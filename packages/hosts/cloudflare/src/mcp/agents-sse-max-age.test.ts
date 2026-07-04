@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest"
 import { MAX_SSE_AGE_MS, McpAgent } from "agents/mcp";
 import { Effect, Option, Schema } from "effect";
 
+import { SESSION_TIMEOUT_MS } from "./session-alarm-policy";
+
 const KEEPALIVE_INTERVAL_MS = 25_000;
 const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
 
@@ -262,6 +264,11 @@ describe("agents SSE max-age rotation", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("keeps the default max age well above the session idle timeout", () => {
+    expect(MAX_SSE_AGE_MS).toBe(30 * 60 * 1000);
+    expect(MAX_SSE_AGE_MS).toBeGreaterThanOrEqual(6 * SESSION_TIMEOUT_MS);
   });
 
   it("closes a healthy draining SSE connection within one keepalive tick after max age", async () => {

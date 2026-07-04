@@ -17,6 +17,7 @@ import {
   dcrClientNameForIntegration,
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
+  oauthIdentityLabelFromHealth,
   runCimdConnect,
   runDcrConnect,
 } from "./add-account-modal";
@@ -108,6 +109,66 @@ describe("connectionNameFrom", () => {
   it("derives a callable default from owner and integration when the display name is empty", () => {
     expect(String(connectionNameFrom("", "org", "GitHub", "org_123"))).toBe("workspaceGithub");
     expect(String(connectionNameFrom("", "org", "GitHub", null))).toBe("localGithub");
+  });
+});
+
+describe("oauthIdentityLabelFromHealth", () => {
+  const healthyResult = {
+    status: "healthy" as const,
+    identity: " user@example.com ",
+    checkedAt: 1,
+  };
+
+  it("uses a healthy probed identity when the stored label is still the default", () => {
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: healthyResult,
+        typedLabel: "",
+        storedIdentityLabel: "Personal Google",
+        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBe("user@example.com");
+  });
+
+  it("does not overwrite a hand-typed label", () => {
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: healthyResult,
+        typedLabel: "My Google Account",
+        storedIdentityLabel: "My Google Account",
+        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not overwrite a stored custom label", () => {
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: healthyResult,
+        typedLabel: "",
+        storedIdentityLabel: "Finance Google",
+        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBeNull();
+  });
+
+  it("requires a healthy result with an identity", () => {
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: { status: "degraded", checkedAt: 1 },
+        typedLabel: "",
+        storedIdentityLabel: "Personal Google",
+        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBeNull();
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: { status: "healthy", checkedAt: 1 },
+        typedLabel: "",
+        storedIdentityLabel: "Personal Google",
+        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBeNull();
   });
 });
 

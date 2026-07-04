@@ -13,18 +13,11 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
 import { McpSessionDO } from "./session-durable-object";
-
-interface McpAgentSessionStub {
-  readonly validateMcpSessionOwner: (identity: {
-    readonly accountId: string;
-    readonly organizationId: string;
-  }) => Promise<"ok" | "not_found" | "forbidden">;
-  readonly _cf_scheduleDestroy: () => Promise<void>;
-}
 
 const corsPreflightResponse = (): Response =>
   new Response(null, {
@@ -66,12 +59,6 @@ const renderAuthError = (
   }
   return jsonRpcResponse(503, -32001, outcome.message);
 };
-
-const sessionStub = (env: CloudflareEnv, sessionId: string): McpAgentSessionStub =>
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers types expose only DurableObjectStub, but RPC methods are generated from the bound DO class.
-  env.MCP_SESSION.get(
-    env.MCP_SESSION.idFromName(`streamable-http:${sessionId}`),
-  ) as unknown as McpAgentSessionStub;
 
 const authenticate = (request: Request, config: CloudflareConfig) =>
   Effect.gen(function* () {
@@ -115,7 +102,11 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
         await Effect.runPromise(
-          Effect.ignore(Effect.tryPromise(() => sessionStub(env, sessionId)._cf_scheduleDestroy())),
+          Effect.ignore(
+            Effect.tryPromise(() =>
+              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
+            ),
+          ),
         );
       }
       return renderAuthError(auth, request, outcome);
@@ -126,7 +117,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     }
 
     if (sessionId) {
-      const owner = await sessionStub(env, sessionId).validateMcpSessionOwner({
+      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });

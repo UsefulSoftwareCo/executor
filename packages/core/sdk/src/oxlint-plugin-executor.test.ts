@@ -1,28 +1,34 @@
 import { describe, expect, it } from "@effect/vitest";
 import { spawnSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 
-const runOxlintOn = async (name: string, source: string) => {
-  const dir = join(repoRoot, ".local", "oxlint-plugin-executor-tests");
-  await mkdir(dir, { recursive: true });
-  const file = join(dir, name);
-  await writeFile(file, source);
-
-  const result = spawnSync(
+const runOxlint = (files: readonly string[]) =>
+  spawnSync(
     join(repoRoot, "node_modules", ".bin", "oxlint"),
-    ["-c", join(repoRoot, ".oxlintrc.jsonc"), file, "--deny-warnings"],
+    ["-c", join(repoRoot, ".oxlintrc.jsonc"), ...files, "--deny-warnings"],
     {
       cwd: repoRoot,
       encoding: "utf8",
     },
   );
 
+const runOxlintOn = async (name: string, source: string) => {
+  const dir = join(repoRoot, ".local", "oxlint-plugin-executor-tests");
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, name);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, source);
+
+  const result = runOxlint([file]);
+
   await rm(file, { force: true });
   return result;
 };
+
+const runOxlintFile = (repoRelativeFile: string) => runOxlint([join(repoRoot, repoRelativeFile)]);
 
 describe("executor oxlint plugin", () => {
   it("rejects expect calls in conditional test branches", async () => {
@@ -207,6 +213,32 @@ describe("executor oxlint plugin", () => {
         export const values = ["ok", null].filter((value): value is string => value !== null);
       `,
     );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Found 0 warnings and 0 errors.");
+  });
+
+  it("rejects raw Durable Object id resolution", async () => {
+    const result = await runOxlintOn(
+      "raw-durable-object-id.ts",
+      `
+        declare const namespace: {
+          readonly idFromName: (name: string) => unknown;
+          readonly idFromString: (id: string) => unknown;
+        };
+
+        namespace.idFromName("session");
+        namespace.idFromString("session");
+      `,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("executor(no-raw-durable-object-id)");
+    expect(result.stdout).toContain("Use the canonical helper");
+  });
+
+  it("allows canonical Durable Object helper files to resolve ids", () => {
+    const result = runOxlintFile("packages/hosts/cloudflare/src/mcp/session-stub.ts");
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Found 0 warnings and 0 errors.");

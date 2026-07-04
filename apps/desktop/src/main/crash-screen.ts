@@ -11,6 +11,104 @@ export interface CrashScreenOptions {
   readonly reported: boolean;
 }
 
+export const startupWindowHtml = (): string => `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Executor</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --background: #0a0a0a;
+        --foreground: #fafafa;
+        --muted: #a1a1aa;
+        --line: #27272a;
+        --pulse: #fafafa;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --background: #f7f7f4;
+          --foreground: #18181b;
+          --muted: #60646c;
+          --line: #d8d8d0;
+          --pulse: #18181b;
+        }
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        width: min(22rem, calc(100vw - 4rem));
+        display: grid;
+        gap: 1rem;
+        justify-items: center;
+        text-align: center;
+      }
+      .mark {
+        width: 2.25rem;
+        height: 2.25rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        font-size: 0.82rem;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 600;
+        letter-spacing: 0;
+      }
+      p {
+        margin: -0.35rem 0 0;
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+      .activity {
+        width: 8rem;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--line);
+      }
+      .activity::after {
+        content: "";
+        display: block;
+        width: 45%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--pulse);
+        animation: slide 1.15s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% { transform: translateX(-110%); opacity: 0.35; }
+        50% { opacity: 0.9; }
+        100% { transform: translateX(245%); opacity: 0.35; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .activity::after { animation: none; transform: none; width: 100%; opacity: 0.55; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark">Ex</div>
+      <h1>Starting Executor&hellip;</h1>
+      <p>Preparing your local workspace.</p>
+      <div class="activity" aria-hidden="true"></div>
+    </main>
+  </body>
+</html>`;
+
 export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<!doctype html>
 <html>
   <head>

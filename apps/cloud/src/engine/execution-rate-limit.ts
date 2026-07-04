@@ -14,12 +14,12 @@
 // ---------------------------------------------------------------------------
 
 import { DurableObject, env } from "cloudflare:workers";
-import * as Sentry from "@sentry/cloudflare";
 import { Data, Effect } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { ExecutionEngine } from "@executor-js/execution";
 
+import { captureCauseEffect } from "../observability";
 import { withPreExecutionGate, type GateDecision } from "./execution-gate";
 import { RATE_LIMIT_BLOCKED_MESSAGE } from "./execution-limit-messages";
 
@@ -149,10 +149,12 @@ export const makeExecutionRateLimiter = (
         // FAIL OPEN: the backstop must never block executions because its
         // counter is unreachable or slow.
         Effect.catch((error: unknown) =>
-          Effect.sync((): GateDecision => {
-            console.warn("[rate-limit] execution rate limit check failed open:", error);
-            Sentry.captureException(error);
-            return { blocked: false };
+          Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              console.warn("[rate-limit] execution rate limit check failed open:", error);
+            });
+            yield* captureCauseEffect(error);
+            return { blocked: false } as const satisfies GateDecision;
           }),
         ),
       );

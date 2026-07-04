@@ -15,6 +15,14 @@
     "./mcp/agent-durable-object": {
       "types": "./src/mcp/agent-session-durable-object.ts",
       "default": "./src/mcp/agent-session-durable-object.ts"
+    },
+    "./mcp/execution-owner-directory": {
+      "types": "./src/mcp/execution-owner-directory.ts",
+      "default": "./src/mcp/execution-owner-directory.ts"
+    },
+    "./mcp/session-stub": {
+      "types": "./src/mcp/session-stub.ts",
+      "default": "./src/mcp/session-stub.ts"
     }
   },
   "scripts": {

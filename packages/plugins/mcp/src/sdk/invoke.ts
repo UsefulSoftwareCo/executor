@@ -26,7 +26,7 @@ import {
   UrlElicitation,
   type Elicit,
   type ElicitationRequest,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/core";
 
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";

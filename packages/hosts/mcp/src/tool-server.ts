@@ -23,6 +23,7 @@ import {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  formatTtlDuration,
   findSkill,
   renderSkillsIndex,
   EXECUTE_SKILL,
@@ -30,6 +31,9 @@ import {
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ResumeResponse,
+  type ExecutionResult,
+  type PausedExecution,
+  type PausedExecutionDeadline,
 } from "@executor-js/execution";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,19 @@ type SharedMcpServerConfig = {
    * wait, durable record, or no-op.
    */
   readonly pausedExecutionHooks?: PausedExecutionHooks;
+  /**
+   * Host-provided approval lease duration. When present, paused payloads carry
+   * an absolute deadline and hooks receive the same deadline.
+   */
+  readonly pausedExecutionLeaseMs?: number;
+  /**
+   * Optional host-owned model resume fallback. Used by Cloudflare session
+   * Durable Objects to route a resume miss to the session that owns the pause.
+   */
+  readonly resumeFallback?: (
+    executionId: string,
+    response: ResumeResponse,
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -118,10 +135,32 @@ export const PAUSED_APPROVAL_TIMEOUT_MS = 4 * 60 * 1000;
 const BROWSER_APPROVAL_WAIT_TIMEOUT_MS = PAUSED_APPROVAL_TIMEOUT_MS + 1000;
 
 export type PausedExecutionHooks = {
-  readonly onExecutionPaused?: (executionId: string) => Effect.Effect<void>;
+  readonly onExecutionPaused?: (
+    executionId: string,
+    deadline: PausedExecutionDeadline | undefined,
+  ) => Effect.Effect<void>;
   readonly onResumeStarted?: (executionId: string) => Effect.Effect<void>;
   readonly onResumeSettled?: (executionId: string) => Effect.Effect<void>;
 };
+
+export type ResumeUnavailableStatus =
+  | "execution_not_found"
+  | "execution_expired"
+  | "execution_forbidden"
+  | "execution_already_settled";
+
+export type ResumeFallbackOutcome =
+  | {
+      readonly status: "result";
+      readonly result: McpToolResult;
+    }
+  | {
+      readonly status: Exclude<ResumeUnavailableStatus, "execution_not_found">;
+      readonly ttlMs?: number;
+    }
+  | {
+      readonly status: "execution_not_found";
+    };
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge
@@ -276,7 +315,7 @@ const formatBoundaryError = (err: unknown): { name?: string; message: string; st
 // MCP result formatting
 // ---------------------------------------------------------------------------
 
-type McpToolResult = {
+export type McpToolResult = {
   content: ContentBlock[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
@@ -430,6 +469,16 @@ const toMcpPausedResult = (formatted: ReturnType<typeof formatPausedExecution>):
   structuredContent: formatted.structured,
 });
 
+export const formatMcpExecutionOutcome = (
+  outcome: ExecutionResult,
+  options?: { readonly pausedDeadline?: PausedExecutionDeadline },
+): McpToolResult =>
+  outcome.status === "completed"
+    ? toMcpResult(outcome.result)
+    : toMcpPausedResult(
+        formatPausedExecution(outcome.execution, { deadline: options?.pausedDeadline }),
+      );
+
 // `execute` failures reaching the MCP host are infra defects — domain
 // failures from tools are now expressed as `ToolResult` values (success
 // channel) and flow through `formatExecuteResult`. Emit an opaque
@@ -491,28 +540,71 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   };
 };
 
-// A paused execution lives in the session runtime's memory: it expires when
-// the user takes too long to answer, and dies early when the runtime is
-// rebuilt (host restart, redeploy). Either way the recovery is the same and
-// the model should be told it, not just handed a miss.
-const missingExecutionResult = (executionId: string): McpToolResult => ({
-  content: [
-    {
-      type: "text" as const,
-      text: [
-        `No paused execution: ${executionId}.`,
-        "The paused execution expired or was lost when its session was restarted — paused executions only stay resumable for a few minutes.",
-        "To recover, run the execute tool again with the original code; if it pauses, a fresh executionId will be issued.",
-      ].join(" "),
+const recoveryText =
+  "To recover, run the execute tool again with the original code; if it pauses, a fresh executionId will be issued.";
+
+const resumeUnavailableResult = (input: {
+  readonly status: ResumeUnavailableStatus;
+  readonly executionId: string;
+  readonly ttlMs?: number;
+}): McpToolResult => {
+  const windowMs = input.ttlMs ?? PAUSED_APPROVAL_TIMEOUT_MS;
+  const approvalWindow = formatTtlDuration(windowMs);
+  const textByStatus: Record<ResumeUnavailableStatus, string[]> = {
+    execution_not_found: [
+      `Paused execution is unknown: ${input.executionId}.`,
+      `Paused executions are only resumable for a limited window; this id may have expired or never existed.`,
+      recoveryText,
+    ],
+    execution_expired: [
+      `Paused execution expired: ${input.executionId}.`,
+      `Approval windows last ${approvalWindow}; the owning session no longer has a live pause for this executionId.`,
+      recoveryText,
+    ],
+    execution_forbidden: [
+      `Paused execution cannot be resumed by this authenticated identity: ${input.executionId}.`,
+      "Resume must be called by the same account and organization that owns the paused session.",
+    ],
+    execution_already_settled: [
+      `Paused execution has already settled: ${input.executionId}.`,
+      "The resume result is no longer available for replay.",
+      "Run execute again only if the result is still needed.",
+    ],
+  };
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: textByStatus[input.status].join(" "),
+      },
+    ],
+    structuredContent: {
+      status: input.status,
+      executionId: input.executionId,
+      ...(input.status === "execution_expired" ? { ttlMs: windowMs } : {}),
+      ...(input.status === "execution_forbidden" ? {} : { recovery: "re_execute" }),
     },
-  ],
-  structuredContent: {
-    status: "execution_not_found",
+    isError: true,
+  };
+};
+
+const missingExecutionResult = (executionId: string): McpToolResult =>
+  resumeUnavailableResult({ status: "execution_not_found", executionId });
+
+const alreadySettledResult = (executionId: string): McpToolResult =>
+  resumeUnavailableResult({ status: "execution_already_settled", executionId });
+
+const fallbackOutcomeResult = (
+  executionId: string,
+  outcome: ResumeFallbackOutcome,
+): McpToolResult => {
+  if (outcome.status === "result") return outcome.result;
+  return resumeUnavailableResult({
+    status: outcome.status,
     executionId,
-    recovery: "re_execute",
-  },
-  isError: true,
-});
+    ttlMs: "ttlMs" in outcome ? outcome.ttlMs : undefined,
+  });
+};
 
 // The `skills` tool serves named, static how-to docs (see the execution
 // package's skills registry). No name -> the index; a known name -> that
@@ -599,8 +691,17 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       ({
         mode: "model",
       } as const);
-    const onExecutionPaused = (executionId: string): Effect.Effect<void> =>
-      config.pausedExecutionHooks?.onExecutionPaused?.(executionId) ?? Effect.void;
+    const pauseDeadline = (): PausedExecutionDeadline | undefined => {
+      const ttlMs = config.pausedExecutionLeaseMs;
+      return ttlMs === undefined || ttlMs <= 0
+        ? undefined
+        : { ttlMs, expiresAt: new Date(Date.now() + ttlMs).toISOString() };
+    };
+    const onExecutionPaused = (
+      executionId: string,
+      deadline: PausedExecutionDeadline | undefined,
+    ): Effect.Effect<void> =>
+      config.pausedExecutionHooks?.onExecutionPaused?.(executionId, deadline) ?? Effect.void;
     const onResumeStarted = (executionId: string): Effect.Effect<void> =>
       config.pausedExecutionHooks?.onResumeStarted?.(executionId) ?? Effect.void;
     const onResumeSettled = (executionId: string): Effect.Effect<void> =>
@@ -610,6 +711,32 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         yield* onResumeStarted(executionId);
         return yield* engine.resume(executionId, response);
       }).pipe(Effect.ensuring(onResumeSettled(executionId)));
+
+    const localExecutionAlreadySettled = (executionId: string): Effect.Effect<boolean> =>
+      engine.isExecutionSettled?.(executionId) ?? Effect.succeed(false);
+
+    const resumeFallback = (
+      executionId: string,
+      response: ResumeResponse,
+    ): Effect.Effect<ResumeFallbackOutcome | null> =>
+      config
+        .resumeFallback?.(executionId, response)
+        .pipe(Effect.catchCause(() => Effect.succeed(null))) ?? Effect.succeed(null);
+
+    const formatPausedModelResult = (
+      execution: PausedExecution,
+      source: "execute" | "resume" | "browser_resume",
+    ): Effect.Effect<McpToolResult> =>
+      Effect.gen(function* () {
+        const deadline = pauseDeadline();
+        yield* Effect.annotateCurrentSpan({
+          "mcp.execute.paused": true,
+          "mcp.execute.paused_execution_id": execution.id,
+          "mcp.execute.pause_source": source,
+        });
+        yield* onExecutionPaused(execution.id, deadline);
+        return toMcpPausedResult(formatPausedExecution(execution, { deadline }));
+      });
 
     const resolveParentSpan = (): Tracer.AnySpan | undefined => {
       const ps = config.parentSpan;
@@ -661,18 +788,18 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         if (outcome.status === "paused") {
+          const deadline = pauseDeadline();
           yield* Effect.annotateCurrentSpan({
             "mcp.execute.paused": true,
             "mcp.execute.paused_execution_id": outcome.execution.id,
             "mcp.execute.pause_source": "execute",
           });
-          yield* onExecutionPaused(outcome.execution.id);
-        }
-        return outcome.status === "completed"
-          ? toMcpResult(outcome.result)
-          : elicitationMode.mode === "browser"
+          yield* onExecutionPaused(outcome.execution.id, deadline);
+          return elicitationMode.mode === "browser"
             ? yield* requireUserResumeApproval(outcome.execution.id)
-            : toMcpPausedResult(formatPausedExecution(outcome.execution));
+            : toMcpPausedResult(formatPausedExecution(outcome.execution, { deadline }));
+        }
+        return toMcpResult(outcome.result);
       }).pipe(
         Effect.withSpan("mcp.host.tool.execute", {
           attributes: {
@@ -697,6 +824,14 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const outcome = yield* resumeWithLifecycle(executionId, { action, content });
         if (!outcome) {
           debugLog("resume.missing_execution", { executionId });
+          if (yield* localExecutionAlreadySettled(executionId)) {
+            return alreadySettledResult(executionId);
+          }
+          const fallback = yield* resumeFallback(executionId, { action, content });
+          if (fallback) {
+            debugLog("resume.fallback_result", { executionId, status: fallback.status });
+            return fallbackOutcomeResult(executionId, fallback);
+          }
           return missingExecutionResult(executionId);
         }
         debugLog("resume.result", {
@@ -709,16 +844,9 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         if (outcome.status === "paused") {
-          yield* Effect.annotateCurrentSpan({
-            "mcp.execute.paused": true,
-            "mcp.execute.paused_execution_id": outcome.execution.id,
-            "mcp.execute.pause_source": "resume",
-          });
-          yield* onExecutionPaused(outcome.execution.id);
+          return yield* formatPausedModelResult(outcome.execution, "resume");
         }
-        return outcome.status === "completed"
-          ? toMcpResult(outcome.result)
-          : toMcpPausedResult(formatPausedExecution(outcome.execution));
+        return toMcpResult(outcome.result);
       }).pipe(
         Effect.withSpan("mcp.host.tool.resume", {
           attributes: {
@@ -780,12 +908,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           return missingExecutionResult(executionId);
         }
         if (outcome.status === "paused") {
+          const deadline = pauseDeadline();
           yield* Effect.annotateCurrentSpan({
             "mcp.execute.paused": true,
             "mcp.execute.paused_execution_id": outcome.execution.id,
             "mcp.execute.pause_source": "browser_resume",
           });
-          yield* onExecutionPaused(outcome.execution.id);
+          yield* onExecutionPaused(outcome.execution.id, deadline);
         }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)

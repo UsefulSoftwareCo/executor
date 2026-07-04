@@ -13,6 +13,7 @@ export type DesktopUpdateStatus =
   | { readonly state: "available"; readonly version: string }
   | { readonly state: "downloading"; readonly version: string; readonly percent: number }
   | { readonly state: "downloaded"; readonly version: string }
+  | { readonly state: "error"; readonly version: string; readonly message: string }
   | { readonly state: "installing"; readonly version: string };
 
 /** Push channel: main → renderer, whenever the update status changes. */

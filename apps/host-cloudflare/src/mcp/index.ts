@@ -1,32 +1,15 @@
 import { Effect } from "effect";
 
 import { decodeResumeResponse } from "@executor-js/host-mcp/browser-approval";
-import type {
-  McpApprovalOwner,
-  McpSessionApprovalResult,
-  McpSessionResumeApprovalResult,
-} from "@executor-js/cloudflare/mcp/agent-durable-object";
-import type { ResumeResponse } from "@executor-js/execution";
+import type { McpApprovalOwner } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { makeAccessVerifier } from "../auth/cloudflare-access";
 
 export { cloudflareAccessMcpAuth } from "./auth";
 export { McpSessionDO } from "./session-durable-object";
-
-const toApprovalStub = (stub: unknown): McpApprovalStub => stub as McpApprovalStub;
-
-interface McpApprovalStub {
-  getPausedExecutionForApproval(
-    executionId: string,
-    identity: McpApprovalOwner,
-  ): Promise<McpSessionApprovalResult>;
-  resumeExecutionForApproval(
-    executionId: string,
-    identity: McpApprovalOwner,
-    response: ResumeResponse,
-  ): Promise<McpSessionResumeApprovalResult>;
-}
+export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
 const PAUSED_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
 const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
@@ -39,8 +22,7 @@ export const makeCloudflareApprovalHandler = (
   env: CloudflareEnv,
 ): ((request: Request) => Promise<Response>) => {
   const { verify } = makeAccessVerifier(config);
-  const stubFor = (sessionId: string): McpApprovalStub =>
-    toApprovalStub(env.MCP_SESSION.get(env.MCP_SESSION.idFromName(`streamable-http:${sessionId}`)));
+  const stubFor = (sessionId: string) => mcpSessionStub(env.MCP_SESSION, sessionId);
 
   return async (request) => {
     const principal = await Effect.runPromise(verify(request));

@@ -32,10 +32,7 @@ import {
   authorizeOrganizationSelector,
   resolveOrganization,
 } from "./organization";
-import type {
-  McpSessionApprovalResult,
-  McpSessionResumeApprovalResult,
-} from "../mcp/session-durable-object";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -122,23 +119,7 @@ const requireSelectedOrganization = Effect.gen(function* () {
   };
 });
 
-const getMcpSessionStub = (mcpSessionId: string) =>
-  Effect.try({
-    try: () => {
-      const ns = env.MCP_SESSION;
-      return ns.get(ns.idFromString(mcpSessionId));
-    },
-    catch: () => undefined,
-  }).pipe(Effect.orElseSucceed(() => null));
-
-const requireMcpSessionStub = (mcpSessionId: string, executionId: string) =>
-  Effect.gen(function* () {
-    const stub = yield* getMcpSessionStub(mcpSessionId);
-    if (!stub) {
-      return yield* new McpExecutionNotFoundError({ executionId });
-    }
-    return stub;
-  });
+const getMcpSessionStub = (mcpSessionId: string) => mcpSessionStub(env.MCP_SESSION, mcpSessionId);
 
 const failMcpApprovalResult = (
   result: { readonly status: "not_found" | "forbidden" },
@@ -528,13 +509,12 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       .handle("getMcpPaused", ({ params }) =>
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
-          const result = yield* Effect.promise(
-            () =>
-              stub.getPausedExecutionForApproval(params.executionId, {
-                accountId: owner.accountId,
-                organizationId: owner.organizationId,
-              }) as Promise<McpSessionApprovalResult>,
+          const stub = getMcpSessionStub(params.mcpSessionId);
+          const result = yield* Effect.promise(() =>
+            stub.getPausedExecutionForApproval(params.executionId, {
+              accountId: owner.accountId,
+              organizationId: owner.organizationId,
+            }),
           );
 
           if (result.status !== "ok") {
@@ -550,20 +530,19 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       .handle("resumeMcpExecution", ({ params, payload }) =>
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
-          const result = yield* Effect.promise(
-            () =>
-              stub.resumeExecutionForApproval(
-                params.executionId,
-                {
-                  accountId: owner.accountId,
-                  organizationId: owner.organizationId,
-                },
-                {
-                  action: payload.action,
-                  content: payload.content as Record<string, unknown> | undefined,
-                },
-              ) as Promise<McpSessionResumeApprovalResult>,
+          const stub = getMcpSessionStub(params.mcpSessionId);
+          const result = yield* Effect.promise(() =>
+            stub.resumeExecutionForApproval(
+              params.executionId,
+              {
+                accountId: owner.accountId,
+                organizationId: owner.organizationId,
+              },
+              {
+                action: payload.action,
+                content: payload.content as Record<string, unknown> | undefined,
+              },
+            ),
           );
 
           if (result.status !== "ok") {

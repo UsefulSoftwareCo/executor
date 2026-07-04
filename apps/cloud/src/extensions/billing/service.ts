@@ -3,9 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import { env } from "cloudflare:workers";
-import * as Sentry from "@sentry/cloudflare";
 import { Autumn } from "autumn-js";
 import { Context, Data, Effect, Layer } from "effect";
+
+import { captureCauseEffect } from "../../observability";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -72,12 +73,12 @@ const make = Effect.sync(() => {
       ).pipe(
         Effect.catchTag("AutumnError", (error) =>
           Effect.gen(function* () {
-            // Silent billing data loss is worth paging on — autumn.trackExecution
+            // Silent billing data loss is worth paging on: autumn.trackExecution
             // is fire-and-forget so the caller doesn't handle it themselves.
             yield* Effect.sync(() => {
               console.error("[billing] track failed:", error);
-              Sentry.captureException(error);
             });
+            yield* captureCauseEffect(error);
             yield* Effect.annotateCurrentSpan({ "autumn.track.failed": true });
           }),
         ),

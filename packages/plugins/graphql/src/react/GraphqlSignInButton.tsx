@@ -2,13 +2,16 @@ import { useState } from "react";
 
 import {
   AuthTemplateSlug,
-  ConnectionName,
   IntegrationSlug,
   OAuthClientSlug,
   type Connection,
   type AuthTemplateSlug as AuthTemplateSlugType,
 } from "@executor-js/sdk/shared";
-import { OAuthSignInButton, useOAuthPopupFlow } from "@executor-js/react/plugins/oauth-sign-in";
+import {
+  OAuthSignInButton,
+  useOAuthPopupFlow,
+  type OAuthCompletionPayload,
+} from "@executor-js/react/plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
   useConnectionOwner,
@@ -57,10 +60,10 @@ export default function GraphqlSignInButton(props: {
         template: AuthTemplateSlug.make(String(props.template)),
         identityLabel: `${props.displayName} OAuth`,
       },
-      onSuccess: (payload: { readonly connection: ConnectionName }) => {
+      onSuccess: (payload: OAuthCompletionPayload) => {
         // Touch the minted connection name to satisfy the success contract; the
         // connection list re-reads via reactivity keys after the flow completes.
-        void payload.connection;
+        void payload.name;
         setConnectedOwner(connectionOwner);
       },
     });

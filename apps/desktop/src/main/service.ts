@@ -38,6 +38,8 @@ export const bundledExecutorPath = (): string =>
 
 const executorAvailable = (): boolean => app.isPackaged && existsSync(bundledExecutorPath());
 
+let userPathCapture: Promise<string | undefined> | null = null;
+
 const captureUserPath = async (): Promise<string | undefined> => {
   const shell = process.env.SHELL;
   if (!shell) return process.env.PATH;
@@ -53,24 +55,37 @@ const captureUserPath = async (): Promise<string | undefined> => {
   }
 };
 
-const serviceEnv = async (dataDir: string): Promise<NodeJS.ProcessEnv> => ({
-  ...process.env,
-  ...(await captureUserPath().then((path) => (path ? { PATH: path } : {}))),
-  EXECUTOR_DATA_DIR: dataDir,
-  EXECUTOR_SCOPE_DIR: dataDir,
-  EXECUTOR_CLIENT: "desktop",
-  ...sidecarCrashReportingEnv(),
-});
+const memoizedUserPath = (): Promise<string | undefined> => {
+  userPathCapture ??= captureUserPath();
+  return userPathCapture;
+};
+
+const serviceEnv = async (
+  dataDir: string,
+  options: { readonly captureUserPath: boolean },
+): Promise<NodeJS.ProcessEnv> => {
+  const path = options.captureUserPath ? await memoizedUserPath() : process.env.PATH;
+  return {
+    ...process.env,
+    ...(path ? { PATH: path } : {}),
+    EXECUTOR_DATA_DIR: dataDir,
+    EXECUTOR_SCOPE_DIR: dataDir,
+    EXECUTOR_CLIENT: "desktop",
+    ...sidecarCrashReportingEnv(),
+  };
+};
 
 const runExecutor = async (
   args: ReadonlyArray<string>,
-  options: { readonly dataDir: string },
+  options: { readonly dataDir: string; readonly captureUserPath?: boolean },
 ): Promise<CommandResult> => {
   const bin = bundledExecutorPath();
   try {
     const { stdout, stderr } = await execFileAsync(bin, [...args], {
       encoding: "utf8",
-      env: await serviceEnv(options.dataDir),
+      env: await serviceEnv(options.dataDir, {
+        captureUserPath: options.captureUserPath ?? true,
+      }),
     });
     return { code: 0, stdout, stderr };
   } catch (error) {
@@ -92,7 +107,10 @@ const statusValue = (stdout: string, key: "Registered" | "Running"): boolean =>
 export const supervisedServiceStatus = async (): Promise<SupervisedServiceStatus> => {
   if (!executorAvailable()) return { supported: false, registered: false, running: false };
   const dataDir = join(app.getPath("home"), ".executor");
-  const result = await runExecutor(["service", "status"], { dataDir });
+  const result = await runExecutor(["service", "status"], {
+    dataDir,
+    captureUserPath: false,
+  });
   if (result.code !== 0) {
     serviceLog.warn(`service status failed: ${result.stderr || result.stdout}`);
     return { supported: true, registered: false, running: false };

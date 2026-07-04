@@ -20,6 +20,7 @@
     "executor/no-match-orelse": "error",
     "executor/no-promise-catch": "error",
     "executor/no-promise-reject": "error",
+    "executor/no-raw-durable-object-id": "error",
     "executor/no-raw-fetch": "error",
     "executor/no-redundant-primitive-cast": "error",
     "executor/no-redundant-error-factory": "error",

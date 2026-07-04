@@ -325,4 +325,96 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     }>(call);
     expect(result.result?.structuredContent?.result).toBe(42);
   }, 60_000);
+
+  it("resumes a model-paused execution from a fresh MCP session", async () => {
+    const accept = "application/json, text/event-stream";
+    const rpc = (sessionId: string | null, body: unknown) =>
+      worker.fetch("/mcp?elicitation_mode=model", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept,
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const initialize = async (id: number): Promise<string> => {
+      const init = await rpc(null, {
+        jsonrpc: "2.0",
+        id,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+      });
+      expect(init.status).toBe(200);
+      const sessionId = init.headers.get("mcp-session-id");
+      expect(sessionId).toBeTruthy();
+      await rpc(sessionId, {
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      });
+      return sessionId!;
+    };
+
+    const sessionA = await initialize(1);
+    const execute = await rpc(sessionA, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "execute",
+        arguments: {
+          code: [
+            "return await tools.executor.coreTools.policies.create({",
+            '  owner: "org",',
+            '  pattern: "microsoft.*",',
+            '  action: "require_approval"',
+            "});",
+          ].join("\n"),
+        },
+      },
+    });
+    expect(execute.status).toBe(200);
+    const paused = await readMcpJson<{
+      result?: {
+        structuredContent?: {
+          status?: string;
+          executionId?: string;
+        };
+      };
+    }>(execute);
+    expect(paused.result?.structuredContent?.status).toBe("waiting_for_interaction");
+    const executionId = paused.result?.structuredContent?.executionId;
+    expect(executionId).toBeTruthy();
+
+    const sessionB = await initialize(3);
+    expect(sessionB).not.toBe(sessionA);
+    const resume = await rpc(sessionB, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "resume",
+        arguments: { executionId, action: "accept", content: "{}" },
+      },
+    });
+    expect(resume.status).toBe(200);
+    const resumed = await readMcpJson<{
+      result?: {
+        isError?: boolean;
+        structuredContent?: {
+          status?: string;
+          recovery?: string;
+          result?: unknown;
+        };
+      };
+    }>(resume);
+    expect(resumed.result?.structuredContent?.status).not.toBe("execution_not_found");
+    expect(resumed.result?.structuredContent?.recovery).not.toBe("re_execute");
+    expect(resumed.result?.isError).toBeFalsy();
+    expect(resumed.result?.structuredContent?.status).toBe("completed");
+  }, 60_000);
 });

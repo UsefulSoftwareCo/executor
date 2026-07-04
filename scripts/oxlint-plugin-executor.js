@@ -15,6 +15,7 @@ import noMatchOrelse from "./oxlint-plugin-executor/rules/no-match-orelse.js";
 import noPromiseCatch from "./oxlint-plugin-executor/rules/no-promise-catch.js";
 import noPromiseClientSurface from "./oxlint-plugin-executor/rules/no-promise-client-surface.js";
 import noPromiseReject from "./oxlint-plugin-executor/rules/no-promise-reject.js";
+import noRawDurableObjectId from "./oxlint-plugin-executor/rules/no-raw-durable-object-id.js";
 import noRawFetch from "./oxlint-plugin-executor/rules/no-raw-fetch.js";
 import noRawErrorThrow from "./oxlint-plugin-executor/rules/no-raw-error-throw.js";
 import noRedundantPrimitiveCast from "./oxlint-plugin-executor/rules/no-redundant-primitive-cast.js";
@@ -58,6 +59,7 @@ export default {
     "no-promise-catch": noPromiseCatch,
     "no-promise-client-surface": noPromiseClientSurface,
     "no-promise-reject": noPromiseReject,
+    "no-raw-durable-object-id": noRawDurableObjectId,
     "no-raw-fetch": noRawFetch,
     "no-raw-error-throw": noRawErrorThrow,
     "no-redundant-primitive-cast": noRedundantPrimitiveCast,

@@ -83,9 +83,13 @@ function useLatestVersion(currentVersion: string | undefined) {
 
 // ── Card chrome ──────────────────────────────────────────────────────────
 
-/** The bordered card with the download glyph + "Update available" + version.
+/** The bordered card with the download glyph + title + version.
  *  Each variant supplies its own action as children. */
-function UpdateCardShell(props: { version: string | null; children?: React.ReactNode }) {
+function UpdateCardShell(props: {
+  title?: string;
+  version: string | null;
+  children?: React.ReactNode;
+}) {
   return (
     <div className="mx-2 mb-2 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
       <div className="flex items-center gap-2">
@@ -102,7 +106,9 @@ function UpdateCardShell(props: { version: string | null; children?: React.React
           </svg>
         </div>
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-foreground">Update available</p>
+          <p className="text-xs font-semibold text-foreground">
+            {props.title ?? "Update available"}
+          </p>
           {props.version && <p className="text-sm text-muted-foreground">v{props.version}</p>}
         </div>
       </div>
@@ -231,10 +237,20 @@ function DesktopUpdateCard(props: { update: DesktopUpdate }) {
     if (status.state === "installing") {
       return <p className="mt-2.5 text-xs text-muted-foreground">Restarting…</p>;
     }
+    if (status.state === "error") {
+      return <p className="mt-2.5 text-xs text-muted-foreground">{status.message}</p>;
+    }
     return null;
   })();
 
-  return <UpdateCardShell version={version}>{action}</UpdateCardShell>;
+  return (
+    <UpdateCardShell
+      title={status.state === "error" ? "Update failed" : undefined}
+      version={version}
+    >
+      {action}
+    </UpdateCardShell>
+  );
 }
 
 // ── SidebarUpdateCard (the only export the shells consume) ────────────────

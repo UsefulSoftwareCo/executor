@@ -1,12 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
 import { defaultMcpResource } from "@executor-js/host-mcp";
+import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
 
-import { McpAgentSessionDOBase, type SessionMeta } from "./agent-session-durable-object";
+import {
+  McpAgentSessionDOBase,
+  type McpApprovalOwner,
+  type McpSessionModelResumeResult,
+  type SessionMeta,
+} from "./agent-session-durable-object";
 
 class MemoryStorage {
   private readonly data = new Map<string, unknown>();
@@ -77,7 +83,7 @@ type HarnessSession = {
   alarm: () => Promise<void>;
   ctx: MemoryStorage;
   dbHandle: { readonly end: () => void } | null;
-  engine: { readonly pausedExecutionCount: () => Effect.Effect<number> } | null;
+  engine: ExecutionEngine<Cause.YieldableError> | null;
   getSessionId: () => string;
   initialized: boolean;
   lastActivityMs: number;
@@ -85,9 +91,15 @@ type HarnessSession = {
   onStart: () => Promise<void>;
   pendingApprovalLeases: Map<string, never>;
   props: Record<string, unknown>;
+  runMcpAgentOnStart: () => Promise<void>;
   server?: McpServer;
   sessionMeta: SessionMeta;
   sessionTimeoutMs: () => number;
+  resumeExecutionForModel: (
+    executionId: string,
+    identity: McpApprovalOwner,
+    response: ResumeResponse,
+  ) => Promise<McpSessionModelResumeResult>;
   validateMcpSessionOwner: (identity: {
     readonly accountId: string;
     readonly organizationId: string;
@@ -130,6 +142,44 @@ const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: ()
   return { promise, resolve };
 };
 
+type ResumeCall = {
+  readonly executionId: string;
+  readonly response: ResumeResponse;
+};
+
+const completed = (result: unknown): ExecutionResult => ({
+  status: "completed",
+  result: { result },
+});
+
+const makeEngine = (
+  resultForResume: (executionId: string, response: ResumeResponse) => ExecutionResult | null = () =>
+    completed("resume-result"),
+): { readonly calls: ResumeCall[]; readonly engine: ExecutionEngine<Cause.YieldableError> } => {
+  const calls: ResumeCall[] = [];
+  return {
+    calls,
+    engine: {
+      execute: () => Effect.succeed({ result: "execute-result" }),
+      executeWithPause: () => Effect.succeed(completed("execute-result")),
+      resume: (executionId, response) =>
+        Effect.sync(() => {
+          calls.push({ executionId, response });
+          return resultForResume(executionId, response);
+        }),
+      getPausedExecution: () => Effect.succeed(null),
+      pausedExecutionCount: () => Effect.succeed(0),
+      hasPausedExecutions: () => Effect.succeed(false),
+      getDescription: Effect.succeed("test engine"),
+    },
+  };
+};
+
+const approval = {
+  action: "accept",
+  content: { approved: true },
+} satisfies ResumeResponse;
+
 const makeHarnessSession = async (): Promise<HarnessSession> => {
   const sessionId = "session-reconnect";
   const sessionMeta: SessionMeta = {
@@ -145,7 +195,7 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   const session = Object.create(McpAgentSessionDOBase.prototype) as HarnessSession;
   session.ctx = storage;
   session.dbHandle = { end: () => undefined };
-  session.engine = { pausedExecutionCount: () => Effect.succeed(0) };
+  session.engine = makeEngine().engine;
   session.getSessionId = () => sessionId;
   session.initialized = true;
   session.lastActivityMs = Date.now() - 10;
@@ -155,10 +205,11 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   session.server = server;
   session.sessionMeta = sessionMeta;
   session.sessionTimeoutMs = () => 1;
-  session.onStart = async () => {
+  session.runMcpAgentOnStart = async () => {
     const restored = session.server ?? makeServer();
     session.server = restored;
     await restored.connect(new RestoredTransport());
+    session.engine = makeEngine().engine;
     session.initialized = true;
   };
 
@@ -183,7 +234,7 @@ describe("McpAgentSessionDOBase transport restore", () => {
     let onStartCalls = 0;
     let restoredServer: McpServer | undefined;
 
-    session.onStart = async () => {
+    session.runMcpAgentOnStart = async () => {
       onStartCalls += 1;
       const restored = session.server ?? makeServer();
       restoredServer ??= restored;
@@ -212,5 +263,82 @@ describe("McpAgentSessionDOBase transport restore", () => {
     await expect(Promise.all([first, second])).resolves.toEqual(["ok", "ok"]);
     expect(onStartCalls).toBe(1);
     expect(session.server).toBe(restoredServer);
+  });
+
+  it("single-flights SDK onStart callers with same-session restore", async () => {
+    const session = await makeHarnessSession();
+    const firstStartEntered = makeDeferred();
+    const finishStart = makeDeferred();
+    let onStartCalls = 0;
+
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      session.server = restored;
+      firstStartEntered.resolve();
+      await finishStart.promise;
+      await restored.connect(new RestoredTransport());
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const restore = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
+    });
+    const sdkStart = session.onStart();
+
+    await firstStartEntered.promise;
+    await Promise.resolve();
+    finishStart.resolve();
+
+    await expect(Promise.all([restore, sdkStart])).resolves.toEqual(["ok", undefined]);
+    expect(onStartCalls).toBe(1);
+  });
+
+  it("single-flights model resume restore with SDK onStart", async () => {
+    const session = await makeHarnessSession();
+    const firstStartEntered = makeDeferred();
+    const finishStart = makeDeferred();
+    const restoredEngine = makeEngine(() => completed("model-result"));
+    let onStartCalls = 0;
+
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      session.server = restored;
+      firstStartEntered.resolve();
+      await finishStart.promise;
+      await restored.connect(new RestoredTransport());
+      session.engine = restoredEngine.engine;
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const resume = session.resumeExecutionForModel(
+      "exec-model",
+      { accountId: "user-1", organizationId: "org-1" },
+      approval,
+    );
+    const sdkStart = session.onStart();
+
+    await firstStartEntered.promise;
+    await Promise.resolve();
+    finishStart.resolve();
+
+    const [resumeResult] = await Promise.all([resume, sdkStart]);
+    expect(resumeResult).toMatchObject({
+      status: "result",
+      result: {
+        structuredContent: {
+          status: "completed",
+          result: "model-result",
+        },
+      },
+    });
+    expect(onStartCalls).toBe(1);
+    expect(restoredEngine.calls).toEqual([{ executionId: "exec-model", response: approval }]);
   });
 });

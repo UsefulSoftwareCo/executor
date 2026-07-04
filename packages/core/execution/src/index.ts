@@ -2,10 +2,12 @@ export {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  formatTtlDuration,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ExecutionResult,
   type PausedExecution,
+  type PausedExecutionDeadline,
   type ResumeResponse,
 } from "./engine";
 

@@ -24,6 +24,7 @@ import {
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
+  MICROSOFT_GRAPH_IDENTITY_SCOPE,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
   MICROSOFT_TOKEN_URL,
@@ -185,7 +186,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 const HTTP_METHODS = new Set(["delete", "get", "patch", "post", "put"]);
-const BASE_OAUTH_SCOPES = new Set(["offline_access", "openid", "profile", "email"]);
+const REQUEST_BASE_SCOPES = new Set(["offline_access", "openid", "profile", "email"]);
+const PATH_SCOPE_IGNORED_SCOPES = new Set([
+  "offline_access",
+  "openid",
+  "profile",
+  "email",
+  MICROSOFT_GRAPH_IDENTITY_SCOPE,
+]);
 
 const firstString = (values: readonly unknown[]): string | undefined =>
   values.find((value): value is string => typeof value === "string" && value.trim().length > 0);
@@ -422,6 +430,9 @@ const matchesGraphPath = (
   );
 };
 
+const isIdentityHealthPath = (path: string): boolean =>
+  graphPathMatchVariants(path).some((variant) => variant === "/me");
+
 const operationTags = (operation: Record<string, unknown>): readonly string[] =>
   Array.isArray(operation.tags)
     ? operation.tags.filter((tag): tag is string => typeof tag === "string")
@@ -499,7 +510,7 @@ const operationMatchesScope = (
   selectedScopes: ReadonlySet<string>,
 ): boolean =>
   permissionScopes(operation).some(
-    (scope) => selectedScopes.has(scope) && !BASE_OAUTH_SCOPES.has(scope),
+    (scope) => selectedScopes.has(scope) && !PATH_SCOPE_IGNORED_SCOPES.has(scope),
   );
 
 const filterPathItem = (
@@ -512,7 +523,10 @@ const filterPathItem = (
     readonly selectedScopes: ReadonlySet<string>;
   },
 ): Record<string, unknown> | null => {
-  const pathMatches = matchesGraphPath(path, options.exactPaths, options.pathPrefixes);
+  // Always keep bare /me: the default identity health check depends on GET /me
+  // even when the profile workload is unchecked.
+  const pathMatchesSelection = matchesGraphPath(path, options.exactPaths, options.pathPrefixes);
+  const identityHealthGetOnly = !pathMatchesSelection && isIdentityHealthPath(path);
   const kept: Record<string, unknown> = {};
   let hasOperation = false;
 
@@ -520,8 +534,10 @@ const filterPathItem = (
     const lowerKey = key.toLowerCase();
     if (!HTTP_METHODS.has(lowerKey)) continue;
     if (!isRecord(value)) continue;
+    if (identityHealthGetOnly && lowerKey !== "get") continue;
     if (
-      pathMatches ||
+      pathMatchesSelection ||
+      identityHealthGetOnly ||
       operationMatchesTagPrefix(value, options.tagPrefixes) ||
       operationMatchesScope(value, options.selectedScopes)
     ) {
@@ -719,7 +735,7 @@ const streamSelectedScopes = (
   const collected = [
     ...MICROSOFT_GRAPH_BASE_SCOPES,
     ...fullGraphScopes,
-    ...requestedScopes.filter((scope) => !BASE_OAUTH_SCOPES.has(scope)),
+    ...requestedScopes.filter((scope) => !REQUEST_BASE_SCOPES.has(scope)),
   ];
   for (const range of structure.pathItems) {
     const entry = parseEntry(structure.text, range, 2);

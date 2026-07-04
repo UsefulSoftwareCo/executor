@@ -1,7 +1,7 @@
 import { Cause, Data, Effect, Predicate, Result } from "effect";
 import { HttpServerRespondable, HttpServerResponse } from "effect/unstable/http";
 
-import { captureCause } from "../observability";
+import { captureCause, captureCauseEffect } from "../observability";
 
 // Implements `Respondable` so the framework's default cause→response
 // pipeline (`HttpServerRespondable.toResponseOrElse`) renders this as the
@@ -13,13 +13,14 @@ export class HttpResponseError extends Data.TaggedError("HttpResponseError")<{
   readonly message: string;
 }> {
   [HttpServerRespondable.symbol](): Effect.Effect<HttpServerResponse.HttpServerResponse> {
-    if (this.status >= 500) captureCause(this);
-    return Effect.succeed(
-      HttpServerResponse.jsonUnsafe(
-        { error: this.message, code: this.code },
-        { status: this.status },
-      ),
-    );
+    const self = this;
+    return Effect.gen(function* () {
+      if (self.status >= 500) yield* captureCauseEffect(self);
+      return HttpServerResponse.jsonUnsafe(
+        { error: self.message, code: self.code },
+        { status: self.status },
+      );
+    });
   }
 }
 
@@ -65,3 +66,15 @@ export const toErrorServerResponse = (error: unknown): HttpServerResponse.HttpSe
     { status: mapped.status },
   );
 };
+
+export const toErrorServerResponseEffect = (
+  error: unknown,
+): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+  Effect.gen(function* () {
+    const mapped = toHttpResponseError(error);
+    if (mapped.status >= 500) yield* captureCauseEffect(mapped);
+    return HttpServerResponse.jsonUnsafe(
+      { error: mapped.message, code: mapped.code },
+      { status: mapped.status },
+    );
+  });

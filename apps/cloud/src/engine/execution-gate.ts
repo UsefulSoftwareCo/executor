@@ -24,12 +24,12 @@
 // `CodeCompilationError` / `SandboxRuntimeError` into `ExecuteResult.error`.
 // ---------------------------------------------------------------------------
 
-import * as Sentry from "@sentry/cloudflare";
 import { Data, Effect } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
+import { captureCauseEffect } from "../observability";
 import { EXECUTION_LIMIT_BLOCKED_MESSAGE } from "./execution-limit-messages";
 
 // The engine's completed-result payload (`ExecuteResult` in codemode-core),
@@ -166,10 +166,12 @@ export const makeExecutionLimitGate = (checkBalance: ExecutionBalanceCheck) => {
         // must never block executions. Reported like `trackExecution` so a
         // billing outage still pages; the error outcome is never cached.
         Effect.catch((error: unknown) =>
-          Effect.sync((): GateDecision => {
-            console.warn("[billing] execution balance check failed open:", error);
-            Sentry.captureException(error);
-            return { blocked: false };
+          Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              console.warn("[billing] execution balance check failed open:", error);
+            });
+            yield* captureCauseEffect(error);
+            return { blocked: false } as const satisfies GateDecision;
           }),
         ),
       );

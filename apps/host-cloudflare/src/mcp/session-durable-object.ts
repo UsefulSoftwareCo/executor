@@ -1,14 +1,26 @@
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
-import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
+import {
+  PAUSED_APPROVAL_TIMEOUT_MS,
+  createExecutorMcpServer,
+} from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import type { ExecutorDbHandle } from "@executor-js/api/server";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
+  type McpApprovalOwner,
+  type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import {
+  mcpExecutionOwnerDirectoryFromNamespace,
+  type McpExecutionOwnerDirectory,
+  type McpExecutionOwnerRoute,
+} from "@executor-js/cloudflare/mcp/execution-owner-directory";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import type { ResumeResponse } from "@executor-js/execution";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
 import { createD1ExecutorDb } from "../db/d1";
@@ -35,6 +47,10 @@ import { preloadQuickJs } from "../quickjs";
 // own lifecycle (the binding is the connection), so `end` is `close` — a no-op.
 type CfSessionDbHandle = ExecutorDbHandle & { readonly end: () => Promise<void> };
 
+class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
+  readonly cause: unknown;
+}> {}
+
 export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSessionDbHandle> {
   private readonly cfEnv: CloudflareEnv;
   private readonly cfConfig: CloudflareConfig;
@@ -46,6 +62,27 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     super(ctx, env);
     this.cfEnv = env;
     this.cfConfig = loadConfig(env);
+  }
+
+  protected override executionOwnerDirectory(): McpExecutionOwnerDirectory | null {
+    return mcpExecutionOwnerDirectoryFromNamespace(this.cfEnv.MCP_EXECUTION_OWNER);
+  }
+
+  protected override forwardModelResumeToOwner(
+    owner: McpExecutionOwnerRoute,
+    identity: McpApprovalOwner,
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<McpSessionModelResumeResult, unknown> {
+    return Effect.tryPromise({
+      try: () =>
+        mcpSessionStub(this.cfEnv.MCP_SESSION, owner.sessionId).resumeExecutionForModel(
+          executionId,
+          identity,
+          response,
+        ),
+      catch: (cause) => new McpModelResumeForwardError({ cause }),
+    });
   }
 
   protected override async openSessionDb(): Promise<CfSessionDbHandle> {
@@ -91,6 +128,8 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         engine,
         browserApprovalStore: self.browserApprovalStore,
         pausedExecutionHooks: self.pausedExecutionHooks,
+        pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,
+        resumeFallback: self.modelResumeFallback,
         elicitationMode:
           elicitationMode === "browser"
             ? {

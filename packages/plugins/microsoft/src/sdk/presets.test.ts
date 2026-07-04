@@ -58,6 +58,16 @@ describe("Microsoft Graph scope presets", () => {
     ]);
   });
 
+  it("includes User.Read for identity when profile is not selected", () => {
+    expect(microsoftGraphScopesForPresetIds(["mail"])).toEqual([
+      ...MICROSOFT_GRAPH_BASE_SCOPES,
+      "User.Read",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "MailboxSettings.ReadWrite",
+    ]);
+  });
+
   it("returns path filters for the selected workloads", () => {
     expect(microsoftGraphExactPathsForPresetIds(["profile"])).toContain("/me");
     expect(microsoftGraphPathPrefixesForPresetIds(["mail"])).toContain("/me/messages");

@@ -25,6 +25,7 @@ export interface CloudflareEnv {
    *  session (the DO id IS the session id), so a session survives across the
    *  Worker's stateless isolates. */
   readonly MCP_SESSION: DurableObjectNamespace;
+  readonly MCP_EXECUTION_OWNER?: DurableObjectNamespace;
   /** Zero Trust team domain, e.g. `your-team.cloudflareaccess.com`. */
   readonly ACCESS_TEAM_DOMAIN: string;
   /** The Access application's AUD tag (the JWT audience to verify). */
