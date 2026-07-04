@@ -191,6 +191,14 @@ paths:
       responses:
         "200":
           description: OK
+    patch:
+      operationId: me.UpdateUser
+      security:
+        - azureAdDelegated:
+            - User.ReadWrite
+      responses:
+        "200":
+          description: OK
   /me/photo:
     get:
       operationId: me.photo.GetProfilePhoto
@@ -229,6 +237,36 @@ const noWorkloadSelection = {
   pathPrefixes: [],
   tagPrefixes: [],
 } as const;
+
+const profileSelection = {
+  coversFullGraph: false,
+  presetIds: ["profile"],
+  customScopes: [],
+  exactPaths: ["/me", "/me/photo", "/me/photo/$value"],
+  pathPrefixes: [],
+  tagPrefixes: [],
+} as const;
+
+type MicrosoftGraphKeepPathItemSelection = Parameters<typeof microsoftGraphKeepPathItem>[0];
+
+const keptIdentityFixturePaths = (
+  selection: MicrosoftGraphKeepPathItemSelection,
+): Map<string, Record<string, unknown>> => {
+  const structure = structuralSplit(identityPathFixture);
+  expect(structure).not.toBeNull();
+  const keepPathItem = microsoftGraphKeepPathItem(selection);
+  const kept = new Map<string, Record<string, unknown>>();
+
+  for (const range of structure!.pathItems) {
+    const entry = parseEntry(structure!.text, range, 2);
+    expect(entry).not.toBeNull();
+    const [path, rawPathItem] = entry!;
+    const pathItem = keepPathItem(path, rawPathItem as Record<string, unknown>);
+    if (pathItem) kept.set(path, pathItem as Record<string, unknown>);
+  }
+
+  return kept;
+};
 
 const keptPathItem = (fixture: string): Record<string, unknown> => {
   const structure = structuralSplit(fixture);
@@ -285,22 +323,19 @@ const responseFileHintKind = (
   return Option.getOrUndefined(hint)?.kind;
 };
 
-it("keeps bare /me for identity health checks without keeping /me child paths", () => {
-  const structure = structuralSplit(identityPathFixture);
-  expect(structure).not.toBeNull();
-  const keepPathItem = microsoftGraphKeepPathItem(noWorkloadSelection);
-  const kept = new Map<string, Record<string, unknown>>();
-
-  for (const range of structure!.pathItems) {
-    const entry = parseEntry(structure!.text, range, 2);
-    expect(entry).not.toBeNull();
-    const [path, rawPathItem] = entry!;
-    const pathItem = keepPathItem(path, rawPathItem as Record<string, unknown>);
-    if (pathItem) kept.set(path, pathItem as Record<string, unknown>);
-  }
+it("keeps only GET /me for identity health checks without selected workloads", () => {
+  const kept = keptIdentityFixturePaths(noWorkloadSelection);
 
   expect([...kept.keys()]).toEqual(["/me"]);
   expect(kept.get("/me")?.get).toMatchObject({ operationId: "me.GetUser" });
+  expect(kept.get("/me")?.patch).toBeUndefined();
+});
+
+it("keeps all /me operations when profile selects the path", () => {
+  const kept = keptIdentityFixturePaths(profileSelection);
+
+  expect(kept.get("/me")?.get).toMatchObject({ operationId: "me.GetUser" });
+  expect(kept.get("/me")?.patch).toMatchObject({ operationId: "me.UpdateUser" });
 });
 
 it("keeps already-binary drive content responses untouched", () => {

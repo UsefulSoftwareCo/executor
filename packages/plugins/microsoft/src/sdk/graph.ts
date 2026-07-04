@@ -525,8 +525,8 @@ const filterPathItem = (
 ): Record<string, unknown> | null => {
   // Always keep bare /me: the default identity health check depends on GET /me
   // even when the profile workload is unchecked.
-  const pathMatches =
-    isIdentityHealthPath(path) || matchesGraphPath(path, options.exactPaths, options.pathPrefixes);
+  const pathMatchesSelection = matchesGraphPath(path, options.exactPaths, options.pathPrefixes);
+  const identityHealthGetOnly = !pathMatchesSelection && isIdentityHealthPath(path);
   const kept: Record<string, unknown> = {};
   let hasOperation = false;
 
@@ -534,8 +534,10 @@ const filterPathItem = (
     const lowerKey = key.toLowerCase();
     if (!HTTP_METHODS.has(lowerKey)) continue;
     if (!isRecord(value)) continue;
+    if (identityHealthGetOnly && lowerKey !== "get") continue;
     if (
-      pathMatches ||
+      pathMatchesSelection ||
+      identityHealthGetOnly ||
       operationMatchesTagPrefix(value, options.tagPrefixes) ||
       operationMatchesScope(value, options.selectedScopes)
     ) {
