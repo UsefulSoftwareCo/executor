@@ -881,7 +881,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           return toMcpResult(outcome.result);
         }),
       ).pipe(
+        // OTel SpanKind CONSUMER: a tool call is a remotely-initiated unit of
+        // work processed by this server. Per OTel semantics, observability
+        // backends treat consumer spans as task/job roots; a root INTERNAL
+        // span without HTTP attributes is typically not classifiable when no
+        // HTTP server span wraps the call (e.g. the stdio transport).
         Effect.withSpan("mcp.host.tool.execute", {
+          kind: "consumer",
           attributes: {
             "mcp.tool.name": "execute",
             "mcp.execute.code_length": code.length,
@@ -933,6 +939,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       ).pipe(
         Effect.withSpan("mcp.host.tool.resume", {
+          kind: "consumer",
           attributes: {
             "mcp.tool.name": "resume",
             "mcp.execute.resume.action": action,
@@ -1009,6 +1016,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       ).pipe(
         Effect.withSpan("mcp.host.tool.resume.browser_approval", {
+          kind: "consumer",
           attributes: {
             "mcp.tool.name": "resume",
             "mcp.execute.execution_id": executionId,
