@@ -10,7 +10,7 @@
 //   4. The session must survive: the concurrent pair and follow-up calls should
 //      succeed instead of leaving the DO permanently bricked.
 //
-// Mechanism hypothesis (see REPRO.md for the file:line trace): after
+// Mechanism: after
 // idle-dispose, a request carrying a session id runs
 // validateMcpSessionOwner → onStart → server.connect(_transport). The SDK's
 // own serve() streaming handler then does its own agent.fetch(Upgrade:websocket),
