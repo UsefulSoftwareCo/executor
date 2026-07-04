@@ -271,15 +271,20 @@ export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
   DEFAULT_EXECUTOR_SERVER_USERNAME,
   EXECUTOR_ORG_SELECTOR_HEADER,
+  ExecutorServerHeaderResolutionError,
   apiBaseUrlForServerOrigin,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
   originFromApiBaseUrl,
+  resolveExecutorServerConfiguredHeaders,
+  resolveExecutorServerRequestHeaders,
   type ExecutorServerAuth,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
   type ExecutorServerConnectionKind,
+  type ExecutorServerHeaders,
+  type ExecutorServerHeaderValue,
 } from "./server-connection";
 
 export {

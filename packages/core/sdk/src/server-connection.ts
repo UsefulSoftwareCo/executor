@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 
 export const DEFAULT_EXECUTOR_SERVER_ORIGIN = "http://127.0.0.1:4000";
 export const DEFAULT_EXECUTOR_SERVER_USERNAME = "executor";
@@ -6,6 +6,22 @@ export const EXECUTOR_ORG_SELECTOR_HEADER = "x-executor-organization";
 
 export type ExecutorServerConnectionKind = "http" | "desktop-sidecar";
 export type ExecutorLocalServerKind = "cli-daemon" | "desktop-sidecar" | "foreground";
+export type ExecutorServerHeaderValue = {
+  readonly kind: "env";
+  readonly name: string;
+};
+export type ExecutorServerHeaders = Readonly<Record<string, ExecutorServerHeaderValue>>;
+
+export class ExecutorServerHeaderResolutionError extends Data.TaggedError(
+  "ExecutorServerHeaderResolutionError",
+)<{
+  readonly headerName: string;
+  readonly envName: string;
+}> {
+  override get message(): string {
+    return `Server profile header "${this.headerName}" references unset environment variable "${this.envName}".`;
+  }
+}
 
 export type ExecutorServerAuth =
   | {
@@ -37,6 +53,7 @@ export interface ExecutorServerConnection {
   readonly apiBaseUrl: string;
   readonly displayName: string;
   readonly auth?: ExecutorServerAuth;
+  readonly headers?: ExecutorServerHeaders;
 }
 
 export interface ExecutorServerConnectionInput {
@@ -46,6 +63,7 @@ export interface ExecutorServerConnectionInput {
   readonly apiBaseUrl?: string;
   readonly displayName?: string;
   readonly auth?: ExecutorServerAuth;
+  readonly headers?: ExecutorServerHeaders;
 }
 
 export interface ExecutorLocalServerManifest {
@@ -67,6 +85,19 @@ const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
 const displayNameFromOrigin = (origin: string): string =>
   origin.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
+const normalizeExecutorServerHeaders = (
+  headers: ExecutorServerHeaders | undefined,
+): ExecutorServerHeaders | undefined => {
+  if (!headers) return undefined;
+  const entries = Object.entries(headers).flatMap(([rawHeaderName, value]) => {
+    const headerName = rawHeaderName.trim();
+    const envName = value.name.trim();
+    if (!headerName || !envName) return [];
+    return [[headerName, { kind: "env" as const, name: envName }] as const];
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+};
 
 export const normalizeExecutorServerOrigin = (raw: string): string => {
   const trimmed = stripTrailingSlash(raw.trim());
@@ -102,6 +133,7 @@ export const normalizeExecutorServerConnection = (
   );
   const apiBaseUrl = stripTrailingSlash(input.apiBaseUrl ?? apiBaseUrlForServerOrigin(origin));
   const kind = input.kind ?? "http";
+  const headers = normalizeExecutorServerHeaders(input.headers);
 
   return {
     kind,
@@ -110,6 +142,7 @@ export const normalizeExecutorServerConnection = (
     apiBaseUrl,
     displayName: input.displayName ?? displayNameFromOrigin(origin),
     ...(input.auth ? { auth: input.auth } : {}),
+    ...(headers ? { headers } : {}),
   };
 };
 
@@ -145,6 +178,35 @@ export const getExecutorServerAuthorizationHeader = (
   return encoded ? `Basic ${encoded}` : null;
 };
 
+export const resolveExecutorServerConfiguredHeaders = (
+  connection: ExecutorServerConnection,
+  env: Readonly<Record<string, string | undefined>>,
+): Effect.Effect<Record<string, string>, ExecutorServerHeaderResolutionError> =>
+  Effect.gen(function* () {
+    const resolved: Record<string, string> = {};
+    for (const [headerName, value] of Object.entries(connection.headers ?? {})) {
+      if (value.kind !== "env") continue;
+      const headerValue = env[value.name];
+      if (headerValue === undefined || headerValue.length === 0) {
+        return yield* new ExecutorServerHeaderResolutionError({ headerName, envName: value.name });
+      }
+      resolved[headerName] = headerValue;
+    }
+    return resolved;
+  });
+
+export const resolveExecutorServerRequestHeaders = (
+  connection: ExecutorServerConnection,
+  env: Readonly<Record<string, string | undefined>>,
+): Effect.Effect<Record<string, string>, ExecutorServerHeaderResolutionError> =>
+  resolveExecutorServerConfiguredHeaders(connection, env).pipe(
+    Effect.map((headers) => {
+      const authorization = getExecutorServerAuthorizationHeader(connection);
+      if (!authorization) return headers;
+      return { ...headers, authorization };
+    }),
+  );
+
 const ExecutorServerAuthJson = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("basic"),
@@ -165,6 +227,11 @@ const ExecutorServerAuthJson = Schema.Union([
   }),
 ]);
 
+const ExecutorServerHeaderJson = Schema.Struct({
+  kind: Schema.Literal("env"),
+  name: Schema.String,
+});
+
 const ExecutorServerConnectionJson = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["http", "desktop-sidecar"])),
   key: Schema.optional(Schema.String),
@@ -172,6 +239,7 @@ const ExecutorServerConnectionJson = Schema.Struct({
   apiBaseUrl: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   auth: Schema.optional(ExecutorServerAuthJson),
+  headers: Schema.optional(Schema.Record(Schema.String, ExecutorServerHeaderJson)),
 });
 
 const ExecutorLocalServerManifestJson = Schema.Struct({
