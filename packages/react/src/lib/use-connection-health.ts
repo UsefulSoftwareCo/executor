@@ -11,8 +11,7 @@ import { RegistryContext, useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import type { Connection, HealthCheckResult, HealthStatus, Owner } from "@executor-js/sdk/shared";
 
-import { checkConnectionHealth, connectionsOptimisticAtom } from "../api/atoms";
-import { connectionCheckKeys } from "../api/reactivity-keys";
+import { checkConnectionHealth, connectionsAllAtom, connectionsOptimisticAtom } from "../api/atoms";
 
 /** Freshness window for automatic revalidation: a HEALTHY verdict younger
  *  than this renders as-is; anything else (stale, missing, or non-healthy)
@@ -47,13 +46,17 @@ const revalidateQuery = (
  * persists every verdict on `last_health`, so after a check we must re-read the
  * connection rows or a later render within the atom TTL serves the pre-check
  * state. Returns a stable callback usable from a probe's `.then` for any owner
- * (the loop surface probes across both owners), refreshing the optimistic atom
- * every connections view derives from.
+ * (the loop surface probes across both owners), refreshing the owner-scoped
+ * optimistic atom plus the all-connections view that provider accounts derive
+ * from.
  */
 function useInvalidateConnections(): (owner: Owner) => void {
   const registry = useContext(RegistryContext);
   return useCallback(
-    (owner: Owner) => registry.refresh(connectionsOptimisticAtom(owner)),
+    (owner: Owner) => {
+      registry.refresh(connectionsOptimisticAtom(owner));
+      registry.refresh(connectionsAllAtom);
+    },
     [registry],
   );
 }
@@ -107,17 +110,19 @@ export function useConnectionHealth(connection: Connection): {
   }, [connection, doCheck, invalidateConnections]);
 
   const runCheck = useCallback(async () => {
-    // Manual "Check now": invalidate the connections cache unconditionally so
-    // every surface picks up the freshly persisted verdict. Re-running this
-    // effect after the refetch is harmless: the ref guard blocks a re-probe.
+    // Manual "Check now": refresh connection reads after folding the returned
+    // verdict into this row. Re-running this effect after the refetch is
+    // harmless: the ref guard blocks a re-probe.
     const exit = await doCheck({
       params: connectionParams(connection),
       query: {},
-      reactivityKeys: connectionCheckKeys,
     });
-    if (Exit.isSuccess(exit)) setLiveProbe(exit.value);
+    if (Exit.isSuccess(exit)) {
+      setLiveProbe(exit.value);
+      invalidateConnections(connection.owner);
+    }
     return exit;
-  }, [connection, doCheck]);
+  }, [connection, doCheck, invalidateConnections]);
 
   return { probe, status, runCheck };
 }

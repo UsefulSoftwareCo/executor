@@ -48,8 +48,9 @@ export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.too
 
 /** A connection health check persists only the connection's `last_health`
  *  verdict, never its tools, so it invalidates `connections` alone (no `tools`
- *  churn). Passed at the manual "Check now" call site; the automatic mount-time
- *  probe invalidates conditionally instead (only when the verdict changed). */
+ *  churn). Use this for flows where every connection read should reconcile from
+ *  persisted health immediately; row-level checks can refresh narrower read
+ *  surfaces after applying their own local probe result. */
 export const connectionCheckKeys = [ReactivityKey.connections] as const;
 
 /** Mutations that register / replace an OAuth client (app). */
