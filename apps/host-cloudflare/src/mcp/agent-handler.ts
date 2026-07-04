@@ -13,6 +13,7 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { mcpSessionDurableObjectName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
@@ -70,7 +71,7 @@ const renderAuthError = (
 const sessionStub = (env: CloudflareEnv, sessionId: string): McpAgentSessionStub =>
   // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers types expose only DurableObjectStub, but RPC methods are generated from the bound DO class.
   env.MCP_SESSION.get(
-    env.MCP_SESSION.idFromName(`streamable-http:${sessionId}`),
+    env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(sessionId)),
   ) as unknown as McpAgentSessionStub;
 
 const authenticate = (request: Request, config: CloudflareConfig) =>

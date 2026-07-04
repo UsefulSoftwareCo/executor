@@ -6,6 +6,7 @@ import type {
   McpSessionApprovalResult,
   McpSessionResumeApprovalResult,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { mcpSessionDurableObjectName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import type { ResumeResponse } from "@executor-js/execution";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
@@ -13,6 +14,7 @@ import { makeAccessVerifier } from "../auth/cloudflare-access";
 
 export { cloudflareAccessMcpAuth } from "./auth";
 export { McpSessionDO } from "./session-durable-object";
+export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
 const toApprovalStub = (stub: unknown): McpApprovalStub => stub as McpApprovalStub;
 
@@ -40,7 +42,9 @@ export const makeCloudflareApprovalHandler = (
 ): ((request: Request) => Promise<Response>) => {
   const { verify } = makeAccessVerifier(config);
   const stubFor = (sessionId: string): McpApprovalStub =>
-    toApprovalStub(env.MCP_SESSION.get(env.MCP_SESSION.idFromName(`streamable-http:${sessionId}`)));
+    toApprovalStub(
+      env.MCP_SESSION.get(env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(sessionId))),
+    );
 
   return async (request) => {
     const principal = await Effect.runPromise(verify(request));

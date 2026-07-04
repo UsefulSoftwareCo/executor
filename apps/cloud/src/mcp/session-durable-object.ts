@@ -21,16 +21,27 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 
-import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
+import {
+  PAUSED_APPROVAL_TIMEOUT_MS,
+  createExecutorMcpServer,
+} from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
   type IncomingTraceHeaders,
+  type McpApprovalOwner,
+  type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
-import { buildExecuteDescription } from "@executor-js/execution";
+import {
+  mcpSessionDurableObjectName,
+  mcpExecutionOwnerDirectoryFromNamespace,
+  type McpExecutionOwnerDirectory,
+  type McpExecutionOwnerRoute,
+} from "@executor-js/cloudflare/mcp/execution-owner-directory";
+import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
 // engine with `CloudMeteredExecutionStackLayer`, so every MCP execution is
@@ -64,6 +75,7 @@ import { captureCause as reportCause } from "../observability";
 export type {
   McpApprovalOwner,
   McpSessionApprovalResult,
+  McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
   McpSessionInit,
   IncomingTraceHeaders,
@@ -89,8 +101,22 @@ type CloudSessionDbHandle = DbServiceShape & {
   readonly end: () => Promise<void>;
 };
 
+interface McpModelResumeStub {
+  readonly resumeExecutionForModel: (
+    executionId: string,
+    identity: McpApprovalOwner,
+    response: ResumeResponse,
+  ) => Promise<McpSessionModelResumeResult>;
+}
+
+const toMcpModelResumeStub = (stub: unknown): McpModelResumeStub => stub as McpModelResumeStub;
+
 class OrganizationNotFoundError extends Data.TaggedError("OrganizationNotFoundError")<{
   readonly organizationId: string;
+}> {}
+
+class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
+  readonly cause: unknown;
 }> {}
 
 // W3C propagation across the worker→DO boundary. The worker injects its
@@ -175,6 +201,27 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     );
   }
 
+  protected override executionOwnerDirectory(): McpExecutionOwnerDirectory | null {
+    return mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER);
+  }
+
+  protected override forwardModelResumeToOwner(
+    owner: McpExecutionOwnerRoute,
+    identity: McpApprovalOwner,
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<McpSessionModelResumeResult, unknown> {
+    return Effect.tryPromise({
+      try: () =>
+        toMcpModelResumeStub(
+          env.MCP_SESSION.get(
+            env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(owner.sessionId)),
+          ),
+        ).resumeExecutionForModel(executionId, identity, response),
+      catch: (cause) => new McpModelResumeForwardError({ cause }),
+    });
+  }
+
   protected override openSessionDb(): CloudSessionDbHandle {
     return makeDbHandle({
       idleTimeout: LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS,
@@ -239,6 +286,8 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,
         pausedExecutionHooks: self.pausedExecutionHooks,
+        pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,
+        resumeFallback: self.modelResumeFallback,
         elicitationMode:
           sessionElicitationMode === "browser"
             ? {
