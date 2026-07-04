@@ -67,6 +67,12 @@ paths:
       responses:
         "200":
           description: OK
+  /me/drive/root/children:
+    get:
+      operationId: me.drive.root.ListChildren
+      responses:
+        "200":
+          description: OK
   /sites:
     get:
       operationId: sites.ListSites
@@ -185,41 +191,48 @@ components:
             https://graph.microsoft.com/.default: https://graph.microsoft.com/.default
 `;
 
-const graphHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
-  HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
-    Effect.succeed(
-      HttpClientResponse.fromWeb(
-        request,
-        new Response(
-          request.url === MICROSOFT_GRAPH_OPENAPI_URL
-            ? graphFixture
-            : request.url === MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL
-              ? permissionsReferenceFixture
-              : request.url === EMULATOR_SPEC_URL
-                ? emulatorGraphFixture
-                : request.url === LOCAL_EMULATOR_SPEC_URL
-                  ? localEmulatorGraphFixture
-                  : "not found",
-          {
-            status:
-              request.url === MICROSOFT_GRAPH_OPENAPI_URL ||
-              request.url === MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL ||
-              request.url === EMULATOR_SPEC_URL ||
-              request.url === LOCAL_EMULATOR_SPEC_URL
-                ? 200
-                : 404,
-            headers: {
-              "content-type":
-                request.url === MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL
-                  ? "text/markdown"
-                  : "application/yaml",
-            },
-          },
-        ),
-      ),
-    ),
-  ),
+interface GraphHttpClientOptions {
+  readonly failedUrls?: ReadonlySet<string>;
+  readonly beforeResponse?: (url: string) => Effect.Effect<void, never, never>;
+}
+
+const waitOneTurn: Effect.Effect<void, never, never> = Effect.promise(() => Promise.resolve()).pipe(
+  Effect.orDie,
 );
+
+const GRAPH_FIXTURE_BODIES: Readonly<Record<string, string>> = {
+  [MICROSOFT_GRAPH_OPENAPI_URL]: graphFixture,
+  [MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL]: permissionsReferenceFixture,
+  [EMULATOR_SPEC_URL]: emulatorGraphFixture,
+  [LOCAL_EMULATOR_SPEC_URL]: localEmulatorGraphFixture,
+};
+
+const makeGraphHttpClientLayer = (options: GraphHttpClientOptions = {}) =>
+  Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      const body = GRAPH_FIXTURE_BODIES[request.url];
+      const failed = options.failedUrls?.has(request.url) === true;
+      const response = HttpClientResponse.fromWeb(
+        request,
+        failed
+          ? new Response("forced failure", { status: 503 })
+          : body === undefined
+            ? new Response("not found", { status: 404 })
+            : new Response(body, {
+                status: 200,
+                headers: {
+                  "content-type":
+                    request.url === MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL
+                      ? "text/markdown"
+                      : "application/yaml",
+                },
+              }),
+      );
+      return (options.beforeResponse?.(request.url) ?? Effect.void).pipe(Effect.as(response));
+    }),
+  );
+
+const graphHttpClientLayer = makeGraphHttpClientLayer();
 
 const graphPlugins = (options?: Omit<MicrosoftPluginOptions, "httpClientLayer">) =>
   [
@@ -615,6 +628,300 @@ describe("Microsoft Graph provider", () => {
 
         expect(Exit.isFailure(exit)).toBe(true);
         expect(requests).toBe(0);
+      }),
+    ),
+  );
+});
+
+describe("Microsoft Graph per-workload add flow", () => {
+  const workloadExpectations = [
+    {
+      presetId: "mail",
+      slug: "microsoft_mail",
+      name: "Outlook Mail",
+      description: "Messages, folders, attachments, settings, and send mail.",
+      scopes: ["Mail.ReadWrite", "Mail.Send", "MailboxSettings.ReadWrite"],
+      // Every per-workload source seeds the bare GET /me identity health check
+      // (`me.getUser`) alongside its own workload operations.
+      toolNames: ["me.getUser", "me.messagesListMessages"],
+      absentToolNames: ["me.eventsListEvents", "me.driveRootListChildren", "sites.listSites"],
+    },
+    {
+      presetId: "calendar",
+      slug: "microsoft_calendar",
+      name: "Outlook Calendar",
+      description: "Calendars, events, and scheduling.",
+      scopes: ["Calendars.ReadWrite"],
+      toolNames: ["me.getUser", "me.eventsListEvents"],
+      absentToolNames: ["me.messagesListMessages", "me.driveRootListChildren", "sites.listSites"],
+    },
+    {
+      presetId: "files",
+      slug: "microsoft_files",
+      name: "OneDrive Files",
+      description: "Drives, files, folders, sharing links, and permissions.",
+      scopes: ["Files.ReadWrite.All", "Sites.ReadWrite.All"],
+      toolNames: ["me.driveRootListChildren", "me.getUser"],
+      absentToolNames: ["me.messagesListMessages", "me.eventsListEvents", "sites.listSites"],
+    },
+  ] as const;
+
+  it.effect(
+    "addWorkloads creates one integration per preset with exact scopes and health checks",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+          const connectedToolNames = (slug: string) =>
+            Effect.gen(function* () {
+              yield* executor.connections.create({
+                owner: "org",
+                name: ConnectionName.make(slug),
+                integration: IntegrationSlug.make(slug),
+                template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+                value: "token-xyz",
+              });
+              return (yield* executor.tools.list({ integration: IntegrationSlug.make(slug) }))
+                .map((tool) => String(tool.name))
+                .sort();
+            });
+
+          const result = yield* executor.microsoft.addWorkloads({
+            workloads: workloadExpectations.map((workload) => ({ presetId: workload.presetId })),
+          });
+
+          expect(result).toEqual({
+            added: workloadExpectations.map((workload) => ({
+              slug: IntegrationSlug.make(workload.slug),
+              presetId: workload.presetId,
+              toolCount: 2,
+            })),
+            skipped: [],
+            failed: [],
+          });
+
+          const integrations = yield* executor.integrations.list();
+          for (const workload of workloadExpectations) {
+            const integration = integrations.find((item) => String(item.slug) === workload.slug);
+            expect(integration?.name).toBe(workload.name);
+            expect(integration?.description).toBe(workload.description);
+
+            const config = yield* executor.microsoft.getConfig(workload.slug);
+            expect(config?.microsoftGraphPresetIds).toEqual([workload.presetId]);
+            expect(config?.microsoftGraphCoversFullGraph).toBe(false);
+            // Each workload's scopes are exactly its preset scopes plus the base
+            // and identity (User.Read) scopes, never another workload's.
+            expect(config?.microsoftGraphScopes).toEqual([
+              "offline_access",
+              "User.Read",
+              ...workload.scopes,
+            ]);
+
+            const delegated = config?.authenticationTemplate?.find(
+              (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+            );
+            expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
+              "offline_access",
+              "User.Read",
+              ...workload.scopes,
+            ]);
+
+            // The bare GET /me identity check is seeded per workload source.
+            const stored = yield* executor.integrations.healthCheck.get(
+              IntegrationSlug.make(workload.slug),
+            );
+            expect(stored?.operation).toBe("me.getUser");
+            expect(stored?.identityField).toBe("userPrincipalName");
+
+            const toolNames = yield* connectedToolNames(workload.slug);
+            expect(toolNames).toEqual([...workload.toolNames].sort());
+            for (const absent of workload.absentToolNames) {
+              expect(toolNames).not.toContain(absent);
+            }
+          }
+        }),
+      ),
+  );
+
+  it.effect("addWorkloads isolates a spec-fetch failure and keeps other workloads registered", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Force every Graph spec fetch to fail. The middle workload's failure
+        // must not poison the workloads that would otherwise succeed: a shared
+        // 37MB source is fetched per add, so an isolated 503 during the mail
+        // add is reported in `failed` while calendar and files still land.
+        const failingLayer = makeGraphHttpClientLayer({
+          failedUrls: new Set([MICROSOFT_GRAPH_OPENAPI_URL]),
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              microsoftPlugin({ httpClientLayer: failingLayer }),
+              memoryCredentialsPlugin(),
+            ],
+          }),
+        );
+
+        const result = yield* executor.microsoft.addWorkloads({
+          workloads: [{ presetId: "mail" }, { presetId: "calendar" }, { presetId: "files" }],
+        });
+
+        expect(result).toEqual({
+          added: [],
+          skipped: [],
+          failed: [
+            {
+              slug: IntegrationSlug.make("microsoft_mail"),
+              presetId: "mail",
+              error: "Failed to fetch Microsoft Graph OpenAPI document: HTTP 503",
+            },
+            {
+              slug: IntegrationSlug.make("microsoft_calendar"),
+              presetId: "calendar",
+              error: "Failed to fetch Microsoft Graph OpenAPI document: HTTP 503",
+            },
+            {
+              slug: IntegrationSlug.make("microsoft_files"),
+              presetId: "files",
+              error: "Failed to fetch Microsoft Graph OpenAPI document: HTTP 503",
+            },
+          ],
+        });
+
+        expect(yield* executor.microsoft.getIntegration("microsoft_mail")).toBeNull();
+      }),
+    ),
+  );
+
+  it.effect("addWorkloads isolates a single failing workload from the ones that succeed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+        const connectedToolNames = (slug: string) =>
+          Effect.gen(function* () {
+            yield* executor.connections.create({
+              owner: "org",
+              name: ConnectionName.make(slug),
+              integration: IntegrationSlug.make(slug),
+              template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+              value: "token-xyz",
+            });
+            return (yield* executor.tools.list({ integration: IntegrationSlug.make(slug) }))
+              .map((tool) => String(tool.name))
+              .sort();
+          });
+
+        // An unknown preset fails with a parse error mid-list; the workloads on
+        // either side of it still register.
+        const result = yield* executor.microsoft.addWorkloads({
+          workloads: [
+            { presetId: "mail" },
+            { presetId: "not-a-real-workload" },
+            { presetId: "files" },
+          ],
+        });
+
+        expect(result.added).toEqual([
+          {
+            slug: IntegrationSlug.make("microsoft_mail"),
+            presetId: "mail",
+            toolCount: 2,
+          },
+          {
+            slug: IntegrationSlug.make("microsoft_files"),
+            presetId: "files",
+            toolCount: 2,
+          },
+        ]);
+        expect(result.skipped).toEqual([]);
+        expect(result.failed).toEqual([
+          {
+            slug: IntegrationSlug.make("microsoft_not_a_real_workload"),
+            presetId: "not-a-real-workload",
+            error: "Microsoft Graph workload preset is not available: not-a-real-workload",
+          },
+        ]);
+
+        expect(yield* connectedToolNames("microsoft_mail")).toEqual(
+          ["me.getUser", "me.messagesListMessages"].sort(),
+        );
+        expect(yield* connectedToolNames("microsoft_files")).toEqual(
+          ["me.driveRootListChildren", "me.getUser"].sort(),
+        );
+      }),
+    ),
+  );
+
+  it.effect("addWorkloads skips an existing workload without duplicating integration rows", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addWorkloads({ workloads: [{ presetId: "mail" }] });
+        const result = yield* executor.microsoft.addWorkloads({
+          workloads: [{ presetId: "mail" }],
+        });
+
+        expect(result).toEqual({
+          added: [],
+          skipped: [
+            {
+              slug: IntegrationSlug.make("microsoft_mail"),
+              presetId: "mail",
+              reason: "already_exists",
+            },
+          ],
+          failed: [],
+        });
+
+        const integrations = yield* executor.integrations.list();
+        expect(
+          integrations.filter((integration) => String(integration.slug) === "microsoft_mail"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("addWorkloads starts each workload spec fetch sequentially", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Each per-workload add fetches the (37MB in prod) Graph source; two in
+        // flight recreate the isolate OOM. The strict {concurrency: 1} guard is
+        // proven by a spy that counts in-flight spec fetches: it would observe
+        // maxActive === 2 under concurrency 2, and never settles a fetch until
+        // the next microtask turn so any overlap is caught.
+        let activeSpecFetches = 0;
+        let maxActiveSpecFetches = 0;
+        let specFetchCount = 0;
+        const sequentialLayer = makeGraphHttpClientLayer({
+          beforeResponse: (url) => {
+            if (url !== MICROSOFT_GRAPH_OPENAPI_URL) return Effect.void;
+            return Effect.gen(function* () {
+              activeSpecFetches += 1;
+              specFetchCount += 1;
+              maxActiveSpecFetches = Math.max(maxActiveSpecFetches, activeSpecFetches);
+              yield* waitOneTurn;
+              activeSpecFetches -= 1;
+            });
+          },
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              microsoftPlugin({ httpClientLayer: sequentialLayer }),
+              memoryCredentialsPlugin(),
+            ],
+          }),
+        );
+
+        const result = yield* executor.microsoft.addWorkloads({
+          workloads: [{ presetId: "mail" }, { presetId: "calendar" }, { presetId: "files" }],
+        });
+
+        expect(result.failed).toEqual([]);
+        expect(result.added).toHaveLength(3);
+        expect(specFetchCount).toBe(3);
+        expect(maxActiveSpecFetches).toBe(1);
       }),
     ),
   );
