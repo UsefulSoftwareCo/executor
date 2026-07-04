@@ -29,14 +29,39 @@ scenario(
         await page.getByRole("heading", { name: "Add Google integration" }).waitFor();
       });
 
-      await step("The Photos preset defaults to the focused namespace and products", async () => {
-        await page.locator('input[value="Google Photos"]').waitFor();
-        await page.locator('input[value="google_photos"]').waitFor();
-        await page.getByText("Google Photos Library").first().waitFor();
-        await page.getByText("Google Photos Picker").first().waitFor();
-        await page.getByText("2 Google APIs").waitFor();
+      await step("The Photos preset pre-checks both Photos products for fan-out", async () => {
+        // The focused flow initializes the multi-select picker with exactly
+        // the two Photos presets checked; each is added as its own
+        // integration on submit.
+        const library = page.getByRole("checkbox", { name: /Google Photos Library/ });
+        const picker = page.getByRole("checkbox", { name: /Google Photos Picker/ });
+        await library.waitFor();
+        await picker.waitFor();
+        expect(await library.isChecked()).toBe(true);
+        expect(await picker.isChecked()).toBe(true);
+        // Other products stay unchecked: the flow is Photos-scoped, not the
+        // featured default selection.
+        expect(await page.getByRole("checkbox", { name: /Google Calendar/ }).isChecked()).toBe(
+          false,
+        );
+        // The scope preview counts exactly the two checked Photos products.
+        await page.getByRole("button", { name: /^View scopes 2$/ }).waitFor();
+      });
+
+      await step("Multi-select keeps preset identities: no name/namespace form", async () => {
+        // With two products checked there is no single-integration identity
+        // form; the settings section spells out that presets keep their own
+        // names and namespaces.
+        await page.getByText("Google product settings").waitFor();
+        await page.getByText("Selected products keep their preset names and namespaces.").waitFor();
+        expect(await page.locator('input[value="Google Photos"]').count()).toBe(0);
+        expect(await page.locator('input[value="google_photos"]').count()).toBe(0);
         expect(await page.locator('input[value="Google"]').count()).toBe(0);
         expect(await page.locator('input[value="google"]').count()).toBe(0);
+        // The submit button is armed for the checked selection.
+        const connect = page.getByRole("button", { name: "Connect Google" });
+        await connect.waitFor();
+        expect(await connect.isEnabled()).toBe(true);
       });
     });
   }),
