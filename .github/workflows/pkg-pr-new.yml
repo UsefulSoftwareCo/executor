@@ -59,6 +59,7 @@ jobs:
       # No prebuilt better-sqlite3 binary matches the Blacksmith Linux runner,
       # so `bun install` builds it from source via node-gyp, whose undici needs
       # Node 22.10+ (webidl.markAsUncloneable).
+
       - uses: actions/setup-node@v4
         if: runner.os == 'Linux'
         with:
