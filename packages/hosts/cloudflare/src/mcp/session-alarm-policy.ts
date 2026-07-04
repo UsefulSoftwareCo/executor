@@ -23,12 +23,22 @@ export type SessionAlarmDecision =
 export const decideSessionAlarm = (input: {
   readonly idleMs: number;
   readonly pausedExecutionCount: number;
+  readonly sessionTimeoutMs?: number;
+  readonly maxPausedSessionIdleMs?: number;
 }): SessionAlarmDecision => {
-  if (input.idleMs < SESSION_TIMEOUT_MS) {
+  const sessionTimeoutMs = input.sessionTimeoutMs ?? SESSION_TIMEOUT_MS;
+  const maxPausedSessionIdleMs = input.maxPausedSessionIdleMs ?? MAX_PAUSED_SESSION_IDLE_MS;
+  if (input.idleMs < sessionTimeoutMs) {
     return { kind: "idle_within_timeout" };
   }
-  if (input.pausedExecutionCount > 0 && input.idleMs < MAX_PAUSED_SESSION_IDLE_MS) {
-    return { kind: "extend_paused_lease", leaseMs: PAUSED_EXECUTION_LEASE_MS };
+  if (input.pausedExecutionCount > 0 && input.idleMs < maxPausedSessionIdleMs) {
+    return {
+      kind: "extend_paused_lease",
+      leaseMs: Math.max(
+        1,
+        Math.min(PAUSED_EXECUTION_LEASE_MS, maxPausedSessionIdleMs - input.idleMs),
+      ),
+    };
   }
   return { kind: "destroy_idle_session" };
 };

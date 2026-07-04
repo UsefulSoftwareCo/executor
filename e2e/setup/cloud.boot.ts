@@ -90,6 +90,8 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // The AuthKit domain (MCP OAuth metadata + JWKS) is the emulator too.
     MCP_AUTHKIT_DOMAIN: workosUrl,
     MCP_RESOURCE_ORIGIN: options.publicUrl,
+    MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
+    MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
     ALLOW_LOCAL_NETWORK: "true",
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real

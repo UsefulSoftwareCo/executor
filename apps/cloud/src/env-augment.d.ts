@@ -58,6 +58,8 @@ declare global {
       EXECUTOR_MCP_DEBUG?: string;
       MCP_AUTHKIT_DOMAIN?: string;
       MCP_RESOURCE_ORIGIN?: string;
+      MCP_SESSION_TIMEOUT_MS?: string;
+      MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
       NODE_ENV?: string;
 
       // Shared with frontend
