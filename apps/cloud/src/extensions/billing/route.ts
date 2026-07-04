@@ -5,7 +5,11 @@ import { autumnHandler } from "autumn-js/backend";
 
 import { WorkOSClient } from "../../auth/workos";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../../auth/organization";
-import { HttpResponseError, isServerError, toErrorServerResponse } from "../../api/error-response";
+import {
+  HttpResponseError,
+  isServerError,
+  toErrorServerResponseEffect,
+} from "../../api/error-response";
 
 type BillingSession = {
   readonly userId: string;
@@ -111,7 +115,7 @@ const handler = Effect.gen(function* () {
     if (isServerError(err)) {
       console.error("[autumn] request failed:", Cause.pretty(err));
     }
-    return Effect.succeed(toErrorServerResponse(err));
+    return toErrorServerResponseEffect(err);
   }),
 );
 

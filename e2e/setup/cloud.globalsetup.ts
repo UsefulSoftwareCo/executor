@@ -25,6 +25,15 @@ const bootLogFile = process.env.E2E_VERBOSE
   ? undefined
   : resolve(RUNS_DIR, "cloud", "server-logs", "boot.log");
 
+const optionalCloudEnv = (): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const key of ["SENTRY_DSN", "SENTRY_OTEL_LOG_PAYLOAD", "SENTRY_OTEL_VERIFY"]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
+};
+
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_CLOUD_URL) {
     await waitForHttp(process.env.E2E_CLOUD_URL);
@@ -74,7 +83,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
           // endpoint-agnostic, so the same layer that ships prod traces to
           // Axiom ships e2e traces to the suite store — "why was that page
           // slow" gets a span waterfall, not a guess.
-          extraEnv: motelExporterEnv(motel, publicUrl),
+          extraEnv: { ...motelExporterEnv(motel, publicUrl), ...optionalCloudEnv() },
         });
         return { teardown: cloud.teardown, value: cloud };
       },

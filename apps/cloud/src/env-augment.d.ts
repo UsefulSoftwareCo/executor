@@ -11,6 +11,8 @@ declare global {
       AXIOM_TRACES_URL?: string;
       AXIOM_TRACES_SAMPLE_RATIO?: string;
       SENTRY_DSN?: string;
+      SENTRY_OTEL_LOG_PAYLOAD?: string;
+      SENTRY_OTEL_VERIFY?: string;
       VITE_PUBLIC_SENTRY_DSN?: string;
       VITE_PUBLIC_POSTHOG_KEY?: string;
       VITE_PUBLIC_POSTHOG_HOST?: string;

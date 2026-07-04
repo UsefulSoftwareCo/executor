@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { SpanKind, SpanStatusCode, context, trace } from "@opentelemetry/api";
+import type { ErrorEvent } from "@sentry/cloudflare";
 import {
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_RESPONSE_STATUS_CODE,
@@ -14,6 +15,13 @@ import { isAppOwnedPath } from "./app-paths";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
+import {
+  beforeSendWithOtelCorrelation,
+  captureCause,
+  otelCorrelationContextFromOpenTelemetrySpan,
+  SENTRY_EVENT_ID_ATTRIBUTE,
+  tagCurrentSentryScopeWithOtelContext,
+} from "./observability";
 import { browserTracesResponse } from "./observability/browser-traces";
 import { flushTracerProvider, installTracerProvider } from "./observability/telemetry";
 
@@ -27,6 +35,10 @@ const sentryOptions = (env: Env) => ({
   enableLogs: true,
   sendDefaultPii: true,
   skipOpenTelemetrySetup: true,
+  beforeSend: (event: ErrorEvent) =>
+    beforeSendWithOtelCorrelation(event, {
+      logPayload: !env.SENTRY_DSN || env.SENTRY_OTEL_LOG_PAYLOAD === "true",
+    }),
   // NOTE: do NOT enable `instrumentPrototypeMethods`. It walks the DO prototype
   // and reads every property — including accessors — to find methods to wrap,
   // which invokes the `sessionId` getter with `this` bound to the prototype
@@ -158,6 +170,8 @@ const cloudflareHandler: ExportedHandler<Env> = {
       { kind: SpanKind.SERVER },
       parentContext,
       async (span) => {
+        const otelContext = otelCorrelationContextFromOpenTelemetrySpan(span);
+        tagCurrentSentryScopeWithOtelContext(otelContext);
         span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
         span.setAttribute(ATTR_URL_FULL, request.url);
         span.setAttribute(ATTR_URL_PATH, url.pathname);
@@ -168,6 +182,22 @@ const cloudflareHandler: ExportedHandler<Env> = {
         // outer wrapper still captures the exception; we only mark span status.
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary
         try {
+          if (env.SENTRY_OTEL_VERIFY === "true" && url.pathname === "/__sentry-otel-verify") {
+            // oxlint-disable-next-line executor/no-error-constructor -- boundary: synthetic verification needs an Error payload for Sentry grouping
+            const eventId = captureCause(new Error("sentry otel verification"), otelContext) ?? "";
+            if (eventId) span.setAttribute(SENTRY_EVENT_ID_ATTRIBUTE, eventId);
+            span.setAttribute("sentry_otel.verify", true);
+            span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, 500);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            return Response.json(
+              {
+                sentryEventId: eventId,
+                otelTraceId: otelContext?.traceId ?? "",
+                otelSpanId: otelContext?.spanId ?? "",
+              },
+              { status: 500 },
+            );
+          }
           const response = await fetchHandler(request, env, ctx);
           span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
           if (response.status >= 500) {

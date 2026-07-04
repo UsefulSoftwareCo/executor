@@ -68,7 +68,11 @@ import { makeExecutionStack } from "../engine/execution-stack";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
-import { captureCause as reportCause } from "../observability";
+import {
+  captureCause as reportCause,
+  captureCauseEffect as reportCauseEffect,
+  tagCurrentSentryScopeWithCurrentOtelSpan,
+} from "../observability";
 
 // Re-export the shared types so existing cloud importers
 // (`auth/handlers.ts`, etc.) keep their `../mcp/session-durable-object` path.
@@ -322,6 +326,16 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override captureCause(cause: Cause.Cause<unknown>): void {
     reportCause(cause);
+  }
+
+  protected override captureCauseEffect(
+    cause: Cause.Cause<unknown>,
+  ): Effect.Effect<string | undefined> {
+    return reportCauseEffect(cause);
+  }
+
+  protected override prepareErrorCaptureScope(): Effect.Effect<void> {
+    return Effect.asVoid(tagCurrentSentryScopeWithCurrentOtelSpan);
   }
 
   // Best-effort export the DO isolate's buffered spans after the RPC settles,

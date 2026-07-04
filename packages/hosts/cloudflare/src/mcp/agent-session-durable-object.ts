@@ -236,6 +236,17 @@ export abstract class McpAgentSessionDOBase<
 
   protected captureCause(_cause: Cause.Cause<unknown>): void {}
 
+  protected captureCauseEffect(cause: Cause.Cause<unknown>): Effect.Effect<string | undefined> {
+    return Effect.sync(() => {
+      this.captureCause(cause);
+      return undefined;
+    });
+  }
+
+  protected prepareErrorCaptureScope(): Effect.Effect<void> {
+    return Effect.void;
+  }
+
   protected flushTelemetry(): Promise<void> {
     return Promise.resolve();
   }
@@ -604,6 +615,7 @@ export abstract class McpAgentSessionDOBase<
     }
     const self = this;
     const program = Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
       const sessionMeta = yield* self.resolveAndStoreSessionMeta(props.session);
       const dbHandle = yield* self.openSessionDbHandle();
       const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
@@ -618,7 +630,7 @@ export abstract class McpAgentSessionDOBase<
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
           console.error("[mcp-session] init failed:", Cause.pretty(cause));
-          self.captureCause(cause);
+          yield* self.captureCauseEffect(cause);
           yield* self.recordCauseOnSpan(cause);
         }),
       ),
@@ -650,6 +662,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.runPromise(
       Effect.gen(function* () {
+        yield* self.prepareErrorCaptureScope();
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
         if (self.initialized) {
@@ -681,6 +694,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.runPromise(
       Effect.gen(function* () {
+        yield* self.prepareErrorCaptureScope();
         const owner = yield* self.validateApprovalIdentity(identity);
         if (owner !== "ok") return { status: owner } as const;
 
@@ -718,6 +732,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.runPromise(
       Effect.gen(function* () {
+        yield* self.prepareErrorCaptureScope();
         const owner = yield* self.validateApprovalIdentity(identity);
         if (owner === "forbidden") return { status: "execution_forbidden" } as const;
         if (owner === "not_found") {
@@ -775,6 +790,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.runPromise(
       Effect.gen(function* () {
+        yield* self.prepareErrorCaptureScope();
         const owner = yield* self.validateApprovalIdentity(identity);
         if (owner !== "ok") return { status: owner } as const;
 
@@ -1015,6 +1031,7 @@ export abstract class McpAgentSessionDOBase<
   ): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
       if (self.pendingApprovalLeases.has(executionId)) return;
 
       yield* Effect.promise(() => self.markActivity()).pipe(
@@ -1031,9 +1048,14 @@ export abstract class McpAgentSessionDOBase<
         attributes: { "mcp.execution.id": executionId },
       }),
       Effect.tapCause((cause) =>
-        Effect.sync(() => {
-          console.error("[mcp-session] pending approval lease start failed:", Cause.pretty(cause));
-          self.captureCause(cause);
+        Effect.gen(function* () {
+          yield* Effect.sync(() => {
+            console.error(
+              "[mcp-session] pending approval lease start failed:",
+              Cause.pretty(cause),
+            );
+          });
+          yield* self.captureCauseEffect(cause);
         }),
       ),
       Effect.ignore,
@@ -1048,16 +1070,19 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private queuePendingApprovalLeaseExpiration(executionId: string): void {
+    const self = this;
     this.ctx.waitUntil(
       Effect.runPromise(
         this.expirePendingApproval(executionId).pipe(
           Effect.tapCause((cause) =>
-            Effect.sync(() => {
-              console.error(
-                "[mcp-session] pending approval lease expiration failed:",
-                Cause.pretty(cause),
-              );
-              this.captureCause(cause);
+            Effect.gen(function* () {
+              yield* Effect.sync(() => {
+                console.error(
+                  "[mcp-session] pending approval lease expiration failed:",
+                  Cause.pretty(cause),
+                );
+              });
+              yield* self.captureCauseEffect(cause);
             }),
           ),
           Effect.ignore,
@@ -1134,6 +1159,7 @@ export abstract class McpAgentSessionDOBase<
   private expirePendingApproval(executionId: string): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
       const lease = self.pendingApprovalLeases.get(executionId);
       if (!lease || lease.expiring) return;
       lease.expiring = true;
