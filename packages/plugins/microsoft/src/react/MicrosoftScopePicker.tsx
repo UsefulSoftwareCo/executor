@@ -192,8 +192,7 @@ export function MicrosoftScopePicker({
       <div className="space-y-1">
         <FieldLabel>Customize Microsoft Graph</FieldLabel>
         <p className="text-[11px] text-muted-foreground">
-          Pick the operation groups to expose as tools. They share one Microsoft OAuth consent and
-          one account connection.
+          Pick Microsoft workloads to add. Each selected workload becomes its own integration.
         </p>
       </div>
 
