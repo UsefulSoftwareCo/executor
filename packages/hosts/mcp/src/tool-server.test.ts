@@ -30,6 +30,10 @@ class TestExecutionError extends Data.TaggedError("TestExecutionError")<{
   readonly message: string;
 }> {}
 
+const expectString: (value: unknown) => asserts value is string = (value) => {
+  expect(typeof value).toBe("string");
+};
+
 const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   execute?: ExecutionEngine<E>["execute"];
   executeWithPause?: ExecutionEngine<E>["executeWithPause"];
@@ -1478,10 +1482,10 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         });
         const after = Date.now();
         const structured = result.structuredContent as Record<string, unknown>;
-        const expiresAt = structured.expiresAt as string;
+        const expiresAt = structured.expiresAt;
 
         expect(structured.ttlMs).toBe(60_000);
-        expect(typeof expiresAt).toBe("string");
+        expectString(expiresAt);
         const expiresAtMs = Date.parse(expiresAt);
         expect(expiresAtMs).toBeGreaterThanOrEqual(before + 60_000);
         expect(expiresAtMs).toBeLessThanOrEqual(after + 60_000);

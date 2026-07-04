@@ -67,20 +67,80 @@ vi.mock("agents/mcp", () => ({
   },
 }));
 
-class FakeStorage {
+class FakeStorage implements DurableObjectStorage {
   private readonly values = new Map<string, unknown>();
+  readonly sql = {} as DurableObjectStorage["sql"];
+  readonly kv = {} as DurableObjectStorage["kv"];
   alarmAt: number | null = null;
 
-  async get<T>(key: string): Promise<T | undefined> {
-    return this.values.get(key) as T | undefined;
+  async get<T>(key: string): Promise<T | undefined>;
+  async get<T>(keys: string[]): Promise<Map<string, T>>;
+  async get<T>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
+    if (Array.isArray(keyOrKeys)) {
+      return new Map(keyOrKeys.map((key) => [key, this.values.get(key) as T]));
+    }
+    return this.values.get(keyOrKeys) as T | undefined;
   }
 
-  async put<T>(key: string, value: T): Promise<void> {
-    this.values.set(key, value);
+  async put<T>(key: string, value: T): Promise<void>;
+  async put<T>(entries: Record<string, T> | Map<string, T>): Promise<void>;
+  async put<T>(
+    keyOrEntries: string | Record<string, T> | Map<string, T>,
+    value?: T,
+  ): Promise<void> {
+    if (typeof keyOrEntries === "string") {
+      this.values.set(keyOrEntries, value);
+      return;
+    }
+    const entries =
+      keyOrEntries instanceof Map ? keyOrEntries.entries() : Object.entries(keyOrEntries);
+    for (const [key, entry] of entries) this.values.set(key, entry);
   }
 
-  async delete(key: string): Promise<boolean> {
-    return this.values.delete(key);
+  async delete(key: string): Promise<boolean>;
+  async delete(keys: string[]): Promise<number>;
+  async delete(keyOrKeys: string | string[]): Promise<boolean | number> {
+    if (!Array.isArray(keyOrKeys)) return this.values.delete(keyOrKeys);
+    let deleted = 0;
+    for (const key of keyOrKeys) {
+      if (this.values.delete(key)) deleted += 1;
+    }
+    return deleted;
+  }
+
+  async list<T = unknown>(): Promise<Map<string, T>> {
+    return new Map([...this.values.entries()].map(([key, value]) => [key, value as T]));
+  }
+
+  async deleteAll(): Promise<void> {
+    this.values.clear();
+    this.alarmAt = null;
+  }
+
+  transaction<T>(_closure: (txn: DurableObjectTransaction) => Promise<T>): Promise<T> {
+    return Promise.resolve(undefined as T);
+  }
+
+  transactionSync<T>(_closure: () => T): T {
+    return undefined as T;
+  }
+
+  async sync(): Promise<void> {}
+
+  async getAlarm(): Promise<number | null> {
+    return this.alarmAt;
+  }
+
+  async getCurrentBookmark(): Promise<string> {
+    return "test-bookmark";
+  }
+
+  async getBookmarkForTime(_timestamp: number | Date): Promise<string> {
+    return "test-bookmark";
+  }
+
+  onNextSessionRestoreBookmark(_bookmark: string): Promise<string> {
+    return Promise.resolve("test-bookmark");
   }
 
   async setAlarm(scheduledTime: number | Date): Promise<void> {
@@ -92,18 +152,21 @@ class FakeStorage {
   }
 }
 
-class FakeDurableObjectState {
+class FakeDurableObjectState implements DurableObjectState {
   readonly storage = new FakeStorage();
   readonly id: DurableObjectId;
+  readonly props: unknown = undefined;
+  readonly facets = {} as DurableObjectState["facets"];
   readonly ctx = this;
   private waitUntilPromises: Promise<unknown>[] = [];
 
   constructor(name: string) {
-    this.id = {
+    const id: Pick<DurableObjectId, "equals" | "name" | "toString"> = {
       equals: (other: DurableObjectId) => other.toString() === name,
       name,
       toString: () => name,
-    } as unknown as DurableObjectId;
+    };
+    this.id = id as DurableObjectId;
   }
 
   waitUntil(promise: Promise<unknown>): void {
@@ -120,6 +183,34 @@ class FakeDurableObjectState {
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
     return callback();
   }
+
+  acceptWebSocket(_ws: WebSocket, _tags?: string[]): void {}
+
+  getWebSockets(_tag?: string): WebSocket[] {
+    return [];
+  }
+
+  getTags(_ws: WebSocket): string[] {
+    return [];
+  }
+
+  setWebSocketAutoResponse(_pair?: WebSocketRequestResponsePair): void {}
+
+  getWebSocketAutoResponse(): WebSocketRequestResponsePair | null {
+    return null;
+  }
+
+  getWebSocketAutoResponseTimestamp(_ws: WebSocket): Date | null {
+    return null;
+  }
+
+  setHibernatableWebSocketEventTimeout(_timeoutMs?: number): void {}
+
+  getHibernatableWebSocketEventTimeout(): number | null {
+    return null;
+  }
+
+  abort(_reason?: string): void {}
 }
 
 class InMemoryExecutionOwnerDirectoryNamespace implements McpExecutionOwnerDirectoryNamespace<string> {
@@ -134,7 +225,7 @@ class InMemoryExecutionOwnerDirectoryNamespace implements McpExecutionOwnerDirec
     if (!directory) {
       directory = new McpExecutionOwnerDirectoryDO({
         storage: new FakeStorage(),
-      } as unknown as DurableObjectState);
+      });
       this.directories.set(id, directory);
     }
     return directory;
@@ -200,13 +291,6 @@ type PendingApprovalLeaseSnapshot = {
   readonly timeout: ReturnType<typeof setTimeout> | null;
 };
 
-type PrivateRuntimeState = {
-  engine: ExecutionEngine<Cause.YieldableError> | null;
-  dbHandle: TestDbHandle | null;
-  initialized: boolean;
-  pendingApprovalLeases: Map<string, PendingApprovalLeaseSnapshot>;
-};
-
 class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle> {
   private readonly meta: SessionMeta;
   private readonly fakeState: FakeDurableObjectState;
@@ -227,7 +311,7 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
     readonly forwardModelResumeToOwner?: HarnessSession["modelResumeForward"];
   }) {
     const state = new FakeDurableObjectState(input.sessionId);
-    super(state as unknown as DurableObjectState, {} as Cloudflare.Env);
+    super(state, {} as Cloudflare.Env);
     this.fakeState = state;
     this.meta = input.meta ?? sessionMeta();
     this.directory = mcpExecutionOwnerDirectoryFromNamespace(input.directoryNamespace);
@@ -269,10 +353,9 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
   }
 
   protected override buildMcpServer(): Effect.Effect<BuiltMcpServer> {
-    const runtime = this.runtimeState();
     return Effect.succeed({
       mcpServer: new McpServer({ name: "test", version: "1.0.0" }),
-      engine: runtime.engine!,
+      engine: this["engine"]!,
     });
   }
 
@@ -298,31 +381,24 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
     executionId: string,
     response: ResumeResponse,
   ): Promise<McpSessionModelResumeResult | null> {
-    const local = await Effect.runPromise(
-      this.runtimeState().engine!.resume(executionId, response),
-    );
+    const local = await Effect.runPromise(this["engine"]!.resume(executionId, response));
     if (local) return { status: "result", result: formatMcpExecutionOutcome(local) };
     return Effect.runPromise(this.modelResumeFallback(executionId, response));
   }
 
   pendingLease(executionId: string): PendingApprovalLeaseSnapshot | undefined {
-    return this.runtimeState().pendingApprovalLeases.get(executionId);
+    return this["pendingApprovalLeases"].get(executionId);
   }
 
   pendingLeaseCount(): number {
-    return this.runtimeState().pendingApprovalLeases.size;
+    return this["pendingApprovalLeases"].size;
   }
 
   private installRuntime(engine: ExecutionEngine<Cause.YieldableError>): void {
-    const runtime = this.runtimeState();
-    runtime.engine = engine;
-    runtime.dbHandle = { end: () => undefined };
-    runtime.initialized = true;
+    this["engine"] = engine;
+    this["dbHandle"] = { end: () => undefined };
+    this["initialized"] = true;
     this.server = new McpServer({ name: "test", version: "1.0.0" });
-  }
-
-  private runtimeState(): PrivateRuntimeState {
-    return this as unknown as PrivateRuntimeState;
   }
 }
 

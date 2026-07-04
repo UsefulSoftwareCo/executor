@@ -30,6 +30,21 @@ export interface McpExecutionOwnerDirectoryNamespace<Id> {
   readonly get: (id: Id) => unknown;
 }
 
+interface McpExecutionOwnerDirectoryStorage {
+  readonly get: <T>(key: string) => Promise<T | undefined>;
+  readonly put: <T>(key: string, value: T) => Promise<void>;
+  readonly delete: (key: string) => Promise<boolean>;
+  readonly setAlarm: (scheduledTime: number | Date) => Promise<void>;
+  readonly deleteAlarm: () => Promise<void>;
+}
+
+interface McpExecutionOwnerDirectoryState {
+  readonly storage: McpExecutionOwnerDirectoryStorage;
+}
+
+const toMcpExecutionOwnerDirectoryStub = (stub: unknown): McpExecutionOwnerDirectoryStub =>
+  stub as McpExecutionOwnerDirectoryStub;
+
 export const mcpSessionDurableObjectName = (sessionId: string): string =>
   `streamable-http:${sessionId}`;
 
@@ -59,9 +74,9 @@ const isOwnerRecord = (value: unknown): value is McpExecutionOwnerRecord =>
 const expiryMs = (record: McpExecutionOwnerRecord): number => Date.parse(record.expiresAt);
 
 export class McpExecutionOwnerDirectoryDO {
-  private readonly storage: DurableObjectStorage;
+  private readonly storage: McpExecutionOwnerDirectoryStorage;
 
-  constructor(ctx: DurableObjectState) {
+  constructor(ctx: McpExecutionOwnerDirectoryState) {
     this.storage = ctx.storage;
   }
 
@@ -99,7 +114,7 @@ export const mcpExecutionOwnerDirectoryFromNamespace = <Id>(
 ): McpExecutionOwnerDirectory | null => {
   if (!namespace) return null;
   const stubFor = (executionId: string): McpExecutionOwnerDirectoryStub =>
-    namespace.get(namespace.idFromName(executionId)) as unknown as McpExecutionOwnerDirectoryStub;
+    toMcpExecutionOwnerDirectoryStub(namespace.get(namespace.idFromName(executionId)));
   return {
     put: (record) =>
       Effect.tryPromise({

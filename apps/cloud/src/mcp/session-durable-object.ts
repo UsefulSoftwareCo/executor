@@ -109,6 +109,8 @@ interface McpModelResumeStub {
   ) => Promise<McpSessionModelResumeResult>;
 }
 
+const toMcpModelResumeStub = (stub: unknown): McpModelResumeStub => stub as McpModelResumeStub;
+
 class OrganizationNotFoundError extends Data.TaggedError("OrganizationNotFoundError")<{
   readonly organizationId: string;
 }> {}
@@ -211,10 +213,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
     return Effect.tryPromise({
       try: () =>
-        (
+        toMcpModelResumeStub(
           env.MCP_SESSION.get(
             env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(owner.sessionId)),
-          ) as unknown as McpModelResumeStub
+          ),
         ).resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),
     });

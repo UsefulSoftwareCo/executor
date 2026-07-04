@@ -34,7 +34,7 @@ const makeDirectory = () => {
   const storage = new FakeStorage();
   const directory = new McpExecutionOwnerDirectoryDO({
     storage,
-  } as unknown as DurableObjectState);
+  });
   return { directory, storage };
 };
 

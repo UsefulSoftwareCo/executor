@@ -55,6 +55,8 @@ interface McpModelResumeStub {
   ) => Promise<McpSessionModelResumeResult>;
 }
 
+const toMcpModelResumeStub = (stub: unknown): McpModelResumeStub => stub as McpModelResumeStub;
+
 class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
   readonly cause: unknown;
 }> {}
@@ -84,10 +86,10 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
     return Effect.tryPromise({
       try: () =>
-        (
+        toMcpModelResumeStub(
           this.cfEnv.MCP_SESSION.get(
             this.cfEnv.MCP_SESSION.idFromName(mcpSessionDurableObjectName(owner.sessionId)),
-          ) as unknown as McpModelResumeStub
+          ),
         ).resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),
     });
