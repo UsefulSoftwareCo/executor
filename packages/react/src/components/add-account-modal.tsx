@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -1290,8 +1290,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // user can cancel back out without it springing open again; retries on later
   // renders only while the methods list is still empty.
   const oauthHandoffOpenedKey = useRef<string | null>(null);
+  const oauthReconnectOpenedKey = useRef<string | null>(null);
   useEffect(() => {
     if (!initialState?.oauthClient) return;
+    if (initialState.oauthClient.action === "reconnect") return;
     if (oauthHandoffOpenedKey.current === initialState.key) return;
     const oauthMethod = allMethods.find((m: AuthMethod) => m.kind === "oauth");
     if (!oauthMethod) return;
@@ -1583,7 +1585,58 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // Just ask the parent to close. Reopening remounts this whole component (see
   // AddAccountModal), so there is nothing to hand-reset: the form fields and the
   // OAuth popup flow's busy state die with this instance.
-  const close = () => onOpenChange(false);
+  const close = useCallback(() => onOpenChange(false), [onOpenChange]);
+
+  useEffect(() => {
+    const handoff = initialState;
+    const oauthClient = handoff?.oauthClient;
+    if (!handoff || oauthClient?.action !== "reconnect") return;
+    if (oauthReconnectOpenedKey.current === handoff.key) return;
+    const client = oauthClient.slug;
+    const clientOwner = oauthClient.owner ?? handoff.owner;
+    const connectionOwner = handoff.owner;
+    const connectionName = handoff.label;
+    const oauthMethod = handoff.template
+      ? allMethods.find(
+          (m: AuthMethod) =>
+            m.kind === "oauth" &&
+            (m.id === handoff.template || String(m.template) === handoff.template),
+        )
+      : allMethods.find((m: AuthMethod) => m.kind === "oauth");
+    if (!client || !clientOwner || !connectionOwner || !connectionName || !oauthMethod) return;
+
+    oauthReconnectOpenedKey.current = handoff.key;
+    setMethodId(oauthMethod.id);
+    void oauthPopup.start({
+      payload: {
+        client: OAuthClientSlug.make(client),
+        clientOwner,
+        owner: connectionOwner,
+        name: ConnectionName.make(connectionName),
+        integration,
+        template: oauthMethod.template,
+        ...(handoff.identityLabel !== undefined ? { identityLabel: handoff.identityLabel } : {}),
+      },
+      onAuthorizationStarted: () => {
+        trackEvent("connection_reconnected", {
+          integration_slug: String(integration),
+          owner: connectionOwner,
+          success: true,
+        });
+      },
+      onError: () => {
+        trackEvent("connection_reconnected", {
+          integration_slug: String(integration),
+          owner: connectionOwner,
+          success: false,
+        });
+      },
+      onSuccess: () => {
+        toast.success("Reconnected");
+        close();
+      },
+    });
+  }, [initialState, allMethods, integration, oauthPopup, close]);
 
   const credentialPayloadOrigin = createCredentialPayloadOrigin({
     origin: credentialOrigin,
@@ -2018,6 +2071,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
         forceOverlay
+        onInteractOutside={
+          oauthClientHandoff?.action === "reconnect" ? (event) => event.preventDefault() : undefined
+        }
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing

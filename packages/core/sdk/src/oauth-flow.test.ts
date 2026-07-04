@@ -45,6 +45,11 @@ const oauthPlugin = definePlugin(() => ({
   },
   // Echo the resolved credential value (the OAuth access token) back out.
   invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
+  checkHealth: ({ credential }) =>
+    Effect.succeed({
+      status: credential.value === null ? "expired" : "healthy",
+      checkedAt: Date.now(),
+    }),
   extension: (ctx) => ({
     seed: (scopes: readonly string[] = []) =>
       ctx.core.integrations.register({
@@ -620,6 +625,82 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           expect(yield* server.acceptsAccessToken(refreshedToken.token)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("checkHealth records expired when OAuth refresh is rejected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          tokenExpiresInSeconds: 0,
+          invalidRefreshTokenDescription: "Grant not found",
+        });
+        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = harness;
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        yield* server.clearRequests;
+
+        const result = yield* executor.connections.checkHealth({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+
+        expect(result.status).toBe("expired");
+        expect(result.detail).toContain("Grant not found");
+        const refreshed = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(refreshed?.lastHealth).toMatchObject({
+          status: "expired",
+          detail: expect.stringContaining("Grant not found"),
+        });
+        const requests = yield* server.requests;
+        const refreshRequest = requests.find(
+          (r) => r.path === "/token" && r.method === "POST" && r.body.includes("refresh_token"),
+        );
+        expect(refreshRequest).toBeDefined();
+      }),
+    ),
   );
 });
 

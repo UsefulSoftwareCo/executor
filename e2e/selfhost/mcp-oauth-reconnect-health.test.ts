@@ -2,7 +2,7 @@
 // refresh token is rejected by the provider as `invalid_grant`.
 import { randomBytes } from "node:crypto";
 
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
 import { expect } from "@effect/vitest";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import type { Page } from "playwright";
@@ -34,8 +34,6 @@ const oauthReconnectRequest = (url: string): boolean =>
   url.includes("/api/oauth/probe") ||
   url.includes("/api/oauth/start") ||
   url.includes("/api/oauth/clients/register-dynamic");
-
-const observedFailure = (cause: Cause.Cause<unknown>): string => String(Cause.squash(cause));
 
 const connectionsSection = (page: Page) =>
   page.locator("section").filter({
@@ -155,8 +153,6 @@ scenario(
   "MCP OAuth · invalid_grant refresh during health check returns expired instead of 500",
   {
     timeout: 180_000,
-    expectedFailure:
-      "BUG: invalid_grant during pre-health token refresh is folded into InternalError/500.",
   },
   Effect.scoped(
     Effect.gen(function* () {
@@ -167,17 +163,21 @@ scenario(
       const client = yield* makeApiClient(api, identity);
       const { oauth, slug } = yield* seedExpiredDcrMcpOAuthConnection(client, "mcp-hc-invalid");
 
-      const apiExit = yield* Effect.exit(
-        client.connections.checkHealth({
-          params: { owner: "org", integration: slug, name },
-          query: {},
-        }),
+      const apiResult = yield* client.connections.checkHealth({
+        params: { owner: "org", integration: slug, name },
+        query: {},
+      });
+      expect(apiResult.status, "typed checkHealth classifies the dead grant").toBe("expired");
+      expect(apiResult.detail, "the provider rejection detail is surfaced").toContain(
+        "Grant not found",
       );
-      if (Exit.isFailure(apiExit)) {
-        console.info(`[BUG repro] typed checkHealth failed: ${observedFailure(apiExit.cause)}`);
-      } else {
-        console.info(`[BUG repro] typed checkHealth status: ${apiExit.value.status}`);
-      }
+      const reread = yield* client.connections.get({
+        params: { owner: "org", integration: slug, name },
+      });
+      expect(reread.lastHealth?.status, "the expired health verdict persisted").toBe("expired");
+      expect(reread.lastHealth?.detail, "the persisted detail is useful").toContain(
+        "Grant not found",
+      );
       yield* logTokenRequests("typed checkHealth", oauth);
       yield* oauth.clearRequests;
 
@@ -228,8 +228,6 @@ scenario(
   "MCP OAuth · DCR reconnect keeps the dialog open and reaches OAuth start",
   {
     timeout: 180_000,
-    expectedFailure:
-      "BUG: DCR reconnect opens AddAccountModal without oauthClient handoff, then closes.",
   },
   Effect.scoped(
     Effect.gen(function* () {
@@ -255,52 +253,24 @@ scenario(
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
         });
 
-        await step("Reconnect should keep a dialog visible or reach OAuth", async () => {
+        await step("Reconnect should keep a dialog visible and reach OAuth", async () => {
           const oauthRequest = page
-            .waitForRequest((request) => oauthReconnectRequest(request.url()), { timeout: 5_000 })
-            .then((request) => request.url())
-            .catch(() => null);
+            .waitForRequest((request) => oauthReconnectRequest(request.url()), { timeout: 30_000 })
+            .then((request) => request.url());
 
           await menuTrigger.click();
           await page.getByRole("menuitem", { name: "Reconnect" }).click();
 
-          const sawDialog = await dialog
-            .waitFor({ state: "visible", timeout: 1_000 })
-            .then(() => true)
-            .catch(() => false);
-
-          let reachedOAuth: string | null = null;
-          let closedWithinTwoSeconds: boolean | null = null;
-          if (!sawDialog) {
-            reachedOAuth = await oauthRequest;
-            console.info(
-              `[BUG repro] reconnect dialog was not observed; OAuth request: ${
-                reachedOAuth ?? "none"
-              }`,
-            );
-          } else {
-            closedWithinTwoSeconds = await dialog
-              .waitFor({ state: "hidden", timeout: 2_000 })
-              .then(() => true)
-              .catch(() => false);
-            reachedOAuth = await oauthRequest;
-            console.info(
-              `[BUG repro] reconnect dialog closedWithinTwoSeconds=${closedWithinTwoSeconds}; OAuth requests: ${
-                oauthRequests.join(", ") || reachedOAuth || "none"
-              }`,
-            );
-          }
-
-          const outcome =
-            sawDialog && closedWithinTwoSeconds === false
-              ? "dialog-persisted"
-              : reachedOAuth !== null
-                ? "oauth-reached"
-                : "missing";
-          expect(
-            outcome,
-            "Reconnect should keep the dialog visible or reach OAuth within 5s",
-          ).not.toBe("missing");
+          await dialog.waitFor({ state: "visible", timeout: 30_000 });
+          const reachedOAuth = await oauthRequest;
+          await page.waitForTimeout(2_000);
+          await dialog.waitFor({ state: "visible", timeout: 1_000 });
+          console.info(
+            `[MCP OAuth repro] reconnect dialog stayed open; OAuth requests: ${
+              oauthRequests.join(", ") || reachedOAuth
+            }`,
+          );
+          expect(reachedOAuth, "Reconnect should issue an OAuth request").toBeTruthy();
         });
       });
     }),

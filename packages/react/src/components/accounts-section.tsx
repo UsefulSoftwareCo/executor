@@ -501,6 +501,7 @@ export function AccountsSection(props: {
               methods={methods}
               onEdit={setEditingConnection}
               onDcrReconnect={(connection: Connection) => {
+                if (connection.oauthClient == null) return;
                 setReconnectHandoff({
                   key: `reconnect:${connection.owner}:${String(connection.integration)}:${String(
                     connection.name,
@@ -508,6 +509,14 @@ export function AccountsSection(props: {
                   owner: connection.owner,
                   template: String(connection.template),
                   label: String(connection.name),
+                  ...(connection.identityLabel != null
+                    ? { identityLabel: connection.identityLabel }
+                    : {}),
+                  oauthClient: {
+                    action: "reconnect",
+                    slug: String(connection.oauthClient),
+                    owner: connection.oauthClientOwner ?? connection.owner,
+                  },
                 });
               }}
               declaredScopes={declaredScopes}

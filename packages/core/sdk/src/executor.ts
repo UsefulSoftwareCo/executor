@@ -2594,6 +2594,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // can still render the connection, just without a liveness verdict.
     const unknownHealth = (): HealthCheckResult => ({ status: "unknown", checkedAt: Date.now() });
 
+    const persistHealthResult = (
+      ref: ConnectionRef,
+      result: HealthCheckResult,
+    ): Effect.Effect<void, never> =>
+      core
+        .updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              b("owner", "=", String(ref.owner)),
+              b("integration", "=", String(ref.integration)),
+              b("name", "=", String(ref.name)),
+            ),
+          set: { last_health: result, updated_at: new Date() },
+        })
+        .pipe(Effect.ignore);
+
+    const healthFromCredentialResolutionError = (
+      err: CredentialResolutionError,
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
+      err.reauthRequired === true
+        ? Effect.succeed({
+            status: "expired",
+            checkedAt: Date.now(),
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+            detail: err.message,
+          })
+        : Effect.fail(
+            new StorageError({
+              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+              message: err.message,
+              cause: err,
+            }),
+          );
+
     // Resolve an in-flight credential's value map (key-first validation) without
     // saving anything. Mirrors `resolveConnectionValues` for the saved-row path:
     // pasted `value`/`values` are used directly; `from` origins resolve through
@@ -2654,41 +2688,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const check = runtime?.plugin.checkHealth;
         if (!runtime || !check) return unknownHealth();
 
-        const values = yield* foldResolutionFailure(resolveConnectionValues(connectionRow));
-        const record = rowToIntegrationRecord(
-          integrationRow,
-          describeAuthMethodsForRow(integrationRow),
-        );
-        const credential: ToolInvocationCredential = {
-          owner: connectionRow.owner as Owner,
-          integration: ref.integration,
-          connection: ConnectionName.make(connectionRow.name),
-          template: AuthTemplateSlug.make(connectionRow.template),
-          value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-          values,
-          config: record.config,
-        };
-        // Core resolves the declared spec (its own column) and hands it to the
-        // plugin; plugins no longer read it out of their config.
-        const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
-        const result = yield* foldPluginFailure(
-          check({ ctx: runtime.ctx, integration: record, credential, spec }),
-          `Health check for connection "${ref.name}" failed.`,
-        );
+        const result = yield* Effect.gen(function* () {
+          const values = yield* resolveConnectionValues(connectionRow);
+          const record = rowToIntegrationRecord(
+            integrationRow,
+            describeAuthMethodsForRow(integrationRow),
+          );
+          const credential: ToolInvocationCredential = {
+            owner: connectionRow.owner as Owner,
+            integration: ref.integration,
+            connection: ConnectionName.make(connectionRow.name),
+            template: AuthTemplateSlug.make(connectionRow.template),
+            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+            values,
+            config: record.config,
+          };
+          // Core resolves the declared spec (its own column) and hands it to the
+          // plugin; plugins no longer read it out of their config.
+          const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
+          return yield* foldPluginFailure(
+            check({ ctx: runtime.ctx, integration: record, credential, spec }),
+            `Health check for connection "${ref.name}" failed.`,
+          );
+        }).pipe(Effect.catchTag("CredentialResolutionError", healthFromCredentialResolutionError));
         // Persist the verdict on the connection row so the accounts list shows
         // alive/expired at a glance. Best-effort: a write failure must not turn
         // a successful probe into an error.
-        yield* core
-          .updateMany("connection", {
-            where: (b: AnyCb) =>
-              b.and(
-                b("owner", "=", String(ref.owner)),
-                b("integration", "=", String(ref.integration)),
-                b("name", "=", String(ref.name)),
-              ),
-            set: { last_health: result, updated_at: new Date() },
-          })
-          .pipe(Effect.ignore);
+        yield* persistHealthResult(ref, result);
         return result;
       });
 

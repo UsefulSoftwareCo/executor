@@ -122,13 +122,19 @@ export interface IntegrationAccountHandoff {
   readonly template?: string;
   /** Non-secret connection label to prefill. */
   readonly label?: string;
+  /** Existing display identity to preserve when reconnecting a saved row. */
+  readonly identityLabel?: string;
   /** Present when the agent handed off a CONFIDENTIAL OAuth-app registration
-   *  (via `oauth.clients.createHandoff`): the accounts UI opens the
+   *  (via `oauth.clients.createHandoff`) or when a saved OAuth connection is
+   *  reconnecting through its stored app. Registration opens the
    *  Register-OAuth-app form pre-filled with these NON-secret fields, and the
-   *  human types the client secret directly into the browser. */
+   *  human types the client secret directly into the browser. Reconnect starts
+   *  OAuth with the existing public client. */
   readonly oauthClient?: {
+    readonly action?: "register" | "reconnect";
     /** Preselected client slug; when set the form's slug is fixed. */
     readonly slug?: string;
+    readonly owner?: "org" | "user";
     readonly grant?: string;
     readonly clientId?: string;
     readonly authorizationUrl?: string;
