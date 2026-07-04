@@ -436,6 +436,82 @@ export abstract class McpAgentSessionDOBase<
     });
   }
 
+  private logExecutionOwnerDirectoryFailure(input: {
+    readonly operation: "put" | "get" | "delete";
+    readonly executionId: string;
+    readonly cause: Cause.Cause<unknown>;
+  }): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      const first = Cause.prettyErrors(input.cause)[0];
+      console.error(
+        JSON.stringify({
+          event: "mcp_execution_owner_directory_error",
+          operation: input.operation,
+          executionId: input.executionId,
+          sessionId: self.sessionId,
+          exceptionType: first?.name ?? "Error",
+          exceptionMessage: first?.message ?? "unknown",
+          cause: Cause.pretty(input.cause),
+        }),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "mcp.execution_owner.directory.operation": input.operation,
+      });
+      yield* self.recordCauseOnSpan(input.cause);
+    });
+  }
+
+  private logModelResumeForwardFailure(input: {
+    readonly executionId: string;
+    readonly owner: McpExecutionOwnerRoute;
+    readonly cause: Cause.Cause<unknown>;
+  }): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      const first = Cause.prettyErrors(input.cause)[0];
+      console.error(
+        JSON.stringify({
+          event: "mcp_model_resume_forward_error",
+          executionId: input.executionId,
+          sessionId: self.sessionId,
+          ownerSessionId: input.owner.sessionId,
+          exceptionType: first?.name ?? "Error",
+          exceptionMessage: first?.message ?? "unknown",
+          cause: Cause.pretty(input.cause),
+        }),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "mcp.execution_owner.forward.owner_session_id": input.owner.sessionId,
+      });
+      yield* self.recordCauseOnSpan(input.cause);
+    });
+  }
+
+  private logModelResumeForwardTimeout(input: {
+    readonly executionId: string;
+    readonly owner: McpExecutionOwnerRoute;
+    readonly timeoutMs: number;
+  }): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      console.error(
+        JSON.stringify({
+          event: "mcp_model_resume_forward_error",
+          reason: "timeout",
+          executionId: input.executionId,
+          sessionId: self.sessionId,
+          ownerSessionId: input.owner.sessionId,
+          timeoutMs: input.timeoutMs,
+        }),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "mcp.execution_owner.forward.owner_session_id": input.owner.sessionId,
+        "mcp.execution_owner.forward.error": "timeout",
+      });
+    });
+  }
+
   private withSpanFlush<A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> {
     const self = this;
     return effect.pipe(Effect.ensuring(Effect.promise(() => self.flushTelemetry())));
@@ -813,6 +889,9 @@ export abstract class McpAgentSessionDOBase<
       Effect.map((record) =>
         record ? { expiresAt: record.expiresAt, ttlMs: record.ttlMs } : undefined,
       ),
+      Effect.tapCause((cause) =>
+        this.logExecutionOwnerDirectoryFailure({ operation: "get", executionId, cause }),
+      ),
       Effect.catchCause(() => noDeadline),
     );
   }
@@ -835,13 +914,26 @@ export abstract class McpAgentSessionDOBase<
         expiresAt: deadline.expiresAt,
         ttlMs: deadline.ttlMs,
       };
-      yield* directory.put(record);
+      yield* directory
+        .put(record)
+        .pipe(
+          Effect.tapCause((cause) =>
+            self.logExecutionOwnerDirectoryFailure({ operation: "put", executionId, cause }),
+          ),
+        );
     }).pipe(Effect.ignore);
   }
 
   private deleteExecutionOwnerEntry(executionId: string): Effect.Effect<void> {
     const directory = this.executionOwnerDirectory();
-    return directory?.delete(executionId).pipe(Effect.ignore) ?? Effect.void;
+    return (
+      directory?.delete(executionId).pipe(
+        Effect.tapCause((cause) =>
+          this.logExecutionOwnerDirectoryFailure({ operation: "delete", executionId, cause }),
+        ),
+        Effect.ignore,
+      ) ?? Effect.void
+    );
   }
 
   private resumeEngineWithLifecycle(
@@ -864,9 +956,12 @@ export abstract class McpAgentSessionDOBase<
     if (!directory) return Effect.succeed(null);
     const self = this;
     return Effect.gen(function* () {
-      const record = yield* directory
-        .get(executionId)
-        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      const record = yield* directory.get(executionId).pipe(
+        Effect.tapCause((cause) =>
+          self.logExecutionOwnerDirectoryFailure({ operation: "get", executionId, cause }),
+        ),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
       if (!record) return null;
 
       const sessionMeta = yield* self.loadSessionMeta();
@@ -893,10 +988,24 @@ export abstract class McpAgentSessionDOBase<
           Effect.timeoutOrElse({
             duration: `${MODEL_RESUME_FORWARD_TIMEOUT_MS} millis`,
             orElse: () =>
-              Effect.succeed({ status: "execution_expired" as const, ttlMs: record.ttlMs }),
+              Effect.gen(function* () {
+                yield* self.logModelResumeForwardTimeout({
+                  executionId,
+                  owner: record.owner,
+                  timeoutMs: MODEL_RESUME_FORWARD_TIMEOUT_MS,
+                });
+                return { status: "execution_expired" as const, ttlMs: record.ttlMs };
+              }),
           }),
-          Effect.catchCause(() =>
-            Effect.succeed({ status: "execution_expired" as const, ttlMs: record.ttlMs }),
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* self.logModelResumeForwardFailure({
+                executionId,
+                owner: record.owner,
+                cause,
+              });
+              return { status: "execution_expired" as const, ttlMs: record.ttlMs };
+            }),
           ),
         );
       if (
@@ -994,10 +1103,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.gen(function* () {
       const lease = self.pendingApprovalLeases.get(executionId);
-      if (!lease) {
-        yield* self.deleteExecutionOwnerEntry(executionId);
-        return;
-      }
+      if (!lease) return;
       if (lease.timeout) clearTimeout(lease.timeout);
       self.pendingApprovalLeases.delete(executionId);
       lease.disposeKeepAlive();
