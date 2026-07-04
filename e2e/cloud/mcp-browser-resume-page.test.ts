@@ -15,13 +15,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { scenario } from "../src/scenario";
-import { Api, Mcp, Target } from "../src/services";
+import { Api, Browser, Mcp, Target } from "../src/services";
 import { parseBrowserApproval } from "../src/surfaces/mcp";
 import type { Identity } from "../src/target";
 
 const coreApi = composePluginApi([] as const);
 
 const GATE_TOOL = "executor.coreTools.policies.list";
+const UNAVAILABLE_COPY = "This paused execution is no longer available";
 
 const GATED_CODE = `
 const result = await tools.executor.coreTools.policies.list({});
@@ -62,6 +63,11 @@ const openBrowserApprovalSession = async (mcpUrl: string, bearer: string): Promi
 
 const closeQuietly = (connected: Connected): Effect.Effect<void> =>
   Effect.promise(() => connected.client.close().catch(() => undefined));
+
+const pathWithSearch = (url: string): string => {
+  const parsed = new URL(url);
+  return `${parsed.pathname}${parsed.search}`;
+};
 
 const authenticatedFetch = (
   identity: Identity,
@@ -156,6 +162,100 @@ scenario(
           }),
         );
         expect(resumed.isError, "browser-mode resume consumes the page decision").not.toBe(true);
+        expect(textOf(resumed), "the gated tool completed after approval").toContain(policy.id);
+      }).pipe(Effect.ensuring(closeQuietly(session)));
+    }).pipe(
+      Effect.ensuring(
+        api.policies
+          .remove({ params: { policyId: policy.id }, payload: { owner: "org" } })
+          .pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
+
+scenario(
+  "MCP approval · browser resume page approves a paused execution through the UI",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: apiClient } = yield* Api;
+    const browser = yield* Browser;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+    const api = yield* apiClient(coreApi, identity);
+
+    const policy = yield* api.policies.create({
+      payload: { owner: "org", pattern: GATE_TOOL, action: "require_approval" },
+    });
+
+    yield* Effect.gen(function* () {
+      const session = yield* Effect.promise(() =>
+        openBrowserApprovalSession(target.mcpUrl, bearer),
+      );
+      yield* Effect.gen(function* () {
+        const paused = yield* Effect.promise(() =>
+          session.client.callTool({ name: "execute", arguments: { code: GATED_CODE } }),
+        );
+        const approval = parseBrowserApproval({
+          raw: paused,
+          text: textOf(paused),
+          ok: paused.isError !== true,
+        });
+
+        const approvalUrl = new URL(approval.approvalUrl);
+        const mcpSessionId = approvalUrl.searchParams.get("mcp_session_id");
+        expect(
+          mcpSessionId,
+          "approval URL carries the MCP session id that the browser page will query",
+        ).toEqual(expect.any(String));
+        expect(mcpSessionId, "approval URL points at the session that paused").toBe(
+          session.transport.sessionId,
+        );
+
+        const [resumed] = yield* Effect.all(
+          [
+            Effect.promise(() =>
+              session.client.callTool({
+                name: "resume",
+                arguments: { executionId: approval.executionId },
+              }),
+            ),
+            browser.session(identity, async ({ page, step }) => {
+              await step("Open the paused execution approval page", async () => {
+                await page.goto(pathWithSearch(approval.approvalUrl), { waitUntil: "networkidle" });
+                await page.getByText("User approval required").waitFor();
+              });
+
+              await step("Review the paused tool call details", async () => {
+                await page.getByText("Pending request").waitFor();
+                await page.getByText(/Approve executor\.coreTools\.policies\.list\?/).waitFor();
+
+                const approve = page.getByRole("button", { name: "Approve" });
+                await approve.waitFor();
+                expect(
+                  await approve.isEnabled(),
+                  "the approve control is enabled for the paused execution",
+                ).toBe(true);
+                expect(
+                  await page.getByText(UNAVAILABLE_COPY).count(),
+                  "the resume page does not show the expired-session failure copy",
+                ).toBe(0);
+              });
+
+              await step("Approve the paused tool call", async () => {
+                await page.getByRole("button", { name: "Approve" }).click();
+                await page.getByText("Approve sent").waitFor();
+              });
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(resumed.isError, "browser-mode resume completed after the UI approval").not.toBe(
+          true,
+        );
         expect(textOf(resumed), "the gated tool completed after approval").toContain(policy.id);
       }).pipe(Effect.ensuring(closeQuietly(session)));
     }).pipe(
