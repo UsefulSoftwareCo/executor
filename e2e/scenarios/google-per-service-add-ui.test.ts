@@ -98,8 +98,14 @@ scenario(
           .getByRole("link", { name: "Open" })
           .click();
         await page.waitForURL(/\/integrations\/google_calendar\b/);
-        // The detail header renders the per-service name, not a generic "Google".
-        await page.getByText("Google Calendar").first().waitFor({ timeout: 20_000 });
+        // The detail header renders the per-service name, not a generic
+        // "Google". Scoped to the main region: the shell sidebar also lists
+        // the new integration as "Google Calendar".
+        await page
+          .getByRole("main")
+          .getByText("Google Calendar")
+          .first()
+          .waitFor({ timeout: 20_000 });
       });
 
       await step("The integrations list has three separate Google integrations", async () => {
@@ -107,7 +113,11 @@ scenario(
         // Each fanned-out integration is its own list entry, keyed by its slug
         // (the list renders the slug as each entry's description).
         for (const slug of ["google_calendar", "google_gmail", "google_drive"]) {
-          await page.getByText(slug, { exact: true }).first().waitFor({ timeout: 20_000 });
+          await page
+            .getByRole("main")
+            .getByText(slug, { exact: true })
+            .first()
+            .waitFor({ timeout: 20_000 });
         }
       });
 

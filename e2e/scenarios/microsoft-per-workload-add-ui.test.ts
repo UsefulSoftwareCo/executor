@@ -78,14 +78,25 @@ scenario(
         async () => {
           await page.getByTestId("add-result-row-mail").getByRole("link", { name: "Open" }).click();
           await page.waitForURL(/\/integrations\/microsoft_mail\b/);
-          await page.getByText("Outlook Mail").first().waitFor({ timeout: 20_000 });
+          // Scoped to the main region: the shell sidebar also lists the new
+          // integration as "Outlook Mail", so a page-wide lookup would match
+          // the sidebar link instead of the detail page under test.
+          await page
+            .getByRole("main")
+            .getByText("Outlook Mail")
+            .first()
+            .waitFor({ timeout: 20_000 });
         },
       );
 
       await step("The integrations list has two separate Microsoft integrations", async () => {
         await page.goto("/integrations", { waitUntil: "networkidle" });
         for (const slug of ["microsoft_mail", "microsoft_calendar"]) {
-          await page.getByText(slug, { exact: true }).first().waitFor({ timeout: 20_000 });
+          await page
+            .getByRole("main")
+            .getByText(slug, { exact: true })
+            .first()
+            .waitFor({ timeout: 20_000 });
         }
       });
 
