@@ -18,6 +18,7 @@ import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import {
+  MAX_PAUSED_SESSION_IDLE_MS,
   SESSION_TIMEOUT_MS,
   decideSessionAlarm,
   pausedLeaseExtensionLog,
@@ -234,6 +235,14 @@ export abstract class McpAgentSessionDOBase<
     return undefined;
   }
 
+  protected sessionTimeoutMs(): number {
+    return SESSION_TIMEOUT_MS;
+  }
+
+  protected maxPausedSessionIdleMs(): number {
+    return MAX_PAUSED_SESSION_IDLE_MS;
+  }
+
   protected readonly browserApprovalStore: BrowserApprovalStore = {
     takeResponse: (executionId) => this.takeApprovalResponse(executionId),
     waitForResponse: (executionId) => this.waitForApprovalResponse(executionId),
@@ -310,7 +319,7 @@ export abstract class McpAgentSessionDOBase<
     this.lastActivityMs = now;
     await Promise.all([
       this.ctx.storage.put(LAST_ACTIVITY_KEY, now),
-      this.ctx.storage.setAlarm(now + SESSION_TIMEOUT_MS),
+      this.ctx.storage.setAlarm(now + this.sessionTimeoutMs()),
     ]);
   }
 
@@ -328,6 +337,27 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private async cleanupUnaddressableSessionAlarm(): Promise<void> {
+    await Effect.runPromise(this.closeRuntime());
+    await Effect.runPromise(
+      Effect.all([
+        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
+        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.delete(LAST_ACTIVITY_KEY))),
+      ]),
+    );
+  }
+
+  private async disposeIdleRuntime(input: {
+    readonly idleMs: number;
+    readonly pausedExecutionCount: number;
+  }): Promise<void> {
+    console.info(
+      JSON.stringify({
+        event: "mcp_session_idle_runtime_dispose",
+        sessionId: this.sessionId,
+        idleMs: input.idleMs,
+        pausedExecutionCount: input.pausedExecutionCount,
+      }),
+    );
     await Effect.runPromise(this.closeRuntime());
     await Effect.runPromise(
       Effect.all([
@@ -476,9 +506,15 @@ export abstract class McpAgentSessionDOBase<
       Effect.gen(function* () {
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
-        yield* Effect.promise(() => self.markActivity()).pipe(
-          Effect.withSpan("McpSessionDO.markActivity"),
-        );
+        if (self.initialized) {
+          yield* Effect.promise(() => self.markActivity()).pipe(
+            Effect.withSpan("McpSessionDO.markActivity"),
+          );
+        } else {
+          yield* Effect.promise(() => self.onStart()).pipe(
+            Effect.withSpan("McpSessionDO.restore_transport_runtime"),
+          );
+        }
         return identity.accountId === sessionMeta.userId &&
           identity.organizationId === sessionMeta.organizationId
           ? ("ok" as const)
@@ -576,7 +612,12 @@ export abstract class McpAgentSessionDOBase<
     const lastActivityMs = await this.loadLastActivity();
     const idleMs = lastActivityMs > 0 ? Date.now() - lastActivityMs : 0;
     const pausedExecutionCount = await this.pausedExecutionCount();
-    const decision = decideSessionAlarm({ idleMs, pausedExecutionCount });
+    const decision = decideSessionAlarm({
+      idleMs,
+      pausedExecutionCount,
+      sessionTimeoutMs: this.sessionTimeoutMs(),
+      maxPausedSessionIdleMs: this.maxPausedSessionIdleMs(),
+    });
 
     if (decision.kind === "idle_within_timeout") {
       await super.alarm();
@@ -598,7 +639,7 @@ export abstract class McpAgentSessionDOBase<
       return;
     }
 
-    await this.destroy();
+    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount });
   }
 
   private validateApprovalIdentity(

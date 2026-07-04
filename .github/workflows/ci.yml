@@ -67,7 +67,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -90,7 +90,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -113,7 +113,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -126,15 +126,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Cache Turbo task cache
-        uses: useblacksmith/cache@v5
-        with:
-          path: .turbo
-          key: ${{ runner.os }}-turbo-typecheck-${{ hashFiles('bun.lock', 'turbo.json') }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-typecheck-
-            ${{ runner.os }}-turbo-
 
       - run: bun install --frozen-lockfile
 
@@ -155,7 +146,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -168,15 +159,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Cache Turbo task cache
-        uses: useblacksmith/cache@v5
-        with:
-          path: .turbo
-          key: ${{ runner.os }}-turbo-test-${{ hashFiles('bun.lock', 'turbo.json') }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-test-
-            ${{ runner.os }}-turbo-
 
       - run: bun install --frozen-lockfile
 
@@ -199,7 +181,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
-      E2E_MCP_FAST_IDLE_TEARDOWN: "true"
+      MCP_SESSION_TIMEOUT_MS: "3000"
+      MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
     steps:
       - uses: actions/checkout@v4
 
@@ -208,7 +191,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -224,7 +207,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-1.60.0
@@ -271,7 +254,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -287,7 +270,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-1.60.0
@@ -328,7 +311,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}

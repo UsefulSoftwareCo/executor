@@ -77,6 +77,13 @@ const LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS = 5;
 const LONG_LIVED_DB_MAX_LIFETIME_SECONDS = 120;
 const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
 
+const positiveMilliseconds = (raw: string | undefined): number | undefined => {
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
+};
+
 type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
   readonly end: () => Promise<void>;
@@ -158,6 +165,16 @@ const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
 // ---------------------------------------------------------------------------
 
 export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionDbHandle> {
+  protected override sessionTimeoutMs(): number {
+    return positiveMilliseconds(env.MCP_SESSION_TIMEOUT_MS) ?? super.sessionTimeoutMs();
+  }
+
+  protected override maxPausedSessionIdleMs(): number {
+    return (
+      positiveMilliseconds(env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS) ?? super.maxPausedSessionIdleMs()
+    );
+  }
+
   protected override openSessionDb(): CloudSessionDbHandle {
     return makeDbHandle({
       idleTimeout: LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS,

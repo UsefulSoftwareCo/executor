@@ -10,6 +10,7 @@ import { claimAndBoot } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
 import { waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
+import { ensureE2eMcpSessionTimeoutEnv } from "./mcp-session-timeouts";
 import { bootMotel, motelExporterEnv } from "./motel";
 import { RUNS_DIR } from "../src/scenario";
 
@@ -31,6 +32,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
   }
 
   if (bootLogFile) mkdirSync(resolve(bootLogFile, ".."), { recursive: true });
+  ensureE2eMcpSessionTimeoutEnv();
 
   // Suite-owned trace store — every run captures distributed traces. Booted
   // once outside the retry: it binds its own OS-assigned port (not a claimed

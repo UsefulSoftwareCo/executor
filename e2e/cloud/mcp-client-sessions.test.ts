@@ -18,6 +18,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
 import type { Identity } from "../src/target";
+import { configuredMcpPausedSessionIdleTimeoutMs } from "../setup/mcp-session-timeouts";
 
 const coreApi = composePluginApi([] as const);
 
@@ -216,19 +217,19 @@ return JSON.stringify(result);
 const executionIdOf = (text: string): string | undefined =>
   /\bexecutionId:\s*(\S+)/.exec(text)?.[1];
 
-const FAST_IDLE_TEARDOWN = process.env.E2E_MCP_FAST_IDLE_TEARDOWN === "true";
+const IDLE_TEARDOWN_BUFFER_MS = 2_000;
+const IDLE_TEARDOWN_GAP_MS = configuredMcpPausedSessionIdleTimeoutMs() + IDLE_TEARDOWN_BUFFER_MS;
+const IDLE_TEARDOWN_SCENARIO_TIMEOUT_MS = IDLE_TEARDOWN_GAP_MS + 120_000;
 
-// The session DO tears its runtime down after 5 minutes without a request
-// (SESSION_TIMEOUT_MS in McpSessionDOBase) and rebuilds it from storage on
-// the next one — the same engine-state wipe a workerd eviction or a deploy
-// causes. Paused approvals deliberately do NOT survive this (durable pause
-// state is out of scope); the contract is that an expired pause fails with
-// recovery guidance and the session keeps working.
-const IDLE_TEARDOWN_GAP = "6 minutes";
+// The session DO tears its runtime down after the configured idle ceiling and
+// rebuilds it from storage on the next request. The e2e harness shortens that
+// ceiling when it owns the cloud dev stack. Paused approvals deliberately do
+// not survive this (durable pause state is out of scope); the contract is that
+// an expired pause fails with recovery guidance and the session keeps working.
 
 scenario(
   "MCP sessions · an approval paused past the idle window expires with re-run guidance, not a dead end",
-  { timeout: 480_000 },
+  { timeout: IDLE_TEARDOWN_SCENARIO_TIMEOUT_MS },
   Effect.gen(function* () {
     const target = yield* Target;
     const { client } = yield* Api;
@@ -243,7 +244,9 @@ scenario(
 
     yield* Effect.gen(function* () {
       const first = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer));
-      const sessionId = first.transport.sessionId ?? "";
+      const sessionId = first.transport.sessionId;
+      expect(sessionId, "the first client got a session id").toEqual(expect.any(String));
+      if (sessionId === undefined) return yield* Effect.die("missing session id");
       const paused = yield* Effect.promise(() =>
         first.client.callTool({ name: "execute", arguments: { code: GATED_CODE } }),
       ).pipe(Effect.ensuring(closeQuietly(first)));
@@ -253,23 +256,18 @@ scenario(
       );
       const executionId = executionIdOf(pausedText);
       expect(executionId, "the paused result carries the executionId").toEqual(expect.any(String));
+      if (executionId === undefined) return yield* Effect.die("missing paused execution id");
 
       // The user thinks the approval over for longer than the session keeps
-      // its runtime warm; the pause is gone when they come back. CI skips the
-      // real idle wait by resuming a deliberately stale id, which exercises the
-      // same recovery branch without spending six minutes in this shard.
-      const expiredExecutionId =
-        FAST_IDLE_TEARDOWN && executionId ? `${executionId}:expired-for-ci` : executionId;
-      if (!FAST_IDLE_TEARDOWN) {
-        yield* Effect.sleep(IDLE_TEARDOWN_GAP);
-      }
+      // its runtime warm; the pause is gone when they come back.
+      yield* Effect.sleep(IDLE_TEARDOWN_GAP_MS);
 
       const second = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer, sessionId));
       yield* Effect.gen(function* () {
         const resumed = yield* Effect.promise(() =>
           second.client.callTool({
             name: "resume",
-            arguments: { executionId: expiredExecutionId ?? "", action: "accept", content: "{}" },
+            arguments: { executionId, action: "accept", content: "{}" },
           }),
         );
         const resumedText = textOf(resumed);
@@ -291,11 +289,12 @@ scenario(
         );
         const freshExecutionId = executionIdOf(reExecutedText);
         expect(freshExecutionId, "the re-run mints a different executionId").not.toBe(executionId);
+        if (freshExecutionId === undefined) return yield* Effect.die("missing fresh execution id");
 
         const resumedFresh = yield* Effect.promise(() =>
           second.client.callTool({
             name: "resume",
-            arguments: { executionId: freshExecutionId ?? "", action: "accept", content: "{}" },
+            arguments: { executionId: freshExecutionId, action: "accept", content: "{}" },
           }),
         );
         expect(resumedFresh.isError, "the fresh approval resumes to completion").not.toBe(true);

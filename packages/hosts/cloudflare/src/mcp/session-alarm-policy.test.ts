@@ -47,6 +47,20 @@ describe("decideSessionAlarm", () => {
     });
   });
 
+  it("caps the extension at the configured paused idle ceiling", () => {
+    expect(
+      decideSessionAlarm({
+        idleMs: 3_000,
+        pausedExecutionCount: 1,
+        sessionTimeoutMs: 3_000,
+        maxPausedSessionIdleMs: 6_000,
+      }),
+    ).toEqual({
+      kind: "extend_paused_lease",
+      leaseMs: 3_000,
+    });
+  });
+
   it("destroys a paused session once the lease cap elapses", () => {
     expect(
       decideSessionAlarm({
