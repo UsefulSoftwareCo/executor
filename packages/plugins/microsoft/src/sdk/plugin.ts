@@ -27,6 +27,7 @@ import {
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
   OpenApiExtractionError,
+  OpenApiParseError,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
   type Authentication,
@@ -48,6 +49,8 @@ import {
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
   MICROSOFT_GRAPH_BASE_URL,
   microsoftGraphPreset,
+  microsoftGraphPresetForId,
+  microsoftServiceSlug,
 } from "./presets";
 
 export interface MicrosoftGraphConfig {
@@ -61,6 +64,41 @@ export interface MicrosoftGraphConfig {
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
   readonly clientCredentialsTokenUrl?: string;
+}
+
+export interface MicrosoftWorkloadConfig {
+  readonly presetId: string;
+  readonly slug?: string;
+  readonly name?: string;
+}
+
+export interface MicrosoftAddWorkloadsInput {
+  readonly workloads: readonly MicrosoftWorkloadConfig[];
+  readonly baseUrl?: string;
+}
+
+export interface MicrosoftAddWorkloadsAdded {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly toolCount: number;
+}
+
+export interface MicrosoftAddWorkloadsSkipped {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly reason: "already_exists";
+}
+
+export interface MicrosoftAddWorkloadsFailed {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly error: string;
+}
+
+export interface MicrosoftAddWorkloadsResult {
+  readonly added: readonly MicrosoftAddWorkloadsAdded[];
+  readonly skipped: readonly MicrosoftAddWorkloadsSkipped[];
+  readonly failed: readonly MicrosoftAddWorkloadsFailed[];
 }
 
 export interface MicrosoftConfigureInput {
@@ -98,6 +136,22 @@ export interface MicrosoftPluginOptions {
 }
 
 const DEFAULT_MICROSOFT_SLUG = "microsoft_graph";
+
+type MicrosoftAddWorkloadOutcome = {
+  readonly added: readonly MicrosoftAddWorkloadsAdded[];
+  readonly skipped: readonly MicrosoftAddWorkloadsSkipped[];
+  readonly failed: readonly MicrosoftAddWorkloadsFailed[];
+};
+
+const microsoftAddWorkloadFailure = (
+  workload: MicrosoftWorkloadConfig,
+  slug: IntegrationSlug,
+  error: string,
+): MicrosoftAddWorkloadOutcome => ({
+  added: [],
+  skipped: [],
+  failed: [{ slug, presetId: workload.presetId, error }],
+});
 
 const describeMicrosoftAuthMethods = (
   record: IntegrationRecord,
@@ -239,6 +293,91 @@ const makeMicrosoftPluginExtension = (
       baseUrl: config.baseUrl,
     });
 
+  const addOneWorkload = (workload: MicrosoftWorkloadConfig, baseUrl?: string) =>
+    Effect.gen(function* () {
+      const preset = microsoftGraphPresetForId(workload.presetId);
+      if (!preset) {
+        return yield* new OpenApiParseError({
+          message: `Microsoft Graph workload preset is not available: ${workload.presetId}`,
+        });
+      }
+
+      // A per-workload integration filters the Graph tree to just this one
+      // preset. The bare GET /me identity keep is seeded by the shared
+      // keepPathItem filter, so every workload source gets its own /me health
+      // check even when the profile workload is not selected. Scopes are this
+      // preset's scopes plus the identity scope (User.Read), derived by
+      // `microsoftGraphScopesForPresetIds` inside the spec build.
+      return yield* addMicrosoftGraphIntegration({
+        selection: { presetIds: [preset.id] },
+        slug: IntegrationSlug.make(workload.slug?.trim() || microsoftServiceSlug(preset.id)),
+        name: workload.name?.trim() || preset.name,
+        description: preset.summary,
+        baseUrl,
+      });
+    });
+
+  const addWorkloads = (input: MicrosoftAddWorkloadsInput) =>
+    Effect.gen(function* () {
+      // Strict {concurrency: 1}: parsing the 37MB Graph tree already strains the
+      // 128MB Workers isolate, so two workload adds in flight recreate the OOM
+      // in aggregate. Each add must fully settle before the next begins.
+      const outcomes = yield* Effect.forEach(
+        input.workloads,
+        (workload): Effect.Effect<MicrosoftAddWorkloadOutcome, never> => {
+          const slug = IntegrationSlug.make(
+            workload.slug?.trim() || microsoftServiceSlug(workload.presetId),
+          );
+          return addOneWorkload(workload, input.baseUrl).pipe(
+            Effect.map(
+              (result): MicrosoftAddWorkloadOutcome => ({
+                added: [
+                  {
+                    slug: result.slug,
+                    presetId: workload.presetId,
+                    toolCount: result.toolCount,
+                  },
+                ],
+                skipped: [],
+                failed: [],
+              }),
+            ),
+            Effect.catchTag("IntegrationAlreadyExistsError", () =>
+              Effect.succeed({
+                added: [],
+                skipped: [
+                  {
+                    slug,
+                    presetId: workload.presetId,
+                    reason: "already_exists" as const,
+                  },
+                ],
+                failed: [],
+              }),
+            ),
+            Effect.catchTags({
+              OpenApiParseError: (error: OpenApiParseError) =>
+                Effect.succeed(microsoftAddWorkloadFailure(workload, slug, error.message)),
+              OpenApiExtractionError: (error: OpenApiExtractionError) =>
+                Effect.succeed(microsoftAddWorkloadFailure(workload, slug, error.message)),
+            }),
+            Effect.catch(() =>
+              Effect.succeed(
+                microsoftAddWorkloadFailure(workload, slug, "Failed to add Microsoft workload"),
+              ),
+            ),
+          );
+        },
+        { concurrency: 1 },
+      );
+
+      return {
+        added: outcomes.flatMap((outcome) => outcome.added),
+        skipped: outcomes.flatMap((outcome) => outcome.skipped),
+        failed: outcomes.flatMap((outcome) => outcome.failed),
+      };
+    });
+
   const updateGraph = (rawSlug: string, input?: MicrosoftUpdateInput) =>
     Effect.gen(function* () {
       const slug = IntegrationSlug.make(rawSlug);
@@ -320,6 +459,7 @@ const makeMicrosoftPluginExtension = (
 
   return {
     addGraph,
+    addWorkloads,
     updateGraph,
     removeGraph: (slug: string) =>
       ctx.transaction(

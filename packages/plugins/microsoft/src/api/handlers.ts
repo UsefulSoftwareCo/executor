@@ -36,6 +36,17 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
           }),
         ),
       )
+      .handle("addWorkloads", ({ payload }) =>
+        capture(
+          Effect.gen(function* () {
+            const ext = yield* MicrosoftExtensionService;
+            return yield* ext.addWorkloads({
+              workloads: payload.workloads,
+              baseUrl: payload.baseUrl,
+            });
+          }),
+        ),
+      )
       .handle("getIntegration", ({ params }) =>
         capture(
           Effect.gen(function* () {

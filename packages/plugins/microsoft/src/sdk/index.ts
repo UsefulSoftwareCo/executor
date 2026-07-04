@@ -21,6 +21,7 @@ export {
   microsoftGraphScopePresets,
   microsoftGraphScopesForPresetIds,
   microsoftGraphTagPrefixesForPresetIds,
+  microsoftServiceSlug,
   type MicrosoftGraphPreset,
   type MicrosoftGraphScopeAudience,
   type MicrosoftGraphScopePreset,
@@ -38,10 +39,16 @@ export {
 } from "./graph";
 export {
   microsoftPlugin,
+  type MicrosoftAddWorkloadsAdded,
+  type MicrosoftAddWorkloadsFailed,
+  type MicrosoftAddWorkloadsInput,
+  type MicrosoftAddWorkloadsResult,
+  type MicrosoftAddWorkloadsSkipped,
   type MicrosoftConfigureInput,
   type MicrosoftGraphConfig,
   type MicrosoftPluginExtension,
   type MicrosoftPluginOptions,
   type MicrosoftUpdateInput,
   type MicrosoftUpdateResult,
+  type MicrosoftWorkloadConfig,
 } from "./plugin";

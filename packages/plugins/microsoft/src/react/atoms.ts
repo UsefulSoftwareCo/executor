@@ -19,6 +19,8 @@ export const microsoftConfigAtom = (slug: IntegrationSlug) =>
 
 export const addMicrosoftGraph = MicrosoftClient.mutation("microsoft", "addGraph");
 
+export const addMicrosoftWorkloads = MicrosoftClient.mutation("microsoft", "addWorkloads");
+
 export const updateMicrosoftGraph = MicrosoftClient.mutation("microsoft", "updateGraph");
 
 export const removeMicrosoftGraph = MicrosoftClient.mutation("microsoft", "removeGraph");

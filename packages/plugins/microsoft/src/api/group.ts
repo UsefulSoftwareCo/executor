@@ -64,6 +64,41 @@ const AddGraphResponse = Schema.Struct({
   toolCount: Schema.Number,
 });
 
+const AddWorkloadPayload = Schema.Struct({
+  presetId: Schema.String,
+  slug: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+});
+
+const AddWorkloadsPayload = Schema.Struct({
+  workloads: Schema.Array(AddWorkloadPayload),
+  baseUrl: Schema.optional(Schema.String),
+});
+
+const AddWorkloadsResponse = Schema.Struct({
+  added: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      toolCount: Schema.Number,
+    }),
+  ),
+  skipped: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      reason: Schema.Literal("already_exists"),
+    }),
+  ),
+  failed: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      error: Schema.String,
+    }),
+  ),
+});
+
 const UpdateGraphPayload = Schema.Struct({
   presetIds: Schema.optional(Schema.Array(Schema.String)),
   customScopes: Schema.optional(Schema.Array(Schema.String)),
@@ -121,6 +156,13 @@ export const MicrosoftGroup = HttpApiGroup.make("microsoft")
     HttpApiEndpoint.post("addGraph", "/microsoft/graph", {
       payload: AddGraphPayload,
       success: AddGraphResponse,
+      error: DomainErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("addWorkloads", "/microsoft/workloads", {
+      payload: AddWorkloadsPayload,
+      success: AddWorkloadsResponse,
       error: DomainErrors,
     }),
   )

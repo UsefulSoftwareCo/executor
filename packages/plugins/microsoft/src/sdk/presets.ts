@@ -486,6 +486,9 @@ export const microsoftGraphPresetForId = (
 ): MicrosoftGraphScopePreset | undefined =>
   microsoftGraphScopePresets.find((preset) => preset.id === presetId);
 
+export const microsoftServiceSlug = (presetId: string): string =>
+  `microsoft_${presetId.replaceAll("-", "_")}`;
+
 export const microsoftGraphPresetIdsCoverFullGraph = (presetIds: Iterable<string>): boolean => {
   const selected = new Set([...presetIds]);
   return microsoftGraphScopePresets.every((preset) => selected.has(preset.id));
