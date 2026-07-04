@@ -30,7 +30,7 @@ import {
   type ToolAnnotations,
   type ToolDef,
   ToolName,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/core";
 
 import {
   TOKEN_VARIABLE,
