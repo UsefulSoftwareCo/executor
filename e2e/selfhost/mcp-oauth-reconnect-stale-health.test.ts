@@ -215,8 +215,6 @@ scenario(
   "MCP OAuth reconnect clears an expired row without a page reload",
   {
     timeout: 180_000,
-    expectedFailure:
-      "OAuth reconnect clears server-side health, but the mounted account row keeps its stale Expired badge until the route reloads.",
   },
   Effect.scoped(
     Effect.gen(function* () {

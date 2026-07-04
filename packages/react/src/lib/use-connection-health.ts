@@ -42,6 +42,53 @@ const revalidateQuery = (
 ): { readonly ifStaleMs?: number } =>
   last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
 
+const healthVersion = (health: HealthCheckResult | null | undefined): string =>
+  health === null || health === undefined ? "none" : `${health.status}:${health.checkedAt}`;
+
+const connectionCredentialKey = (connection: Connection): string =>
+  JSON.stringify({
+    owner: connection.owner,
+    integration: connection.integration,
+    name: connection.name,
+    template: connection.template,
+    provider: connection.provider,
+    address: connection.address,
+    expiresAt: connection.expiresAt ?? null,
+    oauthClient: connection.oauthClient ?? null,
+    oauthClientOwner: connection.oauthClientOwner ?? null,
+    oauthScope: connection.oauthScope ?? null,
+  });
+
+const connectionHealthRowKey = (connection: Connection): string =>
+  JSON.stringify({
+    credential: connectionCredentialKey(connection),
+    lastHealth: healthVersion(connection.lastHealth),
+  });
+
+export interface ConnectionHealthProbeSnapshot {
+  readonly rowKey: string;
+  readonly result: HealthCheckResult;
+}
+
+export const connectionHealthProbeSnapshot = (
+  connection: Connection,
+  result: HealthCheckResult,
+): ConnectionHealthProbeSnapshot => ({
+  rowKey: connectionHealthRowKey(connection),
+  result,
+});
+
+export const resolveConnectionHealthProbe = (
+  connection: Connection,
+  liveProbe: ConnectionHealthProbeSnapshot | null,
+): HealthCheckResult | null => {
+  const persisted = connection.lastHealth ?? null;
+  if (liveProbe === null) return persisted;
+  if (liveProbe.rowKey !== connectionHealthRowKey(connection)) return persisted;
+  if (persisted !== null && persisted.checkedAt > liveProbe.result.checkedAt) return persisted;
+  return liveProbe.result;
+};
+
 /**
  * Imperative invalidation of the connections cache for one owner. The server
  * persists every verdict on `last_health`, so after a check we must re-read the
@@ -70,24 +117,25 @@ export function useConnectionHealth(connection: Connection): {
   readonly status: HealthStatus;
   readonly runCheck: () => Promise<Exit.Exit<HealthCheckResult, unknown>>;
 } {
-  // A live probe result, once a check has run, overrides the persisted one.
-  const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(null);
+  // A live probe result can override only the row snapshot it checked.
+  const [liveProbe, setLiveProbe] = useState<ConnectionHealthProbeSnapshot | null>(null);
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
-  const probe = liveProbe ?? connection.lastHealth ?? null;
+  const probe = resolveConnectionHealthProbe(connection, liveProbe);
   const status: HealthStatus = probe?.status ?? "unknown";
 
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
   // older than the freshness window (or never checked), stale-while-revalidate
   // style: the persisted verdict renders instantly, the probe corrects it in
   // place.
-  const revalidated = useRef(false);
+  const revalidated = useRef<string | null>(null);
   useEffect(() => {
-    if (revalidated.current) return;
+    const credentialKey = connectionCredentialKey(connection);
+    if (revalidated.current === credentialKey) return;
     const last = connection.lastHealth;
     if (healthyAndFresh(last)) return;
-    revalidated.current = true;
+    revalidated.current = credentialKey;
     void doCheck({
       params: connectionParams(connection),
       query: revalidateQuery(last),
@@ -99,7 +147,7 @@ export function useConnectionHealth(connection: Connection): {
       // cache (which would refetch connections, re-run this effect, and, but
       // for the once-per-mount ref guard, risk a probe loop).
       if (!Exit.isSuccess(exit)) return;
-      setLiveProbe(exit.value);
+      setLiveProbe(connectionHealthProbeSnapshot(connection, exit.value));
       if (exit.value.status !== (last?.status ?? "unknown")) {
         invalidateConnections(connection.owner);
       }
@@ -115,7 +163,7 @@ export function useConnectionHealth(connection: Connection): {
       query: {},
       reactivityKeys: connectionCheckKeys,
     });
-    if (Exit.isSuccess(exit)) setLiveProbe(exit.value);
+    if (Exit.isSuccess(exit)) setLiveProbe(connectionHealthProbeSnapshot(connection, exit.value));
     return exit;
   }, [connection, doCheck]);
 
@@ -136,7 +184,9 @@ const probeKey = (connection: Connection): string =>
 export function useConnectionsHealth(
   connections: readonly Connection[],
 ): (connection: Connection) => HealthCheckResult | null {
-  const [liveProbes, setLiveProbes] = useState<ReadonlyMap<string, HealthCheckResult>>(new Map());
+  const [liveProbes, setLiveProbes] = useState<ReadonlyMap<string, ConnectionHealthProbeSnapshot>>(
+    new Map(),
+  );
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
@@ -146,10 +196,11 @@ export function useConnectionsHealth(
   useEffect(() => {
     for (const connection of connections) {
       const key = probeKey(connection);
-      if (revalidated.current.has(key)) continue;
+      const credentialKey = `${key}:${connectionCredentialKey(connection)}`;
+      if (revalidated.current.has(credentialKey)) continue;
       const last = connection.lastHealth;
       if (healthyAndFresh(last)) continue;
-      revalidated.current.add(key);
+      revalidated.current.add(credentialKey);
       void doCheck({
         params: connectionParams(connection),
         query: revalidateQuery(last),
@@ -159,7 +210,9 @@ export function useConnectionsHealth(
         // an unchanged reconfirm never churns the cache (the per-key ref guard
         // already prevents a re-probe on the resulting re-render).
         if (!Exit.isSuccess(exit)) return;
-        setLiveProbes((current) => new Map(current).set(key, exit.value));
+        setLiveProbes((current) =>
+          new Map(current).set(key, connectionHealthProbeSnapshot(connection, exit.value)),
+        );
         if (exit.value.status !== (last?.status ?? "unknown")) {
           invalidateConnections(connection.owner);
         }
@@ -169,7 +222,7 @@ export function useConnectionsHealth(
 
   return useCallback(
     (connection: Connection) =>
-      liveProbes.get(probeKey(connection)) ?? connection.lastHealth ?? null,
+      resolveConnectionHealthProbe(connection, liveProbes.get(probeKey(connection)) ?? null),
     [liveProbes],
   );
 }
