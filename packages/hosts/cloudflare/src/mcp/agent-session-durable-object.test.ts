@@ -122,6 +122,14 @@ class RestoredTransport implements Transport {
 
 const makeServer = () => new McpServer({ name: "executor-test", version: "1.0.0" });
 
+const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: () => void } => {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+};
+
 const makeHarnessSession = async (): Promise<HarnessSession> => {
   const sessionId = "session-reconnect";
   const sessionMeta: SessionMeta = {
@@ -166,5 +174,43 @@ describe("McpAgentSessionDOBase transport restore", () => {
     await expect(
       session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
     ).resolves.toBe("ok");
+  });
+
+  it("single-flights concurrent same-session restore after idle disposal", async () => {
+    const session = await makeHarnessSession();
+    const firstRestoreEntered = makeDeferred();
+    const finishRestore = makeDeferred();
+    let onStartCalls = 0;
+    let restoredServer: McpServer | undefined;
+
+    session.onStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      restoredServer ??= restored;
+      session.server = restored;
+      firstRestoreEntered.resolve();
+      await finishRestore.promise;
+      await restored.connect(new RestoredTransport());
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const first = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
+    });
+    const second = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
+    });
+
+    await firstRestoreEntered.promise;
+    await Promise.resolve();
+    finishRestore.resolve();
+
+    await expect(Promise.all([first, second])).resolves.toEqual(["ok", "ok"]);
+    expect(onStartCalls).toBe(1);
+    expect(session.server).toBe(restoredServer);
   });
 });

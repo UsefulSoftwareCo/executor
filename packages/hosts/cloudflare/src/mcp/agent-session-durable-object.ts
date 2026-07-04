@@ -200,6 +200,7 @@ export abstract class McpAgentSessionDOBase<
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
   private initialized = false;
+  private restoreTransportRuntimePromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private approvalResponses = new Map<string, ResumeResponse>();
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
@@ -451,7 +452,7 @@ export abstract class McpAgentSessionDOBase<
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
   }
 
-  private restoreTransportRuntime(): Effect.Effect<void> {
+  private restoreTransportRuntimeOnce(): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       yield* self.closeRuntime();
@@ -460,6 +461,31 @@ export abstract class McpAgentSessionDOBase<
         yield* self.closeRuntime();
         return yield* Effect.failCause(restored.cause);
       }
+    });
+  }
+
+  private restoreTransportRuntime(): Effect.Effect<void> {
+    const self = this;
+    return Effect.promise(() => {
+      if (self.restoreTransportRuntimePromise) return self.restoreTransportRuntimePromise;
+
+      const restoring = Promise.resolve().then(() =>
+        Effect.runPromise(self.restoreTransportRuntimeOnce()),
+      );
+      self.restoreTransportRuntimePromise = restoring;
+      restoring.then(
+        () => {
+          if (self.restoreTransportRuntimePromise === restoring) {
+            self.restoreTransportRuntimePromise = null;
+          }
+        },
+        () => {
+          if (self.restoreTransportRuntimePromise === restoring) {
+            self.restoreTransportRuntimePromise = null;
+          }
+        },
+      );
+      return restoring;
     });
   }
 
