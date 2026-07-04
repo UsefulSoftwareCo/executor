@@ -287,8 +287,8 @@ function OwnerAccounts(props: {
             success: true,
           });
         },
-        onError: () => {
-          toast.error("Failed to reconnect");
+        onError: (error: string, details?: string) => {
+          toast.error(details ?? error);
           trackEvent("connection_reconnected", {
             integration_slug: String(connection.integration),
             owner: connection.owner,
@@ -509,6 +509,11 @@ export function AccountsSection(props: {
                   owner: connection.owner,
                   template: String(connection.template),
                   label: String(connection.name),
+                  reconnectRef: {
+                    owner: connection.owner,
+                    integration: String(connection.integration),
+                    name: String(connection.name),
+                  },
                   ...(connection.identityLabel != null
                     ? { identityLabel: connection.identityLabel }
                     : {}),

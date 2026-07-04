@@ -2354,23 +2354,26 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       input: MintOAuthConnectionInput,
     ): Effect.Effect<Connection, StorageFailure> =>
       Effect.gen(function* () {
-        const name = connectionIdentifier(String(input.name));
-        yield* requireUserSubject(input.owner);
-        const integrationRow = yield* findIntegrationRow(input.integration);
+        const reconnectRef = input.reconnectRef ?? null;
+        const name = reconnectRef?.name ?? connectionIdentifier(String(input.name));
+        const owner = reconnectRef?.owner ?? input.owner;
+        const integration = reconnectRef?.integration ?? input.integration;
+        yield* requireUserSubject(owner);
+        const integrationRow = yield* findIntegrationRow(integration);
         if (!integrationRow) {
           return yield* new StorageError({
-            message: `Integration not found: ${input.integration}`,
+            message: `Integration not found: ${integration}`,
             cause: undefined,
           });
         }
         const keys = yield* Effect.try({
-          try: () => ownedKeys(input.owner),
+          try: () => ownedKeys(owner),
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
         const now = new Date();
         const ref: ConnectionRef = {
-          owner: input.owner,
-          integration: input.integration,
+          owner,
+          integration,
           name,
         };
         yield* transaction(
@@ -2387,24 +2390,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
+              last_health: null,
               updated_at: now,
             };
             if (existing) {
               yield* core.updateMany("connection", {
                 where: (b: AnyCb) =>
                   b.and(
-                    byOwner(input.owner)(b),
-                    b("integration", "=", String(input.integration)),
+                    byOwner(owner)(b),
+                    b("integration", "=", String(integration)),
                     b("name", "=", String(name)),
                   ),
                 set,
+              });
+            } else if (reconnectRef !== null) {
+              return yield* new StorageError({
+                message: `Connection no longer exists for reconnect: ${owner}/${String(integration)}/${String(name)}`,
+                cause: undefined,
               });
             } else {
               yield* core.create("connection", {
                 tenant: keys.tenant,
                 owner: keys.owner,
                 subject: keys.subject,
-                integration: String(input.integration),
+                integration: String(integration),
                 name: String(name),
                 template: String(input.template),
                 provider: input.provider,
@@ -2440,7 +2449,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               tenant: keys.tenant,
               owner: keys.owner,
               subject: keys.subject,
-              integration: String(input.integration),
+              integration: String(integration),
               name: String(name),
               template: String(input.template),
               provider: input.provider,
@@ -3607,6 +3616,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
+      findConnection: (ref: ConnectionRef) => connectionsGet(ref),
       // One integration-row read + one projector run. Resolve the method this
       // template selects exactly as the runtime's `selectAuthMethod` does —
       // exact slug match, else the sole declared method (single-method

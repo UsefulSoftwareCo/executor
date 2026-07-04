@@ -124,6 +124,12 @@ export interface IntegrationAccountHandoff {
   readonly label?: string;
   /** Existing display identity to preserve when reconnecting a saved row. */
   readonly identityLabel?: string;
+  /** Exact saved connection row to update when the handoff is a reconnect. */
+  readonly reconnectRef?: {
+    readonly owner: "org" | "user";
+    readonly integration: string;
+    readonly name: string;
+  };
   /** Present when the agent handed off a CONFIDENTIAL OAuth-app registration
    *  (via `oauth.clients.createHandoff`) or when a saved OAuth connection is
    *  reconnecting through its stored app. Registration opens the

@@ -40,6 +40,11 @@ export function oauthReconnectPayload(connection: Connection): OAuthStartPayload
     integration: connection.integration,
     template: connection.template,
     identityLabel: connection.identityLabel ?? undefined,
+    reconnectRef: {
+      owner: connection.owner,
+      integration: connection.integration,
+      name: connection.name,
+    },
   };
 }
 

@@ -1614,8 +1614,13 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (oauthReconnectOpenedKey.current === handoff.key) return;
     const client = oauthClient.slug;
     const clientOwner = oauthClient.owner ?? handoff.owner;
-    const connectionOwner = handoff.owner;
-    const connectionName = handoff.label;
+    const reconnectRef = handoff.reconnectRef;
+    const connectionOwner = reconnectRef?.owner ?? handoff.owner;
+    const connectionName = reconnectRef?.name ?? handoff.label;
+    const connectionIntegration =
+      reconnectRef?.integration != null
+        ? IntegrationSlug.make(reconnectRef.integration)
+        : integration;
     const oauthMethod = handoff.template
       ? allMethods.find(
           (m: AuthMethod) =>
@@ -1633,8 +1638,17 @@ function AddAccountModalView(props: AddAccountModalProps) {
         clientOwner,
         owner: connectionOwner,
         name: ConnectionName.make(connectionName),
-        integration,
+        integration: connectionIntegration,
         template: oauthMethod.template,
+        ...(reconnectRef
+          ? {
+              reconnectRef: {
+                owner: reconnectRef.owner,
+                integration: connectionIntegration,
+                name: ConnectionName.make(reconnectRef.name),
+              },
+            }
+          : {}),
         ...(handoff.identityLabel !== undefined ? { identityLabel: handoff.identityLabel } : {}),
       },
       onAuthorizationStarted: () => {
@@ -1644,7 +1658,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
           success: true,
         });
       },
-      onError: () => {
+      onError: (error: string, details?: string) => {
+        toast.error(details ?? error);
         trackEvent("connection_reconnected", {
           integration_slug: String(integration),
           owner: connectionOwner,

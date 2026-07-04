@@ -34,6 +34,7 @@ import {
   OAuthState,
   type AuthTemplateSlug,
   type ConnectionName,
+  type ConnectionRef,
   type IntegrationSlug,
   type OAuthClientSlug,
   type Owner,
@@ -69,13 +70,14 @@ export type OAuthStartPayload = {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string;
+  readonly reconnectRef?: ConnectionRef | null;
   readonly redirectUri?: string;
 };
 
 export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {
   readonly payload: OAuthStartPayload;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
-  readonly onError?: (error: string) => void;
+  readonly onError?: (error: string, details?: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
 };
 
@@ -381,6 +383,7 @@ export function useOAuthPopupFlow<
               integration: input.payload.integration,
               template: input.payload.template,
               identityLabel: input.payload.identityLabel,
+              reconnectRef: input.payload.reconnectRef ?? null,
               redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
             },
           }).then((exit) =>

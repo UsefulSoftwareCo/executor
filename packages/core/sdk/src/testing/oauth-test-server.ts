@@ -86,6 +86,7 @@ export interface OAuthTestServerShape {
   }) => Effect.Effect<OAuthTokenSet, OAuthTestServerFlowError>;
   readonly requests: Effect.Effect<readonly OAuthTestServerRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
+  readonly clearRefreshTokens: Effect.Effect<void>;
   readonly issuedAccessTokens: Effect.Effect<readonly string[]>;
   readonly acceptsAccessToken: (token: string) => Effect.Effect<boolean>;
   readonly acceptsAuthorizationHeader: (
@@ -754,6 +755,9 @@ export const serveOAuthTestServer = (
       }),
       requests: Ref.get(requests),
       clearRequests: Ref.set(requests, []),
+      clearRefreshTokens: Effect.sync(() => {
+        refreshTokens.clear();
+      }),
       issuedAccessTokens: accessTokenSet.pipe(Effect.map((tokens) => [...tokens])),
       acceptsAccessToken: (token) => accessTokenSet.pipe(Effect.map((tokens) => tokens.has(token))),
       acceptsAuthorizationHeader: (authorization) => {

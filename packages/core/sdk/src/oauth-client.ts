@@ -1,7 +1,7 @@
 import type { Effect } from "effect";
 import { Schema } from "effect";
 
-import type { Connection } from "./connection";
+import type { Connection, ConnectionRef } from "./connection";
 import type { StorageFailure } from "./fuma-runtime";
 import {
   type AuthTemplateSlug,
@@ -122,6 +122,8 @@ export interface OAuthStartInput {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
+  /** Exact existing row to update when this flow is a reconnect. */
+  readonly reconnectRef?: ConnectionRef | null;
   /** Browser-facing callback URL for this flow. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
 }

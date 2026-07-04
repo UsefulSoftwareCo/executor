@@ -118,43 +118,51 @@ const abortError = (signal: AbortSignal): unknown => {
   return error;
 };
 
+const observedPromise = <A>(promise: Promise<A>): Promise<A> => {
+  void promise.then(undefined, () => undefined);
+  return promise;
+};
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): FetchLike => {
-  const execute: FetchLike = async (url, init) => {
-    const headers = headersFrom(init?.headers);
-    const requestWithoutBody = HttpClientRequest.make(httpMethodFrom(init?.method))(url, {
-      headers: recordFromHeaders(headers),
-    });
-    const request = await applyBody(requestWithoutBody, headers, init?.body);
-    const effect = Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient;
-      const response = yield* client.execute(request);
-      const responseHeaders = new Headers();
-      for (const [key, value] of Object.entries(response.headers)) {
-        if (value !== undefined) responseHeaders.set(key, value);
-      }
-      const body =
-        response.status === 204 || response.status === 205 || response.status === 304
-          ? null
-          : Stream.toReadableStream(response.stream);
-      return new Response(body, {
-        status: response.status,
-        headers: responseHeaders,
-      });
-    }).pipe(Effect.provide(httpClientLayer));
-    const promise = Effect.runPromise(effect);
-    if (!init?.signal) return promise;
-    // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
-    if (init.signal.aborted) return Promise.reject(abortError(init.signal));
-    const aborted = new Promise<never>((_, reject) => {
-      // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter races the Effect request against AbortSignal
-      init.signal?.addEventListener("abort", () => reject(abortError(init.signal!)), {
-        once: true,
-      });
-    });
-    return Promise.race([promise, aborted]);
-  };
+  const execute: FetchLike = (url, init) =>
+    observedPromise(
+      (async () => {
+        const headers = headersFrom(init?.headers);
+        const requestWithoutBody = HttpClientRequest.make(httpMethodFrom(init?.method))(url, {
+          headers: recordFromHeaders(headers),
+        });
+        const request = await applyBody(requestWithoutBody, headers, init?.body);
+        const effect = Effect.gen(function* () {
+          const client = yield* HttpClient.HttpClient;
+          const response = yield* client.execute(request);
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(response.headers)) {
+            if (value !== undefined) responseHeaders.set(key, value);
+          }
+          const body =
+            response.status === 204 || response.status === 205 || response.status === 304
+              ? null
+              : Stream.toReadableStream(response.stream);
+          return new Response(body, {
+            status: response.status,
+            headers: responseHeaders,
+          });
+        }).pipe(Effect.provide(httpClientLayer));
+        const promise = observedPromise(Effect.runPromise(effect));
+        if (!init?.signal) return await promise;
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter mirrors AbortSignal rejection semantics
+        if (init.signal.aborted) throw abortError(init.signal);
+        const aborted = new Promise<never>((_, reject) => {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter races the Effect request against AbortSignal
+          init.signal?.addEventListener("abort", () => reject(abortError(init.signal!)), {
+            once: true,
+          });
+        });
+        return await Promise.race([promise, aborted]);
+      })(),
+    );
   return execute;
 };
 

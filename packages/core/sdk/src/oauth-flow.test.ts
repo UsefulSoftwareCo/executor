@@ -10,6 +10,7 @@ import {
   ToolAddress,
   ToolName,
 } from "./ids";
+import type { FumaDb } from "./fuma-runtime";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
 import { definePlugin } from "./plugin";
@@ -23,6 +24,7 @@ import { serveOAuthTestServer } from "./testing/oauth-test-server";
 const INTEG = IntegrationSlug.make("acme");
 const TEMPLATE = AuthTemplateSlug.make("oauth");
 const CLIENT = OAuthClientSlug.make("acme-app");
+const ORG_SUBJECT = "";
 
 const oauthPlugin = definePlugin(() => ({
   id: "acme" as const,
@@ -61,6 +63,41 @@ const oauthPlugin = definePlugin(() => ({
 }))();
 
 const plugins = [memoryCredentialsPlugin(), oauthPlugin] as const;
+
+const seedExistingOAuthConnection = (
+  db: FumaDb,
+  input: {
+    readonly tenant: string;
+    readonly name: ConnectionName;
+    readonly lastHealth?: unknown;
+  },
+): Effect.Effect<void> =>
+  Effect.promise(() => {
+    const now = new Date();
+    return db.create("connection", {
+      tenant: input.tenant,
+      owner: "org",
+      subject: ORG_SUBJECT,
+      integration: String(INTEG),
+      name: String(input.name),
+      template: String(TEMPLATE),
+      provider: "memory",
+      item_ids: { token: "old-token-item" },
+      identity_label: "Mixed case account",
+      description: "preserve this note",
+      last_health: input.lastHealth ?? null,
+      tools_synced_at: null,
+      oauth_client: String(CLIENT),
+      oauth_client_owner: "org",
+      refresh_item_id: "old-refresh-item",
+      expires_at: Date.now() - 60_000,
+      oauth_scope: "old",
+      oauth_token_url: null,
+      provider_state: null,
+      created_at: now,
+      updated_at: now,
+    });
+  }).pipe(Effect.asVoid);
 
 interface TokenEndpointCall {
   readonly host: string;
@@ -190,6 +227,192 @@ describe("oauth.start / oauth.complete", () => {
           expect(yield* server.acceptsAccessToken(out.token)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("complete with reconnectRef updates the exact existing row in place", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config, tenant } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const originalName = ConnectionName.make("mcpLinearAppOauth");
+        const reconnectRef = { owner: "org" as const, integration: INTEG, name: originalName };
+        yield* seedExistingOAuthConnection(config.db, {
+          tenant,
+          name: originalName,
+          lastHealth: { status: "expired", checkedAt: Date.now() - 60_000 },
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: originalName,
+          integration: INTEG,
+          template: TEMPLATE,
+          identityLabel: "Mixed case account",
+          reconnectRef,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(String(connection.name)).toBe("mcpLinearAppOauth");
+        expect(String(connection.address)).toBe("tools.acme.org.mcpLinearAppOauth");
+        expect(connection.lastHealth).toBeNull();
+
+        const rows = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(rows.map((row) => row.name)).toEqual(["mcpLinearAppOauth"]);
+        expect(rows[0]?.description).toBe("preserve this note");
+
+        const token = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.mcpLinearAppOauth.whoami"),
+          {},
+        )) as { token: string };
+        expect(token.token).toMatch(/^at_/);
+      }),
+    ),
+  );
+
+  it.effect("complete with a deleted reconnectRef fails instead of creating", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config, tenant } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const originalName = ConnectionName.make("mcpLinearAppOauth");
+        const reconnectRef = { owner: "org" as const, integration: INTEG, name: originalName };
+        yield* seedExistingOAuthConnection(config.db, { tenant, name: originalName });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: originalName,
+          integration: INTEG,
+          template: TEMPLATE,
+          reconnectRef,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        yield* Effect.promise(() =>
+          config.db.deleteMany("connection", {
+            where: (b) =>
+              b.and(
+                b("owner", "=", "org"),
+                b("subject", "=", ORG_SUBJECT),
+                b("integration", "=", String(INTEG)),
+                b("name", "=", String(originalName)),
+              ),
+          }),
+        );
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const error = yield* Effect.flip(
+          executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          }),
+        );
+
+        expect(Predicate.isTagged("OAuthCompleteError")(error)).toBe(true);
+        expect(error).toMatchObject({
+          message: expect.stringContaining("Connection no longer exists for reconnect"),
+        });
+        const rows = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(rows).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("complete without reconnectRef still normalizes create names", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("mcpLinearAppOauth"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(String(connection.name)).toBe("mcplinearappoauth");
+        const rows = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(rows.map((row) => row.name)).toEqual(["mcplinearappoauth"]);
+      }),
+    ),
   );
 
   it.effect("carries the URL org selector in provider state without changing redirect_uri", () =>

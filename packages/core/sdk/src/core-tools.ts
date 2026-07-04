@@ -308,6 +308,7 @@ const OAuthStartInput = Schema.Struct({
   integration: Schema.String,
   template: Schema.String,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+  reconnectRef: Schema.optional(Schema.NullOr(ConnectionRefInput)),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const OAuthStartOutput = Schema.Union([
@@ -836,6 +837,8 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 integration: IntegrationSlug.make(input.integration),
                 template: AuthTemplateSlug.make(input.template),
                 identityLabel: input.identityLabel,
+                reconnectRef:
+                  input.reconnectRef == null ? null : connectionRefFromInput(input.reconnectRef),
                 redirectUri: input.redirectUri,
               }),
               (result) =>

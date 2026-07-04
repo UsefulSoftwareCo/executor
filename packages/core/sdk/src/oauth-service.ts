@@ -17,7 +17,7 @@
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
-import type { Connection } from "./connection";
+import type { Connection, ConnectionRef } from "./connection";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
 import { StorageError } from "./fuma-runtime";
 import {
@@ -91,6 +91,8 @@ export interface MintOAuthConnectionInput {
   readonly refreshItemId: string | null;
   readonly expiresAt: number | null;
   readonly oauthScope: string | null;
+  /** Exact existing row to update. When present, minting must never create. */
+  readonly reconnectRef?: ConnectionRef | null;
   /** Per-connection override for the token endpoint, persisted only when the
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
@@ -125,6 +127,8 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Load one saved connection by exact identity before reconnect token exchange. */
+  readonly findConnection: (ref: ConnectionRef) => Effect.Effect<Connection | null, StorageFailure>;
   /**
    * Resolve the OAuth scope policy for a `(integration, template)`:
    *  - `{ kind: "scopes", scopes }`: the scopes the integration's auth template
@@ -205,16 +209,18 @@ const recordedOAuthScope = (
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 
+const decodeSessionPayload = (payload: unknown): unknown =>
+  typeof payload === "string"
+    ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
+    : payload;
+
 /** Extract the persisted `requestedScopes` from an `oauth_session.payload`. The
  *  jsonColumn may surface as a parsed object (in-memory backends) or a JSON
  *  string (serialized backends); decode strings before reading. Returns `null`
  *  for legacy sessions written before `requestedScopes` was persisted, so
  *  `complete` can fall back to the client's scopes. */
 const requestedScopesFromPayload = (payload: unknown): readonly string[] | null => {
-  const decoded =
-    typeof payload === "string"
-      ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
-      : payload;
+  const decoded = decodeSessionPayload(payload);
   if (decoded === null || typeof decoded !== "object") return null;
   const value = (decoded as Record<string, unknown>).requestedScopes;
   return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : null;
@@ -224,14 +230,42 @@ const requestedScopesFromPayload = (payload: unknown): readonly string[] | null 
  *  (same-owner connects, or sessions written before this field), so `complete`
  *  falls back to the session owner. */
 const clientOwnerFromPayload = (payload: unknown): Owner | null => {
-  const decoded =
-    typeof payload === "string"
-      ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
-      : payload;
+  const decoded = decodeSessionPayload(payload);
   if (decoded === null || typeof decoded !== "object") return null;
   const value = (decoded as Record<string, unknown>).clientOwner;
   return value === "user" || value === "org" ? value : null;
 };
+
+const reconnectRefFromPayload = (payload: unknown): ConnectionRef | null => {
+  const decoded = decodeSessionPayload(payload);
+  if (decoded === null || typeof decoded !== "object") return null;
+  const value = (decoded as Record<string, unknown>).reconnectRef;
+  if (value === null || typeof value !== "object") return null;
+  const ref = value as Record<string, unknown>;
+  const owner = ref.owner;
+  const integration = ref.integration;
+  const name = ref.name;
+  if (
+    (owner !== "user" && owner !== "org") ||
+    typeof integration !== "string" ||
+    typeof name !== "string"
+  ) {
+    return null;
+  }
+  return {
+    owner,
+    integration: IntegrationSlug.make(integration),
+    name: ConnectionName.make(name),
+  };
+};
+
+const formatConnectionRef = (ref: ConnectionRef): string =>
+  `${ref.owner}/${String(ref.integration)}/${String(ref.name)}`;
+
+const sameConnectionRef = (a: ConnectionRef, b: ConnectionRef): boolean =>
+  a.owner === b.owner &&
+  String(a.integration) === String(b.integration) &&
+  String(a.name) === String(b.name);
 
 /** Narrow a stored `grant` string to the `OAuthGrant` union, or `null` when the
  *  value is neither known grant. EXPLICIT — there is no silent fallback to
@@ -951,6 +985,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           message: "A Workspace connection must use a Workspace app.",
         });
       }
+      const inputRef: ConnectionRef = {
+        owner: input.owner,
+        integration: input.integration,
+        name: input.name,
+      };
+      const reconnectRef = input.reconnectRef ?? null;
+      if (reconnectRef !== null && !sameConnectionRef(reconnectRef, inputRef)) {
+        return yield* new OAuthStartError({
+          message: `Reconnect target does not match OAuth start target: ${formatConnectionRef(reconnectRef)}`,
+        });
+      }
+      if (reconnectRef !== null) {
+        const existing = yield* deps.findConnection(reconnectRef).pipe(
+          Effect.mapError(
+            () =>
+              new OAuthStartError({
+                message: `Failed to load reconnect target ${formatConnectionRef(reconnectRef)}`,
+              }),
+          ),
+        );
+        if (existing === null) {
+          return yield* new OAuthStartError({
+            message: `Connection no longer exists for reconnect: ${formatConnectionRef(reconnectRef)}`,
+          });
+        }
+      }
       // Load the app by its EXPLICIT owner (the caller knows it — no derivation).
       // The connection is still minted under `input.owner`. Storage visibility
       // policy hides apps the actor cannot see, so a wrong owner yields null.
@@ -1015,6 +1075,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           input.clientOwner,
           // client_credentials has no callback, so no regional rebind applies.
           null,
+          input.reconnectRef ?? null,
         ).pipe(
           Effect.mapError(
             (cause) =>
@@ -1077,6 +1138,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             owner: input.owner,
             clientOwner: input.clientOwner,
             requestedScopes: authorizationRequestedScopes,
+            reconnectRef,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -1139,6 +1201,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // recorded-scope fallback when the AS omits `scope`. Missing/legacy
         // payloads fall back to the client's scopes below.
         requestedScopes: requestedScopesFromPayload(sessionRow.payload),
+        reconnectRef: reconnectRefFromPayload(sessionRow.payload),
         // The app's owner, recorded by `start` — reload the SAME app at
         // completion by explicit owner (no derivation). Defaults to the session
         // owner for same-owner connects.
@@ -1150,6 +1213,25 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       if (Number.isFinite(session.expiresAt) && session.expiresAt <= Date.now()) {
         yield* deleteSession(input.state);
         return yield* new OAuthSessionNotFoundError({ state: input.state });
+      }
+
+      if (session.reconnectRef !== null) {
+        const reconnectRef = session.reconnectRef;
+        const existing = yield* deps.findConnection(reconnectRef).pipe(
+          Effect.mapError(
+            () =>
+              new OAuthCompleteError({
+                message: `Failed to load reconnect target ${formatConnectionRef(reconnectRef)}`,
+                restartRequired: true,
+              }),
+          ),
+        );
+        if (existing === null) {
+          return yield* new OAuthCompleteError({
+            message: `Connection no longer exists for reconnect: ${formatConnectionRef(reconnectRef)}`,
+            restartRequired: true,
+          });
+        }
       }
 
       // Reload the SAME app `start` resolved, by its explicit recorded owner.
@@ -1220,6 +1302,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // Persist the regional token endpoint ONLY when it differs from the
         // client's configured one, so refresh redeems against the same region.
         tokenUrl === client.tokenUrl ? null : tokenUrl,
+        session.reconnectRef,
       ).pipe(
         Effect.mapError(
           (cause) =>
@@ -1259,6 +1342,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     /** Regional token endpoint override to persist when the code was redeemed
      *  off the client's configured host; null to use the client's token URL. */
     oauthTokenUrl: string | null,
+    reconnectRef: ConnectionRef | null,
   ): Effect.Effect<Connection, StorageFailure> =>
     Effect.gen(function* () {
       const provider = deps.defaultWritableProvider();
@@ -1295,6 +1379,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // non-resource scope from the token `scope` string, so preserve it when
         // the refresh token proves it was granted.
         oauthScope: recordedOAuthScope(token, requestedScopes),
+        reconnectRef,
         oauthTokenUrl,
       });
     });

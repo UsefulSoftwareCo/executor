@@ -159,6 +159,15 @@ const StartPayload = Schema.Struct({
   integration: IntegrationSlug,
   template: AuthTemplateSlug,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+  reconnectRef: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        owner: Owner,
+        integration: IntegrationSlug,
+        name: ConnectionName,
+      }),
+    ),
+  ),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
 });
 

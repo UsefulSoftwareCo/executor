@@ -58,6 +58,11 @@ describe("oauthReconnectPayload (re-mint the SAME connection)", () => {
     expect(payload!.integration).toBe(IntegrationSlug.make("github"));
     expect(payload!.template).toBe(AuthTemplateSlug.make("oauth"));
     expect(payload!.identityLabel).toBe("Personal GitHub");
+    expect(payload!.reconnectRef).toEqual({
+      owner: "user",
+      integration: IntegrationSlug.make("github"),
+      name: ConnectionName.make("personal-github"),
+    });
   });
 
   it("maps a null identityLabel to undefined (optional payload field)", () => {
