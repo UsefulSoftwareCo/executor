@@ -130,6 +130,36 @@ jobs:
           printf '%s' "$APPLE_API_KEY" > "${RUNNER_TEMP}/private_keys/AuthKey.p8"
           echo "APPLE_API_KEY_PATH=${RUNNER_TEMP}/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
 
+      - name: Verify Azure Trusted Signing configuration
+        if: matrix.platform == 'win'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            AZURE_TENANT_ID \
+            AZURE_CLIENT_ID \
+            AZURE_CLIENT_SECRET \
+            AZURE_TRUSTED_SIGNING_ENDPOINT \
+            AZURE_TRUSTED_SIGNING_ACCOUNT \
+            AZURE_TRUSTED_SIGNING_CERT_PROFILE \
+            AZURE_TRUSTED_SIGNING_PUBLISHER_NAME
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required for Windows Trusted Signing"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Build desktop distributables
         env:
           # electron-builder reads GH_TOKEN for the publish step. We use
@@ -148,6 +178,16 @@ jobs:
           APPLE_API_KEY: ${{ env.APPLE_API_KEY_PATH }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Windows Azure Trusted Signing. electron-builder 26 invokes the
+          # TrustedSigning PowerShell module and authenticates through Azure
+          # Identity environment credentials.
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
 

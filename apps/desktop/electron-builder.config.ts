@@ -1,5 +1,29 @@
 import type { Configuration } from "electron-builder";
 
+type AzureTrustedSigningOptions = NonNullable<
+  NonNullable<Configuration["win"]>["azureSignOptions"]
+>;
+
+function getAzureTrustedSigningOptions(): AzureTrustedSigningOptions | undefined {
+  const endpoint = process.env.AZURE_TRUSTED_SIGNING_ENDPOINT;
+  const certificateProfileName = process.env.AZURE_TRUSTED_SIGNING_CERT_PROFILE;
+  const codeSigningAccountName = process.env.AZURE_TRUSTED_SIGNING_ACCOUNT;
+  const publisherName = process.env.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME;
+
+  if (!endpoint || !certificateProfileName || !codeSigningAccountName || !publisherName) {
+    return undefined;
+  }
+
+  return {
+    endpoint,
+    certificateProfileName,
+    codeSigningAccountName,
+    publisherName,
+  };
+}
+
+const azureTrustedSigningOptions = getAzureTrustedSigningOptions();
+
 const config: Configuration = {
   appId: "sh.executor.desktop",
   productName: "Executor",
@@ -46,6 +70,7 @@ const config: Configuration = {
   // artifact only exists once a leg stages an arm64 executor for it.
   win: {
     target: ["nsis"],
+    ...(azureTrustedSigningOptions ? { azureSignOptions: azureTrustedSigningOptions } : {}),
   },
   nsis: {
     oneClick: true,
