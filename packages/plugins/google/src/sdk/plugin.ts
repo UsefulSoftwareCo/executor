@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import type { Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
@@ -25,6 +25,7 @@ import {
   listHealthCheckCandidatesOpenApi,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
+  OpenApiExtractionError,
   OpenApiParseError,
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
@@ -161,18 +162,21 @@ const googleOpenApiPresetById: ReadonlyMap<string, GoogleOpenApiPreset> = new Ma
   googleOpenApiPresets.map((preset) => [preset.id, preset]),
 );
 
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
-const googleAddServicesErrorMessage = (error: unknown): string =>
-  Option.getOrElse(
-    Option.map(decodeErrorMessage(error), ({ message }) => message),
-    () => String(error),
-  );
+type GoogleAddServiceOutcome = {
+  readonly added: readonly GoogleAddServicesAdded[];
+  readonly skipped: readonly GoogleAddServicesSkipped[];
+  readonly failed: readonly GoogleAddServicesFailed[];
+};
 
-type GoogleAddServiceOutcome =
-  | { readonly _tag: "added"; readonly value: GoogleAddServicesAdded }
-  | { readonly _tag: "skipped"; readonly value: GoogleAddServicesSkipped }
-  | { readonly _tag: "failed"; readonly value: GoogleAddServicesFailed };
+const googleAddServiceFailure = (
+  service: GoogleServiceConfig,
+  slug: IntegrationSlug,
+  error: string,
+): GoogleAddServiceOutcome => ({
+  added: [],
+  skipped: [],
+  failed: [{ slug, presetId: service.presetId, error }],
+});
 
 const googlePhotosBundlePresetIdByUrl = new Map(
   googlePhotosOpenApiPresets.flatMap((preset) =>
@@ -374,33 +378,40 @@ const makeGooglePluginExtension = (
           return addOneService(service, input.baseUrl).pipe(
             Effect.map(
               (result): GoogleAddServiceOutcome => ({
-                _tag: "added",
-                value: {
-                  slug: result.slug,
-                  presetId: service.presetId,
-                  toolCount: result.toolCount,
-                },
+                added: [
+                  {
+                    slug: result.slug,
+                    presetId: service.presetId,
+                    toolCount: result.toolCount,
+                  },
+                ],
+                skipped: [],
+                failed: [],
               }),
             ),
             Effect.catchTag("IntegrationAlreadyExistsError", () =>
               Effect.succeed({
-                _tag: "skipped" as const,
-                value: {
-                  slug,
-                  presetId: service.presetId,
-                  reason: "already_exists" as const,
-                },
+                added: [],
+                skipped: [
+                  {
+                    slug,
+                    presetId: service.presetId,
+                    reason: "already_exists" as const,
+                  },
+                ],
+                failed: [],
               }),
             ),
-            Effect.catch((error) =>
-              Effect.succeed({
-                _tag: "failed" as const,
-                value: {
-                  slug,
-                  presetId: service.presetId,
-                  error: googleAddServicesErrorMessage(error),
-                },
-              }),
+            Effect.catchTags({
+              OpenApiParseError: (error: OpenApiParseError) =>
+                Effect.succeed(googleAddServiceFailure(service, slug, error.message)),
+              OpenApiExtractionError: (error: OpenApiExtractionError) =>
+                Effect.succeed(googleAddServiceFailure(service, slug, error.message)),
+            }),
+            Effect.catch(() =>
+              Effect.succeed(
+                googleAddServiceFailure(service, slug, "Failed to add Google service"),
+              ),
             ),
           );
         },
@@ -408,9 +419,9 @@ const makeGooglePluginExtension = (
       );
 
       return {
-        added: outcomes.flatMap((outcome) => (outcome._tag === "added" ? [outcome.value] : [])),
-        skipped: outcomes.flatMap((outcome) => (outcome._tag === "skipped" ? [outcome.value] : [])),
-        failed: outcomes.flatMap((outcome) => (outcome._tag === "failed" ? [outcome.value] : [])),
+        added: outcomes.flatMap((outcome) => outcome.added),
+        skipped: outcomes.flatMap((outcome) => outcome.skipped),
+        failed: outcomes.flatMap((outcome) => outcome.failed),
       };
     });
 
