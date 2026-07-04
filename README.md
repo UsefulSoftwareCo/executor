@@ -51,9 +51,10 @@ install.
 To run it locally instead (Node.js 20+):
 
 ```bash
-npm install -g executor   # or: pnpm add -g / bun add -g / yarn global add
-executor install          # install the durable background service
-executor web              # open the web UI in your browser
+npm install -g executor       # or: pnpm add -g executor
+bun add -g executor           # or: yarn global add executor
+executor install              # install the durable background service
+executor web                  # open the web UI in your browser
 ```
 
 `executor install` keeps the service running across restarts. For a throwaway
@@ -111,6 +112,20 @@ executor call executor openapi addSource '{
   "baseUrl": "https://petstore3.swagger.io/api/v3"
 }'
 ```
+
+For an X data workflow, Xquik's public OpenAPI spec works the same way:
+
+```bash
+executor call executor openapi addSource '{
+  "spec": "https://xquik.com/openapi.json",
+  "namespace": "xquik",
+  "baseUrl": "https://xquik.com/api/v1"
+}'
+```
+
+Create a connection for the source in Executor and store the required `x-api-key`
+credential there, so agents can search X data and run Xquik tools through the
+shared catalog without copying credentials into each MCP client.
 
 Use `baseUrl` when the OpenAPI document has relative `servers` entries (for
 example `"/api/v3"`). Confirm it is live with `executor tools sources`.
