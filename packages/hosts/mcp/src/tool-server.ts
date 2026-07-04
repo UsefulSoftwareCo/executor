@@ -116,7 +116,7 @@ type SharedMcpServerConfig = {
   readonly resumeFallback?: (
     executionId: string,
     response: ResumeResponse,
-  ) => Effect.Effect<ResumeFallbackOutcome | null>;
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
