@@ -103,7 +103,11 @@ const ProductRow = ({
       checked ? "bg-primary/5" : "hover:bg-muted/40",
     )}
   >
-    <Checkbox checked={checked} onCheckedChange={(next) => onToggle(next === true)} />
+    <Checkbox
+      data-testid={`preset-checkbox-${preset.id}`}
+      checked={checked}
+      onCheckedChange={(next) => onToggle(next === true)}
+    />
     <div className="shrink-0">
       <IntegrationFavicon icon={preset.icon} url={preset.url} size={16} />
     </div>

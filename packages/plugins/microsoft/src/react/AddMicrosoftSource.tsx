@@ -151,7 +151,10 @@ export function MicrosoftWorkloadResultPanel(props: {
   if (rows.length === 0) return null;
 
   return (
-    <section className="space-y-3 rounded-lg border border-border bg-muted/10 px-3 py-3">
+    <section
+      data-testid="microsoft-add-results"
+      className="space-y-3 rounded-lg border border-border bg-muted/10 px-3 py-3"
+    >
       <div>
         <h2 className="text-sm font-medium text-foreground">Microsoft workloads</h2>
         <p className="text-[11px] text-muted-foreground">
@@ -164,6 +167,8 @@ export function MicrosoftWorkloadResultPanel(props: {
           return (
             <li
               key={`${row.status}:${row.presetId}`}
+              data-testid={`add-result-row-${row.presetId}`}
+              data-state={row.status}
               className="flex items-start gap-2 rounded-md border border-border bg-background px-2.5 py-2"
             >
               <span
@@ -211,6 +216,7 @@ export function MicrosoftWorkloadResultPanel(props: {
                   type="button"
                   variant="outline"
                   size="xs"
+                  data-testid={`add-result-retry-${row.presetId}`}
                   loading={props.retryingPresetId === row.presetId}
                   onClick={() => void props.onRetry(row.presetId)}
                 >
@@ -509,7 +515,12 @@ export default function AddMicrosoftSource(props: {
         <Button variant="ghost" onClick={dismiss} disabled={adding || retryingPresetId !== null}>
           {workloadsResult || customGraphSlug ? "Done" : "Cancel"}
         </Button>
-        <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
+        <Button
+          data-testid="microsoft-add-submit"
+          onClick={() => void handleAdd()}
+          disabled={!canAdd}
+          loading={adding}
+        >
           Connect Microsoft
         </Button>
       </FloatActions>
