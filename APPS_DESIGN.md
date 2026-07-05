@@ -1,12 +1,13 @@
-# Executor apps — self-hosted build (DESIGN.md)
+# Executor apps — self-hosted build (design record)
 
-Status: in progress. Durable record of the architecture, seam signatures,
-package layout, key decisions, verification commands, and known gaps for the
-executor apps subsystem built into the self-hosted deployment.
+Durable record of the architecture, seam signatures, package layout, key
+decisions, verification commands, and known gaps for the executor apps
+subsystem built into the self-hosted deployment.
 
-Note: the tracked design-system doc is `design.md` (lowercase). This uppercase
-`DESIGN.md` is the apps-subsystem architecture record required by the build
-brief.
+Note: the brief asked for `DESIGN.md`, but the repo already tracks a
+design-system doc at `design.md`, and this repo lives on a case-insensitive
+filesystem (`DESIGN.md` and `design.md` collide). To avoid clobbering the
+design system, this apps architecture record lives at `APPS_DESIGN.md`.
 
 ## What this is
 
