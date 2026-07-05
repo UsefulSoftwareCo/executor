@@ -198,7 +198,7 @@ export const buildUiDocument = (input: {
       const runtimeJs = result.outputFiles?.[0]?.text;
       if (runtimeJs === undefined) throw new Error("ui runtime produced no output");
 
-      const dataIsland = JSON.stringify({
+      const dataIsland = safeJsonForScript({
         rows: input.rows,
         title: input.title,
         ready: true,
@@ -226,6 +226,26 @@ export const buildUiDocument = (input: {
         cause,
       }),
   });
+
+// Serialize a value as JSON safe to embed in an inline `<script>` element. The
+// hazard is that a string value containing `</script>` (or `<!--`) closes the
+// script element and lets arbitrary markup after it execute. The well-known safe
+// pattern escapes the characters that can start such a sequence — `<`, `>`, `&`
+// — as their `\uXXXX` JSON escapes (which parse back to the identical string),
+// plus the U+2028/U+2029 line terminators that are literal newlines in a script
+// but valid inside a JSON string. The result is still valid JSON and still
+// `JSON.parse`s to the original value; it simply can never contain a raw
+// `</script`.
+const SCRIPT_UNSAFE: Record<string, string> = {
+  "<": "\\u003c",
+  ">": "\\u003e",
+  "&": "\\u0026",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+};
+
+export const safeJsonForScript = (value: unknown): string =>
+  JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (c) => SCRIPT_UNSAFE[c] ?? c);
 
 const escapeHtml = (value: string): string =>
   value.replace(
