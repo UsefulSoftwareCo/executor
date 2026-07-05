@@ -26,6 +26,8 @@ import {
 import { BunFileSystem, BunHttpServer, BunPath, BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
+import { httpAccessLogger } from "@executor-js/observability";
+
 import { makeSelfHostApp } from "./app";
 import { loadConfig } from "./config";
 import type { BetterAuthHandle } from "./auth";
@@ -121,7 +123,11 @@ export const startServer = async (): Promise<void> => {
   }).pipe(Layer.provide(BunFileSystem.layer), Layer.provide(BunPath.layer));
 
   const ServerLive = HttpRouter.serve(Layer.mergeAll(AppLayer, AssetsLive, SpaLive), {
-    middleware: selfHostHttpMiddleware(betterAuth),
+    // The default Effect access logger is swapped for `httpAccessLogger`
+    // (composed message instead of the constant "Sent HTTP response"); it
+    // wraps outermost, exactly where `HttpRouter.serve` would put its own.
+    disableLogger: true,
+    middleware: (httpApp) => httpAccessLogger(selfHostHttpMiddleware(betterAuth)(httpApp)),
   }).pipe(
     Layer.provide(
       BunHttpServer.layer({ hostname: config.host, port: config.port, idleTimeout: 0 }),

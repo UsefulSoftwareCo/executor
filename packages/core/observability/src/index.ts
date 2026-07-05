@@ -1,6 +1,6 @@
-import { Layer, Logger, References } from "effect";
+import { Duration, Effect, Exit, Layer, Logger, References } from "effect";
 import type * as LogLevel from "effect/LogLevel";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpMiddleware, HttpServerRequest } from "effect/unstable/http";
 import type { HttpClient } from "effect/unstable/http";
 import {
   OtlpLogger,
@@ -93,6 +93,61 @@ export const structuredLoggerLayer = (options?: {
     ? logger
     : Layer.merge(logger, Layer.succeed(References.MinimumLogLevel)(level));
 };
+
+// ---------------------------------------------------------------------------
+// HTTP access log
+// ---------------------------------------------------------------------------
+
+const stripSearchAndHash = (url: string): string => {
+  const query = url.indexOf("?");
+  const hash = url.indexOf("#");
+  const end = query === -1 ? hash : hash === -1 ? query : Math.min(query, hash);
+  return end === -1 ? url : url.slice(0, end);
+};
+
+/**
+ * Access-log middleware replacing Effect's built-in `HttpMiddleware.logger`,
+ * whose message is the constant string "Sent HTTP response" (request context
+ * lives only in annotations, so log UIs that render the message column show
+ * an uninformative constant). This emits a composed message
+ * (`GET /api/things 200 in 12ms`) while keeping the same `http.*` annotations
+ * for filtering, plus `http.duration_ms`.
+ *
+ * Apply via `HttpRouter.serve`/`toWebHandler` `middleware` together with
+ * `disableLogger: true`, or every request logs twice.
+ */
+export const httpAccessLogger = HttpMiddleware.make((httpApp) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const path = stripSearchAndHash(request.url);
+    const [duration, exit] = yield* Effect.timed(Effect.exit(httpApp));
+    const durationMs = Math.round(Duration.toMillis(duration));
+    if (Exit.isSuccess(exit)) {
+      yield* Effect.logInfo(
+        `${request.method} ${path} ${exit.value.status} in ${durationMs}ms`,
+      ).pipe(
+        Effect.annotateLogs({
+          "http.method": request.method,
+          "http.url": path,
+          "http.status": exit.value.status,
+          "http.duration_ms": durationMs,
+        }),
+      );
+      return exit.value;
+    }
+    // An exit failure here is an unhandled route error (e.g. RouteNotFound) or
+    // a defect; the platform's error renderer still owns the response. Info
+    // level, matching the built-in logger: not-found probes are routine noise.
+    yield* Effect.logInfo(`${request.method} ${path} failed in ${durationMs}ms`, exit.cause).pipe(
+      Effect.annotateLogs({
+        "http.method": request.method,
+        "http.url": path,
+        "http.duration_ms": durationMs,
+      }),
+    );
+    return yield* Effect.failCause(exit.cause);
+  }),
+);
 
 export type ObservabilityConfig = {
   /** OTLP resource service name, e.g. "executor-local". */

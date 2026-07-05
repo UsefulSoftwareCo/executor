@@ -34,6 +34,7 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { Layer } from "effect";
+import { httpAccessLogger } from "@executor-js/observability";
 import type { AnyPlugin } from "@executor-js/sdk";
 
 import { observabilityMiddleware, type ErrorCapture } from "../observability";
@@ -212,8 +213,13 @@ export const toApiHandler = (
   appLayer: Layer.Layer<any, any, any>,
 ): ApiHandler => {
   // `HttpServer.layerServices` supplies the synthetic HTTP platform so
-  // `toWebHandler` can run handlers without a listening socket.
-  const web = HttpRouter.toWebHandler(appLayer.pipe(Layer.provideMerge(HttpServer.layerServices)));
+  // `toWebHandler` can run handlers without a listening socket. The default
+  // Effect access logger is swapped for `httpAccessLogger` (composed message
+  // instead of the constant "Sent HTTP response").
+  const web = HttpRouter.toWebHandler(appLayer.pipe(Layer.provideMerge(HttpServer.layerServices)), {
+    disableLogger: true,
+    middleware: httpAccessLogger,
+  });
   // With every requirement provided the leftover `HR` is `never`, so `handler`
   // is the one-arg `(request) => Promise<Response>` form — but the loose
   // `R = any` input widens `HR` to `any` (a two-arg signature), so narrow back

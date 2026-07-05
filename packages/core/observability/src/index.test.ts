@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Logger, Schema } from "effect";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
+  httpAccessLogger,
   jsonSpanLogger,
   observabilityLayer,
   parseLogLevel,
@@ -86,6 +88,56 @@ describe("jsonSpanLogger", () => {
     const record = decodeLogLine(lines[0]!);
     expect(typeof record.trace_id).toBe("string");
     expect(typeof record.span_id).toBe("string");
+  });
+});
+
+describe("httpAccessLogger", () => {
+  type CapturedLog = ReturnType<(typeof Logger.formatStructured)["log"]>;
+
+  const runWithRequest = async (
+    url: string,
+    app: Effect.Effect<HttpServerResponse.HttpServerResponse, unknown>,
+  ): Promise<CapturedLog[]> => {
+    const records: CapturedLog[] = [];
+    const captureLogger = Logger.make((options) => {
+      records.push(Logger.formatStructured.log(options));
+    });
+    await Effect.runPromise(
+      httpAccessLogger(app).pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          HttpServerRequest.fromWeb(new Request(url)),
+        ),
+        Effect.provide(Logger.layer([captureLogger], { mergeWithExisting: false })),
+        Effect.ignore,
+      ),
+    );
+    return records;
+  };
+
+  it("composes method, path, and status into the message", async () => {
+    const records = await runWithRequest(
+      "http://localhost/api/things?id=42#frag",
+      Effect.succeed(HttpServerResponse.empty({ status: 201 })),
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0]!.message).toMatch(/^GET \/api\/things 201 in \d+ms$/);
+    expect(records[0]!.annotations).toMatchObject({
+      "http.method": "GET",
+      "http.url": "/api/things",
+      "http.status": 201,
+    });
+    expect(typeof records[0]!.annotations["http.duration_ms"]).toBe("number");
+  });
+
+  it("logs failures with the cause and no status", async () => {
+    const records = await runWithRequest(
+      "http://localhost/missing",
+      Effect.fail("route not found"),
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0]!.message).toMatch(/^GET \/missing failed in \d+ms$/);
+    expect(records[0]!.annotations["http.status"]).toBeUndefined();
   });
 });
 
