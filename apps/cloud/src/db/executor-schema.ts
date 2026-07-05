@@ -45,6 +45,8 @@ export const connection = pgTable(
     description: text("description"),
     last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
+    tools_sync_failure_count: bigint("tools_sync_failure_count", { mode: "bigint" }),
+    tools_sync_retry_after: bigint("tools_sync_retry_after", { mode: "bigint" }),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),

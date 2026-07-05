@@ -176,6 +176,10 @@ export const coreTables = defineTables({
       // Epoch ms of the last tool (re)production for this connection. Stale
       // vs the integration's `config_revised_at` → re-produced on next read.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      // Consecutive failed remote catalog syncs. Paired with
+      // `tools_sync_retry_after` to keep dead connectors off the hot read path.
+      tools_sync_failure_count: nullableBigintColumn("tools_sync_failure_count"),
+      tools_sync_retry_after: nullableBigintColumn("tools_sync_retry_after"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for

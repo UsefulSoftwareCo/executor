@@ -139,6 +139,11 @@ import {
   ORG_SUBJECT,
   type ExecutorOwnerPolicyContext,
 } from "./owner-policy";
+import {
+  isToolsSyncBackoffPending,
+  nextToolsSyncFailureBackoff,
+  resetToolsSyncBackoffPatch,
+} from "./tool-sync-backoff";
 import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
@@ -2002,6 +2007,58 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
+    // How long a remote-catalog connection's persisted tools stay fresh
+    // (`ExecutorConfig.toolsSyncTtlMs`; `null` disables time-based re-sync).
+    const toolsSyncTtlMs =
+      config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
+
+    const connectionToolsSyncWhere = (ref: ConnectionRef) => (b: AnyCb) =>
+      b.and(
+        byOwner(ref.owner)(b),
+        b("integration", "=", String(ref.integration)),
+        b("name", "=", String(ref.name)),
+      );
+
+    // Failure backoff always needs a base interval, so a null toolsSyncTtlMs
+    // (time-based re-sync disabled) falls back to the default rather than
+    // disabling backoff too.
+    const toolsSyncBackoffBaseMs = toolsSyncTtlMs ?? DEFAULT_TOOLS_SYNC_TTL_MS;
+
+    const stampConnectionToolsSyncSuccess = (
+      ref: ConnectionRef,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.flatMap(
+        Effect.sync(() => Date.now()),
+        (nowMs) =>
+          core.updateMany("connection", {
+            where: connectionToolsSyncWhere(ref),
+            set: { tools_synced_at: nowMs, ...resetToolsSyncBackoffPatch },
+          }),
+      );
+
+    const stampConnectionToolsSyncFailure = (
+      ref: ConnectionRef,
+      failureCount: unknown,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.flatMap(
+        Effect.sync(() => Date.now()),
+        (nowMs) => {
+          const next = nextToolsSyncFailureBackoff({
+            failureCount,
+            baseMs: toolsSyncBackoffBaseMs,
+            nowMs,
+          });
+          return core.updateMany("connection", {
+            where: connectionToolsSyncWhere(ref),
+            set: {
+              tools_synced_at: nowMs,
+              tools_sync_failure_count: next.failureCount,
+              tools_sync_retry_after: next.retryAfter,
+            },
+          });
+        },
+      );
+
     const produceConnectionTools = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
@@ -2019,18 +2076,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("connection", "=", String(ref.name)),
           );
-        // Every exit stamps the sync time — including the cleanup paths that
-        // produce zero tools — so the stale-catalog check (`config_revised_at`
-        // vs `tools_synced_at`) doesn't re-attempt this connection per read.
-        const stampSynced = core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(owner)(b),
-              b("integration", "=", String(ref.integration)),
-              b("name", "=", String(ref.name)),
-            ),
-          set: { tools_synced_at: Date.now() },
-        });
+        const stampSynced = stampConnectionToolsSyncSuccess(ref);
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -2088,11 +2134,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         if (result.incomplete === true) {
           // Non-authoritative listing (source unreachable, auth not ready).
-          // Keep the existing catalog — replacing it would wipe working tools
-          // over a transient outage — and stamp the sync time anyway so a down
-          // server isn't re-dialed on every read; the freshness TTL re-attempts
-          // later.
-          yield* stampSynced;
+          // Keep the existing catalog and record a failed sync attempt so a
+          // consistently unreachable source backs off between request-path reads.
+          yield* stampConnectionToolsSyncFailure(ref, existingRow?.tools_sync_failure_count);
           const keptRows = yield* core.findMany("tool", { where });
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
         }
@@ -2761,6 +2805,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // catalog. The deferred variant of `connectionsRefresh` for signals that
     // arrive mid-invocation (an MCP `notifications/tools/list_changed`, an
     // unknown-tool rejection) where re-listing inline would block the caller.
+    // Intentionally leaves tools_sync_retry_after alone: a deferred stale-mark
+    // yields to an active failure-backoff window rather than forcing a re-list
+    // of a connection that just timed out.
     const connectionsMarkToolsStale = (ref: ConnectionRef): Effect.Effect<void, StorageFailure> =>
       core.updateMany("connection", {
         where: (b: AnyCb) =>
@@ -2885,11 +2932,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       return true;
     };
 
-    // How long a remote-catalog connection's persisted tools stay fresh
-    // (`ExecutorConfig.toolsSyncTtlMs`; `null` disables time-based re-sync).
-    const toolsSyncTtlMs =
-      config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
-
     // Rebuild any visible connection whose persisted tool catalog is stale.
     // Three triggers:
     //  - stale-marked: `tools_synced_at` is NULL (`connections.markToolsStale`
@@ -2903,7 +2945,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     //    tool set can change with no executor-visible signal) and the catalog
     //    is older than the freshness TTL.
     // Best-effort: a failed rebuild leaves the stale-but-working catalog in
-    // place and retries on the next read.
+    // place and retries on the next eligible read.
     const syncStaleConnectionTools = Effect.gen(function* () {
       const integrations = yield* core.findMany("integration", {});
       if (integrations.length === 0) return;
@@ -2913,8 +2955,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       const anyRemoteCatalog = Array.from(runtimes.values()).some(
         (runtime) => runtime.plugin.remoteToolCatalog === true,
       );
-      const cutoff =
-        toolsSyncTtlMs == null || !anyRemoteCatalog ? null : Date.now() - toolsSyncTtlMs;
+      const nowMs = Date.now();
+      const cutoff = toolsSyncTtlMs == null || !anyRemoteCatalog ? null : nowMs - toolsSyncTtlMs;
 
       // Bound the scan to potentially-stale rows: stale-marked (NULL stamp) or
       // synced before the latest instant any trigger could fire at (the TTL
@@ -2934,16 +2976,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           : Math.max(cutoff ?? Number.MIN_SAFE_INTEGER, latestRevision ?? Number.MIN_SAFE_INTEGER);
 
       const connections = yield* core.findMany("connection", {
-        where: (b: AnyCb) =>
-          staleBefore === null
-            ? b.isNull("tools_synced_at")
-            : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
+        where: (b: AnyCb) => {
+          const stale =
+            staleBefore === null
+              ? b.isNull("tools_synced_at")
+              : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore));
+          return b.and(
+            stale,
+            b.or(b.isNull("tools_sync_retry_after"), b("tools_sync_retry_after", "<=", nowMs)),
+          );
+        },
       });
+      const staleConnections: Array<{
+        readonly connection: ConnectionRow;
+        readonly integrationRow: IntegrationRow;
+        readonly ref: ConnectionRef;
+      }> = [];
       for (const connection of connections) {
         const integrationRow = integrationBySlug.get(connection.integration);
         if (!integrationRow) continue;
         const runtime = runtimes.get(integrationRow.plugin_id);
-        // Only re-produce catalogs this executor can actually re-list —
+        // Only re-produce catalogs this executor can actually re-list;
         // rebuilding under an unloaded plugin would clear a working catalog.
         // (A loaded plugin without `resolveTools` still flows through:
         // `produceConnectionTools` runs its clear-and-stamp cleanup path.)
@@ -2964,21 +3017,38 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           syncedAt !== null &&
           syncedAt < cutoff;
         if (!staleMarked && !configRevised && !expired) continue;
+        if (isToolsSyncBackoffPending(connection.tools_sync_retry_after, nowMs)) continue;
 
-        yield* produceConnectionTools(integrationRow, {
-          owner: connection.owner as Owner,
-          integration: IntegrationSlug.make(connection.integration),
-          name: ConnectionName.make(connection.name),
-        }).pipe(
-          Effect.catch(() => Effect.succeed([] as readonly Tool[])),
-          Effect.withSpan("executor.tools.sync_stale", {
-            attributes: {
-              "executor.integration": connection.integration,
-              "executor.connection": connection.name,
-            },
-          }),
-        );
+        staleConnections.push({
+          connection,
+          integrationRow,
+          ref: {
+            owner: connection.owner as Owner,
+            integration: IntegrationSlug.make(connection.integration),
+            name: ConnectionName.make(connection.name),
+          },
+        });
       }
+
+      yield* Effect.forEach(
+        staleConnections,
+        ({ connection, integrationRow, ref }) =>
+          produceConnectionTools(integrationRow, ref).pipe(
+            Effect.catch(() =>
+              stampConnectionToolsSyncFailure(ref, connection.tools_sync_failure_count).pipe(
+                Effect.catch(() => Effect.void),
+                Effect.as([] as readonly Tool[]),
+              ),
+            ),
+            Effect.withSpan("executor.tools.sync_stale", {
+              attributes: {
+                "executor.integration": connection.integration,
+                "executor.connection": connection.name,
+              },
+            }),
+          ),
+        { concurrency: 4, discard: true },
+      );
     });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
