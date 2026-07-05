@@ -8,7 +8,7 @@ import { Effect } from "effect";
 import { makeGitArtifactStore } from "../backing/git-artifact-store";
 import { makeQuickjsToolSandbox } from "../backing/quickjs-tool-sandbox";
 import { dailyBriefFileSet } from "../testing/daily-brief";
-import { publish, type PutBlob } from "./publish";
+import { publish, PUBLISH_LIMITS, type PutBlob } from "./publish";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -90,5 +90,59 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
       // The failure is a PublishError at the bundle stage.
       expect(JSON.stringify(err)).toContain("bundle");
     }
+  });
+
+  // --- Fix 7: publish payload limits ---------------------------------------
+  it("rejects an oversized publish set (too many files) and persists nothing", async () => {
+    const { deps, blobs } = makeDeps();
+    const files = new Map<string, string>();
+    for (let i = 0; i < PUBLISH_LIMITS.maxFiles + 5; i++) {
+      files.set(`tools/t${i}.ts`, "// noop");
+    }
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("exceeding the limit");
+    // Nothing committed: the git store never got a commit, and no blobs staged.
+    const latest = await run(Effect.flatMap(deps.artifactStore.forScope("s"), (s) => s.latest()));
+    expect(latest).toBeNull();
+    expect(blobs.size).toBe(0);
+  });
+
+  it("rejects a single file over the per-file byte limit", async () => {
+    const { deps } = makeDeps();
+    const big = "x".repeat(PUBLISH_LIMITS.maxFileBytes + 1);
+    const files = new Map([["tools/big.ts", big]]);
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("per-file limit");
+  });
+
+  it("rejects a set over the total byte limit", async () => {
+    const { deps } = makeDeps();
+    const half = "y".repeat(Math.floor(PUBLISH_LIMITS.maxFileBytes));
+    const files = new Map<string, string>();
+    // Enough near-max files to exceed the total but stay under the count limit.
+    const count = Math.ceil(PUBLISH_LIMITS.maxTotalBytes / PUBLISH_LIMITS.maxFileBytes) + 1;
+    for (let i = 0; i < count; i++) files.set(`tools/t${i}.ts`, half);
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("total limit");
+  });
+
+  // --- Fix 8: adversarial cron rejected at publish time --------------------
+  it("rejects a workflow with an invalid cron (*/0) at publish, persisting nothing", async () => {
+    const { deps } = makeDeps();
+    const files = new Map([
+      [
+        "workflows/bad.ts",
+        `import { defineWorkflow } from "executor:app";\n` +
+          `export default defineWorkflow({ description: "b", schedule: { cron: "*/0 * * * *" }, async run(step){ return 1; } });`,
+      ],
+    ]);
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("cron step must be >= 1");
+    const latest = await run(Effect.flatMap(deps.artifactStore.forScope("s"), (s) => s.latest()));
+    expect(latest).toBeNull();
   });
 });

@@ -7,7 +7,7 @@ import { Effect } from "effect";
 
 import { makeSelfHostAppsRuntime } from "../plugin/self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver, dailyBriefFileSet } from "../testing";
-import { cronMatches, makeScheduler } from "./scheduler";
+import { cronMatches, makeScheduler, validateCron, CronError } from "./scheduler";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -22,6 +22,38 @@ describe("scheduler", () => {
     expect(cronMatches("0 9 * * 1-5", weekdayTen)).toBe(false);
     expect(cronMatches("*/15 * * * *", new Date(Date.UTC(2026, 0, 5, 3, 30, 0)))).toBe(true);
     expect(cronMatches("*/15 * * * *", new Date(Date.UTC(2026, 0, 5, 3, 31, 0)))).toBe(false);
+  });
+
+  // --- Fix 8: adversarial cron strings never hang the parser ---------------
+  it("rejects adversarial cron fields via validateCron (never loops)", () => {
+    // A step of 0 would loop forever in the naive parser.
+    expect(() => validateCron("*/0 * * * *")).toThrow(CronError);
+    expect(() => validateCron("*/-1 * * * *")).toThrow(CronError);
+    // Out-of-range and reversed ranges are bounded, not billion-iteration loops.
+    expect(() => validateCron("0 0 1 1 0-999")).toThrow(CronError);
+    expect(() => validateCron("0 0 999999999-0 * *")).toThrow(CronError);
+    expect(() => validateCron("nonsense")).toThrow(CronError);
+    expect(() => validateCron("* * * *")).toThrow(CronError); // 4 fields
+    // A valid cron passes.
+    expect(() => validateCron("0 9 * * 1-5")).not.toThrow();
+    expect(() => validateCron("*/15 * * * *")).not.toThrow();
+  });
+
+  it("cronMatches returns quickly (no hang) on adversarial strings", () => {
+    const date = new Date(Date.UTC(2026, 0, 5, 9, 0, 0));
+    // The guard: each of these completes near-instantly and never matches. If the
+    // parser hung, this test would time out instead of asserting false.
+    const start = Date.now();
+    for (const cron of [
+      "*/0 * * * *",
+      "*/-5 * * * *",
+      "0 0 1 1 0-2000000000",
+      "0-999999999/0 * * * *",
+    ]) {
+      expect(cronMatches(cron, date)).toBe(false);
+    }
+    // Generous upper bound; the real signal is that it returns at all.
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 
   it("fires a due workflow schedule and starts the run", async () => {

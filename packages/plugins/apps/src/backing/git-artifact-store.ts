@@ -24,6 +24,11 @@ import {
 
 const BRANCH = "refs/heads/main";
 
+// The "must not exist" sentinel for `git update-ref <ref> <new> <old>`: an empty
+// old-value asserts the ref currently has NO value (the first publish to a fresh
+// scope repo). git treats the empty string as "the ref must not already exist".
+const EMPTY_OID = "";
+
 const run = (
   cwd: string,
   args: readonly string[],
@@ -172,7 +177,23 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
             },
           );
         })).trim();
-        yield* run(repoDir, ["update-ref", BRANCH, commitHash]);
+        // Compare-and-swap the branch ref: `update-ref <ref> <new> <old>` fails
+        // if HEAD moved since we read `parent`, so a concurrent publish that
+        // committed first cannot be silently clobbered. On the first commit there
+        // is no parent, so we assert the ref is absent (the empty-oid form). A CAS
+        // failure surfaces as a typed conflict for the caller to retry from a
+        // fresh parent.
+        const expectedOld = parent ?? EMPTY_OID;
+        yield* run(repoDir, ["update-ref", BRANCH, commitHash, expectedOld]).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ArtifactStoreError({
+                message: `publish conflict: ${BRANCH} moved concurrently (expected ${expectedOld}); retry from the new head`,
+                conflict: true,
+                cause,
+              }),
+          ),
+        );
         return yield* readMeta(commitHash);
       }),
 

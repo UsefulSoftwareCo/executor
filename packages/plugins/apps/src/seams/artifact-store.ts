@@ -30,6 +30,10 @@ export interface SnapshotMeta {
 
 export class ArtifactStoreError extends Data.TaggedError("ArtifactStoreError")<{
   readonly message: string;
+  /** True when the failure is a concurrent-write conflict (the snapshot ref
+   *  moved under a compare-and-swap). Callers retry from the fresh head or
+   *  surface a typed conflict rather than clobbering the other writer. */
+  readonly conflict?: boolean;
   readonly cause?: unknown;
 }> {}
 

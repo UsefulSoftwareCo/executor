@@ -15,7 +15,8 @@ import {
   type UiDescriptor,
   type WorkflowDescriptor,
 } from "./descriptor";
-import { discover, PublishError, type DiscoveredArtifact } from "./discover";
+import { discover, PublishError, type DiscoveredArtifact, type FileDiagnostic } from "./discover";
+import { validateCron } from "../workflow/scheduler";
 
 // ---------------------------------------------------------------------------
 // publish — the compiler. discover (fs-shape) -> bundle (esbuild, platform
@@ -37,6 +38,55 @@ import { discover, PublishError, type DiscoveredArtifact } from "./discover";
 // in `.executor/descriptor.json`, so projections are idempotently re-derivable
 // via `repairProjections` (recompute-on-read). See `loadDescriptorFromSnapshot`.
 // ---------------------------------------------------------------------------
+
+// Publish payload limits (Fix 7). A publish file set is user-supplied and
+// otherwise unbounded, so an oversized set could exhaust memory / disk before
+// any per-file work runs. These caps are enforced up front (before discover),
+// so an oversized set fails with a typed diagnostic and nothing is persisted.
+export const PUBLISH_LIMITS = {
+  /** Max number of files in one publish. */
+  maxFiles: 256,
+  /** Max bytes for any single file. */
+  maxFileBytes: 1024 * 1024, // 1 MiB
+  /** Max total bytes across all files. */
+  maxTotalBytes: 4 * 1024 * 1024, // 4 MiB
+} as const;
+
+const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");
+
+/** Reject an oversized publish set with a typed diagnostic before any work. */
+export const enforcePublishLimits = (files: FileSet): PublishError | null => {
+  const diagnostics: FileDiagnostic[] = [];
+  if (files.size > PUBLISH_LIMITS.maxFiles) {
+    diagnostics.push({
+      path: "",
+      message: `publish has ${files.size} files, exceeding the limit of ${PUBLISH_LIMITS.maxFiles}`,
+    });
+  }
+  let total = 0;
+  for (const [path, contents] of files) {
+    const size = byteLength(contents);
+    total += size;
+    if (size > PUBLISH_LIMITS.maxFileBytes) {
+      diagnostics.push({
+        path,
+        message: `file is ${size} bytes, exceeding the per-file limit of ${PUBLISH_LIMITS.maxFileBytes} bytes`,
+      });
+    }
+  }
+  if (total > PUBLISH_LIMITS.maxTotalBytes) {
+    diagnostics.push({
+      path: "",
+      message: `publish total is ${total} bytes, exceeding the total limit of ${PUBLISH_LIMITS.maxTotalBytes} bytes`,
+    });
+  }
+  if (diagnostics.length === 0) return null;
+  return new PublishError({
+    message: `publish payload exceeds limits (${diagnostics.length} problem(s))`,
+    stage: "discover",
+    diagnostics,
+  });
+};
 
 /** Content-addressed blob writer (SHA-256 hex key -> value). Idempotent. */
 export type PutBlob = (hash: string, value: string) => Effect.Effect<void, PublishError>;
@@ -191,6 +241,27 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
           annotations: raw.annotations,
         });
       } else {
+        // Validate any declared cron at PUBLISH time (Fix 8): an adversarial
+        // cron (`*/0`, negative step, out-of-range) is rejected here with a
+        // typed diagnostic rather than reaching the scheduler.
+        if (raw.schedule?.cron !== undefined) {
+          try {
+            validateCron(raw.schedule.cron);
+          } catch (cause) {
+            return yield* Effect.fail(
+              new PublishError({
+                message: `workflow "${artifact.name}" has an invalid cron`,
+                stage: "collect",
+                diagnostics: [
+                  {
+                    path: artifact.entry,
+                    message: cause instanceof Error ? cause.message : String(cause),
+                  },
+                ],
+              }),
+            );
+          }
+        }
         workflows.push({
           name: artifact.name,
           sourcePath: artifact.entry,
@@ -273,6 +344,11 @@ export const publish = (
   input: PublishInput,
 ): Effect.Effect<PublishOutput, PublishError> =>
   Effect.gen(function* () {
+    // --- Phase 0: bound the payload BEFORE any work (Fix 7). Oversized sets
+    //     fail with a typed diagnostic and nothing is bundled or persisted. ---
+    const overLimit = enforcePublishLimits(input.files);
+    if (overLimit) return yield* Effect.fail(overLimit);
+
     // --- Phase 1: all fallible work, ZERO persistence ---------------------
     const assembled = yield* assemble(deps, input.files);
     const body = descriptorBody(input.scope, assembled);
