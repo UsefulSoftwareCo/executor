@@ -23,6 +23,18 @@ export interface AppsHttpDeps {
   readonly runtime: AppsRuntime;
   /** Mount prefix (default "/api/apps"). */
   readonly prefix?: string;
+  /**
+   * Authenticate an inbound request. Returns `true` when the caller is
+   * authorized and `false` otherwise; the handler answers `false` with a 401.
+   *
+   * The apps surface (publish / invoke / workflow lifecycle / SSE) mutates
+   * per-scope state and reaches real integrations, so it MUST be behind the same
+   * credential the rest of `/api` requires. This seam lets the host thread its
+   * own identity check (self-host's Better Auth session/bearer/api-key) in
+   * without this package importing the host's auth stack. When omitted (tests
+   * that drive the runtime directly) every request is allowed.
+   */
+  readonly authenticate?: (request: Request) => Promise<boolean>;
 }
 
 const json = (body: unknown, status = 200): Response =>
@@ -42,6 +54,20 @@ export const makeAppsHttpRoutes = (
   const handler = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (!url.pathname.startsWith(prefix)) return new Response("not found", { status: 404 });
+
+    // Auth gate: the whole apps surface (publish/invoke/workflows/ui/SSE) is
+    // behind the host's identity check. An unauthenticated caller gets a 401
+    // BEFORE any route logic runs — including the SSE stream.
+    if (deps.authenticate) {
+      const ok = await deps.authenticate(request).catch(() => false);
+      if (!ok) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
     const rest = url.pathname.slice(prefix.length).replace(/^\//, "");
     const parts = rest.split("/").filter(Boolean);
     // parts[0] = scope
@@ -134,8 +160,23 @@ export const makeAppsHttpRoutes = (
         return json({ runs });
       }
 
-      // GET :scope/ui/:name -> compiled JS bundle
+      // GET :scope/ui/:name -> compiled JS bundle, OR the self-booting HTML
+      // document when `?document=html` (Fix 10: the fallback a non-UI MCP client
+      // opens in a browser). Both are behind the same auth gate as the rest of
+      // the surface.
       if (parts[1] === "ui" && parts[2] && request.method === "GET") {
+        if (url.searchParams.get("document") === "html") {
+          const doc = await run(runtime.getUiDocument(scope, parts[2]));
+          if (!doc) return new Response("ui not found", { status: 404 });
+          return new Response(doc.html, {
+            status: 200,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "x-ui-title": doc.title ?? "",
+              "x-ui-max-height": String(doc.maxHeight ?? ""),
+            },
+          });
+        }
         const bundle = await run(runtime.getUiBundle(scope, parts[2]));
         if (!bundle) return new Response("ui not found", { status: 404 });
         return new Response(bundle.code, {

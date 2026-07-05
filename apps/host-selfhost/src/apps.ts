@@ -54,11 +54,36 @@ const notImplementedResolver: ClientResolver = {
     ),
 };
 
+/** Options for the apps subsystem singleton. `authenticate` gates the HTTP
+ *  surface; supplied by `app.ts` from the resolved Better Auth instance.
+ *  `webBaseUrl` is the public origin used to build the `apps_open_ui` HTTP
+ *  fallback URL. */
+export interface SelfHostAppsSubsystemOptions {
+  readonly authenticate?: (request: Request) => Promise<boolean>;
+  readonly webBaseUrl?: string;
+}
+
 // The boot-time singleton. Built lazily on first access so importing this module
 // (which executor.config.ts does) does not do filesystem work at import time.
 let subsystem: SelfHostApps | undefined;
 
-export const getSelfHostAppsSubsystem = (): SelfHostApps => {
+// The live authenticate + fallback-URL refs. The subsystem is a singleton and is
+// FIRST built by executor.config.ts (which has no auth), then app.ts calls again
+// WITH auth. So we can't bake auth into the http handler at build time — instead
+// the handler reads these mutable refs per request, and app.ts sets them once the
+// Better Auth instance is resolved. Until set, the surface DENIES all requests
+// (fail-closed), so a misconfigured boot never exposes the surface unauthed.
+let authenticateRef: ((request: Request) => Promise<boolean>) | undefined;
+let webBaseUrlRef: string | undefined;
+
+export const getSelfHostAppsSubsystem = (
+  options: SelfHostAppsSubsystemOptions = {},
+): SelfHostApps => {
+  // Apply any newly-supplied config to the live refs (app.ts's call carries the
+  // real auth even though config.ts built the singleton first).
+  if (options.authenticate) authenticateRef = options.authenticate;
+  if (options.webBaseUrl) webBaseUrlRef = options.webBaseUrl;
+
   if (!subsystem) {
     subsystem = makeSelfHostApps({
       dataDir: resolveDataDir(),
@@ -71,6 +96,13 @@ export const getSelfHostAppsSubsystem = (): SelfHostApps => {
       // so external integration calls resolve the user's connection + credential
       // at the boundary and dispatch over the request's HttpClient.
       makeResolver: ({ ctx }) => makeCtxResolver(ctx),
+      // Read the live auth ref per request. Fail-closed: if app.ts hasn't wired
+      // the Better Auth check yet, deny (never expose the surface unauthed).
+      authenticate: (request) =>
+        authenticateRef ? authenticateRef(request) : Promise.resolve(false),
+      // Read the live web base URL ref (used for the apps_open_ui fallback URL).
+      webBaseUrl: undefined,
+      webBaseUrlFn: () => webBaseUrlRef,
     });
   }
   return subsystem;
@@ -79,6 +111,8 @@ export const getSelfHostAppsSubsystem = (): SelfHostApps => {
 /** Reset the singleton (tests build fresh instances per data dir). */
 export const resetSelfHostAppsSubsystem = (): void => {
   subsystem = undefined;
+  authenticateRef = undefined;
+  webBaseUrlRef = undefined;
 };
 
 /** @deprecated use getSelfHostAppsSubsystem(); kept for existing call sites. */

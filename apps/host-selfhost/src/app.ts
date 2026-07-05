@@ -75,7 +75,32 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // closes over). Its HTTP surface mounts under /api/apps/*; published tools are
   // catalog citizens through its source plugin; its extra MCP surface (publish
   // door, skills, ui:// resources) is registered on the real MCP server below.
-  const apps = getSelfHostAppsSubsystem();
+  //
+  // The HTTP surface (publish/invoke/workflows/ui/SSE) mutates per-scope state
+  // and reaches real integrations, so it is authenticated with the SAME Better
+  // Auth credential the rest of `/api` requires. We resolve a session from the
+  // same three credential shapes the identity seam accepts (session cookie,
+  // Bearer session token, Bearer value retried as an x-api-key), matching
+  // `betterAuthIdentityLayer` so a token that works on `/api` works here too.
+  const appsAuthenticate = async (request: Request): Promise<boolean> => {
+    const auth = betterAuth.auth;
+    const session = await auth.api.getSession({ headers: request.headers }).catch(() => null);
+    if (session) return true;
+    const authorization = request.headers.get("authorization");
+    const token =
+      authorization && authorization.toLowerCase().startsWith("bearer ")
+        ? authorization.slice(7).trim()
+        : undefined;
+    if (!token) return false;
+    const apiKeySession = await auth.api
+      .getSession({ headers: new Headers({ "x-api-key": token }) })
+      .catch(() => null);
+    return apiKeySession != null;
+  };
+  const apps = getSelfHostAppsSubsystem({
+    authenticate: appsAuthenticate,
+    webBaseUrl: config.webBaseUrl,
+  });
 
   // ---- the in-process MCP serving seams (+ shutdown hook) ----------------
   // Pass the pinned public origin so browser-approval URLs are reachable behind

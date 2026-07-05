@@ -28,6 +28,18 @@ export interface SelfHostAppsOptions {
   /** Optional per-request resolver factory for the catalog invoke path (built
    *  from the invoking executor context). */
   readonly makeResolver?: AppsPluginOptions["makeResolver"];
+  /** Authenticate the apps HTTP surface (publish/invoke/workflows/ui/SSE). The
+   *  host threads its identity check here so this package doesn't import the
+   *  host's auth stack. Omit to leave the surface open (tests). */
+  readonly authenticate?: (request: Request) => Promise<boolean>;
+  /** Absolute base URL (e.g. `https://host`) used to build the HTTP fallback URL
+   *  for `apps_open_ui` when the MCP client can't render UI inline. Omit to
+   *  serve no fallback URL (the tool returns `fallback_unavailable`). */
+  readonly webBaseUrl?: string;
+  /** Lazy variant of `webBaseUrl` for hosts whose base URL is resolved AFTER the
+   *  subsystem singleton is built (self-host: config.ts builds it, app.ts sets
+   *  the URL). Read per registration; takes precedence over `webBaseUrl`. */
+  readonly webBaseUrlFn?: () => string | undefined;
 }
 
 export interface SelfHostApps {
@@ -48,7 +60,10 @@ export const makeSelfHostApps = (options: SelfHostAppsOptions): SelfHostApps => 
     store,
     resolver: options.resolver,
   });
-  const http = makeAppsHttpRoutes({ runtime: host.runtime });
+  const http = makeAppsHttpRoutes({
+    runtime: host.runtime,
+    authenticate: options.authenticate,
+  });
   const plugin = appsPlugin({
     runtime: host.runtime,
     resolveBindings: options.resolveBindings,
@@ -58,7 +73,19 @@ export const makeSelfHostApps = (options: SelfHostAppsOptions): SelfHostApps => 
     runtime: host.runtime,
     http,
     registerMcp: (server) =>
-      registerAppsMcp(server, { runtime: host.runtime, scope: options.scope }),
+      registerAppsMcp(server, {
+        runtime: host.runtime,
+        scope: options.scope,
+        // Read the base URL lazily so a host that resolves it after building the
+        // subsystem singleton still gets a working fallback URL.
+        uiDocumentUrl: (scope, name) => {
+          const base = options.webBaseUrlFn?.() ?? options.webBaseUrl;
+          if (!base) return undefined;
+          return `${base.replace(/\/$/, "")}/api/apps/${encodeURIComponent(
+            scope,
+          )}/ui/${encodeURIComponent(name)}?document=html`;
+        },
+      }),
     plugin,
     close: host.close,
   };
