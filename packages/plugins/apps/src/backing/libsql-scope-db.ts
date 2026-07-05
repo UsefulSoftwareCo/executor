@@ -141,6 +141,22 @@ export interface LibsqlScopeDbOptions {
 
 const toUrl = (path: string): string => (path === ":memory:" ? path : `file:${resolve(path)}`);
 
+// A reversible, collision-free filename key for a scope (Fix 9). A scope already
+// composed only of filename-safe characters is used verbatim (so distinct
+// filename-safe scopes stay distinct — "my-scope" and "my_scope" no longer
+// collide). Any scope containing a character outside that set is hex-encoded in
+// full under an `x-` prefix, which can never collide with a verbatim scope
+// (verbatim scopes never start with `x-` followed by only hex... unless they
+// literally are `x-<hex>`, so we also encode those). Two different scopes always
+// produce two different keys.
+const SAFE_SCOPE = /^[A-Za-z0-9._-]+$/;
+const HEX_PREFIXED = /^x-[0-9a-f]*$/;
+const scopeFileKey = (scope: string): string => {
+  if (SAFE_SCOPE.test(scope) && !HEX_PREFIXED.test(scope)) return scope;
+  const hex = Buffer.from(scope, "utf8").toString("hex");
+  return `x-${hex}`;
+};
+
 export const makeLibsqlScopeDb = (options: LibsqlScopeDbOptions): ScopeDb => {
   const clients = new Map<string, Client>();
   const listeners = new Set<(event: ScopeWriteEvent) => void>();
@@ -156,7 +172,14 @@ export const makeLibsqlScopeDb = (options: LibsqlScopeDbOptions): ScopeDb => {
         client = createClient({ url: ":memory:" });
       } else {
         mkdirSync(options.root, { recursive: true });
-        const safe = scope.replace(/[^a-zA-Z0-9._-]/g, "_");
+        // Collision-free filename (Fix 9): the old `replace(/[^..]/g, "_")`
+        // COLLAPSED distinct scopes to the same file ("my-scope" and "my_scope"
+        // -> "my_scope.db"), so two scopes shared one database. Encode the raw
+        // scope instead: keep the common safe-identifier case readable, and for
+        // anything with a character outside `[A-Za-z0-9._-]` fall back to a
+        // reversible hex encoding of the full raw scope. Distinct scopes always
+        // map to distinct filenames.
+        const safe = scopeFileKey(scope);
         client = createClient({ url: toUrl(join(options.root, `${safe}.db`)) });
       }
       clients.set(scope, client);

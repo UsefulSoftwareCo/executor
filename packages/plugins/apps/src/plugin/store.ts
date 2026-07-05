@@ -29,6 +29,15 @@ export const descriptorCollection = definePluginStorageCollection("published_des
   },
 });
 
+/** The explicit connection-name -> scope mapping (Fix 9), keyed by the
+ *  (normalized) connection name. */
+export const scopeConnectionCollection = definePluginStorageCollection("apps_scope_connection", {
+  Type: {} as {
+    readonly connectionName: string;
+    readonly scope: string;
+  },
+});
+
 export interface AppsStore {
   /** Persist the published descriptor for a scope (the published pointer). */
   readonly putDescriptor: (
@@ -41,6 +50,22 @@ export interface AppsStore {
   readonly putBlob: (key: string, value: string) => Effect.Effect<void, StorageFailure>;
   /** Read a blob by key. */
   readonly getBlob: (key: string) => Effect.Effect<string | null, StorageFailure>;
+  /**
+   * Record the explicit connection-name -> scope mapping (Fix 9). The executor
+   * normalizes connection names to identifiers, so distinct scopes ("my-scope"
+   * vs "my_scope") can normalize to the SAME name if we tried to parse the scope
+   * back out. Storing the mapping at connect time makes the lookup exact and
+   * collision-free; `resolveTools`/`invokeTool` consult it instead of reversing
+   * the name. Idempotent (upsert).
+   */
+  readonly putScopeForConnection: (
+    connectionName: string,
+    scope: string,
+  ) => Effect.Effect<void, StorageFailure>;
+  /** The scope a connection name maps to, or null if none was recorded. */
+  readonly getScopeForConnection: (
+    connectionName: string,
+  ) => Effect.Effect<string | null, StorageFailure>;
 }
 
 export interface AppsStoreDeps {
@@ -57,7 +82,16 @@ export interface AppsStoreDeps {
 
 export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
   const descriptors = deps.pluginStorage.collection(descriptorCollection);
+  const scopeConnections = deps.pluginStorage.collection(scopeConnectionCollection);
   return {
+    putScopeForConnection: (connectionName, scope) =>
+      scopeConnections
+        .put({ owner: "org", key: connectionName, data: { connectionName, scope } })
+        .pipe(Effect.asVoid),
+    getScopeForConnection: (connectionName) =>
+      scopeConnections
+        .get({ key: connectionName })
+        .pipe(Effect.map((entry) => entry?.data.scope ?? null)),
     putDescriptor: (owner, descriptor) =>
       descriptors
         .put({

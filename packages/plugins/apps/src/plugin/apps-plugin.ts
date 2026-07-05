@@ -7,6 +7,7 @@ import {
   ConnectionName,
   IntegrationSlug,
   AuthTemplateSlug,
+  connectionIdentifier,
   type ResolveToolsInput,
   type ResolveToolsResult,
   type InvokeToolInput,
@@ -89,6 +90,17 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   const resolveBindings = options.resolveBindings;
   const makeResolver = options.makeResolver;
 
+  // Resolve the scope a connection addresses (Fix 9). Prefer the EXPLICIT stored
+  // mapping (recorded at connect time under the normalized name), which is exact
+  // and collision-free. Only when no mapping was recorded (e.g. a legacy
+  // connection created before the mapping existed) fall back to reverse-parsing
+  // the name — the fragile path this replaces.
+  const scopeFor = (connectionName: string): Effect.Effect<string> =>
+    runtime.deps.store.getScopeForConnection(connectionName).pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.map((mapped) => mapped ?? scopeFromConnection(connectionName)),
+    );
+
   return {
     id: APPS_PLUGIN_ID as "apps",
     packageName: "@executor-js/plugin-apps",
@@ -104,10 +116,15 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       return { runtime };
     },
 
-    // Declare the plugin's storage collection so the host provisions it.
+    // Declare the plugin's storage collections so the host provisions them.
     pluginStorage: {
       published_descriptor: {
         name: "published_descriptor",
+        schema: { Type: {} as Record<string, unknown> },
+        indexes: [],
+      },
+      apps_scope_connection: {
+        name: "apps_scope_connection",
         schema: { Type: {} as Record<string, unknown> },
         indexes: [],
       },
@@ -167,6 +184,22 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                     value: "",
                   });
                 }
+                // Record the explicit connection-name -> scope mapping (Fix 9).
+                // The executor normalizes connection names to identifiers, so we
+                // record the mapping under BOTH the name we requested and its
+                // normalized form (the name resolveTools/invokeTool actually
+                // sees). This makes the scope lookup exact and collision-free:
+                // "my-scope" and "my_scope" get DISTINCT stored mappings even if
+                // a naive name-parse would collapse them.
+                yield* runtime.deps.store
+                  .putScopeForConnection(String(connName), scope)
+                  .pipe(Effect.orElseSucceed(() => undefined));
+                const normalized = connectionIdentifier(String(connName));
+                if (normalized !== String(connName)) {
+                  yield* runtime.deps.store
+                    .putScopeForConnection(normalized, scope)
+                    .pipe(Effect.orElseSucceed(() => undefined));
+                }
                 return { scope, connection: String(connName) };
               }),
           }),
@@ -223,7 +256,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         // resolves to ZERO tools (the connection exists before the first
         // publish), so an empty descriptor here is an intentional empty result,
         // not the silently-swallowed missing-tool case invokeTool guards against.
-        const scope = scopeFromConnection(connection.name);
+        const scope = yield* scopeFor(String(connection.name));
         const descriptor = yield* runtime.getDescriptor(scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
         const tools: ToolDef[] = descriptor.tools.map((t) => ({
@@ -240,7 +273,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
 
     invokeTool: ({ ctx, toolRow, args }: InvokeToolInput<AppsStoreShape>) =>
       Effect.gen(function* () {
-        const scope = scopeFromConnection(toolRow.connection);
+        const scope = yield* scopeFor(String(toolRow.connection));
         const descriptor = yield* runtime.getDescriptor(scope);
         // A missing descriptor / unknown tool is a typed error, NOT a silent
         // `?? {}` default: invoking a tool that is not published in the scope

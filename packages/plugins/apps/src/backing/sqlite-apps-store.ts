@@ -23,6 +23,7 @@ const toUrl = (path: string): string => (path === ":memory:" ? path : `file:${re
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS descriptors (scope TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, descriptor TEXT NOT NULL, published_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scope_connections (connection_name TEXT PRIMARY KEY, scope TEXT NOT NULL);
 `;
 
 // Not-really-failing storage errors from libSQL wrapped opaquely.
@@ -75,6 +76,29 @@ export const makeSqliteAppsStore = (options: SqliteAppsStoreOptions): AppsStore 
           return row ? (JSON.parse(String(row.descriptor)) as AppDescriptor) : null;
         },
         catch: (cause) => storageFail("getDescriptor failed", cause),
+      }),
+    putScopeForConnection: (connectionName, scope) =>
+      Effect.tryPromise({
+        try: async () => {
+          await init();
+          await client.execute({
+            sql: "INSERT INTO scope_connections (connection_name, scope) VALUES (?, ?) ON CONFLICT(connection_name) DO UPDATE SET scope=excluded.scope",
+            args: [connectionName, scope],
+          });
+        },
+        catch: (cause) => storageFail("putScopeForConnection failed", cause),
+      }),
+    getScopeForConnection: (connectionName) =>
+      Effect.tryPromise({
+        try: async () => {
+          await init();
+          const res = await client.execute({
+            sql: "SELECT scope FROM scope_connections WHERE connection_name = ?",
+            args: [connectionName],
+          });
+          return res.rows[0] ? String(res.rows[0].scope) : null;
+        },
+        catch: (cause) => storageFail("getScopeForConnection failed", cause),
       }),
     putBlob: (key, value) =>
       Effect.tryPromise({

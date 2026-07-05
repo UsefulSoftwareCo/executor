@@ -26,6 +26,7 @@ export const makeInMemoryAppsStore = (): AppsStore & {
 } => {
   const descriptors = new Map<string, AppDescriptor>();
   const blobs = new Map<string, string>();
+  const scopeConnections = new Map<string, string>();
   return {
     descriptors,
     blobs,
@@ -34,6 +35,10 @@ export const makeInMemoryAppsStore = (): AppsStore & {
     getDescriptor: (scope) => Effect.sync(() => descriptors.get(scope) ?? null),
     putBlob: (key, value) => Effect.sync(() => void blobs.set(key, value)),
     getBlob: (key) => Effect.sync(() => blobs.get(key) ?? null),
+    putScopeForConnection: (connectionName, scope) =>
+      Effect.sync(() => void scopeConnections.set(connectionName, scope)),
+    getScopeForConnection: (connectionName) =>
+      Effect.sync(() => scopeConnections.get(connectionName) ?? null),
   };
 };
 
