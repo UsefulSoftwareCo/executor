@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { Effect } from "effect";
-import { createEmulator, type EmulatorClient } from "@executor-js/emulate";
+import { createEmulator } from "@executor-js/emulate";
+
+type LocalEmulator = Awaited<ReturnType<typeof createEmulator>>;
 
 import { makeSelfHostAppsRuntime, type SelfHostAppsRuntime } from "../plugin/self-host-runtime";
 import { makeAppsHttpRoutes } from "../http/routes";
@@ -52,7 +54,7 @@ class FakeMcpServer implements McpServerLike {
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect as never);
 
 describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
-  let github: EmulatorClient;
+  let github: LocalEmulator;
   let host: SelfHostAppsRuntime;
   let http: ReturnType<typeof makeAppsHttpRoutes>;
   let mcp: FakeMcpServer;
