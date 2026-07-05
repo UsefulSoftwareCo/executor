@@ -112,5 +112,105 @@ export default defineTool({
       expect(seen[0].path).toEqual(["messages", "search"]);
       expect(seen[0].args[0]).toMatchObject({ q: "invoice" });
     });
+
+    // --- richer assertions grafted from build A ---------------------------
+
+    it("round-trips a db.sql write with its parameters intact", async () => {
+      const sandbox = makeSandbox();
+      // A tool with a github client AND a db.sql write, asserting BOTH the
+      // connection call and the parameterized db statement cross the bridge with
+      // their args intact (the db.sql param round-trip A's suite covers).
+      const src = `import { defineTool, connection } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "bridge",
+  connections: { gh: connection("github") },
+  input: z.object({}),
+  async handler(_i, { gh, db }) {
+    const repos = await gh.repos.listForAuthenticatedUser({ per_page: 5 });
+    await db.sql\`INSERT INTO log (n) VALUES (\${repos.length})\`;
+    return { count: repos.length };
+  },
+});`;
+      const b = await bundle("tools/bridge.ts", src);
+      const calls: { root: string; path: readonly string[]; args: readonly unknown[] }[] = [];
+      const bridge: HandleBridge = {
+        call: ({ root, path, args }) =>
+          Effect.sync(() => {
+            calls.push({ root, path, args });
+            if (root === "gh" && path.join(".") === "repos.listForAuthenticatedUser") {
+              return [{ full_name: "a/b" }, { full_name: "c/d" }];
+            }
+            return [];
+          }),
+      };
+      const result = await run(
+        sandbox.invoke(
+          b,
+          {
+            artifact: "bridge",
+            kind: "tool",
+            input: {},
+            roots: { gh: { kind: "single" }, db: { kind: "single" } },
+          },
+          bridge,
+        ),
+      );
+      expect(result.output).toEqual({ count: 2 });
+      // The github call crossed the bridge.
+      expect(calls.some((c) => c.root === "gh")).toBe(true);
+      // The db.sql write crossed as ["sql"] with the template strings + the
+      // interpolated parameter (2) intact.
+      const dbCall = calls.find((c) => c.root === "db");
+      expect(dbCall?.path).toEqual(["sql"]);
+      const [strings, ...params] = dbCall!.args as [readonly string[], ...unknown[]];
+      expect(strings.join("?")).toContain("INSERT INTO log");
+      expect(params).toEqual([2]);
+    });
+
+    it("fans out per-index, each element addressed distinctly", async () => {
+      const sandbox = makeSandbox();
+      // inbox i returns (i+1) messages; the handler pushes each count, so the
+      // ordered result proves each fan-out element was addressed with its index.
+      const src = `import { defineTool, connections } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "fanout",
+  connections: { inboxes: connections("gmail") },
+  input: z.object({}),
+  async handler(_i, { inboxes }) {
+    const counts = [];
+    for (const inbox of inboxes) {
+      const r = await inbox.messages.search({ q: "x" });
+      counts.push(r.length);
+    }
+    return { inboxes: inboxes.length, counts };
+  },
+});`;
+      const b = await bundle("tools/fanout2.ts", src);
+      const bridge: HandleBridge = {
+        call: ({ root, path }) =>
+          Effect.sync(() => {
+            if (path.join(".") === "messages.search") {
+              const idx = Number(root.split("#")[1]);
+              return new Array(idx + 1).fill({ id: "m" });
+            }
+            return [];
+          }),
+      };
+      const result = await run(
+        sandbox.invoke(
+          b,
+          {
+            artifact: "fanout2",
+            kind: "tool",
+            input: {},
+            roots: { inboxes: { kind: "array", count: 3 } },
+          },
+          bridge,
+        ),
+      );
+      expect(result.output).toEqual({ inboxes: 3, counts: [1, 2, 3] });
+    });
   });
 };

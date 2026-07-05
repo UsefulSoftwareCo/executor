@@ -225,14 +225,23 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
         // bridge. Path 0 is `__handle__`; the single arg is {root, path, args}.
         const invoker: SandboxToolInvoker = {
           invoke: (input: { path: string; args: unknown }) => {
+            // Strictness (grafted from A): the ONLY reserved bridge path the
+            // invoke phase accepts is `__handle__`. Anything else is a hard
+            // error, never silently ignored — a handler must not reach the host
+            // through an unexpected channel.
             if (input.path !== "__handle__") {
-              return Effect.fail(new Error(`unexpected sandbox call: ${input.path}`)) as never;
+              return Effect.fail(
+                new Error(`unexpected sandbox bridge path: ${input.path}`),
+              ) as never;
             }
             const call = input.args as {
               root: string;
               path: readonly string[];
               args: readonly unknown[];
             };
+            if (!call || typeof call.root !== "string" || !Array.isArray(call.path)) {
+              return Effect.fail(new Error("malformed sandbox bridge call")) as never;
+            }
             return bridge.call({ root: call.root, path: call.path, args: call.args }) as never;
           },
         };

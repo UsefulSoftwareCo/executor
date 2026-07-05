@@ -120,15 +120,37 @@ const parseRoot = (root: string): { role: string; index?: number } => {
   return { role: root.slice(0, hash), index: Number(root.slice(hash + 1)) };
 };
 
+// Root names the bridge treats as reserved: nothing the sandbox sends may
+// address them as a connection role. `db` is handled explicitly first; any other
+// reserved prefix (a future internal handle) is rejected rather than silently
+// resolved. (Grafted strictness from A: reject unexpected/reserved calls.)
+const RESERVED_ROOTS = new Set(["__proto__", "constructor", "prototype"]);
+
+const invokeErr = (message: string): ToolSandboxError =>
+  new ToolSandboxError({ kind: "invoke", message });
+
 /**
  * Build the HandleBridge the sandbox calls out through. `db` routes to the
  * scope database; a declared role routes to its bound connection through the
- * `ClientResolver`. Undeclared roots are unreachable (the sandbox never injects
- * them). A `.account` read on a client returns bound-connection metadata
+ * `ClientResolver`. The dispatch is STRICT: an empty/malformed path, a reserved
+ * root, an undeclared root, or an out-of-range fan-out index is a typed error,
+ * never a silent success (the cloud RPC backing must be able to trust the same
+ * shape). A `.account` read on a client returns bound-connection metadata
  * without a round-trip.
  */
 export const buildBridge = (context: BindingContext): HandleBridge => ({
   call: ({ root, path, args }) => {
+    // Strictness: every bridge call must name a root and a non-empty method path.
+    if (typeof root !== "string" || root.length === 0) {
+      return Effect.fail(invokeErr("bridge call is missing a handle root"));
+    }
+    if (!Array.isArray(path) || path.length === 0) {
+      return Effect.fail(invokeErr(`bridge call to "${root}" has an empty method path`));
+    }
+    if (RESERVED_ROOTS.has(root)) {
+      return Effect.fail(invokeErr(`reserved handle root is not callable: ${root}`));
+    }
+
     if (root === "db") {
       // The scope db handle exposes `sql` as a tagged template; the injected
       // client calls `db.sql(templateStrings, ...values)`. When routed through
@@ -143,29 +165,39 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
             ),
           );
       }
-      return Effect.fail(
-        new ToolSandboxError({ kind: "invoke", message: `unsupported db call: ${path.join(".")}` }),
-      );
+      return Effect.fail(invokeErr(`unsupported db call: ${path.join(".")}`));
     }
 
     const { role, index } = parseRoot(root);
     const decl = context.declared[role];
     if (!decl) {
-      return Effect.fail(
-        new ToolSandboxError({ kind: "invoke", message: `undeclared handle root: ${root}` }),
-      );
+      return Effect.fail(invokeErr(`undeclared handle root: ${root}`));
     }
     if (decl.kind === "catalog") {
       return Effect.fail(
-        new ToolSandboxError({
-          kind: "invoke",
-          message: "catalog() open-world proxy execution is not implemented in this build",
-        }),
+        invokeErr("catalog() open-world proxy execution is not implemented in this build"),
       );
     }
 
-    // A `.account` read returns bound-connection metadata (safe, no creds).
     const binding = context.bindings[role];
+    // Fan-out roots MUST carry a valid index within the bound array; a single
+    // role MUST NOT carry an index. (Grafted bounds-checking from A.)
+    if (decl.kind === "array") {
+      if (binding?.kind !== "array") {
+        return Effect.fail(invokeErr(`role "${role}" is a fan-out but is not bound to an array`));
+      }
+      if (
+        index === undefined ||
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= binding.connections.length
+      ) {
+        return Effect.fail(invokeErr(`fan-out handle "${root}" addresses an out-of-range index`));
+      }
+    } else if (index !== undefined) {
+      return Effect.fail(invokeErr(`single-connection role "${role}" was addressed with an index`));
+    }
+
     const connectionName =
       binding?.kind === "array"
         ? binding.connections[index ?? 0]
@@ -173,9 +205,7 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
           ? binding.connection
           : undefined;
     if (!connectionName) {
-      return Effect.fail(
-        new ToolSandboxError({ kind: "invoke", message: `no binding for role ${role}` }),
-      );
+      return Effect.fail(invokeErr(`no binding for role ${role}`));
     }
     if (path.length === 1 && path[0] === "account") {
       // Clients read `.account.email` / `.account.login`; expose both keys.
