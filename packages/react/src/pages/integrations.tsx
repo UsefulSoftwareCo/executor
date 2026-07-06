@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -33,11 +33,14 @@ import {
   CardStackEntryDescription,
   CardStackEntryMedia,
   CardStackEntryTitle,
+  CardStackHeader,
 } from "../components/card-stack";
 import {
+  IntegrationFavicon,
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
+import { groupIntegrations, type IntegrationFamilyGroup } from "../lib/integration-grouping";
 import { IntegrationHealthSummary } from "../components/integration-health-summary";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
@@ -434,47 +437,110 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
     return out;
   }, [integrationPlugins]);
 
+  // Multi-service providers (Google, Microsoft) collapse their per-service
+  // integrations under one umbrella; everything else renders flat. Groups keep
+  // the position of their first member so the list order is stable.
+  const items = useMemo(() => groupIntegrations(props.integrations), [props.integrations]);
+
+  const renderEntry = (integration: Integration) => {
+    const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
+    const plugin = pluginByKind.get(pluginKey);
+    const SummaryComponent = plugin?.summary;
+    const slug = String(integration.slug);
+    const name = integration.name || slug;
+    return (
+      <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
+        <Link
+          to="/{-$orgSlug}/integrations/$namespace"
+          params={{ namespace: slug }}
+          data-testid={`integration-entry-${slug}`}
+        >
+          <IntegrationIconWithAccount
+            icon={integrationPresetIconUrl(
+              { id: slug, kind: integration.kind, name, url: integration.displayUrl },
+              integrationPlugins,
+            )}
+            sourceId={slug}
+            url={integration.displayUrl ?? integrationInferredUrl({ id: slug, name }) ?? undefined}
+          />
+          <CardStackEntryContent>
+            <CardStackEntryTitle>{name}</CardStackEntryTitle>
+            <CardStackEntryDescription>{slug}</CardStackEntryDescription>
+          </CardStackEntryContent>
+          <CardStackEntryActions>
+            {SummaryComponent && (
+              <Suspense fallback={null}>
+                <SummaryComponent sourceId={slug} />
+              </Suspense>
+            )}
+            <IntegrationHealthSummary integration={integration.slug} />
+          </CardStackEntryActions>
+        </Link>
+      </CardStackEntry>
+    );
+  };
+
+  // Runs of standalone (non-family) integrations share one searchable card so
+  // the flat catalog keeps its familiar search box; family groups render as
+  // their own collapsible provider umbrellas interleaved at the right position.
+  const rendered: ReactNode[] = [];
+  let flatRun: Integration[] = [];
+  const flushFlat = () => {
+    if (flatRun.length === 0) return;
+    const run = flatRun;
+    flatRun = [];
+    rendered.push(
+      <CardStack key={`flat-${String(run[0]!.slug)}`} searchable>
+        <CardStackContent>{run.map(renderEntry)}</CardStackContent>
+      </CardStack>,
+    );
+  };
+
+  for (const item of items) {
+    if (item.type === "single") {
+      flatRun.push(item.integration);
+      continue;
+    }
+    flushFlat();
+    rendered.push(
+      <IntegrationFamilyGroupCard
+        key={`group-${item.kind}`}
+        group={item}
+        plugin={pluginByKind.get(KIND_TO_PLUGIN_KEY[item.kind] ?? item.kind)}
+        renderEntry={renderEntry}
+      />,
+    );
+  }
+  flushFlat();
+
+  return <div className="space-y-3">{rendered}</div>;
+}
+
+// A provider umbrella: a collapsible card whose header carries the provider
+// icon + name and a count, containing that provider's per-service integrations.
+function IntegrationFamilyGroupCard(props: {
+  group: IntegrationFamilyGroup;
+  plugin: IntegrationPlugin | undefined;
+  renderEntry: (integration: Integration) => ReactNode;
+}) {
+  const { group, plugin, renderEntry } = props;
+  // The provider's own logo lives on its bundle preset (the "Google" /
+  // "Microsoft Graph" entry); fall back to a neutral glyph when absent.
+  const headerIcon = plugin?.presets?.find((preset) => preset.icon)?.icon ?? null;
   return (
-    <CardStack searchable>
-      <CardStackContent>
-        {props.integrations.map((integration) => {
-          const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
-          const plugin = pluginByKind.get(pluginKey);
-          const SummaryComponent = plugin?.summary;
-          const slug = String(integration.slug);
-          const name = integration.name || slug;
-          return (
-            <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
-              <Link to="/{-$orgSlug}/integrations/$namespace" params={{ namespace: slug }}>
-                <IntegrationIconWithAccount
-                  icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
-                    integrationPlugins,
-                  )}
-                  sourceId={slug}
-                  url={
-                    integration.displayUrl ??
-                    integrationInferredUrl({ id: slug, name }) ??
-                    undefined
-                  }
-                />
-                <CardStackEntryContent>
-                  <CardStackEntryTitle>{name}</CardStackEntryTitle>
-                  <CardStackEntryDescription>{slug}</CardStackEntryDescription>
-                </CardStackEntryContent>
-                <CardStackEntryActions>
-                  {SummaryComponent && (
-                    <Suspense fallback={null}>
-                      <SummaryComponent sourceId={slug} />
-                    </Suspense>
-                  )}
-                  <IntegrationHealthSummary integration={integration.slug} />
-                </CardStackEntryActions>
-              </Link>
-            </CardStackEntry>
-          );
-        })}
-      </CardStackContent>
+    <CardStack collapsible defaultOpen data-testid={`integration-group-${group.kind}`}>
+      <CardStackHeader>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <IntegrationFavicon icon={headerIcon} size={16} />
+          </span>
+          <span className="truncate">{group.label}</span>
+          <span className="shrink-0 font-mono text-xs font-normal text-muted-foreground">
+            {group.members.length}
+          </span>
+        </span>
+      </CardStackHeader>
+      <CardStackContent>{group.members.map(renderEntry)}</CardStackContent>
     </CardStack>
   );
 }
