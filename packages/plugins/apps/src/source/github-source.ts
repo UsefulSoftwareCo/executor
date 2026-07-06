@@ -1,6 +1,6 @@
 import { Data, Effect, Result } from "effect";
 
-import { PublishError, type FileDiagnostic, type SkippedArtifact } from "../pipeline/discover";
+import { PublishError, type FileDiagnostic } from "../pipeline/discover";
 import { PUBLISH_LIMITS, enforcePublishLimits } from "../pipeline/publish";
 import type { AppSourceRef } from "../pipeline/descriptor";
 import type { AppsRuntime } from "../plugin/runtime";
@@ -20,6 +20,7 @@ export interface GitHubSourceSnapshot {
   readonly ref: string;
   readonly upstreamSha: string;
   readonly description?: string;
+  readonly skipped: readonly GitHubSkippedArtifact[];
 }
 
 export class GitHubSourceError extends Data.TaggedError("GitHubSourceError")<{
@@ -35,27 +36,32 @@ export interface SyncErrorData {
   readonly diagnostics?: readonly FileDiagnostic[];
 }
 
+export interface GitHubSkippedArtifact {
+  readonly path: string;
+  readonly reason: "not supported yet" | "unsupported file type" | "ignored";
+}
+
 export type GitHubSyncResult =
   | {
       readonly status: "published";
       readonly snapshotId: SnapshotId;
       readonly upstreamSha: string;
       readonly tools: readonly string[];
-      readonly skipped: readonly SkippedArtifact[];
+      readonly skipped: readonly GitHubSkippedArtifact[];
       readonly errors?: undefined;
     }
   | {
       readonly status: "up-to-date";
       readonly upstreamSha: string;
       readonly tools: readonly string[];
-      readonly skipped: readonly SkippedArtifact[];
+      readonly skipped: readonly GitHubSkippedArtifact[];
       readonly errors?: undefined;
     }
   | {
       readonly status: "failed";
       readonly upstreamSha?: string;
       readonly tools: readonly string[];
-      readonly skipped: readonly SkippedArtifact[];
+      readonly skipped: readonly GitHubSkippedArtifact[];
       readonly errors: readonly SyncErrorData[];
     };
 
@@ -65,7 +71,9 @@ export interface SyncGitHubSourceInput extends GitHubSourceInput {
   readonly scope: string;
 }
 
-const MATERIALIZED_RE = /^(tools|workflows|ui|skills)\//;
+const TOOL_RE = /^tools\/([a-z0-9][a-z0-9-]*)\.(ts|tsx|js|jsx)$/;
+const DEFERRED_RE = /^(workflows|ui|skills)\//;
+const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
 
 const trimBaseUrl = (baseUrl: string): string => baseUrl.replace(/\/+$/, "");
 
@@ -88,8 +96,7 @@ const encodedRepoPath = (repo: string): Effect.Effect<string, GitHubSourceError>
   return Effect.succeed(`${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.name)}`);
 };
 
-const materializes = (path: string): boolean =>
-  path === "executor.json" || MATERIALIZED_RE.test(path);
+const acceptedPath = (path: string): boolean => path === "executor.json" || TOOL_RE.test(path);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -163,6 +170,7 @@ interface RefResponse {
 interface TreeEntry {
   readonly path?: unknown;
   readonly type?: unknown;
+  readonly mode?: unknown;
   readonly sha?: unknown;
   readonly size?: unknown;
 }
@@ -217,6 +225,34 @@ const checkTreeLimits = (entries: readonly TreeEntry[]): PublishError | null => 
     });
   }
   return diagnostics.length === 0 ? null : limitError(diagnostics);
+};
+
+const classifyTreeEntry = (
+  entry: TreeEntry,
+):
+  | {
+      readonly kind: "fetch";
+      readonly entry: TreeEntry & { readonly path: string; readonly sha: string };
+    }
+  | { readonly kind: "skip"; readonly skipped: GitHubSkippedArtifact }
+  | null => {
+  const path = asString(entry.path);
+  if (!path) return null;
+
+  const type = asString(entry.type);
+  const mode = asString(entry.mode);
+  if (type === "tree") return null;
+  if (type !== "blob" || !mode || !REGULAR_FILE_MODES.has(mode)) {
+    return { kind: "skip", skipped: { path, reason: "unsupported file type" } };
+  }
+
+  const sha = asString(entry.sha);
+  if (!sha) return { kind: "skip", skipped: { path, reason: "unsupported file type" } };
+  if (acceptedPath(path)) return { kind: "fetch", entry: { ...entry, path, sha } };
+  if (DEFERRED_RE.test(path)) {
+    return { kind: "skip", skipped: { path, reason: "not supported yet" } };
+  }
+  return { kind: "skip", skipped: { path, reason: "ignored" } };
 };
 
 const decodeBlob = (path: string, blob: BlobResponse): Effect.Effect<string, GitHubSourceError> =>
@@ -293,13 +329,14 @@ export const fetchGitHubSource = (
         path: `/repos/${repoPath}/git/trees/${treeSha}`,
       });
     }
-    const entries = (tree.tree ?? []).filter(
-      (entry) =>
-        entry.type === "blob" &&
-        typeof entry.path === "string" &&
-        typeof entry.sha === "string" &&
-        materializes(entry.path),
-    );
+    const entries: (TreeEntry & { readonly path: string; readonly sha: string })[] = [];
+    const skipped: GitHubSkippedArtifact[] = [];
+    for (const entry of tree.tree ?? []) {
+      const classified = classifyTreeEntry(entry);
+      if (!classified) continue;
+      if (classified.kind === "fetch") entries.push(classified.entry);
+      else skipped.push(classified.skipped);
+    }
     const treeLimitError = checkTreeLimits(entries);
     if (treeLimitError) return yield* Effect.fail(treeLimitError);
 
@@ -321,6 +358,7 @@ export const fetchGitHubSource = (
       ref,
       upstreamSha,
       description: yield* executorDescription(files),
+      skipped,
     };
   });
 
@@ -372,7 +410,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
         status: "up-to-date",
         upstreamSha: snapshot.upstreamSha,
         tools: current.tools.map((tool) => tool.name),
-        skipped: current.skipped ?? [],
+        skipped: [...snapshot.skipped, ...(current.skipped ?? [])],
       } satisfies GitHubSyncResult;
     }
 
@@ -391,7 +429,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
         status: "failed",
         upstreamSha: snapshot.upstreamSha,
         tools: [],
-        skipped: [],
+        skipped: snapshot.skipped,
         errors: [publishErrorToSyncError(published.failure)],
       } satisfies GitHubSyncResult;
     }
@@ -401,6 +439,6 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
       snapshotId: published.success.snapshotId,
       upstreamSha: snapshot.upstreamSha,
       tools: published.success.descriptor.tools.map((tool) => tool.name),
-      skipped: published.success.skipped,
+      skipped: [...snapshot.skipped, ...published.success.skipped],
     } satisfies GitHubSyncResult;
   });

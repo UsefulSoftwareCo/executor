@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { makeSelfHostAppsRuntime } from "../plugin/self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
 import { PUBLISH_LIMITS } from "../pipeline/publish";
+import { scopeAddress } from "../seams/scope-address";
 import { fetchGitHubSource, syncGitHubSource } from "./github-source";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
@@ -34,8 +35,17 @@ const json = (value: unknown, status = 200): Response =>
     headers: { "content-type": "application/json" },
   });
 
+interface GitHubTreeFixtureEntry {
+  readonly path: string;
+  readonly type: string;
+  readonly mode?: string;
+  readonly content?: string;
+  readonly size?: number;
+}
+
 const makeGitHubFetch = (input: {
   readonly files: ReadonlyMap<string, string>;
+  readonly entries?: readonly GitHubTreeFixtureEntry[];
   readonly upstreamSha?: string;
   readonly treeSha?: string;
 }) => {
@@ -43,9 +53,22 @@ const makeGitHubFetch = (input: {
   const upstreamSha = input.upstreamSha ?? "commit-1";
   const treeSha = input.treeSha ?? "tree-1";
   const blobBySha = new Map<string, { path: string; content: string }>();
+  const treeEntries: readonly GitHubTreeFixtureEntry[] =
+    input.entries ??
+    [...input.files].map(([path, content]) => ({
+      path,
+      type: "blob",
+      mode: "100644",
+      content,
+    }));
   let index = 0;
-  for (const [path, content] of input.files) {
-    blobBySha.set(`blob-${++index}`, { path, content });
+  const shaByPath = new Map<string, string>();
+  for (const entry of treeEntries) {
+    if (entry.content !== undefined) {
+      const sha = `blob-${++index}`;
+      shaByPath.set(entry.path, sha);
+      blobBySha.set(sha, { path: entry.path, content: entry.content });
+    }
   }
   let blobCalls = 0;
   const fetch = (async (rawUrl: string) => {
@@ -59,12 +82,16 @@ const makeGitHubFetch = (input: {
     }
     if (url.pathname === `${repoPath}/git/trees/${treeSha}`) {
       return json({
-        tree: [...blobBySha.entries()].map(([sha, blob]) => ({
-          path: blob.path,
-          type: "blob",
-          sha,
-          size: Buffer.byteLength(blob.content, "utf8"),
-        })),
+        tree: treeEntries.map((entry, entryIndex) => {
+          const sha = shaByPath.get(entry.path) ?? `tree-${entryIndex}`;
+          return {
+            path: entry.path,
+            type: entry.type,
+            mode: entry.mode,
+            sha,
+            size: entry.size ?? Buffer.byteLength(entry.content ?? "", "utf8"),
+          };
+        }),
       });
     }
     const blobPrefix = `${repoPath}/git/blobs/`;
@@ -103,10 +130,10 @@ describe("GitHub custom-tools source", () => {
     ]);
     const github = makeGitHubFetch({ files, upstreamSha: "commit-a" });
     const snapshot = await run(fetchGitHubSource({ repo: "acme/tools", fetch: github.fetch }));
-    expect([...snapshot.files.keys()].sort()).toEqual([
-      "executor.json",
-      "tools/hello.ts",
-      "workflows/deferred.ts",
+    expect([...snapshot.files.keys()].sort()).toEqual(["executor.json", "tools/hello.ts"]);
+    expect(snapshot.skipped).toEqual([
+      { path: "workflows/deferred.ts", reason: "not supported yet" },
+      { path: "docs/readme.md", reason: "ignored" },
     ]);
     expect(snapshot.description).toBe("Acme tools");
 
@@ -123,6 +150,7 @@ describe("GitHub custom-tools source", () => {
     expect(result.tools).toEqual(["hello"]);
     expect(result.skipped).toEqual([
       { path: "workflows/deferred.ts", reason: "not supported yet" },
+      { path: "docs/readme.md", reason: "ignored" },
     ]);
     const descriptor = await run(host.runtime.getDescriptor("githubTools"));
     expect(descriptor?.description).toBe("Acme tools");
@@ -206,6 +234,67 @@ export default defineTool({ description: "bad", input: { type: "object" }, async
     expect(result.upstreamSha).toBe("bad-sha");
     expect(result.errors?.[0]?.stage).toBe("bundle");
     expect(result.errors?.[0]?.message).toContain('bare import "lodash" is not allowed');
+    await host.close();
+  });
+
+  it("skips unsupported tree entries and invalid paths without committing them", async () => {
+    const github = makeGitHubFetch({
+      files: new Map(),
+      entries: [
+        {
+          path: "tools/ok.ts",
+          type: "blob",
+          mode: "100644",
+          content: toolSource("ok"),
+        },
+        {
+          path: "tools/link.ts",
+          type: "blob",
+          mode: "120000",
+          content: "../outside.ts",
+        },
+        {
+          path: "tools/submodule.ts",
+          type: "commit",
+          mode: "160000",
+        },
+        {
+          path: "tools/Bad.Name.ts",
+          type: "blob",
+          mode: "100644",
+          content: toolSource("bad"),
+        },
+      ],
+      upstreamSha: "mixed-sha",
+    });
+    const host = makeRuntime();
+    const result = await run(
+      syncGitHubSource({
+        runtime: host.runtime,
+        scope: "githubTools",
+        repo: "acme/tools",
+        fetch: github.fetch,
+      }),
+    );
+
+    expect(result.status).toBe("published");
+    expect(result.tools).toEqual(["ok"]);
+    expect(result.skipped).toEqual([
+      { path: "tools/link.ts", reason: "unsupported file type" },
+      { path: "tools/submodule.ts", reason: "unsupported file type" },
+      { path: "tools/Bad.Name.ts", reason: "ignored" },
+    ]);
+
+    const descriptor = await run(host.runtime.getDescriptor("githubTools"));
+    expect(descriptor?.tools.map((tool) => tool.name)).toEqual(["ok"]);
+    const scopeStore = await run(
+      host.runtime.deps.artifactStore.forScope(scopeAddress("org", "githubTools")),
+    );
+    const snapshotPaths = await run(scopeStore.list(descriptor!.snapshotId as never));
+    expect(snapshotPaths).toContain("tools/ok.ts");
+    expect(snapshotPaths).not.toContain("tools/link.ts");
+    expect(snapshotPaths).not.toContain("tools/submodule.ts");
+    expect(snapshotPaths).not.toContain("tools/Bad.Name.ts");
     await host.close();
   });
 });

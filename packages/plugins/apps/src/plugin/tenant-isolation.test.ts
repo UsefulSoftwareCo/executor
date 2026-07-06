@@ -51,6 +51,7 @@ const makeGitHubFetch = (input: { readonly toolName: string; readonly upstreamSh
           {
             path: `tools/${input.toolName}.ts`,
             type: "blob",
+            mode: "100644",
             sha: `${input.upstreamSha}-blob`,
             size: Buffer.byteLength(content, "utf8"),
           },

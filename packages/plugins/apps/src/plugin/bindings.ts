@@ -259,6 +259,8 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
       return Effect.fail(invokeErr(`no binding for role ${role}`));
     }
     if (path.length === 1 && path[0] === "account") {
+      // Connection-derived placeholders only; this is not verified upstream
+      // account identity.
       return Effect.succeed({ email: connectionName, login: connectionName, name: connectionName });
     }
 
