@@ -1063,7 +1063,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
   const activeOrgs = orgs.filter((org) => !org.completed && org.hardErrors.length === 0);
   const summary = {
     orgs: orgs.length,
-    completedOrgs: orgs.length - activeOrgs.length,
+    completedOrgs: orgs.filter((org) => org.completed).length,
     integrationsCreate: activeOrgs
       .flatMap((org) => org.integrations)
       .filter((row) => row.action === "create").length,

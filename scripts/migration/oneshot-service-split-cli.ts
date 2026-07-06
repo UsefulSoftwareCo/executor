@@ -214,6 +214,9 @@ const operationKeyPrefix = (integration: string): string =>
 
 const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
   if (org.completed) return;
+  if (org.hardErrors.length > 0) {
+    throw new Error(`org ${org.tenant} has unresolved policy hard errors; apply is blocked`);
+  }
   await sql.begin(async (tx) => {
     const now = new Date();
     for (const row of org.integrations.filter((item) => item.action === "create")) {
