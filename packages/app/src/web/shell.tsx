@@ -212,6 +212,7 @@ function SidebarContent(props: {
           <Link
             to="/{-$orgSlug}"
             onClick={props.onNavigate}
+            data-testid="sidebar-integrations-heading"
             className="text-xs font-medium uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground"
           >
             Integrations
@@ -220,6 +221,7 @@ function SidebarContent(props: {
             variant="ghost"
             size="icon-xs"
             aria-label="Connect an integration"
+            data-testid="sidebar-connect-integration"
             className="text-muted-foreground/60 hover:text-foreground"
             onClick={() => setConnectOpen(true)}
           >
