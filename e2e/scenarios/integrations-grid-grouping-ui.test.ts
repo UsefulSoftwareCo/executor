@@ -23,12 +23,25 @@
 // Text lookups are scoped to getByRole("main"): selfhost shares a
 // bootstrap-admin identity and the shell sidebar also lists these integrations,
 // so a page-wide getByText would match the sidebar copy.
+//
+// SHARED-STATE ROBUSTNESS: on selfhost every scenario acts as the same
+// bootstrap admin, so google-per-service-add-ui may already have created these
+// integrations before this file runs (or vice versa, in either order). The add
+// flow's submit button is DISABLED when the custom slug (`google_custom`)
+// already exists (`customSlugAlreadyExists` gates `canAdd` in
+// AddGoogleSource), so this spec first checks the grid, adds only what is
+// missing, and removes ONLY what it created in an `ensuring` finalizer so the
+// google-per-service spec finds a clean slate if it runs after this file.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import { composePluginApi } from "@executor-js/api/server";
+import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
-import { Browser, Target } from "../src/services";
+import { Api, Browser, Target } from "../src/services";
 import { clearCheckedPresets, setPresetChecked } from "./support/picker";
+
+const coreApi = composePluginApi([] as const);
 
 scenario(
   "Integrations · per-service integrations group under one provider umbrella with distinct icons",
@@ -36,40 +49,105 @@ scenario(
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
+    const { client } = yield* Api;
     const identity = yield* target.newIdentity();
+    const api = yield* client(coreApi, identity);
     const customDiscoveryUrl = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
+    // Slugs this test creates (as opposed to found already existing); the
+    // finalizer removes exactly these so no state leaks into the shared
+    // selfhost instance, and pre-existing integrations are left alone.
+    const createdSlugs: string[] = [];
 
-    yield* browser.session(identity, async ({ page, step }) => {
-      await step("Fan out four Google integrations (Calendar, Gmail, Drive, custom)", async () => {
-        await page.goto("/integrations/add/google", { waitUntil: "domcontentloaded" });
-        await page.getByText("Customize your Google connection").waitFor();
-        await page.getByTestId("preset-checkbox-google-calendar").waitFor();
+    const session = browser.session(identity, async ({ page, step }) => {
+      await step(
+        "Ensure the four Google integrations exist (Calendar, Gmail, Drive, custom)",
+        async () => {
+          // This step is about ensuring grid preconditions, not about the add
+          // path (google-per-service-add-ui owns that): it adds only the missing
+          // integrations and tolerates "skipped" rows. The real grouping/icon
+          // assertions live in the steps below.
+          //
+          // preset id -> integration slug (dashes become underscores; custom -> google_custom)
+          const presetToSlug: Record<string, string> = {
+            "google-calendar": "google_calendar",
+            "google-gmail": "google_gmail",
+            "google-drive": "google_drive",
+          };
+          const customSlug = "google_custom";
 
-        await clearCheckedPresets(page);
-        for (const presetId of ["google-calendar", "google-gmail", "google-drive"]) {
-          await setPresetChecked(page, presetId, true);
-        }
-        const customField = page.getByPlaceholder(
-          "https://www.googleapis.com/discovery/v1/apis/<service>/<version>/rest",
-        );
-        await customField.fill(customDiscoveryUrl);
-        await customField.press("Enter");
-        await page.getByText(customDiscoveryUrl).waitFor();
+          await page.goto("/integrations", { waitUntil: "networkidle" });
+          const existingMain = page.getByRole("main");
+          const slugExists = async (slug: string): Promise<boolean> =>
+            (await existingMain.getByTestId(`integration-entry-${slug}`).count()) > 0;
 
-        await page.getByTestId("google-add-submit").click();
-        const results = page.getByTestId("google-add-results");
-        await results.waitFor({ timeout: 120_000 });
-        for (const presetId of ["google-calendar", "google-gmail", "google-drive"]) {
-          const row = page.getByTestId(`add-result-row-${presetId}`);
-          await row.waitFor({ timeout: 120_000 });
-          expect(await row.getAttribute("data-state"), `${presetId} added`).toBe("added");
-        }
-        const customRow = page.getByTestId("add-result-row-custom");
-        await customRow.waitFor({ timeout: 120_000 });
-        expect(await customRow.getAttribute("data-state"), "custom Google service added").toBe(
-          "added",
-        );
-      });
+          const missingPresetIds: string[] = [];
+          for (const [presetId, slug] of Object.entries(presetToSlug)) {
+            if (!(await slugExists(slug))) missingPresetIds.push(presetId);
+          }
+          const customMissing = !(await slugExists(customSlug));
+
+          // Everything the grid asserts on already exists: the add flow's submit
+          // would be disabled (custom slug collision), so skip it entirely and
+          // go straight to the grid.
+          if (missingPresetIds.length === 0 && !customMissing) return;
+
+          // Record intent BEFORE submitting so a mid-add failure still gets its
+          // partial state cleaned up by the finalizer.
+          for (const presetId of missingPresetIds) createdSlugs.push(presetToSlug[presetId]!);
+          if (customMissing) createdSlugs.push(customSlug);
+
+          await page.goto("/integrations/add/google", {
+            waitUntil: "domcontentloaded",
+          });
+          await page.getByText("Customize your Google connection").waitFor();
+          await page.getByTestId("preset-checkbox-google-calendar").waitFor();
+
+          // Clear the featured defaults, then select exactly the missing presets:
+          // submitting an already-existing preset is harmless ("skipped") but
+          // leaving defaults checked would create integrations this test never
+          // asserts on.
+          await clearCheckedPresets(page);
+          for (const presetId of missingPresetIds) {
+            await setPresetChecked(page, presetId, true);
+          }
+
+          // Only add the custom Discovery URL when google_custom is missing: if
+          // it already exists, filling it flips customSlugAlreadyExists true and
+          // disables the submit button.
+          if (customMissing) {
+            const customField = page.getByPlaceholder(
+              "https://www.googleapis.com/discovery/v1/apis/<service>/<version>/rest",
+            );
+            await customField.fill(customDiscoveryUrl);
+            await customField.press("Enter");
+            await page.getByText(customDiscoveryUrl).waitFor();
+          }
+
+          await page.getByTestId("google-add-submit").click();
+          const results = page.getByTestId("google-add-results");
+          await results.waitFor({ timeout: 120_000 });
+
+          // Each submitted preset resolves to a row that is either freshly
+          // "added" or "skipped" (raced with another writer) - both leave the
+          // integration present, which is all the grid needs.
+          for (const presetId of missingPresetIds) {
+            const row = page.getByTestId(`add-result-row-${presetId}`);
+            await row.waitFor({ timeout: 120_000 });
+            expect(
+              ["added", "skipped"],
+              `${presetId} present (added or already existed)`,
+            ).toContain(await row.getAttribute("data-state"));
+          }
+          if (customMissing) {
+            const customRow = page.getByTestId("add-result-row-custom");
+            await customRow.waitFor({ timeout: 120_000 });
+            expect(
+              ["added", "skipped"],
+              "custom Google service present (added or already existed)",
+            ).toContain(await customRow.getAttribute("data-state"));
+          }
+        },
+      );
 
       await step("The four Google integrations sit under one Google umbrella", async () => {
         await page.goto("/integrations", { waitUntil: "networkidle" });
@@ -129,5 +207,21 @@ scenario(
         ).toBe(3);
       });
     });
+
+    yield* session.pipe(
+      Effect.ensuring(
+        // Remove ONLY the integrations this test created (never pre-existing
+        // ones): on selfhost the next scenario acts as the same admin, and a
+        // leaked google_custom disables the Google add flow's submit button.
+        Effect.forEach(
+          createdSlugs,
+          (slug) =>
+            api.integrations
+              .remove({ params: { slug: IntegrationSlug.make(slug) } })
+              .pipe(Effect.ignore),
+          { discard: true },
+        ),
+      ),
+    );
   }),
 );
