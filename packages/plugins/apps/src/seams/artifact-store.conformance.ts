@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
 import type { ArtifactStore, FileSet } from "./artifact-store";
+import { scopeAddress } from "./scope-address";
 
 // ---------------------------------------------------------------------------
 // ArtifactStore conformance suite. Runs against the INTERFACE, not a specific
@@ -22,7 +23,7 @@ export const artifactStoreConformance = (
   describe(`ArtifactStore conformance: ${name}`, () => {
     it("round-trips a file set through a snapshot", async () => {
       const store = await makeStore();
-      const scope = await run(store.forScope("s1"));
+      const scope = await run(store.forScope(scopeAddress("org", "s1")));
       const files = fileSet({
         "tools/a.ts": "export const a = 1;\n",
         "notes/x.md": "# x\n",
@@ -46,7 +47,7 @@ export const artifactStoreConformance = (
 
     it("keeps a snapshot immutable across a later publish", async () => {
       const store = await makeStore();
-      const scope = await run(store.forScope("s2"));
+      const scope = await run(store.forScope(scopeAddress("org", "s2")));
       const first = await run(scope.commit(fileSet({ "tools/a.ts": "v1" }), "first"));
       const second = await run(
         scope.commit(fileSet({ "tools/a.ts": "v2", "tools/b.ts": "new" }), "second"),
@@ -65,7 +66,7 @@ export const artifactStoreConformance = (
 
     it("tracks latest and logs newest-first", async () => {
       const store = await makeStore();
-      const scope = await run(store.forScope("s3"));
+      const scope = await run(store.forScope(scopeAddress("org", "s3")));
       expect(await run(scope.latest())).toBeNull();
 
       const a = await run(scope.commit(fileSet({ "tools/a.ts": "1" }), "a"));
@@ -82,8 +83,8 @@ export const artifactStoreConformance = (
 
     it("isolates scopes", async () => {
       const store = await makeStore();
-      const s1 = await run(store.forScope("iso-1"));
-      const s2 = await run(store.forScope("iso-2"));
+      const s1 = await run(store.forScope(scopeAddress("org", "iso-1")));
+      const s2 = await run(store.forScope(scopeAddress("org", "iso-2")));
       await run(s1.commit(fileSet({ "tools/a.ts": "one" }), "one"));
       expect(await run(s2.latest())).toBeNull();
     });

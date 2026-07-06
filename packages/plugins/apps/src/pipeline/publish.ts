@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 
 import type { ArtifactStore, FileSet, SnapshotId } from "../seams/artifact-store";
+import { scopeAddress } from "../seams/scope-address";
 import type { ToolSandbox } from "../seams/tool-sandbox";
 import { bundleEntry, toolchainRef } from "./bundle";
 import {
@@ -71,6 +72,7 @@ export const enforcePublishLimits = (files: FileSet): PublishError | null => {
 };
 
 export interface PublishInput {
+  readonly tenant?: string;
   readonly scope: string;
   readonly files: FileSet;
   readonly commitMessage?: string;
@@ -220,11 +222,13 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
   });
 
 const descriptorBody = (
+  tenant: string,
   scope: string,
   assembled: AssembledApp,
   input: Pick<PublishInput, "description" | "source">,
 ): Omit<AppDescriptor, "snapshotId"> => ({
   version: DESCRIPTOR_VERSION,
+  tenant,
   scope,
   ...(input.description !== undefined ? { description: input.description } : {}),
   ...(input.source !== undefined ? { source: input.source } : {}),
@@ -241,14 +245,15 @@ export const publish = (
   input: PublishInput,
 ): Effect.Effect<PublishOutput, PublishError> =>
   Effect.gen(function* () {
+    const tenant = input.tenant ?? "org";
     const overLimit = enforcePublishLimits(input.files);
     if (overLimit) return yield* Effect.fail(overLimit);
 
     const assembled = yield* assemble(deps, input.files);
-    const body = descriptorBody(input.scope, assembled, input);
+    const body = descriptorBody(tenant, input.scope, assembled, input);
 
     const scopeStore = yield* deps.artifactStore
-      .forScope(input.scope)
+      .forScope(scopeAddress(tenant, input.scope))
       .pipe(
         Effect.mapError(
           (cause) =>
@@ -275,12 +280,13 @@ export const publish = (
 
 export const loadDescriptorFromSnapshot = (
   store: ArtifactStore,
+  tenant: string,
   scope: string,
   snapshotId: SnapshotId,
 ): Effect.Effect<AppDescriptor | null, PublishError> =>
   Effect.gen(function* () {
     const scopeStore = yield* store
-      .forScope(scope)
+      .forScope(scopeAddress(tenant, scope))
       .pipe(
         Effect.mapError(
           (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),

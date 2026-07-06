@@ -7,6 +7,7 @@ import { Effect } from "effect";
 
 import { makeGitArtifactStore } from "../backing/git-artifact-store";
 import { makeQuickjsToolSandbox } from "../backing/quickjs-tool-sandbox";
+import { scopeAddress } from "../seams/scope-address";
 import { dailyBriefFileSet } from "../testing/daily-brief";
 import { FLOW_ENTRIES_KEY, GUIDE_ENTRIES_KEY } from "./descriptor";
 import { publish, PUBLISH_LIMITS } from "./publish";
@@ -169,7 +170,9 @@ export default defineTool({
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
     expect(exit._tag).toBe("Failure");
     expect(JSON.stringify(exit)).toContain("exceeding the limit");
-    const latest = await run(Effect.flatMap(deps.artifactStore.forScope("s"), (s) => s.latest()));
+    const latest = await run(
+      Effect.flatMap(deps.artifactStore.forScope(scopeAddress("org", "s")), (s) => s.latest()),
+    );
     expect(latest).toBeNull();
   });
 

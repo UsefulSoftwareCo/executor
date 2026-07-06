@@ -14,6 +14,7 @@ import type { AppDescriptor } from "../pipeline/descriptor";
 
 export const descriptorCollection = definePluginStorageCollection("published_descriptor", {
   Type: {} as {
+    readonly tenant: string;
     readonly scope: string;
     readonly snapshotId: string;
     readonly descriptor: AppDescriptor;
@@ -23,6 +24,7 @@ export const descriptorCollection = definePluginStorageCollection("published_des
 
 export const scopeConnectionCollection = definePluginStorageCollection("apps_scope_connection", {
   Type: {} as {
+    readonly tenant: string;
     readonly connectionName: string;
     readonly scope: string;
   },
@@ -30,15 +32,21 @@ export const scopeConnectionCollection = definePluginStorageCollection("apps_sco
 
 export interface AppsStore {
   readonly putDescriptor: (
+    tenant: string,
     owner: "org" | "user",
     descriptor: AppDescriptor,
   ) => Effect.Effect<void, StorageFailure>;
-  readonly getDescriptor: (scope: string) => Effect.Effect<AppDescriptor | null, StorageFailure>;
+  readonly getDescriptor: (
+    tenant: string,
+    scope: string,
+  ) => Effect.Effect<AppDescriptor | null, StorageFailure>;
   readonly putScopeForConnection: (
+    tenant: string,
     connectionName: string,
     scope: string,
   ) => Effect.Effect<void, StorageFailure>;
   readonly getScopeForConnection: (
+    tenant: string,
     connectionName: string,
   ) => Effect.Effect<string | null, StorageFailure>;
 }
@@ -50,21 +58,29 @@ export interface AppsStoreDeps {
 export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
   const descriptors = deps.pluginStorage.collection(descriptorCollection);
   const scopeConnections = deps.pluginStorage.collection(scopeConnectionCollection);
+  // Tenant is now part of apps storage keys. The apps subsystem had not shipped
+  // before this key shape, so no migration from the old scope-only keys is needed.
+  const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
-    putScopeForConnection: (connectionName, scope) =>
+    putScopeForConnection: (tenant, connectionName, scope) =>
       scopeConnections
-        .put({ owner: "org", key: connectionName, data: { connectionName, scope } })
+        .put({
+          owner: "org",
+          key: keyFor(tenant, connectionName),
+          data: { tenant, connectionName, scope },
+        })
         .pipe(Effect.asVoid),
-    getScopeForConnection: (connectionName) =>
+    getScopeForConnection: (tenant, connectionName) =>
       scopeConnections
-        .get({ key: connectionName })
+        .get({ key: keyFor(tenant, connectionName) })
         .pipe(Effect.map((entry) => entry?.data.scope ?? null)),
-    putDescriptor: (owner, descriptor) =>
+    putDescriptor: (tenant, owner, descriptor) =>
       descriptors
         .put({
           owner,
-          key: descriptor.scope,
+          key: keyFor(tenant, descriptor.scope),
           data: {
+            tenant,
             scope: descriptor.scope,
             snapshotId: descriptor.snapshotId,
             descriptor,
@@ -72,7 +88,9 @@ export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
           },
         })
         .pipe(Effect.asVoid),
-    getDescriptor: (scope) =>
-      descriptors.get({ key: scope }).pipe(Effect.map((entry) => entry?.data.descriptor ?? null)),
+    getDescriptor: (tenant, scope) =>
+      descriptors
+        .get({ key: keyFor(tenant, scope) })
+        .pipe(Effect.map((entry) => entry?.data.descriptor ?? null)),
   };
 };

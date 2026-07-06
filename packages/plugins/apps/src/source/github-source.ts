@@ -61,6 +61,7 @@ export type GitHubSyncResult =
 
 export interface SyncGitHubSourceInput extends GitHubSourceInput {
   readonly runtime: AppsRuntime;
+  readonly tenant?: string;
   readonly scope: string;
 }
 
@@ -359,7 +360,9 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
       } satisfies GitHubSyncResult;
     }
     const snapshot = fetched.success;
-    const current = yield* input.runtime.getDescriptor(input.scope);
+    const current = input.tenant
+      ? yield* input.runtime.getDescriptor(input.tenant, input.scope)
+      : yield* input.runtime.getDescriptor(input.scope);
     if (
       current?.source?.kind === "github" &&
       current.source.repo === snapshot.repo &&
@@ -375,6 +378,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
 
     const published = yield* input.runtime
       .publish({
+        tenant: input.tenant,
         scope: input.scope,
         files: snapshot.files,
         description: snapshot.description,

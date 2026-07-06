@@ -7,6 +7,7 @@ import { Effect } from "effect";
 
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver, dailyBriefFileSet } from "../testing";
+import { scopeAddress } from "../seams/scope-address";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -63,7 +64,7 @@ describe("AppsRuntime end-to-end (publish -> invoke)", () => {
     )) as { synced: number; repos: number };
     expect(syncResult).toEqual({ synced: 2, repos: 1 });
 
-    const db = await run(host.scopeDb.forScope("rhys"));
+    const db = await run(host.scopeDb.forScope(scopeAddress("org", "rhys")));
     const rows = await run(db.exec<{ n: number }>("SELECT COUNT(*) AS n FROM issues"));
     expect(Number(rows[0].n)).toBe(2);
 

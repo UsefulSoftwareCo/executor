@@ -125,14 +125,20 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   const runtime = options.runtime;
   const makeResolver = options.makeResolver;
 
-  const scopeFor = (connectionName: string): Effect.Effect<string> =>
-    runtime.deps.store.getScopeForConnection(connectionName).pipe(
+  const tenantFor = (ctx: Pick<PluginCtx, "owner"> | undefined): string => {
+    const tenant = ctx?.owner?.tenant;
+    return tenant === undefined ? "org" : String(tenant);
+  };
+
+  const scopeFor = (tenant: string, connectionName: string): Effect.Effect<string> =>
+    runtime.deps.store.getScopeForConnection(tenant, connectionName).pipe(
       Effect.orElseSucceed(() => null),
       Effect.map((mapped) => mapped ?? scopeFromConnection(connectionName)),
     );
 
   const ensureCatalogConnection = (scope: string, ctx: PluginCtx<AppsStoreShape>) =>
     Effect.gen(function* () {
+      const tenant = tenantFor(ctx);
       const slug = IntegrationSlug.make(APPS_INTEGRATION_SLUG);
       const existing = yield* ctx.core.integrations
         .get(slug)
@@ -162,10 +168,10 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         });
       }
       yield* runtime.deps.store
-        .putScopeForConnection(String(rawName), scope)
+        .putScopeForConnection(tenant, String(rawName), scope)
         .pipe(Effect.orElseSucceed(() => undefined));
       yield* runtime.deps.store
-        .putScopeForConnection(String(connName), scope)
+        .putScopeForConnection(tenant, String(connName), scope)
         .pipe(Effect.orElseSucceed(() => undefined));
       return {
         scope,
@@ -255,9 +261,11 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                 const integration = yield* ctx.core.integrations
                   .get(sourceConnection.integration)
                   .pipe(Effect.orElseSucceed(() => null));
+                const tenant = tenantFor(ctx);
                 const scope = explicitScope ?? sourceScopeFor({ repo, connection });
                 const result = yield* syncGitHubSource({
                   runtime,
+                  tenant,
                   scope,
                   repo,
                   ref,
@@ -277,8 +285,9 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
 
     resolveTools: ({ ctx, connection }: ResolveToolsInput<AppsStoreShape>) =>
       Effect.gen(function* () {
-        const scope = yield* scopeFor(String(connection.name));
-        const descriptor = yield* runtime.getDescriptor(scope);
+        const tenant = ctx ? tenantFor(ctx) : "org";
+        const scope = yield* scopeFor(tenant, String(connection.name));
+        const descriptor = yield* runtime.getDescriptor(tenant, scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
         const resolver =
           makeResolver && ctx ? makeResolver({ ctx, scope, tool: "*" }) : runtime.deps.resolver;
@@ -297,8 +306,9 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
 
     invokeTool: ({ ctx, toolRow, args, invokeOptions }: InvokeToolInput<AppsStoreShape>) =>
       Effect.gen(function* () {
-        const scope = yield* scopeFor(String(toolRow.connection));
-        const descriptor = yield* runtime.getDescriptor(scope);
+        const tenant = tenantFor(ctx);
+        const scope = yield* scopeFor(tenant, String(toolRow.connection));
+        const descriptor = yield* runtime.getDescriptor(tenant, scope);
         if (!descriptor) {
           return yield* Effect.fail(
             new Error(
@@ -316,7 +326,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
           ? makeResolver({ ctx, scope, tool: toolRow.name })
           : undefined;
         return yield* runtime
-          .invokeTool({ scope, tool: toolRow.name, args, resolver, invokeOptions })
+          .invokeTool({ tenant, scope, tool: toolRow.name, args, resolver, invokeOptions })
           .pipe(
             Effect.mapError(
               (cause) =>

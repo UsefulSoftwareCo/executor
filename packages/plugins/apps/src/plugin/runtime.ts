@@ -24,6 +24,7 @@ import {
   BindingError,
 } from "./bindings";
 import type { AppsStore } from "./store";
+import { scopeAddress } from "../seams/scope-address";
 
 // ---------------------------------------------------------------------------
 // AppsRuntime: the substrate-neutral core for published custom tools.
@@ -36,21 +37,30 @@ export interface AppsRuntimeDeps {
   readonly store: AppsStore;
   /** Routes a bound integration method call to the real API (policy/audit). */
   readonly resolver: ClientResolver;
+  readonly defaultTenant?: string;
 }
 
 export interface AppsRuntime {
   readonly publish: (input: {
+    readonly tenant?: string;
     readonly scope: string;
     readonly files: ReadonlyMap<string, string>;
     readonly message?: string;
     readonly description?: string;
     readonly source?: AppSourceRef;
   }) => Effect.Effect<PublishOutput, PublishError>;
-  readonly getDescriptor: (scope: string) => Effect.Effect<AppDescriptor | null>;
+  readonly getDescriptor: (
+    tenantOrScope: string,
+    scope?: string,
+  ) => Effect.Effect<AppDescriptor | null>;
   /** Re-derive the published-descriptor pointer from the latest committed
    *  snapshot. */
-  readonly repair: (scope: string) => Effect.Effect<AppDescriptor | null, PublishError>;
+  readonly repair: (
+    tenantOrScope: string,
+    scope?: string,
+  ) => Effect.Effect<AppDescriptor | null, PublishError>;
   readonly invokeTool: (input: {
+    readonly tenant?: string;
     readonly scope: string;
     readonly tool: string;
     readonly args: unknown;
@@ -74,14 +84,28 @@ const failNoDescriptor = (scope: string): PublishError =>
   });
 
 export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
+  const defaultTenant = deps.defaultTenant ?? "org";
   const bundleCache = new Map<string, string>();
   const publishChains = new Map<string, Promise<unknown>>();
+  const resolveTenant = (tenant?: string): string => tenant ?? defaultTenant;
+  const resolveTenantScope = (
+    tenantOrScope: string,
+    maybeScope?: string,
+  ): { tenant: string; scope: string } =>
+    maybeScope === undefined
+      ? { tenant: defaultTenant, scope: tenantOrScope }
+      : { tenant: tenantOrScope, scope: maybeScope };
 
-  const withScopePublishLock = <A>(scope: string, run: () => Promise<A>): Promise<A> => {
-    const prior = publishChains.get(scope) ?? Promise.resolve();
+  const withScopePublishLock = <A>(
+    tenant: string,
+    scope: string,
+    run: () => Promise<A>,
+  ): Promise<A> => {
+    const key = `${tenant}:${scope}`;
+    const prior = publishChains.get(key) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(run);
     publishChains.set(
-      scope,
+      key,
       next.catch(() => undefined),
     );
     return next;
@@ -95,16 +119,18 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       const cacheKey = `${descriptor.snapshotId}:${sourcePath}`;
       const cached = bundleCache.get(cacheKey);
       if (cached) return cached;
-      const scopeStore = yield* deps.artifactStore.forScope(descriptor.scope).pipe(
-        Effect.mapError(
-          (c) =>
-            new PublishError({
-              message: c.message,
-              stage: "project",
-              diagnostics: [],
-            }),
-        ),
-      );
+      const scopeStore = yield* deps.artifactStore
+        .forScope(scopeAddress(descriptor.tenant, descriptor.scope))
+        .pipe(
+          Effect.mapError(
+            (c) =>
+              new PublishError({
+                message: c.message,
+                stage: "project",
+                diagnostics: [],
+              }),
+          ),
+        );
       const files = yield* scopeStore.read(descriptor.snapshotId as never).pipe(
         Effect.mapError(
           (c) =>
@@ -129,9 +155,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       return bundle.code;
     });
 
-  const recoverFromSnapshot = (scope: string): Effect.Effect<AppDescriptor | null, PublishError> =>
+  const recoverFromSnapshot = (
+    tenant: string,
+    scope: string,
+  ): Effect.Effect<AppDescriptor | null, PublishError> =>
     Effect.gen(function* () {
-      const scopeStore = yield* deps.artifactStore.forScope(scope).pipe(
+      const scopeStore = yield* deps.artifactStore.forScope(scopeAddress(tenant, scope)).pipe(
         Effect.mapError(
           (c) =>
             new PublishError({
@@ -152,11 +181,14 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         ),
       );
       if (!latest) return null;
-      return yield* loadDescriptorFromSnapshot(deps.artifactStore, scope, latest.id);
+      return yield* loadDescriptorFromSnapshot(deps.artifactStore, tenant, scope, latest.id);
     });
 
-  const requireDescriptor = (scope: string): Effect.Effect<AppDescriptor, PublishError> =>
-    deps.store.getDescriptor(scope).pipe(
+  const requireDescriptor = (
+    tenant: string,
+    scope: string,
+  ): Effect.Effect<AppDescriptor, PublishError> =>
+    deps.store.getDescriptor(tenant, scope).pipe(
       Effect.mapError(
         (c) =>
           new PublishError({
@@ -166,13 +198,18 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           }),
       ),
       Effect.flatMap((d) =>
-        d ? Effect.succeed(d) : recoverFromSnapshot(scope).pipe(Effect.orElseSucceed(() => null)),
+        d
+          ? Effect.succeed(d)
+          : recoverFromSnapshot(tenant, scope).pipe(Effect.orElseSucceed(() => null)),
       ),
       Effect.flatMap((d) => (d ? Effect.succeed(d) : Effect.fail(failNoDescriptor(scope)))),
     );
 
-  const putDescriptorPointer = (descriptor: AppDescriptor): Effect.Effect<void, PublishError> =>
-    deps.store.putDescriptor("org", descriptor).pipe(
+  const putDescriptorPointer = (
+    tenant: string,
+    descriptor: AppDescriptor,
+  ): Effect.Effect<void, PublishError> =>
+    deps.store.putDescriptor(tenant, "org", descriptor).pipe(
       Effect.mapError(
         (c) =>
           new PublishError({
@@ -183,11 +220,14 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       ),
     );
 
-  const repairScope = (scope: string): Effect.Effect<AppDescriptor | null, PublishError> =>
+  const repairScope = (
+    tenant: string,
+    scope: string,
+  ): Effect.Effect<AppDescriptor | null, PublishError> =>
     Effect.gen(function* () {
-      const descriptor = yield* recoverFromSnapshot(scope);
+      const descriptor = yield* recoverFromSnapshot(tenant, scope);
       if (!descriptor) return null;
-      yield* putDescriptorPointer(descriptor);
+      yield* putDescriptorPointer(tenant, descriptor);
       return descriptor;
     });
 
@@ -211,7 +251,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       );
       const roots = rootsFor(toolDesc.integrations);
       const code = yield* bundleFor(descriptor, toolDesc.sourcePath);
-      const db = yield* deps.scopeDb.forScope(scope).pipe(
+      const db = yield* deps.scopeDb.forScope(scopeAddress(descriptor.tenant, scope)).pipe(
         Effect.mapError(
           (c) =>
             new PublishError({
@@ -258,8 +298,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     publish: (input) =>
       Effect.flatMap(
         Effect.tryPromise({
-          try: () =>
-            withScopePublishLock(input.scope, () =>
+          try: () => {
+            const tenant = resolveTenant(input.tenant);
+            return withScopePublishLock(tenant, input.scope, () =>
               Effect.runPromiseExit(
                 Effect.gen(function* () {
                   const out = yield* runPublish(
@@ -268,6 +309,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
                       sandbox: deps.sandbox,
                     },
                     {
+                      tenant,
                       scope: input.scope,
                       files: input.files,
                       commitMessage: input.message,
@@ -275,11 +317,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
                       source: input.source,
                     },
                   );
-                  yield* putDescriptorPointer(out.descriptor);
+                  yield* putDescriptorPointer(tenant, out.descriptor);
                   return out;
                 }),
               ),
-            ),
+            );
+          },
           catch: (cause) =>
             new PublishError({
               message: cause instanceof Error ? cause.message : String(cause),
@@ -290,21 +333,27 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         (exit) => exit,
       ),
 
-    getDescriptor: (scope) =>
-      deps.store.getDescriptor(scope).pipe(
+    getDescriptor: (tenantOrScope, maybeScope) => {
+      const { tenant, scope } = resolveTenantScope(tenantOrScope, maybeScope);
+      return deps.store.getDescriptor(tenant, scope).pipe(
         Effect.orElseSucceed(() => null),
         Effect.flatMap((pointer) =>
           pointer
             ? Effect.succeed(pointer)
-            : recoverFromSnapshot(scope).pipe(Effect.orElseSucceed(() => null)),
+            : recoverFromSnapshot(tenant, scope).pipe(Effect.orElseSucceed(() => null)),
         ),
-      ),
+      );
+    },
 
-    repair: (scope) => repairScope(scope),
+    repair: (tenantOrScope, maybeScope) => {
+      const { tenant, scope } = resolveTenantScope(tenantOrScope, maybeScope);
+      return repairScope(tenant, scope);
+    },
 
     invokeTool: (input) =>
       Effect.gen(function* () {
-        const descriptor = yield* requireDescriptor(input.scope);
+        const tenant = resolveTenant(input.tenant);
+        const descriptor = yield* requireDescriptor(tenant, input.scope);
         const toolDesc = descriptor.tools.find((t) => t.name === input.tool);
         if (!toolDesc) {
           return yield* Effect.fail(

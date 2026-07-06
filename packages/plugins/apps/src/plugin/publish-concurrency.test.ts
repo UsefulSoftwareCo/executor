@@ -7,6 +7,7 @@ import { Effect } from "effect";
 
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
+import { scopeAddress } from "../seams/scope-address";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -70,7 +71,9 @@ describe("concurrent publishes to one scope (Fix 6)", () => {
     // HEAD and the descriptor pointer AGREE: the store's current descriptor's
     // snapshotId equals the artifact store's latest committed snapshot.
     const latest = await run(
-      runtime.deps.artifactStore.forScope("s").pipe(Effect.flatMap((s) => s.latest())),
+      runtime.deps.artifactStore
+        .forScope(scopeAddress("org", "s"))
+        .pipe(Effect.flatMap((s) => s.latest())),
     );
     expect(latest).not.toBeNull();
     const pointer = await run(runtime.getDescriptor("s"));

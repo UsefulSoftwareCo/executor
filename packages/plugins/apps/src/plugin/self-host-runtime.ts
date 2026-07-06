@@ -13,6 +13,8 @@ import type { ClientResolver } from "./bindings";
 export interface SelfHostAppsRuntimeOptions {
   /** Data dir root; `<root>/artifacts` and `<root>/scope-db`. */
   readonly dataDir: string;
+  /** Default tenant for direct runtime calls; request paths pass tenant explicitly. */
+  readonly tenant?: string;
   readonly store: AppsStore;
   /** Routes bound integration calls to real APIs (policy/audit). */
   readonly resolver: ClientResolver;
@@ -43,6 +45,7 @@ export const makeSelfHostAppsRuntime = (
     sandbox,
     store: options.store,
     resolver: options.resolver,
+    defaultTenant: options.tenant,
   });
 
   return {

@@ -11,6 +11,7 @@ import {
   type ScopeArtifactStore,
   type SnapshotId,
 } from "../seams/artifact-store";
+import { scopeAddressStorageKey } from "../seams/scope-address";
 
 export * from "./daily-brief";
 
@@ -19,15 +20,17 @@ export const makeInMemoryAppsStore = (): AppsStore & {
 } => {
   const descriptors = new Map<string, AppDescriptor>();
   const scopeConnections = new Map<string, string>();
+  const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
     descriptors,
-    putDescriptor: (_owner, descriptor) =>
-      Effect.sync(() => void descriptors.set(descriptor.scope, descriptor)),
-    getDescriptor: (scope) => Effect.sync(() => descriptors.get(scope) ?? null),
-    putScopeForConnection: (connectionName, scope) =>
-      Effect.sync(() => void scopeConnections.set(connectionName, scope)),
-    getScopeForConnection: (connectionName) =>
-      Effect.sync(() => scopeConnections.get(connectionName) ?? null),
+    putDescriptor: (tenant, _owner, descriptor) =>
+      Effect.sync(() => void descriptors.set(keyFor(tenant, descriptor.scope), descriptor)),
+    getDescriptor: (tenant, scope) =>
+      Effect.sync(() => descriptors.get(keyFor(tenant, scope)) ?? null),
+    putScopeForConnection: (tenant, connectionName, scope) =>
+      Effect.sync(() => void scopeConnections.set(keyFor(tenant, connectionName), scope)),
+    getScopeForConnection: (tenant, connectionName) =>
+      Effect.sync(() => scopeConnections.get(keyFor(tenant, connectionName)) ?? null),
   };
 };
 
@@ -35,11 +38,11 @@ export const makeInMemoryArtifactStore = (): ArtifactStore => {
   const scopes = new Map<string, Map<string, FileSet>>();
   const order = new Map<string, string[]>();
   let counter = 0;
-  const forScope = (scope: string): ScopeArtifactStore => {
-    const snaps = scopes.get(scope) ?? new Map<string, FileSet>();
-    scopes.set(scope, snaps);
-    const seq = order.get(scope) ?? [];
-    order.set(scope, seq);
+  const forScope = (key: string): ScopeArtifactStore => {
+    const snaps = scopes.get(key) ?? new Map<string, FileSet>();
+    scopes.set(key, snaps);
+    const seq = order.get(key) ?? [];
+    order.set(key, seq);
     return {
       commit: (files, message) =>
         Effect.sync(() => {
@@ -69,7 +72,7 @@ export const makeInMemoryArtifactStore = (): ArtifactStore => {
         ),
     };
   };
-  return { forScope: (scope) => Effect.succeed(forScope(scope)) };
+  return { forScope: (address) => Effect.succeed(forScope(scopeAddressStorageKey(address))) };
 };
 
 export type { SnapshotId };

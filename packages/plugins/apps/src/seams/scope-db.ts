@@ -1,5 +1,6 @@
 import type { Effect } from "effect";
 import { Data } from "effect";
+import type { ScopeAddress } from "./scope-address";
 
 // ---------------------------------------------------------------------------
 // ScopeDb — the per-scope app database (the shared primitive).
@@ -37,6 +38,6 @@ export interface ScopeDbHandle {
 }
 
 export interface ScopeDb {
-  readonly forScope: (scope: string) => Effect.Effect<ScopeDbHandle, ScopeDbError>;
+  readonly forScope: (address: ScopeAddress) => Effect.Effect<ScopeDbHandle, ScopeDbError>;
   readonly close: () => Effect.Effect<void, ScopeDbError>;
 }

@@ -7,7 +7,7 @@
 
 /** Descriptor schema version. Bumped on any breaking shape change. A reader
  *  refuses a descriptor from a version it does not understand. */
-export const DESCRIPTOR_VERSION = 3 as const;
+export const DESCRIPTOR_VERSION = 4 as const;
 
 /** Where an entry came from: path + content hash. Lets a projection point back
  *  at the exact source bytes without re-reading the snapshot, and makes the
@@ -70,6 +70,7 @@ export const GUIDE_ENTRIES_KEY = "skills";
 
 export interface AppDescriptor {
   readonly version: typeof DESCRIPTOR_VERSION;
+  readonly tenant: string;
   readonly scope: string;
   readonly description?: string;
   readonly source?: AppSourceRef;

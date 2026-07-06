@@ -13,6 +13,7 @@ import {
   type SnapshotId,
   type SnapshotMeta,
 } from "../seams/artifact-store";
+import { scopeAddressStorageKey } from "../seams/scope-address";
 
 // ---------------------------------------------------------------------------
 // Git-backed ArtifactStore (self-hosted). One bare git repo per scope under
@@ -59,14 +60,6 @@ const run = (
       child.stdin?.end();
     }
   });
-
-const sanitizeScope = (scope: string): string => {
-  if (!/^[a-zA-Z0-9._-]+$/.test(scope)) {
-    // Scopes are internal identifiers; refuse anything that could escape a path.
-    throw new ArtifactStoreError({ message: `invalid scope key: ${scope}` });
-  }
-  return scope;
-};
 
 const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
   // Environment forcing a deterministic author/committer so a snapshot's hash
@@ -266,18 +259,17 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
 };
 
 export interface GitArtifactStoreOptions {
-  /** Directory holding one bare repo per scope. Created on demand. */
+  /** Directory holding one bare repo per tenant/scope. Created on demand. */
   readonly root: string;
 }
 
-/** Build the git-backed ArtifactStore. Each scope gets a lazily-initialized
- *  bare repo `<root>/<scope>.git`. */
+/** Build the git-backed ArtifactStore. Each tenant/scope pair gets a
+ *  lazily-initialized bare repo under `<root>`. */
 export const makeGitArtifactStore = (options: GitArtifactStoreOptions): ArtifactStore => {
   const initialized = new Map<string, Promise<ScopeArtifactStore>>();
 
-  const init = async (scope: string): Promise<ScopeArtifactStore> => {
-    const safe = sanitizeScope(scope);
-    const repoDir = join(options.root, `${safe}.git`);
+  const init = async (key: string): Promise<ScopeArtifactStore> => {
+    const repoDir = join(options.root, `${key}.git`);
     await mkdir(repoDir, { recursive: true });
     await new Promise<void>((resolve, reject) => {
       execFile("git", ["init", "--bare", "--quiet"], { cwd: repoDir }, (error) =>
@@ -288,18 +280,22 @@ export const makeGitArtifactStore = (options: GitArtifactStoreOptions): Artifact
   };
 
   return {
-    forScope: (scope) =>
+    forScope: (address) =>
       Effect.tryPromise({
         try: () => {
-          let existing = initialized.get(scope);
+          const key = scopeAddressStorageKey(address);
+          let existing = initialized.get(key);
           if (!existing) {
-            existing = init(scope);
-            initialized.set(scope, existing);
+            existing = init(key);
+            initialized.set(key, existing);
           }
           return existing;
         },
         catch: (cause) =>
-          new ArtifactStoreError({ message: `failed to open scope repo: ${scope}`, cause }),
+          new ArtifactStoreError({
+            message: `failed to open scope repo: ${address.tenant}/${address.scope}`,
+            cause,
+          }),
       }),
   };
 };

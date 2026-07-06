@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
 import type { ScopeDb } from "./scope-db";
+import { scopeAddress } from "./scope-address";
 
 // ---------------------------------------------------------------------------
 // ScopeDb conformance suite. Runs against the interface. Covers: scope
@@ -18,8 +19,8 @@ export const scopeDbConformance = (
   describe(`ScopeDb conformance: ${name}`, () => {
     it("isolates data between scopes", async () => {
       const db = await makeDb();
-      const a = await run(db.forScope("scope-a"));
-      const b = await run(db.forScope("scope-b"));
+      const a = await run(db.forScope(scopeAddress("org", "scope-a")));
+      const b = await run(db.forScope(scopeAddress("org", "scope-b")));
       await run(a.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"));
       await run(a.exec("INSERT INTO items (name) VALUES ('a-only')"));
       await run(b.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"));
@@ -33,7 +34,7 @@ export const scopeDbConformance = (
 
     it("bumps a table's version on each write", async () => {
       const db = await makeDb();
-      const s = await run(db.forScope("ver"));
+      const s = await run(db.forScope(scopeAddress("org", "ver")));
       await run(s.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)"));
       const afterCreate = await run(s.tableVersion("t"));
       expect(afterCreate).toBeGreaterThanOrEqual(1);
@@ -54,7 +55,7 @@ export const scopeDbConformance = (
 
     it("supports the author-facing tagged-template sql with parameters", async () => {
       const db = await makeDb();
-      const s = await run(db.forScope("tpl"));
+      const s = await run(db.forScope(scopeAddress("org", "tpl")));
       await run(s.exec("CREATE TABLE issues (repo TEXT, title TEXT)"));
       const repo = "acme/app";
       const title = "Bug";

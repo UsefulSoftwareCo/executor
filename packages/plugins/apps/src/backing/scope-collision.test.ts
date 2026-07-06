@@ -7,6 +7,7 @@ import { Effect } from "effect";
 
 import { makeLibsqlScopeDb } from "./libsql-scope-db";
 import { makeSqliteAppsStore } from "./sqlite-apps-store";
+import { scopeAddress } from "../seams/scope-address";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -24,11 +25,11 @@ describe("scope collision (Fix 9)", () => {
     const root = mkdtempSync(join(tmpdir(), "apps-scopecol-"));
     const db = makeLibsqlScopeDb({ root });
 
-    const a = await run(db.forScope("my-scope"));
+    const a = await run(db.forScope(scopeAddress("org", "my-scope")));
     await run(a.exec("CREATE TABLE t (v TEXT)"));
     await run(a.exec("INSERT INTO t (v) VALUES ('a')"));
 
-    const b = await run(db.forScope("my_scope"));
+    const b = await run(db.forScope(scopeAddress("org", "my_scope")));
     await run(b.exec("CREATE TABLE t (v TEXT)"));
     await run(b.exec("INSERT INTO t (v) VALUES ('b')"));
 
@@ -51,12 +52,12 @@ describe("scope collision (Fix 9)", () => {
     // ("appsMyScope"), but the explicit mapping keys by the ACTUAL stored name,
     // so each scope's connection maps to the right scope. Simulate two DISTINCT
     // connection names being recorded for two distinct scopes.
-    await run(store.putScopeForConnection("appsMyScopeDash", "my-scope"));
-    await run(store.putScopeForConnection("appsMyScopeUnderscore", "my_scope"));
+    await run(store.putScopeForConnection("org", "appsMyScopeDash", "my-scope"));
+    await run(store.putScopeForConnection("org", "appsMyScopeUnderscore", "my_scope"));
 
-    expect(await run(store.getScopeForConnection("appsMyScopeDash"))).toBe("my-scope");
-    expect(await run(store.getScopeForConnection("appsMyScopeUnderscore"))).toBe("my_scope");
+    expect(await run(store.getScopeForConnection("org", "appsMyScopeDash"))).toBe("my-scope");
+    expect(await run(store.getScopeForConnection("org", "appsMyScopeUnderscore"))).toBe("my_scope");
     // An unmapped name returns null (caller falls back to legacy parse).
-    expect(await run(store.getScopeForConnection("unknown"))).toBeNull();
+    expect(await run(store.getScopeForConnection("org", "unknown"))).toBeNull();
   });
 });

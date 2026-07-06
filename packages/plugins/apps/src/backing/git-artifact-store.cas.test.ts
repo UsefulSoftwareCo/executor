@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
 import { makeGitArtifactStore } from "./git-artifact-store";
+import { scopeAddress } from "../seams/scope-address";
 import type { ArtifactStoreError } from "../seams/artifact-store";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
@@ -23,7 +24,7 @@ describe("git ArtifactStore ref CAS (Fix 6)", () => {
   it("two concurrent commits from one parent: one wins, the other typed-conflicts", async () => {
     const root = mkdtempSync(join(tmpdir(), "apps-cas-"));
     const storeA = makeGitArtifactStore({ root });
-    const scopeA = await run(storeA.forScope("s"));
+    const scopeA = await run(storeA.forScope(scopeAddress("org", "s")));
 
     // Seed a parent so racers commit ON TOP of the same head.
     await run(scopeA.commit(new Map([["tools/base.ts", "// base"]]), "base"));
@@ -37,7 +38,7 @@ describe("git ArtifactStore ref CAS (Fix 6)", () => {
     for (let i = 0; i < N; i++) {
       const store = makeGitArtifactStore({ root });
       // eslint-disable-next-line no-await-in-loop
-      openedScopes.push(await run(store.forScope("s")));
+      openedScopes.push(await run(store.forScope(scopeAddress("org", "s"))));
     }
     const scopeB = openedScopes[0];
 

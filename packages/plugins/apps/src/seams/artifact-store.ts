@@ -1,5 +1,6 @@
 import type { Effect } from "effect";
 import { Data } from "effect";
+import type { ScopeAddress } from "./scope-address";
 
 // ---------------------------------------------------------------------------
 // ArtifactStore — the per-scope git-backed source store.
@@ -58,7 +59,9 @@ export interface ScopeArtifactStore {
   readonly log: (limit?: number) => Effect.Effect<readonly SnapshotMeta[], ArtifactStoreError>;
 }
 
-/** The substrate-neutral store: hands out a per-scope store by scope key. */
+/** The substrate-neutral store: hands out a per-scope store by tenant + scope. */
 export interface ArtifactStore {
-  readonly forScope: (scope: string) => Effect.Effect<ScopeArtifactStore, ArtifactStoreError>;
+  readonly forScope: (
+    address: ScopeAddress,
+  ) => Effect.Effect<ScopeArtifactStore, ArtifactStoreError>;
 }
