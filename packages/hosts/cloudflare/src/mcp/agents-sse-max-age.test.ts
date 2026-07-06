@@ -11,8 +11,10 @@ type FakeWebSocket = EventTarget & {
   accepted: boolean;
   closeCode: number | undefined;
   closeReason: string | undefined;
+  sent: string[];
   accept: () => void;
   close: (code?: number, reason?: string) => void;
+  send: (message: string) => void;
 };
 
 type FakeAgentStub = {
@@ -41,7 +43,13 @@ const RotationLogEvent = Schema.Struct({
     Schema.Literal("legacy-sse"),
   ]),
 });
+const DeliveryAck = Schema.Struct({
+  eventId: Schema.String,
+  streamId: Schema.String,
+  type: Schema.Literal("cf_mcp_delivery_ack"),
+});
 const decodeRotationLogEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RotationLogEvent));
+const decodeDeliveryAck = Schema.decodeUnknownSync(Schema.fromJsonString(DeliveryAck));
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -120,6 +128,71 @@ const installStallingTransformStream = () => {
   };
 };
 
+const installRejectingTransformStream = () => {
+  let abortReason: unknown;
+  let writeCount = 0;
+  const writer = {
+    abort: (reason: unknown) => {
+      abortReason = reason;
+      return Promise.resolve();
+    },
+    close: () => Promise.resolve(),
+    write: () => {
+      writeCount += 1;
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: fake writer models WHATWG stream write rejection in a unit test.
+      return Promise.reject(new Error("client disconnected"));
+    },
+  };
+
+  vi.stubGlobal(
+    "TransformStream",
+    class {
+      readonly readable = new ReadableStream<Uint8Array>();
+      readonly writable = {
+        getWriter: () => writer,
+      };
+    },
+  );
+
+  return {
+    abortReason: () => abortReason,
+    writeCount: () => writeCount,
+  };
+};
+
+const installClosedRejectingTransformStream = () => {
+  let abortReason: unknown;
+  let rejectClosed: ((error: Error) => void) | undefined;
+  const closed = new Promise<never>((_, reject) => {
+    rejectClosed = reject;
+  });
+  const writer = {
+    abort: (reason: unknown) => {
+      abortReason = reason;
+      return Promise.resolve();
+    },
+    close: () => Promise.resolve(),
+    closed,
+    write: () => Promise.resolve(),
+  };
+
+  vi.stubGlobal(
+    "TransformStream",
+    class {
+      readonly readable = new ReadableStream<Uint8Array>();
+      readonly writable = {
+        getWriter: () => writer,
+      };
+    },
+  );
+
+  return {
+    abortReason: () => abortReason,
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: fake writer models WHATWG writer.closed rejection in a unit test.
+    rejectClosed: () => rejectClosed?.(new Error("client canceled response body")),
+  };
+};
+
 const makeExecutionContext = (): ExecutionContext => ({
   passThroughOnException: () => {},
   props: undefined,
@@ -131,12 +204,16 @@ const makeWebSocket = (): FakeWebSocket => {
   ws.accepted = false;
   ws.closeCode = undefined;
   ws.closeReason = undefined;
+  ws.sent = [];
   ws.accept = () => {
     ws.accepted = true;
   };
   ws.close = (code?: number, reason?: string) => {
     ws.closeCode = code;
     ws.closeReason = reason;
+  };
+  ws.send = (message: string) => {
+    ws.sent.push(message);
   };
   return ws;
 };
@@ -221,13 +298,19 @@ const openPostSse = async () => {
   return { response, ws };
 };
 
-const emitAgentEvent = (ws: FakeWebSocket, event: string, close?: true): void => {
+const emitAgentEvent = (
+  ws: FakeWebSocket,
+  event: string,
+  close?: true,
+  extra?: Record<string, unknown>,
+): void => {
   ws.dispatchEvent(
     new MessageEvent("message", {
       data: JSON.stringify({
         close,
         event,
         type: "cf_mcp_agent_event",
+        ...extra,
       }),
     }),
   );
@@ -309,8 +392,78 @@ describe("agents SSE max-age rotation", () => {
     );
     await drained;
 
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("acknowledges a final POST response only after the SSE write drains", async () => {
+    const { response, ws } = await openPostSse();
+    const drained = drainResponse(response);
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await drained;
+
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(ws.sent.map((line) => decodeDeliveryAck(line))).toContainEqual({
+      type: "cf_mcp_delivery_ack",
+      eventId: "post-stream:0000000000000001",
+      streamId: "post-stream",
+    });
+  });
+
+  it("treats an SSE writer rejection as terminal and does not acknowledge delivery", async () => {
+    const transform = installRejectingTransformStream();
+    const { ws } = await openPostSse();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await waitFor(() => ws.closeCode === 1013);
+
+    expect(transform.writeCount()).toBe(1);
+    expect(transform.abortReason()).toBeInstanceOf(Error);
+    expect(ws.closeReason).toBe("SSE client not draining");
+    expect(ws.sent).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not acknowledge a final POST response after the response body was canceled", async () => {
+    const transform = installClosedRejectingTransformStream();
+    const { ws } = await openPostSse();
+
+    transform.rejectClosed();
+    await flushMicrotasks();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await flushMicrotasks();
+
+    expect(transform.abortReason()).toBeInstanceOf(Error);
     expect(ws.closeCode).toBeUndefined();
-    expect(ws.closeReason).toBeUndefined();
+    expect(ws.sent).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

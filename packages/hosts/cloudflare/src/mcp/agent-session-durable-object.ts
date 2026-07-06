@@ -31,6 +31,7 @@ import {
   SESSION_TIMEOUT_MS,
   decideSessionAlarm,
   pausedLeaseExtensionLog,
+  runningLeaseExtensionLog,
 } from "./session-alarm-policy";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
@@ -118,9 +119,9 @@ const LAST_ACTIVITY_KEY = "last-activity-ms";
 const PARTYSERVER_NAME_KEY = "__ps_name";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
-const ACTIVE_POST_RESPONSE_WAIT_POLL_MS = 25;
-const ACTIVE_POST_RESPONSE_WAIT_MAX_MS = PAUSED_APPROVAL_TIMEOUT_MS + 30_000;
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
+const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
+const MCP_UNDELIVERED_STREAM_KEY_PREFIX = "__mcp_undelivered_stream__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 
 type JsonRpcRequestId = string | number;
@@ -162,8 +163,6 @@ const isSessionProps = (props: unknown): props is McpSessionProps =>
   "session" in props &&
   typeof (props as { readonly session?: unknown }).session === "object" &&
   (props as { readonly session?: unknown }).session !== null;
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const readActivePostRequestIds = (request: Request): readonly JsonRpcRequestId[] => {
   if (request.headers.get(MCP_HTTP_METHOD_HEADER) !== "POST") return [];
@@ -319,34 +318,13 @@ export abstract class McpAgentSessionDOBase<
     }
 
     await this.keepAliveWhile(async () => {
+      await this.setStreamRequestIds(conn.id, [...requestIds]);
       await super.onConnect(conn, context);
-      await this.waitForActivePostResponseDrain(conn.id);
     });
   }
 
   private openSessionDbHandle(): Effect.Effect<TDbHandle> {
     return Effect.promise(() => Promise.resolve(this.openSessionDb()));
-  }
-
-  private async waitForActivePostResponseDrain(streamId: string): Promise<void> {
-    const startedAt = Date.now();
-    for (;;) {
-      const requestIds = await this.getStreamRequestIds(streamId);
-      if (!requestIds || requestIds.length === 0) return;
-      if (Date.now() - startedAt >= ACTIVE_POST_RESPONSE_WAIT_MAX_MS) {
-        console.warn(
-          JSON.stringify({
-            event: "mcp_active_post_response_wait_timeout",
-            sessionId: this.sessionId,
-            streamId,
-            requestIds,
-            elapsedMs: Date.now() - startedAt,
-          }),
-        );
-        return;
-      }
-      await sleep(ACTIVE_POST_RESPONSE_WAIT_POLL_MS);
-    }
   }
 
   private loadSessionMeta(): Effect.Effect<SessionMeta | null> {
@@ -388,6 +366,40 @@ export abstract class McpAgentSessionDOBase<
     if (this.ctx.id.name) return true;
     const stored = await this.ctx.storage.get<string>(PARTYSERVER_NAME_KEY);
     return !!stored;
+  }
+
+  private activeStreamCount(): number {
+    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
+    if (!getConnections) return 0;
+    return Array.from(getConnections.call(this)).length;
+  }
+
+  private async runningExecutionCount(): Promise<number> {
+    const rows = await this.ctx.storage.list<readonly JsonRpcRequestId[]>({
+      prefix: MCP_STREAM_REQS_KEY_PREFIX,
+      limit: 1_000,
+    });
+    let count = 0;
+    for (const requestIds of rows.values()) {
+      if (Array.isArray(requestIds)) count += requestIds.length;
+    }
+    const undelivered = await this.ctx.storage.list<boolean>({
+      prefix: MCP_UNDELIVERED_STREAM_KEY_PREFIX,
+      limit: 1_000,
+    });
+    count += undelivered.size;
+    return count;
+  }
+
+  private closeActiveStreams(): void {
+    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
+    if (!getConnections) return;
+    for (const connection of getConnections.call(this)) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort WebSocket close during runtime disposal.
+      try {
+        connection.close(1000, "Session closed");
+      } catch {}
+    }
   }
 
   private async cleanupUnaddressableSessionAlarm(): Promise<void> {
@@ -543,6 +555,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.gen(function* () {
       yield* self.releaseAllPendingApprovalLeases();
+      yield* Effect.sync(() => self.closeActiveStreams());
       if (self.server) {
         const server = self.server;
         delete (self as { server?: McpServer }).server;
@@ -832,9 +845,13 @@ export abstract class McpAgentSessionDOBase<
     const lastActivityMs = await this.loadLastActivity();
     const idleMs = lastActivityMs > 0 ? Date.now() - lastActivityMs : 0;
     const pausedExecutionCount = await this.pausedExecutionCount();
+    const runningExecutionCount = await this.runningExecutionCount();
+    const activeStreamCount = this.activeStreamCount();
     const decision = decideSessionAlarm({
       idleMs,
       pausedExecutionCount,
+      runningExecutionCount,
+      activeStreamCount,
       sessionTimeoutMs: this.sessionTimeoutMs(),
       maxPausedSessionIdleMs: this.maxPausedSessionIdleMs(),
     });
@@ -855,6 +872,26 @@ export abstract class McpAgentSessionDOBase<
           }),
         ),
       );
+      await this.ctx.storage.setAlarm(Date.now() + decision.leaseMs);
+      return;
+    }
+
+    if (decision.kind === "extend_running_lease") {
+      console.info(
+        JSON.stringify(
+          runningLeaseExtensionLog({
+            sessionId: this.sessionId,
+            runningExecutionCount,
+            activeStreamCount,
+            idleMs,
+            leaseMs: decision.leaseMs,
+          }),
+        ),
+      );
+      // Open streamable-HTTP bridges and persisted request ids represent work
+      // that can still deliver or replay a response. Buggy dead pipes are
+      // closed by the SSE writer's terminal failure path, so they stop
+      // extending the lease once the bridge observes the failure.
       await this.ctx.storage.setAlarm(Date.now() + decision.leaseMs);
       return;
     }
