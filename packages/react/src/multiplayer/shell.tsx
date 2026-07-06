@@ -2,7 +2,7 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { BookOpen, Command, ExternalLink } from "lucide-react";
+import { BookOpen, Command, ExternalLink, Plus } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
@@ -22,6 +22,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
+import { ConnectDialog } from "../pages/integrations";
 import { Wordmark } from "../components/wordmark";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
@@ -362,6 +363,7 @@ function SidebarContent(
     ),
   );
   const navItems = [...(props.navItems ?? defaultShellNavItems), ...pluginNavItems];
+  const [connectOpen, setConnectOpen] = useState(false);
   return (
     <>
       {props.showBrand !== false && (
@@ -381,12 +383,31 @@ function SidebarContent(
           />
         ))}
 
-        <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          <span>Integrations</span>
+        <div className="mt-5 mb-1 flex items-center justify-between gap-1 pr-1 pl-2.5">
+          <Link
+            to="/{-$orgSlug}"
+            onClick={props.onNavigate}
+            data-testid="sidebar-integrations-heading"
+            className="text-xs font-medium uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Integrations
+          </Link>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Connect an integration"
+            data-testid="sidebar-connect-integration"
+            className="text-muted-foreground/60 hover:text-foreground"
+            onClick={() => setConnectOpen(true)}
+          >
+            <Plus className="size-3.5" />
+          </Button>
         </div>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
+
+      <ConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
 
       <SidebarUpdateCard />
 
