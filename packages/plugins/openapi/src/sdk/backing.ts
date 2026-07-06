@@ -579,24 +579,37 @@ export const resolveOpenApiBackedTools = ({
   readonly storage: OpenapiStore;
 }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
   Effect.gen(function* () {
+    const incomplete = (reason: string): ResolveToolsResult => ({
+      tools: [],
+      definitions: {},
+      incomplete: true,
+      incompleteReason: reason,
+    });
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
     if (!openApiConfig) return { tools: [], definitions: {} };
     if (openApiConfig.specHash != null) {
-      const defsJson = yield* storage.getDefs(openApiConfig.specHash);
+      const defsJson = yield* storage
+        .getDefs(openApiConfig.specHash)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
       if (defsJson != null) {
         const definitions = Option.getOrNull(decodeDefsJson(defsJson));
         if (definitions != null) {
-          const ops = yield* storage.listOperations(String(integration.slug));
+          const ops = yield* storage
+            .listOperations(String(integration.slug))
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          if (ops == null) return incomplete("OpenAPI operation bindings could not be loaded.");
           return { tools: ops.map(toolDefFromStoredOperation), definitions };
         }
       }
     }
-    const specText = yield* loadOpenApiSpecText(storage, openApiConfig);
-    if (specText == null) return { tools: [], definitions: {} };
+    const specText = yield* loadOpenApiSpecText(storage, openApiConfig).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (specText == null) return incomplete("OpenAPI spec blob could not be loaded.");
     const compiled = yield* compileOpenApiSpecCached(openApiConfig.specHash, specText).pipe(
       Effect.catch(() => Effect.succeed(null)),
     );
-    if (!compiled) return { tools: [], definitions: {} };
+    if (!compiled) return incomplete("OpenAPI spec could not be parsed.");
     return {
       tools: openApiToolDefsFromCompiled(compiled),
       definitions: compiled.hoistedDefs,

@@ -10,9 +10,10 @@ import {
   ToolAddress,
   ToolName,
 } from "./ids";
+import { createExecutor } from "./executor";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
-import { makeTestExecutor } from "./testing";
+import { makeTestConfig, makeTestExecutor } from "./testing";
 
 // removed: v1 connection-refresh lifecycle, ConnectionProvider.refresh,
 // SecretProvider, accessToken token-refresh + in-flight dedup tests — the v2
@@ -356,6 +357,264 @@ describe("connections.refresh", () => {
       });
       expect(tools.map((t) => String(t.name)).sort()).toEqual(["deploy", "list"]);
     }),
+  );
+});
+
+describe("tool catalog sync safety", () => {
+  it.effect(
+    "background sync preserves a nonzero catalog when a plugin returns authoritative empty",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let empty = false;
+          const guardedPlugin = definePlugin(() => ({
+            id: "guarded" as const,
+            credentialProviders: [memoryProvider()],
+            storage: () => ({}),
+            resolveTools: () =>
+              Effect.sync(() => ({
+                tools: empty
+                  ? []
+                  : [
+                      { name: ToolName.make("deploy"), description: "deploy" },
+                      { name: ToolName.make("list"), description: "list" },
+                    ],
+              })),
+            invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+            extension: (ctx) => ({
+              seed: () =>
+                ctx.core.integrations.register({
+                  slug: INTEG,
+                  description: "Vercel",
+                  config: {},
+                }),
+            }),
+          }))();
+          const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+          const executor = yield* createExecutor(config);
+          yield* executor.guarded.seed();
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+
+          empty = true;
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+              set: { tools_synced_at: null },
+            }),
+          );
+          const tools = yield* executor.tools.list({ integration: INTEG });
+          const connection = yield* executor.connections.get({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+
+          expect(tools.map((tool) => String(tool.name)).sort()).toEqual(["deploy", "list"]);
+          expect(connection?.lastHealth).toMatchObject({
+            status: "degraded",
+            detail: expect.stringContaining("authoritative empty catalog"),
+          });
+        }),
+      ),
+  );
+
+  it.effect("explicit refresh accepts an authoritative empty catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let empty = false;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.sync(() => ({
+              tools: empty
+                ? []
+                : [
+                    { name: ToolName.make("deploy"), description: "deploy" },
+                    { name: ToolName.make("list"), description: "list" },
+                  ],
+            })),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [guardedPlugin] as const }),
+        );
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        empty = true;
+        const refreshed = yield* executor.connections.refresh({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        const tools = yield* executor.tools.list({ integration: INTEG });
+
+        expect(refreshed).toEqual([]);
+        expect(tools).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("successful sync clears a prior tool-sync failure health record", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let incomplete = false;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.sync(() =>
+              incomplete
+                ? {
+                    tools: [],
+                    incomplete: true,
+                    incompleteReason: "temporary catalog outage",
+                  }
+                : {
+                    tools: [
+                      { name: ToolName.make("deploy"), description: "deploy" },
+                      { name: ToolName.make("list"), description: "list" },
+                    ],
+                  },
+            ),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        incomplete = true;
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+        yield* executor.tools.list({ integration: INTEG });
+        expect(
+          (yield* executor.connections.get({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          }))?.lastHealth,
+        ).toMatchObject({
+          status: "degraded",
+          detail: expect.stringContaining("temporary catalog outage"),
+        });
+
+        incomplete = false;
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+        yield* executor.tools.list({ integration: INTEG });
+        const connection = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+
+        expect(connection?.lastHealth).toBeNull();
+      }),
+    ),
+  );
+
+  it.effect("successful sync preserves genuine health-check records", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.succeed({
+              tools: [
+                { name: ToolName.make("deploy"), description: "deploy" },
+                { name: ToolName.make("list"), description: "list" },
+              ],
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        const health = {
+          status: "degraded" as const,
+          checkedAt: Date.now(),
+          detail: "health check returned HTTP 503",
+        };
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null, last_health: health },
+          }),
+        );
+        yield* executor.tools.list({ integration: INTEG });
+        const connection = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+
+        expect(connection?.lastHealth).toMatchObject(health);
+      }),
+    ),
   );
 });
 

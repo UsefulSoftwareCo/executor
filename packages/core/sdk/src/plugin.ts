@@ -297,6 +297,9 @@ export interface ResolveToolsResult {
    *  listing is authoritative, including a genuine "this source has zero
    *  tools". */
   readonly incomplete?: boolean;
+  /** Human-readable reason for an incomplete listing. Persisted by core when it
+   *  preserves the prior catalog so operators can see why data is stale. */
+  readonly incompleteReason?: string;
 }
 
 // ---------------------------------------------------------------------------

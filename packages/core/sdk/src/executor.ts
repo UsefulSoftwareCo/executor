@@ -2002,9 +2002,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
+    const toolSyncHealthDetailPrefix = "Tool sync failing";
+
+    const toolSyncHealth = (reason: string): HealthCheckResult => ({
+      status: "degraded",
+      checkedAt: Date.now(),
+      detail: `${toolSyncHealthDetailPrefix}: ${reason}`,
+    });
+
+    const syncHealthReason = (result: ResolveToolsResult): string =>
+      result.incompleteReason ?? "plugin returned an incomplete tool catalog";
+
     const produceConnectionTools = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
+      mode: "explicit" | "background" = "explicit",
     ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
@@ -2019,18 +2031,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("connection", "=", String(ref.name)),
           );
+        const connectionWhere = (b: AnyCb) =>
+          b.and(
+            byOwner(owner)(b),
+            b("integration", "=", String(ref.integration)),
+            b("name", "=", String(ref.name)),
+          );
+        const isToolSyncHealth = (health: HealthCheckResult | null): boolean =>
+          health?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
+        const syncedSet = (row: ConnectionRow | null) => {
+          const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
+          return isToolSyncHealth(health)
+            ? { tools_synced_at: Date.now(), last_health: null, updated_at: new Date() }
+            : { tools_synced_at: Date.now() };
+        };
         // Every exit stamps the sync time — including the cleanup paths that
         // produce zero tools — so the stale-catalog check (`config_revised_at`
         // vs `tools_synced_at`) doesn't re-attempt this connection per read.
-        const stampSynced = core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(owner)(b),
-              b("integration", "=", String(ref.integration)),
-              b("name", "=", String(ref.name)),
-            ),
-          set: { tools_synced_at: Date.now() },
-        });
+        // Successful syncs also clear stale sync-failure health records, while
+        // preserving genuine health-check outcomes.
+        const stampSynced = (row: ConnectionRow | null) =>
+          core.updateMany("connection", {
+            where: connectionWhere,
+            set: syncedSet(row),
+          });
+        const stampSyncedWithHealth = (reason: string) =>
+          core.updateMany("connection", {
+            where: connectionWhere,
+            set: {
+              tools_synced_at: Date.now(),
+              last_health: toolSyncHealth(reason),
+              updated_at: new Date(),
+            },
+          });
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -2051,7 +2084,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
-              yield* stampSynced;
+              yield* stampSynced(existingRow);
             }),
           );
           return [];
@@ -2063,7 +2096,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
-              yield* stampSynced;
+              yield* stampSynced(existingRow);
             }),
           );
           return [];
@@ -2092,9 +2125,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // over a transient outage — and stamp the sync time anyway so a down
           // server isn't re-dialed on every read; the freshness TTL re-attempts
           // later.
-          yield* stampSynced;
+          const reason = syncHealthReason(result);
+          yield* stampSyncedWithHealth(reason);
+          yield* Effect.logWarning("executor tool sync preserved catalog", {
+            reason,
+            integration: String(ref.integration),
+            connection: String(ref.name),
+          });
           const keptRows = yield* core.findMany("tool", { where });
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
+        }
+
+        if (mode === "background" && result.tools.length === 0) {
+          const keptRows = yield* core.findMany("tool", { where });
+          if (keptRows.length > 0) {
+            const reason =
+              "background tool sync produced an authoritative empty catalog for a connection with existing tools";
+            yield* stampSyncedWithHealth(reason);
+            yield* Effect.logWarning("executor tool sync preserved nonzero catalog", {
+              reason,
+              integration: String(ref.integration),
+              connection: String(ref.name),
+              existingToolCount: keptRows.length,
+            });
+            return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
+          }
         }
 
         const now = new Date();
@@ -2132,7 +2187,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             yield* core.deleteMany("definition", { where });
             yield* core.createMany("tool", toolRows);
             yield* core.createMany("definition", definitionRows);
-            yield* stampSynced;
+            yield* stampSynced(existingRow);
           }),
         );
 
@@ -2965,11 +3020,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           syncedAt < cutoff;
         if (!staleMarked && !configRevised && !expired) continue;
 
-        yield* produceConnectionTools(integrationRow, {
-          owner: connection.owner as Owner,
-          integration: IntegrationSlug.make(connection.integration),
-          name: ConnectionName.make(connection.name),
-        }).pipe(
+        yield* produceConnectionTools(
+          integrationRow,
+          {
+            owner: connection.owner as Owner,
+            integration: IntegrationSlug.make(connection.integration),
+            name: ConnectionName.make(connection.name),
+          },
+          "background",
+        ).pipe(
           Effect.catch(() => Effect.succeed([] as readonly Tool[])),
           Effect.withSpan("executor.tools.sync_stale", {
             attributes: {

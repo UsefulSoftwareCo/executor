@@ -975,10 +975,17 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
       readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient>;
     }) =>
       Effect.gen(function* () {
+        const incomplete = (reason: string) => ({
+          tools: [] as readonly ToolDef[],
+          incomplete: true,
+          incompleteReason: reason,
+        });
         const decoded = yield* decodeGraphqlIntegrationConfig(config).pipe(Effect.option);
         if (Option.isNone(decoded)) return { tools: [] };
         const graphqlConfig = decoded.value;
-        const introspectionJson = yield* loadIntrospectionJson(storage, graphqlConfig);
+        const introspectionJson = yield* loadIntrospectionJson(storage, graphqlConfig).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        );
         // Live introspection (no stored snapshot) needs the connection's
         // credential inputs for auth-required endpoints; resolve them lazily.
         const values =
@@ -994,15 +1001,27 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           template,
           options?.httpClientLayer ?? httpClientLayer,
         ).pipe(Effect.option);
-        if (Option.isNone(introspection)) return { tools: [] };
+        if (Option.isNone(introspection)) {
+          return incomplete("GraphQL introspection could not be loaded.");
+        }
         const extracted = yield* extract(introspection.value).pipe(Effect.option);
-        if (Option.isNone(extracted)) return { tools: [] };
+        if (Option.isNone(extracted)) {
+          return incomplete("GraphQL introspection result could not be converted to tools.");
+        }
         const prepared = prepareOperations(extracted.value.result.fields, introspection.value);
         return {
           tools: buildToolDefs(prepared),
           definitions: extracted.value.definitions,
         };
-      }).pipe(Effect.catch(() => Effect.succeed({ tools: [] as readonly ToolDef[] }))),
+      }).pipe(
+        Effect.catch(() =>
+          Effect.succeed({
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: "GraphQL tool catalog could not be resolved.",
+          }),
+        ),
+      ),
 
     // -----------------------------------------------------------------------
     // Invoke one of a connection's tools. Look up the operation by integration

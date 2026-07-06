@@ -32,6 +32,7 @@ import { variable } from "@executor-js/sdk/http-auth";
 import { openApiPlugin } from "./plugin";
 import type { OpenapiStore } from "./store";
 import type { AuthenticationInput } from "./types";
+import { defsBlobKey, specBlobKey } from "./store";
 import {
   makeOpenApiHttpApiTestSourceConfig,
   serveOpenApiHttpApiTestServer,
@@ -65,11 +66,48 @@ const specText = () => {
   return spec.url;
 };
 
+const specTextWithDefinition = () =>
+  JSON.stringify({
+    openapi: "3.1.0",
+    info: { title: "Catalog", version: "1.0.0" },
+    paths: {
+      "/items": {
+        get: {
+          operationId: "listItems",
+          responses: {
+            "200": {
+              description: "ok",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "array",
+                    items: { $ref: "#/components/schemas/Item" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        Item: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+        },
+      },
+    },
+  });
+
 const apiKeyTemplate: AuthenticationInput = {
   slug: AuthTemplateSlug.make("apiKey"),
   type: "apiKey",
   headers: { "x-api-key": [variable("token")] },
 };
+
+const openApiBlobNamespace = "o:test-tenant/openapi";
 
 describe("OpenAPI plugin — spec blob storage", () => {
   it.effect("addSpec stores a content pointer, not the inline spec text", () =>
@@ -121,6 +159,197 @@ describe("OpenAPI plugin — spec blob storage", () => {
         ).data as { "x-api-key"?: string };
 
         expect(result["x-api-key"]).toBe("secret-key-123");
+      }),
+    ),
+  );
+
+  it.effect(
+    "stale sync preserves tools and definitions when the spec blob parses to a non-object",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const config = makeTestConfig({ plugins: testPlugins() });
+          const executor = yield* createExecutor(config);
+          const text = specTextWithDefinition();
+          const hash = yield* sha256Hex(text);
+
+          yield* executor.openapi.addSpec({
+            spec: { kind: "blob", value: text },
+            slug: "corrupt_blob",
+          });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: IntegrationSlug.make("corrupt_blob"),
+            template: AuthTemplateSlug.make("none"),
+            values: {},
+          });
+
+          const beforeTools = yield* executor.tools.list({
+            integration: IntegrationSlug.make("corrupt_blob"),
+          });
+          const beforeDefinitions = yield* Effect.promise(() =>
+            config.db.findMany("definition", {
+              where: (b) => b("integration", "=", "corrupt_blob"),
+            }),
+          );
+          expect(beforeTools.length).toBeGreaterThan(0);
+          expect(beforeDefinitions.length).toBeGreaterThan(0);
+
+          yield* Effect.promise(() =>
+            config.db.updateMany("blob", {
+              where: (b) =>
+                b.and(b("namespace", "=", openApiBlobNamespace), b("key", "=", specBlobKey(hash))),
+              set: { value: JSON.stringify("not an object") },
+            }),
+          );
+          yield* Effect.promise(() =>
+            config.db.deleteMany("blob", {
+              where: (b) =>
+                b.and(b("namespace", "=", openApiBlobNamespace), b("key", "=", defsBlobKey(hash))),
+            }),
+          );
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b.and(b("integration", "=", "corrupt_blob"), b("name", "=", "main")),
+              set: { tools_synced_at: null },
+            }),
+          );
+
+          const afterTools = yield* executor.tools.list({
+            integration: IntegrationSlug.make("corrupt_blob"),
+          });
+          const afterDefinitions = yield* Effect.promise(() =>
+            config.db.findMany("definition", {
+              where: (b) => b("integration", "=", "corrupt_blob"),
+            }),
+          );
+          const connection = yield* executor.connections.get({
+            owner: "org",
+            integration: IntegrationSlug.make("corrupt_blob"),
+            name: ConnectionName.make("main"),
+          });
+
+          expect(afterTools.map((tool) => String(tool.name)).sort()).toEqual(
+            beforeTools.map((tool) => String(tool.name)).sort(),
+          );
+          expect(afterDefinitions).toHaveLength(beforeDefinitions.length);
+          expect(connection?.lastHealth).toMatchObject({
+            status: "degraded",
+            detail: expect.stringContaining("OpenAPI spec could not be parsed"),
+          });
+        }),
+      ),
+  );
+
+  it.effect("stale sync preserves tools and definitions when the spec blob is missing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({ plugins: testPlugins() });
+        const executor = yield* createExecutor(config);
+        const text = specTextWithDefinition();
+        const hash = yield* sha256Hex(text);
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: text },
+          slug: "missing_blob",
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("missing_blob"),
+          template: AuthTemplateSlug.make("none"),
+          values: {},
+        });
+
+        const beforeTools = yield* executor.tools.list({
+          integration: IntegrationSlug.make("missing_blob"),
+        });
+        const beforeDefinitions = yield* Effect.promise(() =>
+          config.db.findMany("definition", {
+            where: (b) => b("integration", "=", "missing_blob"),
+          }),
+        );
+        expect(beforeTools.length).toBeGreaterThan(0);
+        expect(beforeDefinitions.length).toBeGreaterThan(0);
+
+        yield* Effect.promise(() =>
+          config.db.deleteMany("blob", {
+            where: (b) =>
+              b.and(
+                b("namespace", "=", openApiBlobNamespace),
+                b("key", "in", [specBlobKey(hash), defsBlobKey(hash)]),
+              ),
+          }),
+        );
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", "missing_blob"), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+
+        const afterTools = yield* executor.tools.list({
+          integration: IntegrationSlug.make("missing_blob"),
+        });
+        const afterDefinitions = yield* Effect.promise(() =>
+          config.db.findMany("definition", {
+            where: (b) => b("integration", "=", "missing_blob"),
+          }),
+        );
+        const connection = yield* executor.connections.get({
+          owner: "org",
+          integration: IntegrationSlug.make("missing_blob"),
+          name: ConnectionName.make("main"),
+        });
+
+        expect(afterTools.map((tool) => String(tool.name)).sort()).toEqual(
+          beforeTools.map((tool) => String(tool.name)).sort(),
+        );
+        expect(afterDefinitions).toHaveLength(beforeDefinitions.length);
+        expect(connection?.lastHealth).toMatchObject({
+          status: "degraded",
+          detail: expect.stringContaining("OpenAPI spec blob could not be loaded"),
+        });
+      }),
+    ),
+  );
+
+  it.effect("explicit spec refresh accepts a valid OpenAPI document with zero operations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const emptySpec = JSON.stringify({
+          openapi: "3.1.0",
+          info: { title: "Empty", version: "1.0.0" },
+          paths: {},
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specText() },
+          slug: "healthy_zero",
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("healthy_zero"),
+          template: AuthTemplateSlug.make("none"),
+          values: {},
+        });
+        expect(
+          (yield* executor.tools.list({ integration: IntegrationSlug.make("healthy_zero") }))
+            .length,
+        ).toBeGreaterThan(0);
+
+        const update = yield* executor.openapi.updateSpec("healthy_zero", {
+          spec: { kind: "blob", value: emptySpec },
+        });
+        const tools = yield* executor.tools.list({
+          integration: IntegrationSlug.make("healthy_zero"),
+        });
+
+        expect(update.toolCount).toBe(0);
+        expect(tools).toEqual([]);
       }),
     ),
   );
