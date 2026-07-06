@@ -43,8 +43,9 @@ interface CloudPluginDeps {
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
   /** Mirrors `HostConfig.allowLocalNetwork` (`ALLOW_LOCAL_NETWORK`): lets
-   *  `microsoft.addGraph` point at a loopback emulator instead of the pinned
-   *  Microsoft Graph URLs. Off by default; production leaves it unset. */
+   *  custom Microsoft workload adds point at a loopback emulator instead of
+   *  the pinned Microsoft Graph URLs. Off by default; production leaves it
+   *  unset. */
   readonly allowLocalNetwork?: boolean;
 }
 

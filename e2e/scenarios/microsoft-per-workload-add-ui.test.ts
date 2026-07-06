@@ -2,10 +2,11 @@
 // spec. The add-Microsoft flow lets a user check several Graph workloads and
 // submit them in one action; each checked workload becomes its OWN integration
 // (microsoft_mail, microsoft_calendar), each a scope-filtered slice of the
-// Graph, not one bundled "microsoft_graph" source. This drives the whole
-// browser path: clear the featured defaults, check exactly Mail + Calendar,
-// submit, assert two `add-result-row-*` rows added, follow one Open link to a
-// per-workload integration page, confirm both slugs in the list, then re-add
+// Graph, not one bundled "microsoft_graph" source. The same submit also adds
+// one custom-scope workload entry. This drives the whole browser path: clear
+// the featured defaults, check exactly Mail + Calendar, add a custom scope,
+// submit, assert three `add-result-row-*` rows added, follow one Open link to
+// a per-workload integration page, confirm all slugs in the list, then re-add
 // Mail and see it reported skipped.
 //
 // OUTBOUND SPEC (same shape as the Google spec, scoped-out reasons below):
@@ -29,11 +30,12 @@ import { setPresetChecked } from "./support/picker";
 
 scenario(
   "Microsoft · the per-workload picker fans out to separate integrations and skips existing ones",
-  { timeout: 420_000 },
+  { timeout: 600_000 },
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
     const identity = yield* target.newIdentity();
+    const customScope = "Sites.Read.All";
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the Microsoft add flow", async () => {
@@ -43,7 +45,7 @@ scenario(
         await page.getByTestId("preset-checkbox-mail").waitFor();
       });
 
-      await step("Clear the defaults, then check exactly Mail + Calendar", async () => {
+      await step("Clear defaults, check Mail + Calendar, and add a custom scope", async () => {
         // The featured defaults (profile, mail, calendar, contacts, tasks, files)
         // start checked; clear them, then select only the two under test.
         for (const presetId of ["profile", "mail", "calendar", "contacts", "tasks", "files"]) {
@@ -54,9 +56,13 @@ scenario(
         }
         expect(await page.getByTestId("preset-checkbox-contacts").isChecked()).toBe(false);
         expect(await page.getByTestId("preset-checkbox-files").isChecked()).toBe(false);
+
+        await page.getByPlaceholder("Sites.Read.All").fill(customScope);
+        await page.getByPlaceholder("Sites.Read.All").press("Enter");
+        await page.getByText(customScope).waitFor();
       });
 
-      await step("Submit the fan-out and see two added integrations", async () => {
+      await step("Submit the fan-out and see three added integrations", async () => {
         await page.getByTestId("microsoft-add-submit").click();
         // Each workload fetches + stream-compiles the 37MB Graph spec; allow a
         // wide window for the result panel to populate.
@@ -71,6 +77,14 @@ scenario(
           ).toBe("added");
           await row.getByRole("link", { name: "Open" }).waitFor();
         }
+
+        const customRow = page.getByTestId("add-result-row-custom");
+        await customRow.waitFor({ timeout: 300_000 });
+        expect(
+          await customRow.getAttribute("data-state"),
+          "the custom scope is added through the workloads endpoint",
+        ).toBe("added");
+        await customRow.getByRole("link", { name: "Open" }).waitFor();
       });
 
       await step(
@@ -89,9 +103,9 @@ scenario(
         },
       );
 
-      await step("The integrations list has two separate Microsoft integrations", async () => {
+      await step("The integrations list has three separate Microsoft integrations", async () => {
         await page.goto("/integrations", { waitUntil: "networkidle" });
-        for (const slug of ["microsoft_mail", "microsoft_calendar"]) {
+        for (const slug of ["microsoft_mail", "microsoft_calendar", "microsoft_graph_custom"]) {
           await page
             .getByRole("main")
             .getByText(slug, { exact: true })

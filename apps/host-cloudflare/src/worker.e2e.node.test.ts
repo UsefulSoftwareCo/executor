@@ -167,8 +167,8 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(integration?.slug).toBe(slug);
   }, 60_000);
 
-  it("registers the Microsoft Graph API route in the runtime plugin set", async () => {
-    const res = await worker.fetch("/api/microsoft/graph", {
+  it("registers the Microsoft workloads API route in the runtime plugin set", async () => {
+    const res = await worker.fetch("/api/microsoft/workloads", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),

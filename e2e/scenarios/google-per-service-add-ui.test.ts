@@ -4,15 +4,16 @@
 // not one bundled "google" source. This drives the whole browser path:
 //
 //   1. Open /integrations/add/google (the Google-owned add flow).
-//   2. Clear the featured defaults, then check exactly Calendar + Gmail + Drive.
+//   2. Clear the featured defaults, check Calendar + Gmail + Drive, and add a
+//      custom Tasks Discovery URL.
 //   3. Submit via `google-add-submit`. The flow fetches each preset's real
 //      Google Discovery document (www.googleapis.com) and registers one
-//      integration per product.
-//   4. The result panel shows three `add-result-row-*` rows, each data-state
+//      integration per product, plus one custom integration.
+//   4. The result panel shows four `add-result-row-*` rows, each data-state
 //      "added", each with an Open link.
 //   5. Follow one Open link: the integration detail page shows the per-service
 //      name ("Google Calendar"), proving the fan-out kept preset identities.
-//   6. Back on the integrations list, all three separate integrations exist
+//   6. Back on the integrations list, all four separate integrations exist
 //      (asserted by their distinct slugs in the list UI).
 //   7. Re-open the add flow, check Calendar again, submit: its row now reports
 //      data-state "skipped" (the integration already exists), proving the
@@ -42,6 +43,7 @@ scenario(
     const target = yield* Target;
     const browser = yield* Browser;
     const identity = yield* target.newIdentity();
+    const customDiscoveryUrl = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the Google add flow", async () => {
@@ -52,28 +54,44 @@ scenario(
         await page.getByTestId("preset-checkbox-google-calendar").waitFor();
       });
 
-      await step("Clear the defaults, then check exactly Calendar + Gmail + Drive", async () => {
-        // Clear every featured default, then select only the three under test.
-        const featuredDefaults = [
-          "google-calendar",
-          "google-gmail",
-          "google-sheets",
-          "google-drive",
-          "google-docs",
-        ];
-        for (const presetId of featuredDefaults) {
-          await setPresetChecked(page, presetId, false);
-        }
+      await step(
+        "Clear defaults, check Calendar + Gmail + Drive, and add a custom URL",
+        async () => {
+          // Clear every featured default, then select only the three preset
+          // products under test.
+          const featuredDefaults = [
+            "google-calendar",
+            "google-gmail",
+            "google-sheets",
+            "google-drive",
+            "google-docs",
+          ];
+          for (const presetId of featuredDefaults) {
+            await setPresetChecked(page, presetId, false);
+          }
 
-        for (const presetId of ["google-calendar", "google-gmail", "google-drive"]) {
-          await setPresetChecked(page, presetId, true);
-        }
-        // Everything else is unchecked: this is a scoped three-product selection.
-        expect(await page.getByTestId("preset-checkbox-google-sheets").isChecked()).toBe(false);
-        expect(await page.getByTestId("preset-checkbox-google-docs").isChecked()).toBe(false);
-      });
+          for (const presetId of ["google-calendar", "google-gmail", "google-drive"]) {
+            await setPresetChecked(page, presetId, true);
+          }
+          // Everything else is unchecked: this is a scoped three-product selection.
+          expect(await page.getByTestId("preset-checkbox-google-sheets").isChecked()).toBe(false);
+          expect(await page.getByTestId("preset-checkbox-google-docs").isChecked()).toBe(false);
 
-      await step("Submit the fan-out and see three added integrations", async () => {
+          await page
+            .getByPlaceholder(
+              "https://www.googleapis.com/discovery/v1/apis/<service>/<version>/rest",
+            )
+            .fill(customDiscoveryUrl);
+          await page
+            .getByPlaceholder(
+              "https://www.googleapis.com/discovery/v1/apis/<service>/<version>/rest",
+            )
+            .press("Enter");
+          await page.getByText(customDiscoveryUrl).waitFor();
+        },
+      );
+
+      await step("Submit the fan-out and see four added integrations", async () => {
         await page.getByTestId("google-add-submit").click();
         // The result panel appears once every product is registered. Discovery
         // fetch + spec compile per product; allow generous time.
@@ -90,6 +108,14 @@ scenario(
           // Each added row links out to its own integration page.
           await row.getByRole("link", { name: "Open" }).waitFor();
         }
+
+        const customRow = page.getByTestId("add-result-row-custom");
+        await customRow.waitFor({ timeout: 120_000 });
+        expect(
+          await customRow.getAttribute("data-state"),
+          "the custom Discovery URL is added through the services endpoint",
+        ).toBe("added");
+        await customRow.getByRole("link", { name: "Open" }).waitFor();
       });
 
       await step("Open one product: its integration page shows the per-service name", async () => {
@@ -108,11 +134,11 @@ scenario(
           .waitFor({ timeout: 20_000 });
       });
 
-      await step("The integrations list has three separate Google integrations", async () => {
+      await step("The integrations list has four separate Google integrations", async () => {
         await page.goto("/integrations", { waitUntil: "networkidle" });
         // Each fanned-out integration is its own list entry, keyed by its slug
         // (the list renders the slug as each entry's description).
-        for (const slug of ["google_calendar", "google_gmail", "google_drive"]) {
+        for (const slug of ["google_calendar", "google_gmail", "google_drive", "google_custom"]) {
           await page
             .getByRole("main")
             .getByText(slug, { exact: true })

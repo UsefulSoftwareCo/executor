@@ -22,8 +22,8 @@ import { resolveSecretKey } from "./src/config";
 interface SelfHostPluginDeps {
   readonly activeToolkitSlug?: string;
   /** Mirrors `HostConfig.allowLocalNetwork` (EXECUTOR_ALLOW_LOCAL_NETWORK):
-   *  lets `microsoft.addGraph` point at a loopback emulator instead of the
-   *  pinned Microsoft Graph URLs. Off by default. */
+   *  lets custom Microsoft workload adds point at a loopback emulator instead
+   *  of the pinned Microsoft Graph URLs. Off by default. */
   readonly allowLocalNetwork?: boolean;
 }
 
