@@ -197,6 +197,14 @@ export interface IntegrationPlugin {
     readonly accountHandoff?: IntegrationAccountHandoff | null;
   }>;
   readonly presets?: readonly IntegrationPreset[];
+  /** Per-service icon overrides for provider plugins that fan out into several
+   *  per-service integrations (e.g. Google → google_calendar, google_gmail).
+   *  Keyed by the integration slug the fan-out registers; the catalog favicon
+   *  resolver consults this before falling back to a URL-derived favicon, so a
+   *  Gmail integration shows the Gmail glyph rather than a generic Google logo.
+   *  Kept separate from `presets` so the connect picker's popular-integration
+   *  list is not affected. */
+  readonly serviceIcons?: readonly { readonly slug: string; readonly icon: string }[];
   /** Trigger early download of the plugin's lazy component chunks (add/edit/etc.).
    *  Call from the host on intent (hover/focus) so the chunks land before the
    *  user navigates into the add page. Idempotent. */

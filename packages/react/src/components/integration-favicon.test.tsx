@@ -70,6 +70,68 @@ describe("IntegrationFavicon", () => {
     expect(integrationFaviconSrc({ icon, sourceId: slug, url, size: 16 })).toBe("/favicon-32.png");
   });
 
+  it("prefers a plugin's per-service icon (keyed by slug) over the preset cascade", () => {
+    // A provider that fans out into per-service integrations declares a
+    // slug->icon map; a Gmail integration resolves to the Gmail glyph even
+    // though every Google service shares the same displayUrl host.
+    expect(
+      integrationPresetIconUrl(
+        {
+          id: "google_gmail",
+          kind: "google",
+          name: "Gmail",
+          url: "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+        },
+        [
+          {
+            key: "google",
+            label: "Google",
+            add: () => null,
+            edit: () => null,
+            presets: [
+              { id: "google", name: "Google", summary: "Bundle.", icon: "https://x/g.svg" },
+            ],
+            serviceIcons: [
+              { slug: "google_gmail", icon: "https://x/gmail.png" },
+              { slug: "google_calendar", icon: "https://x/calendar.svg" },
+            ],
+          },
+        ],
+      ),
+    ).toBe("https://x/gmail.png");
+  });
+
+  it("falls through to the preset cascade when no per-service icon matches the slug", () => {
+    expect(
+      integrationPresetIconUrl(
+        {
+          id: "google_sheets",
+          kind: "google",
+          name: "Google Sheets",
+          url: "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
+        },
+        [
+          {
+            key: "google",
+            label: "Google",
+            add: () => null,
+            edit: () => null,
+            presets: [
+              {
+                id: "google-sheets",
+                name: "Google Sheets",
+                summary: "Spreadsheets.",
+                url: "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
+                icon: "https://x/sheets.svg",
+              },
+            ],
+            serviceIcons: [{ slug: "google_gmail", icon: "https://x/gmail.png" }],
+          },
+        ],
+      ),
+    ).toBe("https://x/sheets.svg");
+  });
+
   it("finds preset icons from a source URL", () => {
     expect(
       integrationPresetIconUrl(

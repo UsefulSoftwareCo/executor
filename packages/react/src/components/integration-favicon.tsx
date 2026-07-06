@@ -156,6 +156,14 @@ export function integrationPresetIconUrl(
 ): string | null {
   const pluginKey = KIND_TO_PLUGIN_KEY[source.kind] ?? source.kind;
   const plugin = integrationPlugins.find((p) => p.key === pluginKey);
+
+  // Per-service integrations (google_calendar, microsoft_mail, …) carry their
+  // own product glyph, keyed by the exact slug the fan-out registered. This is
+  // the most specific match, so it wins over the URL/token preset cascade below
+  // (a provider's per-service integrations often share one displayUrl).
+  const serviceIcon = plugin?.serviceIcons?.find((entry) => entry.slug === source.id);
+  if (serviceIcon) return serviceIcon.icon;
+
   const presets = plugin?.presets ?? [];
   const sourceUrl = normalizeUrl(source.url);
   const sourceGoogleService = googleApiServiceFromUrl(source.url);
