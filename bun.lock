@@ -781,6 +781,30 @@
         "effect": "catalog:",
       },
     },
+    "packages/plugins/apps": {
+      "name": "@executor-js/plugin-apps",
+      "version": "0.1.0",
+      "dependencies": {
+        "@executor-js/codemode-core": "workspace:*",
+        "@executor-js/runtime-quickjs": "workspace:*",
+        "@executor-js/sdk": "workspace:*",
+        "@libsql/client": "catalog:",
+        "@standard-schema/spec": "^1.0.0",
+        "esbuild": "^0.27.3",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "effect": "catalog:",
+        "tsup": "catalog:",
+        "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "catalog:",
+      },
+    },
     "packages/plugins/desktop-settings": {
       "name": "@executor-js/plugin-desktop-settings",
       "version": "1.5.28",
@@ -1775,6 +1799,8 @@
     "@executor-js/mcporter": ["@executor-js/mcporter@0.11.4", "", { "dependencies": { "@iarna/toml": "^2.2.5", "@modelcontextprotocol/sdk": "^1.29.0", "acorn": "^8.16.0", "commander": "^14.0.3", "es-toolkit": "^1.47.0", "jsonc-parser": "^3.3.1", "ora": "^9.4.0", "rolldown": "1.0.1", "zod": "^4.3.6" }, "bin": { "mcporter": "dist/cli.js" } }, "sha512-KewlNnqmzSkJAH7JS/2le9WxPWzL/ND7Pt/G5KGgfrSK9K9cE8UPIsEYZYZUJYoFnbCBzhlU9ugg59ptv1h3Ow=="],
 
     "@executor-js/motel": ["@executor-js/motel@0.2.5-executor.1", "", { "dependencies": { "@effect/atom-react": "^4.0.0-beta.49", "@effect/opentelemetry": "^4.0.0-beta.49", "@effect/platform-bun": "^4.0.0-beta.50", "@opentelemetry/api": "^1.9.0", "@opentelemetry/exporter-logs-otlp-http": "^0.214.0", "@opentelemetry/exporter-trace-otlp-http": "^0.211.0", "@opentelemetry/sdk-logs": "^0.214.0", "@opentelemetry/sdk-node": "^0.214.0", "@opentelemetry/sdk-trace-base": "^2.5.0", "@opentelemetry/sdk-trace-node": "^2.6.1", "@opentui/core": "^0.1.99", "@opentui/react": "^0.1.99", "effect": "^4.0.0-beta.49", "react": "^19.2.5", "scheduler": "^0.27.0" }, "bin": { "motel": "src/motel.ts", "motel-mcp": "src/mcp.ts" } }, "sha512-fLGJ5FIIBYd+4L2OurpYFjWzvcCbACvmdNofh6THXQJE1Gku93EKURtgn27/XddyM9SKGST6/znTRcmwKiYdXw=="],
+
+    "@executor-js/plugin-apps": ["@executor-js/plugin-apps@workspace:packages/plugins/apps"],
 
     "@executor-js/plugin-desktop-settings": ["@executor-js/plugin-desktop-settings@workspace:packages/plugins/desktop-settings"],
 
