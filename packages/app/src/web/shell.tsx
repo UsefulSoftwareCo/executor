@@ -207,7 +207,7 @@ function SidebarContent(props: {
         {/* Sources list */}
         <Link
           to="/{-$orgSlug}"
-          className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground"
+          className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground hover:underline"
           onClick={props.onNavigate}
         >
           <span>Integrations</span>
