@@ -49,13 +49,13 @@ scenario(
         const dialog = page.getByRole("dialog");
         await dialog.waitFor();
         const confirm = dialog.getByRole("button", { name: "Delete organization" });
-        await expect(confirm, "cannot delete before typing the name").toBeDisabled();
+        expect(await confirm.isDisabled(), "cannot delete before typing the name").toBe(true);
 
         // A wrong value keeps it disabled; the exact org name enables it.
         await page.getByLabel(/to confirm/i).fill("not the name");
-        await expect(confirm).toBeDisabled();
+        expect(await confirm.isDisabled()).toBe(true);
         await page.getByLabel(/to confirm/i).fill(ORG);
-        await expect(confirm, "the exact org name unlocks deletion").toBeEnabled();
+        expect(await confirm.isEnabled(), "the exact org name unlocks deletion").toBe(true);
       });
 
       await step("Confirming deletes the org and drops the user out of it", async () => {
@@ -67,7 +67,7 @@ scenario(
         await page.waitForURL((url) => !url.pathname.startsWith(`/${slug}/org`), {
           timeout: 30_000,
         });
-        await expect(page.getByText("Permanently delete this organization")).toHaveCount(0);
+        expect(await page.getByText("Permanently delete this organization").count()).toBe(0);
       });
     });
   }),
