@@ -17,8 +17,6 @@ export const googleConfigAtom = (slug: IntegrationSlug) =>
     reactivityKeys: [ReactivityKey.integrations, ReactivityKey.tools],
   });
 
-export const addGoogleBundle = GoogleClient.mutation("google", "addBundle");
-
 export const addGoogleServices = GoogleClient.mutation("google", "addServices");
 
 export const updateGoogleBundle = GoogleClient.mutation("google", "updateBundle");

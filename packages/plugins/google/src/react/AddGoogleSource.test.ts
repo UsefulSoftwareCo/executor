@@ -93,6 +93,11 @@ describe("AddGoogleSource per-service submit", () => {
           presetId: "google-drive",
           error: "Discovery fetch failed",
         },
+        {
+          slug: IntegrationSlug.make("google_custom"),
+          presetId: "custom",
+          error: "Custom Discovery fetch failed",
+        },
       ],
     };
 
@@ -110,6 +115,8 @@ describe("AddGoogleSource per-service submit", () => {
     expect(text).toContain("Already exists");
     expect(text).toContain("Google Drive");
     expect(text).toContain("Discovery fetch failed");
+    expect(text).toContain("Custom Discovery URLs");
+    expect(text).toContain("Custom Discovery fetch failed");
     expect(text).toContain("Retry");
   });
 
@@ -171,6 +178,34 @@ describe("AddGoogleSource per-service submit", () => {
           name: "Team Calendar",
         },
       ],
+    });
+  });
+
+  it("submits custom Discovery URLs as one service entry", () => {
+    expect(
+      googleAddServicesPayload({
+        presetIds: ["google-calendar"],
+        custom: {
+          urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
+          slug: "google_custom",
+          name: "Custom Google APIs",
+          description: "Custom Google APIs.",
+        },
+        baseUrl: " https://proxy.example ",
+      }),
+    ).toEqual({
+      services: [
+        { presetId: "google-calendar" },
+        {
+          custom: {
+            urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
+            slug: "google_custom",
+            name: "Custom Google APIs",
+            description: "Custom Google APIs.",
+          },
+        },
+      ],
+      baseUrl: "https://proxy.example",
     });
   });
 });

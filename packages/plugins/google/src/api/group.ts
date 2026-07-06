@@ -46,24 +46,22 @@ const OAuthTemplatePayload = Schema.Struct({
 const AuthenticationPayload = Schema.Union([OAuthTemplatePayload, ApiKeyAuthTemplate]);
 const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMethod]);
 
-const AddBundlePayload = Schema.Struct({
-  urls: Schema.Array(Schema.String),
-  slug: Schema.optional(Schema.String),
-  name: Schema.optional(Schema.String),
-  description: Schema.optional(Schema.String),
-  baseUrl: Schema.optional(Schema.String),
-});
-
-const AddBundleResponse = Schema.Struct({
-  slug: IntegrationSlug,
-  toolCount: Schema.Number,
-});
-
-const AddServicePayload = Schema.Struct({
+const AddPresetServicePayload = Schema.Struct({
   presetId: Schema.String,
   slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
 });
+
+const AddCustomServicePayload = Schema.Struct({
+  custom: Schema.Struct({
+    urls: Schema.Array(Schema.String),
+    slug: Schema.optional(Schema.String),
+    name: Schema.String,
+    description: Schema.optional(Schema.String),
+  }),
+});
+
+const AddServicePayload = Schema.Union([AddPresetServicePayload, AddCustomServicePayload]);
 
 const AddServicesPayload = Schema.Struct({
   services: Schema.Array(AddServicePayload),
@@ -131,13 +129,6 @@ const ConfigureResponse = Schema.Struct({
 });
 
 export const GoogleGroup = HttpApiGroup.make("google")
-  .add(
-    HttpApiEndpoint.post("addBundle", "/google/bundles", {
-      payload: AddBundlePayload,
-      success: AddBundleResponse,
-      error: DomainErrors,
-    }),
-  )
   .add(
     HttpApiEndpoint.post("addServices", "/google/services", {
       payload: AddServicesPayload,

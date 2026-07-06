@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 import {
@@ -488,7 +488,7 @@ const googleDiscoveryToolNames = (toolName: string): readonly string[] =>
 const bundlePlugins = () =>
   [googlePlugin({ httpClientLayer: discoveryHttpClientLayer }), memoryCredentialsPlugin()] as const;
 
-describe("Google bundle add flow", () => {
+describe("Google custom service add flow", () => {
   it("SDK catalog includes the Google Photos focused preset", () => {
     const presetIds =
       googlePlugin({ httpClientLayer: discoveryHttpClientLayer }).integrationPresets?.map(
@@ -499,7 +499,7 @@ describe("Google bundle add flow", () => {
     expect(presetIds).toContain("google-photos");
   });
 
-  it.effect("rejects lookalike Discovery hosts before fetching bundle documents", () =>
+  it.effect("rejects lookalike Discovery hosts before fetching custom service documents", () =>
     Effect.scoped(
       Effect.gen(function* () {
         let requests = 0;
@@ -523,36 +523,68 @@ describe("Google bundle add flow", () => {
           }),
         );
 
-        const exit = yield* executor.google
-          .addBundle({
-            urls: ["https://evilgoogleapis.com/discovery/v1/apis/calendar/v3/rest"],
-            slug: "bad_google",
-          })
-          .pipe(Effect.exit);
+        const result = yield* executor.google.addServices({
+          services: [
+            {
+              custom: {
+                urls: ["https://evilgoogleapis.com/discovery/v1/apis/calendar/v3/rest"],
+                slug: "bad_google",
+                name: "Bad Google",
+              },
+            },
+          ],
+        });
 
-        expect(Exit.isFailure(exit)).toBe(true);
+        expect(result).toEqual({
+          added: [],
+          skipped: [],
+          failed: [
+            {
+              slug: IntegrationSlug.make("bad_google"),
+              presetId: "custom",
+              error:
+                "Google Discovery document URL must be a supported googleapis.com HTTPS Discovery endpoint",
+            },
+          ],
+        });
         expect(requests).toBe(0);
       }),
     ),
   );
 
   it.effect(
-    "addBundle merges calendar+gmail+drive into one google integration with no tool-name collisions",
+    "addServices custom entry merges calendar+gmail+drive into one requested integration with no tool-name collisions",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
 
-          const result = yield* executor.google.addBundle({
-            urls: [CALENDAR_URL, GMAIL_URL, DRIVE_URL],
-            slug: "google",
-            description: "Google",
+          const result = yield* executor.google.addServices({
+            services: [
+              {
+                custom: {
+                  urls: [CALENDAR_URL, GMAIL_URL, DRIVE_URL],
+                  slug: "google_custom",
+                  name: "Custom Google APIs",
+                  description: "Google",
+                },
+              },
+            ],
           });
-          expect(String(result.slug)).toBe("google");
+          expect(result).toEqual({
+            added: [
+              {
+                slug: IntegrationSlug.make("google_custom"),
+                presetId: "custom",
+                toolCount: 6,
+              },
+            ],
+            skipped: [],
+            failed: [],
+          });
 
-          // ONE integration, not three.
-          const integration = yield* executor.google.getIntegration("google");
-          expect(integration?.slug).toBe(IntegrationSlug.make("google"));
+          const integration = yield* executor.google.getIntegration("google_custom");
+          expect(integration?.slug).toBe(IntegrationSlug.make("google_custom"));
 
           // The stored oauth template carries the COMPACTED union of every API's
           // scopes plus the hidden OAuth2 identity scopes that `oauth.start`
@@ -560,7 +592,7 @@ describe("Google bundle add flow", () => {
           // `calendar.readonly` collapses under `calendar`, and `gmail.readonly`
           // collapses under `https://mail.google.com/`, so the requested consent
           // is clean rather than the raw per-method union.
-          const config = yield* executor.google.getConfig("google");
+          const config = yield* executor.google.getConfig("google_custom");
           expect(config?.googleDiscoveryUrls).toEqual([
             CALENDAR_URL,
             GMAIL_URL,
@@ -584,7 +616,7 @@ describe("Google bundle add flow", () => {
           yield* executor.connections.create({
             owner: "org",
             name: ConnectionName.make("main"),
-            integration: IntegrationSlug.make("google"),
+            integration: IntegrationSlug.make("google_custom"),
             template: AuthTemplateSlug.make("googleOAuth2"),
             value: "token-xyz",
           });
@@ -602,133 +634,157 @@ describe("Google bundle add flow", () => {
       ),
   );
 
-  it.effect("addBundle constrains Google Photos to the preset scopes and upload tool", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+  it.effect(
+    "addServices custom entry constrains Google Photos to the preset scopes and upload tool",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
 
-        yield* executor.google.addBundle({
-          urls: [
-            PHOTOS_LIBRARY_URL,
-            "https://photospicker.googleapis.com/$discovery/rest?version=v1",
-          ],
-          slug: "google_photos",
-          name: "Google Photos",
-        });
+          yield* executor.google.addServices({
+            services: [
+              {
+                custom: {
+                  urls: [
+                    PHOTOS_LIBRARY_URL,
+                    "https://photospicker.googleapis.com/$discovery/rest?version=v1",
+                  ],
+                  slug: "google_photos",
+                  name: "Google Photos",
+                },
+              },
+            ],
+          });
 
-        const config = yield* executor.google.getConfig("google_photos");
-        const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
-        expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
-          [
-            "email",
-            "https://www.googleapis.com/auth/photoslibrary.appendonly",
-            "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-            "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
-            "openid",
-            "profile",
-          ].sort(),
-        );
+          const config = yield* executor.google.getConfig("google_photos");
+          const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+          expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
+            [
+              "email",
+              "https://www.googleapis.com/auth/photoslibrary.appendonly",
+              "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+              "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+              "openid",
+              "profile",
+            ].sort(),
+          );
 
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: IntegrationSlug.make("google_photos"),
-          template: AuthTemplateSlug.make("googleOAuth2"),
-          value: "token-xyz",
-        });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: IntegrationSlug.make("google_photos"),
+            template: AuthTemplateSlug.make("googleOAuth2"),
+            value: "token-xyz",
+          });
 
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("photoslibrary.mediaItems.upload");
-        expect(toolNames).toContain("photoslibrary.mediaItems.search");
-        expect(toolNames).toContain("photospicker.mediaItems.list");
-        expect(toolNames).not.toContain("photoslibrary.albums.list");
-      }),
-    ),
+          const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+          expect(toolNames).toContain("photoslibrary.mediaItems.upload");
+          expect(toolNames).toContain("photoslibrary.mediaItems.search");
+          expect(toolNames).toContain("photospicker.mediaItems.list");
+          expect(toolNames).not.toContain("photoslibrary.albums.list");
+        }),
+      ),
   );
 
-  it.effect("addBundle keeps Google Photos scoped when combined with another API", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+  it.effect(
+    "addServices custom entry keeps Google Photos scoped when combined with another API",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
 
-        yield* executor.google.addBundle({
-          urls: [CALENDAR_URL, PHOTOS_LIBRARY_URL, PHOTOS_PICKER_URL],
-          slug: "google_photos_calendar",
-          name: "Google Photos and Calendar",
-        });
+          yield* executor.google.addServices({
+            services: [
+              {
+                custom: {
+                  urls: [CALENDAR_URL, PHOTOS_LIBRARY_URL, PHOTOS_PICKER_URL],
+                  slug: "google_photos_calendar",
+                  name: "Google Photos and Calendar",
+                },
+              },
+            ],
+          });
 
-        const config = yield* executor.google.getConfig("google_photos_calendar");
-        const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
-        expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
-          [
-            "email",
-            "https://www.googleapis.com/auth/calendar",
-            "https://www.googleapis.com/auth/photoslibrary.appendonly",
-            "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-            "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
-            "openid",
-            "profile",
-          ].sort(),
-        );
+          const config = yield* executor.google.getConfig("google_photos_calendar");
+          const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+          expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
+            [
+              "email",
+              "https://www.googleapis.com/auth/calendar",
+              "https://www.googleapis.com/auth/photoslibrary.appendonly",
+              "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+              "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+              "openid",
+              "profile",
+            ].sort(),
+          );
 
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: IntegrationSlug.make("google_photos_calendar"),
-          template: AuthTemplateSlug.make("googleOAuth2"),
-          value: "token-xyz",
-        });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: IntegrationSlug.make("google_photos_calendar"),
+            template: AuthTemplateSlug.make("googleOAuth2"),
+            value: "token-xyz",
+          });
 
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("calendar.events.list");
-        expect(toolNames).toContain("photoslibrary.mediaItems.upload");
-        expect(toolNames).toContain("photoslibrary.mediaItems.search");
-        expect(toolNames).toContain("photospicker.mediaItems.list");
-        expect(toolNames).not.toContain("photoslibrary.albums.list");
-      }),
-    ),
+          const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+          expect(toolNames).toContain("calendar.events.list");
+          expect(toolNames).toContain("photoslibrary.mediaItems.upload");
+          expect(toolNames).toContain("photoslibrary.mediaItems.search");
+          expect(toolNames).toContain("photospicker.mediaItems.list");
+          expect(toolNames).not.toContain("photoslibrary.albums.list");
+        }),
+      ),
   );
 
-  it.effect("addBundle scopes a partial Google Photos bundle when mixed with another API", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+  it.effect(
+    "addServices custom entry scopes partial Google Photos URLs when mixed with another API",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
 
-        yield* executor.google.addBundle({
-          urls: [CALENDAR_URL, PHOTOS_LIBRARY_URL],
-          slug: "google_photos_library_calendar",
-          name: "Google Photos Library and Calendar",
-        });
+          yield* executor.google.addServices({
+            services: [
+              {
+                custom: {
+                  urls: [CALENDAR_URL, PHOTOS_LIBRARY_URL],
+                  slug: "google_photos_library_calendar",
+                  name: "Google Photos Library and Calendar",
+                },
+              },
+            ],
+          });
 
-        const config = yield* executor.google.getConfig("google_photos_library_calendar");
-        const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
-        expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
-          [
-            "email",
-            "https://www.googleapis.com/auth/calendar",
-            "https://www.googleapis.com/auth/photoslibrary.appendonly",
-            "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-            "openid",
-            "profile",
-          ].sort(),
-        );
+          const config = yield* executor.google.getConfig("google_photos_library_calendar");
+          const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+          expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
+            [
+              "email",
+              "https://www.googleapis.com/auth/calendar",
+              "https://www.googleapis.com/auth/photoslibrary.appendonly",
+              "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+              "openid",
+              "profile",
+            ].sort(),
+          );
 
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: IntegrationSlug.make("google_photos_library_calendar"),
-          template: AuthTemplateSlug.make("googleOAuth2"),
-          value: "token-xyz",
-        });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: IntegrationSlug.make("google_photos_library_calendar"),
+            template: AuthTemplateSlug.make("googleOAuth2"),
+            value: "token-xyz",
+          });
 
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("calendar.events.list");
-        expect(toolNames).toContain("photoslibrary.mediaItems.upload");
-        expect(toolNames).toContain("photoslibrary.mediaItems.search");
-        expect(toolNames).not.toContain("photospicker.mediaItems.list");
-        expect(toolNames).not.toContain("photoslibrary.albums.list");
-      }),
-    ),
+          const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+          expect(toolNames).toContain("calendar.events.list");
+          expect(toolNames).toContain("photoslibrary.mediaItems.upload");
+          expect(toolNames).toContain("photoslibrary.mediaItems.search");
+          expect(toolNames).not.toContain("photospicker.mediaItems.list");
+          expect(toolNames).not.toContain("photoslibrary.albums.list");
+        }),
+      ),
   );
 });
 
@@ -965,7 +1021,7 @@ describe("Google per-service add flow", () => {
 });
 
 describe("Google health-check default", () => {
-  it.effect("default featured bundle auto-configures OAuth2 userinfo identity", () =>
+  it.effect("custom service with featured URLs auto-configures OAuth2 userinfo identity", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
@@ -975,10 +1031,17 @@ describe("Google health-check default", () => {
 
         expect(defaultUrls).toEqual([CALENDAR_URL, GMAIL_URL, SHEETS_URL, DRIVE_URL, DOCS_URL]);
 
-        yield* executor.google.addBundle({
-          urls: defaultUrls,
-          slug: "google_default",
-          description: "Google",
+        yield* executor.google.addServices({
+          services: [
+            {
+              custom: {
+                urls: defaultUrls,
+                slug: "google_default",
+                name: "Google",
+                description: "Google",
+              },
+            },
+          ],
         });
 
         const stored = yield* executor.integrations.healthCheck.get(
@@ -1019,15 +1082,22 @@ describe("Google health-check default", () => {
     ),
   );
 
-  it.effect("addBundle with People still prefers OAuth2 userinfo", () =>
+  it.effect("custom service with People still prefers OAuth2 userinfo", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
 
-        yield* executor.google.addBundle({
-          urls: [PEOPLE_URL, CALENDAR_URL],
-          slug: "google_people",
-          description: "Google",
+        yield* executor.google.addServices({
+          services: [
+            {
+              custom: {
+                urls: [PEOPLE_URL, CALENDAR_URL],
+                slug: "google_people",
+                name: "Google",
+                description: "Google",
+              },
+            },
+          ],
         });
 
         const stored = yield* executor.integrations.healthCheck.get(

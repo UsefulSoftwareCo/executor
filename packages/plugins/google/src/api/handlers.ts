@@ -14,20 +14,6 @@ const ExecutorApiWithGoogle = addGroup(GoogleGroup);
 
 export const GoogleHandlers = HttpApiBuilder.group(ExecutorApiWithGoogle, "google", (handlers) =>
   handlers
-    .handle("addBundle", ({ payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* GoogleExtensionService;
-          return yield* ext.addBundle({
-            urls: payload.urls,
-            slug: payload.slug,
-            name: payload.name,
-            description: payload.description,
-            baseUrl: payload.baseUrl,
-          });
-        }),
-      ),
-    )
     .handle("addServices", ({ payload }) =>
       capture(
         Effect.gen(function* () {

@@ -237,8 +237,8 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 //
 // The picker shows the OAuth consent a user is about to grant BEFORE connecting
 // (the "View scopes" panel), but the authoritative scope list only exists in
-// each API's live Discovery document, which the add flow fetches lazily at
-// `addBundle` time. To preview consent without N network round-trips, each preset
+// each API's live Discovery document, which the add flow fetches lazily. To
+// preview consent without N network round-trips, each preset
 // declares the broad top-level scope(s) a full integration grants. These flow
 // through `googleOAuthConsentBatches` (which compacts sub-scopes under their
 // broad parent), so the previewed grant matches the unioned scopes the bundle

@@ -14,7 +14,6 @@ import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
 import {
-  addIntegrationErrorMessage,
   errorMessageFromExit,
   FormErrorAlert,
   SlugCollisionAlert,
@@ -22,7 +21,7 @@ import {
 } from "@executor-js/react/lib/integration-add";
 import { OpenApiSourceDetailsFields } from "@executor-js/plugin-openapi/react";
 
-import { addGoogleBundle, addGoogleServices } from "./atoms";
+import { addGoogleServices } from "./atoms";
 import { GoogleProductPicker } from "./GoogleProductPicker";
 import {
   GOOGLE_PHOTOS_PRESET_ID,
@@ -31,11 +30,8 @@ import {
   googleServiceSlug,
   type GoogleOpenApiPreset,
 } from "../sdk/presets";
-import type {
-  GoogleAddServicesInput,
-  GoogleAddServicesResult,
-  GoogleBundleConfig,
-} from "../sdk/plugin";
+import type { GoogleAddServicesInput, GoogleAddServicesResult } from "../sdk/plugin";
+import { GOOGLE_CUSTOM_SERVICE_ID } from "../sdk/plugin";
 
 const GOOGLE_BUNDLE_FAVICON = "https://fonts.gstatic.com/s/i/productlogos/googleg/v6/192px.svg";
 
@@ -54,6 +50,13 @@ export type GoogleServiceIdentityOverride = {
   readonly name: string;
 };
 
+export type GoogleCustomServiceInput = {
+  readonly urls: readonly string[];
+  readonly slug: string;
+  readonly name: string;
+  readonly description?: string;
+};
+
 export type AddGoogleServicesMutation = (input: {
   readonly payload: GoogleAddServicesInput;
   readonly reactivityKeys: typeof integrationWriteKeys;
@@ -62,14 +65,32 @@ export type AddGoogleServicesMutation = (input: {
 export const googleAddServicesPayload = (input: {
   readonly presetIds: readonly string[];
   readonly identityOverride?: GoogleServiceIdentityOverride;
+  readonly custom?: GoogleCustomServiceInput;
   readonly baseUrl?: string;
 }): GoogleAddServicesInput => {
-  const identityOverride = input.presetIds.length === 1 ? input.identityOverride : undefined;
-  const services = input.presetIds.map((presetId: string) => ({
+  const identityOverride =
+    input.presetIds.length === 1 && !input.custom ? input.identityOverride : undefined;
+  const presetServices = input.presetIds.map((presetId: string) => ({
     presetId,
     ...(identityOverride?.slug.trim() ? { slug: identityOverride.slug.trim() } : {}),
     ...(identityOverride?.name.trim() ? { name: identityOverride.name.trim() } : {}),
   }));
+  const custom =
+    input.custom && input.custom.urls.length > 0
+      ? [
+          {
+            custom: {
+              urls: [...input.custom.urls],
+              slug: input.custom.slug,
+              name: input.custom.name,
+              ...(input.custom.description?.trim()
+                ? { description: input.custom.description.trim() }
+                : {}),
+            },
+          },
+        ]
+      : [];
+  const services = [...presetServices, ...custom];
   const baseUrl = input.baseUrl?.trim() ?? "";
   return baseUrl.length > 0 ? { services, baseUrl } : { services };
 };
@@ -79,6 +100,7 @@ export const submitGoogleServicesSelection = (
   input: {
     readonly presetIds: readonly string[];
     readonly identityOverride?: GoogleServiceIdentityOverride;
+    readonly custom?: GoogleCustomServiceInput;
     readonly baseUrl?: string;
   },
 ): Promise<Exit.Exit<GoogleAddServicesResult, unknown>> =>
@@ -149,7 +171,9 @@ export const mergeGoogleAddServicesResult = (
 };
 
 const googlePresetName = (presetId: string): string =>
-  googleOpenApiPresetById.get(presetId)?.name ?? presetId;
+  presetId === GOOGLE_CUSTOM_SERVICE_ID
+    ? "Custom Discovery URLs"
+    : (googleOpenApiPresetById.get(presetId)?.name ?? presetId);
 
 export function GoogleServiceResultPanel(props: {
   readonly result: GoogleAddServicesResult;
@@ -266,36 +290,6 @@ const BaseUrlSettings = (props: {
   </section>
 );
 
-const CustomGoogleBundleResult = (props: { readonly slug: string }) => (
-  <section className="rounded-lg border border-border bg-muted/10 px-3 py-3">
-    <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <h2 className="text-sm font-medium text-foreground">Custom Discovery URLs</h2>
-        <p className="text-[11px] text-muted-foreground">
-          Custom URLs were added through the legacy Google bundle path.
-        </p>
-      </div>
-      <Button variant="ghost" size="xs" asChild>
-        <Link to="/{-$orgSlug}/integrations/$namespace" params={{ namespace: props.slug }}>
-          Open
-        </Link>
-      </Button>
-    </div>
-  </section>
-);
-
-const googleBundlePayload = (config: GoogleBundleConfig): GoogleBundleConfig => {
-  const baseUrl = config.baseUrl?.trim() ?? "";
-  const description = config.description?.trim() ?? "";
-  return {
-    urls: config.urls,
-    ...(config.slug !== undefined ? { slug: config.slug } : {}),
-    ...(config.name !== undefined ? { name: config.name } : {}),
-    ...(description.length > 0 ? { description } : {}),
-    ...(baseUrl.length > 0 ? { baseUrl } : {}),
-  };
-};
-
 export default function AddGoogleSource(props: {
   onComplete: (slug?: string) => void;
   onCancel: () => void;
@@ -313,20 +307,19 @@ export default function AddGoogleSource(props: {
   const [retryingPresetId, setRetryingPresetId] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
   const [servicesResult, setServicesResult] = useState<GoogleAddServicesResult | null>(null);
-  const [customBundleSlug, setCustomBundleSlug] = useState<string | null>(null);
 
   const selectedIds = useMemo(() => [...selectedPresetIds], [selectedPresetIds]);
   const singleSelectedPreset =
     selectedIds.length === 1 ? googleOpenApiPresetById.get(selectedIds[0]!) : undefined;
-  const usesCustomBundleFallback = customDiscoveryUrls.length > 0;
+  const hasCustomDiscoveryUrls = customDiscoveryUrls.length > 0;
 
   const identity = useIntegrationIdentity({
-    fallbackName: usesCustomBundleFallback
+    fallbackName: hasCustomDiscoveryUrls
       ? "Custom Google APIs"
       : (singleSelectedPreset?.name ?? (isGooglePhotosPreset ? "Google Photos" : "Google")),
     fallbackNamespace:
       props.initialNamespace ??
-      (usesCustomBundleFallback
+      (hasCustomDiscoveryUrls
         ? "google_custom"
         : singleSelectedPreset
           ? googleServiceSlug(singleSelectedPreset.id)
@@ -357,85 +350,72 @@ export default function AddGoogleSource(props: {
   }, []);
 
   const doAddServices = useAtomSet(addGoogleServices, { mode: "promiseExit" });
-  const doAddBundle = useAtomSet(addGoogleBundle, { mode: "promiseExit" });
 
   const resolvedSourceId = slugifyNamespace(identity.namespace) || "google_custom";
   const resolvedDisplayName =
     identity.name.trim() ||
-    (usesCustomBundleFallback
+    (hasCustomDiscoveryUrls
       ? "Custom Google APIs"
       : (singleSelectedPreset?.name ?? (isGooglePhotosPreset ? "Google Photos" : "Google")));
   const resolvedDescription =
     descriptionDraft ??
-    (usesCustomBundleFallback
+    (hasCustomDiscoveryUrls
       ? "Custom Google APIs."
       : isGooglePhotosPreset
         ? "Google Photos albums, uploads, app-created media, and selected picker media."
         : "Google APIs");
   const customSlugAlreadyExists = useSlugAlreadyExists(
-    usesCustomBundleFallback ? resolvedSourceId : "",
+    hasCustomDiscoveryUrls ? resolvedSourceId : "",
   );
   const identityOverride =
-    selectedIds.length === 1 && !usesCustomBundleFallback
+    selectedIds.length === 1 && !hasCustomDiscoveryUrls
       ? { slug: resolvedSourceId, name: resolvedDisplayName }
+      : undefined;
+  const customService =
+    customDiscoveryUrls.length > 0
+      ? {
+          urls: [...customDiscoveryUrls],
+          slug: resolvedSourceId,
+          name: resolvedDisplayName,
+          description: resolvedDescription,
+        }
       : undefined;
   const canAdd =
     (selectedIds.length > 0 || customDiscoveryUrls.length > 0) &&
     !customSlugAlreadyExists &&
     !adding;
 
-  const addCustomDiscoveryBundle = async (): Promise<boolean> => {
-    if (customDiscoveryUrls.length === 0) return true;
-    const exit = await doAddBundle({
-      payload: googleBundlePayload({
-        urls: [...customDiscoveryUrls],
-        slug: resolvedSourceId,
-        name: resolvedDisplayName,
-        description: resolvedDescription,
-        baseUrl,
-      }),
-      reactivityKeys: integrationWriteKeys,
-    });
-    if (Exit.isFailure(exit)) {
-      setAddError(addIntegrationErrorMessage(exit, resolvedSourceId, "Failed to add Google"));
-      return false;
-    }
-    setCustomBundleSlug(String(exit.value.slug));
-    return true;
-  };
-
   const handleAdd = async () => {
     setAdding(true);
     setAddError(null);
     setServicesResult(null);
-    setCustomBundleSlug(null);
-    if (selectedIds.length > 0) {
-      const exit = await submitGoogleServicesSelection(doAddServices, {
-        presetIds: selectedIds,
-        ...(identityOverride ? { identityOverride } : {}),
-        baseUrl,
-      });
-      if (Exit.isFailure(exit)) {
-        setAddError(errorMessageFromExit(exit, "Failed to add Google services"));
-        setAdding(false);
-        return;
-      }
-      setServicesResult(exit.value);
+    const exit = await submitGoogleServicesSelection(doAddServices, {
+      presetIds: selectedIds,
+      ...(identityOverride ? { identityOverride } : {}),
+      ...(customService ? { custom: customService } : {}),
+      baseUrl,
+    });
+    if (Exit.isFailure(exit)) {
+      setAddError(errorMessageFromExit(exit, "Failed to add Google services"));
+      setAdding(false);
+      return;
     }
-    await addCustomDiscoveryBundle();
+    setServicesResult(exit.value);
     setAdding(false);
   };
 
   const handleRetry = async (presetId: string) => {
     setRetryingPresetId(presetId);
     setAddError(null);
+    const retryingCustom = presetId === GOOGLE_CUSTOM_SERVICE_ID;
     const retryIdentityOverride =
-      identityOverride && selectedIds.length === 1 && selectedIds[0] === presetId
+      !retryingCustom && identityOverride && selectedIds.length === 1 && selectedIds[0] === presetId
         ? identityOverride
         : undefined;
     const exit = await submitGoogleServicesSelection(doAddServices, {
-      presetIds: [presetId],
+      presetIds: retryingCustom ? [] : [presetId],
       ...(retryIdentityOverride ? { identityOverride: retryIdentityOverride } : {}),
+      ...(retryingCustom && customService ? { custom: customService } : {}),
       baseUrl,
     });
     if (Exit.isFailure(exit)) {
@@ -449,22 +429,22 @@ export default function AddGoogleSource(props: {
     setRetryingPresetId(null);
   };
 
-  const showIdentityDetails = selectedIds.length === 1 || usesCustomBundleFallback;
-  const detailTitle = usesCustomBundleFallback
+  const showIdentityDetails = selectedIds.length === 1 || hasCustomDiscoveryUrls;
+  const detailTitle = hasCustomDiscoveryUrls
     ? "Custom Google Discovery URLs"
     : (singleSelectedPreset?.name ?? "Google");
-  const detailSubtitle = usesCustomBundleFallback
+  const detailSubtitle = hasCustomDiscoveryUrls
     ? selectedIds.length > 0
       ? `${customDiscoveryUrls.length} custom URL${
           customDiscoveryUrls.length === 1 ? "" : "s"
-        } added through the legacy bundle path. Selected products keep preset names.`
+        } added as its own integration. Selected products keep preset names.`
       : `${customDiscoveryUrls.length} custom URL${
           customDiscoveryUrls.length === 1 ? "" : "s"
-        } added through the legacy bundle path.`
+        } added as its own integration.`
     : "This product is added as its own integration.";
 
   const dismiss = () => {
-    if (servicesResult || customBundleSlug) {
+    if (servicesResult) {
       props.onComplete();
       return;
     }
@@ -493,7 +473,7 @@ export default function AddGoogleSource(props: {
           title={detailTitle}
           subtitle={detailSubtitle}
           identity={identity}
-          {...(usesCustomBundleFallback
+          {...(hasCustomDiscoveryUrls
             ? { description: resolvedDescription, onDescriptionChange: setDescriptionDraft }
             : {})}
           baseUrl={baseUrl}
@@ -518,11 +498,9 @@ export default function AddGoogleSource(props: {
         />
       )}
 
-      {customBundleSlug && <CustomGoogleBundleResult slug={customBundleSlug} />}
-
       <FloatActions>
         <Button variant="ghost" onClick={dismiss} disabled={adding || retryingPresetId !== null}>
-          {servicesResult || customBundleSlug ? "Done" : "Cancel"}
+          {servicesResult ? "Done" : "Cancel"}
         </Button>
         <Button
           data-testid="google-add-submit"

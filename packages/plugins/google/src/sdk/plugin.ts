@@ -93,19 +93,24 @@ export const defaultGoogleHealthCheck = (
     : undefined;
 };
 
-export interface GoogleBundleConfig {
-  readonly urls: readonly string[];
-  readonly slug?: string;
-  readonly name?: string;
-  readonly description?: string;
-  readonly baseUrl?: string;
-}
+export const GOOGLE_CUSTOM_SERVICE_ID = "custom";
 
-export interface GoogleServiceConfig {
+export interface GooglePresetServiceConfig {
   readonly presetId: string;
   readonly slug?: string;
   readonly name?: string;
 }
+
+export interface GoogleCustomServiceConfig {
+  readonly custom: {
+    readonly urls: readonly string[];
+    readonly slug?: string;
+    readonly name: string;
+    readonly description?: string;
+  };
+}
+
+export type GoogleServiceConfig = GooglePresetServiceConfig | GoogleCustomServiceConfig;
 
 export interface GoogleAddServicesInput {
   readonly services: readonly GoogleServiceConfig[];
@@ -162,6 +167,18 @@ const googleOpenApiPresetById: ReadonlyMap<string, GoogleOpenApiPreset> = new Ma
   googleOpenApiPresets.map((preset) => [preset.id, preset]),
 );
 
+const isGooglePresetServiceConfig = (
+  service: GoogleServiceConfig,
+): service is GooglePresetServiceConfig => "presetId" in service;
+
+const googleServiceEntryId = (service: GoogleServiceConfig): string =>
+  isGooglePresetServiceConfig(service) ? service.presetId : GOOGLE_CUSTOM_SERVICE_ID;
+
+const googleServiceEntrySlug = (service: GoogleServiceConfig): IntegrationSlug =>
+  isGooglePresetServiceConfig(service)
+    ? IntegrationSlug.make(service.slug?.trim() || googleServiceSlug(service.presetId))
+    : IntegrationSlug.make(service.custom.slug?.trim() || "google_custom");
+
 type GoogleAddServiceOutcome = {
   readonly added: readonly GoogleAddServicesAdded[];
   readonly skipped: readonly GoogleAddServicesSkipped[];
@@ -175,7 +192,7 @@ const googleAddServiceFailure = (
 ): GoogleAddServiceOutcome => ({
   added: [],
   skipped: [],
-  failed: [{ slug, presetId: service.presetId, error }],
+  failed: [{ slug, presetId: googleServiceEntryId(service), error }],
 });
 
 const googlePhotosBundlePresetIdByUrl = new Map(
@@ -329,8 +346,9 @@ const makeGooglePluginExtension = (
       );
 
       // Default the health check to the light OAuth2 userinfo identity call
-      // added to every new bundle. Older bundles without oauth2/v2 can still
-      // fall back to the People API identity operation.
+      // added to every new Google OpenAPI integration. Older integrations
+      // without oauth2/v2 can still fall back to the People API identity
+      // operation.
       const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
       if (defaultHealthCheck) {
         yield* ctx.core.integrations.setHealthCheck(slug, defaultHealthCheck);
@@ -339,17 +357,23 @@ const makeGooglePluginExtension = (
       return { slug, toolCount: compiled.definitions.length };
     });
 
-  const addBundle = (config: GoogleBundleConfig) =>
-    addGoogleOpenApiIntegration({
-      urls: config.urls,
-      slug: IntegrationSlug.make(config.slug?.trim() || DEFAULT_GOOGLE_SLUG),
-      name: config.name?.trim() || "Google",
-      description: config.description ?? "Google APIs",
-      baseUrl: config.baseUrl,
-    });
-
   const addOneService = (service: GoogleServiceConfig, baseUrl?: string) =>
     Effect.gen(function* () {
+      if (!isGooglePresetServiceConfig(service)) {
+        if (service.custom.urls.length === 0) {
+          return yield* new OpenApiParseError({
+            message: "Custom Google service requires at least one Discovery URL",
+          });
+        }
+        return yield* addGoogleOpenApiIntegration({
+          urls: service.custom.urls,
+          slug: googleServiceEntrySlug(service),
+          name: service.custom.name.trim() || "Custom Google APIs",
+          description: service.custom.description ?? "Custom Google APIs.",
+          baseUrl,
+        });
+      }
+
       const preset = googleOpenApiPresetById.get(service.presetId);
       if (!preset?.url) {
         return yield* new OpenApiParseError({
@@ -372,16 +396,15 @@ const makeGooglePluginExtension = (
       const outcomes = yield* Effect.forEach(
         input.services,
         (service): Effect.Effect<GoogleAddServiceOutcome, never> => {
-          const slug = IntegrationSlug.make(
-            service.slug?.trim() || googleServiceSlug(service.presetId),
-          );
+          const slug = googleServiceEntrySlug(service);
+          const presetId = googleServiceEntryId(service);
           return addOneService(service, input.baseUrl).pipe(
             Effect.map(
               (result): GoogleAddServiceOutcome => ({
                 added: [
                   {
                     slug: result.slug,
-                    presetId: service.presetId,
+                    presetId,
                     toolCount: result.toolCount,
                   },
                 ],
@@ -395,7 +418,7 @@ const makeGooglePluginExtension = (
                 skipped: [
                   {
                     slug,
-                    presetId: service.presetId,
+                    presetId,
                     reason: "already_exists" as const,
                   },
                 ],
@@ -489,7 +512,6 @@ const makeGooglePluginExtension = (
     });
 
   return {
-    addBundle,
     addServices,
     updateBundle,
     removeBundle: (slug: string) =>
@@ -585,8 +607,8 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
     }),
 
   // Health checks reuse the OpenAPI backing (same store). The People API
-  // identity call is auto-defaulted at addBundle when present; core owns the
-  // stored spec, the user adjusts it via the editor.
+  // identity call is auto-defaulted when present; core owns the stored spec,
+  // the user adjusts it via the editor.
   listHealthCheckCandidates: (input) =>
     listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
   checkHealth: (input) =>
