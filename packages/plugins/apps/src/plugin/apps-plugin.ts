@@ -295,7 +295,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         return { tools } satisfies ResolveToolsResult;
       }),
 
-    invokeTool: ({ ctx, toolRow, args }: InvokeToolInput<AppsStoreShape>) =>
+    invokeTool: ({ ctx, toolRow, args, invokeOptions }: InvokeToolInput<AppsStoreShape>) =>
       Effect.gen(function* () {
         const scope = yield* scopeFor(String(toolRow.connection));
         const descriptor = yield* runtime.getDescriptor(scope);
@@ -316,7 +316,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
           ? makeResolver({ ctx, scope, tool: toolRow.name })
           : undefined;
         return yield* runtime
-          .invokeTool({ scope, tool: toolRow.name, args, resolver })
+          .invokeTool({ scope, tool: toolRow.name, args, resolver, invokeOptions })
           .pipe(
             Effect.mapError(
               (cause) =>

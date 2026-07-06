@@ -3577,6 +3577,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             credential,
             args,
             elicit: buildElicit(address, args, handler),
+            invokeOptions: options,
           }),
         );
       }).pipe(
@@ -3733,7 +3734,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           items: (key) => providersItems(key),
         },
         oauth,
-        execute: (address, args) => execute(address, args),
+        execute: (address, args, options) => execute(address, args, options),
         transaction: <A, E>(effect: Effect.Effect<A, E>) => transaction(effect),
       };
 

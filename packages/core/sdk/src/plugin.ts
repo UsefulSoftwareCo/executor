@@ -37,6 +37,7 @@ import type {
   ElicitationHandler,
   ElicitationRequest,
   ElicitationResponse,
+  InvokeOptions,
 } from "./elicitation";
 import type {
   ExecuteError,
@@ -255,7 +256,11 @@ export interface PluginCtx<TStore = unknown> {
    *  policy, approval, credential resolution, and plugin dispatch all stay in
    *  the core path. Intended for plugin sandboxes that expose higher-level
    *  virtual tools over existing integration tools. */
-  readonly execute: (address: ToolAddress, args: unknown) => Effect.Effect<unknown, ExecuteError>;
+  readonly execute: (
+    address: ToolAddress,
+    args: unknown,
+    options?: InvokeOptions,
+  ) => Effect.Effect<unknown, ExecuteError>;
 
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
@@ -463,6 +468,8 @@ export interface InvokeToolInput<TStore = unknown> {
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
   readonly elicit: Elicit;
+  /** Original caller options for nested same-request tool calls. */
+  readonly invokeOptions?: InvokeOptions;
 }
 
 /** Input for `validateToolArgs` — no credential/elicit: validation runs

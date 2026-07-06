@@ -41,6 +41,10 @@ interface ToolRow {
   readonly integration: string;
 }
 
+interface ConnectionRow {
+  readonly address: string;
+}
+
 interface ExecuteResponse {
   readonly status: "completed" | "paused";
   readonly text: string;
@@ -178,8 +182,13 @@ const githubFetch = async <T>(
   return (text.length > 0 ? JSON.parse(text) : null) as T;
 };
 
-const createIssue = (emulator: Emulator, token: string, title: string): Promise<unknown> =>
-  githubFetch(emulator, token, `/repos/${OWNER}/${REPO}/issues`, {
+const createIssue = (
+  emulator: Emulator,
+  token: string,
+  title: string,
+  repo = REPO,
+): Promise<unknown> =>
+  githubFetch(emulator, token, `/repos/${OWNER}/${repo}/issues`, {
     method: "POST",
     body: JSON.stringify({ title }),
   });
@@ -188,11 +197,12 @@ const putRepoFiles = async (
   emulator: Emulator,
   token: string,
   files: Readonly<Record<string, string>>,
+  repo = REPO,
 ): Promise<string> => {
   const ref = await githubFetch<{ object: { sha: string } }>(
     emulator,
     token,
-    `/repos/${OWNER}/${REPO}/git/ref/heads/main`,
+    `/repos/${OWNER}/${repo}/git/ref/heads/main`,
   );
   const parentSha = ref.object.sha;
   const tree = await githubFetch<{ sha: string }>(
@@ -224,7 +234,7 @@ const putRepoFiles = async (
       }),
     },
   );
-  await githubFetch(emulator, token, `/repos/${OWNER}/${REPO}/git/refs/heads/main`, {
+  await githubFetch(emulator, token, `/repos/${OWNER}/${repo}/git/refs/heads/main`, {
     method: "PATCH",
     body: JSON.stringify({ sha: commit.sha }),
   });
@@ -356,19 +366,58 @@ export default defineTool({
 });
 `;
 
+const approvalBridgeSource = `import { z } from "zod";
+import { defineTool, integration } from "executor:app";
+
+export default defineTool({
+  description: "List issues through a bridged GitHub client.",
+  integrations: {
+    github: integration("github"),
+  },
+  input: z.object({
+    owner: z.string(),
+    repo: z.string(),
+  }),
+  output: z.object({ count: z.number() }),
+  annotations: { readOnly: true, destructive: false },
+  async handler({ owner, repo }, { github }) {
+    const issues = await github.repos.listIssues({ owner, repo });
+    return { count: issues.length };
+  },
+});
+`;
+
 const initialFiles = (): Record<string, string> => ({
   "executor.json": executorJson,
   "tools/deal-pipeline-sync.ts": dealPipelineSyncSource,
   "tools/find-deal-docs.ts": findDealDocsSource,
 });
 
+const approvalFiles = (): Record<string, string> => ({
+  "executor.json": executorJson,
+  "tools/approval-bridge.ts": approvalBridgeSource,
+});
+
 const registerGitHubIntegration = async (emulator: Emulator, token: string): Promise<void> => {
-  await postJson("/api/openapi/specs", {
-    spec: { kind: "url", url: emulator.openapiUrl },
-    slug: "github",
-    baseUrl: emulator.url,
-    authenticationTemplate: [bearerTemplate],
+  const specResponse = await fetch(`${server.baseUrl}/api/openapi/specs`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      spec: { kind: "url", url: emulator.openapiUrl },
+      slug: "github",
+      baseUrl: emulator.url,
+      authenticationTemplate: [bearerTemplate],
+    }),
   });
+  expect([200, 409]).toContain(specResponse.status);
+  await specResponse.text();
+  const existing = await requestJson<readonly ConnectionRow[]>(
+    "/api/connections?integration=github",
+    {
+      headers: jsonHeaders,
+    },
+  );
+  if (existing.some((connection) => connection.address === GITHUB_CONNECTION)) return;
   const created = await postJson<{ address: string }>("/api/connections", {
     owner: "user",
     name: "main",
@@ -392,6 +441,9 @@ const listAppTools = (): Promise<readonly ToolRow[]> =>
 
 const execute = (code: string): Promise<ExecuteResponse> =>
   postJson<ExecuteResponse>("/api/executions", { code, autoApprove: true });
+
+const executeWithApprovalPause = (code: string): Promise<ExecuteResponse> =>
+  postJson<ExecuteResponse>("/api/executions", { code });
 
 const executeResult = async (code: string): Promise<unknown> => {
   const response = await execute(code);
@@ -546,4 +598,52 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
     "find-deal-docs",
   ]);
   expect(afterSkipped.some((tool) => tool.address.includes("workflow"))).toBe(false);
+});
+
+test("bridged integration calls inherit the caller approval handler", async () => {
+  const credential = await github.credentials.mint({
+    type: "api-key",
+    login: OWNER,
+    scopes: ["repo", "user"],
+  });
+  const token = credential.token;
+  expect(token).toBeTruthy();
+  await registerGitHubIntegration(github, token!);
+  await createIssue(github, token!, "Approval-gated issue");
+  await putRepoFiles(github, token!, approvalFiles());
+  const published = await syncSource();
+  expect(published.status).toBe("published");
+
+  const githubTools = await requestJson<readonly ToolRow[]>("/api/tools?integration=github", {
+    headers: jsonHeaders,
+  });
+  const listIssues = githubTools.find((tool) => tool.name === "repos.listIssues");
+  expect(listIssues).toBeTruthy();
+  await postJson("/api/policies", {
+    owner: "org",
+    pattern: listIssues!.address.replace(/^tools\./, ""),
+    action: "require_approval",
+  });
+
+  const beforeLedger = await github.ledger.list();
+  const beforeCalls = beforeLedger.filter(
+    (entry) =>
+      entry.operationId === "issues/listForRepo" && entry.path === `/repos/${OWNER}/${REPO}/issues`,
+  ).length;
+
+  const response = await executeWithApprovalPause(
+    callAppToolCode("approval-bridge", {
+      github: GITHUB_CONNECTION,
+      owner: OWNER,
+      repo: REPO,
+    }),
+  );
+  expect(response.status).toBe("paused");
+
+  const afterLedger = await github.ledger.list();
+  const afterCalls = afterLedger.filter(
+    (entry) =>
+      entry.operationId === "issues/listForRepo" && entry.path === `/repos/${OWNER}/${REPO}/issues`,
+  ).length;
+  expect(afterCalls).toBe(beforeCalls);
 });

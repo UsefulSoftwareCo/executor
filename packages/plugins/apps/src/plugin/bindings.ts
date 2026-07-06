@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { Data } from "effect";
+import type { InvokeOptions } from "@executor-js/sdk";
 
 import type { HandleBridge, HandleRootSpec } from "../seams/tool-sandbox";
 import { ToolSandboxError } from "../seams/tool-sandbox";
@@ -50,6 +51,7 @@ export interface ClientResolver {
     readonly connection: string;
     readonly path: readonly string[];
     readonly args: readonly unknown[];
+    readonly invokeOptions?: InvokeOptions;
   }) => Effect.Effect<unknown, BindingError>;
 }
 
@@ -62,6 +64,8 @@ export interface BindingContext {
   readonly db: ScopeDbHandle;
   /** Routes a bound method call to the real integration. */
   readonly resolver: ClientResolver;
+  /** Caller-supplied invoke options to preserve approval/elicitation context. */
+  readonly invokeOptions?: InvokeOptions;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -259,7 +263,13 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
     }
 
     return context.resolver
-      .call({ integration: decl.integration, connection: connectionName, path, args })
+      .call({
+        integration: decl.integration,
+        connection: connectionName,
+        path,
+        args,
+        invokeOptions: context.invokeOptions,
+      })
       .pipe(
         Effect.mapError(
           (cause) => new ToolSandboxError({ kind: "invoke", message: cause.message, cause }),

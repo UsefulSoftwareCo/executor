@@ -87,7 +87,7 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
       return row ? toCandidate(row) : null;
     }),
 
-  call: ({ integration, connection, path, args }) =>
+  call: ({ integration, connection, path, args, invokeOptions }) =>
     Effect.gen(function* () {
       const ref = parseConnectionAddress(connection);
       if (!ref) {
@@ -107,7 +107,7 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
       const tool = path.join(".");
       const address = ToolAddress.make(`${connection}.${tool}`);
       const payload = args[0] ?? {};
-      const result = yield* input.ctx.execute(address, payload).pipe(
+      const result = yield* input.ctx.execute(address, payload, invokeOptions).pipe(
         Effect.mapError((cause) =>
           bindingError({
             integration,

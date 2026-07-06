@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import type { InvokeOptions } from "@executor-js/sdk";
 
 import type { ArtifactStore } from "../seams/artifact-store";
 import type { ScopeDb } from "../seams/scope-db";
@@ -56,6 +57,8 @@ export interface AppsRuntime {
     /** Optional per-request resolver override. The catalog invoke path supplies
      *  one built from the request's executor context. */
     readonly resolver?: ClientResolver;
+    /** Optional caller options forwarded to bridged sub-calls. */
+    readonly invokeOptions?: InvokeOptions;
   }) => Effect.Effect<
     unknown,
     PublishError | BindingError | InputValidationError | OutputValidationError
@@ -194,6 +197,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     toolDesc: ToolDescriptor,
     args: unknown,
     resolver?: ClientResolver,
+    invokeOptions?: InvokeOptions,
   ): Effect.Effect<
     unknown,
     PublishError | BindingError | InputValidationError | OutputValidationError
@@ -222,6 +226,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         bindings: resolved.bindings,
         db,
         resolver: activeResolver,
+        invokeOptions,
       });
       const result = yield* deps.sandbox
         .invoke(
@@ -316,6 +321,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           toolDesc,
           input.args,
           input.resolver,
+          input.invokeOptions,
         );
       }),
   };
