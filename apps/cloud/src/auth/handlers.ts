@@ -454,8 +454,20 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           yield* workos.deleteOrganization(organizationId);
 
           // Purge all local tenant data, secrets, and the identity mirror
-          // (cascades local memberships) in one transaction.
-          yield* users.use((s) => s.deleteOrganizationCascade(organizationId));
+          // (cascades local memberships) in one transaction. If this fails
+          // after the WorkOS delete already succeeded, the org is gone for
+          // everyone (unreachable) but its secrets/tenant rows linger orphaned —
+          // alert loudly so that window gets swept, then surface the failure.
+          yield* users
+            .use((s) => s.deleteOrganizationCascade(organizationId))
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.logError(
+                  "deleteOrganization: WorkOS org deleted but local purge failed, tenant data and secrets orphaned",
+                  { organizationId, error },
+                ),
+              ),
+            );
 
           // Cancel billing. Best-effort: the org is already deleted, so a
           // lingering Autumn customer is a billing loose end (log loudly) rather

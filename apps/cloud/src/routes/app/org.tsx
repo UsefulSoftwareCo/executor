@@ -92,7 +92,8 @@ function DangerZoneSection() {
   const isAdmin = AsyncResult.match(membersResult, {
     onInitial: () => false,
     onFailure: () => false,
-    onSuccess: ({ value }) => value.members.some((m) => m.isCurrentUser && m.role === "admin"),
+    onSuccess: ({ value }) =>
+      value.members.some((m) => m.isCurrentUser && m.status === "active" && m.role === "admin"),
   });
 
   if (!isAdmin || !organizationName) return null;
