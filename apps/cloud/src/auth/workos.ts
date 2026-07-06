@@ -145,7 +145,11 @@ const make = Effect.gen(function* () {
     });
   }
 
-  const workos = new WorkOS({ apiKey, clientId, ...workosApiUrlOptions(env.WORKOS_API_URL) });
+  const workos = new WorkOS({
+    apiKey,
+    clientId,
+    ...workosApiUrlOptions(env.WORKOS_API_URL),
+  });
 
   const use = <A>(fn: (wos: WorkOS) => Promise<A>) =>
     withServiceLogging(
@@ -389,7 +393,11 @@ const make = Effect.gen(function* () {
 
     /** Update a membership's role. */
     updateOrgMembershipRole: (membershipId: string, roleSlug: string) =>
-      use((wos) => wos.userManagement.updateOrganizationMembership(membershipId, { roleSlug })),
+      use((wos) =>
+        wos.userManagement.updateOrganizationMembership(membershipId, {
+          roleSlug,
+        }),
+      ),
 
     /** List available roles for an organization. */
     listOrgRoles: (organizationId: string) =>
@@ -401,7 +409,19 @@ const make = Effect.gen(function* () {
 
     /** Update an organization. */
     updateOrganization: (organizationId: string, name: string) =>
-      use((wos) => wos.organizations.updateOrganization({ organization: organizationId, name })),
+      use((wos) =>
+        wos.organizations.updateOrganization({
+          organization: organizationId,
+          name,
+        }),
+      ),
+
+    /**
+     * Delete an organization. Cascades in WorkOS: the org's memberships,
+     * invitations, and domains go with it, so every member loses access.
+     */
+    deleteOrganization: (organizationId: string) =>
+      use((wos) => wos.organizations.deleteOrganization(organizationId)),
 
     /** Generate an Admin Portal link for domain verification. */
     generateDomainVerificationPortalLink: (organizationId: string, returnUrl: string) =>

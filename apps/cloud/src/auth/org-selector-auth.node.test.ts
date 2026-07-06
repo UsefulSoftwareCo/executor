@@ -35,7 +35,11 @@ const stubWorkOS = Layer.succeed(
     get: (_t, prop) => {
       if (prop === "authenticateRequest") {
         return () =>
-          Effect.succeed({ userId: MEMBER, email: "u@e2e.test", organizationId: SESSION_ORG });
+          Effect.succeed({
+            userId: MEMBER,
+            email: "u@e2e.test",
+            organizationId: SESSION_ORG,
+          });
       }
       if (prop === "listUserMemberships") {
         return (userId: string) =>
@@ -66,7 +70,12 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug: org.id,
           createdAt,
         }),
-        getOrganization: async (id: string) => ({ id, name: `Org ${id}`, slug: id, createdAt }),
+        getOrganization: async (id: string) => ({
+          id,
+          name: `Org ${id}`,
+          slug: id,
+          createdAt,
+        }),
         // The URL slug maps to URL_ORG (the member's other org); any other slug
         // maps to an org the caller is NOT a member of, so membership rejects it.
         getOrganizationBySlug: async (slug: string) => ({
@@ -75,6 +84,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });
@@ -117,7 +127,10 @@ describe("resolveSessionPrincipal · URL org selector", () => {
       // The slug resolves to a real org id, but membership is re-checked — a
       // slug is a selector, not a trust boundary, so a non-member is rejected.
       const error = yield* Effect.flip(
-        run({ cookie: "wos-session=x", "x-executor-organization": "outsider-slug" }),
+        run({
+          cookie: "wos-session=x",
+          "x-executor-organization": "outsider-slug",
+        }),
       );
       expect(error).toMatchObject({ _tag: "NoOrganization" });
     }),

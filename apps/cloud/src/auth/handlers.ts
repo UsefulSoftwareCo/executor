@@ -9,6 +9,7 @@ import {
   CloudAuthPublicApi,
   McpExecutionNotFoundError,
   McpSessionForbiddenError,
+  OrganizationDeletionForbidden,
 } from "./api";
 import { NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
@@ -242,7 +243,9 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           }
 
           if (!sealedSession) {
-            return HttpServerResponse.text("Failed to create session", { status: 500 });
+            return HttpServerResponse.text("Failed to create session", {
+              status: 500,
+            });
           }
 
           return deleteResponseCookie(
@@ -323,7 +326,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const organizations = yield* Effect.all(
             memberships.data.map((m) =>
               resolveOrganization(m.organizationId).pipe(
-                Effect.map((org) => ({ id: org.id, name: org.name, slug: org.slug })),
+                Effect.map((org) => ({
+                  id: org.id,
+                  name: org.name,
+                  slug: org.slug,
+                })),
                 Effect.orElseSucceed(() => null),
               ),
             ),
@@ -354,7 +361,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               activeMemberships.map((membership) =>
                 autumn
                   .use((client) =>
-                    client.customers.getOrCreate({ customerId: membership.organizationId }),
+                    client.customers.getOrCreate({
+                      customerId: membership.organizationId,
+                    }),
                   )
                   .pipe(
                     Effect.map((customer) =>
@@ -408,6 +417,66 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
           return { id: org.id, name: org.name, slug: mirrored.slug };
+        }),
+      )
+      .handle("deleteOrganization", ({ payload }) =>
+        Effect.gen(function* () {
+          const workos = yield* WorkOSClient;
+          const users = yield* UserStoreService;
+          const autumn = yield* AutumnService;
+
+          // Target the caller's currently-selected org (honors the org-selector
+          // header, same as the other org-scoped auth handlers). NoOrganization
+          // when the session has no org to act on.
+          const session = yield* requireSelectedOrganization;
+          const organizationId = session.organizationId;
+
+          // Admin-only. Live WorkOS check so a member removed/demoted moments
+          // ago can't delete the workspace. A pending admin invite is not an
+          // active admin, so require active status too.
+          const membership = yield* workos.getUserOrgMembership(organizationId, session.accountId);
+          if (!membership || membership.status !== "active" || membership.role?.slug !== "admin") {
+            return yield* new OrganizationDeletionForbidden();
+          }
+
+          // The typed confirmation must match the org's current name — the same
+          // label the settings page shows. Trimmed on both sides.
+          const org = yield* users.use((s) => s.getOrganization(organizationId));
+          if (!org || payload.confirmName.trim() !== org.name.trim()) {
+            return yield* new OrganizationDeletionForbidden();
+          }
+
+          // WorkOS FIRST. Once the org is gone there, membership authorization
+          // fails for every member, so the workspace is truly deleted even if a
+          // later local step lags (leftover local rows become unreachable, not
+          // user-visible). The reverse order risks the org resurrecting as an
+          // empty workspace when a later request re-mirrors it with a new slug.
+          yield* workos.deleteOrganization(organizationId);
+
+          // Purge all local tenant data, secrets, and the identity mirror
+          // (cascades local memberships) in one transaction.
+          yield* users.use((s) => s.deleteOrganizationCascade(organizationId));
+
+          // Cancel billing. Best-effort: the org is already deleted, so a
+          // lingering Autumn customer is a billing loose end (log loudly) rather
+          // than a correctness failure that should 500 the caller.
+          yield* autumn
+            .use((client) => client.customers.delete({ customerId: organizationId }))
+            .pipe(
+              Effect.catchTag("AutumnError", (error) =>
+                Effect.logWarning("deleteOrganization: failed to delete Autumn customer", {
+                  organizationId,
+                  error,
+                }),
+              ),
+            );
+
+          // The caller's session is pinned to the now-deleted org — clear it so
+          // the browser bounces to login and rehydrates to another membership
+          // (or the create-org screen when they have none left).
+          (yield* SessionCookies).set("wos-session", "", DELETE_COOKIE_OPTIONS);
+
+          return { success: true };
         }),
       )
       .handle("pendingInvitations", () =>

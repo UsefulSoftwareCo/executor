@@ -35,6 +35,8 @@ export const organizationsAtom = Atom.refreshOnWindowFocus(
 
 export const createOrganization = CloudApiClient.mutation("cloudAuth", "createOrganization");
 
+export const deleteOrganization = CloudApiClient.mutation("cloudAuth", "deleteOrganization");
+
 export const pendingInvitationsAtom = CloudApiClient.query("cloudAuth", "pendingInvitations", {
   timeToLive: "1 minute",
   reactivityKeys: [ReactivityKey.auth],
@@ -57,7 +59,10 @@ export const AuthProvider = ({
     (state) => {
       if (!posthog) return;
       if (state.status === "authenticated") {
-        posthog.identify(state.user.id, { email: state.user.email, name: state.user.name });
+        posthog.identify(state.user.id, {
+          email: state.user.email,
+          name: state.user.name,
+        });
         if (state.organization) {
           posthog.group("organization", state.organization.id, {
             name: state.organization.name,

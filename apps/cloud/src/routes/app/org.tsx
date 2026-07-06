@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Exit } from "effect";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
@@ -5,18 +6,31 @@ import { trackEvent } from "@executor-js/react/api/analytics";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { useCustomer } from "autumn-js/react";
 import { toast } from "sonner";
-import { orgDomainWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { orgDomainWriteKeys, authWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
+import { Input } from "@executor-js/react/components/input";
+import { Label } from "@executor-js/react/components/label";
 import { CopyButton } from "@executor-js/react/components/copy-button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@executor-js/react/components/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@executor-js/react/components/dropdown-menu";
+import { orgMembersAtom } from "@executor-js/react/api/account-atoms";
 import { OrgPage as SharedOrgPage } from "@executor-js/react/pages/org";
 import { orgDomainsAtom, getDomainVerificationLink, deleteDomain } from "../../web/org-atoms";
+import { deleteOrganization, useAuth } from "../../web/auth";
 
 // ---------------------------------------------------------------------------
 // Cloud organization page. The members / roles / invite / org-name surface is
@@ -52,8 +66,139 @@ function OrgPage() {
             <Button size="sm">Upgrade plan</Button>
           </Link>
         }
+        dangerZoneSection={<DangerZoneSection />}
       />
     </div>
+  );
+}
+
+// Destructive org teardown, admin-only. Hidden entirely for non-admins (the
+// backend enforces admin + name-confirmation regardless). Deleting the org
+// removes the workspace and all of its data for every member, cancels billing,
+// and logs the caller out.
+function DangerZoneSection() {
+  const auth = useAuth();
+  const membersResult = useAtomValue(orgMembersAtom);
+  const doDelete = useAtomSet(deleteOrganization, { mode: "promiseExit" });
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const organizationName = auth.status === "authenticated" ? auth.organization?.name : undefined;
+
+  // Only admins may delete. Derive the caller's role from the members list
+  // (already loaded for this page); render nothing while it loads or for
+  // members, so a delete control never flashes for someone who can't use it.
+  const isAdmin = AsyncResult.match(membersResult, {
+    onInitial: () => false,
+    onFailure: () => false,
+    onSuccess: ({ value }) => value.members.some((m) => m.isCurrentUser && m.role === "admin"),
+  });
+
+  if (!isAdmin || !organizationName) return null;
+
+  const confirmed = confirmText.trim() === organizationName.trim();
+
+  const handleDelete = async () => {
+    if (!confirmed || deleting) return;
+    setDeleting(true);
+    const exit = await doDelete({
+      payload: { confirmName: confirmText.trim() },
+      reactivityKeys: authWriteKeys,
+    });
+    trackEvent("org_deleted", { success: Exit.isSuccess(exit) });
+    if (Exit.isSuccess(exit)) {
+      // The org (and the caller's session) are gone. A full navigation resets
+      // all app state and lets the auth gate rehydrate to another membership or
+      // the create-org screen.
+      toast.success(`Deleted ${organizationName}`);
+      window.location.href = "/";
+      return;
+    }
+    setDeleting(false);
+    toast.error("Failed to delete organization");
+  };
+
+  return (
+    <section className="mb-2 border-t border-border pt-8">
+      <div className="flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium text-destructive">Delete organization</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Permanently delete this organization and all of its data for every member. This cannot
+            be undone.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="destructive"
+          className="ml-4 shrink-0"
+          onClick={() => {
+            setConfirmText("");
+            setOpen(true);
+          }}
+        >
+          Delete
+        </Button>
+      </div>
+
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          if (deleting) return;
+          if (!v) setConfirmText("");
+          setOpen(v);
+        }}
+      >
+        <DialogContent className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">Delete organization</DialogTitle>
+            <DialogDescription className="text-sm leading-relaxed">
+              This permanently deletes{" "}
+              <span className="font-medium text-foreground">{organizationName}</span>, including
+              every integration, connection, credential, and policy, for all members. Billing is
+              canceled and everyone loses access immediately. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-1.5 py-1">
+            <Label
+              htmlFor="delete-org-confirm"
+              className="text-sm font-medium uppercase tracking-wider text-muted-foreground"
+            >
+              Type <span className="font-mono normal-case text-foreground">{organizationName}</span>{" "}
+              to confirm
+            </Label>
+            <Input
+              id="delete-org-confirm"
+              autoComplete="off"
+              value={confirmText}
+              onChange={(e) => setConfirmText((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleDelete();
+              }}
+              className="h-9 text-sm"
+            />
+          </div>
+
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost" size="sm" disabled={deleting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={!confirmed || deleting}
+            >
+              {deleting ? "Deleting…" : "Delete organization"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
   );
 }
 

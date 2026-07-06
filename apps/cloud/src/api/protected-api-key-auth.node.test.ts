@@ -65,6 +65,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });

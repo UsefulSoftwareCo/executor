@@ -71,8 +71,16 @@ export interface AnalyticsEvents {
     success: boolean;
     dcr_fallback?: boolean;
   };
-  connection_reconnected: { integration_slug: string; owner: Owner; success: boolean };
-  connection_removed: { integration_slug: string; owner: Owner; success: boolean };
+  connection_reconnected: {
+    integration_slug: string;
+    owner: Owner;
+    success: boolean;
+  };
+  connection_removed: {
+    integration_slug: string;
+    owner: Owner;
+    success: boolean;
+  };
   oauth_completed: { success: boolean };
   oauth_popup_blocked: {};
   oauth_client_registered: {
@@ -95,14 +103,22 @@ export interface AnalyticsEvents {
     is_error?: boolean;
   };
   tool_id_copied: { integration_slug: string; tool_name: string };
-  tool_policy_set: { action: string; pattern_kind: "exact" | "group"; owner: Owner };
+  tool_policy_set: {
+    action: string;
+    pattern_kind: "exact" | "group";
+    owner: Owner;
+  };
   tool_policy_cleared: { pattern_kind: "exact" | "group"; owner: Owner };
 
   // ── Policies page ────────────────────────────────────────────────────────
   policy_created: { action: string; owner: Owner; success: boolean };
   policy_action_changed: { action: string; owner: Owner; success: boolean };
   policy_removed: { owner: Owner; success: boolean };
-  policy_reordered: { owner: Owner; direction: "up" | "down"; success: boolean };
+  policy_reordered: {
+    owner: Owner;
+    direction: "up" | "down";
+    success: boolean;
+  };
 
   // ── API keys ─────────────────────────────────────────────────────────────
   api_key_created: { success: boolean };
@@ -146,6 +162,7 @@ export interface AnalyticsEvents {
   login_cta_clicked: {};
   signed_out: {};
   org_created: { success: boolean };
+  org_deleted: { success: boolean };
   org_switched: { success: boolean };
   org_invitation_accepted: { success: boolean };
   setup_mcp_completed: {};
