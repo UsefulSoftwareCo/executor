@@ -5,6 +5,8 @@
 // capability sits behind a seam.
 
 export * from "./seams";
+export * from "./authoring";
+export * from "./standard-schema";
 export * from "./pipeline/descriptor";
 export { discover, PublishError } from "./pipeline/discover";
 export { bundleEntry, PLATFORM_MODULES, INLINABLE_MODULES } from "./pipeline/bundle";
@@ -26,9 +28,10 @@ export {
 export {
   buildBridge,
   rootsFor,
+  resolveIntegrationBindings,
   BindingError,
-  type Bindings,
-  type RoleBinding,
+  type ConnectionCandidate,
+  type RoleBindings,
   type ClientResolver,
   type BindingContext,
 } from "./plugin/bindings";

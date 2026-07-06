@@ -14,4 +14,9 @@ export {
   type SelfHostAppsRuntimeOptions,
 } from "./plugin/self-host-runtime";
 export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
-export { BindingError, type ClientResolver, type Bindings } from "./plugin/bindings";
+export {
+  BindingError,
+  type ClientResolver,
+  type ConnectionCandidate,
+  type RoleBindings,
+} from "./plugin/bindings";

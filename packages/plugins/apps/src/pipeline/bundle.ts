@@ -20,11 +20,10 @@ export const toolchainRef = (): ToolchainRef => ({
 //
 // One esbuild pass per artifact entry. The platform module (`executor:app`)
 // stays EXTERNAL, the sandbox shim provides the real behavior. A small allowlist
-// of schema libraries (`zod`, `@standard-schema/spec`) is INLINED from
-// node_modules so the author's schema runs in the sandbox AND its `toJSONSchema`
-// is reachable to extract the descriptor's input/output JSON Schema. Every
-// other bare import is rejected with a diagnostic: npm deps in user bundles are
-// out of scope.
+// of schema libraries (`zod`) is INLINED from node_modules so the author's
+// schema runs in the sandbox and exposes the Standard Schema JSON-schema
+// extension. Every other bare import is rejected with a diagnostic: npm deps in
+// user bundles are out of scope.
 //
 // Output is a single CJS string with the externals left as `require(...)`
 // calls the sandbox resolves.
@@ -36,7 +35,7 @@ export const PLATFORM_MODULES = new Set<string>(["executor:app"]);
 
 /** npm modules we deliberately inline (schema runtime that must run in the
  *  sandbox). Everything else bare is rejected. */
-export const INLINABLE_MODULES = new Set<string>(["zod", "@standard-schema/spec"]);
+export const INLINABLE_MODULES = new Set<string>(["zod"]);
 
 const isInlinable = (path: string): boolean => {
   if (INLINABLE_MODULES.has(path)) return true;
@@ -80,29 +79,10 @@ const candidates = (path: string): string[] => {
 const FILESET_NS = "fileset";
 const VIRTUAL_ENTRY = "executor-apps://entry";
 
-/** The virtual entry esbuild starts from: re-export the author entry AND expose
- *  the shared zod instance as a global so the sandbox collect driver can call
- *  `toJSONSchema` against the SAME zod the author bundled. */
+/** The virtual entry esbuild starts from: re-export the author entry. */
 const virtualEntrySource = (authorEntry: string) => `
 import __artifactModule from ${JSON.stringify(`/${authorEntry}`)};
-import * as __zod from "zod";
 globalThis.__artifact = __artifactModule;
-globalThis.__zodToJson = function (schema) {
-  if (!schema) return undefined;
-  try {
-    return __zod.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
-  } catch (e) {
-    try { return __zod.toJSONSchema(schema); } catch (e2) { return {}; }
-  }
-};
-globalThis.__zodToJsonOutput = function (schema) {
-  if (!schema) return undefined;
-  try {
-    return __zod.toJSONSchema(schema, { io: "output", unrepresentable: "any" });
-  } catch (e) {
-    try { return __zod.toJSONSchema(schema); } catch (e2) { return {}; }
-  }
-};
 `;
 
 const fileSetPlugin = (files: ReadonlyMap<string, string>, authorEntry: string) => ({

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
-import { buildBridge, type ClientResolver } from "./bindings";
-import type { ConnectionDecl } from "../pipeline/descriptor";
+import { buildBridge, resolveIntegrationBindings, type ClientResolver } from "./bindings";
+import type { IntegrationDecl } from "../pipeline/descriptor";
 import type { ScopeDbHandle } from "../seams/scope-db";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,26 @@ const okDb: ScopeDbHandle = {
 };
 
 const okResolver: ClientResolver = {
+  listConnections: ({ integration }) =>
+    Effect.succeed([
+      {
+        address: `tools.${integration}.user.main`,
+        integration,
+        name: "main",
+        owner: "user",
+      },
+    ]),
+  resolveConnection: ({ connection }) =>
+    Effect.succeed(
+      connection === "tools.github.user.main" || connection === "main"
+        ? {
+            address: "tools.github.user.main",
+            integration: "github",
+            name: "main",
+            owner: "user",
+          }
+        : null,
+    ),
   call: () => Effect.succeed({ ok: true }),
 };
 
@@ -26,13 +46,11 @@ const fails = <A, E>(effect: Effect.Effect<A, E>): Promise<boolean> =>
   Effect.runPromiseExit(effect).then((exit) => exit._tag === "Failure");
 
 describe("HandleBridge strict dispatch", () => {
-  const declared: Record<string, ConnectionDecl> = {
-    gh: { kind: "single", integration: "github" },
-    inboxes: { kind: "array", integration: "gmail" },
+  const declared: Record<string, IntegrationDecl> = {
+    gh: { integration: "github" },
   };
   const bindings = {
-    gh: { kind: "single", connection: "gh-main" } as const,
-    inboxes: { kind: "array", connections: ["a", "b"] } as const,
+    gh: "tools.github.user.main",
   };
   const bridge = buildBridge({ declared, bindings, db: okDb, resolver: okResolver });
 
@@ -48,13 +66,7 @@ describe("HandleBridge strict dispatch", () => {
     expect(await fails(bridge.call({ root: "ghost", path: ["x"], args: [] }))).toBe(true);
   });
 
-  it("rejects an out-of-range fan-out index", async () => {
-    expect(
-      await fails(bridge.call({ root: "inboxes#5", path: ["messages", "list"], args: [] })),
-    ).toBe(true);
-  });
-
-  it("rejects an index on a single-connection role", async () => {
+  it("rejects an index on an integration role", async () => {
     expect(await fails(bridge.call({ root: "gh#0", path: ["repos", "list"], args: [] }))).toBe(
       true,
     );
@@ -71,10 +83,40 @@ describe("HandleBridge strict dispatch", () => {
     expect(out).toEqual({ ok: true });
   });
 
-  it("routes a valid fan-out element through the resolver", async () => {
-    const out = await Effect.runPromise(
-      bridge.call({ root: "inboxes#1", path: ["messages", "list"], args: [{}] }),
-    );
-    expect(out).toEqual({ ok: true });
+  it("defaults a missing role property when exactly one connection exists", async () => {
+    const resolved = await Effect.runPromise(resolveIntegrationBindings(declared, {}, okResolver));
+    expect(resolved.bindings).toEqual({ gh: "tools.github.user.main" });
+    expect(resolved.input).toEqual({});
+  });
+
+  it("fails when several connections exist and the role property is missing", async () => {
+    const resolver: ClientResolver = {
+      ...okResolver,
+      listConnections: () =>
+        Effect.succeed([
+          { address: "tools.github.user.one", integration: "github" },
+          { address: "tools.github.user.two", integration: "github" },
+        ]),
+    };
+    expect(await fails(resolveIntegrationBindings(declared, {}, resolver))).toBe(true);
+  });
+
+  it("fails when a requested connection belongs to a different integration", async () => {
+    const resolver: ClientResolver = {
+      ...okResolver,
+      resolveConnection: () =>
+        Effect.succeed({ address: "tools.gmail.user.main", integration: "gmail" }),
+    };
+    expect(
+      await fails(resolveIntegrationBindings(declared, { gh: "tools.gmail.user.main" }, resolver)),
+    ).toBe(true);
+  });
+
+  it("fails when a requested connection is unknown", async () => {
+    expect(
+      await fails(
+        resolveIntegrationBindings(declared, { gh: "tools.github.user.missing" }, okResolver),
+      ),
+    ).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import { Effect } from "effect";
 
 import type { AppDescriptor } from "../pipeline/descriptor";
 import type { AppsStore } from "../plugin/store";
-import type { ClientResolver, BindingError } from "../plugin/bindings";
+import type { BindingError, ClientResolver, ConnectionCandidate } from "../plugin/bindings";
 import {
   ArtifactStoreError,
   asSnapshotId,
@@ -76,12 +76,31 @@ export type { SnapshotId };
 
 export const makeTestResolver = (
   handlers: Record<string, Record<string, (args: readonly unknown[]) => unknown>>,
+  connections?: readonly ConnectionCandidate[],
 ): ClientResolver & {
   readonly calls: { integration: string; connection: string; method: string }[];
 } => {
   const calls: { integration: string; connection: string; method: string }[] = [];
+  const knownConnections =
+    connections ??
+    Object.keys(handlers).map((integration) => ({
+      address: `tools.${integration}.user.${integration}`,
+      integration,
+      name: integration,
+      owner: "user",
+    }));
   return {
     calls,
+    listConnections: ({ integration }) =>
+      Effect.succeed(
+        knownConnections.filter((connection) => connection.integration === integration),
+      ),
+    resolveConnection: ({ connection }) =>
+      Effect.succeed(
+        knownConnections.find(
+          (candidate) => candidate.address === connection || candidate.name === connection,
+        ) ?? null,
+      ),
     call: ({ integration, connection, path, args }) => {
       const method = path.join(".");
       calls.push({ integration, connection, method });
@@ -91,7 +110,7 @@ export const makeTestResolver = (
           _tag: "BindingError",
           message: `no test handler for ${integration}.${method}`,
           role: integration,
-          surface: integration,
+          integration,
         } as unknown as BindingError);
       }
       return Effect.sync(() => handler(args));

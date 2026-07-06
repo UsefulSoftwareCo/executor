@@ -2,7 +2,11 @@ import { Effect } from "effect";
 
 import type { ArtifactStore } from "../seams/artifact-store";
 import type { ScopeDb } from "../seams/scope-db";
-import type { ToolSandbox } from "../seams/tool-sandbox";
+import {
+  InputValidationError,
+  OutputValidationError,
+  type ToolSandbox,
+} from "../seams/tool-sandbox";
 import {
   publish as runPublish,
   loadDescriptorFromSnapshot,
@@ -14,7 +18,7 @@ import { bundleEntry } from "../pipeline/bundle";
 import {
   buildBridge,
   rootsFor,
-  type Bindings,
+  resolveIntegrationBindings,
   type ClientResolver,
   BindingError,
 } from "./bindings";
@@ -47,11 +51,13 @@ export interface AppsRuntime {
     readonly scope: string;
     readonly tool: string;
     readonly args: unknown;
-    readonly bindings: Bindings;
     /** Optional per-request resolver override. The catalog invoke path supplies
      *  one built from the request's executor context. */
     readonly resolver?: ClientResolver;
-  }) => Effect.Effect<unknown, PublishError | BindingError>;
+  }) => Effect.Effect<
+    unknown,
+    PublishError | BindingError | InputValidationError | OutputValidationError
+  >;
   readonly deps: AppsRuntimeDeps;
 }
 
@@ -185,11 +191,19 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     descriptor: AppDescriptor,
     toolDesc: ToolDescriptor,
     args: unknown,
-    bindings: Bindings,
     resolver?: ClientResolver,
-  ): Effect.Effect<unknown, PublishError | BindingError> =>
+  ): Effect.Effect<
+    unknown,
+    PublishError | BindingError | InputValidationError | OutputValidationError
+  > =>
     Effect.gen(function* () {
-      const roots = yield* rootsFor(toolDesc.connections, bindings);
+      const activeResolver = resolver ?? deps.resolver;
+      const resolved = yield* resolveIntegrationBindings(
+        toolDesc.integrations,
+        args,
+        activeResolver,
+      );
+      const roots = rootsFor(toolDesc.integrations);
       const code = yield* bundleFor(descriptor, toolDesc.sourcePath);
       const db = yield* deps.scopeDb.forScope(scope).pipe(
         Effect.mapError(
@@ -202,22 +216,32 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         ),
       );
       const bridge = buildBridge({
-        declared: toolDesc.connections,
-        bindings,
+        declared: toolDesc.integrations,
+        bindings: resolved.bindings,
         db,
-        resolver: resolver ?? deps.resolver,
+        resolver: activeResolver,
       });
       const result = yield* deps.sandbox
-        .invoke(code, { artifact: toolDesc.name, kind: "tool", input: args, roots }, bridge)
+        .invoke(
+          code,
+          { artifact: toolDesc.name, kind: "tool", input: resolved.input, roots },
+          bridge,
+        )
         .pipe(
-          Effect.mapError(
-            (c) =>
-              new PublishError({
-                message: c.message,
-                stage: "project",
-                diagnostics: [{ path: toolDesc.sourcePath, message: c.message }],
-              }),
-          ),
+          Effect.mapError((c) => {
+            if (
+              c instanceof BindingError ||
+              c instanceof InputValidationError ||
+              c instanceof OutputValidationError
+            ) {
+              return c;
+            }
+            return new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [{ path: toolDesc.sourcePath, message: c.message }],
+            });
+          }),
         );
       return result.output;
     });
@@ -287,7 +311,6 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           descriptor,
           toolDesc,
           input.args,
-          input.bindings,
           input.resolver,
         );
       }),

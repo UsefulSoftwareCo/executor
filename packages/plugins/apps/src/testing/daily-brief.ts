@@ -2,19 +2,18 @@ export const DAILY_BRIEF_MANIFEST = `{
   "$schema": "https://executor.sh/schemas/scope-manifest.json",
   "scope": "rhys",
   "description": "Personal scope artifacts, GitHub issues brief.",
-  "connections": { "github": "github/rhys" },
   "artifacts": { "tools": "tools/" }
 }
 `;
 
 export const ISSUES_SYNC_TS = `import { z } from "zod";
-import { defineTool, connection } from "executor:app";
+import { defineTool, integration } from "executor:app";
 
 export default defineTool({
   description:
     "Refresh the scope \\\`issues\\\` table from GitHub. Syncs open issues across the given repos (default: every repo the connection can see).",
-  connections: {
-    github: connection("github", { description: "GitHub account whose issues to sync" }),
+  integrations: {
+    github: integration("github"),
   },
   input: z.object({
     repos: z.array(z.string()).optional().describe("owner/repo entries; omit to sync all accessible repos"),
@@ -57,13 +56,13 @@ export default defineTool({
 `;
 
 export const SEARCH_ALL_MAIL_TS = `import { z } from "zod";
-import { defineTool, connections } from "executor:app";
+import { defineTool, integration } from "executor:app";
 
 export default defineTool({
   description:
-    "Search across all connected Gmail accounts. Returns matches newest-first, tagged with which inbox they came from.",
-  connections: {
-    inboxes: connections("gmail", { description: "Gmail accounts to search across" }),
+    "Search a connected Gmail account. Returns matches newest-first.",
+  integrations: {
+    inbox: integration("gmail"),
   },
   input: z.object({
     query: z.string().describe("Gmail search syntax, e.g. from:acme subject:invoice"),
@@ -76,17 +75,12 @@ export default defineTool({
     })),
   }),
   annotations: { readOnly: true },
-  async handler({ query, limit }, { inboxes }) {
-    const perInbox = await Promise.all(
-      inboxes.map(async (inbox) => {
-        const { messages } = await inbox.messages.search({ q: query, maxResults: limit });
-        return messages.map((m) => ({
-          inbox: inbox.account.email, id: m.id, from: m.from,
-          subject: m.subject, snippet: m.snippet, date: m.date,
-        }));
-      }),
-    );
-    const results = perInbox.flat().sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);
+  async handler({ query, limit }, { inbox }) {
+    const { messages } = await inbox.messages.search({ q: query, maxResults: limit });
+    const results = messages.map((m) => ({
+      inbox: inbox.account.email, id: m.id, from: m.from,
+      subject: m.subject, snippet: m.snippet, date: m.date,
+    })).sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);
     return { results };
   },
 });

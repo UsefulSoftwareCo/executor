@@ -789,7 +789,6 @@
         "@executor-js/runtime-quickjs": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@libsql/client": "catalog:",
-        "@standard-schema/spec": "^1.0.0",
         "esbuild": "^0.27.3",
         "zod": "4.3.6",
       },

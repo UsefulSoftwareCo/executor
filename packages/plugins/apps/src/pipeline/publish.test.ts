@@ -36,21 +36,17 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
     expect(out.skipped).toEqual([]);
 
     const sync = d.tools.find((t) => t.name === "issues-sync")!;
-    expect(sync.connections.github).toEqual(
-      expect.objectContaining({ kind: "single", integration: "github" }),
-    );
+    expect(sync.integrations.github).toEqual(expect.objectContaining({ integration: "github" }));
     expect((sync.inputSchema as { type: string }).type).toBe("object");
 
     const mail = d.tools.find((t) => t.name === "search-all-mail")!;
-    expect(mail.connections.inboxes).toEqual(
-      expect.objectContaining({ kind: "array", integration: "gmail" }),
-    );
+    expect(mail.integrations.inbox).toEqual(expect.objectContaining({ integration: "gmail" }));
   });
 
   it("publishes tools while reporting deferred known folders under skipped", async () => {
     const deps = makeDeps();
-    const flowPath = `work${"flows"}/y.ts`;
-    const guidePath = `sk${"ills"}/z/${"SK"}ILL.md`;
+    const flowPath = "workflows/y.ts";
+    const guidePath = "skills/z/SKILL.md";
     const files = new Map<string, string>([
       [
         "tools/x.ts",
@@ -72,6 +68,81 @@ export default defineTool({ description: "x", input: z.object({}), async handler
       { path: flowPath, reason: "not supported yet" },
       { path: guidePath, reason: "not supported yet" },
     ]);
+  });
+
+  it("rejects an authored input field that collides with an integration role", async () => {
+    const deps = makeDeps();
+    const files = new Map<string, string>([
+      [
+        "tools/sync.ts",
+        `import { defineTool, integration } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "sync",
+  integrations: { crm: integration("dealcloud") },
+  input: z.object({ crm: z.string() }),
+  async handler(){ return {}; },
+});`,
+      ],
+    ]);
+
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("collides");
+    expect(JSON.stringify(exit)).toContain("crm");
+  });
+
+  it("rejects a Standard Schema vendor without JSON Schema export", async () => {
+    const deps = makeDeps();
+    const files = new Map<string, string>([
+      [
+        "tools/vendor.ts",
+        `import { defineTool } from "executor:app";
+const schema = {
+  "~standard": {
+    version: 1,
+    vendor: "vendor-without-json-schema",
+    validate(value) { return { value }; },
+  },
+};
+export default defineTool({
+  description: "vendor",
+  input: schema,
+  async handler(input){ return input; },
+});`,
+      ],
+    ]);
+
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("vendor-without-json-schema");
+    expect(JSON.stringify(exit)).toContain("vendor");
+    expect(JSON.stringify(exit)).toContain("input");
+  });
+
+  it("accepts raw JSON Schema input", async () => {
+    const deps = makeDeps();
+    const files = new Map<string, string>([
+      [
+        "tools/raw.ts",
+        `import { defineTool } from "executor:app";
+export default defineTool({
+  description: "raw",
+  input: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
+  async handler(input){ return input; },
+});`,
+      ],
+    ]);
+
+    const out = await run(publish(deps, { scope: "s", files }));
+
+    expect(out.descriptor.tools[0].inputSchema).toEqual({
+      type: "object",
+      properties: { q: { type: "string" } },
+      required: ["q"],
+    });
   });
 
   it("rejects a bare npm import (npm deps out of scope)", async () => {

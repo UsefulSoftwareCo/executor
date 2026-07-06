@@ -9,7 +9,7 @@ import { bundleEntry } from "../pipeline/bundle";
 //   - collect determinism catches Math.random (double-run byte-compare)
 //   - network denial (fetch throws)
 //   - timeout kill (an infinite loop is interrupted)
-//   - handle bridge round-trip including fan-out arrays (connections("x"))
+//   - handle bridge round-trip for declared integration roles
 // A future Worker Loaders backing must pass this same suite.
 // ---------------------------------------------------------------------------
 
@@ -63,24 +63,20 @@ export default defineTool({ description: "loop", input: z.object({}), async hand
       expect(exit._tag).toBe("Failure");
     });
 
-    it("round-trips the handle bridge, including fan-out arrays", async () => {
+    it("round-trips the handle bridge for a declared integration role", async () => {
       const sandbox = makeSandbox();
-      // A tool that fans out over an array of clients and calls a method on each.
-      const src = `import { defineTool, connections } from "executor:app";
+      const src = `import { defineTool, integration } from "executor:app";
 import { z } from "zod";
 export default defineTool({
-  description: "fanout",
-  connections: { inboxes: connections("gmail") },
+  description: "search",
+  integrations: { inbox: integration("gmail") },
   input: z.object({ q: z.string() }),
-  async handler({ q }, { inboxes }) {
-    const per = await Promise.all(inboxes.map(async (inbox, i) => {
-      const r = await inbox.messages.search({ q, index: i });
-      return r.count;
-    }));
-    return { total: per.reduce((a, b) => a + b, 0), n: inboxes.length };
+  async handler({ q }, { inbox }) {
+    const r = await inbox.messages.search({ q });
+    return { total: r.count };
   },
 });`;
-      const b = await bundle("tools/fanout.ts", src);
+      const b = await bundle("tools/search.ts", src);
 
       const seen: { root: string; path: readonly string[]; args: readonly unknown[] }[] = [];
       const bridge: HandleBridge = {
@@ -95,19 +91,17 @@ export default defineTool({
         sandbox.invoke(
           b,
           {
-            artifact: "fanout",
+            artifact: "search",
             kind: "tool",
             input: { q: "invoice" },
-            roots: { inboxes: { kind: "array", count: 2 } },
+            roots: { inbox: { kind: "single" } },
           },
           bridge,
         ),
       );
-      expect(result.output).toEqual({ total: 6, n: 2 });
-      // Two distinct fan-out roots were addressed (inboxes#0 and inboxes#1).
+      expect(result.output).toEqual({ total: 3 });
       const roots = new Set(seen.map((s) => s.root));
-      expect(roots.has("inboxes#0")).toBe(true);
-      expect(roots.has("inboxes#1")).toBe(true);
+      expect(roots.has("inbox")).toBe(true);
       // The method path and JSON args crossed the boundary intact.
       expect(seen[0].path).toEqual(["messages", "search"]);
       expect(seen[0].args[0]).toMatchObject({ q: "invoice" });
@@ -120,11 +114,11 @@ export default defineTool({
       // A tool with a github client AND a db.sql write, asserting BOTH the
       // connection call and the parameterized db statement cross the bridge with
       // their args intact (the db.sql param round-trip A's suite covers).
-      const src = `import { defineTool, connection } from "executor:app";
+      const src = `import { defineTool, integration } from "executor:app";
 import { z } from "zod";
 export default defineTool({
   description: "bridge",
-  connections: { gh: connection("github") },
+  integrations: { gh: integration("github") },
   input: z.object({}),
   async handler(_i, { gh, db }) {
     const repos = await gh.repos.listForAuthenticatedUser({ per_page: 5 });
@@ -166,51 +160,6 @@ export default defineTool({
       const [strings, ...params] = dbCall!.args as [readonly string[], ...unknown[]];
       expect(strings.join("?")).toContain("INSERT INTO log");
       expect(params).toEqual([2]);
-    });
-
-    it("fans out per-index, each element addressed distinctly", async () => {
-      const sandbox = makeSandbox();
-      // inbox i returns (i+1) messages; the handler pushes each count, so the
-      // ordered result proves each fan-out element was addressed with its index.
-      const src = `import { defineTool, connections } from "executor:app";
-import { z } from "zod";
-export default defineTool({
-  description: "fanout",
-  connections: { inboxes: connections("gmail") },
-  input: z.object({}),
-  async handler(_i, { inboxes }) {
-    const counts = [];
-    for (const inbox of inboxes) {
-      const r = await inbox.messages.search({ q: "x" });
-      counts.push(r.length);
-    }
-    return { inboxes: inboxes.length, counts };
-  },
-});`;
-      const b = await bundle("tools/fanout2.ts", src);
-      const bridge: HandleBridge = {
-        call: ({ root, path }) =>
-          Effect.sync(() => {
-            if (path.join(".") === "messages.search") {
-              const idx = Number(root.split("#")[1]);
-              return new Array(idx + 1).fill({ id: "m" });
-            }
-            return [];
-          }),
-      };
-      const result = await run(
-        sandbox.invoke(
-          b,
-          {
-            artifact: "fanout2",
-            kind: "tool",
-            input: {},
-            roots: { inboxes: { kind: "array", count: 3 } },
-          },
-          bridge,
-        ),
-      );
-      expect(result.output).toEqual({ inboxes: 3, counts: [1, 2, 3] });
     });
   });
 };

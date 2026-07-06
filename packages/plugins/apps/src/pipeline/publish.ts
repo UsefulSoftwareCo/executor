@@ -10,7 +10,7 @@ import {
   GUIDE_ENTRIES_KEY,
   stableStringify,
   type AppDescriptor,
-  type ConnectionDecl,
+  type IntegrationDecl,
   type ModuleSourceRef,
   type ToolDescriptor,
 } from "./descriptor";
@@ -92,30 +92,52 @@ const sourceRef = (path: string, source: string): Effect.Effect<ModuleSourceRef>
 
 interface CollectedDescriptor {
   readonly kind: "tool";
+  readonly artifact?: string;
   readonly description?: string;
-  readonly connections?: Record<
-    string,
-    { decl: string; integration?: string; description?: string }
-  >;
+  readonly integrations?: Record<string, { integration?: string }>;
   readonly annotations?: ToolDescriptor["annotations"];
   readonly inputJsonSchema?: unknown;
   readonly outputJsonSchema?: unknown;
 }
 
-const toConnectionDecls = (
-  raw: CollectedDescriptor["connections"],
-): Record<string, ConnectionDecl> => {
-  const out: Record<string, ConnectionDecl> = {};
+const toIntegrationDecls = (
+  raw: CollectedDescriptor["integrations"],
+): Record<string, IntegrationDecl> => {
+  const out: Record<string, IntegrationDecl> = {};
   for (const [role, c] of Object.entries(raw ?? {})) {
-    if (c.decl === "array") {
-      out[role] = { kind: "array", integration: c.integration ?? "", description: c.description };
-    } else if (c.decl === "catalog") {
-      out[role] = { kind: "catalog" };
-    } else {
-      out[role] = { kind: "single", integration: c.integration ?? "", description: c.description };
-    }
+    out[role] = { integration: c.integration ?? "" };
   }
   return out;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const rejectRoleInputCollisions = (
+  artifactName: string,
+  sourcePath: string,
+  inputSchema: unknown,
+  integrations: Readonly<Record<string, IntegrationDecl>>,
+): PublishError | null => {
+  if (!isRecord(inputSchema)) return null;
+  const properties = inputSchema.properties;
+  if (!isRecord(properties)) return null;
+
+  for (const role of Object.keys(integrations)) {
+    if (Object.prototype.hasOwnProperty.call(properties, role)) {
+      return new PublishError({
+        message: `tool "${artifactName}" input field "${role}" collides with a platform integration argument`,
+        stage: "collect",
+        diagnostics: [
+          {
+            path: sourcePath,
+            message: `input field "${role}" collides with declared integration role "${role}"`,
+          },
+        ],
+      });
+    }
+  }
+  return null;
 };
 
 interface AssembledApp {
@@ -146,7 +168,7 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
             }),
         ),
       );
-      const collected = yield* deps.sandbox.collect(bundle.code).pipe(
+      const collected = yield* deps.sandbox.collect(bundle.code, { artifact: artifact.name }).pipe(
         Effect.mapError(
           (cause) =>
             new PublishError({
@@ -157,7 +179,11 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         ),
       );
       const raw = collected.artifacts.default?.descriptor as CollectedDescriptor | undefined;
-      if (!raw) {
+      const keyed = collected.artifacts[artifact.name]?.descriptor as
+        | CollectedDescriptor
+        | undefined;
+      const descriptor = keyed ?? raw;
+      if (!descriptor) {
         return yield* Effect.fail(
           new PublishError({
             message: `no descriptor collected from ${artifact.entry}`,
@@ -166,17 +192,24 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
           }),
         );
       }
-      const connections = toConnectionDecls(raw.connections);
+      const integrations = toIntegrationDecls(descriptor.integrations);
+      const collision = rejectRoleInputCollisions(
+        artifact.name,
+        artifact.entry,
+        descriptor.inputJsonSchema,
+        integrations,
+      );
+      if (collision) return yield* Effect.fail(collision);
       const source = yield* sourceRef(artifact.entry, files.get(artifact.entry) ?? "");
       tools.push({
         name: artifact.name,
         sourcePath: artifact.entry,
         source,
-        description: raw.description ?? "",
-        connections,
-        inputSchema: raw.inputJsonSchema,
-        outputSchema: raw.outputJsonSchema,
-        annotations: raw.annotations,
+        description: descriptor.description ?? "",
+        integrations,
+        inputSchema: descriptor.inputJsonSchema,
+        outputSchema: descriptor.outputJsonSchema,
+        annotations: descriptor.annotations,
       });
     }
 

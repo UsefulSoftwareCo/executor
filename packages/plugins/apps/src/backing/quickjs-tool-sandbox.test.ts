@@ -3,8 +3,8 @@ import { Effect } from "effect";
 
 import { bundleEntry } from "../pipeline/bundle";
 import { makeQuickjsToolSandbox } from "./quickjs-tool-sandbox";
-import { ISSUES_SYNC_TS, SEARCH_ALL_MAIL_TS } from "../testing/daily-brief";
-import type { HandleBridge } from "../seams/tool-sandbox";
+import { ISSUES_SYNC_TS } from "../testing/daily-brief";
+import { InputValidationError, type HandleBridge } from "../seams/tool-sandbox";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -17,30 +17,18 @@ describe("QuickJS ToolSandbox", () => {
     const result = await run(sandbox.collect(code));
     const descriptor = result.artifacts.default.descriptor as {
       kind: string;
-      connections: Record<string, { decl: string; integration: string }>;
+      integrations: Record<string, { integration: string }>;
       inputJsonSchema: { type: string; properties: Record<string, unknown> };
       hasHandler: boolean;
     };
     expect(descriptor.kind).toBe("tool");
-    expect(descriptor.connections.github).toEqual(
-      expect.objectContaining({ decl: "single", integration: "github" }),
+    expect(descriptor.integrations.github).toEqual(
+      expect.objectContaining({ integration: "github" }),
     );
     expect(descriptor.hasHandler).toBe(true);
     expect(descriptor.inputJsonSchema.type).toBe("object");
     expect(descriptor.inputJsonSchema.properties).toHaveProperty("repos");
     expect(descriptor.inputJsonSchema.properties).toHaveProperty("since");
-  });
-
-  it("collects a fan-out (connections) declaration", async () => {
-    const files = new Map([["tools/search-all-mail.ts", SEARCH_ALL_MAIL_TS]]);
-    const { code } = await run(bundleEntry({ files, entry: "tools/search-all-mail.ts" }));
-    const result = await run(sandbox.collect(code));
-    const descriptor = result.artifacts.default.descriptor as {
-      connections: Record<string, { decl: string; integration: string }>;
-    };
-    expect(descriptor.connections.inboxes).toEqual(
-      expect.objectContaining({ decl: "array", integration: "gmail" }),
-    );
   });
 
   it("invokes a tool, routing injected-client + db calls through the bridge", async () => {
@@ -92,6 +80,54 @@ describe("QuickJS ToolSandbox", () => {
     expect(calls.some((c) => c.root === "github")).toBe(true);
   });
 
+  it("surfaces Standard Schema validation issues before the handler runs", async () => {
+    const source = `import { defineTool } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "validates",
+  input: z.object({ q: z.string() }),
+  async handler(){ return { ok: true }; },
+});`;
+    const files = new Map([["tools/validate.ts", source]]);
+    const { code } = await run(bundleEntry({ files, entry: "tools/validate.ts" }));
+    const bridge: HandleBridge = { call: () => Effect.succeed(null) };
+
+    const exit = await Effect.runPromiseExit(
+      sandbox.invoke(
+        code,
+        { artifact: "validate", kind: "tool", input: { q: 123 }, roots: {} },
+        bridge,
+      ),
+    );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag !== "Failure") throw new Error("expected validation failure");
+    expect(JSON.stringify(exit.cause)).toContain("InputValidationError");
+    expect(JSON.stringify(exit.cause)).toContain("q");
+  });
+
+  it("invokes raw JSON Schema tools without sandbox Standard Schema validation", async () => {
+    const source = `import { defineTool } from "executor:app";
+export default defineTool({
+  description: "raw",
+  input: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
+  async handler(input){ return { q: input.q }; },
+});`;
+    const files = new Map([["tools/raw.ts", source]]);
+    const { code } = await run(bundleEntry({ files, entry: "tools/raw.ts" }));
+    const bridge: HandleBridge = { call: () => Effect.succeed(null) };
+
+    const result = await run(
+      sandbox.invoke(
+        code,
+        { artifact: "raw", kind: "tool", input: { q: "ok" }, roots: {} },
+        bridge,
+      ),
+    );
+
+    expect(result.output).toEqual({ q: "ok" });
+  });
+
   it("rejects a non-deterministic descriptor (Math.random at describe time)", async () => {
     const nondeterministic = `import { defineTool } from "executor:app";
 import { z } from "zod";
@@ -121,5 +157,22 @@ export default defineTool({
       sandbox.invoke(code, { artifact: "net", kind: "tool", input: {}, roots: {} }, bridge),
     );
     expect(exit._tag).toBe("Failure");
+  });
+
+  it("returns typed InputValidationError from promise rejection", async () => {
+    const source = `import { defineTool } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "typed",
+  input: z.object({ name: z.string() }),
+  async handler(){ return {}; },
+});`;
+    const files = new Map([["tools/typed.ts", source]]);
+    const { code } = await run(bundleEntry({ files, entry: "tools/typed.ts" }));
+    const bridge: HandleBridge = { call: () => Effect.succeed(null) };
+
+    await expect(
+      run(sandbox.invoke(code, { artifact: "typed", kind: "tool", input: {}, roots: {} }, bridge)),
+    ).rejects.toBeInstanceOf(InputValidationError);
   });
 });

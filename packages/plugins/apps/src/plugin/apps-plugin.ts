@@ -16,7 +16,8 @@ import {
 
 import type { AppsRuntime } from "./runtime";
 import { makeAppsStore } from "./store";
-import type { Bindings, ClientResolver } from "./bindings";
+import type { ClientResolver, ConnectionCandidate } from "./bindings";
+import type { IntegrationDecl, ToolDescriptor } from "../pipeline/descriptor";
 
 export const APPS_INTEGRATION_SLUG = "apps";
 export const APPS_PLUGIN_ID = "apps";
@@ -25,11 +26,6 @@ const DEFAULT_CATALOG_SCOPE = "default";
 
 export interface AppsPluginOptions {
   readonly runtime: AppsRuntime;
-  readonly resolveBindings?: (input: {
-    readonly scope: string;
-    readonly tool: string;
-    readonly declared: Readonly<Record<string, { kind: string; integration?: string }>>;
-  }) => Bindings;
   readonly makeResolver?: (input: {
     readonly ctx: unknown;
     readonly scope: string;
@@ -37,30 +33,59 @@ export interface AppsPluginOptions {
   }) => ClientResolver;
 }
 
-const defaultBindings = (
-  declared: Readonly<Record<string, { kind: string; integration?: string }>>,
-): Bindings => {
-  const out: Record<string, Bindings[string]> = {};
-  for (const [role, decl] of Object.entries(declared)) {
-    if (decl.kind === "array") {
-      out[role] = { kind: "array", connections: [decl.integration ?? role] };
-    } else if (decl.kind !== "catalog") {
-      out[role] = { kind: "single", connection: decl.integration ?? role };
-    }
-  }
-  return out;
-};
-
 interface AppsStoreShape {
   readonly runtime: AppsRuntime;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const unique = (values: readonly string[]): readonly string[] => [...new Set(values)];
+
+const projectInputSchema = (
+  schema: unknown,
+  integrations: Readonly<Record<string, IntegrationDecl>>,
+  byRole: Readonly<Record<string, readonly ConnectionCandidate[]>>,
+): unknown => {
+  const base: Record<string, unknown> = isRecord(schema) ? { ...schema } : { type: "object" };
+  const properties = isRecord(base.properties) ? { ...base.properties } : {};
+  const required = new Set(
+    Array.isArray(base.required)
+      ? base.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+
+  for (const [role, decl] of Object.entries(integrations)) {
+    const addresses = unique((byRole[role] ?? []).map((c) => c.address));
+    const roleSchema: Record<string, unknown> = {
+      type: "string",
+      enum: addresses,
+      description: `Connection to use for ${role} (${decl.integration})`,
+    };
+    if (addresses.length === 1) {
+      roleSchema.default = addresses[0];
+      required.delete(role);
+    } else {
+      required.add(role);
+    }
+    properties[role] = roleSchema;
+  }
+
+  const projected: Record<string, unknown> = {
+    ...base,
+    type: typeof base.type === "string" ? base.type : "object",
+    properties,
+  };
+  if (required.size > 0) projected.required = [...required];
+  else delete projected.required;
+  return projected;
+};
 
 export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   if (!options?.runtime) {
     throw new Error("appsPlugin requires a runtime");
   }
   const runtime = options.runtime;
-  const resolveBindings = options.resolveBindings;
   const makeResolver = options.makeResolver;
 
   const scopeFor = (connectionName: string): Effect.Effect<string> =>
@@ -158,15 +183,16 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const scope = yield* scopeFor(String(connection.name));
         const descriptor = yield* runtime.getDescriptor(scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
-        const tools: ToolDef[] = descriptor.tools.map((t) => ({
-          name: ToolName.make(t.name),
-          description: t.description,
-          inputSchema: t.inputSchema,
-          outputSchema: t.outputSchema,
-          annotations: {
-            requiresApproval: t.annotations?.destructive === true,
-          },
-        }));
+        const tools: ToolDef[] = [];
+        for (const t of descriptor.tools) {
+          const byRole: Record<string, readonly ConnectionCandidate[]> = {};
+          for (const [role, decl] of Object.entries(t.integrations)) {
+            byRole[role] = yield* runtime.deps.resolver
+              .listConnections({ integration: decl.integration })
+              .pipe(Effect.orElseSucceed(() => []));
+          }
+          tools.push(projectTool(t, byRole));
+        }
         return { tools } satisfies ResolveToolsResult;
       }),
 
@@ -187,15 +213,11 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
             new Error(`apps tool "${toolRow.name}" is not published in scope "${scope}"`),
           );
         }
-        const declared = toolDesc.connections;
-        const bindings = resolveBindings
-          ? resolveBindings({ scope, tool: toolRow.name, declared })
-          : defaultBindings(declared);
         const resolver = makeResolver
           ? makeResolver({ ctx, scope, tool: toolRow.name })
           : undefined;
         return yield* runtime
-          .invokeTool({ scope, tool: toolRow.name, args, bindings, resolver })
+          .invokeTool({ scope, tool: toolRow.name, args, resolver })
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -208,6 +230,19 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
           );
       }),
   };
+});
+
+const projectTool = (
+  descriptor: ToolDescriptor,
+  byRole: Readonly<Record<string, readonly ConnectionCandidate[]>>,
+): ToolDef => ({
+  name: ToolName.make(descriptor.name),
+  description: descriptor.description,
+  inputSchema: projectInputSchema(descriptor.inputSchema, descriptor.integrations, byRole),
+  outputSchema: descriptor.outputSchema,
+  annotations: {
+    requiresApproval: descriptor.annotations?.destructive === true,
+  },
 });
 
 export const APPS_CONNECTION_PREFIX = APPS_INTEGRATION_SLUG;

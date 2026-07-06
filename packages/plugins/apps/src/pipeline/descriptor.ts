@@ -7,7 +7,7 @@
 
 /** Descriptor schema version. Bumped on any breaking shape change. A reader
  *  refuses a descriptor from a version it does not understand. */
-export const DESCRIPTOR_VERSION = 1 as const;
+export const DESCRIPTOR_VERSION = 2 as const;
 
 /** Where an entry came from: path + content hash. Lets a projection point back
  *  at the exact source bytes without re-reading the snapshot, and makes the
@@ -27,10 +27,9 @@ export interface ToolchainRef {
   readonly target: string;
 }
 
-export type ConnectionDecl =
-  | { readonly kind: "single"; readonly integration: string; readonly description?: string }
-  | { readonly kind: "array"; readonly integration: string; readonly description?: string }
-  | { readonly kind: "catalog" };
+export interface IntegrationDecl {
+  readonly integration: string;
+}
 
 export interface ToolDescriptor {
   /** Path identity, e.g. `issues-sync` (from `tools/issues-sync.ts`). */
@@ -39,8 +38,8 @@ export interface ToolDescriptor {
   /** Path + source-hash provenance for this entry. */
   readonly source: ModuleSourceRef;
   readonly description: string;
-  /** role -> connection declaration, collected from `connections:`. */
-  readonly connections: Readonly<Record<string, ConnectionDecl>>;
+  /** role -> integration declaration, collected from `integrations:`. */
+  readonly integrations: Readonly<Record<string, IntegrationDecl>>;
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
   readonly annotations?: {
@@ -57,8 +56,8 @@ export interface DeferredDescriptor {
   readonly description?: string;
 }
 
-export const FLOW_ENTRIES_KEY = `work${"flows"}` as `${"work"}flows`;
-export const GUIDE_ENTRIES_KEY = `sk${"ills"}` as `${"sk"}ills`;
+export const FLOW_ENTRIES_KEY = "workflows";
+export const GUIDE_ENTRIES_KEY = "skills";
 
 export interface AppDescriptor {
   readonly version: typeof DESCRIPTOR_VERSION;

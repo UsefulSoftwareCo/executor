@@ -18,8 +18,7 @@ import { Data } from "effect";
 //     pre-bound clients whose method calls cross OUT through a serializable
 //     bridge (`HandleBridge.call`). EVERYTHING crossing the boundary is
 //     serializable — the cloud version of this seam is an RPC, so the interface
-//     forbids passing functions or runtime objects across. Fan-out arrays
-//     (`connections("gmail")` -> client[]) are modeled as indexed handle roots.
+//     forbids passing functions or runtime objects across.
 //
 // The self-hosted backing is QuickJS (packages/kernel/runtime-quickjs), whose
 // `SandboxToolInvoker.invoke({path, args})` already matches the bridge shape.
@@ -31,6 +30,21 @@ export class ToolSandboxError extends Data.TaggedError("ToolSandboxError")<{
   readonly message: string;
   readonly kind: "collect" | "invoke" | "timeout" | "network" | "nondeterministic" | "bundle";
   readonly cause?: unknown;
+}> {}
+
+export interface ValidationIssue {
+  readonly message: string;
+  readonly path?: readonly unknown[];
+}
+
+export class InputValidationError extends Data.TaggedError("InputValidationError")<{
+  readonly message: string;
+  readonly issues: readonly ValidationIssue[];
+}> {}
+
+export class OutputValidationError extends Data.TaggedError("OutputValidationError")<{
+  readonly message: string;
+  readonly issues: readonly ValidationIssue[];
 }> {}
 
 /**
@@ -48,13 +62,12 @@ export interface HandleBridge {
   }) => Effect.Effect<unknown, ToolSandboxError>;
 }
 
-/** Which handle roots to inject and, for fan-out roots, how many elements. A
- *  single connection role is `{ kind: "single" }`; a fan-out is
- *  `{ kind: "array", count }`; `db` is a single. Everything the handler can see
- *  is enumerated here — undeclared roots are simply absent. */
-export type HandleRootSpec =
-  | { readonly kind: "single" }
-  | { readonly kind: "array"; readonly count: number };
+/** Which handle roots to inject. Each declared integration role and `db` are
+ *  single roots. Everything the handler can see is enumerated here —
+ *  undeclared roots are simply absent. */
+export interface HandleRootSpec {
+  readonly kind: "single";
+}
 
 export interface InvokeRequest {
   /** The artifact whose handler to run (path identity, e.g. `issues-sync`). */
@@ -86,13 +99,21 @@ export interface CollectResult {
   readonly artifacts: Readonly<Record<string, CollectedArtifact>>;
 }
 
+export interface CollectRequest {
+  /** The path-derived artifact identity, used only for diagnostics. */
+  readonly artifact?: string;
+}
+
 export interface ToolSandbox {
   /**
    * Import the bundle with nothing bound and gather the `defineTool` descriptor.
    * Runs the collection twice internally and byte-compares; a mismatch fails
    * with `kind: "nondeterministic"`. This is the determinism gate.
    */
-  readonly collect: (bundle: string) => Effect.Effect<CollectResult, ToolSandboxError>;
+  readonly collect: (
+    bundle: string,
+    request?: CollectRequest,
+  ) => Effect.Effect<CollectResult, ToolSandboxError>;
   /**
    * Run one artifact's handler with injected handles bridged through `bridge`.
    * Network is denied; a per-call timeout kills a runaway handler.
@@ -101,5 +122,5 @@ export interface ToolSandbox {
     bundle: string,
     request: InvokeRequest,
     bridge: HandleBridge,
-  ) => Effect.Effect<InvokeResult, ToolSandboxError>;
+  ) => Effect.Effect<InvokeResult, ToolSandboxError | InputValidationError | OutputValidationError>;
 }
