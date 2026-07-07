@@ -79,7 +79,7 @@ const runtimeChecks: readonly RuntimeCheck[] = [
     },
     // These identifiers are introduced by patches/agents@0.17.3.patch and do
     // not exist in the upstream 0.17.3 dist.
-    sentinels: ["markStreamUndelivered", "replayUndeliveredResponses"],
+    sentinels: ["markStreamUndelivered", "replayUndeliveredResponses", "mcpBridgeIsUnknownFrame"],
   },
 ];
 

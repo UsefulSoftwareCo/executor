@@ -19,10 +19,43 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a62be2e41 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..e9cf6bd3cdec39b4e032f65b3deffd925f5d07dd 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
-@@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
+@@ -7,6 +7,32 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
+ import { ElicitRequestSchema, InitializeRequestSchema, JSONRPCMessageSchema, isInitializeRequest, isJSONRPCErrorResponse, isJSONRPCNotification, isJSONRPCRequest, isJSONRPCResultResponse } from "@modelcontextprotocol/sdk/types.js";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
++//#region executor-patch: worker<->DO bridge unknown-frame tolerance
++/**
++* The worker<->DO websocket bridge carries a small, versioned frame vocabulary
++* (`cf_mcp_agent_event`, `cf_mcp_delivery_ack`, and the replay-complete frame).
++* Under gradual (staged) deployments the worker and DO can run DIFFERENT
++* versions for the duration of a rollout, so a newer peer may emit a frame
++* `type` the older peer does not recognize. Such a frame MUST be ignored
++* without breaking the stream (never throw, never close, never forward garbage)
++* and logged once, structured, so version skew is observable in Axiom.
++*
++* Returns true when the caller should treat the frame as consumed (unknown,
++* dropped-with-warning); false when the frame is a recognized bridge type the
++* caller must go on to handle.
++*/
++function mcpBridgeIsUnknownFrame(message, direction) {
++	// Only frames that positively carry a bridge `type` are candidates. Frames
++	// with no `type` (e.g. bare JSON-RPC on the DO ingress) are NOT bridge
++	// frames and must fall through to the caller's normal handling untouched.
++	if (message == null || typeof message !== "object") return false;
++	const frameType = message.type;
++	if (typeof frameType !== "string") return false;
++	if (frameType === "cf_mcp_agent_event" || frameType === "cf_mcp_delivery_ack") return false;
++	console.warn(JSON.stringify({ event: "mcp_bridge_unknown_frame", frameType, direction }));
++	return true;
++}
++//#endregion
+ //#region src/mcp/sse-keepalive.ts
+ /**
+ * Shared SSE keepalive utility for MCP transports.
+@@ -28,13 +54,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
  const KEEPALIVE_INTERVAL_MS = 25e3;
  /** SSE comment frame the parser drops before any event dispatch. */
  const KEEPALIVE_FRAME = ": keepalive\n\n";
@@ -42,7 +75,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	}, KEEPALIVE_INTERVAL_MS);
  	return handle;
  }
-@@ -180,10 +184,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -180,10 +210,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  					});
  					return new Response(body, { status: 404 });
  				}
@@ -62,7 +95,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  				request.headers.forEach((value, key) => {
  					existingHeaders[key] = value;
  				});
-@@ -206,45 +215,99 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -206,45 +241,100 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  						jsonrpc: "2.0"
  					});
  					return new Response(body, { status: 500 });
@@ -137,6 +170,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
 -							}
 +								const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
 +								const message = JSON.parse(data);
++								if (mcpBridgeIsUnknownFrame(message, "do->worker")) return;
 +								if (message.type !== "cf_mcp_agent_event") return;
 +								const writePromise = __forwardSse(encoder.encode(message.event));
 +								if (message.close) {
@@ -188,7 +222,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  					}
  					onClose().catch(console.error);
  				});
-@@ -279,10 +342,16 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -279,10 +369,16 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  					id: null,
  					jsonrpc: "2.0"
  				}), { status: 400 });
@@ -209,7 +243,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  					props: ctx.props,
  					jurisdiction: options.jurisdiction
  				});
-@@ -306,27 +375,116 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -306,27 +402,117 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  				if (!ws) {
  					await writer.close();
  					return new Response("Failed to establish WS to DO", { status: 500 });
@@ -291,6 +325,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
 -						}
 +								const data = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
 +								const message = JSON.parse(data);
++								if (mcpBridgeIsUnknownFrame(message, "do->worker")) return;
 +								if (message.type !== "cf_mcp_agent_event") return;
 +								const writePromise = __forwardSse(encoder.encode(message.event));
 +								if (message.close) {
@@ -341,7 +376,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  				return new Response(readable, {
  					headers: {
  						"Cache-Control": "no-cache",
-@@ -389,10 +547,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -389,10 +575,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  		const url = new URL(request.url);
  		if (request.method === "GET" && basePattern.test(url)) {
  			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
@@ -362,7 +397,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  			endpointUrl.pathname = encodeURI(`${basePath}/message`);
  			endpointUrl.searchParams.set("sessionId", sessionId);
  			const endpointMessage = `event: endpoint\ndata: ${endpointUrl.pathname + endpointUrl.search + endpointUrl.hash}\n\n`;
-@@ -414,35 +578,94 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -414,35 +606,94 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  				console.error("Failed to establish WebSocket connection");
  				await writer.close();
  				return new Response("Failed to establish WebSocket connection", { status: 500 });
@@ -475,7 +510,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -634,7 +857,23 @@ var StreamableHTTPServerTransport = class {
+@@ -634,7 +885,23 @@ var StreamableHTTPServerTransport = class {
  				}
  				this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
  				connection.setState(resumeState);
@@ -500,7 +535,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  				return;
  			}
  		}
-@@ -644,6 +883,26 @@ var StreamableHTTPServerTransport = class {
+@@ -644,6 +911,26 @@ var StreamableHTTPServerTransport = class {
  			_standaloneSse: true
  		};
  		connection.setState(standaloneState);
@@ -527,7 +562,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	}
  	/**
  	* Close any connection (other than `selfId`) currently bound to
-@@ -664,12 +923,14 @@ var StreamableHTTPServerTransport = class {
+@@ -664,12 +951,14 @@ var StreamableHTTPServerTransport = class {
  	* Only used when resumability is enabled
  	*/
  	async replayEvents(lastEventId) {
@@ -543,7 +578,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  					this.writeSSEEvent(connection, message, eventId);
  				} catch (error) {
  					this.onerror?.(error);
-@@ -678,6 +939,33 @@ var StreamableHTTPServerTransport = class {
+@@ -678,6 +967,33 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -577,7 +612,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	}
  	/**
  	* Writes an event to the SSE stream with proper formatting
-@@ -689,6 +977,8 @@ var StreamableHTTPServerTransport = class {
+@@ -689,6 +1005,8 @@ var StreamableHTTPServerTransport = class {
  		return connection.send(JSON.stringify({
  			type: "cf_mcp_agent_event",
  			event: eventData,
@@ -586,7 +621,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  			close
  		}));
  	}
-@@ -777,9 +1067,11 @@ var StreamableHTTPServerTransport = class {
+@@ -777,9 +1095,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -600,7 +635,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1153,10 @@ var StreamableHTTPServerTransport = class {
+@@ -861,12 +1181,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -617,7 +652,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -899,6 +1189,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -899,6 +1217,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  		const eventId = `${streamId}:${seq.toString(16).padStart(DurableObjectEventStore.SEQ_PAD, "0")}`;
  		const eventKey = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${eventId}`;
  		await this.storage.put(eventKey, message);
@@ -625,7 +660,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1206,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1234,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -686,7 +721,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1314,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1342,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -696,7 +731,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1725,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1753,52 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -738,13 +773,18 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
 +				await this.acknowledgeDeliveredStream(parsed.streamId);
 +				return;
 +			}
++			// A frame carrying an unrecognized bridge `type` (worker/DO version
++			// skew during a gradual deploy): drop it with a structured warning
++			// instead of handing it to super.onMessage, which would reject it as
++			// malformed JSON-RPC. Bare JSON-RPC (no `type`) falls through below.
++			if (mcpBridgeIsUnknownFrame(parsed, "worker->do")) return;
 +		} catch {}
 +		return super.onMessage(connection, message);
 +	}
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2082,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2115,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
