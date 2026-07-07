@@ -1,22 +1,25 @@
-// Cloud: a TRANSIENT WorkOS outage during the per-request live-membership check
-// must NOT destroy a live MCP session. This is the churn-risk defect: every
-// /mcp request re-verifies org membership against WorkOS, and a WorkOS
-// 429/5xx/timeout used to be indistinguishable from a genuinely revoked
-// membership — it collapsed to Forbidden, and a Forbidden carrying a session id
-// schedules the session Durable Object for destruction (in-flight executions,
-// paused approvals, undelivered results — all gone). For a shared-API-key org a
-// single WorkOS blip could mass-condemn every session at once.
+// Cloud: how the per-request live-membership check classifies WorkOS failures,
+// pinned in BOTH directions at the real upstream (faults armed on the WorkOS
+// emulator's membership endpoint — the same emulator the product's real WorkOS
+// SDK talks to; no product code or stubs touched):
 //
-// The contract this pins: during the blip the request fails RETRYABLY (503),
-// the session is left intact, and once WorkOS recovers the SAME session id keeps
-// serving requests. We inject the outage at the real upstream by arming a fault
-// on the WorkOS emulator's membership endpoint (the same emulator the product's
-// real WorkOS SDK talks to) — no product code or stubs touched.
+// 1. A TRANSIENT WorkOS outage (5xx/timeout) must NOT destroy a live MCP
+//    session. This is the churn-risk defect: a WorkOS blip used to collapse to
+//    Forbidden, and a Forbidden carrying a session id schedules the session
+//    Durable Object for destruction (in-flight executions, paused approvals,
+//    undelivered results — all gone). For a shared-API-key org a single blip
+//    could mass-condemn every session at once. Contract: the blip request fails
+//    RETRYABLY (503 + Retry-After), and once WorkOS recovers the SAME session
+//    id keeps serving requests.
 //
-// Red/green: on the pre-fix code the outage request returns a session-destroying
-// Forbidden, so the post-outage request gets 404 "reconnect" (the session is
-// dead). With the fix the outage request is a 503 and the post-outage request is
-// a clean 200.
+// 2. A DEFINITIVE WorkOS denial (401 — the revoked/invalid API key answer) must
+//    fail CLOSED: Forbidden, session condemned. Retrying cannot help; treating
+//    it as transient would preserve sessions indefinitely for a revoked
+//    customer (the fail-open inversion the adversarial review caught).
+//
+// Red/green for (1): pre-fix, the outage request returns a session-destroying
+// Forbidden and the post-outage request gets 404 "reconnect". With the fix the
+// outage request is a 503 and the post-outage request is a clean 200.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -116,6 +119,20 @@ const MEMBERSHIP_FAULT = {
   times: 8,
 } as const;
 
+// The definitive-denial counterpart: WorkOS ANSWERS the membership lookup with
+// 401 — the shape of a revoked/invalid API key. Not a blip; must fail closed.
+const MEMBERSHIP_DENIAL_FAULT = {
+  match: {
+    method: "GET",
+    pathPattern: "/user_management/organization_memberships*",
+  },
+  response: {
+    status: 401,
+    body: { message: "Could not authorize the request. Maybe your API key is invalid?" },
+  },
+  times: 8,
+} as const;
+
 scenario(
   "MCP sessions · a transient WorkOS outage 503s retryably and leaves the session alive",
   {},
@@ -181,5 +198,59 @@ scenario(
       "the session survived the blip and resumes work once WorkOS recovers",
     ).toBe(200);
     yield* Effect.promise(() => afterOutage.text());
+  }),
+);
+
+scenario(
+  "MCP sessions · a definitive WorkOS denial fails closed and condemns the session",
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+
+    const workos = yield* Effect.promise(() =>
+      connectEmulator({ baseUrl: `http://127.0.0.1:${WORKOS_EMULATOR_PORT}` }),
+    );
+
+    // A healthy session doing real work before the denial.
+    const sessionId = yield* Effect.promise(() => openSession(target.mcpUrl, bearer));
+    const healthy = yield* Effect.promise(() =>
+      mcpPost(target.mcpUrl, { bearer, sessionId, body: toolsList(2) }),
+    );
+    expect(healthy.status, "the session serves requests before the denial").toBe(200);
+    yield* Effect.promise(() => healthy.text());
+
+    yield* Effect.gen(function* () {
+      // WorkOS starts ANSWERING the membership lookup with 401 — the
+      // revoked/invalid API key shape. Deterministic denial, not a blip.
+      yield* Effect.promise(() => workos.faults.arm(MEMBERSHIP_DENIAL_FAULT));
+
+      const denied = yield* Effect.promise(() =>
+        mcpPost(target.mcpUrl, { bearer, sessionId, body: toolsList(3) }),
+      );
+      const deniedBody = (yield* Effect.promise(() => denied.json())) as JsonRpcError;
+      expect(
+        denied.status,
+        "a definitive WorkOS denial fails closed as Forbidden, never a retryable 503",
+      ).toBe(403);
+      expect(deniedBody.error.code, "the denial is a JSON-RPC error envelope").toBe(-32001);
+    }).pipe(Effect.ensuring(Effect.promise(() => workos.faults.clear())));
+
+    // The Forbidden carried the session id, so the session was condemned: the
+    // id must NOT serve requests once WorkOS recovers. If this returned 200 the
+    // fail-closed contract is broken (a revoked customer kept a live session).
+    const afterDenial = yield* Effect.promise(() =>
+      mcpPost(target.mcpUrl, { bearer, sessionId, body: toolsList(4) }),
+    );
+    expect(
+      afterDenial.status,
+      "the condemned session id is dead after a definitive denial (reconnect required)",
+    ).toBe(404);
+    const afterBody = (yield* Effect.promise(() => afterDenial.json())) as JsonRpcError;
+    expect(afterBody.error.message, "the client is told to reconnect").toMatch(
+      /timed out|reconnect|not found/i,
+    );
   }),
 );

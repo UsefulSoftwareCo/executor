@@ -4,6 +4,7 @@ import {
   McpAuthProvider,
   jsonRpcErrorBody,
   defaultMcpResource,
+  UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
   type McpResource,
 } from "@executor-js/host-mcp";
@@ -18,11 +19,6 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { cloudMcpAuth } from "./auth-provider";
 import { McpSessionDOSqlite } from "./session-durable-object";
-
-// Advertised on transient-auth 503s so clients back off before retrying. Short:
-// WorkOS blips are typically sub-second, and the JSON-RPC transport surfaces the
-// non-200 as a retryable error the agent can re-issue.
-const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
 
 const corsPreflightResponse = (): Response =>
   new Response(null, {
@@ -65,11 +61,18 @@ const renderAuthError = (
   // Unavailable: a transient auth-infra failure (JWKS blip OR a WorkOS
   // membership-lookup 429/5xx/timeout). Both are retryable, so advertise a
   // Retry-After so the client (and any polite retry layer) backs off instead of
-  // hammering. Crucially, this path NEVER reaches the session-destroy branch
-  // below — a transient failure must not condemn a live session.
-  const response = jsonRpcResponse(503, -32001, outcome.message);
-  response.headers.set("retry-after", String(UNAVAILABLE_RETRY_AFTER_SECONDS));
-  return response;
+  // hammering (same rendering as the shared envelope's Unavailable branch).
+  // Crucially, this path NEVER reaches the session-destroy branch below — a
+  // transient failure must not condemn a live session.
+  //
+  // Note this 503 shares JSON-RPC code -32001 with the terminated-session 404
+  // ("Session timed out, please reconnect"); that is intentional — -32001 is
+  // the generic auth/session envelope code, and the HTTP STATUS is the
+  // discriminator clients act on: 503 = retry the SAME session id, 404 = the
+  // id is dead, reconnect.
+  return jsonRpcErrorBody(503, -32001, outcome.message, {
+    retryAfterSeconds: UNAVAILABLE_RETRY_AFTER_SECONDS,
+  });
 };
 
 const authenticate = (request: Request) =>

@@ -42,6 +42,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { ApiKeyService } from "../auth/api-keys";
+import { isDefinitiveWorkOSDenial } from "../auth/errors";
 import { CoreSharedServices } from "../auth/workos";
 import {
   bearerChallengeFor,
@@ -67,14 +68,20 @@ const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
-// A transient WorkOS failure (429 / 5xx / timeout) during the live membership
-// lookup must NOT masquerade as "org revoked". The two are indistinguishable in
-// outcome value alone (`authorize` yields `null` for a genuinely-absent org),
-// but they differ in the Effect CHANNEL: a genuine absence SUCCEEDS with `null`,
-// while a WorkOS error FAILS. We branch on that below so a WorkOS blip becomes a
-// retryable 503 (session preserved) rather than a Forbidden (session condemned).
-// This mirrors the JWKS/api-key `reason: "system"` classification already used
-// on the verify path.
+// A transient WorkOS failure (429 / 5xx / timeout / network) during the live
+// membership lookup must NOT masquerade as "org revoked" — but the failure
+// channel alone is not enough to tell them apart: WorkOS also answers with
+// DEFINITIVE 4xx denials (401 revoked/invalid API key, 403, 404 deleted org)
+// that the SDK throws as typed exceptions. So the classification is:
+//   - lookup SUCCEEDS with `null`            -> genuine absence -> Forbidden
+//   - lookup FAILS with WorkOS 401/403/404   -> definitive denial -> Forbidden
+//       (fail CLOSED: WorkOS answered and said no; retrying cannot help)
+//   - lookup FAILS any other way (429/5xx/timeout/network/no status)
+//       -> transient -> retryable 503, session preserved
+// The status rides on `WorkOSError.status` (threaded from the SDK exception at
+// the service boundary in auth/workos.ts); `isDefinitiveWorkOSDenial` is the
+// single predicate. This mirrors the JWKS/api-key `reason: "system"`
+// classification already used on the verify path.
 const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
   "Organization authorization temporarily unavailable - please retry";
 
@@ -172,9 +179,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         }
 
         // Capture success-vs-failure explicitly instead of collapsing both into
-        // `null`. A FAILURE here is a transient WorkOS error (429/5xx/timeout) —
-        // NOT evidence the org is gone — so it must become a retryable 503 with
-        // the session left intact, never a Forbidden that condemns the DO.
+        // `null`, then classify the failure (see the classification table on
+        // ORGANIZATION_AUTHORIZE_UNAVAILABLE above): a definitive WorkOS 4xx
+        // denial fails CLOSED as Forbidden, anything else is a transient error
+        // that must become a retryable 503 with the session left intact.
         const authorizeResult = yield* orgAuth
           .authorize(token.accountId, organizationSelector)
           .pipe(
@@ -189,6 +197,19 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         yield* annotateMcpRequest(request, { token, parseBody });
 
         if (Result.isFailure(authorizeResult)) {
+          if (isDefinitiveWorkOSDenial(authorizeResult.failure)) {
+            // WorkOS ANSWERED and said no (revoked key, forbidden, deleted
+            // org). Deterministic denial — same as a successful lookup with no
+            // membership, so the Forbidden/condemn path applies.
+            yield* Effect.annotateCurrentSpan({
+              "mcp.auth.outcome": "denied",
+              "mcp.auth.organization_authorize_error": String(authorizeResult.failure).slice(
+                0,
+                500,
+              ),
+            });
+            return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+          }
           yield* Effect.annotateCurrentSpan({
             "mcp.auth.outcome": "system_error",
             "mcp.auth.system_error.reason": "organization_authorize",

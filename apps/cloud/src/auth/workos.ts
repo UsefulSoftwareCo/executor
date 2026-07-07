@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
 import { parseCookie } from "./cookies";
-import { WorkOSError, tryPromiseService, withServiceLogging } from "./errors";
+import { tryPromiseService, withServiceLogging, workosErrorFromFailure } from "./errors";
 
 const COOKIE_NAME = "wos-session";
 const INVALID_COOKIE_PASSWORD_MESSAGE = "WORKOS_COOKIE_PASSWORD must be at least 32 characters";
@@ -147,10 +147,14 @@ const make = Effect.gen(function* () {
 
   const workos = new WorkOS({ apiKey, clientId, ...workosApiUrlOptions(env.WORKOS_API_URL) });
 
+  // The public `WorkOSError` carries the upstream HTTP status when the SDK
+  // exception had one (all its typed exceptions do), so consumers can tell a
+  // definitive WorkOS denial (401/403/404 — fail closed) from a transient
+  // failure (429/5xx/network — retryable).
   const use = <A>(fn: (wos: WorkOS) => Promise<A>) =>
     withServiceLogging(
       "workos",
-      () => new WorkOSError(),
+      workosErrorFromFailure,
       tryPromiseService(() => fn(workos)),
     );
 

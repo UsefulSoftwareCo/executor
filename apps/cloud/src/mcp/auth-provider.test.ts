@@ -1,13 +1,22 @@
 // ---------------------------------------------------------------------------
 // The cloud MCP auth provider's organization-authorization branch.
 //
-// The load-bearing property under test: a TRANSIENT WorkOS failure during the
-// live membership lookup must resolve to a retryable `Unavailable` (503), NOT a
-// `Forbidden`. Only `Forbidden` reaches the session-destroy path in
-// agent-handler, so misclassifying a WorkOS blip as Forbidden permanently
-// condemns a live session DO. A lookup that SUCCEEDS with no membership is a
-// genuine `Forbidden` (destroy allowed); a lookup that succeeds with an org id
-// is `Authenticated`.
+// The load-bearing property under test is the failure CLASSIFICATION, in both
+// directions:
+//
+//   - a TRANSIENT WorkOS failure (429/5xx/timeout/network — retrying can help)
+//     must resolve to a retryable `Unavailable` (503), NOT a `Forbidden`. Only
+//     `Forbidden` reaches the session-destroy path in agent-handler, so
+//     misclassifying a blip as Forbidden permanently condemns a live session DO.
+//   - a DEFINITIVE WorkOS denial (401 revoked/invalid API key, 403, 404 deleted
+//     org — WorkOS answered and said no) must fail CLOSED as `Forbidden`, NOT
+//     be misread as transient. Misclassifying it as Unavailable would preserve
+//     sessions indefinitely for a revoked customer (fail-open inversion).
+//
+// The definitive/transient split rides on `WorkOSError.status`, threaded from
+// the WorkOS SDK exception at the service boundary (auth/workos.ts). A lookup
+// that SUCCEEDS with no membership is a genuine `Forbidden` (destroy allowed);
+// a lookup that succeeds with an org id is `Authenticated`.
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
@@ -15,6 +24,7 @@ import { Data, Effect, Layer, Predicate } from "effect";
 
 import { McpAuthProvider } from "@executor-js/host-mcp";
 
+import { WorkOSError } from "../auth/errors";
 import { cloudMcpAuthProviderLayer } from "./auth-provider";
 import {
   MCP_ORGANIZATION_HEADER,
@@ -49,16 +59,11 @@ const stubAuthMissingBearer = Layer.succeed(McpAuth)({
   verifyBearer: () => Effect.succeed(mcpUnauthorized("missing_bearer")),
 });
 
-// Mirrors the real failure channel: `authorizeOrganization`'s WorkOS call maps
-// upstream 429/5xx/timeout to a tagged `WorkOSError` before it reaches here.
-class StubWorkOSError extends Data.TaggedError("StubWorkOSError")<{
-  readonly detail: string;
-}> {}
-
-// `authorize` FAILS (transient WorkOS error) — the blip we must classify as 503.
-const stubOrgAuthTransientFailure = Layer.succeed(McpOrganizationAuth)({
-  authorize: () => Effect.fail(new StubWorkOSError({ detail: "workos 503: upstream timeout" })),
-});
+// `authorize` failing with the REAL `WorkOSError` the service boundary mints:
+// with `status` when WorkOS answered (its SDK exceptions all carry one), without
+// when the failure never reached WorkOS (network error / timeout).
+const stubOrgAuthFailing = (error: unknown): Layer.Layer<McpOrganizationAuth> =>
+  Layer.succeed(McpOrganizationAuth)({ authorize: () => Effect.fail(error) });
 
 // `authorize` SUCCEEDS with `null` — the caller genuinely holds no membership.
 const stubOrgAuthNoMembership = Layer.succeed(McpOrganizationAuth)({
@@ -69,6 +74,12 @@ const stubOrgAuthNoMembership = Layer.succeed(McpOrganizationAuth)({
 const stubOrgAuthActive = Layer.succeed(McpOrganizationAuth)({
   authorize: () => Effect.succeed(ORG_ID),
 });
+
+// A failure that is not a WorkOSError at all (e.g. the per-request DB layer
+// failing before the WorkOS call) — no status to read, must stay transient.
+class StubInfraError extends Data.TaggedError("StubInfraError")<{
+  readonly detail: string;
+}> {}
 
 const authenticateWith = (
   orgAuth: Layer.Layer<McpOrganizationAuth>,
@@ -82,10 +93,58 @@ const authenticateWith = (
   );
 
 describe("cloud MCP org-authorization classification", () => {
-  it.effect("transient WorkOS failure -> Unavailable (retryable 503, session preserved)", () =>
+  it.effect("WorkOS 5xx -> Unavailable (retryable 503, session preserved)", () =>
     Effect.gen(function* () {
-      const outcome = yield* authenticateWith(stubOrgAuthTransientFailure);
+      const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({ status: 503 })));
       expect(Predicate.isTagged(outcome, "Unavailable")).toBe(true);
+    }),
+  );
+
+  it.effect("WorkOS 429 rate limit -> Unavailable (retryable, session preserved)", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({ status: 429 })));
+      expect(Predicate.isTagged(outcome, "Unavailable")).toBe(true);
+    }),
+  );
+
+  it.effect("WorkOS unreachable (no HTTP status) -> Unavailable (session preserved)", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({})));
+      expect(Predicate.isTagged(outcome, "Unavailable")).toBe(true);
+    }),
+  );
+
+  it.effect("non-WorkOS infra failure -> Unavailable (no status to read, stay retryable)", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(
+        stubOrgAuthFailing(new StubInfraError({ detail: "db layer failed" })),
+      );
+      expect(Predicate.isTagged(outcome, "Unavailable")).toBe(true);
+    }),
+  );
+
+  it.effect(
+    "WorkOS 401 (revoked/invalid API key) -> Forbidden (fail closed, destroy allowed)",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* authenticateWith(
+          stubOrgAuthFailing(new WorkOSError({ status: 401 })),
+        );
+        expect(Predicate.isTagged(outcome, "Forbidden")).toBe(true);
+      }),
+  );
+
+  it.effect("WorkOS 403 -> Forbidden (fail closed, destroy allowed)", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({ status: 403 })));
+      expect(Predicate.isTagged(outcome, "Forbidden")).toBe(true);
+    }),
+  );
+
+  it.effect("WorkOS 404 (deleted org/user) -> Forbidden (fail closed, destroy allowed)", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({ status: 404 })));
+      expect(Predicate.isTagged(outcome, "Forbidden")).toBe(true);
     }),
   );
 

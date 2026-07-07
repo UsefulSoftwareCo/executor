@@ -87,10 +87,15 @@ export const jsonRpcErrorBody = (
   status: number,
   code: number,
   message: string,
-  opts?: { readonly cors?: boolean; readonly challenge?: string },
+  opts?: {
+    readonly cors?: boolean;
+    readonly challenge?: string;
+    readonly retryAfterSeconds?: number;
+  },
 ): Response => {
   const cors = opts?.cors ?? true;
   const challenge = opts?.challenge;
+  const retryAfterSeconds = opts?.retryAfterSeconds;
   return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
     status,
     headers: {
@@ -102,9 +107,17 @@ export const jsonRpcErrorBody = (
             "access-control-expose-headers": "WWW-Authenticate",
           }
         : {}),
+      ...(retryAfterSeconds === undefined ? {} : { "retry-after": String(retryAfterSeconds) }),
     },
   });
 };
+
+/**
+ * Advertised on transient-auth 503s (`Unavailable` outcomes) so clients back
+ * off before retrying. Short: upstream auth-infra blips (JWKS fetch, IdP
+ * membership lookups) are typically sub-second.
+ */
+export const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
 
 /** The envelope's own CORS-on JSON-RPC error `Response`, optionally carrying a challenge. */
 const jsonRpcResponse = (
@@ -147,7 +160,12 @@ const discoveryRoute = (handler: (request: Request) => Effect.Effect<Response>) 
  *   Unauthorized -> 401 + RFC 9728 challenge (outcome's own, else a default
  *                   built from the provider's `resourceMetadataUrl`)
  *   Forbidden    -> 403 JSON-RPC (default code -32001)
- *   Unavailable  -> 503 JSON-RPC -32001
+ *   Unavailable  -> 503 JSON-RPC -32001 + Retry-After
+ *
+ * The transient 503 and the session-lifecycle 404 both use JSON-RPC code
+ * -32001 (the shared "auth/session envelope error" code); clients discriminate
+ * on the HTTP status, which is the contract — 503 means retry the SAME
+ * session, 404 means the session id is dead and the client must reconnect.
  */
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
@@ -164,7 +182,11 @@ const renderAuthError = (
       ),
     ),
     Match.tag("Forbidden", (f) => jsonRpcResponse(403, f.code ?? -32001, f.message)),
-    Match.tag("Unavailable", (u) => jsonRpcResponse(503, -32001, u.message)),
+    Match.tag("Unavailable", (u) =>
+      jsonRpcErrorBody(503, -32001, u.message, {
+        retryAfterSeconds: UNAVAILABLE_RETRY_AFTER_SECONDS,
+      }),
+    ),
     Match.exhaustive,
   );
 
