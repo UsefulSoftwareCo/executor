@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import {
   CodeCompilationError,
   recoverExecutionBody,
+  SandboxHostTimeoutError,
   SandboxRuntimeError,
   stripTypeScript,
   type CodeExecutor,
@@ -44,6 +45,20 @@ export type DynamicWorkerExecutorOptions = {
    * Timeout in milliseconds for code execution. Defaults to 5 minutes.
    */
   readonly timeoutMs?: number;
+  /**
+   * Extra wall-clock the host waits beyond `timeoutMs` before declaring the
+   * isolate wedged and delivering a `SandboxHostTimeoutError`. Defaults to 30s.
+   * The in-sandbox timer should always fire first for a healthy isolate; this
+   * margin only covers the case where that timer is defeated by a wedged RPC.
+   * Exposed primarily so tests can shrink the backstop; production leaves it
+   * unset.
+   */
+  readonly hostTimeoutGraceMs?: number;
+  /**
+   * Poll interval for the host-timeout watchdog, in milliseconds. Defaults to
+   * 1s. Exposed for tests; production leaves it unset.
+   */
+  readonly hostTimeoutPollMs?: number;
   /**
    * Controls outbound network access from sandboxed code.
    * - `null` (default): `fetch()` and `connect()` throw — fully isolated.
@@ -87,6 +102,14 @@ type WorkerRpcResponse = WorkerRpcSuccess | WorkerRpcFailure;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Extra wall-clock the host waits beyond the effective in-sandbox timeout
+ * before declaring the isolate wedged. The in-sandbox timer should always fire
+ * first for a healthy isolate; this margin covers scheduling jitter and the RPC
+ * unwind so a normally-timing-out execution reports its own descriptive timeout
+ * rather than this backstop.
+ */
+const HOST_TIMEOUT_GRACE_MS = 30_000;
 const ENTRY_MODULE = "executor.js";
 
 const normalizeErrorObject = (error: Error) => ({
@@ -467,6 +490,14 @@ export type RunPromise = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
 export class ToolDispatcher extends RpcTarget {
   readonly #invoker: SandboxToolInvoker;
   readonly #runPromise: RunPromise;
+  // Number of tool round-trips currently in flight. The host-side execution
+  // timeout is suspended while this is > 0: whenever the sandbox is blocked
+  // here it is demonstrably not wedged (the host owns the continuation and
+  // will resume it), so neither a slow tool call nor a minutes-long approval
+  // pause (which manifests as an in-flight dispatch awaiting an elicitation
+  // response) should count against the unresponsive-sandbox backstop.
+  #inFlight = 0;
+  #lastReturnedAt = Date.now();
 
   constructor(invoker: SandboxToolInvoker, runPromise: RunPromise) {
     super();
@@ -474,7 +505,32 @@ export class ToolDispatcher extends RpcTarget {
     this.#runPromise = runPromise;
   }
 
+  /** True while at least one tool round-trip is awaiting the host. */
+  get isDispatching(): boolean {
+    return this.#inFlight > 0;
+  }
+
+  /**
+   * Epoch millis when the most recent tool round-trip returned control to the
+   * sandbox (or dispatcher construction time if none has). Combined with
+   * `isDispatching`, lets the host measure only the stretches where the sandbox
+   * is expected to be computing on its own.
+   */
+  get lastReturnedAt(): number {
+    return this.#lastReturnedAt;
+  }
+
   async call(path: string, args: unknown): Promise<WorkerRpcResponse> {
+    this.#inFlight += 1;
+    try {
+      return await this.#dispatch(path, args);
+    } finally {
+      this.#inFlight -= 1;
+      this.#lastReturnedAt = Date.now();
+    }
+  }
+
+  #dispatch(path: string, args: unknown): Promise<WorkerRpcResponse> {
     return this.#runPromise(
       Effect.try({
         try: () => rehydrateBinary(args),
@@ -592,13 +648,101 @@ const startDynamicWorker = (
     }),
   );
 
+// ---------------------------------------------------------------------------
+// Host-side execution timeout (unresponsive-sandbox backstop)
+// ---------------------------------------------------------------------------
+
+/** The subset of `ToolDispatcher` state the host watchdog observes. */
+export type DispatcherActivity = {
+  readonly isDispatching: boolean;
+  readonly lastReturnedAt: number;
+};
+
+export type HostTimeoutOptions = {
+  /** Effective in-sandbox timeout bound the sandbox itself enforces. */
+  readonly timeoutMs: number;
+  /** Extra wall-clock beyond the bound before declaring the isolate wedged. */
+  readonly graceMs: number;
+  /** Dispatcher activity — the host clock is suspended while it is dispatching. */
+  readonly dispatcher: DispatcherActivity;
+  /** Poll interval for the watchdog. Defaults to 1s. */
+  readonly pollMs?: number;
+  /** Emitted once when the backstop fires. */
+  readonly onTimeout?: (info: { readonly elapsedMs: number }) => void;
+  /** Clock injection for tests. Defaults to `Date.now`. */
+  readonly now?: () => number;
+};
+
+/**
+ * Race a (typed) evaluate Effect against a host-side watchdog that fires only
+ * when the sandbox has gone unresponsive: no result and no host round-trip for
+ * `timeoutMs + graceMs` of continuous compute time. The watchdog's reference
+ * point advances every time a tool round-trip returns and is held at `now`
+ * while a round-trip is in flight (a slow tool call or an approval pause), so
+ * those never trip it. A true wedge (isolate evicted / OOM, RPC hung without
+ * rejecting, no further dispatch) leaves the reference point stationary and the
+ * watchdog fires, failing with a `SandboxHostTimeoutError`.
+ *
+ * Takes the evaluate step as a pre-built Effect (not a raw promise) so the
+ * caller keeps its own error classification, and so a test can drive it with an
+ * Effect wrapping a never-settling promise (no live WorkerLoader needed).
+ */
+export const runEvaluateWithHostTimeout = <A, E>(
+  evaluated: Effect.Effect<A, E>,
+  options: HostTimeoutOptions,
+): Effect.Effect<A, E | SandboxHostTimeoutError> =>
+  Effect.gen(function* () {
+    const now = options.now ?? Date.now;
+    const bound = Math.max(0, options.timeoutMs) + Math.max(0, options.graceMs);
+    const pollMs = Math.max(1, options.pollMs ?? 1_000);
+    const start = now();
+
+    const completion = evaluated.pipe(
+      Effect.map((value): TimeoutRace<A> => ({ kind: "done", value })),
+    );
+
+    // Poll the dispatcher's activity. `reference` is the latest instant from
+    // which the sandbox is expected to be computing on its own: execution
+    // start, bumped forward to each round-trip's return, and pinned to `now`
+    // for as long as a round-trip is outstanding. The watchdog fires when the
+    // sandbox has been on its own for `bound` ms without producing a result.
+    const watchdog: Effect.Effect<TimeoutRace<A>> = Effect.gen(function* () {
+      for (;;) {
+        yield* Effect.sleep(pollMs);
+        const current = now();
+        const reference = options.dispatcher.isDispatching
+          ? current
+          : Math.max(start, options.dispatcher.lastReturnedAt);
+        if (current - reference >= bound) {
+          return { kind: "timeout", elapsedMs: current - start };
+        }
+      }
+    });
+
+    const outcome = yield* Effect.raceFirst(completion, watchdog);
+    if (outcome.kind === "timeout") {
+      options.onTimeout?.({ elapsedMs: outcome.elapsedMs });
+      return yield* new SandboxHostTimeoutError({
+        runtime: "dynamic-worker",
+        message: `execution exceeded ${bound}ms (sandbox unresponsive)`,
+        timeoutMs: bound,
+        elapsedMs: outcome.elapsedMs,
+      });
+    }
+    return outcome.value;
+  });
+
+type TimeoutRace<A> =
+  | { readonly kind: "done"; readonly value: A }
+  | { readonly kind: "timeout"; readonly elapsedMs: number };
+
 const evaluate = (
   options: DynamicWorkerExecutorOptions,
   code: string,
   toolInvoker: SandboxToolInvoker,
 ): Effect.Effect<
   ExecuteResult,
-  DynamicWorkerExecutionError | CodeCompilationError | SandboxRuntimeError
+  DynamicWorkerExecutionError | CodeCompilationError | SandboxRuntimeError | SandboxHostTimeoutError
 > => {
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
@@ -606,13 +750,32 @@ const evaluate = (
     const context = yield* Effect.context<never>();
     const dispatcher = new ToolDispatcher(toolInvoker, Effect.runPromiseWith(context));
     const entrypoint = yield* startDynamicWorker(options, code, timeoutMs);
-    const response = yield* Effect.tryPromise({
+    // The evaluate RPC rejects for module compile failures that escaped the
+    // strip step, non-serializable return values, isolate resource limits, and
+    // capacity. All are the user's concern or transient, so classify and
+    // surface them descriptively rather than opaquely.
+    const evaluated = Effect.tryPromise({
       try: () => entrypoint.evaluate(dispatcher),
-      // The evaluate RPC rejects for module compile failures that escaped
-      // the strip step, non-serializable return values, isolate resource
-      // limits, and capacity. All are the user's concern or transient, so
-      // classify and surface them descriptively rather than opaquely.
       catch: toSandboxFailure,
+    });
+    const graceMs = Math.max(0, options.hostTimeoutGraceMs ?? HOST_TIMEOUT_GRACE_MS);
+    const response = yield* runEvaluateWithHostTimeout(evaluated, {
+      timeoutMs,
+      graceMs,
+      pollMs: options.hostTimeoutPollMs,
+      dispatcher,
+      onTimeout: ({ elapsedMs }) => {
+        // Structured, greppable event for the alerting workstream. Kept off the
+        // trace span (which is interrupted by the race) so it always lands.
+        // oxlint-disable-next-line no-console -- boundary: structured host-timeout telemetry event
+        console.error(
+          JSON.stringify({
+            event: "mcp_execution_host_timeout",
+            elapsedMs,
+            timeoutMs: timeoutMs + graceMs,
+          }),
+        );
+      },
     }).pipe(
       Effect.withSpan("executor.runtime.evaluate", {
         attributes: { "executor.runtime": "dynamic-worker" },
@@ -652,6 +815,13 @@ const runInDynamicWorker = (
         Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
       SandboxRuntimeError: (error) =>
         Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+      // A wedged isolate that the in-sandbox timer failed to catch is
+      // unrecoverable, but reporting it as a delivered, descriptive error beats
+      // the original symptom (open-ended silence). Fold it into the success
+      // channel like the other safe-to-report conditions so it reaches the
+      // model instead of collapsing to an opaque internal error.
+      SandboxHostTimeoutError: (error) =>
+        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
     }),
     Effect.withSpan("executor.code.exec.dynamic_worker", {
       attributes: { "executor.runtime": "dynamic-worker" },
@@ -667,4 +837,7 @@ export const makeDynamicWorkerExecutor = (
 ): CodeExecutor<DynamicWorkerExecutionError> => ({
   execute: (code: string, toolInvoker: SandboxToolInvoker) =>
     runInDynamicWorker(options, code, toolInvoker),
+  // The effective in-sandbox bound, exposed so hosts can reason about the
+  // execution budget. `evaluate` clamps to a 100ms floor identically.
+  timeoutMs: Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 });
