@@ -39,12 +39,12 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 // The generated dist config the build produced. Overridable via
-// PROMOTE_CLOUD_CONFIG for local/lab testing against a non-prod worker.
+// PROMOTE_CLOUD_CONFIG for testing against a non-prod worker.
 const CONFIG = process.env.PROMOTE_CLOUD_CONFIG ?? "dist/server/wrangler.json";
 
 // Target-worker guard: refuse to run against anything but executor-cloud unless
 // the operator explicitly names the worker they expect via
-// PROMOTE_CLOUD_ALLOW_NAME (for the deploy lab / a non-prod worker). A promotion
+// PROMOTE_CLOUD_ALLOW_NAME (for a non-prod worker). A promotion
 // routes live traffic and restarts DOs, so a misconfigured config that points at
 // the wrong worker must fail loudly, not promote the wrong thing. `--yes` does
 // NOT bypass this: it only skips wrangler's own interactive confirmation.

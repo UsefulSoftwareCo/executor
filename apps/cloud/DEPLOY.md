@@ -7,9 +7,10 @@ streaming sessions: a cutover mid-call drops in-flight MCP tool results. Staging
 the promotion bounds that blast radius and keeps a mere merge from disrupting
 anything.
 
-The mechanics below were validated empirically on a throwaway lab worker
-(`executor-cloud-deploy-lab`, see `scripts/deploy-lab/`); the "what happens"
-claims are measured, not assumed. The findings are summarized at the end.
+The mechanics below were validated empirically on a throwaway staging worker
+that mounted the real session DO and patched transport with stub auth; the
+"what happens" claims are measured, not assumed. The findings are summarized
+at the end.
 
 ## The flow
 
@@ -66,7 +67,7 @@ The script promotes exactly the version you name (`latest` resolves to the
 highest version number) and holds the remainder of a partial promotion on the
 current-live version. It refuses to run unless the resolved wrangler config
 targets the `executor-cloud` worker (set `PROMOTE_CLOUD_ALLOW_NAME` to override
-for a non-production worker such as the deploy lab).
+for a non-production worker).
 
 ## Session version-affinity (zone ruleset, MUST be configured manually)
 
@@ -104,7 +105,7 @@ session to pin yet. Once the client echoes `mcp-session-id`, every subsequent
 request for that session is version-pinned to the worker version its DO landed
 on.
 
-Validated on the lab worker by sending `Cloudflare-Workers-Version-Key`
+Validated on the staging worker by sending `Cloudflare-Workers-Version-Key`
 directly (12 requests per key across a 4-key set during a two-version gradual
 deployment): each distinct key deterministically mapped to exactly one version
 across all its requests, while unkeyed requests split across versions per the
@@ -150,7 +151,7 @@ Constraints:
 
 ## What the staged flow does and does not fix
 
-Measured on the lab worker:
+Measured on the staging worker:
 
 - **Fixed, merges no longer disrupt anything.** `wrangler versions upload` does
   not restart DOs; a session opened before an upload runs straight through it.
@@ -180,31 +181,13 @@ Measured on the lab worker:
   and even a promotion loses only the single in-flight call, not the session or
   its history.
 
-## The lab worker (`scripts/deploy-lab/`)
+## Re-validating the mechanics
 
-`scripts/deploy-lab/` is a self-contained, re-runnable staging worker that
-mounts the **real** `McpAgentSessionDOBase` + the patched `agents` transport
-with stub auth and a trivial `execute` tool, so the versions / gradual-
-deployment / affinity / rollback mechanics can be validated against the real
-transport with no production secrets. Deploy it as
-`executor-cloud-deploy-lab` (workers_dev only, never routed):
-
-```bash
-# from the repo root (bypasses apps/cloud's dist config redirect)
-wrangler deploy -c apps/cloud/scripts/deploy-lab/wrangler.jsonc --var LAB_VERSION:v1
-```
-
-It exposes `/mcp` (real streamable-HTTP MCP) and `/__lab/version` (echoes the
-serving worker version, for observing traffic splits and affinity). Delete it
-when done (`wrangler delete -c apps/cloud/scripts/deploy-lab/wrangler.jsonc`).
-
-> **workers.dev caveat (lab only).** The lab is reached over its
-> `*.workers.dev` subdomain, which had to be explicitly enabled once (Workers
-> dashboard -> the worker -> Settings -> Domains & Routes -> enable the
-> `workers.dev` route) before requests resolved; the config's `workers_dev:
-true` alone was not sufficient on first deploy. This does **not** apply to
-> production executor-cloud, which is served through configured **routes** on
-> `executor.sh`, not a workers.dev subdomain.
-
-See `scripts/deploy-lab/README.md` for the full experiment runbook and the
-measured results.
+The measurements above came from a throwaway staging worker (a cut-down worker
+mounting the real `McpAgentSessionDOBase` + the patched `agents` transport with
+stub auth and a trivial `execute` tool, deployed to a `workers.dev` subdomain,
+never routed). To re-validate after a Cloudflare behavior change, rebuild the
+same shape: exercise affinity with `Cloudflare-Workers-Version-Key` across a
+two-version gradual deployment, fire an upload and a promotion mid-call, and
+roll back mid-session. Keep any such worker on `workers.dev` only and delete it
+when done.
