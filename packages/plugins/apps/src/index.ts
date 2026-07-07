@@ -28,6 +28,7 @@ export {
 } from "./source/github-source";
 
 export { makeAppsRuntime, type AppsRuntime, type AppsRuntimeDeps } from "./plugin/runtime";
+export { makeAppsRuntimeFromBackings, type AppsBackings } from "./plugin/backings";
 export {
   makeAppsStore,
   type AppsStore,
@@ -50,6 +51,7 @@ export {
   type ClientResolver,
   type BindingContext,
 } from "./plugin/bindings";
+export { makePluginCtxAppsResolver } from "./plugin/resolver";
 export {
   makeSelfHostAppsRuntime,
   type SelfHostAppsRuntime,

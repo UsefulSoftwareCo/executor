@@ -12,7 +12,7 @@ import appsClientPlugin, {
   syncCustomToolSource,
   syncStatusLabel,
   validateGitHubSourceUrl,
-} from "@executor-js/plugin-apps/client";
+} from "./plugin-client";
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {

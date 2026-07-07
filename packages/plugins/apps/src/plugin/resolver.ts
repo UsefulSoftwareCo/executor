@@ -9,11 +9,7 @@ import {
   type Owner,
   type PluginCtx,
 } from "@executor-js/sdk";
-import {
-  BindingError,
-  type ClientResolver,
-  type ConnectionCandidate,
-} from "@executor-js/plugin-apps/api";
+import { BindingError, type ClientResolver, type ConnectionCandidate } from "./bindings";
 
 const parseConnectionAddress = (address: string): ConnectionRef | null => {
   const parts = address.split(".");
@@ -40,7 +36,7 @@ const toCandidate = (connection: {
   ...(connection.owner !== undefined ? { owner: String(connection.owner) } : {}),
 });
 
-export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): ClientResolver => ({
+export const makePluginCtxAppsResolver = (input: { readonly ctx: PluginCtx }): ClientResolver => ({
   listConnections: ({ integration }) =>
     input.ctx.connections.list({ integration: IntegrationSlug.make(integration) }).pipe(
       Effect.map((connections) => connections.map(toCandidate)),

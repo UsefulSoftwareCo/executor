@@ -40,6 +40,7 @@
   "devDependencies": {
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
+    "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
@@ -51,12 +52,16 @@
   },
   "peerDependencies": {
     "@effect/atom-react": "catalog:",
+    "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
     "effect": "catalog:",
     "react": "catalog:"
   },
   "peerDependenciesMeta": {
     "@effect/atom-react": {
+      "optional": true
+    },
+    "@executor-js/api": {
       "optional": true
     },
     "@executor-js/react": {

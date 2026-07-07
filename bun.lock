@@ -797,6 +797,7 @@
       "devDependencies": {
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
+        "@executor-js/api": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
@@ -808,12 +809,14 @@
       },
       "peerDependencies": {
         "@effect/atom-react": "catalog:",
+        "@executor-js/api": "workspace:*",
         "@executor-js/react": "workspace:*",
         "effect": "catalog:",
         "react": "catalog:",
       },
       "optionalPeers": [
         "@effect/atom-react",
+        "@executor-js/api",
         "@executor-js/react",
         "react",
       ],

@@ -30,8 +30,7 @@ import {
 } from "../mcp/session-store";
 import { selfHostPlugins } from "../plugins";
 import { ErrorCaptureLive } from "../observability";
-import { closeSelfHostAppsSubsystem } from "../apps";
-import { makeSelfHostAppsSyncRoute } from "../apps-route";
+import { closeSelfHostAppsBackings } from "../apps-backings";
 
 // ===========================================================================
 // Self-host TEST harness — the throwaway composition tests use to exercise the
@@ -204,7 +203,6 @@ export const makeSelfHostTestApp = async (
     },
     extensions: {
       routes: [
-        makeSelfHostAppsSyncRoute({ identity: options.identity, db: dbHandle }),
         HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
       ],
     },
@@ -220,7 +218,7 @@ export const makeSelfHostTestApp = async (
     handler: web.handler,
     dispose: async () => {
       await web.dispose();
-      await closeSelfHostAppsSubsystem();
+      await closeSelfHostAppsBackings();
       await sessionStore.close();
       await dbHandle.close();
     },

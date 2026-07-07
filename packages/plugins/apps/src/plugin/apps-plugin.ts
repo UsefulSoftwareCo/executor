@@ -14,11 +14,17 @@ import {
   type PluginCtx,
   type ResolveToolsInput,
   type ResolveToolsResult,
+  StorageError,
+  type StorageFailure,
   type ToolDef,
+  type IntegrationRemovalNotAllowedError,
 } from "@executor-js/sdk";
 
 import type { IntegrationDecl, ToolDescriptor } from "../pipeline/descriptor";
 import { PublishError } from "../pipeline/discover";
+import { ArtifactStoreError } from "../seams/artifact-store";
+import { ScopeDbError } from "../seams/scope-db";
+import { ToolSandboxError } from "../seams/tool-sandbox";
 import {
   parseGitHubSourceUrl,
   syncGitHubSource,
@@ -28,7 +34,9 @@ import {
 import { slugifyCustomToolsAppName, validateCustomToolsAppSlug } from "../source/app-slug";
 import type { AppsRuntime, GitHubCustomToolsSourceSummary } from "./runtime";
 import { makeAppsStore, type AppDescriptorRecord, type GitHubSourceTokenRef } from "./store";
-import type { ClientResolver, ConnectionCandidate } from "./bindings";
+import { BindingError, type ClientResolver, type ConnectionCandidate } from "./bindings";
+import { makePluginCtxAppsResolver } from "./resolver";
+import { makeAppsRuntimeFromBackings, type AppsBackings } from "./backings";
 
 export const APPS_INTEGRATION_SLUG = "apps";
 export const APPS_PLUGIN_ID = "apps";
@@ -44,17 +52,43 @@ interface AppsGitHubSourceConfig {
   readonly token?: GitHubSourceTokenRef;
 }
 
-export interface AppsPluginOptions {
-  readonly runtime: AppsRuntime;
-  readonly makeResolver?: (input: {
-    readonly ctx: unknown;
-    readonly scope: string;
-    readonly tool: string;
-  }) => ClientResolver;
-}
+type ResolverFactory = (input: {
+  readonly ctx: unknown;
+  readonly scope: string;
+  readonly tool: string;
+}) => ClientResolver;
+
+export type AppsPluginOptions =
+  | {
+      readonly backings: AppsBackings;
+      readonly runtime?: never;
+      readonly makeResolver?: ResolverFactory;
+    }
+  | {
+      readonly runtime: AppsRuntime;
+      readonly backings?: never;
+      readonly makeResolver?: ResolverFactory;
+    };
 
 interface AppsStoreShape {
   readonly runtime: AppsRuntime;
+}
+
+export interface AppsPluginExtension {
+  readonly runtime: AppsRuntime;
+  readonly syncGitHubSource: (input: unknown) => Effect.Effect<GitHubSyncResult, StorageFailure>;
+  readonly listGitHubSources: () => Effect.Effect<{
+    readonly sources: readonly GitHubCustomToolsSourceSummary[];
+  }>;
+  readonly getGitHubSource: (slug: string) => Effect.Effect<{
+    readonly source: GitHubCustomToolsSourceSummary | null;
+  }>;
+  readonly removeGitHubSource: (
+    slug: string,
+  ) => Effect.Effect<
+    { readonly removed: true },
+    StorageFailure | IntegrationRemovalNotAllowedError
+  >;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -64,6 +98,13 @@ const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 
 const unique = (values: readonly string[]): readonly string[] => [...new Set(values)];
+
+const isPluginCtx = (value: unknown): value is PluginCtx =>
+  isRecord(value) &&
+  isRecord(value.connections) &&
+  typeof value.connections.list === "function" &&
+  typeof value.connections.get === "function" &&
+  typeof value.execute === "function";
 
 const syncFailure = (message: string, path?: string): GitHubSyncResult => ({
   status: "failed",
@@ -76,6 +117,98 @@ const syncFailure = (message: string, path?: string): GitHubSyncResult => ({
       ...(path ? { diagnostics: [{ path, message }] } : {}),
     },
   ],
+});
+
+const missingResolver = (): ClientResolver => ({
+  listConnections: () => Effect.succeed([]),
+  resolveConnection: () => Effect.succeed(null),
+  call: ({ integration, connection }) =>
+    Effect.fail(
+      new BindingError({
+        role: integration,
+        integration,
+        requestedConnection: connection,
+        message: "apps resolver is unavailable outside a request-scoped executor",
+      }),
+    ),
+});
+
+const missingBackingsMessage = "apps plugin requires backings or runtime";
+
+const missingPublishError = (): PublishError =>
+  new PublishError({
+    message: missingBackingsMessage,
+    stage: "project",
+    diagnostics: [],
+  });
+
+const missingStorageError = (): StorageError =>
+  new StorageError({
+    message: missingBackingsMessage,
+    cause: missingBackingsMessage,
+  });
+
+const missingRuntime = (): AppsRuntime => ({
+  publish: () => Effect.fail(missingPublishError()),
+  getDescriptor: () => Effect.succeed(null),
+  listGitHubSources: () => Effect.succeed([]),
+  removeSource: () => Effect.fail(missingPublishError()),
+  repair: () => Effect.fail(missingPublishError()),
+  invokeTool: () => Effect.fail(missingPublishError()),
+  deps: {
+    artifactStore: {
+      forScope: () =>
+        Effect.fail(
+          new ArtifactStoreError({
+            message: missingBackingsMessage,
+          }),
+        ),
+      removeScope: () =>
+        Effect.fail(
+          new ArtifactStoreError({
+            message: missingBackingsMessage,
+          }),
+        ),
+    },
+    scopeDb: {
+      forScope: () =>
+        Effect.fail(
+          new ScopeDbError({
+            message: missingBackingsMessage,
+          }),
+        ),
+      removeScope: () =>
+        Effect.fail(
+          new ScopeDbError({
+            message: missingBackingsMessage,
+          }),
+        ),
+      close: () => Effect.void,
+    },
+    sandbox: {
+      collect: () =>
+        Effect.fail(
+          new ToolSandboxError({
+            message: missingBackingsMessage,
+            kind: "collect",
+          }),
+        ),
+      invoke: () =>
+        Effect.fail(
+          new ToolSandboxError({
+            message: missingBackingsMessage,
+            kind: "invoke",
+          }),
+        ),
+    },
+    store: {
+      putDescriptor: () => Effect.fail(missingStorageError()),
+      getDescriptor: () => Effect.succeed(null),
+      removeDescriptor: () => Effect.fail(missingStorageError()),
+      listDescriptors: () => Effect.succeed([]),
+    },
+    resolver: missingResolver(),
+  },
 });
 
 const sourceTokenItemId = (tenant: string, scope: string): ProviderItemId =>
@@ -160,7 +293,11 @@ const projectTool = (descriptor: ToolDescriptor): ToolDef => ({
 });
 
 export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
-  const runtime = options?.runtime as AppsRuntime;
+  const runtime =
+    options?.runtime ??
+    (options?.backings
+      ? makeAppsRuntimeFromBackings(options.backings, missingResolver())
+      : missingRuntime());
   const makeResolver = options?.makeResolver;
 
   const tenantFor = (ctx: Pick<PluginCtx, "owner"> | undefined): string => {
@@ -436,6 +573,66 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       Effect.orElseSucceed(() => null),
     );
 
+  const requestResolver = (input: {
+    readonly ctx: unknown;
+    readonly scope: string;
+    readonly tool: string;
+  }): ClientResolver =>
+    makeResolver
+      ? makeResolver(input)
+      : isPluginCtx(input.ctx)
+        ? makePluginCtxAppsResolver({ ctx: input.ctx })
+        : runtime.deps.resolver;
+
+  const syncSourceFromPayload = (ctx: PluginCtx<AppsStoreShape>, args: unknown) =>
+    Effect.gen(function* () {
+      const payload = isRecord(args) ? args : {};
+      const url =
+        typeof payload.url === "string"
+          ? payload.url.trim()
+          : typeof payload.repo === "string"
+            ? payload.repo.trim()
+            : "";
+      const ref = asString(payload.ref);
+      const providedToken = asString(payload.token) ?? null;
+      const slug = asString(payload.slug);
+      if (slug && !url) return yield* syncExistingSource(ctx, slug, providedToken);
+      if (!url) return syncFailure('sync_github_source requires "url"');
+      return yield* addSource(ctx, {
+        url,
+        ...(ref ? { ref } : {}),
+        ...(asString(payload.name) ? { name: asString(payload.name) } : {}),
+        token: providedToken,
+      });
+    }).pipe(
+      Effect.catchTags({
+        CredentialProviderNotRegisteredError: (err) => Effect.succeed(syncFailure(err.message)),
+        IntegrationNotFoundError: (err) => Effect.succeed(syncFailure(err.message)),
+        InvalidConnectionInputError: (err) => Effect.succeed(syncFailure(err.message)),
+      }),
+    );
+
+  const extensionFor = (ctx: PluginCtx<AppsStoreShape>): AppsPluginExtension => ({
+    runtime,
+    syncGitHubSource: (input) => syncSourceFromPayload(ctx, input),
+    listGitHubSources: () =>
+      Effect.gen(function* () {
+        const sources = yield* listSources(ctx);
+        return { sources };
+      }),
+    getGitHubSource: (slug) =>
+      Effect.gen(function* () {
+        if (!slug) return { source: null };
+        const source = yield* getSource(ctx, slug);
+        return { source };
+      }),
+    removeGitHubSource: (slug) =>
+      Effect.gen(function* () {
+        yield* ctx.core.integrations.remove(IntegrationSlug.make(slug));
+        return { removed: true as const };
+      }),
+  });
+
   return {
     id: APPS_PLUGIN_ID as "apps",
     packageName: "@executor-js/plugin-apps",
@@ -455,9 +652,9 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       },
     },
 
-    extension: () => ({ runtime }),
+    extension: extensionFor,
 
-    staticSources: () => [
+    staticSources: (self) => [
       {
         id: APPS_PLUGIN_ID,
         kind: "executor",
@@ -466,47 +663,18 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
           tool<AppsStoreShape>({
             name: "sync_github_source",
             description: "Sync a GitHub repository containing custom tool source files.",
-            execute: (args, { ctx }) =>
-              Effect.gen(function* () {
-                const payload = isRecord(args) ? args : {};
-                const url =
-                  typeof payload.url === "string"
-                    ? payload.url.trim()
-                    : typeof payload.repo === "string"
-                      ? payload.repo.trim()
-                      : "";
-                const ref = asString(payload.ref);
-                const providedToken = asString(payload.token) ?? null;
-                const slug = asString(payload.slug);
-                if (slug && !url) return yield* syncExistingSource(ctx, slug, providedToken);
-                if (!url) return syncFailure('sync_github_source requires "url"');
-                return yield* addSource(ctx, {
-                  url,
-                  ...(ref ? { ref } : {}),
-                  ...(asString(payload.name) ? { name: asString(payload.name) } : {}),
-                  token: providedToken,
-                });
-              }),
+            execute: (args) => self.syncGitHubSource(args),
           }),
           tool<AppsStoreShape>({
             name: "list_github_sources",
             description: "List synced GitHub repositories that publish custom tools.",
-            execute: (_args, { ctx }) =>
-              Effect.gen(function* () {
-                const sources = yield* listSources(ctx);
-                return { sources };
-              }),
+            execute: () => self.listGitHubSources(),
           }),
           tool<AppsStoreShape>({
             name: "get_github_source",
             description: "Read one synced GitHub custom-tools source.",
-            execute: (args, { ctx }) =>
-              Effect.gen(function* () {
-                const slug = isRecord(args) ? asString(args.slug) : undefined;
-                if (!slug) return { source: null };
-                const source = yield* getSource(ctx, slug);
-                return { source };
-              }),
+            execute: (args) =>
+              self.getGitHubSource(isRecord(args) ? (asString(args.slug) ?? "") : ""),
           }),
         ],
       },
@@ -547,9 +715,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const descriptor = yield* runtime.getDescriptor(tenant, source.scope);
         const toolDesc = descriptor?.tools.find((t) => t.name === toolRow.name);
         if (!toolDesc) return { inputSchema, outputSchema };
-        const resolver = makeResolver
-          ? makeResolver({ ctx, scope: source.scope, tool: toolRow.name })
-          : runtime.deps.resolver;
+        const resolver = requestResolver({ ctx, scope: source.scope, tool: toolRow.name });
         const byRole: Record<string, readonly ConnectionCandidate[]> = {};
         for (const [role, decl] of Object.entries(toolDesc.integrations)) {
           byRole[role] = yield* resolver
@@ -589,9 +755,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
             diagnostics: [],
           });
         }
-        const resolver = makeResolver
-          ? makeResolver({ ctx, scope: source.scope, tool: toolRow.name })
-          : undefined;
+        const resolver = requestResolver({ ctx, scope: source.scope, tool: toolRow.name });
         return yield* runtime.invokeTool({
           tenant,
           scope: source.scope,

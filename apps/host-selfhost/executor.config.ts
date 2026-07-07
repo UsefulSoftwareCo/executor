@@ -6,9 +6,10 @@ import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
+import { appsPlugin } from "@executor-js/plugin-apps/api";
 
 import { resolveSecretKey } from "./src/config";
-import { getSelfHostAppsSubsystem } from "./src/apps";
+import { getSelfHostAppsBackings } from "./src/apps-backings";
 
 // ---------------------------------------------------------------------------
 // Single source of truth for the self-hosted app's plugin list.
@@ -37,7 +38,7 @@ export default defineExecutorConfig({
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
-      getSelfHostAppsSubsystem().plugin,
+      appsPlugin({ backings: getSelfHostAppsBackings() }),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),
     ] as const,

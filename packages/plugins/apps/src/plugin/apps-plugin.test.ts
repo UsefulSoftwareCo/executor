@@ -62,7 +62,7 @@ describe("appsPlugin custom-tools contract", () => {
       inMemory: true,
     });
     const runtime = host.runtime;
-    const plugin = appsPlugin({ runtime });
+    const plugin = appsPlugin({ backings: host.backings });
     const appIntegration = IntegrationSlug.make("rhys-tools");
     const appConfig = {
       kind: "github",

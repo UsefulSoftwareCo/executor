@@ -22,8 +22,7 @@ import { makeSelfHostMcpSeams } from "./mcp";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
-import { closeSelfHostAppsSubsystem } from "./apps";
-import { makeSelfHostAppsSyncRoute } from "./apps-route";
+import { closeSelfHostAppsBackings } from "./apps-backings";
 
 // ===========================================================================
 // The self-hosted Executor app, as ONE `ExecutorApp.make` call.
@@ -121,7 +120,6 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
-        makeSelfHostAppsSyncRoute({ identity: identityLayer, db: dbHandle }),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
         HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
       ],
@@ -142,7 +140,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     toWebHandler,
     betterAuth,
     closeDb: async () => {
-      await closeSelfHostAppsSubsystem();
+      await closeSelfHostAppsBackings();
       await mcp.close();
       await dbHandle.close();
     },
