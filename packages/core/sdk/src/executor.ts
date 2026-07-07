@@ -3615,6 +3615,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
+      // Normalize the name exactly as the mint does, so the fresh-connect
+      // guard sees the same row the callback would overwrite.
+      findConnection: (ref) =>
+        findConnectionRow({
+          owner: ref.owner,
+          integration: ref.integration,
+          name: connectionIdentifier(String(ref.name)),
+        }).pipe(Effect.map((row) => (row ? rowToConnection(row) : null))),
       // One integration-row read + one projector run. Resolve the method this
       // template selects exactly as the runtime's `selectAuthMethod` does —
       // exact slug match, else the sole declared method (single-method

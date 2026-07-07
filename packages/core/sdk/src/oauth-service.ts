@@ -125,6 +125,15 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Look up a saved connection by (owner, integration, name), with the name
+   *  normalized the way the mint normalizes it. Backs the fresh-connect guard:
+   *  a non-reconnect `start` targeting an existing connection is rejected
+   *  instead of silently re-minting over it at the callback. */
+  readonly findConnection: (ref: {
+    readonly owner: Owner;
+    readonly integration: IntegrationSlug;
+    readonly name: ConnectionName;
+  }) => Effect.Effect<Connection | null, StorageFailure>;
   /**
    * Resolve the OAuth scope policy for a `(integration, template)`:
    *  - `{ kind: "scopes", scopes }`: the scopes the integration's auth template
@@ -218,6 +227,18 @@ const requestedScopesFromPayload = (payload: unknown): readonly string[] | null 
   if (decoded === null || typeof decoded !== "object") return null;
   const value = (decoded as Record<string, unknown>).requestedScopes;
   return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : null;
+};
+
+/** Read the `reconnect` flag `start` recorded on the session payload. Missing
+ *  (legacy sessions) reads as false — the safe default, since only an explicit
+ *  Reconnect flow may overwrite an existing connection. */
+const reconnectFromPayload = (payload: unknown): boolean => {
+  const decoded =
+    typeof payload === "string"
+      ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
+      : payload;
+  if (decoded === null || typeof decoded !== "object") return false;
+  return (decoded as Record<string, unknown>).reconnect === true;
 };
 
 /** Read the app owner `start` recorded on the session payload. Null when absent
@@ -961,6 +982,25 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
 
+      // Fresh connects never replace: the callback's mint upserts by
+      // (owner, integration, name), so without this guard a new flow aimed at
+      // an existing name would silently overwrite that connection when the
+      // user returns from the provider. Reject at start — before any session
+      // or token exists — unless the caller explicitly marked the flow a
+      // reconnect (re-consent / widened scopes re-mint the SAME connection).
+      if (input.reconnect !== true) {
+        const existing = yield* deps.findConnection({
+          owner: input.owner,
+          integration: input.integration,
+          name: input.name,
+        });
+        if (existing) {
+          return yield* new OAuthStartError({
+            message: `A connection named "${input.name}" already exists for ${input.integration}. Choose a different name, remove the existing connection first, or reconnect it instead.`,
+          });
+        }
+      }
+
       // Declared scopes win (driven by the selected auth template). MCP-style
       // integrations declare none and discover them from the client's protected
       // resource / authorization server metadata at connect.
@@ -1077,6 +1117,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             owner: input.owner,
             clientOwner: input.clientOwner,
             requestedScopes: authorizationRequestedScopes,
+            // Recorded so `complete` can re-check the fresh-connect guard: a
+            // connection created between start and the callback must not be
+            // clobbered by the mint.
+            reconnect: input.reconnect === true,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -1144,12 +1188,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // owner for same-owner connects.
         clientOwner:
           clientOwnerFromPayload(sessionRow.payload) ?? (String(sessionRow.owner) as Owner),
+        reconnect: reconnectFromPayload(sessionRow.payload),
       };
 
       // Expired sessions are not redeemable — drop + treat as not found.
       if (Number.isFinite(session.expiresAt) && session.expiresAt <= Date.now()) {
         yield* deleteSession(input.state);
         return yield* new OAuthSessionNotFoundError({ state: input.state });
+      }
+
+      // Re-check the fresh-connect guard from `start`: the user may have
+      // created a connection under this name while the browser hop was in
+      // flight, and the mint below upserts. Checked BEFORE the code exchange
+      // so nothing is redeemed or stored for a flow that must not land.
+      if (!session.reconnect) {
+        const existing = yield* deps.findConnection({
+          owner: session.owner,
+          integration: session.integration,
+          name: session.name,
+        });
+        if (existing) {
+          yield* deleteSession(input.state);
+          return yield* new OAuthCompleteError({
+            message: `A connection named "${session.name}" already exists for ${session.integration}. Choose a different name, remove the existing connection first, or reconnect it instead.`,
+            restartRequired: true,
+          });
+        }
       }
 
       // Reload the SAME app `start` resolved, by its explicit recorded owner.

@@ -70,6 +70,10 @@ export type OAuthStartPayload = {
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string;
   readonly redirectUri?: string;
+  /** True when re-running OAuth for an EXISTING connection (Reconnect): the
+   *  flow re-mints the same (owner, integration, name). Fresh connects omit it
+   *  and are rejected when the name is already taken. */
+  readonly reconnect?: boolean;
 };
 
 export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {

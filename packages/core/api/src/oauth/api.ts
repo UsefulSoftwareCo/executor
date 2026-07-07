@@ -160,6 +160,10 @@ const StartPayload = Schema.Struct({
   template: AuthTemplateSlug,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  /** True when re-running OAuth for an existing connection (re-consent): the
+   *  flow re-mints the same (owner, integration, name). A fresh connect
+   *  targeting an existing name is rejected at start. */
+  reconnect: Schema.optional(Schema.Boolean),
 });
 
 const StartResponse = Schema.Union([

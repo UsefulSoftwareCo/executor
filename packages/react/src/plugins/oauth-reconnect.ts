@@ -40,6 +40,9 @@ export function oauthReconnectPayload(connection: Connection): OAuthStartPayload
     integration: connection.integration,
     template: connection.template,
     identityLabel: connection.identityLabel ?? undefined,
+    // Re-minting the SAME connection is the point of Reconnect; without this
+    // flag oauth.start rejects the existing name as a fresh-connect conflict.
+    reconnect: true,
   };
 }
 

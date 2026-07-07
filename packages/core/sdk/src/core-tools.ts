@@ -310,6 +310,7 @@ const OAuthStartInput = Schema.Struct({
   template: Schema.String,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  reconnect: Schema.optional(Schema.Boolean),
 });
 const OAuthStartOutput = Schema.Union([
   Schema.Struct({
@@ -832,7 +833,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.start",
           description:
-            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state.",
+            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state. Fails if the connection name is already taken unless `reconnect: true` re-runs the flow for that existing connection.",
           inputSchema: OAuthStartInputStd,
           outputSchema: OAuthStartOutputStd,
           // This is the materialization step that turns a registered client
@@ -854,6 +855,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 template: AuthTemplateSlug.make(input.template),
                 identityLabel: input.identityLabel,
                 redirectUri: input.redirectUri,
+                reconnect: input.reconnect ?? undefined,
               }),
               (result) =>
                 result.status === "connected"

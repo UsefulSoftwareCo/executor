@@ -1651,6 +1651,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         integration,
         template: oauthMethod.template,
         ...(handoff.identityLabel !== undefined ? { identityLabel: handoff.identityLabel } : {}),
+        reconnect: true,
       },
       onAuthorizationStarted: () => {
         trackEvent("connection_reconnected", {

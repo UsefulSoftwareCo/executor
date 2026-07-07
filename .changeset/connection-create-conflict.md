@@ -2,4 +2,4 @@
 "@executor-js/sdk": patch
 ---
 
-`connections.create` now fails with `ConnectionAlreadyExistsError` (HTTP 409) when a connection with the same owner, integration, and name already exists, instead of silently overwriting the existing connection and its stored credential. Remove the existing connection first or pick a different name. OAuth reconnects are unaffected: they intentionally re-mint the same connection.
+Creating a connection over an existing one is now rejected instead of silently overwriting it. `connections.create` fails with `ConnectionAlreadyExistsError` (HTTP 409) when the (owner, integration, name) is already taken, and `oauth.start` / `oauth.complete` reject a fresh OAuth connect that targets an existing connection name. Reconnect flows pass `reconnect: true` and keep re-minting the same connection for re-consent and token refresh.

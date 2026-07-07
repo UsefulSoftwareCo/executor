@@ -59,6 +59,9 @@ export default function GraphqlSignInButton(props: {
         integration: IntegrationSlug.make(String(props.slug)),
         template: AuthTemplateSlug.make(String(props.template)),
         identityLabel: `${props.displayName} OAuth`,
+        // The button doubles as Reconnect (deterministic per-owner name):
+        // a second sign-in intentionally re-mints the same connection.
+        ...(isConnected ? { reconnect: true } : {}),
       },
       onSuccess: (payload: OAuthCompletionPayload) => {
         // Touch the minted connection name to satisfy the success contract; the
