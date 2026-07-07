@@ -368,9 +368,7 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private activeStreamCount(): number {
-    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
-    if (!getConnections) return 0;
-    return Array.from(getConnections.call(this)).length;
+    return this.connectionsOrNone().length;
   }
 
   private async runningExecutionCount(): Promise<number> {
@@ -392,13 +390,35 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private closeActiveStreams(): void {
-    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
-    if (!getConnections) return;
-    for (const connection of getConnections.call(this)) {
+    for (const connection of this.connectionsOrNone()) {
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort WebSocket close during runtime disposal.
       try {
         connection.close(1000, "Session closed");
       } catch {}
+    }
+  }
+
+  /**
+   * partyserver's `getConnections` dereferences a `#connectionManager`
+   * private field that is only initialized once the DO has accepted a
+   * websocket (never in unit harnesses), and partyserver exposes no
+   * non-throwing probe for that state, so "it throws" IS the signal for
+   * "no connections yet". Treating that as an empty set is safe for both
+   * callers: `closeActiveStreams` then has nothing to close, and
+   * `activeStreamCount` feeds the idle-lease decision where zero at worst
+   * disposes an idle-looking runtime whose undelivered responses are
+   * persisted in durable storage and replayed by the next reconnect GET.
+   * Before this guard the alarm crashed and retried instead, which kept
+   * the session pinned without ever making progress.
+   */
+  private connectionsOrNone(): ReadonlyArray<Connection> {
+    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
+    if (!getConnections) return [];
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: see doc comment; partyserver offers no non-throwing way to ask whether the connection manager exists.
+    try {
+      return Array.from(getConnections.call(this));
+    } catch {
+      return [];
     }
   }
 
