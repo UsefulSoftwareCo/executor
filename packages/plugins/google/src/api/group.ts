@@ -56,7 +56,7 @@ const AddCustomServicePayload = Schema.Struct({
   custom: Schema.Struct({
     urls: Schema.Array(Schema.String),
     slug: Schema.optional(Schema.String),
-    name: Schema.String,
+    name: Schema.optional(Schema.String),
     description: Schema.optional(Schema.String),
   }),
 });

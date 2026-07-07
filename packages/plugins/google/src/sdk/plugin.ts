@@ -38,7 +38,9 @@ import {
 import {
   convertGoogleDiscoveryBundleToOpenApi,
   fetchGoogleDiscoveryDocument,
+  googleDiscoveryDocumentIdentity,
   normalizeGoogleDiscoveryUrl,
+  type GoogleDiscoveryDocumentIdentity,
 } from "./discovery";
 import { decodeGoogleIntegrationConfig, type GoogleIntegrationConfig } from "./config";
 import {
@@ -103,9 +105,15 @@ export interface GooglePresetServiceConfig {
 
 export interface GoogleCustomServiceConfig {
   readonly custom: {
+    /**
+     * Each Discovery URL is added as its own integration. `slug`, `name`, and
+     * `description` are explicit overrides for a single URL; supplying them
+     * with multiple URLs returns a failed row instead of guessing which service
+     * the override belongs to.
+     */
     readonly urls: readonly string[];
     readonly slug?: string;
-    readonly name: string;
+    readonly name?: string;
     readonly description?: string;
   };
 }
@@ -162,6 +170,8 @@ export interface GooglePluginOptions {
 }
 
 const DEFAULT_GOOGLE_SLUG = "google";
+const DEFAULT_GOOGLE_CUSTOM_SLUG = "google_custom";
+const MAX_GOOGLE_CUSTOM_DESCRIPTION_LENGTH = 500;
 
 const googleOpenApiPresetById: ReadonlyMap<string, GoogleOpenApiPreset> = new Map(
   googleOpenApiPresets.map((preset) => [preset.id, preset]),
@@ -177,7 +187,7 @@ const googleServiceEntryId = (service: GoogleServiceConfig): string =>
 const googleServiceEntrySlug = (service: GoogleServiceConfig): IntegrationSlug =>
   isGooglePresetServiceConfig(service)
     ? IntegrationSlug.make(service.slug?.trim() || googleServiceSlug(service.presetId))
-    : IntegrationSlug.make(service.custom.slug?.trim() || "google_custom");
+    : IntegrationSlug.make(service.custom.slug?.trim() || DEFAULT_GOOGLE_CUSTOM_SLUG);
 
 type GoogleAddServiceOutcome = {
   readonly added: readonly GoogleAddServicesAdded[];
@@ -185,15 +195,20 @@ type GoogleAddServiceOutcome = {
   readonly failed: readonly GoogleAddServicesFailed[];
 };
 
-const googleAddServiceFailure = (
-  service: GoogleServiceConfig,
-  slug: IntegrationSlug,
-  error: string,
-): GoogleAddServiceOutcome => ({
+const googleAddServiceFailure = (input: {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly error: string;
+}): GoogleAddServiceOutcome => ({
   added: [],
   skipped: [],
-  failed: [{ slug, presetId: googleServiceEntryId(service), error }],
+  failed: [{ slug: input.slug, presetId: input.presetId, error: input.error }],
 });
+
+type GoogleFetchedDiscoveryDocument = {
+  readonly discoveryUrl: string;
+  readonly documentText: string;
+};
 
 const googlePhotosBundlePresetIdByUrl = new Map(
   googlePhotosOpenApiPresets.flatMap((preset) =>
@@ -213,20 +228,28 @@ const googlePhotosBundleConsentScopes = (
     : undefined;
 };
 
-const fetchGoogleBundleConversion = (
+const fetchGoogleDiscoveryDocuments = (
   urls: readonly string[],
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
-  consentScopesOverride?: readonly string[],
 ) =>
   Effect.forEach(
     urls,
     (url) =>
       fetchGoogleDiscoveryDocument(url).pipe(
         Effect.provide(httpClientLayer),
-        Effect.map((documentText) => ({ discoveryUrl: url, documentText })),
+        Effect.map(
+          (documentText): GoogleFetchedDiscoveryDocument => ({ discoveryUrl: url, documentText }),
+        ),
       ),
     { concurrency: 4 },
-  ).pipe(
+  );
+
+const fetchGoogleBundleConversion = (
+  urls: readonly string[],
+  httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
+  consentScopesOverride?: readonly string[],
+) =>
+  fetchGoogleDiscoveryDocuments(urls, httpClientLayer).pipe(
     Effect.flatMap((documents) => {
       const consentScopes = consentScopesOverride ?? googlePhotosBundleConsentScopes(urls);
       return convertGoogleDiscoveryBundleToOpenApi({
@@ -257,6 +280,132 @@ const googleBundleUrlsWithIdentity = (
     }
     return uniqueUrls([...normalized, GOOGLE_OAUTH2_DISCOVERY_URL]);
   });
+
+type GoogleServiceAddPlan =
+  | {
+      readonly kind: "preset";
+      readonly service: GooglePresetServiceConfig;
+    }
+  | {
+      readonly kind: "custom";
+      readonly service: GoogleCustomServiceConfig;
+      readonly url: string;
+      readonly fallbackSlug: IntegrationSlug;
+    }
+  | {
+      readonly kind: "invalid-custom";
+      readonly service: GoogleCustomServiceConfig;
+      readonly slug: IntegrationSlug;
+      readonly presetId: string;
+      readonly error: string;
+    };
+
+const hasCustomGoogleServiceOverride = (service: GoogleCustomServiceConfig): boolean =>
+  Boolean(
+    service.custom.slug?.trim() ||
+    service.custom.name?.trim() ||
+    service.custom.description?.trim(),
+  );
+
+const googleCustomFallbackSlug = (index: number): IntegrationSlug =>
+  IntegrationSlug.make(
+    index === 0 ? DEFAULT_GOOGLE_CUSTOM_SLUG : `${DEFAULT_GOOGLE_CUSTOM_SLUG}_${index + 1}`,
+  );
+
+const googleCustomResultId = (slug: IntegrationSlug): string => String(slug);
+
+const googleDiscoveryNameSlugPart = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const googleDiscoverySlug = (name: string): IntegrationSlug =>
+  IntegrationSlug.make(
+    googleServiceSlug(`google-${googleDiscoveryNameSlugPart(name) || "custom"}`),
+  );
+
+const googleDiscoveryDisplayName = (identity: GoogleDiscoveryDocumentIdentity): string => {
+  const title = identity.title
+    ?.trim()
+    .replace(/\s+API(?:\s+v[0-9][A-Za-z0-9._-]*)?$/i, "")
+    .trim();
+  if (title && title.length > 0) {
+    return /^google\b/i.test(title) ? title : `Google ${title}`;
+  }
+  return identity.name
+    .trim()
+    .replace(/[-_.]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const googleDiscoveryDescription = (
+  identity: GoogleDiscoveryDocumentIdentity,
+  displayName: string,
+): string => {
+  const description = identity.description?.trim();
+  if (description && description.length > 0) {
+    return description.length > MAX_GOOGLE_CUSTOM_DESCRIPTION_LENGTH
+      ? `${description.slice(0, MAX_GOOGLE_CUSTOM_DESCRIPTION_LENGTH - 3).trimEnd()}...`
+      : description;
+  }
+  return `${displayName}.`;
+};
+
+const googleServiceAddPlans = (
+  services: readonly GoogleServiceConfig[],
+): readonly GoogleServiceAddPlan[] => {
+  const plans: GoogleServiceAddPlan[] = [];
+  let customIndex = 0;
+  for (const service of services) {
+    if (isGooglePresetServiceConfig(service)) {
+      plans.push({ kind: "preset", service });
+      continue;
+    }
+
+    if (service.custom.urls.length === 0) {
+      const slug = googleCustomFallbackSlug(customIndex);
+      customIndex += 1;
+      plans.push({
+        kind: "invalid-custom",
+        service,
+        slug,
+        presetId: googleCustomResultId(slug),
+        error: "Custom Google service requires at least one Discovery URL",
+      });
+      continue;
+    }
+
+    if (service.custom.urls.length > 1 && hasCustomGoogleServiceOverride(service)) {
+      const slug = googleServiceEntrySlug(service);
+      plans.push({
+        kind: "invalid-custom",
+        service,
+        slug,
+        presetId: googleCustomResultId(slug),
+        error: "Custom Google service identity overrides require exactly one Discovery URL",
+      });
+      continue;
+    }
+
+    for (const url of service.custom.urls) {
+      const overrideSlug = service.custom.slug?.trim();
+      const fallbackSlug =
+        overrideSlug && overrideSlug.length > 0
+          ? IntegrationSlug.make(overrideSlug)
+          : googleCustomFallbackSlug(customIndex);
+      plans.push({
+        kind: "custom",
+        service,
+        url,
+        fallbackSlug,
+      });
+      customIndex += 1;
+    }
+  }
+  return plans;
+};
 
 const describeGoogleAuthMethods = (record: IntegrationRecord): readonly AuthMethodDescriptor[] => {
   const config = decodeGoogleIntegrationConfig(record.config);
@@ -292,8 +441,9 @@ const makeGooglePluginExtension = (
 ) => {
   const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
 
-  const addGoogleOpenApiIntegration = (input: {
+  const addGoogleOpenApiIntegrationFromDocuments = (input: {
     readonly urls: readonly string[];
+    readonly documents: readonly GoogleFetchedDiscoveryDocument[];
     readonly slug: IntegrationSlug;
     readonly name: string;
     readonly description: string;
@@ -301,12 +451,11 @@ const makeGooglePluginExtension = (
     readonly consentScopes?: readonly string[];
   }) =>
     Effect.gen(function* () {
-      const urls = yield* googleBundleUrlsWithIdentity(input.urls);
-      const conversion = yield* fetchGoogleBundleConversion(
-        urls,
-        httpClientLayer,
-        input.consentScopes,
-      );
+      const consentScopes = input.consentScopes ?? googlePhotosBundleConsentScopes(input.urls);
+      const conversion = yield* convertGoogleDiscoveryBundleToOpenApi({
+        documents: input.documents,
+        ...(consentScopes !== undefined ? { consentScopes } : {}),
+      });
       const compiled = yield* compileOpenApiSpec(conversion.specText);
       const slug = input.slug;
 
@@ -318,7 +467,7 @@ const makeGooglePluginExtension = (
       const specHash = yield* sha256Hex(conversion.specText);
       const integrationConfig: GoogleIntegrationConfig = {
         specHash,
-        googleDiscoveryUrls: urls,
+        googleDiscoveryUrls: input.urls,
         ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
         ...(conversion.authenticationTemplate
           ? { authenticationTemplate: conversion.authenticationTemplate }
@@ -349,7 +498,7 @@ const makeGooglePluginExtension = (
       // added to every new Google OpenAPI integration. Older integrations
       // without oauth2/v2 can still fall back to the People API identity
       // operation.
-      const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
+      const defaultHealthCheck = defaultGoogleHealthCheck(input.urls, compiled.definitions);
       if (defaultHealthCheck) {
         yield* ctx.core.integrations.setHealthCheck(slug, defaultHealthCheck);
       }
@@ -357,23 +506,26 @@ const makeGooglePluginExtension = (
       return { slug, toolCount: compiled.definitions.length };
     });
 
-  const addOneService = (service: GoogleServiceConfig, baseUrl?: string) =>
+  const addGoogleOpenApiIntegration = (input: {
+    readonly urls: readonly string[];
+    readonly slug: IntegrationSlug;
+    readonly name: string;
+    readonly description: string;
+    readonly baseUrl?: string;
+    readonly consentScopes?: readonly string[];
+  }) =>
     Effect.gen(function* () {
-      if (!isGooglePresetServiceConfig(service)) {
-        if (service.custom.urls.length === 0) {
-          return yield* new OpenApiParseError({
-            message: "Custom Google service requires at least one Discovery URL",
-          });
-        }
-        return yield* addGoogleOpenApiIntegration({
-          urls: service.custom.urls,
-          slug: googleServiceEntrySlug(service),
-          name: service.custom.name.trim() || "Custom Google APIs",
-          description: service.custom.description ?? "Custom Google APIs.",
-          baseUrl,
-        });
-      }
+      const urls = yield* googleBundleUrlsWithIdentity(input.urls);
+      const documents = yield* fetchGoogleDiscoveryDocuments(urls, httpClientLayer);
+      return yield* addGoogleOpenApiIntegrationFromDocuments({
+        ...input,
+        urls,
+        documents,
+      });
+    });
 
+  const addOnePresetService = (service: GooglePresetServiceConfig, baseUrl?: string) =>
+    Effect.gen(function* () {
       const preset = googleOpenApiPresetById.get(service.presetId);
       if (!preset?.url) {
         return yield* new OpenApiParseError({
@@ -391,53 +543,201 @@ const makeGooglePluginExtension = (
       });
     });
 
+  const addCustomServicePlanOutcome = (
+    plan: Extract<GoogleServiceAddPlan, { kind: "custom" }>,
+    baseUrl?: string,
+  ): Effect.Effect<GoogleAddServiceOutcome, never> => {
+    const fallbackSlug = plan.fallbackSlug;
+    const fallbackPresetId = googleCustomResultId(fallbackSlug);
+    const fallbackFailure = (error: string): GoogleAddServiceOutcome =>
+      googleAddServiceFailure({
+        slug: fallbackSlug,
+        presetId: fallbackPresetId,
+        error,
+      });
+
+    return Effect.gen(function* () {
+      const urls = yield* googleBundleUrlsWithIdentity([plan.url]);
+      const documents = yield* fetchGoogleDiscoveryDocuments(urls, httpClientLayer);
+      const serviceDocument = documents[0];
+      if (!serviceDocument) {
+        return yield* new OpenApiParseError({
+          message: "Custom Google service requires a Discovery document",
+        });
+      }
+      const identity = yield* googleDiscoveryDocumentIdentity({
+        documentText: serviceDocument.documentText,
+      });
+      const overrideSlug = plan.service.custom.slug?.trim();
+      const overrideName = plan.service.custom.name?.trim();
+      const displayName =
+        overrideName && overrideName.length > 0
+          ? overrideName
+          : googleDiscoveryDisplayName(identity);
+      const slug =
+        overrideSlug && overrideSlug.length > 0
+          ? IntegrationSlug.make(overrideSlug)
+          : googleDiscoverySlug(identity.name);
+      const presetId = googleCustomResultId(slug);
+      const description =
+        plan.service.custom.description?.trim() ||
+        googleDiscoveryDescription(identity, displayName);
+
+      return yield* addGoogleOpenApiIntegrationFromDocuments({
+        urls,
+        documents,
+        slug,
+        name: displayName,
+        description,
+        baseUrl,
+      }).pipe(
+        Effect.map(
+          (result): GoogleAddServiceOutcome => ({
+            added: [
+              {
+                slug: result.slug,
+                presetId,
+                toolCount: result.toolCount,
+              },
+            ],
+            skipped: [],
+            failed: [],
+          }),
+        ),
+        Effect.catchTag("IntegrationAlreadyExistsError", (error) => {
+          const skippedSlug = error.slug;
+          return Effect.succeed({
+            added: [],
+            skipped: [
+              {
+                slug: skippedSlug,
+                presetId: googleCustomResultId(skippedSlug),
+                reason: "already_exists" as const,
+              },
+            ],
+            failed: [],
+          });
+        }),
+        Effect.catchTags({
+          OpenApiParseError: (error: OpenApiParseError) =>
+            Effect.succeed(
+              googleAddServiceFailure({
+                slug,
+                presetId,
+                error: error.message,
+              }),
+            ),
+          OpenApiExtractionError: (error: OpenApiExtractionError) =>
+            Effect.succeed(
+              googleAddServiceFailure({
+                slug,
+                presetId,
+                error: error.message,
+              }),
+            ),
+        }),
+      );
+    }).pipe(
+      Effect.catchTags({
+        OpenApiParseError: (error: OpenApiParseError) =>
+          Effect.succeed(fallbackFailure(error.message)),
+      }),
+    );
+  };
+
+  const addServicePlanOutcome = (
+    plan: GoogleServiceAddPlan,
+    baseUrl?: string,
+  ): Effect.Effect<GoogleAddServiceOutcome, never> => {
+    if (plan.kind === "invalid-custom") {
+      return Effect.succeed(
+        googleAddServiceFailure({
+          slug: plan.slug,
+          presetId: plan.presetId,
+          error: plan.error,
+        }),
+      );
+    }
+
+    if (plan.kind === "custom") {
+      return addCustomServicePlanOutcome(plan, baseUrl);
+    }
+
+    const fallbackSlug = googleServiceEntrySlug(plan.service);
+    const fallbackPresetId = googleServiceEntryId(plan.service);
+    const add = addOnePresetService(plan.service, baseUrl).pipe(
+      Effect.map((result) => ({
+        slug: result.slug,
+        presetId: googleServiceEntryId(plan.service),
+        toolCount: result.toolCount,
+      })),
+    );
+
+    return add.pipe(
+      Effect.map(
+        (result): GoogleAddServiceOutcome => ({
+          added: [
+            {
+              slug: result.slug,
+              presetId: result.presetId,
+              toolCount: result.toolCount,
+            },
+          ],
+          skipped: [],
+          failed: [],
+        }),
+      ),
+      Effect.catchTag("IntegrationAlreadyExistsError", (error) => {
+        const skippedSlug = error.slug;
+        return Effect.succeed({
+          added: [],
+          skipped: [
+            {
+              slug: skippedSlug,
+              presetId: fallbackPresetId,
+              reason: "already_exists" as const,
+            },
+          ],
+          failed: [],
+        });
+      }),
+      Effect.catchTags({
+        OpenApiParseError: (error: OpenApiParseError) =>
+          Effect.succeed(
+            googleAddServiceFailure({
+              slug: fallbackSlug,
+              presetId: fallbackPresetId,
+              error: error.message,
+            }),
+          ),
+        OpenApiExtractionError: (error: OpenApiExtractionError) =>
+          Effect.succeed(
+            googleAddServiceFailure({
+              slug: fallbackSlug,
+              presetId: fallbackPresetId,
+              error: error.message,
+            }),
+          ),
+      }),
+      Effect.catch(() =>
+        Effect.succeed(
+          googleAddServiceFailure({
+            slug: fallbackSlug,
+            presetId: fallbackPresetId,
+            error: "Failed to add Google service",
+          }),
+        ),
+      ),
+    );
+  };
+
   const addServices = (input: GoogleAddServicesInput) =>
     Effect.gen(function* () {
+      const plans = googleServiceAddPlans(input.services);
       const outcomes = yield* Effect.forEach(
-        input.services,
-        (service): Effect.Effect<GoogleAddServiceOutcome, never> => {
-          const slug = googleServiceEntrySlug(service);
-          const presetId = googleServiceEntryId(service);
-          return addOneService(service, input.baseUrl).pipe(
-            Effect.map(
-              (result): GoogleAddServiceOutcome => ({
-                added: [
-                  {
-                    slug: result.slug,
-                    presetId,
-                    toolCount: result.toolCount,
-                  },
-                ],
-                skipped: [],
-                failed: [],
-              }),
-            ),
-            Effect.catchTag("IntegrationAlreadyExistsError", () =>
-              Effect.succeed({
-                added: [],
-                skipped: [
-                  {
-                    slug,
-                    presetId,
-                    reason: "already_exists" as const,
-                  },
-                ],
-                failed: [],
-              }),
-            ),
-            Effect.catchTags({
-              OpenApiParseError: (error: OpenApiParseError) =>
-                Effect.succeed(googleAddServiceFailure(service, slug, error.message)),
-              OpenApiExtractionError: (error: OpenApiExtractionError) =>
-                Effect.succeed(googleAddServiceFailure(service, slug, error.message)),
-            }),
-            Effect.catch(() =>
-              Effect.succeed(
-                googleAddServiceFailure(service, slug, "Failed to add Google service"),
-              ),
-            ),
-          );
-        },
+        plans,
+        (plan): Effect.Effect<GoogleAddServiceOutcome, never> =>
+          addServicePlanOutcome(plan, input.baseUrl),
         { concurrency: 1 },
       );
 

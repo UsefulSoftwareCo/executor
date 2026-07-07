@@ -13,12 +13,7 @@ import { Button } from "@executor-js/react/components/button";
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
-import {
-  errorMessageFromExit,
-  FormErrorAlert,
-  SlugCollisionAlert,
-  useSlugAlreadyExists,
-} from "@executor-js/react/lib/integration-add";
+import { errorMessageFromExit, FormErrorAlert } from "@executor-js/react/lib/integration-add";
 import { OpenApiSourceDetailsFields } from "@executor-js/plugin-openapi/react";
 
 import { addGoogleServices } from "./atoms";
@@ -52,8 +47,8 @@ export type GoogleServiceIdentityOverride = {
 
 export type GoogleCustomServiceInput = {
   readonly urls: readonly string[];
-  readonly slug: string;
-  readonly name: string;
+  readonly slug?: string;
+  readonly name?: string;
   readonly description?: string;
 };
 
@@ -81,8 +76,8 @@ export const googleAddServicesPayload = (input: {
           {
             custom: {
               urls: [...input.custom.urls],
-              slug: input.custom.slug,
-              name: input.custom.name,
+              ...(input.custom.slug?.trim() ? { slug: input.custom.slug.trim() } : {}),
+              ...(input.custom.name?.trim() ? { name: input.custom.name.trim() } : {}),
               ...(input.custom.description?.trim()
                 ? { description: input.custom.description.trim() }
                 : {}),
@@ -152,28 +147,73 @@ export const googleAddServicesResultRows = (
   })),
 ];
 
+const googleAddServicesResultRowId = (row: GoogleServiceResultRow): string =>
+  row.presetId === GOOGLE_CUSTOM_SERVICE_ID ? row.slug : row.presetId;
+
 export const mergeGoogleAddServicesResult = (
   previous: GoogleAddServicesResult,
   next: GoogleAddServicesResult,
 ): GoogleAddServicesResult => {
-  const nextPresetIds = new Set(googleAddServicesResultRows(next).map((row) => row.presetId));
+  const nextRowIds = new Set(googleAddServicesResultRows(next).map(googleAddServicesResultRowId));
   return {
-    added: [...previous.added.filter((entry) => !nextPresetIds.has(entry.presetId)), ...next.added],
+    added: [
+      ...previous.added.filter(
+        (entry) =>
+          !nextRowIds.has(
+            googleAddServicesResultRowId({
+              status: "added",
+              presetId: entry.presetId,
+              slug: String(entry.slug),
+              toolCount: entry.toolCount,
+            }),
+          ),
+      ),
+      ...next.added,
+    ],
     skipped: [
-      ...previous.skipped.filter((entry) => !nextPresetIds.has(entry.presetId)),
+      ...previous.skipped.filter(
+        (entry) =>
+          !nextRowIds.has(
+            googleAddServicesResultRowId({
+              status: "skipped",
+              presetId: entry.presetId,
+              slug: String(entry.slug),
+              reason: entry.reason,
+            }),
+          ),
+      ),
       ...next.skipped,
     ],
     failed: [
-      ...previous.failed.filter((entry) => !nextPresetIds.has(entry.presetId)),
+      ...previous.failed.filter(
+        (entry) =>
+          !nextRowIds.has(
+            googleAddServicesResultRowId({
+              status: "failed",
+              presetId: entry.presetId,
+              slug: String(entry.slug),
+              error: entry.error,
+            }),
+          ),
+      ),
       ...next.failed,
     ],
   };
 };
 
-const googlePresetName = (presetId: string): string =>
-  presetId === GOOGLE_CUSTOM_SERVICE_ID
+const humanizeGoogleSlug = (slug: string): string =>
+  slug
+    .replace(/^google_/, "")
+    .split("_")
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const googlePresetName = (row: GoogleServiceResultRow): string =>
+  row.presetId === GOOGLE_CUSTOM_SERVICE_ID || row.slug === "google_custom"
     ? "Custom Discovery URLs"
-    : (googleOpenApiPresetById.get(presetId)?.name ?? presetId);
+    : (googleOpenApiPresetById.get(row.presetId)?.name ??
+      (row.slug.startsWith("google_") ? `Google ${humanizeGoogleSlug(row.slug)}` : row.slug));
 
 export function GoogleServiceResultPanel(props: {
   readonly result: GoogleAddServicesResult;
@@ -196,11 +236,12 @@ export function GoogleServiceResultPanel(props: {
       </div>
       <ul className="space-y-2">
         {rows.map((row: GoogleServiceResultRow) => {
-          const presetName = googlePresetName(row.presetId);
+          const rowId = googleAddServicesResultRowId(row);
+          const presetName = googlePresetName(row);
           return (
             <li
-              key={`${row.status}:${row.presetId}`}
-              data-testid={`add-result-row-${row.presetId}`}
+              key={`${row.status}:${rowId}`}
+              data-testid={`add-result-row-${rowId}`}
               data-state={row.status}
               className="flex items-start gap-2 rounded-md border border-border bg-background px-2.5 py-2"
             >
@@ -249,9 +290,9 @@ export function GoogleServiceResultPanel(props: {
                   type="button"
                   variant="outline"
                   size="xs"
-                  data-testid={`add-result-retry-${row.presetId}`}
-                  loading={props.retryingPresetId === row.presetId}
-                  onClick={() => void props.onRetry(row.presetId)}
+                  data-testid={`add-result-retry-${rowId}`}
+                  loading={props.retryingPresetId === rowId}
+                  onClick={() => void props.onRetry(rowId)}
                 >
                   Retry
                 </Button>
@@ -302,7 +343,6 @@ export default function AddGoogleSource(props: {
   );
   const [customDiscoveryUrls, setCustomDiscoveryUrls] = useState<readonly string[]>([]);
   const [baseUrl, setBaseUrl] = useState("");
-  const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [retryingPresetId, setRetryingPresetId] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
@@ -357,16 +397,6 @@ export default function AddGoogleSource(props: {
     (hasCustomDiscoveryUrls
       ? "Custom Google APIs"
       : (singleSelectedPreset?.name ?? (isGooglePhotosPreset ? "Google Photos" : "Google")));
-  const resolvedDescription =
-    descriptionDraft ??
-    (hasCustomDiscoveryUrls
-      ? "Custom Google APIs."
-      : isGooglePhotosPreset
-        ? "Google Photos albums, uploads, app-created media, and selected picker media."
-        : "Google APIs");
-  const customSlugAlreadyExists = useSlugAlreadyExists(
-    hasCustomDiscoveryUrls ? resolvedSourceId : "",
-  );
   const identityOverride =
     selectedIds.length === 1 && !hasCustomDiscoveryUrls
       ? { slug: resolvedSourceId, name: resolvedDisplayName }
@@ -375,15 +405,9 @@ export default function AddGoogleSource(props: {
     customDiscoveryUrls.length > 0
       ? {
           urls: [...customDiscoveryUrls],
-          slug: resolvedSourceId,
-          name: resolvedDisplayName,
-          description: resolvedDescription,
         }
       : undefined;
-  const canAdd =
-    (selectedIds.length > 0 || customDiscoveryUrls.length > 0) &&
-    !customSlugAlreadyExists &&
-    !adding;
+  const canAdd = (selectedIds.length > 0 || customDiscoveryUrls.length > 0) && !adding;
 
   const handleAdd = async () => {
     setAdding(true);
@@ -407,7 +431,7 @@ export default function AddGoogleSource(props: {
   const handleRetry = async (presetId: string) => {
     setRetryingPresetId(presetId);
     setAddError(null);
-    const retryingCustom = presetId === GOOGLE_CUSTOM_SERVICE_ID;
+    const retryingCustom = !googleOpenApiPresetById.has(presetId);
     const retryIdentityOverride =
       !retryingCustom && identityOverride && selectedIds.length === 1 && selectedIds[0] === presetId
         ? identityOverride
@@ -429,19 +453,9 @@ export default function AddGoogleSource(props: {
     setRetryingPresetId(null);
   };
 
-  const showIdentityDetails = selectedIds.length === 1 || hasCustomDiscoveryUrls;
-  const detailTitle = hasCustomDiscoveryUrls
-    ? "Custom Google Discovery URLs"
-    : (singleSelectedPreset?.name ?? "Google");
-  const detailSubtitle = hasCustomDiscoveryUrls
-    ? selectedIds.length > 0
-      ? `${customDiscoveryUrls.length} custom URL${
-          customDiscoveryUrls.length === 1 ? "" : "s"
-        } added as its own integration. Selected products keep preset names.`
-      : `${customDiscoveryUrls.length} custom URL${
-          customDiscoveryUrls.length === 1 ? "" : "s"
-        } added as its own integration.`
-    : "This product is added as its own integration.";
+  const showIdentityDetails = selectedIds.length === 1 && !hasCustomDiscoveryUrls;
+  const detailTitle = singleSelectedPreset?.name ?? "Google";
+  const detailSubtitle = "This product is added as its own integration.";
 
   const dismiss = () => {
     if (servicesResult) {
@@ -473,9 +487,6 @@ export default function AddGoogleSource(props: {
           title={detailTitle}
           subtitle={detailSubtitle}
           identity={identity}
-          {...(hasCustomDiscoveryUrls
-            ? { description: resolvedDescription, onDescriptionChange: setDescriptionDraft }
-            : {})}
           baseUrl={baseUrl}
           onBaseUrlChange={setBaseUrl}
           baseUrlLabel="Base URL override (optional)"
@@ -485,8 +496,6 @@ export default function AddGoogleSource(props: {
       ) : (
         <BaseUrlSettings baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} />
       )}
-
-      {customSlugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
 
       {addError && <FormErrorAlert message={addError} />}
 

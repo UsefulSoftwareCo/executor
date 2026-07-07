@@ -98,6 +98,11 @@ describe("AddGoogleSource per-service submit", () => {
           presetId: "custom",
           error: "Custom Discovery fetch failed",
         },
+        {
+          slug: IntegrationSlug.make("google_tasks"),
+          presetId: "google_tasks",
+          error: "Tasks Discovery fetch failed",
+        },
       ],
     };
 
@@ -117,6 +122,8 @@ describe("AddGoogleSource per-service submit", () => {
     expect(text).toContain("Discovery fetch failed");
     expect(text).toContain("Custom Discovery URLs");
     expect(text).toContain("Custom Discovery fetch failed");
+    expect(text).toContain("Google Tasks");
+    expect(text).toContain("Tasks Discovery fetch failed");
     expect(text).toContain("Retry");
   });
 
@@ -181,15 +188,12 @@ describe("AddGoogleSource per-service submit", () => {
     });
   });
 
-  it("submits custom Discovery URLs as one service entry", () => {
+  it("submits custom Discovery URLs without generic identity overrides", () => {
     expect(
       googleAddServicesPayload({
         presetIds: ["google-calendar"],
         custom: {
           urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
-          slug: "google_custom",
-          name: "Custom Google APIs",
-          description: "Custom Google APIs.",
         },
         baseUrl: " https://proxy.example ",
       }),
@@ -199,13 +203,35 @@ describe("AddGoogleSource per-service submit", () => {
         {
           custom: {
             urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
-            slug: "google_custom",
-            name: "Custom Google APIs",
-            description: "Custom Google APIs.",
           },
         },
       ],
       baseUrl: "https://proxy.example",
+    });
+  });
+
+  it("passes explicit custom Discovery URL identity overrides when supplied", () => {
+    expect(
+      googleAddServicesPayload({
+        presetIds: [],
+        custom: {
+          urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
+          slug: "team_tasks",
+          name: "Team Tasks",
+          description: "Internal task workflow.",
+        },
+      }),
+    ).toEqual({
+      services: [
+        {
+          custom: {
+            urls: ["https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"],
+            slug: "team_tasks",
+            name: "Team Tasks",
+            description: "Internal task workflow.",
+          },
+        },
+      ],
     });
   });
 });

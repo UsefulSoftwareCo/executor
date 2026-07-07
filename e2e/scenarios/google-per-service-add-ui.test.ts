@@ -99,12 +99,13 @@ scenario(
           await row.getByRole("link", { name: "Open" }).waitFor();
         }
 
-        const customRow = page.getByTestId("add-result-row-custom");
+        const customRow = page.getByTestId("add-result-row-google_tasks");
         await customRow.waitFor({ timeout: 120_000 });
         expect(
           await customRow.getAttribute("data-state"),
           "the custom Discovery URL is added through the services endpoint",
         ).toBe("added");
+        await customRow.getByText("Google Tasks").waitFor();
         await customRow.getByRole("link", { name: "Open" }).waitFor();
       });
 
@@ -128,13 +129,14 @@ scenario(
         await page.goto("/integrations", { waitUntil: "networkidle" });
         // Each fanned-out integration is its own list entry, keyed by its slug
         // (the list renders the slug as each entry's description).
-        for (const slug of ["google_calendar", "google_gmail", "google_drive", "google_custom"]) {
+        for (const slug of ["google_calendar", "google_gmail", "google_drive", "google_tasks"]) {
           await page
             .getByRole("main")
             .getByText(slug, { exact: true })
             .first()
             .waitFor({ timeout: 20_000 });
         }
+        await page.getByRole("main").getByText("Google Tasks").first().waitFor({ timeout: 20_000 });
       });
 
       await step("Re-adding an existing product reports it as skipped", async () => {

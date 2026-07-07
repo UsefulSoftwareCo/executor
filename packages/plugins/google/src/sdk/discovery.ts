@@ -241,6 +241,7 @@ const DiscoveryDocument = Schema.Struct({
   name: TextOption,
   version: TextOption,
   title: TextOption,
+  description: TextOption,
   rootUrl: TextOption,
   servicePath: Schema.optional(Schema.Trim).pipe(
     Schema.withDecodingDefaultType(Effect.succeed("")),
@@ -268,6 +269,12 @@ const DiscoveryDocument = Schema.Struct({
 });
 type DiscoveryDocument = typeof DiscoveryDocument.Type;
 
+export interface GoogleDiscoveryDocumentIdentity {
+  readonly name: string;
+  readonly title?: string;
+  readonly description?: string;
+}
+
 export interface GoogleDiscoveryOpenApiConversion {
   readonly specText: string;
   readonly baseUrl: string;
@@ -285,6 +292,25 @@ const decodeDiscoveryParameter = Schema.decodeUnknownSync(DiscoveryParameter);
 const decodeDiscoveryMethod = Schema.decodeUnknownSync(DiscoveryMethod);
 const decodeDiscoveryResource = Schema.decodeUnknownSync(DiscoveryResource);
 const parseJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+const parseDiscoveryDocument = (documentText: string) =>
+  parseJson(documentText).pipe(
+    Effect.mapError(
+      () =>
+        new OpenApiParseError({
+          message: "Failed to parse Google Discovery document",
+        }),
+    ),
+    Effect.flatMap((parsed) =>
+      Effect.try({
+        try: () => decodeDiscoveryDocument(parsed),
+        catch: () =>
+          new OpenApiParseError({
+            message: "Failed to decode Google Discovery document",
+          }),
+      }),
+    ),
+  );
 
 const DISCOVERY_SERVICE_PATH_RE =
   /^\/discovery\/v1\/apis\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/rest\/?$/;
@@ -386,6 +412,25 @@ export const fetchGoogleDiscoveryDocument = Effect.fn("OpenApi.fetchGoogleDiscov
           }),
       ),
     );
+  },
+);
+
+export const googleDiscoveryDocumentIdentity = Effect.fn("OpenApi.googleDiscoveryDocumentIdentity")(
+  function* (input: { readonly documentText: string }) {
+    const document = yield* parseDiscoveryDocument(input.documentText);
+    const name = Option.getOrUndefined(document.name);
+    if (!name) {
+      return yield* new OpenApiParseError({
+        message: "Google Discovery document is missing name",
+      });
+    }
+    const title = Option.getOrUndefined(document.title);
+    const description = Option.getOrUndefined(document.description);
+    return {
+      name,
+      ...(title !== undefined ? { title } : {}),
+      ...(description !== undefined ? { description } : {}),
+    };
   },
 );
 
@@ -946,22 +991,7 @@ const hasOperation = (
 
 export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleDiscovery")(
   function* (input: { readonly discoveryUrl: string; readonly documentText: string }) {
-    const parsed = yield* parseJson(input.documentText).pipe(
-      Effect.mapError(
-        () =>
-          new OpenApiParseError({
-            message: "Failed to parse Google Discovery document",
-          }),
-      ),
-    );
-    const document = yield* Effect.try({
-      try: () => decodeDiscoveryDocument(parsed),
-      catch: () =>
-        new OpenApiParseError({
-          message: "Failed to decode Google Discovery document",
-        }),
-    });
-
+    const document = yield* parseDiscoveryDocument(input.documentText);
     const info = yield* discoveryDocumentInfo(document, input.discoveryUrl);
     const { service, version, rootUrl, baseUrl, title } = info;
     const paths: Record<string, Record<string, OpenApiOperationObject>> = {};
@@ -1095,21 +1125,7 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
 
   const infos = yield* Effect.forEach(input.documents, ({ discoveryUrl, documentText }) =>
     Effect.gen(function* () {
-      const parsed = yield* parseJson(documentText).pipe(
-        Effect.mapError(
-          () =>
-            new OpenApiParseError({
-              message: "Failed to parse Google Discovery document",
-            }),
-        ),
-      );
-      const document = yield* Effect.try({
-        try: () => decodeDiscoveryDocument(parsed),
-        catch: () =>
-          new OpenApiParseError({
-            message: "Failed to decode Google Discovery document",
-          }),
-      });
+      const document = yield* parseDiscoveryDocument(documentText);
       return yield* discoveryDocumentInfo(document, discoveryUrl);
     }),
   );
