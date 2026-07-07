@@ -128,24 +128,17 @@ scenario(
           const results = page.getByTestId("google-add-results");
           await results.waitFor({ timeout: 120_000 });
 
-          // Each submitted preset resolves to a row that is either freshly
+          // Each submitted entry resolves to a row that is either freshly
           // "added" or "skipped" (raced with another writer) - both leave the
-          // integration present, which is all the grid needs.
-          for (const presetId of missingPresetIds) {
-            const row = page.getByTestId(`add-result-row-${presetId}`);
+          // integration present, which is all the grid needs. The custom Tasks
+          // URL reports under its derived slug.
+          const expectedRowIds = [...missingPresetIds, ...(customMissing ? ["google_tasks"] : [])];
+          for (const rowId of expectedRowIds) {
+            const row = page.getByTestId(`add-result-row-${rowId}`);
             await row.waitFor({ timeout: 120_000 });
-            expect(
-              ["added", "skipped"],
-              `${presetId} present (added or already existed)`,
-            ).toContain(await row.getAttribute("data-state"));
-          }
-          if (customMissing) {
-            const customRow = page.getByTestId("add-result-row-google_tasks");
-            await customRow.waitFor({ timeout: 120_000 });
-            expect(
-              ["added", "skipped"],
-              "custom Google service present (added or already existed)",
-            ).toContain(await customRow.getAttribute("data-state"));
+            expect(["added", "skipped"], `${rowId} present (added or already existed)`).toContain(
+              await row.getAttribute("data-state"),
+            );
           }
         },
       );
