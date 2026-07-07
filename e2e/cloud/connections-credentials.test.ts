@@ -3,8 +3,9 @@
 // identified by (owner, integration, name), with its value stored through the
 // real vault. The product promises under test: the secret goes in but NEVER
 // comes back out of any endpoint; metadata round-trips; re-creating the same
-// connection replaces it instead of duplicating; removal really removes; and
-// unknown connections fail with a typed not-found error.
+// connection is rejected as a conflict instead of silently replacing it;
+// removal really removes; and unknown connections fail with a typed
+// not-found error.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -102,7 +103,7 @@ scenario(
 );
 
 scenario(
-  "Connections · re-creating the same connection replaces it instead of duplicating",
+  "Connections · re-creating the same connection is rejected and leaves the original intact",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -128,21 +129,28 @@ scenario(
       "the first create stores one row with its label",
     ).toEqual(["first key"]);
 
-    yield* client.connections.create({
-      payload: {
-        owner: "org",
-        name,
-        integration,
-        template: TEMPLATE_API_KEY,
-        identityLabel: "rotated key",
-        value: "second-value",
-      },
-    });
+    const error = yield* client.connections
+      .create({
+        payload: {
+          owner: "org",
+          name,
+          integration,
+          template: TEMPLATE_API_KEY,
+          identityLabel: "clobber attempt",
+          value: "second-value",
+        },
+      })
+      .pipe(Effect.flip);
+    expect(
+      (error as { _tag?: string })._tag,
+      "re-creating the same (owner, integration, name) fails with the typed conflict",
+    ).toBe("ConnectionAlreadyExistsError");
+
     const second = yield* client.connections.list({ query: { integration } });
     expect(
       second.filter((connection) => connection.name === name).map((c) => c.identityLabel),
-      "re-creating the same (owner, integration, name) updates the row in place",
-    ).toEqual(["rotated key"]);
+      "the rejected create left the original row untouched",
+    ).toEqual(["first key"]);
   }),
 );
 
