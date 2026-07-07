@@ -1,4 +1,4 @@
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { ToolFileValue } from "@executor-js/sdk/core";
 
@@ -151,6 +151,28 @@ const applyHeaders = (
 const normalizeContentType = (ct: string | null | undefined): string =>
   ct?.split(";")[0]?.trim().toLowerCase() ?? "";
 
+export const STREAM_MAX_BYTES = 1_000_000;
+export const STREAM_MAX_MS = 10_000;
+
+class StreamCapReached extends Error {
+  readonly _tag = "StreamCapReached";
+}
+
+export interface StreamingResponseCaps {
+  readonly maxBytes?: number;
+  readonly maxMs?: number;
+}
+
+const STREAMING_RESPONSE_CONTENT_TYPES = new Set([
+  "application/stream+json",
+  "application/x-ndjson",
+  "application/jsonl",
+  "text/event-stream",
+]);
+
+const isStreamingResponseContentType = (ct: string | null | undefined): boolean =>
+  STREAMING_RESPONSE_CONTENT_TYPES.has(normalizeContentType(ct));
+
 const isJsonContentType = (ct: string | null | undefined): boolean => {
   const normalized = normalizeContentType(ct);
   if (!normalized) return false;
@@ -178,6 +200,115 @@ const isTextContentType = (ct: string | null | undefined): boolean =>
 
 const isOctetStream = (ct: string | null | undefined): boolean =>
   normalizeContentType(ct) === "application/octet-stream";
+
+const parseStreamingJsonLines = (text: string, truncated: boolean): unknown => {
+  const lines = text.split(/\r?\n/);
+  let lastNonEmptyIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index];
+    if (line !== undefined && line.trim() !== "") {
+      lastNonEmptyIndex = index;
+      break;
+    }
+  }
+  const rows: unknown[] = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line === undefined || line.trim() === "") continue;
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      if (truncated && index === lastNonEmptyIndex) continue;
+      return text;
+    }
+  }
+
+  return rows;
+};
+
+const decodeStreamingResponseBody = (
+  contentType: string | null,
+  text: string,
+  truncated: boolean,
+): unknown => {
+  switch (normalizeContentType(contentType)) {
+    case "application/stream+json":
+    case "application/x-ndjson":
+    case "application/jsonl":
+      return parseStreamingJsonLines(text, truncated);
+    case "text/event-stream":
+    default:
+      return text;
+  }
+};
+
+export const collectStreamingBody = (
+  stream: Stream.Stream<Uint8Array, unknown, never>,
+  contentType: string | null,
+  caps: StreamingResponseCaps = {},
+) =>
+  Effect.gen(function* () {
+    const maxBytes = caps.maxBytes ?? STREAM_MAX_BYTES;
+    const maxMs = caps.maxMs ?? STREAM_MAX_MS;
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    let truncated = false;
+    const startedAt = Date.now();
+
+    const completed = yield* stream.pipe(
+      Stream.timeout(maxMs),
+      Stream.runForEach((chunk) =>
+        Effect.gen(function* () {
+          const remaining = maxBytes - bytes;
+          if (remaining <= 0) {
+            truncated = true;
+            return yield* Effect.fail(new StreamCapReached());
+          }
+
+          if (chunk.byteLength > remaining) {
+            chunks.push(chunk.subarray(0, remaining));
+            bytes += remaining;
+            truncated = true;
+            return yield* Effect.fail(new StreamCapReached());
+          }
+
+          chunks.push(chunk);
+          bytes += chunk.byteLength;
+          if (bytes >= maxBytes) {
+            truncated = true;
+            return yield* Effect.fail(new StreamCapReached());
+          }
+        }),
+      ),
+      Effect.timeoutOption(maxMs + 1_000),
+      Effect.catch((error: unknown) =>
+        error instanceof StreamCapReached
+          ? Effect.succeed(Option.some(undefined))
+          : Effect.fail(error),
+      ),
+    );
+    if (Option.isNone(completed)) truncated = true;
+
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= maxMs) truncated = true;
+    const collected = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      collected.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const text = new TextDecoder("utf-8").decode(collected);
+
+    return {
+      data: decodeStreamingResponseBody(contentType, text, truncated),
+      headers: {
+        "x-executor-stream": truncated ? "truncated" : "complete",
+        "x-executor-stream-bytes": String(bytes),
+        "x-executor-stream-duration-ms": String(durationMs),
+      },
+    };
+  });
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";
@@ -861,6 +992,16 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
     ? Option.getOrUndefined(responseBodyBinding.fileHint)
     : undefined;
   const ok = status >= 200 && status < 300;
+  const streamingBody =
+    ok &&
+    status !== 204 &&
+    fileHint?.kind !== "binaryResponse" &&
+    isStreamingResponseContentType(contentType)
+      ? yield* collectStreamingBody(response.stream, contentType).pipe(mapBodyError)
+      : null;
+  if (streamingBody) {
+    Object.assign(responseHeaders, streamingBody.headers);
+  }
   const responseBody: unknown =
     status === 204
       ? null
@@ -870,12 +1011,14 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
             fileHint,
             contentType,
           )
-        : isJsonContentType(contentType)
-          ? yield* response.json.pipe(
-              Effect.catch(() => response.text),
-              mapBodyError,
-            )
-          : yield* response.text.pipe(mapBodyError);
+        : streamingBody
+          ? streamingBody.data
+          : isJsonContentType(contentType)
+            ? yield* response.json.pipe(
+                Effect.catch(() => response.text),
+                mapBodyError,
+              )
+            : yield* response.text.pipe(mapBodyError);
 
   const dataBody =
     ok && fileHint?.kind === "byteField"
