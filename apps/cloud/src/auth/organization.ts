@@ -57,9 +57,19 @@ export const resolveOrganization = (organizationId: string) =>
 // until their access token naturally expires (~10 min).
 //
 // To close that gap we verify membership live on every protected request.
-// `listUserMemberships` is one WorkOS call per request. If this becomes a
-// hot path we can layer a short per-(user, org) TTL cache underneath, or
-// swap it for a local memberships table fed by the WorkOS Events API.
+// `listUserMemberships` is one WorkOS call per request.
+//
+// Caching decision (2026-07): we deliberately do NOT add a positive TTL cache
+// here. A positive cache is exactly what would re-open the revocation gap this
+// live check exists to close — a revoked member would keep access for the cache
+// TTL. Negative caching is worse still (a transient WorkOS blip would get
+// pinned as "no access"), so it is out too. The rate-limit amplification a
+// shared-API-key org can cause under a WorkOS slowdown is mitigated instead by
+// the classification fix at the MCP call site (a blip now yields a retryable
+// 503, so it no longer condemns sessions or triggers reconnect storms). If per-
+// request WorkOS load later proves to be the bottleneck, the right structural
+// fix is a local memberships table fed by the WorkOS Events API (authoritative,
+// no staleness window), not a TTL cache over this call — tracked as follow-up.
 //
 // Returns the resolved organization (via resolveOrganization) if the user
 // currently holds an *active* membership in it, otherwise null. Callers

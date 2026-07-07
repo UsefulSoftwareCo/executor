@@ -9,11 +9,16 @@
 // AuthOutcome:
 //   - missing bearer       -> Unauthorized (challenge: Bearer resource_metadata=…)
 //   - invalid token/api key -> Unauthorized (challenge: Bearer error="invalid_token" …)
-//   - transient JWKS infra  -> Unavailable (caught here; envelope renders 503 -32001)
+//   - transient JWKS OR membership-lookup infra -> Unavailable (caught here;
+//       envelope renders a retryable 503 -32001). A WorkOS blip during the live
+//       org check is a TRANSIENT failure, not evidence the org is gone, so it
+//       must NOT reach the Forbidden/destroy path below.
 //   - no org / revoked org  -> Forbidden ("No organization in session …", -32001).
-//       Because authenticate reads the mcp-session-id header to do the live org
-//       check, the envelope's dispose-on-Forbidden-with-sessionId path reproduces
-//       the old inline clearExistingSession.
+//       This requires a POSITIVE determination (the lookup SUCCEEDED and the org
+//       is absent), never a failed lookup. Because authenticate reads the
+//       mcp-session-id header to do the live org check, the envelope's
+//       dispose-on-Forbidden-with-sessionId path reproduces the old inline
+//       clearExistingSession.
 //   - verified + org allowed -> Authenticated(principal)
 //
 // The rich `mcp.request.annotate` client-fingerprint span (cloud-specific, no
@@ -23,7 +28,7 @@
 // live at WorkOS/AuthKit (external); only the two discovery docs are mounted.
 // ---------------------------------------------------------------------------
 
-import { Cause, Effect, Layer, Predicate, Result } from "effect";
+import { Effect, Layer, Predicate, Result } from "effect";
 
 import {
   authenticated,
@@ -61,6 +66,17 @@ const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-ser
 const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
+
+// A transient WorkOS failure (429 / 5xx / timeout) during the live membership
+// lookup must NOT masquerade as "org revoked". The two are indistinguishable in
+// outcome value alone (`authorize` yields `null` for a genuinely-absent org),
+// but they differ in the Effect CHANNEL: a genuine absence SUCCEEDS with `null`,
+// while a WorkOS error FAILS. We branch on that below so a WorkOS blip becomes a
+// retryable 503 (session preserved) rather than a Forbidden (session condemned).
+// This mirrors the JWKS/api-key `reason: "system"` classification already used
+// on the verify path.
+const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
+  "Organization authorization temporarily unavailable - please retry";
 
 /**
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
@@ -155,22 +171,37 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
           return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
         }
 
-        const organizationId = yield* orgAuth.authorize(token.accountId, organizationSelector).pipe(
-          Effect.catchCause((error) =>
-            Effect.gen(function* () {
-              yield* Effect.annotateCurrentSpan({
-                "mcp.auth.organization_authorize_error": Cause.pretty(error),
-              });
-              return null;
+        // Capture success-vs-failure explicitly instead of collapsing both into
+        // `null`. A FAILURE here is a transient WorkOS error (429/5xx/timeout) —
+        // NOT evidence the org is gone — so it must become a retryable 503 with
+        // the session left intact, never a Forbidden that condemns the DO.
+        const authorizeResult = yield* orgAuth
+          .authorize(token.accountId, organizationSelector)
+          .pipe(
+            Effect.result,
+            Effect.withSpan("mcp.auth.authorize_organization", {
+              attributes: {
+                "mcp.auth.organization_selector": organizationSelector,
+              },
             }),
-          ),
-          Effect.withSpan("mcp.auth.authorize_organization", {
-            attributes: { "mcp.auth.organization_selector": organizationSelector },
-          }),
-        );
+          );
 
         yield* annotateMcpRequest(request, { token, parseBody });
 
+        if (Result.isFailure(authorizeResult)) {
+          yield* Effect.annotateCurrentSpan({
+            "mcp.auth.outcome": "system_error",
+            "mcp.auth.system_error.reason": "organization_authorize",
+            "mcp.auth.organization_authorize_error": String(authorizeResult.failure).slice(0, 500),
+          });
+          return unavailable(ORGANIZATION_AUTHORIZE_UNAVAILABLE);
+        }
+
+        // Positive determination: the lookup succeeded. `null` here means the
+        // caller genuinely holds no active membership (revoked / never a member)
+        // — a real Forbidden, which the handler may act on by condemning the
+        // session.
+        const organizationId = authorizeResult.success;
         if (!organizationId) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
         return authenticated(principalFromToken(token, organizationId));
       });
@@ -179,7 +210,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
       if (Predicate.isTagged(result, "Authorized")) {
         return finishAuthorized(request, result.token);
       }
-      return annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
+      return annotateMcpRequest(request, {
+        token: null,
+        parseBody: false,
+      }).pipe(
         Effect.as(
           unauthorized(
             bearerChallengeFor(
@@ -202,7 +236,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         Effect.result,
         Effect.flatMap((result) =>
           Result.isFailure(result)
-            ? annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
+            ? annotateMcpRequest(request, {
+                token: null,
+                parseBody: false,
+              }).pipe(
                 Effect.flatMap(() =>
                   Effect.annotateCurrentSpan({
                     "mcp.auth.outcome": "system_error",

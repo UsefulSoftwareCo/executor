@@ -19,6 +19,11 @@ import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { cloudMcpAuth } from "./auth-provider";
 import { McpSessionDOSqlite } from "./session-durable-object";
 
+// Advertised on transient-auth 503s so clients back off before retrying. Short:
+// WorkOS blips are typically sub-second, and the JSON-RPC transport surfaces the
+// non-200 as a retryable error the agent can re-issue.
+const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
+
 const corsPreflightResponse = (): Response =>
   new Response(null, {
     status: 204,
@@ -57,7 +62,14 @@ const renderAuthError = (
   if (Predicate.isTagged(outcome, "Forbidden")) {
     return jsonRpcResponse(403, outcome.code ?? -32001, outcome.message);
   }
-  return jsonRpcResponse(503, -32001, outcome.message);
+  // Unavailable: a transient auth-infra failure (JWKS blip OR a WorkOS
+  // membership-lookup 429/5xx/timeout). Both are retryable, so advertise a
+  // Retry-After so the client (and any polite retry layer) backs off instead of
+  // hammering. Crucially, this path NEVER reaches the session-destroy branch
+  // below — a transient failure must not condemn a live session.
+  const response = jsonRpcResponse(503, -32001, outcome.message);
+  response.headers.set("retry-after", String(UNAVAILABLE_RETRY_AFTER_SECONDS));
+  return response;
 };
 
 const authenticate = (request: Request) =>
@@ -99,7 +111,10 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
-  const serveOptions = { binding: "MCP_SESSION", transport: "streamable-http" } as const;
+  const serveOptions = {
+    binding: "MCP_SESSION",
+    transport: "streamable-http",
+  } as const;
   // The agents SDK builds an exact-match `URLPattern` from the path handed to
   // `serve` (see `createStreamingHttpHandler` in `agents/dist/mcp/index.js`) —
   // a single `/mcp` handler never matches `/mcp/toolkits/<slug>` and falls
@@ -126,6 +141,11 @@ export const makeCloudMcpAgentHandler = () => {
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
+      // Destroying a live session on auth grounds requires a POSITIVE
+      // determination that access is genuinely gone — only `Forbidden` carries
+      // that (valid bearer, org absent/revoked). `Unavailable` (transient WorkOS
+      // / JWKS failure) and `Unauthorized` (retry with a fresh token) must leave
+      // the session intact, so the condemn path is gated on `Forbidden` alone.
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
         await Effect.runPromise(
           Effect.ignore(
@@ -142,7 +162,10 @@ export const makeCloudMcpAgentHandler = () => {
       // Matches the old envelope's contract (@modelcontextprotocol/sdk's
       // `WebStandardStreamableHTTPServerTransport.handleDeleteRequest`): 200,
       // not 204 — see e2e/cloud/mcp-protocol.test.ts.
-      return new Response(null, { status: 200, headers: { "access-control-allow-origin": "*" } });
+      return new Response(null, {
+        status: 200,
+        headers: { "access-control-allow-origin": "*" },
+      });
     }
 
     if (sessionId) {
