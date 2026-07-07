@@ -1,5 +1,5 @@
-import { Effect, Exit, Layer, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import type { ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
@@ -153,6 +153,7 @@ const normalizeContentType = (ct: string | null | undefined): string =>
 
 export const STREAM_MAX_BYTES = 1_000_000;
 export const STREAM_MAX_MS = 10_000;
+export const RESPONSE_HEADERS_TIMEOUT_MS = 60_000;
 
 class StreamCapReached extends Error {
   readonly _tag = "StreamCapReached";
@@ -162,6 +163,16 @@ export interface StreamingResponseCaps {
   readonly maxBytes?: number;
   readonly maxMs?: number;
 }
+
+export interface InvokeOptions {
+  readonly responseHeadersTimeoutMs?: number;
+}
+
+const formatTimeout = (timeoutMs: number): string =>
+  timeoutMs % 1_000 === 0 ? `${timeoutMs / 1_000}s` : `${timeoutMs}ms`;
+
+const responseHeadersTimeoutMessage = (timeoutMs: number): string =>
+  `Upstream returned no response headers within ${formatTimeout(timeoutMs)}. The endpoint may be a live stream with no data to send (for example, runtime logs of an idle deployment); the request was aborted. Retry when the resource has activity, or use a non-streaming endpoint.`;
 
 const STREAMING_RESPONSE_CONTENT_TYPES = new Set([
   "application/stream+json",
@@ -260,39 +271,71 @@ export const collectStreamingBody = (
     let truncated = false;
     const startedAt = Date.now();
 
-    const completed = yield* stream.pipe(
-      Stream.timeout(maxMs),
-      Stream.runForEach((chunk) =>
-        Effect.gen(function* () {
-          const remaining = maxBytes - bytes;
-          if (remaining <= 0) {
-            truncated = true;
-            return yield* Effect.fail(new StreamCapReached());
-          }
+    const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    const completedExitOption = yield* Effect.callback<Option.Option<Exit.Exit<void, unknown>>>(
+      (resume, signal) => {
+        let settled = false;
+        const collectEffect = stream.pipe(
+          Stream.timeout(maxMs),
+          Stream.runForEach((chunk) =>
+            Effect.gen(function* () {
+              const remaining = maxBytes - bytes;
+              if (remaining <= 0) {
+                truncated = true;
+                return yield* Effect.fail(new StreamCapReached());
+              }
 
-          if (chunk.byteLength > remaining) {
-            chunks.push(chunk.subarray(0, remaining));
-            bytes += remaining;
-            truncated = true;
-            return yield* Effect.fail(new StreamCapReached());
-          }
+              if (chunk.byteLength > remaining) {
+                chunks.push(chunk.subarray(0, remaining));
+                bytes += remaining;
+                truncated = true;
+                return yield* Effect.fail(new StreamCapReached());
+              }
 
-          chunks.push(chunk);
-          bytes += chunk.byteLength;
-          if (bytes >= maxBytes) {
-            truncated = true;
-            return yield* Effect.fail(new StreamCapReached());
-          }
-        }),
-      ),
-      Effect.timeoutOption(maxMs + 1_000),
-      Effect.catch((error: unknown) =>
-        error instanceof StreamCapReached
-          ? Effect.succeed(Option.some(undefined))
-          : Effect.fail(error),
-      ),
+              chunks.push(chunk);
+              bytes += chunk.byteLength;
+              if (bytes >= maxBytes) {
+                truncated = true;
+                return yield* Effect.fail(new StreamCapReached());
+              }
+            }),
+          ),
+          Effect.catch((error: unknown) =>
+            error instanceof StreamCapReached ? Effect.void : Effect.fail(error),
+          ),
+          Effect.exit,
+          Effect.tap((exit) =>
+            Effect.sync(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resume(Effect.succeed(Option.some(exit)));
+            }),
+          ),
+        );
+        const fiber = runFork(collectEffect);
+        const interrupt = () => {
+          runFork(Fiber.interrupt(fiber));
+        };
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          truncated = true;
+          interrupt();
+          resume(Effect.succeed(Option.none()));
+        }, maxMs + 1_000);
+        signal.addEventListener("abort", interrupt, { once: true });
+        return Effect.sync(() => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", interrupt);
+          if (!settled) interrupt();
+        });
+      },
     );
-    if (Option.isNone(completed)) truncated = true;
+    if (Option.isSome(completedExitOption) && Exit.isFailure(completedExitOption.value)) {
+      return yield* Effect.failCause(completedExitOption.value.cause);
+    }
+    if (Option.isNone(completedExitOption)) truncated = true;
 
     const durationMs = Date.now() - startedAt;
     if (durationMs >= maxMs) truncated = true;
@@ -952,6 +995,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   args: Record<string, unknown>,
   resolvedHeaders: Record<string, string>,
   sourceQueryParams: Record<string, string> = {},
+  options: InvokeOptions = {},
 ) {
   const client = yield* HttpClient.HttpClient;
 
@@ -965,16 +1009,57 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
 
   const request = yield* buildRequest(operation, args, resolvedHeaders, sourceQueryParams);
 
-  const response = yield* client.execute(request).pipe(
-    Effect.mapError(
-      (err) =>
-        new OpenApiInvocationError({
-          message: "HTTP request failed",
-          statusCode: Option.none(),
-          cause: err,
+  const responseHeadersTimeoutMs = options.responseHeadersTimeoutMs ?? RESPONSE_HEADERS_TIMEOUT_MS;
+  const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const responseExitOption = yield* Effect.callback<
+    Option.Option<Exit.Exit<HttpClientResponse.HttpClientResponse, OpenApiInvocationError>>
+  >((resume, signal) => {
+    let settled = false;
+    const responseEffect = client.execute(request).pipe(
+      Effect.mapError(
+        (err) =>
+          new OpenApiInvocationError({
+            message: "HTTP request failed",
+            statusCode: Option.none(),
+            cause: err,
+          }),
+      ),
+      Effect.exit,
+      Effect.tap((exit) =>
+        Effect.sync(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resume(Effect.succeed(Option.some(exit)));
         }),
-    ),
-  );
+      ),
+    );
+    const fiber = runFork(responseEffect);
+    const interrupt = () => {
+      runFork(Fiber.interrupt(fiber));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      interrupt();
+      resume(Effect.succeed(Option.none()));
+    }, responseHeadersTimeoutMs);
+    signal.addEventListener("abort", interrupt, { once: true });
+    return Effect.sync(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", interrupt);
+      if (!settled) interrupt();
+    });
+  });
+  if (Option.isNone(responseExitOption)) {
+    return yield* new OpenApiInvocationError({
+      message: responseHeadersTimeoutMessage(responseHeadersTimeoutMs),
+      statusCode: Option.none(),
+    });
+  }
+  const responseExit = responseExitOption.value;
+  if (Exit.isFailure(responseExit)) return yield* Effect.failCause(responseExit.cause);
+  const response = responseExit.value;
 
   const status = response.status;
   yield* Effect.annotateCurrentSpan({
@@ -1073,6 +1158,7 @@ export const invokeWithLayer = (
   resolvedHeaders: Record<string, string>,
   sourceQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
+  options: InvokeOptions = {},
 ) => {
   const effectiveBaseUrl = resolveRequestHost(operation.servers ?? [], args.server, baseUrl);
   const clientWithBaseUrl = effectiveBaseUrl
@@ -1085,7 +1171,7 @@ export const invokeWithLayer = (
       ).pipe(Layer.provide(httpClientLayer))
     : httpClientLayer;
 
-  return invoke(operation, args, resolvedHeaders, sourceQueryParams).pipe(
+  return invoke(operation, args, resolvedHeaders, sourceQueryParams, options).pipe(
     Effect.provide(clientWithBaseUrl),
     // `invoke` annotates http.status_code on ITS span (`OpenApi.invoke`,
     // via Effect.fn) — annotateCurrentSpan inside it never reaches this

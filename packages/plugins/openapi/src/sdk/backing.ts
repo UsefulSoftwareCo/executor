@@ -30,7 +30,7 @@ import {
   requiredTemplateVariables,
   type OpenApiIntegrationConfig,
 } from "./config";
-import { OpenApiExtractionError, OpenApiParseError } from "./errors";
+import { OpenApiExtractionError, OpenApiInvocationError, OpenApiParseError } from "./errors";
 import {
   buildInputSchema,
   extract,
@@ -38,7 +38,13 @@ import {
   streamOperationBindingsFromStructure,
 } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
-import { annotationsForOperation, buildRequest, invokeWithLayer, REQUIRE_APPROVAL } from "./invoke";
+import {
+  annotationsForOperation,
+  buildRequest,
+  invokeWithLayer,
+  REQUIRE_APPROVAL,
+  type InvokeOptions,
+} from "./invoke";
 import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
@@ -609,6 +615,7 @@ export const invokeOpenApiBackedTool = (input: {
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
   readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>;
+  readonly invokeOptions?: InvokeOptions;
 }) =>
   Effect.gen(function* () {
     const integration = input.toolRow.integration;
@@ -671,15 +678,33 @@ export const invokeOpenApiBackedTool = (input: {
       Object.assign(queryParams, rendered.queryParams);
     }
 
-    const result = yield* invokeWithLayer(
+    const invocation = yield* invokeWithLayer(
       binding,
       (input.args ?? {}) as Record<string, unknown>,
       config?.baseUrl ?? "",
       headers,
       queryParams,
       input.httpClientLayer,
+      input.invokeOptions,
+    ).pipe(
+      Effect.map((result) => ({ ok: true as const, result })),
+      Effect.catchTag("OpenApiInvocationError", (error: OpenApiInvocationError) =>
+        error.message.startsWith("Upstream returned no response headers within ")
+          ? Effect.succeed({
+              ok: false as const,
+              failure: ToolResult.fail({
+                code: "upstream_http_error",
+                message: error.message,
+                details: error.cause ?? error,
+              }),
+            })
+          : Effect.fail(error),
+      ),
     );
 
+    if (!invocation.ok) return invocation.failure;
+
+    const result = invocation.result;
     const ok = result.status >= 200 && result.status < 300;
     if (!ok) {
       if (result.status === 401 || result.status === 403) {

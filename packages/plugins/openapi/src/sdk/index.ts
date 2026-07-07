@@ -12,7 +12,14 @@ export {
   type ByteRange,
   type KeepPathItem,
 } from "./split";
-export { invoke, invokeWithLayer, buildRequest, annotationsForOperation } from "./invoke";
+export {
+  invoke,
+  invokeWithLayer,
+  buildRequest,
+  annotationsForOperation,
+  RESPONSE_HEADERS_TIMEOUT_MS,
+  type InvokeOptions,
+} from "./invoke";
 export {
   buildDefsJsonStreaming,
   checkHealthOpenApi,

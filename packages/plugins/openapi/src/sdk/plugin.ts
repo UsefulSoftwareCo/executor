@@ -48,6 +48,7 @@ import {
   resolveOpenApiBackedTools,
   validateOpenApiBackedToolArgs,
 } from "./backing";
+import type { InvokeOptions } from "./invoke";
 import { resolveServerUrl } from "./openapi-utils";
 
 // ---------------------------------------------------------------------------
@@ -563,6 +564,7 @@ export const describeOpenApiIntegrationDisplay = (
 
 export interface OpenApiPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
+  readonly invokeOptions?: InvokeOptions;
 }
 
 export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
@@ -1044,6 +1046,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         credential,
         args,
         httpClientLayer,
+        invokeOptions: options?.invokeOptions,
       });
     },
 
