@@ -1,5 +1,17 @@
 # executor
 
+## 1.5.29
+
+### Patch Changes
+
+- [#1341](https://github.com/UsefulSoftwareCo/executor/pull/1341) [`5656c3e`](https://github.com/UsefulSoftwareCo/executor/commit/5656c3e2fbb1982510267a7999f4ae37cdb5a381) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix 1Password desktop-app connections failing with "undefined is not a constructor (evaluating 'new n.DesktopAuth(...)')" in packaged builds. The compiled binary now bundles the 1Password SDK's wasm core correctly and falls back to a copy shipped next to the binary, so vault listing and secret resolution work without the `op` CLI installed.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.29
+  - @executor-js/runtime-quickjs@1.5.29
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.49
+
 ## 1.5.28
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-google",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/google",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"

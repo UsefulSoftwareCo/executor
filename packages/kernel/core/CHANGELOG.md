@@ -1,5 +1,7 @@
 # @executor-js/codemode-core
 
+## 1.5.29
+
 ## 1.5.28
 
 ## 1.5.27

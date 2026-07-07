@@ -1,5 +1,12 @@
 # @executor-js/plugin-desktop-settings
 
+## 1.5.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.29
+
 ## 1.5.28
 
 ### Patch Changes
