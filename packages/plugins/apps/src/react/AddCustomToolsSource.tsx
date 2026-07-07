@@ -25,10 +25,14 @@ import {
 export default function AddCustomToolsSource(props: {
   readonly onComplete: (slug?: string) => void;
   readonly onCancel: () => void;
+  readonly initialUrl?: string;
+  readonly initialNamespace?: string;
 }) {
-  const [url, setUrl] = useState("");
-  const [name, setName] = useState("");
-  const [nameTouched, setNameTouched] = useState(false);
+  const [url, setUrl] = useState(props.initialUrl ?? "");
+  const [name, setName] = useState(
+    props.initialNamespace ? slugifyCustomToolsAppName(props.initialNamespace) : "",
+  );
+  const [nameTouched, setNameTouched] = useState(props.initialNamespace !== undefined);
   const [token, setToken] = useState("");
   const [tokenRevealed, setTokenRevealed] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);

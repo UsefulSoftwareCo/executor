@@ -9,6 +9,9 @@ import appsClientPlugin, {
   getCustomToolSource,
   listCustomToolSources,
   removeCustomToolSource,
+  parseGitHubSourceUrl,
+  slugifyCustomToolsAppName,
+  suggestCustomToolsAppName,
   syncCustomToolSource,
   syncStatusLabel,
   validateGitHubSourceUrl,
@@ -46,6 +49,45 @@ describe("custom tools console client", () => {
       "Use a GitHub repo URL like https://github.com/owner/repo, optionally with /tree/<ref> or /commit/<sha>.",
     );
     expect(validateGitHubSourceUrl("")).toBe("Enter a GitHub URL.");
+  });
+
+  it("carries detected repo URL variants into the add form defaults", () => {
+    const treeUrl =
+      "https://github.com/RhysSullivan/executor-custom-tools-demo/tree/feature/custom-tools";
+    const commitUrl = "https://github.com/RhysSullivan/executor-custom-tools-demo/commit/abc1234";
+
+    const tree = parseGitHubSourceUrl(treeUrl);
+    const commit = parseGitHubSourceUrl(commitUrl);
+
+    expect(tree).toMatchObject({
+      ok: true,
+      value: {
+        repo: "RhysSullivan/executor-custom-tools-demo",
+        ref: "feature/custom-tools",
+        url: treeUrl,
+      },
+    });
+    expect(commit).toMatchObject({
+      ok: true,
+      value: {
+        repo: "RhysSullivan/executor-custom-tools-demo",
+        ref: "abc1234",
+        url: commitUrl,
+      },
+    });
+    expect(suggestCustomToolsAppName(treeUrl)).toBe("executor-custom-tools-demo");
+    expect(slugifyCustomToolsAppName(suggestCustomToolsAppName(treeUrl))).toBe(
+      "executor-custom-tools-demo",
+    );
+  });
+
+  it("does not classify non-repo GitHub URLs as custom-tools add input", () => {
+    expect(parseGitHubSourceUrl("https://gist.github.com/RhysSullivan/abc1234").ok).toBe(false);
+    expect(
+      parseGitHubSourceUrl(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/blob/main/openapi.json",
+      ).ok,
+    ).toBe(false);
   });
 
   it("surfaces successful sync and source detail data", async () => {

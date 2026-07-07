@@ -211,7 +211,7 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
-        search: { url: trimmed, namespace: detected.slug },
+        search: { url: detected.endpoint, namespace: detected.slug },
       });
     } else {
       setError(`Detected integration type "${detected.kind}" but no plugin is available for it.`);

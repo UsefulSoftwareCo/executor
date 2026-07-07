@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { IntegrationSlug } from "@executor-js/sdk";
+import { makeTestExecutor } from "@executor-js/sdk/testing";
 
 import { appsPlugin } from "./apps-plugin";
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
@@ -28,6 +29,54 @@ const prototypeFileSet = (): Map<string, string> =>
   ]);
 
 describe("appsPlugin custom-tools contract", () => {
+  it.effect("detects GitHub repo URLs for console auto-detect", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({ plugins: [appsPlugin()] as const });
+
+      const repo = yield* executor.integrations.detect(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo",
+      );
+      const tree = yield* executor.integrations.detect(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/tree/feature/custom-tools",
+      );
+      const commit = yield* executor.integrations.detect(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/commit/abc1234",
+      );
+
+      expect(repo).toEqual([
+        {
+          kind: "apps",
+          confidence: "high",
+          endpoint: "https://github.com/RhysSullivan/executor-custom-tools-demo",
+          name: "Add custom tools from RhysSullivan/executor-custom-tools-demo",
+          slug: "executor-custom-tools-demo",
+        },
+      ]);
+      expect(tree[0]?.endpoint).toBe(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/tree/feature/custom-tools",
+      );
+      expect(commit[0]?.endpoint).toBe(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/commit/abc1234",
+      );
+    }),
+  );
+
+  it.effect("leaves non-repo GitHub URLs unclaimed by custom tools detection", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({ plugins: [appsPlugin()] as const });
+
+      const gist = yield* executor.integrations.detect(
+        "https://gist.github.com/RhysSullivan/abc1234",
+      );
+      const file = yield* executor.integrations.detect(
+        "https://github.com/RhysSullivan/executor-custom-tools-demo/blob/main/openapi.json",
+      );
+
+      expect(gist).toEqual([]);
+      expect(file).toEqual([]);
+    }),
+  );
+
   it("round-trips prototype files through publish, resolveTools, and invokeTool", async () => {
     let dealListArgs: unknown;
     const resolver = makeTestResolver(

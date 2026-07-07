@@ -3,6 +3,7 @@ import { Effect, Result } from "effect";
 import {
   AuthTemplateSlug,
   definePlugin,
+  IntegrationDetectionResult,
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
@@ -692,6 +693,19 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       const config = decodeSourceConfig(integration.config);
       return config ? { url: config.repoUrl } : {};
     },
+
+    detect: ({ url }) =>
+      Effect.sync(() => {
+        const parsed = parseGitHubSourceUrl(url);
+        if (!parsed.ok) return null;
+        return IntegrationDetectionResult.make({
+          kind: APPS_PLUGIN_ID,
+          confidence: "high",
+          endpoint: parsed.value.url,
+          name: `Add custom tools from ${parsed.value.repo}`,
+          slug: slugifyCustomToolsAppName(parsed.value.name),
+        });
+      }),
 
     resolveTools: ({ ctx, config }: ResolveToolsInput<AppsStoreShape>) =>
       Effect.gen(function* () {
