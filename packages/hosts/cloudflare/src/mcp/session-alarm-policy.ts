@@ -54,14 +54,25 @@ export const decideSessionAlarm = (input: {
   if (input.idleMs < sessionTimeoutMs) {
     return { kind: "idle_within_timeout" };
   }
-  if (input.pausedExecutionCount > 0 && input.idleMs < maxPausedSessionIdleMs) {
-    return {
-      kind: "extend_paused_lease",
-      leaseMs: Math.max(
-        1,
-        Math.min(PAUSED_EXECUTION_LEASE_MS, maxPausedSessionIdleMs - input.idleMs),
-      ),
-    };
+  if (input.pausedExecutionCount > 0) {
+    // Paused work expires on its own clock, full stop. A paused execution's
+    // originating POST also leaves an un-responded request id (and often an
+    // open client stream), so the running-lease branch below would otherwise
+    // keep the runtime warm past the paused ceiling and a stale approval
+    // would silently resume. Once maxPausedSessionIdleMs elapses the browser
+    // approval wait has already timed out and the product contract is an
+    // expired-resume error with re-run guidance, so the session is destroyed
+    // regardless of running work or open streams.
+    if (input.idleMs < maxPausedSessionIdleMs) {
+      return {
+        kind: "extend_paused_lease",
+        leaseMs: Math.max(
+          1,
+          Math.min(PAUSED_EXECUTION_LEASE_MS, maxPausedSessionIdleMs - input.idleMs),
+        ),
+      };
+    }
+    return { kind: "destroy_idle_session" };
   }
   if (
     ((input.runningExecutionCount ?? 0) > 0 || (input.activeStreamCount ?? 0) > 0) &&

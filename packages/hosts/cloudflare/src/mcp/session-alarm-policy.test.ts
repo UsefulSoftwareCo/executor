@@ -72,6 +72,21 @@ describe("decideSessionAlarm", () => {
     ).toEqual({ kind: "destroy_idle_session" });
   });
 
+  it("expires a paused execution at the paused ceiling even while its request id is still persisted", () => {
+    // A paused execution's originating POST leaves an un-responded request id
+    // (and often an open stream). Those must not divert the decision into the
+    // running-lease branch: paused work expires on its own clock, and the
+    // product contract past the ceiling is the expired-resume re-run guidance.
+    expect(
+      decideSessionAlarm({
+        idleMs: MAX_PAUSED_SESSION_IDLE_MS,
+        pausedExecutionCount: 1,
+        runningExecutionCount: 1,
+        activeStreamCount: 1,
+      }),
+    ).toEqual({ kind: "destroy_idle_session" });
+  });
+
   it("extends the lease when a request is still running", () => {
     expect(
       decideSessionAlarm({

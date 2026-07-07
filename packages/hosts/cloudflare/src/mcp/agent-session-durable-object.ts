@@ -117,6 +117,8 @@ export interface BrowserApprovalStore {
 const SESSION_META_KEY = "session-meta";
 const LAST_ACTIVITY_KEY = "last-activity-ms";
 const PARTYSERVER_NAME_KEY = "__ps_name";
+/** The agents SDK's durable "condemned" marker (`_cf_scheduleDestroy`). */
+const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
@@ -691,11 +693,23 @@ export abstract class McpAgentSessionDOBase<
 
   async validateMcpSessionOwner(
     identity: McpApprovalOwner,
-  ): Promise<"ok" | "not_found" | "forbidden"> {
+  ): Promise<"ok" | "not_found" | "forbidden" | "terminated"> {
     const self = this;
     return Effect.runPromise(
       Effect.gen(function* () {
         yield* self.prepareErrorCaptureScope();
+        // A DELETE-terminated session is condemned via `_cf_scheduleDestroy`,
+        // which writes a durable marker and defers the actual `destroy()` to
+        // an alarm (~1s later). A request that races into that window still
+        // sees the session's storage intact, so without this gate the session
+        // would restore and answer — but the protocol contract is that a
+        // terminated id is dead the moment the DELETE returns. (The old code
+        // won this race by accident: its onConnect drain-wait stalled the
+        // request until the destroy alarm aborted the isolate.)
+        const destroyPending = yield* Effect.promise(() =>
+          self.ctx.storage.get<boolean>(AGENTS_DESTROY_PENDING_KEY),
+        );
+        if (destroyPending === true) return "terminated" as const;
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
         if (self.initialized) {
@@ -1091,10 +1105,18 @@ export abstract class McpAgentSessionDOBase<
       yield* self.prepareErrorCaptureScope();
       if (self.pendingApprovalLeases.has(executionId)) return;
 
+      // keepAlive BEFORE markActivity: acquiring the first keepAlive ref runs
+      // the SDK's _scheduleNextAlarm, which re-arms the DO alarm to its 30s
+      // heartbeat and would overwrite the idle alarm markActivity sets. With
+      // this ordering markActivity's setAlarm(now + sessionTimeoutMs) lands
+      // last, so the idle/paused-expiry clock keeps ticking while the lease
+      // holds the runtime alive. (Round 1 removed onConnect's drain-wait,
+      // which used to hold a ref across the pause and mask this by keeping
+      // the ref transition away from 0->1.)
+      const disposeKeepAlive = yield* Effect.promise(() => self.keepAlive());
       yield* Effect.promise(() => self.markActivity()).pipe(
         Effect.withSpan("McpSessionDO.markActivity"),
       );
-      const disposeKeepAlive = yield* Effect.promise(() => self.keepAlive());
       const timeout = setTimeout(() => {
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);

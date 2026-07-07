@@ -17,7 +17,7 @@ export interface McpSessionNamespace<Id> {
 export interface McpSessionStub {
   readonly validateMcpSessionOwner: (
     identity: McpApprovalOwner,
-  ) => Promise<"ok" | "not_found" | "forbidden">;
+  ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
   readonly _cf_scheduleDestroy: () => Promise<void>;
   readonly getPausedExecutionForApproval: (
     executionId: string,

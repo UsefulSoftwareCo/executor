@@ -124,6 +124,11 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       if (owner === "not_found") {
         return jsonRpcResponse(404, -32001, "Session not found");
       }
+      if (owner === "terminated") {
+        // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
+        // yet; the terminated id must read as dead immediately.
+        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+      }
       if (owner === "forbidden") {
         return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
       }

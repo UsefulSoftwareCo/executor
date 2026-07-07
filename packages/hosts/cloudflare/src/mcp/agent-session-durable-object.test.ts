@@ -103,7 +103,7 @@ type HarnessSession = {
   validateMcpSessionOwner: (identity: {
     readonly accountId: string;
     readonly organizationId: string;
-  }) => Promise<"ok" | "not_found" | "forbidden">;
+  }) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
 
 class StaleCloseTransport implements Transport {
