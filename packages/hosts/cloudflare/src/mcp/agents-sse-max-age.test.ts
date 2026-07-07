@@ -43,13 +43,7 @@ const RotationLogEvent = Schema.Struct({
     Schema.Literal("legacy-sse"),
   ]),
 });
-const DeliveryAck = Schema.Struct({
-  eventId: Schema.String,
-  streamId: Schema.String,
-  type: Schema.Literal("cf_mcp_delivery_ack"),
-});
 const decodeRotationLogEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RotationLogEvent));
-const decodeDeliveryAck = Schema.decodeUnknownSync(Schema.fromJsonString(DeliveryAck));
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -397,7 +391,11 @@ describe("agents SSE max-age rotation", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("acknowledges a final POST response only after the SSE write drains", async () => {
+  it("never acknowledges a POST response delivery, even after a clean drain", async () => {
+    // workerd resolves writer.close() even when the client canceled the POST
+    // response body, so a clean close is not proof of delivery. The bridge must
+    // NOT send cf_mcp_delivery_ack for POST streams: the DO keeps the response
+    // persisted and the client's reconnect GET replays and acks it instead.
     const { response, ws } = await openPostSse();
     const drained = drainResponse(response);
 
@@ -414,11 +412,7 @@ describe("agents SSE max-age rotation", () => {
 
     expect(ws.closeCode).toBe(1000);
     expect(ws.closeReason).toBe("SSE response delivered");
-    expect(ws.sent.map((line) => decodeDeliveryAck(line))).toContainEqual({
-      type: "cf_mcp_delivery_ack",
-      eventId: "post-stream:0000000000000001",
-      streamId: "post-stream",
-    });
+    expect(ws.sent).toEqual([]);
   });
 
   it("treats an SSE writer rejection as terminal and does not acknowledge delivery", async () => {

@@ -121,7 +121,6 @@ const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
 const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
-const MCP_UNDELIVERED_STREAM_KEY_PREFIX = "__mcp_undelivered_stream__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 
 type JsonRpcRequestId = string | number;
@@ -375,6 +374,12 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private async runningExecutionCount(): Promise<number> {
+    // Only requests still awaiting a result count as running work. Undelivered
+    // response markers (the transport's __mcp_undelivered_stream__: keys)
+    // deliberately do NOT extend the lease: the response is persisted in storage,
+    // which survives disposeIdleRuntime, so a later reconnect GET re-inits the
+    // DO and replays it. Counting them would make every delivered-but-unacked
+    // POST response pin the runtime alive indefinitely.
     const rows = await this.ctx.storage.list<readonly JsonRpcRequestId[]>({
       prefix: MCP_STREAM_REQS_KEY_PREFIX,
       limit: 1_000,
@@ -383,11 +388,6 @@ export abstract class McpAgentSessionDOBase<
     for (const requestIds of rows.values()) {
       if (Array.isArray(requestIds)) count += requestIds.length;
     }
-    const undelivered = await this.ctx.storage.list<boolean>({
-      prefix: MCP_UNDELIVERED_STREAM_KEY_PREFIX,
-      limit: 1_000,
-    });
-    count += undelivered.size;
     return count;
   }
 
