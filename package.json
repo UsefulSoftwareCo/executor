@@ -44,6 +44,7 @@
     "ci": "bun run lint && bun run typecheck && bun run test",
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:changelog-stubs",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
+    "check:patches": "bun run scripts/check-patched-deps.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
     "docs:smoke:install": "bun run scripts/smoke-docs-install.ts",
