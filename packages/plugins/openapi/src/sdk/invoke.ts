@@ -153,7 +153,11 @@ const normalizeContentType = (ct: string | null | undefined): string =>
 
 export const STREAM_MAX_BYTES = 1_000_000;
 export const STREAM_MAX_MS = 10_000;
-export const RESPONSE_HEADERS_TIMEOUT_MS = 60_000;
+// Below Cloudflare's ~125s subrequest limit so cloud fails first with an
+// actionable error, but above the slowest legitimate buffered upstreams
+// observed in production (30d telemetry: successful calls cluster under
+// 110s; a 60s cap would have broken ~40 real calls).
+export const RESPONSE_HEADERS_TIMEOUT_MS = 110_000;
 
 class StreamCapReached extends Error {
   readonly _tag = "StreamCapReached";
