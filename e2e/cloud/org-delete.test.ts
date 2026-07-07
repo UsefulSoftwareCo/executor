@@ -61,13 +61,17 @@ scenario(
       await step("Confirming deletes the org and drops the user out of it", async () => {
         await page.getByRole("dialog").getByRole("button", { name: "Delete organization" }).click();
 
-        // Deletion clears the session and navigates to "/". The org console is
-        // gone: the deleted slug no longer resolves for this browser, so it
-        // never lands back on the org settings page.
-        await page.waitForURL((url) => !url.pathname.startsWith(`/${slug}/org`), {
-          timeout: 30_000,
-        });
-        expect(await page.getByText("Permanently delete this organization").count()).toBe(0);
+        // Success clears the session and hard-navigates to "/", which the SSR
+        // auth gate then redirects (the org and session are gone). That nav
+        // chain aborts any waitForURL, so instead assert the org console itself
+        // is torn down: its danger zone detaches and never comes back.
+        await page
+          .getByText("Permanently delete this organization")
+          .waitFor({ state: "detached", timeout: 30_000 });
+        expect(
+          new URL(page.url()).pathname.startsWith(`/${slug}/org`),
+          "left the org console",
+        ).toBe(false);
       });
     });
   }),
