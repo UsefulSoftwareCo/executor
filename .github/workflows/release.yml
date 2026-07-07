@@ -53,9 +53,11 @@ jobs:
         uses: changesets/action@v1
         with:
           # @changesets/changelog-github occasionally receives truncated
-          # GitHub GraphQL responses. Retry only that transient failure mode.
-          version: >-
-            bash -c 'for attempt in 1 2 3; do log="$(mktemp)"; if bun run changeset:version >"$log" 2>&1; then cat "$log"; rm -f "$log"; exit 0; else status=$?; fi; cat "$log"; if ! grep -Eq "Failed to parse data from GitHub|Premature close" "$log" || [ "$attempt" -eq 3 ]; then rm -f "$log"; exit "$status"; fi; echo "::warning::changeset:version hit a transient GitHub GraphQL failure on attempt $attempt; resetting generated files before retry."; rm -f "$log"; git reset --hard HEAD; git clean -fd -- .changeset apps packages examples e2e; done'
+          # GitHub GraphQL responses. The script retries only that transient
+          # failure mode. It must be a script file: the action splits this
+          # command itself rather than running it through a shell, so an
+          # inline `bash -c '...'` one-liner gets mangled at the quotes.
+          version: bash scripts/changeset-version-with-retry.sh
           commit: Version Packages
           title: Version Packages
           createGithubReleases: false
