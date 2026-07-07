@@ -171,6 +171,13 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # Fail loudly if a load-bearing patched dependency (e.g. the agents MCP
+      # transport hang fix) resolved to a stale, unpatched dist. Without this,
+      # a bun cache edge case can leave the patch unapplied while everything
+      # still builds and tests green, and prod ships the pre-fix transport with
+      # no signal. This is just a few file reads plus greps, so ~zero cost.
+      - run: bun run check:patches
+
       - run: bun run test
 
   e2e:
