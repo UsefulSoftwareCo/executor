@@ -71,8 +71,10 @@ export {
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
+  isUserActionableError,
   type ExecuteError,
   type ExecutorError,
+  type UserActionableError,
 } from "./errors";
 
 // Integration / connection / tool domain contracts.

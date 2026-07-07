@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Schema } from "effect";
+import { Data, Effect, Fiber, Schema } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -8,6 +8,7 @@ import {
   FormElicitation,
   IntegrationSlug,
   OAuthClientSlug,
+  OAuthRegisterDynamicError,
   ProviderItemId,
   ProviderKey,
   ToolName,
@@ -27,6 +28,7 @@ import {
 } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
+import { ExecutionToolError } from "./errors";
 import {
   describeTool,
   makeExecutorToolInvoker,
@@ -262,6 +264,43 @@ const errorPlugin = makeTestPlugin({
             message: 'Field with name "DisplayName" does not exist',
           }),
         ),
+    },
+  ],
+});
+
+class UnmarkedTestError extends Data.TaggedError("UnmarkedTestError")<{
+  readonly message: string;
+}> {}
+
+const userActionableErrorPlugin = makeTestPlugin({
+  pluginId: "user-actionable-error-test",
+  integration: "guided",
+  tools: [
+    {
+      name: "setup",
+      description: "Setup",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () =>
+        Effect.fail(
+          new OAuthRegisterDynamicError({
+            message: "Automatic OAuth setup failed: register an OAuth app manually.",
+          }),
+        ),
+    },
+  ],
+});
+
+const unmarkedErrorPlugin = makeTestPlugin({
+  pluginId: "unmarked-error-test",
+  integration: "unmarked",
+  tools: [
+    {
+      name: "explode",
+      description: "Explode",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () => Effect.fail(new UnmarkedTestError({ message: "internal detail" })),
     },
   ],
 });
@@ -948,6 +987,107 @@ describe("tool discovery", () => {
         },
       });
     }),
+  );
+
+  it.effect("returns user-actionable typed errors as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([userActionableErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "user-actionable-error-test", integration: "guided" },
+      ]);
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "guided.org.main.setup", args: {} });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "oauth_register_dynamic_error",
+          message: "Automatic OAuth setup failed: register an OAuth app manually.",
+        },
+      });
+    }),
+  );
+
+  it.effect("keeps unmarked typed errors opaque", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([unmarkedErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "unmarked-error-test", integration: "unmarked" },
+      ]);
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const err = yield* Effect.flip(
+        invoker.invoke({ path: "unmarked.org.main.explode", args: {} }),
+      );
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: test inspects the rendered ExecutionToolError message to assert opaque redaction
+      const message = (err as ExecutionToolError).message;
+
+      expect(message).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
+      expect(message).not.toContain("internal detail");
+    }),
+  );
+
+  it.effect("surfaces DCR redirect guidance from the core registerDynamic tool", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          approveRedirectUri: (uri) =>
+            uri.startsWith("http://localhost") || uri.startsWith("http://127."),
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [memoryCredentialsPlugin()] as const,
+            coreTools: {},
+          }),
+        );
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        const invoker = makeExecutorToolInvoker(executor, {
+          invokeOptions: { onElicitation: acceptAll },
+        });
+        const nonLoopback = "https://app.example.com/api/oauth/callback";
+        const expectedMessage =
+          "Automatic OAuth setup failed: this server only approves loopback redirect " +
+          "URLs (http://localhost or http://127.0.0.1) for automatic registration, but " +
+          `Executor is using ${nonLoopback}. Register an OAuth app manually with that ` +
+          "redirect URL approved by the server, or run Executor on http://localhost.";
+
+        const result = yield* invoker.invoke({
+          path: "executor.coreTools.oauth.clients.registerDynamic",
+          args: {
+            owner: "org",
+            slug: "acme-dcr",
+            issuer: probe.issuer,
+            registrationEndpoint: probe.registrationEndpoint,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Acme DCR",
+            redirectUri: nonLoopback,
+          },
+        });
+
+        expect(result).toEqual({
+          ok: false,
+          error: {
+            code: "oauth_register_dynamic_error",
+            message: expectedMessage,
+          },
+        });
+        const failure = result as {
+          readonly ok: false;
+          readonly error: { readonly message: string };
+        };
+        expect(failure.error.message).not.toContain("Internal tool error");
+      }),
+    ),
   );
 
   it.effect("returns OAuth reauth failures as ToolResult.fail instead of throwing", () =>

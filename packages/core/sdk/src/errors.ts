@@ -4,6 +4,24 @@ import { ElicitationDeclinedError } from "./elicitation";
 import type { StorageFailure } from "./fuma-runtime";
 import { ConnectionName, IntegrationSlug, Owner, ProviderKey, ToolAddress } from "./ids";
 
+export interface UserActionableError {
+  readonly __executorUserActionable: true;
+  readonly userMessage: string;
+  readonly code: string;
+}
+
+export const isUserActionableError = (value: unknown): value is UserActionableError =>
+  typeof value === "object" &&
+  value !== null &&
+  "__executorUserActionable" in value &&
+  value.__executorUserActionable === true &&
+  "userMessage" in value &&
+  typeof value.userMessage === "string" &&
+  value.userMessage.length > 0 &&
+  "code" in value &&
+  typeof value.code === "string" &&
+  value.code.length > 0;
+
 /* The failure set the SDK surfaces. `execute`'s invoke failures are ported from
  * v1 but re-keyed by `address` (the full `tools.<integration>.<owner>.<connection>.<tool>`
  * handle) instead of an opaque tool id. Storage failures reuse fuma-runtime's

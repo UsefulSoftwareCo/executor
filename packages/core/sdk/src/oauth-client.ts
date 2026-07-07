@@ -2,6 +2,7 @@ import type { Effect } from "effect";
 import { Schema } from "effect";
 
 import type { Connection } from "./connection";
+import type { UserActionableError } from "./errors";
 import type { StorageFailure } from "./fuma-runtime";
 import {
   type AuthTemplateSlug,
@@ -188,27 +189,63 @@ export interface RegisterDynamicClientInput {
   readonly originIntegration?: IntegrationSlug | null;
 }
 
-export class OAuthStartError extends Schema.TaggedErrorClass<OAuthStartError>()("OAuthStartError", {
-  message: Schema.String,
-}) {}
+export class OAuthStartError
+  extends Schema.TaggedErrorClass<OAuthStartError>()("OAuthStartError", {
+    message: Schema.String,
+  })
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "oauth_start_error";
 
-export class OAuthCompleteError extends Schema.TaggedErrorClass<OAuthCompleteError>()(
-  "OAuthCompleteError",
-  {
+  get userMessage(): string {
+    return this.message;
+  }
+}
+
+export class OAuthCompleteError
+  extends Schema.TaggedErrorClass<OAuthCompleteError>()("OAuthCompleteError", {
     message: Schema.String,
     /** True when the auth-code exchange failed in a way the user must restart. */
     restartRequired: Schema.optional(Schema.Boolean),
-  },
-) {}
+  })
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "oauth_complete_error";
 
-export class OAuthProbeError extends Schema.TaggedErrorClass<OAuthProbeError>()("OAuthProbeError", {
-  message: Schema.String,
-}) {}
+  get userMessage(): string {
+    return this.message;
+  }
+}
 
-export class OAuthRegisterDynamicError extends Schema.TaggedErrorClass<OAuthRegisterDynamicError>()(
-  "OAuthRegisterDynamicError",
-  { message: Schema.String },
-) {}
+export class OAuthProbeError
+  extends Schema.TaggedErrorClass<OAuthProbeError>()("OAuthProbeError", {
+    message: Schema.String,
+  })
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "oauth_probe_error";
+
+  get userMessage(): string {
+    return this.message;
+  }
+}
+
+export class OAuthRegisterDynamicError
+  extends Schema.TaggedErrorClass<OAuthRegisterDynamicError>()("OAuthRegisterDynamicError", {
+    message: Schema.String,
+  })
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "oauth_register_dynamic_error";
+
+  get userMessage(): string {
+    return this.message;
+  }
+}
 
 export class OAuthSessionNotFoundError extends Schema.TaggedErrorClass<OAuthSessionNotFoundError>()(
   "OAuthSessionNotFoundError",

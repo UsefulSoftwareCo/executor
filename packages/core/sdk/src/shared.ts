@@ -62,8 +62,10 @@ export {
   InvalidConnectionInputError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
+  isUserActionableError,
   type ExecuteError,
   type ExecutorError,
+  type UserActionableError,
 } from "./errors";
 
 // Elicitation wire schemas.

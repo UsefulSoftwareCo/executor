@@ -11,6 +11,7 @@ import type {
 import {
   annotateToolResultOutcome,
   authToolFailure,
+  isUserActionableError,
   isToolResult,
   ToolResult,
   ToolAddress,
@@ -189,6 +190,12 @@ const credentialResolutionToolFailure = (input: {
   });
 
 const expectedToolFailure = (value: unknown): ToolError | null => {
+  if (isUserActionableError(value)) {
+    return {
+      code: value.code,
+      message: value.userMessage,
+    };
+  }
   if (Predicate.isTagged(value, "ToolNotFoundError") && "address" in value) {
     const suggestions =
       "suggestions" in value && Array.isArray(value.suggestions)
@@ -210,6 +217,12 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
   }
   if (Predicate.isTagged(value, "ToolInvocationError")) {
     const cause = (value as { readonly cause?: unknown }).cause;
+    if (isUserActionableError(cause)) {
+      return {
+        code: cause.code,
+        message: cause.userMessage,
+      };
+    }
     const issues = validationIssues(cause);
     if (issues) {
       return {
