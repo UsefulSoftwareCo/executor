@@ -18,6 +18,21 @@ export const RUNNING_EXECUTION_LEASE_MS = PAUSED_APPROVAL_TIMEOUT_MS;
  */
 export const MAX_PAUSED_SESSION_IDLE_MS = SESSION_TIMEOUT_MS + PAUSED_EXECUTION_LEASE_MS;
 
+/** Matches the patched agents transport's MAX_SSE_AGE_MS (30 minutes). */
+const SSE_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * Hard upper bound on idle time while running work or open streams keep
+ * extending the lease. Running executions are already bounded by the runtime's
+ * own execution timeout and open streams by the SSE max-age rotation, so this
+ * ceiling is a structural backstop for the case where neither bound fires
+ * (a wedged execution that never sends, or a stream close event workerd never
+ * delivers). It sits one full SSE max-age window past the idle timeout so a
+ * legitimately connected-but-quiet client stream is never cut before its
+ * scheduled rotation.
+ */
+export const MAX_RUNNING_SESSION_IDLE_MS = SESSION_TIMEOUT_MS + SSE_MAX_AGE_MS;
+
 export type SessionAlarmDecision =
   | { readonly kind: "idle_within_timeout" }
   | { readonly kind: "destroy_idle_session" }
@@ -31,9 +46,11 @@ export const decideSessionAlarm = (input: {
   readonly activeStreamCount?: number;
   readonly sessionTimeoutMs?: number;
   readonly maxPausedSessionIdleMs?: number;
+  readonly maxRunningSessionIdleMs?: number;
 }): SessionAlarmDecision => {
   const sessionTimeoutMs = input.sessionTimeoutMs ?? SESSION_TIMEOUT_MS;
   const maxPausedSessionIdleMs = input.maxPausedSessionIdleMs ?? MAX_PAUSED_SESSION_IDLE_MS;
+  const maxRunningSessionIdleMs = input.maxRunningSessionIdleMs ?? MAX_RUNNING_SESSION_IDLE_MS;
   if (input.idleMs < sessionTimeoutMs) {
     return { kind: "idle_within_timeout" };
   }
@@ -46,8 +63,17 @@ export const decideSessionAlarm = (input: {
       ),
     };
   }
-  if ((input.runningExecutionCount ?? 0) > 0 || (input.activeStreamCount ?? 0) > 0) {
-    return { kind: "extend_running_lease", leaseMs: RUNNING_EXECUTION_LEASE_MS };
+  if (
+    ((input.runningExecutionCount ?? 0) > 0 || (input.activeStreamCount ?? 0) > 0) &&
+    input.idleMs < maxRunningSessionIdleMs
+  ) {
+    return {
+      kind: "extend_running_lease",
+      leaseMs: Math.max(
+        1,
+        Math.min(RUNNING_EXECUTION_LEASE_MS, maxRunningSessionIdleMs - input.idleMs),
+      ),
+    };
   }
   return { kind: "destroy_idle_session" };
 };

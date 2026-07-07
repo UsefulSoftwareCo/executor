@@ -43,7 +43,17 @@ const RotationLogEvent = Schema.Struct({
     Schema.Literal("legacy-sse"),
   ]),
 });
+const DeliveryAck = Schema.Struct({
+  streamId: Schema.String,
+  type: Schema.Literal("cf_mcp_delivery_ack"),
+});
 const decodeRotationLogEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RotationLogEvent));
+const decodeDeliveryAck = Schema.decodeUnknownOption(Schema.fromJsonString(DeliveryAck));
+const deliveryAcks = (sent: ReadonlyArray<string>): ReadonlyArray<string> =>
+  sent.flatMap((line) => {
+    const decoded = decodeDeliveryAck(line);
+    return Option.isSome(decoded) ? [decoded.value.streamId] : [];
+  });
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -458,6 +468,52 @@ describe("agents SSE max-age rotation", () => {
     expect(transform.abortReason()).toBeInstanceOf(Error);
     expect(ws.closeCode).toBeUndefined();
     expect(ws.sent).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("acks each replayed stream only after the recovery GET drained and closed", async () => {
+    // The replay path never clears storage on enqueue: the transport sends a
+    // replay-complete close frame and the bridge echoes one delivery ack per
+    // replayed stream only once writer.close() resolved with the client still
+    // attached. McpAgent.onMessage clears storage on those acks.
+    const { response, ws } = await openSse();
+    const drained = drainResponse(response);
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: stream-a:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+    );
+    emitAgentEvent(ws, ": replay-complete\n\n", true, {
+      ackStreamIds: ["stream-a", "stream-b"],
+    });
+    await drained;
+
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(deliveryAcks(ws.sent), "one ack per replayed stream").toEqual(["stream-a", "stream-b"]);
+  });
+
+  it("does not ack replayed streams when the recovery GET body was canceled", async () => {
+    // A recovery GET can itself be a dead pipe (workerd surfaces nothing at
+    // write time). The bridge must not ack in that case, so the responses stay
+    // persisted and replayable for the next reconnect.
+    const transform = installClosedRejectingTransformStream();
+    const { ws } = await openSse();
+
+    transform.rejectClosed();
+    await flushMicrotasks();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: stream-a:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+    );
+    emitAgentEvent(ws, ": replay-complete\n\n", true, {
+      ackStreamIds: ["stream-a"],
+    });
+    await flushMicrotasks();
+
+    expect(transform.abortReason()).toBeInstanceOf(Error);
+    expect(deliveryAcks(ws.sent), "no acks for a dead recovery GET").toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
