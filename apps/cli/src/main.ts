@@ -965,7 +965,7 @@ const executeCode = (input: {
 }): Effect.Effect<ExecuteCodeResult, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
     const connection = yield* resolveExecutorServerConnection(input.target);
-    const client = yield* makeApiClient(connection);
+    const client = yield* makeApiClient(connection, input.target);
     const response = yield* client.executions.execute({
       payload: {
         code: input.code,
@@ -1054,7 +1054,7 @@ const printExecutionOutcome = (input: {
 // Typed API client
 // ---------------------------------------------------------------------------
 
-const makeApiClient = (connection: ExecutorServerConnection) => {
+const makeApiClient = (connection: ExecutorServerConnection, target: ServerTarget = {}) => {
   const authorization = getExecutorServerAuthorizationHeader(connection);
   return HttpApiClient.make(ExecutorApi, {
     baseUrl: connection.apiBaseUrl,
@@ -1074,7 +1074,8 @@ const makeApiClient = (connection: ExecutorServerConnection) => {
       Effect.catchIf(
         effect,
         (cause) => HttpClientError.isHttpClientError(cause) && cause.response?.status === 401,
-        () => Effect.fail(new Error(describeUnauthorizedCliServer({ connection, cliPrefix }))),
+        () =>
+          Effect.fail(new Error(describeUnauthorizedCliServer({ connection, cliPrefix, target }))),
       ),
   }).pipe(Effect.provide(FetchHttpClient.layer));
 };
@@ -1817,11 +1818,9 @@ const runCallHelp = (
   Effect.gen(function* () {
     if (args.scopeDir) process.env.EXECUTOR_SCOPE_DIR = resolve(args.scopeDir);
 
-    const connection = yield* resolveExecutorServerConnection({
-      baseUrl: args.baseUrl,
-      serverName: args.serverName,
-    });
-    const client = yield* makeApiClient(connection);
+    const target: ServerTarget = { baseUrl: args.baseUrl, serverName: args.serverName };
+    const connection = yield* resolveExecutorServerConnection(target);
+    const client = yield* makeApiClient(connection, target);
     const tools = yield* client.tools.list({ query: {} });
     const toolPaths = tools.map((tool) => tool.address);
 
@@ -2002,7 +2001,7 @@ const resumeCommand = Command.make(
 
       const contentObj = yield* parseOptionalJsonObject(Option.getOrUndefined(content));
 
-      const client = yield* makeApiClient(connection);
+      const client = yield* makeApiClient(connection, target);
       const result = yield* client.executions.resume({
         params: { executionId },
         payload: { action, content: contentObj },
@@ -2438,7 +2437,15 @@ const loginCommand = Command.make(
       });
 
       console.log("");
-      console.log(`Logged in to ${target.origin} (profile "${profileName}", now the default).`);
+      // Profile bookkeeping stays backstage unless the user works with named
+      // profiles (--name, or a store that already has several).
+      const mentionProfile =
+        explicitName !== undefined || (yield* readCliServerConnectionStore()).profiles.length > 1;
+      console.log(
+        mentionProfile
+          ? `Logged in to ${target.origin} (profile "${profileName}", now the default).`
+          : `Logged in to ${target.origin}.`,
+      );
       if (email) console.log(`Account: ${email}`);
       if (org) console.log(`Organization: ${org}`);
       else if (sub) console.log(`User: ${sub}`);
@@ -2463,8 +2470,14 @@ const logoutCommand = Command.make(
         console.log(`No stored login for ${target.origin}.`);
         return;
       }
+      // Profile bookkeeping stays backstage unless the user addressed one.
+      const mentionProfile = Option.isSome(server) || store.profiles.length > 1;
       if (!profile.connection.auth) {
-        console.log(`Profile "${profile.name}" has no stored credentials.`);
+        console.log(
+          mentionProfile
+            ? `Profile "${profile.name}" has no stored credentials.`
+            : `Not signed in to ${target.origin}.`,
+        );
         return;
       }
       yield* upsertCliServerConnectionProfile({
@@ -2477,7 +2490,9 @@ const logoutCommand = Command.make(
         makeDefault: store.defaultProfile === profile.name,
       });
       console.log(
-        `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`,
+        mentionProfile
+          ? `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`
+          : `Logged out of ${profile.connection.origin}.`,
       );
     }),
 ).pipe(Command.withDescription("Clear stored credentials for a server profile"));

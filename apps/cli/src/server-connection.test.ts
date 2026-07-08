@@ -140,25 +140,51 @@ describe("CLI server connection", () => {
 });
 
 describe("describeUnauthorizedCliServer", () => {
-  it("names the profile and its login command for a stale oauth login", () => {
+  it("hints plain `executor login` when the server was picked implicitly", () => {
+    const connection = normalizeExecutorServerConnection({
+      key: "profile:rhys-executor.sh",
+      origin: "https://executor.sh",
+      auth: { kind: "oauth", accessToken: "stale", expiresAt: 1 },
+    });
+
+    const message = describeUnauthorizedCliServer({
+      connection,
+      cliPrefix: "executor",
+      target: {},
+    });
+    expect(message).toContain("You're signed out of https://executor.sh");
+    expect(message).toContain("Run `executor login` to sign in again.");
+    // Profile names are plumbing: never surfaced when the user didn't type one.
+    expect(message).not.toContain("--server");
+    expect(message).not.toContain("profile");
+  });
+
+  it("echoes --server back when the user targeted a named profile", () => {
     const connection = normalizeExecutorServerConnection({
       key: "profile:work",
       origin: "https://executor.example",
       auth: { kind: "oauth", accessToken: "stale", expiresAt: 1 },
     });
 
-    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
-    expect(message).toContain("You're signed out");
-    expect(message).toContain('profile "work"');
+    const message = describeUnauthorizedCliServer({
+      connection,
+      cliPrefix: "executor",
+      target: { serverName: "work" },
+    });
+    expect(message).toContain("You're signed out of https://executor.example");
     expect(message).toContain("executor login --server work");
   });
 
-  it("points an unauthenticated origin at login --base-url", () => {
+  it("echoes --base-url back when the user targeted an origin", () => {
     const connection = normalizeExecutorServerConnection({
       origin: "https://executor.example",
     });
 
-    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
+    const message = describeUnauthorizedCliServer({
+      connection,
+      cliPrefix: "executor",
+      target: { baseUrl: "https://executor.example" },
+    });
     expect(message).toContain("no credentials are stored");
     expect(message).toContain("executor login --base-url https://executor.example");
   });
@@ -169,7 +195,11 @@ describe("describeUnauthorizedCliServer", () => {
       auth: { kind: "bearer", token: "key_bad" },
     });
 
-    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
+    const message = describeUnauthorizedCliServer({
+      connection,
+      cliPrefix: "executor",
+      target: {},
+    });
     expect(message).toContain("rejected the stored bearer credentials");
     expect(message).toContain("EXECUTOR_API_KEY");
   });
@@ -184,7 +214,8 @@ describe("describeUnauthorizedCliServer", () => {
     const message = describeUnauthorizedCliServer({
       connection,
       cliPrefix: "bun run apps/cli/src/main.ts",
+      target: {},
     });
-    expect(message).toContain("bun run apps/cli/src/main.ts login --server hosted");
+    expect(message).toContain("bun run apps/cli/src/main.ts login");
   });
 });

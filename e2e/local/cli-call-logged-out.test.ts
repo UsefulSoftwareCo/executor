@@ -4,9 +4,11 @@
 // the default profile carries an expired OAuth token with no way to refresh.
 //
 // The CLI must treat that 401 as a sign-in problem, not a transport problem:
-// name the signed-out profile and the exact `executor login` command, and
-// never surface the raw `Decode error (401 GET .../api/tools)` it printed
-// before the 401 mapping existed.
+// say which server the user is signed out of and that `executor login` fixes
+// it. The user typed no flags, so the hint is plain `executor login`; profile
+// names are internal plumbing and must not leak. And the raw
+// `Decode error (401 GET .../api/tools)` from before the 401 mapping must
+// never resurface.
 //
 // The session runs in an interactive shell with an `executor` shim on PATH so
 // the terminal.cast reads like the real moment: the user types the command,
@@ -108,19 +110,23 @@ scenario(
           await term.keyboard.press("Enter");
 
           // The command exits after printing its sign-in error.
-          const snapshot = await term.screen.waitUntil((current) => current.text.includes("401"), {
-            timeoutMs: 60_000,
-          });
+          const snapshot = await term.screen.waitUntil(
+            (current) => current.text.includes("sign in"),
+            { timeoutMs: 60_000 },
+          );
           const screen = snapshot.text;
 
-          // The moment reads as a sign-in problem, scoped to the profile...
+          // The moment reads as a sign-in problem naming the server...
           expect(screen, "the error says the user is signed out").toContain("You're signed out");
-          expect(screen, "it names the stale profile").toContain('profile "hosted"');
-          // ...and hands over the exact recovery command (in dev mode the
-          // prefix is `bun run .../main.ts`, so assert the stable suffix).
-          expect(screen, "it prints the login command for that profile").toContain(
-            "login --server hosted",
+          // ...fixed by plain `executor login` (dev mode prefixes the entry
+          // script, so assert the stable tail of the sentence).
+          expect(screen, "it hands over the bare login command").toContain(
+            "login` to sign in again.",
           );
+
+          // No flags were typed, so no plumbing comes back.
+          expect(screen, "profile names stay internal").not.toContain("--server");
+          expect(screen, "profiles are not mentioned at all").not.toContain("profile");
 
           // The pre-fix rendering must not resurface.
           expect(screen, "the raw transport error stays internal").not.toContain("Decode error");
