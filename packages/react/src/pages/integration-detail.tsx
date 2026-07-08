@@ -297,6 +297,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   // Prefer the integration's DECLARED methods; only fall through to inference
   // when the plugin declares none (no projector → empty `authMethods`).
   const accountsMethods = declaredMethods.length > 0 ? declaredMethods : inferredFallbackMethods;
+  const accountsMethodsLoading =
+    isAsyncResultLoading(integration) ||
+    (declaredMethods.length === 0 && isAsyncResultLoading(connectionsResult));
 
   const handleDelete = async () => {
     if (!integrationData) return;
@@ -444,6 +447,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
                   integration={slug}
                   integrationName={integrationData?.name || namespace}
                   methods={accountsMethods}
+                  methodsLoading={accountsMethodsLoading}
                   accountHandoff={accountHandoff}
                 />
               </div>

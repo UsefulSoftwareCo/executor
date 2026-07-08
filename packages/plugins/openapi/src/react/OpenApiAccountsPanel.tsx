@@ -14,6 +14,7 @@ import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { useOrganizationId } from "@executor-js/react/api/organization-context";
 import { defaultConnectionOwnerForHost } from "@executor-js/react/plugins/connection-owner";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
+import { isAsyncResultLoading } from "@executor-js/react/lib/async-result";
 import {
   useCustomMethodActions,
   type AuthMethodsCodec,
@@ -129,6 +130,7 @@ export default function OpenApiAccountsPanel(props: {
         integration={slug}
         integrationName={integrationName}
         methods={methods}
+        methodsLoading={isAsyncResultLoading(configResult)}
         accountHandoff={accountHandoff}
         createCustomMethod={createCustomMethod}
         removeCustomMethod={removeCustomMethod}

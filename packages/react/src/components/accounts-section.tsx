@@ -366,6 +366,10 @@ export function AccountsSection(props: {
   readonly integration: IntegrationSlug;
   readonly integrationName: string;
   readonly methods: readonly AuthMethod[];
+  /** True while the caller's methods source is still resolving, so the modal can
+   *  show a loading shell instead of treating "not loaded yet" as "no
+   *  authentication". */
+  readonly methodsLoading?: boolean;
   readonly accountHandoff?: IntegrationAccountHandoff | null;
   /** When provided, Add connection shows a "+ Custom method" row. The plugin binds
    *  this to its own configure mutation. Omitted for plugins with fixed auth. */
@@ -376,6 +380,7 @@ export function AccountsSection(props: {
     integration,
     integrationName,
     methods,
+    methodsLoading,
     accountHandoff,
     createCustomMethod,
     removeCustomMethod,
@@ -445,6 +450,7 @@ export function AccountsSection(props: {
       integration={integration}
       integrationName={integrationName}
       methods={methods}
+      methodsLoading={methodsLoading}
       open={adding || reconnectHandoff !== null}
       onOpenChange={(open: boolean) => {
         setAdding(open);

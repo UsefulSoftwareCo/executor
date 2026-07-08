@@ -8,6 +8,7 @@ import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
+import { isAsyncResultLoading } from "@executor-js/react/lib/async-result";
 import {
   useCustomMethodActions,
   type AuthMethodsCodec,
@@ -96,6 +97,7 @@ export default function GraphqlAccountsPanel(props: {
         integration={slug}
         integrationName={integrationName}
         methods={methods}
+        methodsLoading={isAsyncResultLoading(configResult)}
         accountHandoff={accountHandoff}
         createCustomMethod={createCustomMethod}
         removeCustomMethod={removeCustomMethod}
