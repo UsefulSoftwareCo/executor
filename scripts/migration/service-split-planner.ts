@@ -337,6 +337,121 @@ const microsoftCatalogByMonolithPresetId: ReadonlyMap<string, OpenApiPreset> = n
   microsoftCatalog.map((preset) => [preset.id.replace(/^microsoft-/, ""), preset]),
 );
 
+const MICROSOFT_UNMIGRATABLE_UMBRELLA_PRESET_IDS = new Set(["me-surface", "users", "groups"]);
+const MICROSOFT_TOOL_IMPLIED_PRESET_IDS = new Set(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
+const microsoftCatalogBackedPresetIds = new Set(
+  microsoftCatalog
+    .filter((preset) => preset.defaultSlug && preset.defaultSlug.length > 0)
+    .map((preset) => preset.id.replace(/^microsoft-/, "")),
+);
+
+export const microsoftToolFirstSegmentPresetIds: ReadonlyMap<string, readonly string[]> = new Map([
+  ["chats", ["teams-chat"]],
+  ["chatsChat", ["teams-chat"]],
+  ["communications", ["meetings-calls"]],
+  ["communicationsCall", ["meetings-calls"]],
+  ["communicationsOnlineMeeting", ["meetings-calls"]],
+  ["communicationsPresence", ["meetings-calls"]],
+  ["drives", ["files"]],
+  ["drivesDrive", ["files"]],
+  ["drivesDriveItem", ["files"]],
+  ["groupsDrive", ["files"]],
+  ["groupsDrives", ["files"]],
+  ["groupsOnenote", ["onenote"]],
+  ["groupsTeam", ["teams-channels"]],
+  ["meCalendar", ["calendar"]],
+  ["meCalendarGroups", ["calendar"]],
+  ["meCalendars", ["calendar"]],
+  ["meCalendarView", ["calendar"]],
+  ["meChat", ["teams-chat"]],
+  ["meChats", ["teams-chat"]],
+  ["meContact", ["contacts"]],
+  ["meContactFolder", ["contacts"]],
+  ["meContactFolders", ["contacts"]],
+  ["meContacts", ["contacts"]],
+  ["meDrive", ["files"]],
+  ["meDrives", ["files"]],
+  ["meEvent", ["calendar"]],
+  ["meEvents", ["calendar"]],
+  ["meFindMeetingTimes", ["calendar"]],
+  ["meFollowedSites", ["files"]],
+  ["meGetMailTips", ["mail"]],
+  ["meInferenceClassification", ["mail"]],
+  ["meJoinedTeams", ["teams-channels"]],
+  ["meMailFolders", ["mail"]],
+  ["meMailboxSettings", ["mail"]],
+  ["meMessage", ["mail"]],
+  ["meMessages", ["mail"]],
+  ["meOnlineMeeting", ["meetings-calls"]],
+  ["meOnlineMeetings", ["meetings-calls"]],
+  ["meOnenote", ["onenote"]],
+  ["meOutlook", ["mail"]],
+  ["meOutlookUser", ["mail"]],
+  ["mePeople", ["contacts"]],
+  ["mePerson", ["contacts"]],
+  ["mePhoto", ["profile"]],
+  ["meProfilePhoto", ["profile"]],
+  ["meReminderView", ["calendar"]],
+  ["meSendMail", ["mail"]],
+  ["meSite", ["files"]],
+  ["meTeam", ["teams-channels"]],
+  ["meTodo", ["tasks"]],
+  ["meUser", ["profile"]],
+  ["meUserActions", ["profile"]],
+  ["meUserFunctions", ["profile"]],
+  ["shares", ["files"]],
+  ["sites", ["sites"]],
+  ["sitesOnenote", ["onenote"]],
+  ["sitesSite", ["sites"]],
+  ["teams", ["teams-channels"]],
+  ["teamsChannel", ["teams-channels"]],
+  ["teamsTeam", ["teams-channels"]],
+  ["teamsTemplates", ["teams-channels"]],
+  ["teamwork", ["teams-channels"]],
+  ["usersCalendar", ["calendar"]],
+  ["usersCalendarGroups", ["calendar"]],
+  ["usersCalendars", ["calendar"]],
+  ["usersCalendarView", ["calendar"]],
+  ["usersContact", ["contacts"]],
+  ["usersContactFolder", ["contacts"]],
+  ["usersContactFolders", ["contacts"]],
+  ["usersContacts", ["contacts"]],
+  ["usersDrive", ["files"]],
+  ["usersDrives", ["files"]],
+  ["usersEvent", ["calendar"]],
+  ["usersEvents", ["calendar"]],
+  ["usersFindMeetingTimes", ["calendar"]],
+  ["usersMailFolders", ["mail"]],
+  ["usersMessage", ["mail"]],
+  ["usersMessages", ["mail"]],
+  ["usersOnlineMeeting", ["meetings-calls"]],
+  ["usersOnlineMeetings", ["meetings-calls"]],
+  ["usersOnenote", ["onenote"]],
+  ["usersOutlook", ["mail"]],
+  ["usersPeople", ["contacts"]],
+  ["usersPerson", ["contacts"]],
+  ["usersReminderView", ["calendar"]],
+  ["usersSendMail", ["mail"]],
+  ["usersTodo", ["tasks"]],
+]);
+
+const MICROSOFT_WORKBOOK_FIRST_SEGMENTS = new Set([
+  "drivesDriveItem",
+  "groupsDrive",
+  "meDrive",
+  "usersDrive",
+]);
+
+const microsoftFirstSegmentOwnershipKey = (firstSegment: string): string | undefined =>
+  [...microsoftToolFirstSegmentPresetIds.keys()]
+    .filter(
+      (key) =>
+        firstSegment === key ||
+        (firstSegment.startsWith(key) &&
+          firstSegment[key.length]?.toUpperCase() === firstSegment[key.length]),
+    )
+    .sort((left, right) => right.length - left.length)[0];
+
 const serviceSlugForPreset = (family: MonolithPluginId, presetId: string): string | undefined => {
   const preset =
     family === "google"
@@ -405,6 +520,13 @@ const microsoftPresetIdsFromConfig = (integration: IntegrationRow): readonly str
   );
 };
 
+const microsoftUnmigratablePresetIds = (presetIds: readonly string[]): readonly string[] =>
+  presetIds.filter(
+    (presetId) =>
+      MICROSOFT_UNMIGRATABLE_UMBRELLA_PRESET_IDS.has(presetId) ||
+      !microsoftCatalogBackedPresetIds.has(presetId),
+  );
+
 export const googlePresetIdForTool = (toolName: string): string | undefined => {
   const [first, second] = toolName.split(".");
   if (first === "admin") {
@@ -413,38 +535,20 @@ export const googlePresetIdForTool = (toolName: string): string | undefined => {
   return GOOGLE_TOOL_PREFIX_TO_PRESET_ID.get(first ?? "");
 };
 
-const microsoftPresetIdsForTool = (toolName: string): readonly string[] => {
+export const microsoftPresetIdsForTool = (toolName: string): readonly string[] => {
   const segments = toolName.split(".");
   const first = segments[0] ?? "";
-  const presetIds: string[] = [];
-  const add = (presetId: string) => {
-    if (!presetIds.includes(presetId)) presetIds.push(presetId);
-  };
-
-  if (/^me/.test(first)) add("me-surface");
-  if (/^users/.test(first)) add("users");
-  if (/^groups/.test(first)) add("groups");
-  if (/^(me|users).*Message|^meMail|^usersMail|^meMailbox|^meOutlook|^usersOutlook/.test(first)) {
-    add("mail");
-  }
-  if (/Calendar|Event|Reminder|findMeetingTimes/.test(first)) add("calendar");
-  if (/Contact|Person/.test(first)) add("contacts");
-  if (/Todo/.test(first)) add("tasks");
-  if (/Planner/.test(first)) add("planner");
-  if (/Drive|drives|shares/.test(first)) add("files");
-  if (segments.some((segment) => /workbook/i.test(segment)) || /Workbook|Excel/.test(first)) {
-    if (/^(me|users|groups)/.test(first) || /Drive|drives/.test(first)) add("files");
-    add("excel");
-  }
-  if (/sites|Site|List|SharePoint/.test(first)) add("sites");
-  if (/onenote/i.test(first) || segments.some((segment) => /onenote/i.test(segment))) {
-    add("onenote");
-  }
-  if (/chats|Chat/.test(first)) add("teams-chat");
-  if (/teams|Team|teamwork|Channel/.test(first)) add("teams-channels");
-  if (/communications|OnlineMeeting|Call|Presence/.test(first)) add("meetings-calls");
-  if (/^meUser|^usersUser|ProfilePhoto/.test(first)) add("profile");
-  return presetIds;
+  const ownershipKey = microsoftFirstSegmentOwnershipKey(first);
+  const fromFirstSegment = ownershipKey
+    ? (microsoftToolFirstSegmentPresetIds.get(ownershipKey) ?? [])
+    : [];
+  const workbookOwned =
+    ownershipKey !== undefined &&
+    MICROSOFT_WORKBOOK_FIRST_SEGMENTS.has(ownershipKey) &&
+    segments.some((segment) => segment.toLowerCase().includes("workbook"));
+  return unique([...fromFirstSegment, ...(workbookOwned ? ["excel"] : [])]).filter((presetId) =>
+    MICROSOFT_TOOL_IMPLIED_PRESET_IDS.has(presetId),
+  );
 };
 
 const presetIdsForTool = (pluginId: MonolithPluginId, toolName: string): readonly string[] => {
@@ -462,6 +566,14 @@ const deriveServices = (
     pluginId === "google"
       ? googlePresetIdsFromConfig(integration)
       : microsoftPresetIdsFromConfig(integration);
+  if (pluginId === "microsoft") {
+    const unmigratablePresetIds = microsoftUnmigratablePresetIds(fromConfig);
+    if (unmigratablePresetIds.length > 0) {
+      throw new Error(
+        `Monolith ${tenantHash(integration.tenant)}/${integration.plugin_id}/${integration.slug} references unmigratable-umbrella Microsoft Graph preset(s): ${unmigratablePresetIds.join(", ")}; org needs manual handling`,
+      );
+    }
+  }
   const fromTools = unique(
     tools.flatMap((tool) => {
       const presetIds = presetIdsForTool(pluginId, tool.name);
@@ -578,7 +690,7 @@ const operationRowsForService = (
     if (operationIntegration(row) !== monolith.slug) return false;
     const toolName = operationToolName(row);
     if (!toolName) return false;
-    if (monolith.plugin_id === "google" && toolName.startsWith("oauth2.")) return false;
+    if (isIntentionallyDroppedTool(monolith.plugin_id as MonolithPluginId, toolName)) return false;
     return serviceForMatchedTool(monolith.plugin_id as MonolithPluginId, toolName, [
       target,
     ]).includes(target.slug);
@@ -602,6 +714,9 @@ const isConfigOnlyMonolith = (input: {
 }): boolean =>
   input.tools.length === 0 && input.connections.length === 0 && input.operations.length === 0;
 
+const isIntentionallyDroppedTool = (pluginId: MonolithPluginId, toolName: string): boolean =>
+  pluginId === "google" && toolName.startsWith("oauth2.");
+
 const serviceForMatchedTool = (
   pluginId: MonolithPluginId,
   toolName: string,
@@ -616,6 +731,43 @@ const serviceForMatchedTool = (
 
 const allServiceSlugs = (services: readonly ServiceTarget[]): readonly string[] =>
   services.map((service) => service.slug);
+
+const unassignedToolNames = (
+  pluginId: MonolithPluginId,
+  tools: readonly { readonly name: string }[],
+  services: readonly ServiceTarget[],
+): readonly string[] =>
+  unique(
+    tools.flatMap((tool) => {
+      if (isIntentionallyDroppedTool(pluginId, tool.name)) return [];
+      return serviceForMatchedTool(pluginId, tool.name, services).length === 0 ? [tool.name] : [];
+    }),
+  );
+
+const assertNoUnassignedRows = (
+  monolith: IntegrationRow,
+  tools: readonly ToolRow[],
+  operations: readonly PluginStorageRow[],
+  services: readonly ServiceTarget[],
+): void => {
+  const pluginId = monolith.plugin_id as MonolithPluginId;
+  const unassignedTools = unassignedToolNames(pluginId, tools, services);
+  if (unassignedTools.length > 0) {
+    throw new Error(
+      `Monolith ${tenantHash(monolith.tenant)}/${monolith.plugin_id}/${monolith.slug} has tool row(s) with no target service: ${unassignedTools.slice(0, 20).join(", ")}`,
+    );
+  }
+  const operationTools = operations.flatMap((row) => {
+    const toolName = operationToolName(row);
+    return toolName ? [{ name: toolName }] : [];
+  });
+  const unassignedOperations = unassignedToolNames(pluginId, operationTools, services);
+  if (unassignedOperations.length > 0) {
+    throw new Error(
+      `Monolith ${tenantHash(monolith.tenant)}/${monolith.plugin_id}/${monolith.slug} has operation row(s) with no target service: ${unassignedOperations.slice(0, 20).join(", ")}`,
+    );
+  }
+};
 
 const serviceSlugsForToolPattern = (
   pluginId: MonolithPluginId,
@@ -878,6 +1030,13 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
           operations: monolithOperations,
         })
       ) {
+        continue;
+      }
+      try {
+        assertNoUnassignedRows(monolith, monolithTools, monolithOperations, services);
+      } catch (error) {
+        if (!input.collectPolicyErrors) throw error;
+        hardErrors.push(error instanceof Error ? error.message : String(error));
         continue;
       }
       const specHash = specHashFor(monolith);

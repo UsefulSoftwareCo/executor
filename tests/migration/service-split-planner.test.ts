@@ -1,7 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
+import {
+  streamOperationBindingsFromStructure,
+  structuralSplit,
+} from "../../packages/plugins/openapi/src/sdk";
 
 import {
   googlePresetIdForTool,
+  microsoftPresetIdsForTool,
+  microsoftToolFirstSegmentPresetIds,
   operationStorageKey,
   planMigration,
   verifyPolicyRewriteNeverWidens,
@@ -161,6 +168,56 @@ const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> 
   ["google-cloud-resource-manager", ["cloudresourcemanager.projects.list"]],
 ]);
 
+const microsoftDefaultPresetIds = [
+  "profile",
+  "mail",
+  "calendar",
+  "contacts",
+  "tasks",
+  "files",
+  "excel",
+  "sites",
+  "onenote",
+  "teams-chat",
+  "teams-channels",
+  "meetings-calls",
+] as const;
+
+const microsoftFixtureTagForFirstSegment = (firstSegment: string): string =>
+  firstSegment.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+
+const microsoftToolFirstSegmentsFromSplitterFixture = () =>
+  Effect.gen(function* () {
+    const paths = [...microsoftToolFirstSegmentPresetIds.keys()]
+      .map(
+        (firstSegment) => `  /fixture/${firstSegment}:
+    get:
+      tags:
+        - ${microsoftFixtureTagForFirstSegment(firstSegment)}
+      operationId: ${firstSegment}.Get
+      responses:
+        "200":
+          description: OK`,
+      )
+      .join("\n");
+    const structure = structuralSplit(`openapi: 3.0.4
+info:
+  title: Microsoft Graph Tool Ownership Fixture
+  version: v1.0
+paths:
+${paths}
+components: {}
+`);
+    expect(structure).not.toBeNull();
+    const toolNames: string[] = [];
+    yield* streamOperationBindingsFromStructure(structure!, { chunkSize: 100 }, (chunk) =>
+      Effect.sync(() => {
+        toolNames.push(...chunk.map((row) => row.toolName));
+      }),
+    );
+    return new Set(toolNames.map((toolName) => toolName.split(".")[0] ?? ""));
+  });
+
 const input = (overrides: Partial<MigrationInput> = {}): MigrationInput => ({
   integrations: [integration()],
   connections: [connection()],
@@ -195,6 +252,23 @@ describe("provider service split migration planner", () => {
       }
     }
   });
+
+  it.effect("keeps Microsoft planner ownership table aligned with splitter tool names", () =>
+    Effect.gen(function* () {
+      const splitterFirstSegments = yield* microsoftToolFirstSegmentsFromSplitterFixture();
+
+      expect([...splitterFirstSegments].sort()).toEqual(
+        [...microsoftToolFirstSegmentPresetIds.keys()].sort(),
+      );
+      for (const [firstSegment, presetIds] of microsoftToolFirstSegmentPresetIds) {
+        expect(microsoftPresetIdsForTool(`${firstSegment}.get`), firstSegment).toEqual(presetIds);
+      }
+      expect(microsoftPresetIdsForTool("drivesDriveItem.workbook.worksheets.list")).toEqual([
+        "files",
+        "excel",
+      ]);
+    }),
+  );
 
   it("plans a single-service monolith split", () => {
     const plan = planMigration(input());
@@ -745,6 +819,209 @@ describe("provider service split migration planner", () => {
     ]);
     expect(bySlug.get("microsoft_excel")?.servingState.operationsToBuild).toBe(1);
     expect(plan.summary.hardErrorOrgs).toBe(0);
+  });
+
+  it("maps Microsoft me-surface tools to only configured specific presets", () => {
+    const toolNames = [
+      "meInferenceClassification",
+      "meMailboxSettings",
+      "meOutlookUser",
+      "mePerson",
+      "meSite",
+      "meDrive",
+      "meTeam",
+      "meUser",
+      "meUserActions",
+      "meUserFunctions",
+      "meChat",
+      "meOnlineMeeting",
+    ];
+    const migrationInput = input({
+      integrations: [
+        integration({
+          plugin_id: "microsoft",
+          slug: "microsoft_graph_api",
+          name: "Microsoft Graph API",
+          config: {
+            microsoftGraphPresetIds: microsoftDefaultPresetIds,
+            specHash: "graph-hash",
+          },
+        }),
+      ],
+      connections: [
+        connection({
+          integration: "microsoft_graph_api",
+          template: "microsoftOAuth",
+          oauth_client: "microsoft",
+        }),
+      ],
+      tools: toolNames.map((name) =>
+        tool(name, {
+          integration: "microsoft_graph_api",
+          plugin_id: "microsoft",
+        }),
+      ),
+      pluginStorage: toolNames.map((name) =>
+        operation(name, {
+          plugin_id: "microsoft",
+          key: operationStorageKey("microsoft_graph_api", name),
+          data: {
+            integration: "microsoft_graph_api",
+            toolName: name,
+          },
+        }),
+      ),
+      blobs: [
+        blob("spec/graph-hash", { namespace: "o:org_1/microsoft" }),
+        blob("defs/graph-hash", { namespace: "o:org_1/microsoft" }),
+      ],
+    });
+    const plan = planMigration(migrationInput);
+    const bySlug = new Map(plan.orgs[0]?.integrations.map((row) => [row.target.slug, row]));
+
+    expect(microsoftPresetIdsForTool("meInferenceClassification")).toEqual(["mail"]);
+    expect(microsoftPresetIdsForTool("meMailboxSettings")).toEqual(["mail"]);
+    expect(microsoftPresetIdsForTool("meOutlookUser")).toEqual(["mail"]);
+    expect(microsoftPresetIdsForTool("mePerson")).toEqual(["contacts"]);
+    expect(microsoftPresetIdsForTool("meSite")).toEqual(["files"]);
+    expect(microsoftPresetIdsForTool("meDrive")).toEqual(["files"]);
+    expect(microsoftPresetIdsForTool("meTeam")).toEqual(["teams-channels"]);
+    expect(microsoftPresetIdsForTool("meUser")).toEqual(["profile"]);
+    expect(microsoftPresetIdsForTool("meUserActions")).toEqual(["profile"]);
+    expect(microsoftPresetIdsForTool("meUserFunctions")).toEqual(["profile"]);
+    expect(microsoftPresetIdsForTool("meChat")).toEqual(["teams-chat"]);
+    expect(microsoftPresetIdsForTool("meOnlineMeeting")).toEqual(["meetings-calls"]);
+    expect(bySlug.get("microsoft_mail")?.servingState.operationToolNames).toEqual([
+      "meInferenceClassification",
+      "meMailboxSettings",
+      "meOutlookUser",
+    ]);
+    expect(bySlug.get("microsoft_contacts")?.servingState.operationToolNames).toEqual(["mePerson"]);
+    expect(bySlug.get("microsoft_files")?.servingState.operationToolNames).toEqual([
+      "meSite",
+      "meDrive",
+    ]);
+    expect(bySlug.get("microsoft_teams_channels")?.servingState.operationToolNames).toEqual([
+      "meTeam",
+    ]);
+    expect(bySlug.get("microsoft_profile")?.servingState.operationToolNames).toEqual([
+      "meUser",
+      "meUserActions",
+      "meUserFunctions",
+    ]);
+    expect(bySlug.get("microsoft_teams_chat")?.servingState.operationToolNames).toEqual(["meChat"]);
+    expect(bySlug.get("microsoft_meetings_calls")?.servingState.operationToolNames).toEqual([
+      "meOnlineMeeting",
+    ]);
+    expect(plan.summary.hardErrorOrgs).toBe(0);
+  });
+
+  it("hard-errors when a Microsoft operation row maps to no target service", () => {
+    expect(() =>
+      planMigration(
+        input({
+          integrations: [
+            integration({
+              plugin_id: "microsoft",
+              slug: "microsoft_graph_api",
+              name: "Microsoft Graph API",
+              config: {
+                microsoftGraphPresetIds: ["mail"],
+                specHash: "graph-hash",
+              },
+            }),
+          ],
+          connections: [
+            connection({
+              integration: "microsoft_graph_api",
+              template: "microsoftOAuth",
+              oauth_client: "microsoft",
+            }),
+          ],
+          tools: [
+            tool("meMessagesList", {
+              integration: "microsoft_graph_api",
+              plugin_id: "microsoft",
+            }),
+          ],
+          pluginStorage: [
+            operation("unknownGraphThing", {
+              plugin_id: "microsoft",
+              key: operationStorageKey("microsoft_graph_api", "unknownGraphThing"),
+              data: {
+                integration: "microsoft_graph_api",
+                toolName: "unknownGraphThing",
+              },
+            }),
+          ],
+          blobs: [
+            blob("spec/graph-hash", { namespace: "o:org_1/microsoft" }),
+            blob("defs/graph-hash", { namespace: "o:org_1/microsoft" }),
+          ],
+        }),
+      ),
+    ).toThrow(/operation row\(s\) with no target service: unknownGraphThing/);
+  });
+
+  it("hard-errors when a Microsoft tool row maps to no target service", () => {
+    expect(() =>
+      planMigration(
+        input({
+          integrations: [
+            integration({
+              plugin_id: "microsoft",
+              slug: "microsoft_graph_api",
+              name: "Microsoft Graph API",
+              config: {
+                microsoftGraphPresetIds: ["mail"],
+                specHash: "graph-hash",
+              },
+            }),
+          ],
+          connections: [
+            connection({
+              integration: "microsoft_graph_api",
+              template: "microsoftOAuth",
+              oauth_client: "microsoft",
+            }),
+          ],
+          tools: [
+            tool("unknownGraphThing", {
+              integration: "microsoft_graph_api",
+              plugin_id: "microsoft",
+            }),
+          ],
+          pluginStorage: [],
+          blobs: [
+            blob("spec/graph-hash", { namespace: "o:org_1/microsoft" }),
+            blob("defs/graph-hash", { namespace: "o:org_1/microsoft" }),
+          ],
+        }),
+      ),
+    ).toThrow(/tool row\(s\) with no target service: unknownGraphThing/);
+  });
+
+  it("hard-errors when Microsoft config lists an unmigratable umbrella preset", () => {
+    expect(() =>
+      planMigration(
+        input({
+          integrations: [
+            integration({
+              plugin_id: "microsoft",
+              slug: "microsoft_graph_api",
+              name: "Microsoft Graph API",
+              config: {
+                microsoftGraphPresetIds: ["me-surface"],
+                specHash: "graph-hash",
+              },
+            }),
+          ],
+          connections: [],
+          tools: [],
+          pluginStorage: [],
+        }),
+      ),
+    ).toThrow(/unmigratable-umbrella Microsoft Graph preset\(s\): me-surface/);
   });
 
   it("fans Microsoft workbook policies to files and excel without widening", () => {
