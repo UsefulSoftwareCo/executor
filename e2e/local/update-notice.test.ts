@@ -102,6 +102,11 @@ scenario(
               .getByText("npm i -g executor@latest", { exact: true })
               .first()
               .waitFor({ timeout: 5_000 });
+            const changelog = page.getByRole("link", { name: "Changelog" });
+            await changelog.waitFor({ timeout: 5_000 });
+            expect(await changelog.getAttribute("href"), "links to the release changelog").toBe(
+              `https://executor.sh/changelog#v${FORCED_LATEST}`,
+            );
           });
         }),
       { env: { EXECUTOR_NPM_DIST_TAGS: DIST_TAGS } },
@@ -154,6 +159,11 @@ scenario(
           await page.getByText("Update available").waitFor({ timeout: 30_000 });
           await page.getByText(`v${FORCED_LATEST}`).waitFor({ timeout: 5_000 });
           await page.getByRole("button", { name: "Restart to update" }).waitFor({ timeout: 5_000 });
+          const changelog = page.getByRole("link", { name: "Changelog" });
+          await changelog.waitFor({ timeout: 5_000 });
+          expect(await changelog.getAttribute("href"), "links to the release changelog").toBe(
+            `https://executor.sh/changelog#v${FORCED_LATEST}`,
+          );
           // The desktop card never shows the npm command the web/CLI card does.
           expect(
             await page.getByText("npm i -g", { exact: false }).count(),

@@ -48,6 +48,11 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
           expect(await guide.getAttribute("href"), "links to the hosted upgrade docs").toContain(
             "/docs/hosted/",
           );
+          const changelog = page.getByRole("link", { name: "Changelog" });
+          await changelog.waitFor({ timeout: 5_000 });
+          expect(await changelog.getAttribute("href"), "links to the release changelog").toBe(
+            `https://executor.sh/changelog#v${FORCED_LATEST}`,
+          );
           expect(
             await page.getByText("npm i -g", { exact: false }).count(),
             "the self-host / Cloudflare card shows no npm command",

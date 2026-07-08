@@ -26,6 +26,7 @@ import { type DesktopUpdate, useDesktopUpdate } from "../hooks/desktop-update";
 
 const EXECUTOR_DIST_TAGS_PATH = "/v1/app/npm/dist-tags";
 const DOCS_BASE_URL = "https://executor.sh/docs";
+const CHANGELOG_URL = "https://executor.sh/changelog";
 
 type UpgradeHint = "npm" | "selfhost" | "cloudflare" | "managed";
 
@@ -90,6 +91,8 @@ function UpdateCardShell(props: {
   version: string | null;
   children?: React.ReactNode;
 }) {
+  const changelogHref = props.version ? `${CHANGELOG_URL}#v${props.version}` : CHANGELOG_URL;
+
   return (
     <div className="mx-2 mb-2 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
       <div className="flex items-center gap-2">
@@ -113,6 +116,23 @@ function UpdateCardShell(props: {
         </div>
       </div>
       {props.children}
+      <a
+        href={changelogHref}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-2.5 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <span>Changelog</span>
+        <svg viewBox="0 0 16 16" fill="none" className="size-3 shrink-0">
+          <path
+            d="M4 12L12 4M6 4h6v6"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </a>
     </div>
   );
 }

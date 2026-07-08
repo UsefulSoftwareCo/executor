@@ -64,6 +64,11 @@ const run = async (runDir: string) => {
     await page.getByText(`v${FORCED_VERSION}`).waitFor({ timeout: 10_000 });
     const restart = page.getByRole("button", { name: "Restart to update" });
     await restart.waitFor({ timeout: 10_000 });
+    const changelog = page.getByRole("link", { name: "Changelog" });
+    await changelog.waitFor({ timeout: 10_000 });
+    expect(await changelog.getAttribute("href"), "links to the release changelog").toBe(
+      `https://executor.sh/changelog#v${FORCED_VERSION}`,
+    );
     expect(
       await page.getByText("npm i -g", { exact: false }).count(),
       "the desktop card shows no npm command",

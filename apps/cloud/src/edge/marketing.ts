@@ -19,6 +19,7 @@ const MARKETING_PATHS = [
   "/privacy",
   "/terms",
   "/blog",
+  "/changelog",
   "/llms.txt",
   "/api/detect",
   "/_astro",
