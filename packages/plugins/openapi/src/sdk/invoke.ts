@@ -1152,6 +1152,21 @@ const resolveRequestHost = (
   return resolveServerUrl(chosen.url, Option.getOrUndefined(chosen.variables), overrides);
 };
 
+const baseUrlForPathTemplate = (baseUrl: string, pathTemplate: string): string => {
+  if (!baseUrl || !pathTemplate.startsWith("/upload/") || !URL.canParse(baseUrl)) return baseUrl;
+
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  if (basePath && basePath !== "/" && pathTemplate.startsWith(`/upload${basePath}/`)) {
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  return baseUrl;
+};
+
 // ---------------------------------------------------------------------------
 // Invoke with a provided HttpClient layer + per-call host resolution
 // ---------------------------------------------------------------------------
@@ -1165,7 +1180,11 @@ export const invokeWithLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   options: InvokeOptions = {},
 ) => {
-  const effectiveBaseUrl = resolveRequestHost(operation.servers ?? [], args.server, baseUrl);
+  const effectiveBaseUrl = baseUrlForPathTemplate(
+    resolveRequestHost(operation.servers ?? [], args.server, baseUrl),
+    operation.pathTemplate,
+  );
+
   const clientWithBaseUrl = effectiveBaseUrl
     ? Layer.effect(
         HttpClient.HttpClient,

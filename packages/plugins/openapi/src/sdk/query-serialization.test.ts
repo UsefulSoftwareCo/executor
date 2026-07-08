@@ -221,3 +221,46 @@ it.effect("falls back to the base URL for bindings persisted without servers", (
     }),
   ),
 );
+
+it.effect(
+  "targets Google media upload paths at the origin root when the base URL includes the service path",
+  () =>
+    Effect.promise(() =>
+      withServer(async ({ baseUrl, requests }) => {
+        const operation = OperationBinding.make({
+          method: "patch",
+          servers: [],
+          pathTemplate: "/upload/drive/v3/files/{fileId}",
+          requestBody: Option.none(),
+          responseBody: Option.none(),
+          parameters: [
+            OperationParameter.make({
+              name: "fileId",
+              location: "path",
+              required: true,
+              schema: Option.some({ type: "string" }),
+              style: Option.none(),
+              explode: Option.none(),
+              allowReserved: Option.none(),
+              description: Option.none(),
+            }),
+          ],
+        });
+
+        await Effect.runPromise(
+          invokeWithLayer(
+            operation,
+            { fileId: "abc123" },
+            `${baseUrl}/drive/v3/`,
+            {},
+            {},
+            FetchHttpClient.layer,
+          ),
+        );
+
+        expect(new URL(requests[0]!, "http://executor.test").pathname).toBe(
+          "/upload/drive/v3/files/abc123",
+        );
+      }),
+    ),
+);
