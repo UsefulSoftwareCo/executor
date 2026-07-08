@@ -835,12 +835,12 @@ const rewritePolicy = (
     );
   }
 
+  // Orphan policies (pattern targets a service the org never derived) retarget
+  // to every derived service as dormant rows: block/require_approval so the
+  // guardrail intent survives a later add of that service, and approve because
+  // dropping it is the only alternative and a dormant row is equally inert.
   const serviceSlugs = unique(serviceSlugsForPolicyPattern(policy, monolith, services));
-  const orphanPolicyRetarget =
-    orphanPolicyMode === "retarget_all" &&
-    (policy.action === "block" || policy.action === "require_approval")
-      ? allServiceSlugs(services)
-      : [];
+  const orphanPolicyRetarget = orphanPolicyMode === "retarget_all" ? allServiceSlugs(services) : [];
 
   if (serviceSlugs.length === 0 && orphanPolicyRetarget.length === 0) {
     throw new Error(
