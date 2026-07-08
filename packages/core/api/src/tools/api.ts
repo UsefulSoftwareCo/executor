@@ -16,6 +16,7 @@ import {
   InternalError,
   Owner,
   ToolAddress,
+  ToolCatalogExport,
   ToolNotFoundError,
   ToolSchemaView,
 } from "@executor-js/sdk/shared";
@@ -58,6 +59,29 @@ const SchemaQuery = Schema.Struct({
   address: ToolAddress,
 });
 
+// `tools.invoke` request/response. The response is the same ok/error outcome
+// envelope tools return in the sandbox; a paused (approval-gated) execution
+// surfaces as `ok: false` with `code: "execution_paused"` plus resume
+// coordinates, so REST callers see exactly one response shape.
+const InvokeToolParams = { path: Schema.String };
+
+const InvokeQuery = Schema.Struct({
+  // Query params arrive as strings; "true" approves approval-gated tools.
+  autoApprove: Schema.optional(Schema.String),
+});
+
+const InvokeOutcome = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    data: Schema.optional(Schema.Unknown),
+    http: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    error: Schema.Unknown,
+  }),
+]);
+
 // ---------------------------------------------------------------------------
 // Error schemas with HTTP status annotations
 // ---------------------------------------------------------------------------
@@ -80,6 +104,38 @@ export const ToolsApi = HttpApiGroup.make("tools")
     HttpApiEndpoint.get("schema", "/tools/schema", {
       query: SchemaQuery,
       success: ToolSchemaView,
+      error: [InternalError, ToolNotFound],
+    }),
+  )
+  .add(
+    // Bulk schema-bearing read for codegen (`executor generate`): every
+    // visible tool's input/output JSON schema grouped per connection with the
+    // connection's shared `$defs`. One request regardless of catalog size —
+    // per-tool `schema` round trips do not scale to 10k-tool catalogs.
+    HttpApiEndpoint.get("export", "/tools/export", {
+      query: ListToolsQuery,
+      success: ToolCatalogExport,
+      error: InternalError,
+    }),
+  )
+  .add(
+    // The catalog as an OpenAPI 3.1 document: one POST operation per tool,
+    // pointing at `invoke` below. Feed it to any OpenAPI client generator.
+    HttpApiEndpoint.get("openapi", "/tools/export/openapi", {
+      query: ListToolsQuery,
+      success: Schema.Unknown,
+      error: InternalError,
+    }),
+  )
+  .add(
+    // Direct REST invocation of one tool by its dotted path (the operations
+    // the generated OpenAPI document describes). Bodies are the tool's input
+    // object; the response is the uniform outcome envelope.
+    HttpApiEndpoint.post("invoke", "/tools/invoke/:path", {
+      params: InvokeToolParams,
+      query: InvokeQuery,
+      payload: Schema.Unknown,
+      success: InvokeOutcome,
       error: [InternalError, ToolNotFound],
     }),
   );

@@ -109,3 +109,44 @@ resume it:
 ```bash
 executor resume --execution-id exec_123
 ```
+
+## Generate a typed client
+
+`executor generate` exports your tool catalog as an OpenAPI 3.1 document:
+one REST operation per tool, with full input/output schemas. Feed it to
+whatever client generator you already use (openapi-typescript,
+openapi-generator, Kiota, ...) and every call is typed end to end while still
+executing through Executor (auth, policies, and approvals included):
+
+```bash
+executor generate                        # writes executor.openapi.json
+npx openapi-typescript executor.openapi.json -o executor-api.ts
+```
+
+The same document is served live at `GET /api/tools/export/openapi` (bearer
+auth), so generators that take a URL can point straight at the instance. The
+operations it describes are real endpoints: `POST /api/tools/invoke/{tool
+path}` runs the tool and returns `{ ok: true, data }` or `{ ok: false, error }`;
+approval-gated calls return `error.code: "execution_paused"` with resume
+coordinates.
+
+Prefer a ready-made client instead of running a generator? `--format
+typescript` writes a single self-contained TypeScript file with a
+dependency-free runtime client:
+
+```bash
+executor generate --format typescript    # writes executor.gen.ts
+executor generate --format both          # both artifacts
+executor generate --integration github   # only one integration
+```
+
+```ts
+import { createExecutorClient } from "./executor.gen";
+
+const executor = createExecutorClient(); // EXECUTOR_API_KEY / EXECUTOR_AUTH_TOKEN
+const created = await executor.github.org.main.issues.create({ title: "Hi" });
+if (created.ok) console.log(created.data.number);
+```
+
+Calls that pause for approval throw `ExecutorPausedError` with the approval
+URL. Re-run `executor generate` whenever your catalog changes.

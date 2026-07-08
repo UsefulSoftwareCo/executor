@@ -100,7 +100,13 @@ export {
 export type { ToolPolicyAction } from "./core-schema";
 
 // Schema-side views + onboarding autodetect.
-export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+export {
+  ToolCatalogConnectionExport,
+  ToolCatalogExport,
+  ToolCatalogToolExport,
+  ToolSchemaView,
+  IntegrationDetectionResult,
+} from "./types";
 
 export {
   decodeOAuthCallbackState,

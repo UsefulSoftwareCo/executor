@@ -109,6 +109,8 @@ const wrapPromiseExecutor = (pe: PromiseExecutor): EffectExecutor => {
         fromPromise(() => pe.tools.list(filter)),
       schema: (address: Parameters<PromiseExecutor["tools"]["schema"]>[0]) =>
         fromPromise(() => pe.tools.schema(address)),
+      export: (filter?: Parameters<PromiseExecutor["tools"]["export"]>[0]) =>
+        fromPromise(() => pe.tools.export(filter)),
     },
     providers: {
       list: () => fromPromise(() => pe.providers.list()),

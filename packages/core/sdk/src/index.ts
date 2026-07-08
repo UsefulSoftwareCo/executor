@@ -102,7 +102,13 @@ export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 export type { CredentialProvider, ProviderEntry } from "./provider";
 
 // Public projections / detection.
-export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+export {
+  ToolCatalogConnectionExport,
+  ToolCatalogExport,
+  ToolCatalogToolExport,
+  ToolSchemaView,
+  IntegrationDetectionResult,
+} from "./types";
 
 // Health-check vocabulary (pure Schema + helpers).
 export {
@@ -355,7 +361,25 @@ export {
 } from "./config";
 
 // The one TS-preview generator plugins assert against.
-export { buildToolTypeScriptPreview } from "./schema-types";
+export {
+  buildToolTypeScriptPreview,
+  compileToolChunkTypeScript,
+  type ToolChunkSchemaEntry,
+  type ToolChunkTypeScript,
+  type ToolChunkTypeScriptEntry,
+} from "./schema-types";
+
+// Typed tool-proxy source generation (the `executor generate` backend).
+export {
+  generateToolProxySource,
+  type GeneratedToolProxy,
+  type GenerateToolProxyOptions,
+} from "./typegen";
+export {
+  generateOpenApiSpec,
+  type GeneratedOpenApiSpec,
+  type GenerateOpenApiSpecOptions,
+} from "./specgen";
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";

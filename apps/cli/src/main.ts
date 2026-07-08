@@ -76,6 +76,8 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { ExecutorApi, checkForUpdate } from "@executor-js/api";
 import {
+  ConnectionName,
+  IntegrationSlug,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
@@ -84,6 +86,7 @@ import {
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
 } from "@executor-js/sdk/shared";
+import { generateOpenApiSpec, generateToolProxySource } from "@executor-js/sdk/core";
 import {
   decodeAccessTokenClaims,
   discoverCliLogin,
@@ -2718,6 +2721,161 @@ const mcpCommand = Command.make(
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 
 // ---------------------------------------------------------------------------
+// Generate — export the instance's tool catalog for typed clients.
+// Default artifact: an OpenAPI 3.1 document (plug it into any client
+// generator). Optional: a ready-made self-contained TypeScript client.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_GENERATE_OPENAPI_OUTPUT = "executor.openapi.json";
+const DEFAULT_GENERATE_TYPESCRIPT_OUTPUT = "executor.gen.ts";
+
+const generateCommand = Command.make(
+  "generate",
+  {
+    format: Options.choice("format", ["openapi", "typescript", "both"] as const).pipe(
+      Options.withDefault("openapi"),
+      Options.withDescription(
+        "What to emit: an OpenAPI 3.1 document (default; feed it to any client generator), a self-contained TypeScript client, or both.",
+      ),
+    ),
+    output: Options.string("output").pipe(
+      Options.withAlias("o"),
+      Options.optional,
+      Options.withDescription(
+        `Output path. Defaults to ${DEFAULT_GENERATE_OPENAPI_OUTPUT} / ${DEFAULT_GENERATE_TYPESCRIPT_OUTPUT} by format; with --format both this names the OpenAPI file and the TypeScript file keeps its default.`,
+      ),
+    ),
+    integration: Options.string("integration").pipe(
+      Options.optional,
+      Options.withDescription("Only generate tools from this integration slug."),
+    ),
+    connection: Options.string("connection").pipe(
+      Options.optional,
+      Options.withDescription("Only generate tools from this connection name."),
+    ),
+    includeStatic: Options.boolean("include-static").pipe(
+      Options.withDefault(false),
+      Options.withDescription(
+        "Include Executor's built-in static tools (executor.*, search, describe.*).",
+      ),
+    ),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ format, output, integration, connection, includeStatic, baseUrl, server, scope }) =>
+    Effect.gen(function* () {
+      applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
+      const serverConnection = yield* resolveExecutorServerConnection(target);
+      const client = yield* makeApiClient(serverConnection);
+
+      const catalog = yield* client.tools
+        .export({
+          query: {
+            ...(Option.isSome(integration)
+              ? { integration: IntegrationSlug.make(integration.value) }
+              : {}),
+            ...(Option.isSome(connection)
+              ? { connection: ConnectionName.make(connection.value) }
+              : {}),
+          },
+        })
+        .pipe(Effect.mapError(toError));
+
+      const filtered = includeStatic
+        ? catalog
+        : {
+            connections: catalog.connections
+              .map((entry) => ({
+                ...entry,
+                tools: entry.tools.filter((tool) => tool.static !== true),
+              }))
+              .filter((entry) => entry.tools.length > 0),
+          };
+
+      const totalTools = filtered.connections.reduce((sum, entry) => sum + entry.tools.length, 0);
+      if (totalTools === 0) {
+        return yield* Effect.fail(
+          new Error(
+            [
+              "No tools matched, nothing to generate.",
+              `Server: ${serverConnection.origin}`,
+              `Check filters, or add an integration first: ${cliPrefix} web`,
+            ].join("\n"),
+          ),
+        );
+      }
+
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* PlatformPath.Path;
+      const resolveOutput = (candidate: string): string =>
+        path.isAbsolute(candidate) ? candidate : path.join(process.cwd(), candidate);
+      const writeArtifact = (candidate: string, contents: string) =>
+        Effect.gen(function* () {
+          const outputPath = resolveOutput(candidate);
+          yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
+          yield* fs.writeFileString(outputPath, contents);
+          return outputPath;
+        });
+      const requestedOutput = Option.getOrUndefined(output);
+
+      if (format === "openapi" || format === "both") {
+        const generated = yield* Effect.try({
+          try: () => generateOpenApiSpec(filtered, { serverUrl: serverConnection.apiBaseUrl }),
+          catch: (cause) =>
+            cause instanceof Error
+              ? cause
+              : new Error(`Failed to generate the OpenAPI document: ${String(cause)}`),
+        });
+        const outputPath = yield* writeArtifact(
+          requestedOutput ?? DEFAULT_GENERATE_OPENAPI_OUTPUT,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          `${JSON.stringify(generated.document, null, 2)}\n`,
+        );
+        console.log(
+          `Generated ${outputPath} (OpenAPI 3.1, ${generated.toolCount} tools, ${generated.connectionCount} connections).`,
+        );
+        console.log("");
+        console.log("Feed it to your client generator, e.g.:");
+        console.log(`  npx openapi-typescript ${path.basename(outputPath)} -o executor-api.ts`);
+        console.log(
+          `Live copy: ${serverConnection.apiBaseUrl}/tools/export/openapi (bearer auth).`,
+        );
+      }
+
+      if (format === "typescript" || format === "both") {
+        const generated = yield* Effect.try({
+          try: () => generateToolProxySource(filtered),
+          catch: (cause) =>
+            cause instanceof Error
+              ? cause
+              : new Error(`Failed to generate TypeScript source: ${String(cause)}`),
+        });
+        const tsOutput =
+          format === "typescript"
+            ? (requestedOutput ?? DEFAULT_GENERATE_TYPESCRIPT_OUTPUT)
+            : DEFAULT_GENERATE_TYPESCRIPT_OUTPUT;
+        const outputPath = yield* writeArtifact(tsOutput, generated.source);
+        if (format === "both") console.log("");
+        console.log(
+          `Generated ${outputPath} (TypeScript client, ${generated.toolCount} tools, ${generated.connectionCount} connections).`,
+        );
+        console.log("");
+        console.log("Use it:");
+        console.log(
+          `  import { createExecutorClient } from "./${path.basename(tsOutput, ".ts")}";`,
+        );
+        console.log(`  const executor = createExecutorClient();`);
+      }
+    }).pipe(Effect.mapError(toError)),
+).pipe(
+  Command.withDescription(
+    "Export this instance's tool catalog as an OpenAPI document (default) or a typed TypeScript client",
+  ),
+);
+
+// ---------------------------------------------------------------------------
 // Service — register the daemon with the OS so it survives app-quit + restart
 // ---------------------------------------------------------------------------
 
@@ -3119,6 +3277,7 @@ const root = Command.make("executor").pipe(
     daemonCommand,
     serviceCommand,
     mcpCommand,
+    generateCommand,
     openCommand,
     docsCommand,
   ] as const),

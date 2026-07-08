@@ -7,7 +7,7 @@
 
 import { Schema } from "effect";
 
-import { ToolAddress } from "./ids";
+import { ConnectionName, IntegrationSlug, Owner, ToolAddress } from "./ids";
 
 // ---------------------------------------------------------------------------
 // ToolSchemaView — the full schema-side view of a tool, returned by
@@ -27,6 +27,41 @@ export const ToolSchemaView = Schema.Struct({
   typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ToolSchemaView = typeof ToolSchemaView.Type;
+
+// ---------------------------------------------------------------------------
+// ToolCatalogExport — the bulk schema-bearing read returned by
+// `executor.tools.export(filter)`. Unlike `tools.list` (metadata-only, schemas
+// deliberately projected out) this carries every tool's input/output JSON
+// schema plus the connection's shared `$defs`, grouped per connection so a
+// consumer (the `executor generate` typegen) can compile self-contained
+// TypeScript without one `tools.schema` round trip per tool.
+// ---------------------------------------------------------------------------
+
+export const ToolCatalogToolExport = Schema.Struct({
+  address: ToolAddress,
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  inputSchema: Schema.optional(Schema.Unknown),
+  outputSchema: Schema.optional(Schema.Unknown),
+  static: Schema.optional(Schema.Boolean),
+});
+export type ToolCatalogToolExport = typeof ToolCatalogToolExport.Type;
+
+export const ToolCatalogConnectionExport = Schema.Struct({
+  owner: Owner,
+  integration: IntegrationSlug,
+  connection: ConnectionName,
+  tools: Schema.Array(ToolCatalogToolExport),
+  /** Shared `$defs` referenced by this connection's tool schemas, already
+   *  trimmed to the referenced subset. */
+  definitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
+export type ToolCatalogConnectionExport = typeof ToolCatalogConnectionExport.Type;
+
+export const ToolCatalogExport = Schema.Struct({
+  connections: Schema.Array(ToolCatalogConnectionExport),
+});
+export type ToolCatalogExport = typeof ToolCatalogExport.Type;
 
 // ---------------------------------------------------------------------------
 // Integration detection — optional capability on `PluginSpec.detect`. When a

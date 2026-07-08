@@ -140,7 +140,13 @@ import {
   ORG_SUBJECT,
   type ExecutorOwnerPolicyContext,
 } from "./owner-policy";
-import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
+import {
+  ToolCatalogExport,
+  ToolSchemaView,
+  type IntegrationDetectionResult,
+  type ToolCatalogConnectionExport,
+  type ToolCatalogToolExport,
+} from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
@@ -353,6 +359,9 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   readonly tools: {
     readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
     readonly schema: (address: ToolAddress) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
+    /** Bulk schema-bearing read for codegen: every visible tool's input/output
+     *  JSON schema, grouped per connection with trimmed shared `$defs`. */
+    readonly export: (filter?: ToolListFilter) => Effect.Effect<ToolCatalogExport, StorageFailure>;
   };
 
   readonly providers: {
@@ -3253,6 +3262,126 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
+    // The bulk schema-bearing read behind `executor generate`. One pass over
+    // full tool rows (schemas included, unlike the projected `toolsList`),
+    // policy-filtered like `toolsList`, grouped per connection with that
+    // connection's `$defs` trimmed to the referenced subset. Kept as a single
+    // surface instead of N `toolSchema` calls: a 10k-tool catalog must not pay
+    // 10k round trips or 10k per-tool definition queries.
+    const toolsExport = (
+      filter?: ToolListFilter,
+    ): Effect.Effect<ToolCatalogExport, StorageFailure> =>
+      Effect.gen(function* () {
+        yield* syncStaleConnectionTools;
+        const rows = yield* core.findMany("tool", {
+          where: (b: AnyCb) =>
+            b.and(
+              filter?.integration === undefined
+                ? true
+                : b("integration", "=", String(filter.integration)),
+              filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+              filter?.connection === undefined
+                ? true
+                : b("connection", "=", String(filter.connection)),
+            ),
+        });
+        const includeBlocked = filter?.includeBlocked ?? false;
+        const policyRules = yield* listActivePolicyRuleSet();
+
+        type ConnectionGroup = {
+          readonly owner: Owner;
+          readonly integration: IntegrationSlug;
+          readonly connection: ConnectionName;
+          readonly tools: ToolCatalogToolExport[];
+        };
+        const groups = new Map<string, ConnectionGroup>();
+        const groupFor = (tool: Tool): ConnectionGroup => {
+          const key = `${tool.owner} ${tool.integration} ${tool.connection}`;
+          let group = groups.get(key);
+          if (!group) {
+            group = {
+              owner: tool.owner,
+              integration: tool.integration,
+              connection: tool.connection,
+              tools: [],
+            };
+            groups.set(key, group);
+          }
+          return group;
+        };
+
+        const visible = (tool: Tool): Effect.Effect<boolean, StorageFailure> =>
+          Effect.gen(function* () {
+            if (!matchesToolFilter(tool, filter)) return false;
+            if (includeBlocked) return true;
+            const effective = yield* resolvePolicyFromRuleSet(
+              normalizedPolicyId(tool),
+              policyRules,
+              tool.annotations?.requiresApproval,
+            );
+            return effective.action !== "block";
+          });
+
+        for (const row of rows) {
+          const tool = rowToTool(row);
+          if (!(yield* visible(tool))) continue;
+          groupFor(tool).tools.push({
+            address: tool.address,
+            name: String(tool.name),
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            outputSchema: tool.outputSchema,
+          });
+        }
+        for (const entry of staticTools.values()) {
+          const tool = staticToolToTool(entry);
+          if (!(yield* visible(tool))) continue;
+          groupFor(tool).tools.push({
+            address: tool.address,
+            name: String(tool.name),
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            outputSchema: tool.outputSchema,
+            static: true,
+          });
+        }
+
+        const connectionsOut: ToolCatalogConnectionExport[] = [];
+        for (const group of groups.values()) {
+          // Static pseudo-connections have no definition rows; skip the query.
+          const isStatic = group.tools.every((tool) => tool.static === true);
+          let definitions: Record<string, unknown> | undefined;
+          if (!isStatic) {
+            const definitionRows = yield* core.findMany("definition", {
+              where: (b: AnyCb) =>
+                b.and(
+                  byOwner(group.owner)(b),
+                  b("integration", "=", String(group.integration)),
+                  b("connection", "=", String(group.connection)),
+                ),
+            });
+            const defs = new Map<string, unknown>();
+            for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
+            const referenced = collectReferencedDefinitions(
+              group.tools.flatMap((tool) => [tool.inputSchema, tool.outputSchema]),
+              defs,
+            );
+            if (Object.keys(referenced).length > 0) {
+              definitions = referenced;
+            }
+          }
+          connectionsOut.push({
+            owner: group.owner,
+            integration: group.integration,
+            connection: group.connection,
+            tools: group.tools,
+            ...(definitions !== undefined ? { definitions } : {}),
+          });
+        }
+
+        return ToolCatalogExport.make({ connections: connectionsOut });
+      });
+
     // ------------------------------------------------------------------
     // Providers
     // ------------------------------------------------------------------
@@ -3980,6 +4109,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       tools: {
         list: toolsList,
         schema: toolSchema,
+        export: toolsExport,
       },
       providers: {
         list: providersList,

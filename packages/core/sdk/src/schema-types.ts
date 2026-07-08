@@ -789,6 +789,114 @@ export type ToolTypeScriptPreview = {
   typeScriptDefinitions?: Record<string, string>;
 };
 
+// ---------------------------------------------------------------------------
+// Chunked tool compilation — many tools per compiler pass.
+//
+// `buildToolTypeScriptPreview` compiles ONE tool per pass; at catalog scale
+// (the `executor generate` typegen walks every tool, potentially 10k+) the
+// per-pass overhead dominates and compile time grows super-linearly with the
+// number of declarations in a single pass. This entry point compiles a CHUNK
+// of tools in one pass by wrapping every tool's input/output as a property of
+// one root object, then splits the compiled root interface back into per-tool
+// type strings. Callers pick the chunk size; ~200 keeps each pass linear.
+// ---------------------------------------------------------------------------
+
+export type ToolChunkSchemaEntry = {
+  readonly key: string;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+};
+
+export type ToolChunkTypeScriptEntry = {
+  readonly inputTypeScript?: string;
+  readonly outputTypeScript?: string;
+};
+
+export type ToolChunkTypeScript = {
+  readonly tools: ReadonlyMap<string, ToolChunkTypeScriptEntry>;
+  readonly definitions: Record<string, string>;
+};
+
+const CHUNK_INPUT_SUFFIX = "__in";
+const CHUNK_OUTPUT_SUFFIX = "__out";
+
+/**
+ * Compile a chunk of tools' input/output schemas in one compiler pass.
+ *
+ * `key`s must be unique valid identifiers within the chunk (the caller indexes
+ * them, e.g. `t0`, `t1`, …). Shared `$defs` are compiled once per chunk and
+ * returned as named `definitions`; the per-tool type strings reference them by
+ * name. Throws when the underlying compiler rejects a schema — callers decide
+ * whether to retry tool-by-tool or degrade to `unknown`.
+ */
+export const compileToolChunkTypeScript = (
+  tools: ReadonlyArray<ToolChunkSchemaEntry>,
+  defs: ReadonlyMap<string, unknown>,
+  options: TypeScriptRenderOptions = {},
+): ToolChunkTypeScript => {
+  const properties: Array<readonly [string, unknown]> = [];
+  for (const tool of tools) {
+    if (tool.inputSchema !== undefined) {
+      properties.push([`${tool.key}${CHUNK_INPUT_SUFFIX}`, tool.inputSchema]);
+    }
+    if (tool.outputSchema !== undefined) {
+      properties.push([`${tool.key}${CHUNK_OUTPUT_SUFFIX}`, tool.outputSchema]);
+    }
+  }
+  if (properties.length === 0) {
+    return {
+      tools: new Map(tools.map((tool) => [tool.key, {}])),
+      definitions: {},
+    };
+  }
+
+  const wrappedSchema = buildWrappedObjectSchema(properties, defs);
+  const source = compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(options));
+  const declarations = parseGeneratedDeclarations(source);
+  const rootDeclaration = declarations.find(
+    (declaration) => declaration.name === ROOT_WRAPPER_NAME,
+  );
+  const body = rootDeclaration?.kind === "interface" ? rootDeclaration.body : "";
+
+  // Single forward pass: the compiler emits root properties in insertion
+  // order, so a running offset keeps extraction linear in the body size and
+  // immune to one key being a substring of a later one.
+  let offset = 0;
+  const extractNext = (propertyName: string): string | null => {
+    const propertyIndex = body.indexOf(propertyName, offset);
+    if (propertyIndex < 0) {
+      return null;
+    }
+    const colonIndex = body.indexOf(":", propertyIndex + propertyName.length);
+    if (colonIndex < 0) {
+      return null;
+    }
+    const end = findTypeAliasEnd(body, colonIndex + 1);
+    if (end < 0) {
+      return null;
+    }
+    offset = end;
+    return body.slice(colonIndex + 1, end).trim();
+  };
+
+  const compiled = new Map<string, ToolChunkTypeScriptEntry>();
+  for (const tool of tools) {
+    const input =
+      tool.inputSchema !== undefined ? extractNext(`${tool.key}${CHUNK_INPUT_SUFFIX}`) : null;
+    const output =
+      tool.outputSchema !== undefined ? extractNext(`${tool.key}${CHUNK_OUTPUT_SUFFIX}`) : null;
+    compiled.set(tool.key, {
+      ...(input ? { inputTypeScript: compactTypeScript(input) } : {}),
+      ...(output ? { outputTypeScript: compactTypeScript(output) } : {}),
+    });
+  }
+
+  return {
+    tools: compiled,
+    definitions: getDefinitionsFromDeclarations(declarations),
+  };
+};
+
 export const buildToolTypeScriptPreview = async (input: {
   inputSchema?: unknown;
   outputSchema?: unknown;
