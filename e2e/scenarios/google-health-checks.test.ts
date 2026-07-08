@@ -22,6 +22,7 @@ const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
 const GOOGLE_AUTH_TEMPLATE = AuthTemplateSlug.make("googleOAuth2");
 const CONNECTION = ConnectionName.make("main");
+const GOOGLE_EMULATOR_ACCOUNT_EMAIL = "testuser@gmail.com";
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -217,6 +218,19 @@ scenario(
             integration: row.slug,
             oauthClient: row.oauthClient,
           });
+
+          const connections = yield* client.connections.list({
+            query: { owner: "org", integration: row.slug },
+          });
+          const connected = connections.find((connection) => connection.name === CONNECTION);
+          expect(
+            connected?.identityLabel,
+            `${row.presetName} stores OAuth identity from the id_token before health checks`,
+          ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+          expect(
+            connected?.lastHealth,
+            `${row.presetName} has not run a health check before the explicit probe`,
+          ).toBeNull();
 
           const tools = yield* client.tools.list({
             query: { integration: row.slug, connection: CONNECTION },

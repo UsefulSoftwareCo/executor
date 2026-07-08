@@ -16,7 +16,7 @@
 //     construction keeps the call sync and lets callers opt out of PAR
 // ---------------------------------------------------------------------------
 
-import { Data, Effect, Predicate } from "effect";
+import { Data, Effect, Option, Predicate, Schema } from "effect";
 import * as oauth from "oauth4webapi";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,7 @@ export type OAuth2TokenResponse = {
   readonly refresh_token?: string;
   readonly expires_in?: number;
   readonly scope?: string;
+  readonly idTokenIdentityLabel?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -461,12 +462,49 @@ const tokenResponseFrom = (r: oauth.TokenEndpointResponse): OAuth2TokenResponse 
   scope: r.scope,
 });
 
-// MCP source connections are pure OAuth 2.0 — we never request `openid` and
-// never consume `id_token`. Some providers (PostHog, etc.) front an OIDC
-// backend and emit an `id_token` anyway; oauth4webapi then strict-validates
-// its claims against the AS metadata and rejects mismatches we don't care
-// about. Strip the field before delegation.
-const stripIdToken = async (response: Response): Promise<Response> => {
+const JwtClaims = Schema.Record(Schema.String, Schema.Unknown);
+const decodeJwtClaims = Schema.decodeUnknownOption(Schema.fromJsonString(JwtClaims));
+
+const stringClaim = (
+  claims: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined => {
+  const value = claims[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+};
+
+const decodeJwtPayload = (token: string): Readonly<Record<string, unknown>> | null => {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(payload) || payload.length % 4 === 1) return null;
+  const base64 = payload.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+  const decoded = decodeJwtClaims(globalThis.atob(padded));
+  return Option.isSome(decoded) ? decoded.value : null;
+};
+
+export const idTokenIdentityLabel = (idToken: string | undefined): string | undefined => {
+  if (!idToken) return undefined;
+  const claims = decodeJwtPayload(idToken);
+  if (!claims) return undefined;
+  return (
+    stringClaim(claims, "email") ??
+    stringClaim(claims, "preferred_username") ??
+    stringClaim(claims, "sub")
+  );
+};
+
+type StrippedTokenResponse = {
+  readonly response: Response;
+  readonly idTokenIdentityLabel?: string;
+};
+
+// MCP source connections are pure OAuth 2.0. Some providers (PostHog, etc.)
+// front an OIDC backend and emit an `id_token` anyway; oauth4webapi then
+// strict-validates its claims against the AS metadata and rejects mismatches we
+// don't care about. Strip the field before delegation, after extracting the
+// optional display label when the token endpoint returned OIDC account claims.
+const stripIdToken = async (response: Response): Promise<StrippedTokenResponse> => {
   const body = await response
     .clone()
     .json()
@@ -475,24 +513,33 @@ const stripIdToken = async (response: Response): Promise<Response> => {
       () => null,
     );
   if (!body || typeof body !== "object" || !("id_token" in (body as Record<string, unknown>))) {
-    return response;
+    return { response };
   }
-  const { id_token: _ignored, ...rest } = body as Record<string, unknown>;
-  return new Response(JSON.stringify(rest), {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  const { id_token: idToken, ...rest } = body as Record<string, unknown>;
+  const label = typeof idToken === "string" ? idTokenIdentityLabel(idToken) : undefined;
+  return {
+    response: new Response(JSON.stringify(rest), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    }),
+    ...(label ? { idTokenIdentityLabel: label } : {}),
+  };
 };
 
 const processTokenEndpointResponse = async (
   as: oauth.AuthorizationServer,
   client: oauth.Client,
   response: Response,
-): Promise<OAuth2TokenResponse> =>
-  tokenResponseFrom(
-    await oauth.processGenericTokenEndpointResponse(as, client, await stripIdToken(response)),
+): Promise<OAuth2TokenResponse> => {
+  const stripped = await stripIdToken(response);
+  const token = tokenResponseFrom(
+    await oauth.processGenericTokenEndpointResponse(as, client, stripped.response),
   );
+  return stripped.idTokenIdentityLabel
+    ? { ...token, idTokenIdentityLabel: stripped.idTokenIdentityLabel }
+    : token;
+};
 
 // ---------------------------------------------------------------------------
 // Exchange authorization code → tokens
@@ -681,7 +728,7 @@ export const refreshAccessToken = (
       const result = await oauth.processRefreshTokenResponse(
         as,
         client,
-        await stripIdToken(response),
+        (await stripIdToken(response)).response,
       );
       return tokenResponseFrom(result);
     },

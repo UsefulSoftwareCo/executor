@@ -257,6 +257,15 @@ it.effect("resolves fixture-backed Google catalog health checks in converted spe
   }),
 );
 
+it("keeps Google catalog health checks as liveness probes without identity fields", () => {
+  for (const preset of googleCatalog) {
+    expect(
+      preset.healthCheck?.identityField,
+      `${preset.id} should not declare health identity extraction`,
+    ).toBeUndefined();
+  }
+});
+
 it("omits Google health checks when the service spec has no stable cheap read", () => {
   const omitted = [
     "google-sheets",

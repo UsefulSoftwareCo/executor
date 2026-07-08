@@ -85,13 +85,13 @@ function AccountRow(props: {
   const { probe, status, runCheck } = useConnectionHealth(connection);
   const indicator = HEALTH_INDICATOR_COLOR[status];
 
-  // Prefer a probed identity (the live account), then the stored label, then the
-  // connection name. The probe is the whole point: it shows WHICH account this is.
+  // Prefer the stored label from the connection row, then a probed identity,
+  // then the connection name. OAuth labels come from the grant's OIDC claims,
+  // while health identities remain useful for non-OAuth probes.
   const identity =
-    (probe?.identity && probe.identity.length > 0 ? probe.identity : null) ??
     (connection.identityLabel && connection.identityLabel.length > 0
       ? connection.identityLabel
-      : null);
+      : null) ?? (probe?.identity && probe.identity.length > 0 ? probe.identity : null);
   const displayLabel = identity ?? String(connection.name);
 
   const expired = status === "expired";

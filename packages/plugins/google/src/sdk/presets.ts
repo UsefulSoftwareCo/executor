@@ -293,13 +293,11 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
   "google-drive": {
     operation: "drive.about.get",
     args: { fields: "user" },
-    identityField: "user.emailAddress",
   },
   "google-tasks": { operation: "tasks.tasklists.list" },
   "google-people": {
     operation: "people.people.get",
     args: { resourceName: "people/me", personFields: "emailAddresses" },
-    identityField: "emailAddresses.0.value",
   },
   "google-photos-library": { operation: "photoslibrary.albums.list" },
   "google-chat": { operation: "chat.spaces.list" },

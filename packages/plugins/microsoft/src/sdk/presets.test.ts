@@ -320,4 +320,13 @@ describe("Microsoft Graph scope presets", () => {
       }
     }),
   );
+
+  it("keeps Microsoft catalog health checks as liveness probes without identity fields", () => {
+    for (const preset of microsoftCatalog) {
+      expect(
+        preset.healthCheck?.identityField,
+        `${preset.id} should not declare health identity extraction`,
+      ).toBeUndefined();
+    }
+  });
 });

@@ -1209,7 +1209,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           name: session.name,
           integration: session.integration,
           template: session.template,
-          identityLabel: session.identityLabel,
+          identityLabel: session.identityLabel ?? token.idTokenIdentityLabel ?? null,
         },
         client,
         token,

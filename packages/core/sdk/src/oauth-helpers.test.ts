@@ -19,6 +19,7 @@ import {
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
   exchangeClientCredentials,
+  idTokenIdentityLabel,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -362,6 +363,81 @@ describe("exchangeAuthorizationCode", () => {
           });
           expect(result.access_token).toBe("tok");
           expect(result.refresh_token).toBe("rtok");
+          expect(result.idTokenIdentityLabel).toBe("user-1");
+        }),
+    ),
+  );
+
+  it.effect("extracts id_token email as the identity label", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          email: "alice@example.com",
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.idTokenIdentityLabel).toBe("alice@example.com");
+        }),
+    ),
+  );
+
+  it.effect("falls back from id_token email to preferred_username then sub", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const preferred = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(preferred.idTokenIdentityLabel).toBe("alice");
+        }),
+    ),
+  );
+
+  it("falls back to sub and ignores malformed id_tokens", () => {
+    expect(idTokenIdentityLabel(unsignedJwt({ sub: "user-1" }))).toBe("user-1");
+    expect(idTokenIdentityLabel("not-a-jwt")).toBeUndefined();
+    expect(idTokenIdentityLabel(undefined)).toBeUndefined();
+  });
+
+  it.effect("ignores malformed id_tokens without failing the exchange", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: "not-a-jwt",
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.access_token).toBe("tok");
+          expect(result.idTokenIdentityLabel).toBeUndefined();
         }),
     ),
   );
@@ -406,6 +482,7 @@ describe("exchangeAuthorizationCode", () => {
         expect(result.access_token).toBe("tok");
         expect(result.refresh_token).toBe("rtok");
         expect(result.expires_in).toBe(3600);
+        expect(result.idTokenIdentityLabel).toBeUndefined();
       }),
     ),
   );

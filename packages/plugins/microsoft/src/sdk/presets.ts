@@ -560,8 +560,6 @@ export const microsoftCatalog: readonly IntegrationPreset[] = microsoftGraphScop
     specFormat: "microsoft-graph",
     defaultSlug: microsoftServiceSlug(preset.id),
     authTemplate: microsoftGraphCatalogAuthTemplate(preset),
-    ...(preset.id === "profile"
-      ? { healthCheck: { operation: "me.GetUser", identityField: "mail" } }
-      : {}),
+    ...(preset.id === "profile" ? { healthCheck: { operation: "me.GetUser" } } : {}),
   }),
 );
