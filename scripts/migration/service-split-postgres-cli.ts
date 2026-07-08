@@ -488,7 +488,11 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
 };
 
 const writeDryRun = (planInput: MigrationInput): void => {
-  const plan = planMigration({ ...planInput, collectPolicyErrors: true });
+  const plan = planMigration({
+    ...planInput,
+    collectPolicyErrors: true,
+    orphanPolicyMode: "retarget_all",
+  });
   const neverWiden = verifyPolicyRewriteNeverWidens(plan, planInput);
   const r2Copies = plan.orgs
     .filter((org) => !org.completed && org.hardErrors.length === 0)
@@ -580,7 +584,11 @@ const main = async (): Promise<void> => {
       writeDryRun(input);
       return;
     }
-    const plan = planMigration(input);
+    // Orphan block/require_approval policies (a guardrail targeting a service
+    // the org never derived, e.g. a gmail send-block on a Search-Console-only
+    // org) retarget to every derived service as dormant rows rather than
+    // blocking apply. Approved by Rhys 2026-07-08; matches the boot rail.
+    const plan = planMigration({ ...input, orphanPolicyMode: "retarget_all" });
     const neverWiden = verifyPolicyRewriteNeverWidens(plan, input);
     if (!neverWiden.ok) {
       throw new Error(
