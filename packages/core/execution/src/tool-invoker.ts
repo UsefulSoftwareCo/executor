@@ -189,6 +189,28 @@ const credentialResolutionToolFailure = (input: {
     },
   });
 
+const bindingToolFailure = (value: unknown): ToolError | null => {
+  if (!Predicate.isTagged(value, "BindingError")) return null;
+  const maybeBinding = value as {
+    readonly message?: unknown;
+    readonly role?: unknown;
+    readonly integration?: unknown;
+    readonly requestedConnection?: unknown;
+  };
+  const details: Record<string, string> = {};
+  if (typeof maybeBinding.role === "string") details.role = maybeBinding.role;
+  if (typeof maybeBinding.integration === "string") details.integration = maybeBinding.integration;
+  if (typeof maybeBinding.requestedConnection === "string") {
+    details.requestedConnection = maybeBinding.requestedConnection;
+  }
+  return {
+    code: "binding_error",
+    message:
+      typeof maybeBinding.message === "string" ? maybeBinding.message : "Tool binding failed.",
+    ...(Object.keys(details).length > 0 ? { details } : {}),
+  };
+};
+
 const expectedToolFailure = (value: unknown): ToolError | null => {
   if (isUserActionableError(value)) {
     return {
@@ -223,6 +245,8 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
         message: cause.userMessage,
       };
     }
+    const binding = bindingToolFailure(cause);
+    if (binding) return binding;
     const issues = validationIssues(cause);
     if (issues) {
       return {

@@ -26,9 +26,11 @@ import type {
   ConnectionName,
   IntegrationSlug,
   Owner,
+  ProviderItemId,
   ProviderKey,
   Subject,
   Tenant,
+  ToolAddress,
 } from "./ids";
 import type { IntegrationDetectionResult } from "./types";
 import type {
@@ -36,8 +38,10 @@ import type {
   ElicitationHandler,
   ElicitationRequest,
   ElicitationResponse,
+  InvokeOptions,
 } from "./elicitation";
 import type {
+  ExecuteError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   IntegrationNotFoundError,
@@ -244,10 +248,40 @@ export interface PluginCtx<TStore = unknown> {
     readonly items: (
       provider: ProviderKey,
     ) => Effect.Effect<readonly ProviderEntry[], StorageFailure>;
+    /** Read an opaque item from a provider. Plugins use this for secret values
+     *  they own that are not modeled as connections. */
+    readonly get: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<string | null, StorageFailure>;
+    readonly has: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<boolean, StorageFailure>;
+    /** Write through the executor's default writable provider and return the
+     *  provider key that owns the item. */
+    readonly setDefault: (
+      id: ProviderItemId,
+      value: string,
+    ) => Effect.Effect<ProviderKey, CredentialProviderNotRegisteredError | StorageFailure>;
+    readonly remove: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<void, StorageFailure>;
   };
 
   /** Shared OAuth service. */
   readonly oauth: OAuthService;
+
+  /** Invoke another catalog tool through the same executor request context:
+   *  policy, approval, credential resolution, and plugin dispatch all stay in
+   *  the core path. Intended for plugin sandboxes that expose higher-level
+   *  virtual tools over existing integration tools. */
+  readonly execute: (
+    address: ToolAddress,
+    args: unknown,
+    options?: InvokeOptions,
+  ) => Effect.Effect<unknown, ExecuteError>;
 
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
@@ -261,6 +295,7 @@ export interface PluginCtx<TStore = unknown> {
 // ---------------------------------------------------------------------------
 
 export interface ResolveToolsInput<TStore = unknown> {
+  readonly ctx?: PluginCtx<TStore>;
   /** The catalog record (public projection) whose connection is being resolved. */
   readonly integration: Integration;
   /** The plugin's stored opaque config for that integration. */
@@ -300,6 +335,18 @@ export interface ResolveToolsResult {
   /** Human-readable reason for an incomplete listing. Persisted by core when it
    *  preserves the prior catalog so operators can see why data is stale. */
   readonly incompleteReason?: string;
+}
+
+export interface ProjectToolSchemaInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly toolRow: ToolInvocationRow;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+export interface ProjectToolSchemaResult {
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +504,8 @@ export interface InvokeToolInput<TStore = unknown> {
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
   readonly elicit: Elicit;
+  /** Original caller options for nested same-request tool calls. */
+  readonly invokeOptions?: InvokeOptions;
 }
 
 /** Input for `validateToolArgs` — no credential/elicit: validation runs
@@ -475,6 +524,11 @@ export interface ConnectionLifecycleInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   readonly integration: IntegrationSlug;
   readonly connection: ConnectionRef;
+}
+
+export interface IntegrationLifecycleInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly integration: IntegrationRecord;
 }
 
 export interface ConfigureIntegrationHandlerInput<TStore = unknown> {
@@ -615,6 +669,13 @@ export interface PluginSpec<
    *  for catalogs derived purely from stored state (specs, static config). */
   readonly remoteToolCatalog?: boolean;
 
+  /** Project a persisted tool row's stable schemas into the request-visible
+   *  schema view. Use this only for volatile presentation data that should be
+   *  current at read time, not persisted at catalog-refresh time. */
+  readonly projectToolSchema?: (
+    input: ProjectToolSchemaInput<TStore>,
+  ) => Effect.Effect<ProjectToolSchemaResult, unknown>;
+
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the
    *  address. The plugin applies `input.credential` to the outbound request. */
   readonly invokeTool?: (input: InvokeToolInput<TStore>) => Effect.Effect<unknown, unknown>;
@@ -640,6 +701,12 @@ export interface PluginSpec<
   /** Plugin-side cleanup when a connection is removed. */
   readonly removeConnection?: (
     input: ConnectionLifecycleInput<TStore>,
+  ) => Effect.Effect<void, unknown>;
+
+  /** Plugin-side cleanup when a removable integration is removed. Core still
+   *  owns deleting the integration, connection, tool, and definition rows. */
+  readonly removeIntegration?: (
+    input: IntegrationLifecycleInput<TStore>,
   ) => Effect.Effect<void, unknown>;
 
   /** Core-dispatched integration configuration (beyond auth). */

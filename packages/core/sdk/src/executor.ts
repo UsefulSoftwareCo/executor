@@ -1944,6 +1944,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!existing.can_remove) {
             return yield* new IntegrationRemovalNotAllowedError({ slug });
           }
+          const runtime = runtimes.get(existing.plugin_id);
+          if (runtime?.plugin.removeIntegration) {
+            yield* runtime.plugin
+              .removeIntegration({
+                ctx: runtime.ctx,
+                integration: rowToIntegrationRecord(existing, describeAuthMethodsForRow(existing)),
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  pluginStorageFailure(existing.plugin_id, "removeIntegration", cause),
+                ),
+              );
+          }
           // Drop owned connections / tools / definitions for this integration.
           const where = (b: AnyCb) => b("integration", "=", String(slug));
           yield* core.deleteMany("tool", { where });
@@ -2121,6 +2134,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         const result: ResolveToolsResult = yield* runtime.plugin
           .resolveTools({
+            ctx: runtime.ctx,
             integration: rowToIntegration(integrationRow),
             config: decodeJsonColumn(integrationRow.config),
             httpClientLayer: runtime.ctx.httpClientLayer,
@@ -3212,6 +3226,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
         if (effective.action === "block") return null;
 
+        const runtime = runtimes.get(row.plugin_id);
+        const projected = runtime?.plugin.projectToolSchema
+          ? yield* runtime.plugin
+              .projectToolSchema({
+                ctx: runtime.ctx,
+                toolRow: row,
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  pluginStorageFailure(row.plugin_id, "projectToolSchema", cause),
+                ),
+              )
+          : null;
+        const inputSchema =
+          projected && Object.prototype.hasOwnProperty.call(projected, "inputSchema")
+            ? projected.inputSchema
+            : tool.inputSchema;
+        const outputSchema =
+          projected && Object.prototype.hasOwnProperty.call(projected, "outputSchema")
+            ? projected.outputSchema
+            : tool.outputSchema;
+
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
@@ -3223,15 +3261,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const defs = new Map<string, unknown>();
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
-        const referenced = collectReferencedDefinitions(
-          [tool.inputSchema, tool.outputSchema],
-          defs,
-        );
+        const referenced = collectReferencedDefinitions([inputSchema, outputSchema], defs);
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
-              inputSchema: tool.inputSchema,
-              outputSchema: tool.outputSchema,
+              inputSchema,
+              outputSchema,
               defs,
             }),
           catch: (cause) =>
@@ -3243,8 +3278,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           address,
           name: tool.name,
           description: tool.description,
-          inputSchema: tool.inputSchema,
-          outputSchema: tool.outputSchema,
+          inputSchema,
+          outputSchema,
           schemaDefinitions:
             Object.keys(referenced).length > 0
               ? (referenced as Record<string, unknown>)
@@ -3269,6 +3304,53 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const provider = credentialProviders.get(String(key));
         if (!provider || !provider.list) return [];
         return yield* provider.list();
+      });
+
+    const providersGet = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<string | null, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider) return null;
+        return yield* provider.get(id);
+      });
+
+    const providersHas = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<boolean, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider) return false;
+        if (provider.has) return yield* provider.has(id);
+        const value = yield* provider.get(id);
+        return value !== null;
+      });
+
+    const providersSetDefault = (
+      id: ProviderItemId,
+      value: string,
+    ): Effect.Effect<ProviderKey, CredentialProviderNotRegisteredError | StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = defaultWritableProvider();
+        if (!provider || !provider.set) {
+          return yield* new CredentialProviderNotRegisteredError({
+            provider: ProviderKey.make("default"),
+          });
+        }
+        yield* provider.set(id, value);
+        return provider.key;
+      });
+
+    const providersRemove = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider || !provider.delete) return;
+        yield* provider.delete(id);
       });
 
     // ------------------------------------------------------------------
@@ -3700,6 +3782,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             credential,
             args,
             elicit: buildElicit(address, args, handler),
+            invokeOptions: options,
           }),
         );
       }).pipe(
@@ -3854,8 +3937,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         providers: {
           list: () => providersList(),
           items: (key) => providersItems(key),
+          get: (key, id) => providersGet(key, id),
+          has: (key, id) => providersHas(key, id),
+          setDefault: (id, value) => providersSetDefault(id, value),
+          remove: (key, id) => providersRemove(key, id),
         },
         oauth,
+        execute: (address, args, options) => execute(address, args, options),
         transaction: <A, E>(effect: Effect.Effect<A, E>) => transaction(effect),
       };
 
