@@ -1153,19 +1153,15 @@ const resolveRequestHost = (
 };
 
 const baseUrlForPathTemplate = (baseUrl: string, pathTemplate: string): string => {
-  if (!baseUrl || !pathTemplate.startsWith("/upload/")) return baseUrl;
+  if (!baseUrl || !pathTemplate.startsWith("/upload/") || !URL.canParse(baseUrl)) return baseUrl;
 
-  try {
-    const url = new URL(baseUrl);
-    const basePath = url.pathname.replace(/\/+$/, "");
-    if (basePath && basePath !== "/" && pathTemplate.startsWith(`/upload${basePath}/`)) {
-      url.pathname = "/";
-      url.search = "";
-      url.hash = "";
-      return url.toString();
-    }
-  } catch {
-    return baseUrl;
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  if (basePath && basePath !== "/" && pathTemplate.startsWith(`/upload${basePath}/`)) {
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
   }
 
   return baseUrl;
