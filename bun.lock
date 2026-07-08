@@ -337,6 +337,7 @@
         "@rhyssul/portless": "^0.13.0",
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
+        "executor": "workspace:*",
         "wrangler": "^4.0.0",
       },
     },

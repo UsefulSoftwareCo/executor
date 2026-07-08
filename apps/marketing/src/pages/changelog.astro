@@ -5,7 +5,7 @@ import { marked } from "marked";
 
 import Layout from "../layouts/Layout.astro";
 import { parseChangelog, type ChangelogRelease } from "../lib/changelog";
-import markdown from "../../../cli/CHANGELOG.md?raw";
+import markdown from "executor/CHANGELOG.md?raw";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 const releases = parseChangelog(markdown);
