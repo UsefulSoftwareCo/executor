@@ -1769,7 +1769,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // Probe the pasted credential WITHOUT saving the connection. With a
   // configured check the panel's Check runs this directly; with none it runs
   // via handleCandidateProbe, which drafts a spec from the picked candidate.
-  const handleValidate = async (draftSpec?: HealthCheckSpec) => {
+  const handleValidate = async (draftSpec?: HealthCheckSpec): Promise<HealthCheckResult | null> => {
     const payloadOrigin = createCredentialPayloadOrigin({
       origin: credentialOrigin,
       inputs: credentialInputs,
@@ -1777,7 +1777,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       onePasswordItemId,
       singleInput,
     });
-    if (!method || payloadOrigin === null || validating) return;
+    if (!method || payloadOrigin === null || validating) return null;
     setValidating(true);
     const exit = await doValidate({
       payload: {
@@ -1794,7 +1794,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (Exit.isFailure(exit)) {
       setValidationResult(null);
       toast.error(messageFromExit(exit, "Couldn't check the key"));
-      return;
+      return null;
     }
     const result = exit.value;
     setValidationResult(result);
@@ -1828,19 +1828,46 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return probedIdentity;
       });
     }
+    return result;
   };
 
   // No configured check: build a draft spec from the picked candidate and
   // probe with it.
-  const handleCandidateProbe = async () => {
-    if (!hcCandidateReady) return;
+  const handleCandidateProbe = async (): Promise<HealthCheckResult | null> => {
+    if (!hcCandidateReady) return null;
     const argEntries = Object.entries(hcArgs)
       .map(([key, value]) => [key, value.trim()] as const)
       .filter(([, value]) => value.length > 0);
-    await handleValidate({
+    return await handleValidate({
       operation: hcOperation,
       ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
     });
+  };
+
+  const handleContinueFromValidate = async (): Promise<void> => {
+    if (credentialPayloadOrigin === null) {
+      setContinueError(singleInput ? "Enter the key first" : "Fill in every credential field");
+      return;
+    }
+    if (canCheckKey) {
+      if (!hasHealthCheck && !hcCandidateReady) {
+        setContinueError("Choose a check that can run before continuing");
+        return;
+      }
+      const result =
+        validationResult ??
+        (hasHealthCheck ? await handleValidate() : await handleCandidateProbe());
+      if (!result) return;
+      if (result.status !== "healthy") {
+        setContinueError(
+          result.detail ??
+            "The credential check did not return healthy. Fix the key or endpoint, then check again.",
+        );
+        return;
+      }
+    }
+    setContinueError(null);
+    setWizardStep("place");
   };
 
   // The user clicked a field in the probe's response: that field IS the
@@ -2819,16 +2846,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
               ) : wizardActive && wizardStep === "validate" ? (
                 <Button
                   type="button"
-                  onClick={() => {
-                    if (credentialPayloadOrigin === null) {
-                      setContinueError(
-                        singleInput ? "Enter the key first" : "Fill in every credential field",
-                      );
-                      return;
-                    }
-                    setContinueError(null);
-                    setWizardStep("place");
-                  }}
+                  onClick={() => void handleContinueFromValidate()}
                   loading={validating}
                 >
                   Continue

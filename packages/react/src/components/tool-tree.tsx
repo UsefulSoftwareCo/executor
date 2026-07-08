@@ -309,6 +309,8 @@ export function ToolTree(props: {
    *  beneath each section. The same tool name can appear under two accounts (NOT
    *  deduped). When false/unset, render one flat tree (unchanged). */
   groupByConnection?: boolean;
+  /** No-search empty label. Search still uses "No tools match your filter". */
+  emptyLabel?: string;
 }) {
   const {
     tools,
@@ -319,6 +321,7 @@ export function ToolTree(props: {
     patternForDisplay = toPolicyPattern,
     policies,
     groupByConnection,
+    emptyLabel,
   } = props;
   const exactPatterns = useMemo(() => {
     if (!policies) return new Map<string, ToolPolicyAction>();
@@ -410,7 +413,7 @@ export function ToolTree(props: {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {filteredTools.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground">
-            {terms.length > 0 ? "No tools match your filter" : "No tools available"}
+            {terms.length > 0 ? "No tools match your filter" : (emptyLabel ?? "No tools available")}
           </div>
         ) : groupByConnection ? (
           accountGroups.map((group) => (

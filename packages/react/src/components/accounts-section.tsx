@@ -95,6 +95,8 @@ function AccountRow(props: {
   const displayLabel = identity ?? String(connection.name);
 
   const expired = status === "expired";
+  const needsHealthAttention = status === "expired" || status === "degraded";
+  const healthDetail = needsHealthAttention ? probe?.detail : undefined;
 
   const handleCheck = async () => {
     if (checking) return;
@@ -129,9 +131,9 @@ function AccountRow(props: {
             className={`size-2 shrink-0 rounded-full ${indicator.dot}`}
           />
           <span className="truncate">{displayLabel}</span>
-          {expired ? (
-            <Badge variant="destructive" className="shrink-0">
-              Expired
+          {needsHealthAttention ? (
+            <Badge variant={expired ? "destructive" : "outline"} className="shrink-0">
+              {HEALTH_STATUS_LABEL[status]}
             </Badge>
           ) : null}
           {needsReconsent ? (
@@ -143,6 +145,11 @@ function AccountRow(props: {
         {connection.description && connection.description.length > 0 ? (
           <CardStackEntryDescription className="mt-1 text-xs">
             {connection.description}
+          </CardStackEntryDescription>
+        ) : null}
+        {healthDetail ? (
+          <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
+            {healthDetail}
           </CardStackEntryDescription>
         ) : null}
         {needsReconsent ? (

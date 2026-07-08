@@ -6,6 +6,18 @@ export class GraphqlIntrospectionError extends Schema.TaggedErrorClass<GraphqlIn
   "GraphqlIntrospectionError",
   {
     message: Schema.String,
+    status: Schema.optional(Schema.Number),
+    reason: Schema.optional(
+      Schema.Literals([
+        "network",
+        "http",
+        "invalid-json",
+        "invalid-shape",
+        "missing-schema",
+        "graphql-errors",
+      ]),
+    ),
+    upstreamMessage: Schema.optional(Schema.String),
   },
 ) {}
 

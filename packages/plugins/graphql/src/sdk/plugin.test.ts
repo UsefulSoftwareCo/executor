@@ -567,6 +567,200 @@ describe("graphqlPlugin real protocol server", () => {
       expect(names).toContain("mutation.setGreeting");
     }),
   );
+
+  it.effect("checkHealth reports healthy for an introspectable endpoint", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.endpoint,
+        slug: "health_ok",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_ok"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result).toMatchObject({
+        status: "healthy",
+        httpStatus: 200,
+        identity: "GraphQL schema: Query",
+      });
+    }),
+  );
+
+  it.effect("checkHealth reports expired for an HTTP auth wall", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGraphqlTestServer({
+        schema: makeGreetingGraphqlSchema(),
+        auth: {
+          validateAuthorization: (authorization) =>
+            Effect.succeed(authorization === "lin_test_key"),
+        },
+      });
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.endpoint,
+        slug: "health_http_auth",
+        authenticationTemplate: [
+          {
+            slug: "header",
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
+          },
+        ],
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_http_auth"),
+        template: AuthTemplateSlug.make("header"),
+        value: "wrong",
+      });
+
+      expect(result.status).toBe("expired");
+      expect(result.httpStatus).toBe(401);
+      expect(result.detail).toContain("The endpoint rejected the credential (401).");
+      expect(result.detail).toContain(
+        "raw key in the Authorization header without a Bearer prefix",
+      );
+      expect(result.detail).toContain("Upstream said: Unauthorized");
+    }),
+  );
+
+  it.effect("checkHealth includes GraphQL errors payloads in auth verdicts", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            errors: [{ message: "Unauthorized: invalid API key" }],
+          }),
+        ),
+      );
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.url("/graphql"),
+        slug: "health_graphql_auth",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_graphql_auth"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result.status).toBe("expired");
+      expect(result.httpStatus).toBe(200);
+      expect(result.detail).toContain("The endpoint rejected the credential.");
+      expect(result.detail).toContain("Upstream said: Unauthorized: invalid API key");
+    }),
+  );
+
+  it.effect("checkHealth reports degraded for an invalid introspection shape", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe({ data: {} })),
+      );
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.url("/graphql"),
+        slug: "health_invalid_shape",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_invalid_shape"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result.status).toBe("degraded");
+      expect(result.httpStatus).toBe(200);
+      expect(result.detail).toBe(
+        "The endpoint responded, but not with a GraphQL schema. Check that the URL points to a GraphQL endpoint (for Linear: https://api.linear.app/graphql).",
+      );
+    }),
+  );
+
+  it.effect("checkHealth reports degraded for an unreachable endpoint", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: "http://127.0.0.1:1/graphql",
+        slug: "health_unreachable",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_unreachable"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result.status).toBe("degraded");
+      expect(result.detail).toBe(
+        "We couldn't reach the GraphQL endpoint. Check that the URL is correct and reachable, then try again.",
+      );
+    }),
+  );
+
+  it.effect(
+    "resolveTools returns incomplete and keeps existing tools after introspection fails",
+    () =>
+      Effect.gen(function* () {
+        const goodServer = yield* serveGreetingServer;
+        const badServer = yield* serveTestHttpApp(() =>
+          Effect.succeed(HttpServerResponse.jsonUnsafe({ data: {} })),
+        );
+        const executor = yield* makeExecutor();
+
+        yield* executor.graphql.addIntegration({
+          endpoint: goodServer.endpoint,
+          slug: "incomplete_refresh",
+        });
+        yield* createOrgConnection(executor, {
+          integration: "incomplete_refresh",
+          name: "main",
+          template: "none",
+          value: "unused",
+        });
+
+        const initialTools = yield* executor.tools.list();
+        expect(
+          initialTools
+            .filter((tool) => String(tool.integration) === "incomplete_refresh")
+            .map((tool) => String(tool.name)),
+        ).toEqual(expect.arrayContaining(["query.hello", "mutation.setGreeting"]));
+
+        yield* executor.graphql.configure("incomplete_refresh", {
+          endpoint: badServer.url("/graphql"),
+        });
+        const refreshed = yield* executor.connections.refresh({
+          owner: "org",
+          integration: IntegrationSlug.make("incomplete_refresh"),
+          name: ConnectionName.make("main"),
+        });
+
+        expect(refreshed.map((tool) => String(tool.name))).toEqual(
+          expect.arrayContaining(["query.hello", "mutation.setGreeting"]),
+        );
+        const keptTools = yield* executor.tools.list();
+        expect(
+          keptTools
+            .filter((tool) => String(tool.integration) === "incomplete_refresh")
+            .map((tool) => String(tool.name)),
+        ).toEqual(expect.arrayContaining(["query.hello", "mutation.setGreeting"]));
+      }),
+  );
 });
 
 describe("graphqlPlugin", () => {
