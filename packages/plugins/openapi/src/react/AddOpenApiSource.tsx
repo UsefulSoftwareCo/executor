@@ -5,10 +5,12 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import {
+  AuthTemplateSlug,
   IntegrationSlug,
   type HealthCheckCandidate,
   type HealthCheckSpec,
 } from "@executor-js/sdk/shared";
+import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { integrationWriteKeys, healthCheckWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { setIntegrationHealthCheck } from "@executor-js/react/api/atoms";
 import {
@@ -43,7 +45,6 @@ import {
 } from "./auth-method-config";
 import { addOpenApiSpec, previewOpenApiSpec } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
-import { openApiPresets } from "../sdk/presets";
 import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
@@ -96,10 +97,10 @@ export default function AddOpenApiSource(props: {
   initialPreset?: string;
   initialNamespace?: string;
 }) {
-  const initialPreset = useMemo(
-    () => openApiPresets.find((preset) => preset.id === props.initialPreset) ?? null,
-    [props.initialPreset],
-  );
+  const integrationPlugins = useIntegrationPlugins();
+  const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
+  const openApiPresets = openApiPlugin?.presets;
+  const initialPreset = openApiPresets?.find((preset) => preset.id === props.initialPreset) ?? null;
   const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -163,7 +164,7 @@ export default function AddOpenApiSource(props: {
     ? resolveServerUrl(firstServer.url, Option.getOrUndefined(firstServer.variables), {})
     : "";
   const previewPresetIcon =
-    openApiPresets.find(
+    openApiPresets?.find(
       (preset) => preset.url && normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl),
     )?.icon ?? null;
 
@@ -181,15 +182,26 @@ export default function AddOpenApiSource(props: {
   // Register EVERY spec-detected auth method, not just a single selected one.
   // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
   // freshly-allocated `?? []` fallback arrays.
-  const authenticationTemplate: readonly Authentication[] = useMemo(
-    () =>
-      detectedAuthenticationTemplates(
-        preview?.headerPresets ?? [],
-        preview?.oauth2Presets ?? [],
-        resolvedBaseUrl,
-      ),
-    [preview, resolvedBaseUrl],
-  );
+  const authenticationTemplate: readonly Authentication[] = useMemo(() => {
+    if (initialPreset?.authTemplate) {
+      return initialPreset.authTemplate.flatMap((template): readonly Authentication[] =>
+        template.kind === "oauth2"
+          ? [
+              {
+                ...template,
+                slug: AuthTemplateSlug.make(template.slug),
+                resource: template.resource ?? undefined,
+              },
+            ]
+          : [],
+      );
+    }
+    return detectedAuthenticationTemplates(
+      preview?.headerPresets ?? [],
+      preview?.oauth2Presets ?? [],
+      resolvedBaseUrl,
+    );
+  }, [initialPreset?.authTemplate, preview, resolvedBaseUrl]);
 
   // Editable auth methods, seeded from the spec-detected templates. The add flow
   // registers EVERY method (P6), so this is a LIST, preserving multi-method
@@ -307,6 +319,7 @@ export default function AddOpenApiSource(props: {
         baseUrl: resolvedBaseUrl,
         specFormat: initialPreset?.specFormat,
         family: initialPreset?.family,
+        healthCheck: initialPreset?.healthCheck,
         // Always send the edited method list (even empty) when the user has
         // inspected a preview: an explicit [] means "no auth methods", while
         // OMITTING the field tells the server to derive defaults from the
@@ -330,6 +343,7 @@ export default function AddOpenApiSource(props: {
     resolvedBaseUrl,
     editedAuthenticationTemplate,
     initialPreset?.family,
+    initialPreset?.healthCheck,
     initialPreset?.specFormat,
   ]);
 

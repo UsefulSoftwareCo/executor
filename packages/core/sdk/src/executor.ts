@@ -86,6 +86,7 @@ import type {
   AuthMethodDescriptor,
   Integration,
   IntegrationConfig,
+  IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
 import {
@@ -522,7 +523,7 @@ const decodeJsonColumn = (value: unknown): unknown => {
 const rowToIntegration = (
   row: IntegrationRow,
   authMethods: readonly AuthMethodDescriptor[] = [],
-  displayUrl?: string,
+  display?: IntegrationDisplayDescriptor,
 ): Integration => ({
   slug: IntegrationSlug.make(row.slug),
   // Pre-split rows have no `name`; their description WAS the display name.
@@ -534,7 +535,8 @@ const rowToIntegration = (
   canRemove: Boolean(row.can_remove),
   canRefresh: Boolean(row.can_refresh),
   authMethods,
-  ...(displayUrl ? { displayUrl } : {}),
+  ...(display?.url ? { displayUrl: display.url } : {}),
+  ...(display?.family ? { family: display.family } : {}),
 });
 
 const rowToIntegrationRecord = (
@@ -1759,17 +1761,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }
     };
 
-    const describeDisplayUrlForRow = (row: IntegrationRow): string | undefined => {
+    const describeDisplayForRow = (row: IntegrationRow): IntegrationDisplayDescriptor => {
       const runtime = runtimes.get(row.plugin_id);
       const describe = runtime?.plugin.describeIntegrationDisplay;
-      if (!describe) return undefined;
+      if (!describe) return {};
       const record = rowToIntegrationRecord(row);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
       try {
         const display = describe(record);
-        return display.url && display.url.length > 0 ? display.url : undefined;
+        return {
+          ...(display.url && display.url.length > 0 ? { url: display.url } : {}),
+          ...(display.family && display.family.length > 0 ? { family: display.family } : {}),
+        };
       } catch {
-        return undefined;
+        return {};
       }
     };
 
@@ -1801,7 +1806,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const rows = yield* core.findMany("integration", {});
         const staticIntegrations = staticSources().map(staticSourceToIntegration);
         const dbIntegrations = rows.map((row) =>
-          rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row)),
+          rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row)),
         );
         // A scoped toolkit must not advertise providers it grants no tools from
         // (mirrors `connectionsList`). Static sources are system namespaces, not
@@ -1828,7 +1833,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (staticSource) return staticSourceToIntegration(staticSource);
         const row = yield* findIntegrationRow(slug);
         return row
-          ? rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row))
+          ? rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row))
           : null;
       });
 

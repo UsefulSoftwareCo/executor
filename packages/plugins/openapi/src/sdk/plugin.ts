@@ -9,6 +9,7 @@ import {
   IntegrationSlug,
   ToolResult,
   definePlugin,
+  HealthCheckSpec,
   mergeAuthTemplates,
   sha256Hex,
   tool,
@@ -33,7 +34,7 @@ import {
   type SpecPreview,
 } from "./preview";
 import { deriveAuthenticationTemplateFromPreview, firstBaseUrlForPreview } from "./derive-auth";
-import { openApiPresets } from "./presets";
+import { openApiPresets, type OpenApiPreset } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore } from "./store";
 import {
   resolveSpecFormatAdapter,
@@ -87,6 +88,7 @@ export interface OpenApiSpecConfig {
   readonly queryParams?: Record<string, string>;
   readonly specFormat?: string;
   readonly family?: string;
+  readonly healthCheck?: HealthCheckSpec;
   /** Auth methods a connection's value renders through - canonical
    *  placements or the request-shaped authoring dialect. */
   readonly authenticationTemplate?: readonly AuthenticationInput[];
@@ -279,6 +281,7 @@ const AddSourceInputSchema = Schema.Struct({
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   specFormat: Schema.optional(Schema.String),
   family: Schema.optional(Schema.String),
+  healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
 });
 
@@ -566,9 +569,12 @@ export const describeOpenApiAuthMethods = (
 
 export const describeOpenApiIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = decodeOpenApiIntegrationConfig(record.config);
-  return { url: config?.baseUrl ?? config?.sourceUrl };
+  return {
+    url: config?.baseUrl ?? config?.sourceUrl,
+    ...(config?.family ? { family: config.family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -579,6 +585,7 @@ export interface OpenApiPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
   readonly invokeOptions?: InvokeOptions;
   readonly specFormats?: readonly SpecFormatAdapter[];
+  readonly presets?: readonly OpenApiPreset[];
 }
 
 export const openApiPlugin = definePlugin<
@@ -623,7 +630,8 @@ export const openApiPlugin = definePlugin<
   return {
     id: "openapi" as const,
     packageName: "@executor-js/plugin-openapi",
-    integrationPresets: openApiPresets.map((preset) => ({
+    clientConfig: options?.presets ? { presets: options.presets } : undefined,
+    integrationPresets: [...openApiPresets, ...(options?.presets ?? [])].map((preset) => ({
       id: preset.id,
       name: preset.name,
       summary: preset.summary,
@@ -814,6 +822,9 @@ export const openApiPlugin = definePlugin<
                 canRemove: true,
                 canRefresh: integrationConfig.sourceUrl != null,
               });
+              if (config.healthCheck) {
+                yield* ctx.core.integrations.setHealthCheck(slug, config.healthCheck);
+              }
               if (compiled) {
                 yield* ctx.storage.putOperations(
                   resolvedSlug,
@@ -1100,6 +1111,7 @@ export const openApiPlugin = definePlugin<
                   queryParams: input.queryParams,
                   specFormat: input.specFormat,
                   family: input.family,
+                  healthCheck: input.healthCheck,
                   authenticationTemplate: input.authenticationTemplate as
                     | readonly AuthenticationInput[]
                     | undefined,

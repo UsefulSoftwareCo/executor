@@ -7,14 +7,19 @@ import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_GRAPH_ALL_PRESET_IDS,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
+  MICROSOFT_GRAPH_OPENAPI_URL,
+  microsoftCatalog,
+  microsoftGraphAdapter,
 } from "@executor-js/plugin-microsoft";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
-const api = composePluginApi([microsoftHttpPlugin()] as const);
+const api = composePluginApi([
+  openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
+] as const);
 
 type ToolView = {
   readonly name: string;
@@ -47,12 +52,16 @@ scenario(
       Effect.gen(function* () {
         // Add path (1st former OOM site): the full spec is fetched and
         // stream-compiled into one persisted binding per operation.
-        const added = yield* client.microsoft.addGraph({
+        const added = yield* client.openapi.addSpec({
           payload: {
-            presetIds: [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
-            customScopes: [],
+            spec: {
+              kind: "url",
+              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_GRAPH_ALL_PRESET_IDS[0]}`,
+            },
             slug: integration,
             name: "Microsoft Graph (full)",
+            family: "microsoft",
+            specFormat: "microsoft-graph",
           },
         });
         expect(added.slug, "the full Graph source keeps the requested slug").toBe(integration);
@@ -61,16 +70,14 @@ scenario(
           "adding every Graph workload extracts the whole catalog (thousands of operations)",
         ).toBeGreaterThan(5_000);
 
-        const config = yield* client.microsoft.getConfig({ params: { slug: integration } });
-        expect(config?.microsoftGraphPresetIds, "every Graph workload preset is persisted").toEqual(
-          [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
+        const config = yield* client.openapi.getConfig({ params: { slug: integration } });
+        const delegatedScopes = config?.authenticationTemplate?.flatMap((template) =>
+          template.slug === MICROSOFT_AUTH_TEMPLATE_SLUG && template.kind === "oauth2"
+            ? [...template.scopes]
+            : [],
         );
         expect(
-          config?.microsoftGraphCoversFullGraph,
-          "selecting every workload is recognized as full Graph",
-        ).toBe(true);
-        expect(
-          config?.microsoftGraphScopes,
+          delegatedScopes,
           "full Graph delegates the app-registration default scope set",
         ).toEqual([...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES]);
 
@@ -113,8 +120,8 @@ scenario(
             },
           })
           .pipe(Effect.ignore);
-        yield* client.microsoft
-          .removeGraph({ params: { slug: IntegrationSlug.make(integration) } })
+        yield* client.openapi
+          .removeSpec({ params: { slug: IntegrationSlug.make(integration) } })
           .pipe(Effect.ignore);
       }),
     );

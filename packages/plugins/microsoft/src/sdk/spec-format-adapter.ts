@@ -3,13 +3,26 @@ import type { SpecFormatAdapter } from "@executor-js/plugin-openapi";
 
 import { buildMicrosoftGraphOpenApiSpec, microsoftGraphKeepPathItem } from "./graph";
 
+const graphCatalogSelection = (
+  rawUrl: string | undefined,
+): { readonly specUrl?: string; readonly presetIds?: readonly string[] } => {
+  if (!rawUrl || !URL.canParse(rawUrl)) return rawUrl ? { specUrl: rawUrl } : {};
+  const parsed = new URL(rawUrl);
+  const preset = parsed.hash.startsWith("#preset=")
+    ? decodeURIComponent(parsed.hash.slice("#preset=".length))
+    : "";
+  parsed.hash = "";
+  return {
+    specUrl: parsed.toString(),
+    ...(preset.length > 0 ? { presetIds: [preset] } : {}),
+  };
+};
+
 export const microsoftGraphAdapter: SpecFormatAdapter = {
   id: "microsoft-graph",
   fetch: (input) =>
     buildMicrosoftGraphOpenApiSpec(
-      {
-        ...(input.urls[0] ? { specUrl: input.urls[0] } : {}),
-      },
+      graphCatalogSelection(input.urls[0]),
       input.httpClientLayer,
     ).pipe(
       Effect.map((graphSpec) => ({

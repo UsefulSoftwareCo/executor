@@ -4,6 +4,7 @@ import {
   MICROSOFT_GRAPH_ALL_PRESET_IDS,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
+  microsoftCatalog,
   microsoftGraphExactPathsForPresetIds,
   microsoftGraphPathPrefixesForPresetIds,
   microsoftGraphPresetIdsCoverFullGraph,
@@ -11,6 +12,36 @@ import {
   microsoftGraphScopesForPresetIds,
   microsoftGraphTagPrefixesForPresetIds,
 } from "./presets";
+
+const FROZEN_MICROSOFT_SLUGS = [
+  "microsoft_profile",
+  "microsoft_me_surface",
+  "microsoft_mail",
+  "microsoft_calendar",
+  "microsoft_contacts",
+  "microsoft_tasks",
+  "microsoft_planner",
+  "microsoft_files",
+  "microsoft_excel",
+  "microsoft_sites",
+  "microsoft_onenote",
+  "microsoft_teams_chat",
+  "microsoft_teams_channels",
+  "microsoft_meetings_calls",
+  "microsoft_users",
+  "microsoft_groups",
+  "microsoft_directory",
+  "microsoft_applications",
+  "microsoft_identity",
+  "microsoft_admin_reports",
+  "microsoft_security_compliance",
+  "microsoft_devices",
+  "microsoft_education",
+  "microsoft_search",
+  "microsoft_external_connections",
+  "microsoft_solutions",
+  "microsoft_platform_services",
+] as const;
 
 describe("Microsoft Graph scope presets", () => {
   it("keeps default workload ids backed by categorized presets", () => {
@@ -164,6 +195,19 @@ describe("Microsoft Graph scope presets", () => {
   it("declares product icons for each workload", () => {
     for (const preset of microsoftGraphScopePresets) {
       expect(preset.icon).toMatch(/^https:\/\/svgl\.app\/library\/.+\.svg$/);
+    }
+  });
+
+  it("exports one catalog row per workload with stable slugs and Graph auth templates", () => {
+    expect(microsoftCatalog.map((preset) => preset.defaultSlug)).toEqual([
+      ...FROZEN_MICROSOFT_SLUGS,
+    ]);
+    for (const preset of microsoftCatalog) {
+      expect(preset.family).toBe("microsoft");
+      expect(preset.specFormat).toBe("microsoft-graph");
+      expect(preset.defaultSlug).toBeTruthy();
+      expect(preset.authTemplate).toHaveLength(2);
+      expect(preset.authTemplate?.map((template) => template.kind)).toEqual(["oauth2", "oauth2"]);
     }
   });
 });

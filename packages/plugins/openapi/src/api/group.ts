@@ -2,6 +2,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import { ApiKeyAuthMethod, ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 import {
+  HealthCheckSpec,
   InternalError,
   IntegrationAlreadyExistsError,
   IntegrationNotFoundError,
@@ -76,6 +77,7 @@ const AddSpecPayload = Schema.Struct({
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   specFormat: Schema.optional(Schema.String),
   family: Schema.optional(Schema.String),
+  healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
 });
 

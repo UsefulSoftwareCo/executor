@@ -1,7 +1,7 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { googleHttpPlugin } from "@executor-js/plugin-google/api";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import { googleCatalog, googleDiscoveryAdapter } from "@executor-js/plugin-google";
+import { microsoftCatalog, microsoftGraphAdapter } from "@executor-js/plugin-microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
@@ -21,18 +21,15 @@ import { resolveSecretKey } from "./src/config";
 
 interface SelfHostPluginDeps {
   readonly activeToolkitSlug?: string;
-  /** Mirrors `HostConfig.allowLocalNetwork` (EXECUTOR_ALLOW_LOCAL_NETWORK):
-   *  lets `microsoft.addGraph` point at a loopback emulator instead of the
-   *  pinned Microsoft Graph URLs. Off by default. */
-  readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug, allowLocalNetwork }: SelfHostPluginDeps = {}) =>
+  plugins: ({ activeToolkitSlug }: SelfHostPluginDeps = {}) =>
     [
-      openApiHttpPlugin(),
-      googleHttpPlugin(),
-      microsoftHttpPlugin({ allowUnsafeUrlOverrides: allowLocalNetwork === true }),
+      openApiHttpPlugin({
+        presets: [...googleCatalog, ...microsoftCatalog],
+        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+      }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),

@@ -4,8 +4,10 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { createExecutor, IntegrationSlug } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 import { openApiPlugin, parse } from "@executor-js/plugin-openapi";
+import type { AuthenticationInput } from "@executor-js/plugin-openapi";
 
 import { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-format-adapter";
+import { googleCatalog } from "./presets";
 
 const TASKS_URL = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
 
@@ -114,4 +116,52 @@ it.effect("adds a Google Discovery URL through the OpenAPI plugin with derived i
     expect(integration?.slug).toEqual(IntegrationSlug.make("google_tasks"));
     expect(added.toolCount).toBe(1);
   }),
+);
+
+it.effect(
+  "adds a Google catalog preset through OpenAPI with family, format, and default slug",
+  () =>
+    Effect.gen(function* () {
+      const tasksPreset = googleCatalog.find((preset) => preset.defaultSlug === "google_tasks")!;
+      const authTemplate: readonly AuthenticationInput[] = (tasksPreset.authTemplate ?? []).flatMap(
+        (template) => (template.kind === "oauth2" ? [template] : []),
+      );
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [
+            openApiPlugin({
+              httpClientLayer: discoveryHttpClientLayer,
+              presets: [tasksPreset],
+              specFormats: [googleDiscoveryAdapter],
+            }),
+            memoryCredentialsPlugin(),
+          ],
+        }),
+      );
+
+      const added = yield* executor.openapi.addSpec({
+        spec: { kind: "url", url: tasksPreset.url! },
+        slug: tasksPreset.defaultSlug,
+        specFormat: tasksPreset.specFormat,
+        family: tasksPreset.family,
+        authenticationTemplate: authTemplate,
+      });
+      const config = yield* executor.openapi.getConfig("google_tasks");
+
+      expect(String(added.slug)).toBe("google_tasks");
+      expect(config?.family).toBe("google");
+      expect(config?.specFormat).toBe("google-discovery");
+      expect(config?.authenticationTemplate?.[0]?.kind).toBe("oauth2");
+      const storedOAuthTemplates = (config?.authenticationTemplate ?? []).filter(
+        (template) => template.kind === "oauth2",
+      );
+      expect(storedOAuthTemplates[0]?.scopes).toEqual(
+        expect.arrayContaining([
+          "openid",
+          "email",
+          "profile",
+          "https://www.googleapis.com/auth/tasks",
+        ]),
+      );
+    }),
 );

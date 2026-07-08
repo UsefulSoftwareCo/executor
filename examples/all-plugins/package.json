@@ -14,6 +14,7 @@
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-keychain": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
+    "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-onepassword": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/plugin-workos-vault": "workspace:*",

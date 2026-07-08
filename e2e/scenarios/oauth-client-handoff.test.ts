@@ -25,15 +25,21 @@ import { Effect } from "effect";
 import { AccountHttpApi } from "@executor-js/api";
 import { composePluginApi } from "@executor-js/api/server";
 import { connectEmulator, type EmulatorClient, type IssuedCredential } from "@executor-js/emulate";
-import { MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG } from "@executor-js/plugin-microsoft";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import {
+  MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-microsoft";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { ConnectionName, IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import type { McpSession } from "../src/surfaces/mcp";
 
-const microsoftApi = composePluginApi([microsoftHttpPlugin()] as const);
+const microsoftApi = composePluginApi([
+  openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
+] as const);
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -311,15 +317,7 @@ const requireOAuthClientCredential = (credential: IssuedCredential) =>
 scenario(
   "OAuth client · agent hands off, the human enters the secret in the browser, and the app connects",
   {
-    // Blocked (pre-existing, not this PR): this scenario drives the handoff
-    // through `microsoft.addGraph`, which only accepts the canonical Graph spec
-    // in the streamable block-YAML profile (structural split to avoid OOMing the
-    // 128MB Workers isolate on the 37MB doc — packages/plugins/microsoft/src/sdk/
-    // graph.ts). The @executor-js/emulate Microsoft emulator serves a small spec
-    // outside that profile, so addGraph hard-errors. The other two OAuth-client
-    // scenarios in this file (createHandoff, approval-gating) do not touch Graph
-    // and pass. Fix needs a block-YAML-profile emulator spec; tracked separately.
-    skip: "drives microsoft.addGraph, which requires the canonical block-YAML Graph spec the emulator does not serve",
+    skip: "phase 3 will replace this deleted microsoft.addGraph scenario with catalog-driven Microsoft e2e coverage",
     timeout: 240_000,
   },
   Effect.gen(function* () {
@@ -356,14 +354,14 @@ scenario(
       Effect.gen(function* () {
         // Register the Microsoft Graph integration so the console has an OAuth
         // method to register a client against.
-        yield* client.microsoft.addGraph({
+        yield* client.openapi.addSpec({
           payload: {
-            presetIds: ["users"],
-            customScopes: [],
+            spec: { kind: "url", url: emulator.openapiUrl },
             slug: integration,
             name: "Microsoft Graph Emulator",
             baseUrl: emulator.baseUrl,
-            specUrl: emulator.openapiUrl,
+            family: "microsoft",
+            specFormat: "microsoft-graph",
           },
         });
 
@@ -482,7 +480,7 @@ scenario(
             payload: { owner: "org" },
           })
           .pipe(Effect.ignore);
-        yield* client.microsoft.removeGraph({ params: { slug: integration } }).pipe(Effect.ignore);
+        yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
       }).pipe(Effect.ignore),
     );
   }),

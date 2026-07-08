@@ -1,4 +1,6 @@
 import { normalizeGoogleDiscoveryUrl } from "./discovery";
+import { compactGoogleOAuthScopes } from "./oauth-scopes";
+import type { IntegrationPreset } from "@executor-js/sdk/core";
 
 export interface GooglePreset {
   readonly id: string;
@@ -238,7 +240,7 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 // The picker shows the OAuth consent a user is about to grant BEFORE connecting
 // (the "View scopes" panel), but the authoritative scope list only exists in
 // each API's live Discovery document, which the add flow fetches lazily at
-// `addBundle` time. To preview consent without N network round-trips, each preset
+// provider add time. To preview consent without N network round-trips, each preset
 // declares the broad top-level scope(s) a full integration grants. These flow
 // through `googleOAuthConsentBatches` (which compacts sub-scopes under their
 // broad parent), so the previewed grant matches the unioned scopes the bundle
@@ -275,6 +277,44 @@ export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]
 
 export const googleOAuthConsentScopesForPreset = (presetId: string): readonly string[] =>
   googleOAuthConsentScopes[presetId] ?? [];
+
+export const googleServiceSlug = (presetId: string): string => presetId.replaceAll("-", "_");
+
+const GOOGLE_OAUTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
+const GOOGLE_IDENTITY_SCOPES: readonly string[] = ["openid", "email", "profile"];
+const GOOGLE_USERINFO_HEALTH_CHECK = {
+  operation: "oauth2.userinfo.get",
+  identityField: "email",
+} as const;
+
+const googleCatalogAuthTemplate = (presetId: string) => [
+  {
+    slug: GOOGLE_OAUTH_SECURITY_SCHEME,
+    kind: "oauth2" as const,
+    authorizationUrl: GOOGLE_OAUTH_AUTHORIZATION_URL,
+    tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
+    scopes: compactGoogleOAuthScopes([
+      ...GOOGLE_IDENTITY_SCOPES,
+      ...googleOAuthConsentScopesForPreset(presetId),
+    ]),
+  },
+];
+
+export const googleCatalog: readonly IntegrationPreset[] = googleOpenApiPresets.map((preset) => ({
+  id: preset.id,
+  name: preset.name,
+  summary: preset.summary,
+  ...(preset.url ? { url: preset.url } : {}),
+  ...(preset.icon ? { icon: preset.icon } : {}),
+  ...(preset.featured ? { featured: preset.featured } : {}),
+  family: "google",
+  specFormat: "google-discovery",
+  defaultSlug: googleServiceSlug(preset.id),
+  authTemplate: googleCatalogAuthTemplate(preset.id),
+  healthCheck: GOOGLE_USERINFO_HEALTH_CHECK,
+}));
 
 // ---------------------------------------------------------------------------
 // Resolve a stored/normalized Discovery URL back to its preset, so a bundled

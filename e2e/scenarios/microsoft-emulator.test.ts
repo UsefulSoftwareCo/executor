@@ -5,8 +5,12 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { createEmulator, type Emulator, type IssuedCredential } from "@executor-js/emulate";
-import { MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG } from "@executor-js/plugin-microsoft";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import {
+  MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-microsoft";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -17,7 +21,9 @@ import {
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
-const api = composePluginApi([microsoftHttpPlugin()] as const);
+const api = composePluginApi([
+  openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
+] as const);
 
 type OAuthTemplateView = {
   readonly slug: string;
@@ -81,15 +87,7 @@ return { ok: result.ok, path: item.path, result: result.ok ? result.data : resul
 scenario(
   "Microsoft · client credentials against the emulator mint a Graph connection and call /users",
   {
-    // Blocked (pre-existing, not this PR): `microsoft.addGraph` only accepts the
-    // canonical Graph spec in the streamable block-YAML profile — it structurally
-    // splits the doc to avoid OOMing the 128MB Workers isolate on the real 37MB
-    // spec (packages/plugins/microsoft/src/sdk/graph.ts), and hard-errors on
-    // anything else. The @executor-js/emulate Microsoft emulator serves a small
-    // custom Graph spec that isn't in that profile, so addGraph rejects it. Fix
-    // needs the emulator to serve a block-YAML-profile Graph spec (or a
-    // non-Workers compile path); tracked separately.
-    skip: "microsoft.addGraph requires the canonical block-YAML Graph spec; the emulator spec is not in that profile",
+    skip: "phase 3 will replace this deleted microsoft.addGraph scenario with catalog-driven Microsoft e2e coverage",
     timeout: 180_000,
   },
   Effect.scoped(
@@ -110,18 +108,18 @@ scenario(
 
       yield* Effect.ensuring(
         Effect.gen(function* () {
-          yield* client.microsoft.addGraph({
+          yield* client.openapi.addSpec({
             payload: {
-              presetIds: ["users"],
-              customScopes: [],
+              spec: { kind: "url", url: emulator.openapiUrl },
               slug: integration,
               name: "Microsoft Graph Emulator",
               baseUrl: emulator.url,
-              specUrl: emulator.openapiUrl,
+              family: "microsoft",
+              specFormat: "microsoft-graph",
             },
           });
 
-          const config = yield* client.microsoft.getConfig({
+          const config = yield* client.openapi.getConfig({
             params: { slug: integration },
           });
           const appOnlyTemplate = config?.authenticationTemplate?.find(
@@ -213,7 +211,7 @@ scenario(
             params: { slug: oauthClient },
             payload: { owner: "org" },
           });
-          yield* client.microsoft.removeGraph({ params: { slug: integration } });
+          yield* client.openapi.removeSpec({ params: { slug: integration } });
         }).pipe(Effect.ignore),
       );
     }),

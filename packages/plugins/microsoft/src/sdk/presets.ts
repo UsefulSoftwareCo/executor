@@ -1,3 +1,5 @@
+import type { IntegrationPreset } from "@executor-js/sdk/core";
+
 export interface MicrosoftGraphPreset {
   readonly id: string;
   readonly name: string;
@@ -522,3 +524,44 @@ export const microsoftGraphTagPrefixesForPresetIds = (
   orderedUnique(
     [...presetIds].flatMap((presetId) => microsoftGraphPresetForId(presetId)?.tagPrefixes ?? []),
   );
+
+export const microsoftServiceSlug = (presetId: string): string =>
+  `microsoft_${presetId.replaceAll("-", "_")}`;
+
+const microsoftGraphCatalogUrl = (presetId: string): string =>
+  `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${encodeURIComponent(presetId)}`;
+
+const microsoftGraphCatalogAuthTemplate = (preset: MicrosoftGraphScopePreset) => [
+  {
+    slug: MICROSOFT_AUTH_TEMPLATE_SLUG,
+    kind: "oauth2" as const,
+    authorizationUrl: MICROSOFT_AUTHORIZATION_URL,
+    tokenUrl: MICROSOFT_TOKEN_URL,
+    scopes: microsoftGraphScopesForPresetIds([preset.id]),
+  },
+  {
+    slug: MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+    kind: "oauth2" as const,
+    authorizationUrl: MICROSOFT_AUTHORIZATION_URL,
+    tokenUrl: MICROSOFT_TOKEN_URL,
+    scopes: [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
+  },
+];
+
+export const microsoftCatalog: readonly IntegrationPreset[] = microsoftGraphScopePresets.map(
+  (preset) => ({
+    id: `microsoft-${preset.id}`,
+    name: preset.name,
+    summary: preset.summary,
+    url: microsoftGraphCatalogUrl(preset.id),
+    ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(preset.featured ? { featured: preset.featured } : {}),
+    family: "microsoft",
+    specFormat: "microsoft-graph",
+    defaultSlug: microsoftServiceSlug(preset.id),
+    authTemplate: microsoftGraphCatalogAuthTemplate(preset),
+    ...(preset.id === "profile"
+      ? { healthCheck: { operation: "me.GetUser", identityField: "mail" } }
+      : {}),
+  }),
+);

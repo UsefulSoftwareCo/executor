@@ -1,1 +1,1 @@
-export { googlePlugin } from "./sdk/plugin";
+export * from "./sdk/index";

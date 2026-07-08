@@ -1,1 +1,1 @@
-export { microsoftPlugin } from "./sdk/plugin";
+export * from "./sdk/index";

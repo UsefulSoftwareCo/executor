@@ -66,7 +66,6 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
       },
       activeToolkitSlug:
         context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
-      allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
     }),
 });
 

@@ -7,6 +7,7 @@ export {
 } from "./discovery";
 export {
   googleOpenApiBundlePreset,
+  googleCatalog,
   googleOpenApiPresets,
   googlePhotosOpenApiBundlePreset,
   googlePhotosOpenApiPresets,
@@ -16,6 +17,7 @@ export {
   googleStandardUserOAuthPresets,
   googleOAuthConsentScopes,
   googleOAuthConsentScopesForPreset,
+  googleServiceSlug,
   googleAudienceWarningsForUrls,
   googlePresetForDiscoveryUrl,
   type GoogleOpenApiOAuthAudience,
@@ -28,20 +30,6 @@ export {
   isGoogleUserConsentOAuthScope,
 } from "./oauth-scopes";
 export { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-format-adapter";
-export {
-  googleOAuthConsentBatches,
-  type GoogleOAuthBatchInput,
-  type GoogleOAuthConsentBatch,
-} from "./oauth-batches";
-export {
-  googlePlugin,
-  type GoogleBundleConfig,
-  type GoogleConfigureInput,
-  type GooglePluginExtension,
-  type GooglePluginOptions,
-  type GoogleUpdateInput,
-  type GoogleUpdateResult,
-} from "./plugin";
 export {
   googleOpenApiOwnershipDataMigration,
   runSqliteGoogleOpenApiOwnershipMigration,

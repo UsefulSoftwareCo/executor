@@ -75,3 +75,18 @@ it.effect("wraps Microsoft Graph structural split with a streaming keep filter",
     expect(structure!.pathItems.length).toBe(2);
   }),
 );
+
+it.effect("uses catalog URL fragments to select one Graph workload", () =>
+  Effect.gen(function* () {
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
+      httpClientLayer: graphHttpClientLayer,
+    });
+    const keepPathItem = converted.keepPathItem!;
+
+    expect(keepPathItem("/me", { get: { operationId: "me.GetUser" } })).toEqual({
+      get: { operationId: "me.GetUser" },
+    });
+    expect(keepPathItem("/irrelevant", { get: { operationId: "irrelevant.Get" } })).toBeNull();
+  }),
+);

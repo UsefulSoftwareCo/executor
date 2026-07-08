@@ -13,6 +13,7 @@ export {
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
   MICROSOFT_GRAPH_PRESET_ID,
   MICROSOFT_TOKEN_URL,
+  microsoftCatalog,
   microsoftGraphExactPathsForPresetIds,
   microsoftGraphPathPrefixesForPresetIds,
   microsoftGraphPreset,
@@ -21,6 +22,7 @@ export {
   microsoftGraphScopePresets,
   microsoftGraphScopesForPresetIds,
   microsoftGraphTagPrefixesForPresetIds,
+  microsoftServiceSlug,
   type MicrosoftGraphPreset,
   type MicrosoftGraphScopeAudience,
   type MicrosoftGraphScopePreset,
@@ -37,12 +39,3 @@ export {
   type MicrosoftGraphSpecBuild,
 } from "./graph";
 export { microsoftGraphAdapter } from "./spec-format-adapter";
-export {
-  microsoftPlugin,
-  type MicrosoftConfigureInput,
-  type MicrosoftGraphConfig,
-  type MicrosoftPluginExtension,
-  type MicrosoftPluginOptions,
-  type MicrosoftUpdateInput,
-  type MicrosoftUpdateResult,
-} from "./plugin";

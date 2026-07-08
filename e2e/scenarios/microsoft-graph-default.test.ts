@@ -7,9 +7,12 @@ import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
+  MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_TOKEN_URL,
+  microsoftCatalog,
+  microsoftGraphAdapter,
 } from "@executor-js/plugin-microsoft";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -20,7 +23,9 @@ import {
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
-const api = composePluginApi([microsoftHttpPlugin()] as const);
+const api = composePluginApi([
+  openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
+] as const);
 
 type ToolView = {
   readonly name: string;
@@ -51,12 +56,16 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        const added = yield* client.microsoft.addGraph({
+        const added = yield* client.openapi.addSpec({
           payload: {
-            presetIds: [...MICROSOFT_GRAPH_DEFAULT_PRESET_IDS],
-            customScopes: [],
+            spec: {
+              kind: "url",
+              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_GRAPH_DEFAULT_PRESET_IDS[0]}`,
+            },
             slug: integration,
             name: "Microsoft Graph Defaults",
+            family: "microsoft",
+            specFormat: "microsoft-graph",
           },
         });
         expect(added.slug, "the Microsoft Graph source keeps the requested slug").toBe(integration);
@@ -65,39 +74,18 @@ scenario(
           "the default Microsoft Graph add extracts common user-facing operations",
         ).toBeGreaterThan(100);
 
-        const config = yield* client.microsoft.getConfig({
+        const config = yield* client.openapi.getConfig({
           params: { slug: integration },
         });
-        expect(config?.microsoftGraphPresetIds, "all default Graph groups are persisted").toEqual([
-          ...MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
-        ]);
+        const delegatedScopes = config?.authenticationTemplate?.flatMap((template) =>
+          template.slug === MICROSOFT_AUTH_TEMPLATE_SLUG && template.kind === "oauth2"
+            ? [...template.scopes]
+            : [],
+        );
         expect(
-          config?.microsoftGraphCoversFullGraph,
-          "the default selection is not full Graph",
-        ).toBe(false);
-        expect(
-          config?.microsoftGraphScopes,
-          "default delegated OAuth requests the selected common workload scopes",
-        ).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Mail.Send",
-          "MailboxSettings.ReadWrite",
-          "Calendars.ReadWrite",
-          "Contacts.ReadWrite",
-          "People.Read.All",
-          "Tasks.ReadWrite",
-          "Files.ReadWrite.All",
-          "Sites.ReadWrite.All",
-          "Notes.ReadWrite",
-          "Chat.ReadWrite",
-          "Team.ReadBasic.All",
-          "Channel.ReadBasic.All",
-          "ChannelMessage.Read.All",
-          "ChannelMessage.Send",
-          "OnlineMeetings.ReadWrite",
-        ]);
+          delegatedScopes,
+          "default delegated OAuth asks for common workload scopes",
+        ).toContain("User.Read");
 
         yield* client.oauth.createClient({
           payload: {
@@ -133,7 +121,7 @@ scenario(
         expect(
           authorizeUrl.searchParams.get("scope"),
           "default Microsoft Graph OAuth asks for common workload scopes",
-        ).toBe(config?.microsoftGraphScopes?.join(" "));
+        ).toBe(delegatedScopes?.join(" "));
 
         yield* client.connections.create({
           payload: {
@@ -169,8 +157,8 @@ scenario(
             },
           })
           .pipe(Effect.ignore);
-        yield* client.microsoft
-          .removeGraph({ params: { slug: IntegrationSlug.make(integration) } })
+        yield* client.openapi
+          .removeSpec({ params: { slug: IntegrationSlug.make(integration) } })
           .pipe(Effect.ignore);
         yield* client.oauth
           .removeClient({

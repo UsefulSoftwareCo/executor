@@ -66,6 +66,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             queryParams: payload.queryParams ? { ...payload.queryParams } : undefined,
             specFormat: payload.specFormat,
             family: payload.family,
+            healthCheck: payload.healthCheck,
             authenticationTemplate: payload.authenticationTemplate,
           });
         }),
