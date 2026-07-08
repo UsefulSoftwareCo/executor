@@ -70,8 +70,7 @@ export default defineTool({
           const dialog = page.getByRole("dialog", { name: "Choose directory" });
           await dialog
             .getByRole("button", { name: /picked-tools/ })
-            .locator("span")
-            .filter({ hasText: "tools" })
+            .getByText("tools", { exact: true })
             .waitFor({ timeout: 30_000 });
           await dialog.getByRole("button", { name: "picked-tools" }).click();
           await dialog.getByText("1 tool found:").waitFor({ timeout: 30_000 });
