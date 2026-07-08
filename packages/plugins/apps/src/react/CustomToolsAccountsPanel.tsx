@@ -40,7 +40,7 @@ type LoadState =
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "ready"; readonly sources: readonly AppSourceRecord[] };
 
-export default function CustomToolsAccountsPanel(props: { readonly sourceId: string }) {
+export default function CustomToolsAccountsPanel(props: { readonly integrationId: string }) {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [syncingSlug, setSyncingSlug] = useState<string | null>(null);
   const [removingSlug, setRemovingSlug] = useState<string | null>(null);
@@ -48,8 +48,8 @@ export default function CustomToolsAccountsPanel(props: { readonly sourceId: str
   const [removeError, setRemoveError] = useState<string | null>(null);
   const sourcesForApp = useCallback(
     (sources: readonly AppSourceRecord[]): readonly AppSourceRecord[] =>
-      sources.filter((source) => source.app === props.sourceId),
-    [props.sourceId],
+      sources.filter((source) => source.app === props.integrationId),
+    [props.integrationId],
   );
 
   const loadSources = async () => {
@@ -76,7 +76,7 @@ export default function CustomToolsAccountsPanel(props: { readonly sourceId: str
     return () => {
       active = false;
     };
-  }, [props.sourceId, sourcesForApp]);
+  }, [props.integrationId, sourcesForApp]);
 
   const syncSource = async (source: AppSourceRecord) => {
     setSyncingSlug(source.slug);

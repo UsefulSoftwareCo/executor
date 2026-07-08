@@ -87,6 +87,7 @@ const provisionLinux = async (): Promise<ProvisionedGuest> => {
     await vm.ssh(
       `nohup env ${env} EXECUTOR_SUPERVISED=1 EXECUTOR_AUTH_TOKEN=desktop-linux-e2e EXECUTOR_CLIENT=desktop ` +
         `'${guestExecutor}' daemon run --foreground --port ${DAEMON_PORT} --hostname 127.0.0.1 ` +
+        `--auth-token desktop-linux-e2e ` +
         `>/tmp/executor-daemon.log 2>&1 &`,
     );
     if (!(await waitGuestHttp(vm, `http://127.0.0.1:${DAEMON_PORT}/`))) {
