@@ -363,11 +363,16 @@ describe("service-split-postgres-cli", () => {
           readonly plugin_id: string;
           readonly config: unknown;
         }[]
-      >("SELECT slug, plugin_id, config::jsonb AS config FROM integration ORDER BY slug");
+      >(
+        "SELECT slug, plugin_id, config::jsonb AS config, jsonb_typeof(config::jsonb) AS config_type FROM integration ORDER BY slug",
+      );
       expect(integrations).toHaveLength(1);
       expect(integrations[0]).toMatchObject({
         slug: "google_calendar",
         plugin_id: "openapi",
+        // A double-encoded config lands as jsonb string, which some runtime
+        // readers reject; the migration must write a real JSON object.
+        config_type: "object",
       });
       expect(parseJson(integrations[0]?.config)).toMatchObject({
         specHash: "mono-hash",
@@ -401,11 +406,14 @@ describe("service-split-postgres-cli", () => {
           readonly key: string;
           readonly data: unknown;
         }[]
-      >("SELECT plugin_id, key, data FROM plugin_storage WHERE collection = 'operation'");
+      >(
+        "SELECT plugin_id, key, data, jsonb_typeof(data::jsonb) AS data_type FROM plugin_storage WHERE collection = 'operation'",
+      );
       expect(operations).toHaveLength(1);
       expect(operations[0]).toMatchObject({
         plugin_id: "openapi",
         key: operationStorageKey("google_calendar", "calendar.events.list"),
+        data_type: "object",
       });
       expect(parseJson(operations[0]?.data)).toMatchObject({
         integration: "google_calendar",

@@ -1,5 +1,6 @@
 /* oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: one-shot migration CLI */
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -220,14 +221,10 @@ const scrubJson = (value: unknown): unknown => {
   return value;
 };
 
-const stableId = (...parts: readonly string[]): string => {
-  const text = parts.join("\u0000");
-  let hash = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
-  }
-  return `service_split_${hash.toString(36)}`;
-};
+// sha256-based: a 31-bit hash collides around ~50k rows (observed in prod);
+// 96 bits keeps re-run determinism with no realistic collision risk.
+const stableId = (...parts: readonly string[]): string =>
+  `service_split_${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24)}`;
 
 const operationKeyPrefix = (integration: string): string =>
   `${operationStorageKey(integration, "").split(".").slice(0, 2).join(".")}.%`;
@@ -280,8 +277,8 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
           row.target.pluginId,
           row.target.name,
           row.target.description,
-          JSON.stringify(scrubJson(row.config)),
-          row.healthCheck ? JSON.stringify(scrubJson(row.healthCheck)) : null,
+          scrubJson(row.config),
+          row.healthCheck ? scrubJson(row.healthCheck) : null,
           now,
           stableId("integration", org.tenant, row.target.slug),
           org.tenant,
@@ -391,13 +388,11 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
               params.push(
                 integration.target.pluginId,
                 operationStorageKey(integration.target.slug, toolName),
-                JSON.stringify(
-                  scrubJson({
-                    ...storageDataRecord(operation),
-                    integration: integration.target.slug,
-                    toolName,
-                  }),
-                ),
+                scrubJson({
+                  ...storageDataRecord(operation),
+                  integration: integration.target.slug,
+                  toolName,
+                }),
                 operation.created_at,
                 now,
                 stableId("operation", org.tenant, integration.target.slug, toolName),
