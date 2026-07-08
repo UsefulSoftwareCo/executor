@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Effect, Exit } from "effect";
 
 import { Button } from "@executor-js/react/components/button";
@@ -9,19 +9,31 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
+import { Checkbox } from "@executor-js/react/components/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@executor-js/react/components/dialog";
 import { FormErrorAlert, useSlugAlreadyExists } from "@executor-js/react/lib/integration-add";
 
 import {
   createCustomToolSourceEffect,
   formatSyncErrors,
+  listCustomToolDirectoriesEffect,
   parseGitSourceUrl,
   slugifyCustomToolsAppName,
   suggestCustomToolsAppName,
   syncCustomToolSourceEffect,
   validateCustomToolsAppSlug,
   validateGitSourceUrl,
+  type CustomToolsDirectoryListing,
   type AppSourceKind,
 } from "./custom-tools-client";
+import { directoryBrowserRows } from "./source-panel-model";
 
 export default function AddCustomToolsSource(props: {
   readonly onComplete: (slug?: string) => void;
@@ -51,6 +63,7 @@ export default function AddCustomToolsSource(props: {
   const [nameError, setNameError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [browseOpen, setBrowseOpen] = useState(false);
 
   const sourceValue = kind === "git" ? url : path;
   const effectiveName = useMemo(
@@ -130,7 +143,7 @@ export default function AddCustomToolsSource(props: {
           {allowLocalDirectory && (
             <CardStackEntryField
               label="Source type"
-              description="- Git is portable. Local directories are self-host only."
+              description="- Git is portable. Local directories are local-only."
             >
               <div className="flex gap-2">
                 <Button
@@ -201,20 +214,30 @@ export default function AddCustomToolsSource(props: {
           ) : (
             <CardStackEntryField
               label="Directory path"
-              description="- Absolute path on the self-host server."
+              description="- Absolute path on this machine."
             >
               <div className="space-y-1.5">
-                <Input
-                  value={path}
-                  onChange={(event) => {
-                    setPath((event.target as HTMLInputElement).value);
-                    setFieldError(null);
-                    setSyncError(null);
-                  }}
-                  placeholder="/srv/executor-tools"
-                  className="font-mono text-sm"
-                  aria-invalid={fieldError ? true : undefined}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={path}
+                    onChange={(event) => {
+                      setPath((event.target as HTMLInputElement).value);
+                      setFieldError(null);
+                      setSyncError(null);
+                    }}
+                    placeholder="/Users/me/tools"
+                    className="font-mono text-sm"
+                    aria-invalid={fieldError ? true : undefined}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setBrowseOpen(true)}
+                    disabled={syncing}
+                  >
+                    Browse
+                  </Button>
+                </div>
                 {fieldError && <p className="text-xs text-destructive">{fieldError}</p>}
               </div>
             </CardStackEntryField>
@@ -258,6 +281,119 @@ export default function AddCustomToolsSource(props: {
           Sync source
         </Button>
       </FloatActions>
+      {browseOpen && (
+        <DirectoryBrowserModal
+          initialPath={path.trim() || undefined}
+          onClose={() => setBrowseOpen(false)}
+          onSelect={(selectedPath) => {
+            setPath(selectedPath);
+            setFieldError(null);
+            setSyncError(null);
+            setBrowseOpen(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function DirectoryBrowserModal(props: {
+  readonly initialPath?: string;
+  readonly onSelect: (path: string) => void;
+  readonly onClose: () => void;
+}) {
+  const [currentPath, setCurrentPath] = useState(props.initialPath);
+  const [includeHidden, setIncludeHidden] = useState(false);
+  const [listing, setListing] = useState<CustomToolsDirectoryListing | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    void Effect.runPromiseExit(
+      listCustomToolDirectoriesEffect({ path: currentPath, includeHidden }),
+    ).then((exit) => {
+      if (!active) return;
+      setLoading(false);
+      if (Exit.isFailure(exit)) {
+        setError("Unable to read this directory.");
+        return;
+      }
+      setListing(exit.value);
+      setCurrentPath(exit.value.path);
+    });
+    return () => {
+      active = false;
+    };
+  }, [currentPath, includeHidden]);
+
+  const rows = listing ? directoryBrowserRows(listing) : [];
+  const selectedPath = listing?.path ?? currentPath ?? "";
+
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : props.onClose())}>
+      <DialogContent className="sm:max-w-[620px]">
+        <DialogHeader className="border-b border-border/60 pb-4">
+          <DialogTitle className="text-base">Choose directory</DialogTitle>
+          <DialogDescription className="font-mono text-xs break-all">
+            {selectedPath || "Home"}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Checkbox
+              checked={includeHidden}
+              onCheckedChange={(checked) => setIncludeHidden(checked === true)}
+            />
+            Show hidden directories
+          </label>
+          <div className="max-h-[340px] overflow-auto rounded-md border border-border">
+            {loading ? (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">Loading...</div>
+            ) : error ? (
+              <div className="px-3 py-8 text-center text-sm text-destructive">{error}</div>
+            ) : rows.length === 0 ? (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                No subdirectories
+              </div>
+            ) : (
+              <div role="listbox" aria-label="Directories" className="divide-y divide-border">
+                {rows.map((row) => (
+                  <button
+                    key={`${row.kind}:${row.path}`}
+                    type="button"
+                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                    onClick={() => setCurrentPath(row.path)}
+                  >
+                    <span className="min-w-0 truncate font-mono">
+                      {row.kind === "parent" ? ".." : row.name}
+                    </span>
+                    {row.kind === "dir" && row.isSymlink && (
+                      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                        symlink
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <DialogFooter className="border-t border-border/60 pt-4">
+          <Button type="button" variant="ghost" onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => props.onSelect(selectedPath)}
+            disabled={!selectedPath || loading || Boolean(error)}
+          >
+            Select
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

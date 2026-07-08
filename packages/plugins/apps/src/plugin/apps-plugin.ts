@@ -34,7 +34,10 @@ import {
   type SyncDiagnostic,
 } from "../source/app-source";
 import { checkGitAppSourceRefs, fetchGitAppSource, parseGitSourceUrl } from "../source/git-source";
-import { fetchLocalDirectoryAppSource } from "../source/local-directory-source";
+import {
+  fetchLocalDirectoryAppSource,
+  listLocalDirectoryDirs,
+} from "../source/local-directory-source";
 import { AppSourceError, type AppSourceSnapshot } from "../source/app-source";
 import type { PublishError } from "../pipeline/publish";
 
@@ -285,6 +288,15 @@ const makeAppsExtension = (
       publish({ store: ctx.storage, executor: activeExecutor, bundler: activeBundler }, input),
     listSources: () => ctx.storage.listSources(),
     getSource: (slug: string) => ctx.storage.getSource(slug),
+    listDirs: (input: { readonly path?: string; readonly includeHidden?: boolean }) =>
+      Effect.gen(function* () {
+        if (!sourceKinds.includes("local-directory")) {
+          return yield* new AppPluginError({
+            message: "app source kind is not enabled: local-directory",
+          });
+        }
+        return yield* listLocalDirectoryDirs(input);
+      }),
     createSource: (input: CreateAppSourceInput) =>
       Effect.gen(function* () {
         const config = sourceConfig(input);

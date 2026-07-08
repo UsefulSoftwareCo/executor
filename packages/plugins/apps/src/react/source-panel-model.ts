@@ -1,4 +1,8 @@
-import type { AppSourceRecord, SyncSourceResult } from "./custom-tools-client";
+import type {
+  AppSourceRecord,
+  CustomToolsDirectoryListing,
+  SyncSourceResult,
+} from "./custom-tools-client";
 import {
   formatDiagnostics,
   formatSyncErrors,
@@ -22,6 +26,15 @@ export interface SyncNoticeModel {
   readonly errors: readonly string[];
   readonly sourceRef?: string;
 }
+
+export type DirectoryBrowserRow =
+  | { readonly kind: "parent"; readonly name: ".."; readonly path: string }
+  | {
+      readonly kind: "dir";
+      readonly name: string;
+      readonly path: string;
+      readonly isSymlink: boolean;
+    };
 
 const shortRef = (ref: string | undefined): string => (ref ? ref.slice(0, 12) : "Not synced");
 
@@ -86,3 +99,17 @@ export const syncNoticeFromResult = (
     ...(result.sourceRef ? { sourceRef: result.sourceRef.slice(0, 12) } : {}),
   };
 };
+
+export const directoryBrowserRows = (
+  listing: CustomToolsDirectoryListing,
+): readonly DirectoryBrowserRow[] => [
+  ...(listing.parent
+    ? [{ kind: "parent" as const, name: ".." as const, path: listing.parent }]
+    : []),
+  ...listing.dirs.map((dir) => ({
+    kind: "dir" as const,
+    name: dir.name,
+    path: dir.path,
+    isSymlink: dir.isSymlink,
+  })),
+];

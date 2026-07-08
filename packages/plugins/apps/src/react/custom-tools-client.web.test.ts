@@ -6,6 +6,7 @@ import appsClientPlugin, {
   CUSTOM_TOOLS_PLUGIN_KEY,
   createCustomToolSourceEffect,
   formatSyncErrors,
+  listCustomToolDirectoriesEffect,
   listCustomToolSources,
   parseGitSourceUrl,
   removeCustomToolSourceEffect,
@@ -17,6 +18,7 @@ import appsClientPlugin, {
   type CustomToolsFetch,
 } from "./plugin-client";
 import { sourcePanelModel, syncNoticeFromResult } from "./source-panel-model";
+import { directoryBrowserRows } from "./source-panel-model";
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -99,6 +101,13 @@ describe("custom tools console client", () => {
       if (url === "/api/apps/sources/demo-tools") {
         return jsonResponse({ removed: true });
       }
+      if (url === "/api/apps/fs/dirs?path=%2FUsers%2Fada%2Ftools&includeHidden=true") {
+        return jsonResponse({
+          path: "/Users/ada/tools",
+          parent: "/Users/ada",
+          dirs: [{ name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false }],
+        });
+      }
       return jsonResponse({ error: "not found" }, { status: 404 });
     };
 
@@ -117,17 +126,24 @@ describe("custom tools console client", () => {
     const listed = await listCustomToolSources(fetchImpl);
     const synced = await Effect.runPromise(syncCustomToolSourceEffect("demo-tools", fetchImpl));
     const removed = await Effect.runPromise(removeCustomToolSourceEffect("demo-tools", fetchImpl));
+    const dirs = await Effect.runPromise(
+      listCustomToolDirectoriesEffect({ path: "/Users/ada/tools", includeHidden: true }, fetchImpl),
+    );
 
     expect(created.source.slug).toBe("demo-tools");
     expect(createBody).toContain("ghp_secret");
     expect(JSON.stringify(listed)).not.toContain("ghp_secret");
     expect(syncStatusLabel(synced)).toBe("Already up to date.");
     expect(removed).toEqual({ removed: true });
+    expect(dirs.dirs).toEqual([
+      { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
+    ]);
     expect(calls.map((call) => `${call.init?.method ?? "GET"} ${call.url}`)).toEqual([
       "POST /api/apps/sources",
       "GET /api/apps/sources",
       "POST /api/apps/sources/demo-tools/sync",
       "DELETE /api/apps/sources/demo-tools",
+      "GET /api/apps/fs/dirs?path=%2FUsers%2Fada%2Ftools&includeHidden=true",
     ]);
   });
 
@@ -152,6 +168,23 @@ describe("custom tools console client", () => {
     expect(notice.message).toBe("Published 3 tools.");
     expect(notice.added).toEqual(["extra-tool"]);
     expect(notice.sourceRef).toBe("def456abc123");
+  });
+
+  it("models the directory browser rows", () => {
+    expect(
+      directoryBrowserRows({
+        path: "/Users/ada/tools",
+        parent: "/Users/ada",
+        dirs: [
+          { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
+          { name: "linked", path: "/Users/ada/tools/linked", isSymlink: true },
+        ],
+      }),
+    ).toEqual([
+      { kind: "parent", name: "..", path: "/Users/ada" },
+      { kind: "dir", name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
+      { kind: "dir", name: "linked", path: "/Users/ada/tools/linked", isSymlink: true },
+    ]);
   });
 
   it("formats failed sync diagnostics by stage", () => {

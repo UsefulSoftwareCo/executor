@@ -67,9 +67,25 @@ const SyncSourceResponse = Schema.Struct({
   errors: Schema.optional(Schema.Array(SyncDiagnostic)),
 });
 
+const ListDirsQuery = Schema.Struct({
+  path: Schema.optional(Schema.String),
+  includeHidden: Schema.optional(Schema.String),
+});
+const ListDirsResponse = Schema.Struct({
+  path: Schema.String,
+  parent: Schema.NullOr(Schema.String),
+  dirs: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      path: Schema.String,
+      isSymlink: Schema.Boolean,
+    }),
+  ),
+});
+
 const DomainErrors = [InternalError] as const;
 
-export const AppsGroup = HttpApiGroup.make("apps")
+export const AppsBaseGroup = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.get("listSources", "/apps/sources", {
       success: SourcesResponse,
@@ -104,3 +120,18 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: DomainErrors,
     }),
   );
+
+export const AppsGroup = AppsBaseGroup.add(
+  // Local-directory browsing names directories on the host running Executor.
+  // It is only safe for the local single-user host, and the plugin sourceKinds
+  // gate keeps shared selfhost and cloud deployments from registering it.
+  HttpApiEndpoint.get("listDirs", "/apps/fs/dirs", {
+    query: ListDirsQuery,
+    success: ListDirsResponse,
+    error: DomainErrors,
+  }),
+);
+
+export const appsGroupForSourceKinds = (
+  sourceKinds: readonly ("git" | "local-directory")[] | undefined,
+) => ((sourceKinds?.includes("local-directory") ?? true) ? AppsGroup : AppsBaseGroup);

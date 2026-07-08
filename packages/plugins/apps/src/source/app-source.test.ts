@@ -1,7 +1,7 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: tests use fixture server cleanup and hard-fail setup errors */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
@@ -14,7 +14,7 @@ import { parsePack, walkTree } from "../git-client/packfile";
 import { authForHost, checkRefs, uploadPack } from "../git-client/transport";
 import { PUBLISH_LIMITS } from "../pipeline/publish";
 import { checkGitAppSourceRefs, fetchGitAppSource, parseGitSourceUrl } from "./git-source";
-import { fetchLocalDirectoryAppSource } from "./local-directory-source";
+import { fetchLocalDirectoryAppSource, listLocalDirectoryDirs } from "./local-directory-source";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 const textDecoder = new TextDecoder();
@@ -465,6 +465,49 @@ describe("local-directory app sources", () => {
     );
     expect(Exit.isFailure(relative)).toBe(true);
     expect(Exit.isFailure(parent)).toBe(true);
+  });
+
+  it("lists home by default and immediate subdirectories only", async () => {
+    const result = await run(listLocalDirectoryDirs({}));
+    expect(result.path).toBe(homedir());
+    expect(result.dirs.every((entry) => entry.path.startsWith(result.path))).toBe(true);
+  });
+
+  it("lists subdirectories, filters dotdirs, and can include hidden dirs", async () => {
+    const root = await mkdtemp();
+    await mkdir(join(root, "alpha"));
+    await mkdir(join(root, ".hidden"));
+    await writeFile(join(root, "file.txt"), "not a directory");
+
+    const visible = await run(listLocalDirectoryDirs({ path: root }));
+    const hidden = await run(listLocalDirectoryDirs({ path: root, includeHidden: true }));
+
+    expect(visible.dirs.map((entry) => entry.name)).toEqual(["alpha"]);
+    expect(hidden.dirs.map((entry) => entry.name)).toEqual([".hidden", "alpha"]);
+  });
+
+  it("rejects parent traversal in directory listings", async () => {
+    const exit = await Effect.runPromiseExit(listLocalDirectoryDirs({ path: "/tmp/../bad" }));
+    expect(Exit.isFailure(exit)).toBe(true);
+  });
+
+  it("marks symlinked directories and does not descend through them", async () => {
+    const root = await mkdtemp();
+    const target = await mkdtemp();
+    await mkdir(join(target, "nested"));
+    await symlink(target, join(root, "linked"));
+
+    const listed = await run(listLocalDirectoryDirs({ path: root }));
+    expect(listed.dirs).toContainEqual({
+      name: "linked",
+      path: join(root, "linked"),
+      isSymlink: true,
+    });
+
+    const followed = await Effect.runPromiseExit(
+      listLocalDirectoryDirs({ path: join(root, "linked") }),
+    );
+    expect(Exit.isFailure(followed)).toBe(true);
   });
 
   it("does not read symlinks that escape the source root", async () => {

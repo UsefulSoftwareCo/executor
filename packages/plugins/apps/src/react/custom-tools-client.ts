@@ -92,6 +92,18 @@ export type SyncSourceResult =
 
 export type CustomToolsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export interface CustomToolsDirectoryEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly isSymlink: boolean;
+}
+
+export interface CustomToolsDirectoryListing {
+  readonly path: string;
+  readonly parent: string | null;
+  readonly dirs: readonly CustomToolsDirectoryEntry[];
+}
+
 export class CustomToolsClientError extends Data.TaggedError("CustomToolsClientError")<{
   readonly message: string;
 }> {}
@@ -238,6 +250,28 @@ export const createCustomToolSourceEffect = (
       parseJsonResponseEffect<CreateSourceResponse>(
         response,
         "Failed to create custom tools source.",
+      ),
+    ),
+  );
+
+export const listCustomToolDirectoriesEffect = (
+  input: { readonly path?: string; readonly includeHidden?: boolean } = {},
+  fetchImpl: CustomToolsFetch = fetch,
+): Effect.Effect<CustomToolsDirectoryListing, CustomToolsClientError> =>
+  Effect.tryPromise({
+    try: () => {
+      const query = new URLSearchParams();
+      if (input.path) query.set("path", input.path);
+      if (input.includeHidden) query.set("includeHidden", "true");
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      return fetchImpl(`/api/apps/fs/dirs${suffix}`, { credentials: "same-origin" });
+    },
+    catch: () => new CustomToolsClientError({ message: "Failed to browse directories." }),
+  }).pipe(
+    Effect.flatMap((response) =>
+      parseJsonResponseEffect<CustomToolsDirectoryListing>(
+        response,
+        "Failed to browse directories.",
       ),
     ),
   );

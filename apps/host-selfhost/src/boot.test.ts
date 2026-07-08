@@ -112,6 +112,9 @@ test("selfhost rejects local-directory app sources over HTTP", async () => {
     }),
   );
   expect(created.status).toBe(500);
+
+  const dirs = await handler(new Request("http://localhost/api/apps/fs/dirs"));
+  expect(dirs.status).toBe(404);
 });
 
 test("apps source sync publishes and invokes a local-directory tool over HTTP", async () => {

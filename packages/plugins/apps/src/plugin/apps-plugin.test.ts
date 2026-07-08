@@ -407,6 +407,17 @@ describe("apps source sync", () => {
     }),
   );
 
+  it.effect("rejects directory listing when local-directory sources are disabled", () =>
+    Effect.gen(function* () {
+      const plugin = makeAppsPlugin({ sourceKinds: ["git"] });
+      const extension = plugin.extension!({
+        storage: makeSyncStore(),
+      } as never);
+      const exit = yield* Effect.exit(extension.listDirs({ path: "/tmp" }));
+      expect(Exit.isFailure(exit)).toBe(true);
+    }),
+  );
+
   it.effect("syncs git sources, no-ops unchanged refs, and republishes changed refs", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(() => fixtureFetch());

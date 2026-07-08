@@ -1,8 +1,9 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor, executor/no-instanceof-tagged-error -- boundary: filesystem path validation and fs errors normalize to AppSourceError */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -23,10 +24,27 @@ export interface LocalDirectoryAppSourceSnapshot extends AppSourceSnapshot {
   readonly skipped: readonly SourceSkippedFile[];
 }
 
+export interface LocalDirectoryDirsInput {
+  readonly path?: string;
+  readonly includeHidden?: boolean;
+}
+
+export interface LocalDirectoryDirEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly isSymlink: boolean;
+}
+
+export interface LocalDirectoryDirsResult {
+  readonly path: string;
+  readonly parent: string | null;
+  readonly dirs: readonly LocalDirectoryDirEntry[];
+}
+
 const sha256 = (bytes: Uint8Array | string): string =>
   createHash("sha256").update(bytes).digest("hex");
 
-const validateRoot = (path: string): Effect.Effect<string, AppSourceError> =>
+export const validateLocalDirectoryPath = (path: string): Effect.Effect<string, AppSourceError> =>
   Effect.try({
     try: () => {
       if (!isAbsolute(path)) {
@@ -179,7 +197,7 @@ export const fetchLocalDirectoryAppSource = (
   input: LocalDirectoryAppSourceInput,
 ): Effect.Effect<LocalDirectoryAppSourceSnapshot, AppSourceError | PublishError> =>
   Effect.gen(function* () {
-    const root = yield* validateRoot(input.path);
+    const root = yield* validateLocalDirectoryPath(input.path);
     const rootReal = yield* Effect.tryPromise({
       try: () => realpath(root),
       catch: (cause) =>
@@ -196,6 +214,58 @@ export const fetchLocalDirectoryAppSource = (
       sourceRef: sourceRefFor(collected.files),
       description: yield* descriptionFor(collected.files),
       skipped: collected.skipped,
+    };
+  });
+
+export const listLocalDirectoryDirs = (
+  input: LocalDirectoryDirsInput,
+): Effect.Effect<LocalDirectoryDirsResult, AppSourceError> =>
+  Effect.gen(function* () {
+    const root = yield* validateLocalDirectoryPath(input.path?.trim() || homedir());
+    const rootStat = yield* Effect.tryPromise({
+      try: () => lstat(root),
+      catch: (cause) =>
+        new AppSourceError({
+          message: "failed to read local-directory source",
+          path: root,
+          cause,
+        }),
+    });
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return yield* new AppSourceError({
+        message: "local-directory source path must be a directory",
+        path: root,
+      });
+    }
+    const entries = yield* Effect.tryPromise({
+      try: () => readdir(root),
+      catch: (cause) =>
+        new AppSourceError({
+          message: "failed to read local-directory source",
+          path: root,
+          cause,
+        }),
+    });
+    const dirs: LocalDirectoryDirEntry[] = [];
+    for (const name of entries) {
+      if (!input.includeHidden && name.startsWith(".")) continue;
+      const child = `${root}${sep}${name}`;
+      const entryStat = yield* Effect.promise(() => lstat(child).catch(() => null));
+      if (!entryStat) continue;
+      if (entryStat.isDirectory()) {
+        dirs.push({ name, path: child, isSymlink: false });
+        continue;
+      }
+      if (!entryStat.isSymbolicLink()) continue;
+      const targetStat = yield* Effect.promise(() => stat(child).catch(() => null));
+      if (targetStat?.isDirectory()) dirs.push({ name, path: child, isSymlink: true });
+    }
+    dirs.sort((a, b) => a.name.localeCompare(b.name));
+    const parent = dirname(root);
+    return {
+      path: root,
+      parent: parent === root ? null : parent,
+      dirs,
     };
   });
 
