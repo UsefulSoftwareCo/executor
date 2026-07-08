@@ -29,6 +29,7 @@ import type {
 } from "./connection";
 import { HealthCheckResult, HealthCheckSpec } from "./health-check";
 import type { HealthCheckCandidate } from "./health-check";
+import { ToolsSyncError } from "./tools-sync";
 import {
   coreSchema,
   isToolPolicyAction,
@@ -546,6 +547,7 @@ const rowToIntegrationRecord = (
 });
 
 const decodeLastHealth = Schema.decodeUnknownOption(HealthCheckResult);
+const decodeToolsSyncError = Schema.decodeUnknownOption(ToolsSyncError);
 const decodeHealthCheckSpec = Schema.decodeUnknownOption(HealthCheckSpec);
 
 const rowToConnection = (row: ConnectionRow): Connection => {
@@ -567,6 +569,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
       row.oauth_client_owner == null ? null : (String(row.oauth_client_owner) as Owner),
     oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
     lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
+    toolsSyncError: Option.getOrNull(decodeToolsSyncError(row.tools_sync_error)),
   };
 };
 
@@ -2002,16 +2005,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
-    const toolSyncHealthDetailPrefix = "Tool sync failing";
-
-    const toolSyncHealth = (reason: string): HealthCheckResult => ({
-      status: "degraded",
-      checkedAt: Date.now(),
-      detail: `${toolSyncHealthDetailPrefix}: ${reason}`,
-    });
-
-    const syncHealthReason = (result: ResolveToolsResult): string =>
+    const syncErrorReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
+
+    /** The next `tools_sync_error` value after one more failed sync: first
+     *  failure starts the streak, subsequent ones extend it. The count is what
+     *  lets display debounce a single transient blip while a genuine outage
+     *  (several consecutive failures) still surfaces. */
+    const nextToolsSyncError = (row: ConnectionRow | null, reason: string): ToolsSyncError => {
+      const prior = row ? Option.getOrNull(decodeToolsSyncError(row.tools_sync_error)) : null;
+      return { at: Date.now(), failures: (prior?.failures ?? 0) + 1, reason };
+    };
 
     const produceConnectionTools = (
       integrationRow: IntegrationRow,
@@ -2037,30 +2041,26 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("name", "=", String(ref.name)),
           );
-        const isToolSyncHealth = (health: HealthCheckResult | null): boolean =>
-          health?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
-        const syncedSet = (row: ConnectionRow | null) => {
-          const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
-          return isToolSyncHealth(health)
-            ? { tools_synced_at: Date.now(), last_health: null, updated_at: new Date() }
-            : { tools_synced_at: Date.now() };
-        };
         // Every exit stamps the sync time — including the cleanup paths that
         // produce zero tools — so the stale-catalog check (`config_revised_at`
         // vs `tools_synced_at`) doesn't re-attempt this connection per read.
-        // Successful syncs also clear stale sync-failure health records, while
-        // preserving genuine health-check outcomes.
+        // A successful (authoritative) sync also ends any failure streak.
+        // `last_health` is NEVER written here: catalog sync and credential
+        // health are separate signals with separate columns.
         const stampSynced = (row: ConnectionRow | null) =>
           core.updateMany("connection", {
             where: connectionWhere,
-            set: syncedSet(row),
+            set:
+              row != null && row.tools_sync_error != null
+                ? { tools_synced_at: Date.now(), tools_sync_error: null, updated_at: new Date() }
+                : { tools_synced_at: Date.now() },
           });
-        const stampSyncedWithHealth = (reason: string) =>
+        const stampSyncedWithError = (row: ConnectionRow | null, reason: string) =>
           core.updateMany("connection", {
             where: connectionWhere,
             set: {
               tools_synced_at: Date.now(),
-              last_health: toolSyncHealth(reason),
+              tools_sync_error: nextToolsSyncError(row, reason),
               updated_at: new Date(),
             },
           });
@@ -2124,9 +2124,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // Keep the existing catalog — replacing it would wipe working tools
           // over a transient outage — and stamp the sync time anyway so a down
           // server isn't re-dialed on every read; the freshness TTL re-attempts
-          // later.
-          const reason = syncHealthReason(result);
-          yield* stampSyncedWithHealth(reason);
+          // later. The failure is recorded on `tools_sync_error` (extending
+          // the consecutive-failure streak), NOT as a health verdict.
+          const reason = syncErrorReason(result);
+          yield* stampSyncedWithError(existingRow, reason);
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
             integration: String(ref.integration),
@@ -2141,7 +2142,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (keptRows.length > 0) {
             const reason =
               "background tool sync produced an authoritative empty catalog for a connection with existing tools";
-            yield* stampSyncedWithHealth(reason);
+            yield* stampSyncedWithError(existingRow, reason);
             yield* Effect.logWarning("executor tool sync preserved nonzero catalog", {
               reason,
               integration: String(ref.integration),

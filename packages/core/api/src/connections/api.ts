@@ -26,6 +26,7 @@ import {
   Owner,
   ProviderItemId,
   ProviderKey,
+  ToolsSyncError,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,9 @@ const ConnectionResponse = Schema.Struct({
   // Last persisted health-check verdict (written by every checkHealth run),
   // so the list can show alive/expired at a glance without probing.
   lastHealth: Schema.NullOr(HealthCheckResult),
+  // Catalog-sync trouble (consecutive failed syncs + reason), independent of
+  // credential health. Null when the last sync was authoritative.
+  toolsSyncError: Schema.NullOr(ToolsSyncError),
 });
 
 const ToolResponse = Schema.Struct({

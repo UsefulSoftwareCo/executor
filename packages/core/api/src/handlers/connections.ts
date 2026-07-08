@@ -29,6 +29,7 @@ const toResponse = (c: Connection) => ({
   oauthClientOwner: c.oauthClientOwner ?? null,
   oauthScope: c.oauthScope ?? null,
   lastHealth: c.lastHealth ?? null,
+  toolsSyncError: c.toolsSyncError ?? null,
 });
 
 const toolToResponse = (t: Tool) => ({

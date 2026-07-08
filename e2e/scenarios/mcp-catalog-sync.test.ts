@@ -491,6 +491,26 @@ scenario(
           "beta",
         ]);
 
+        // The failed sync is recorded as CATALOG trouble on the connection —
+        // a consecutive-failure record with the plugin's reason — and stays
+        // out of `lastHealth`: a down server says nothing about the credential.
+        const findRow = Effect.map(client.connections.list({ query: {} }), (rows) =>
+          rows.find((c) => String(c.integration) === String(slug) && String(c.name) === "main"),
+        );
+        const duringOutage = yield* findRow;
+        expect(
+          duringOutage?.toolsSyncError?.failures,
+          "the failed sync starts a failure streak",
+        ).toBe(1);
+        expect(
+          duringOutage?.toolsSyncError?.reason,
+          "the sync-error record carries the plugin's reason",
+        ).toContain("MCP");
+        expect(
+          duringOutage?.lastHealth ?? null,
+          "a sync failure never forges a health verdict",
+        ).toBeNull();
+
         // The server comes back CHANGED (beta retired, delta added). A
         // refresh now converges to the live catalog.
         fixture.setDead(false);
@@ -503,6 +523,13 @@ scenario(
           "refresh after recovery serves the server's new catalog",
         ).toEqual(["alpha", "delta"]);
         expect(yield* toolNames, "the read surface follows").toEqual(["alpha", "delta"]);
+
+        // Recovery clears the streak: the sync-error record is gone.
+        const afterRecovery = yield* findRow;
+        expect(
+          afterRecovery?.toolsSyncError ?? null,
+          "a successful sync clears the failure record",
+        ).toBeNull();
       }).pipe(
         Effect.ensuring(
           Effect.gen(function* () {
