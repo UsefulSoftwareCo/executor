@@ -1,4 +1,6 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: pure packfile parser throws are caught by git-source and converted to AppSourceError */
+import { PUBLISH_LIMITS } from "../pipeline/publish";
+
 // Packfile parser: header, object headers, zlib inflate, delta resolution, then
 // commit-to-tree-to-blob walking. Pure Web APIs.
 
@@ -17,6 +19,54 @@ export interface GitObject {
   type: number; // resolved base type (1..4)
   data: Uint8Array;
 }
+
+export interface ParsePackLimits {
+  readonly maxObjectBytes: number;
+  readonly maxDeltaResultBytes: number;
+  readonly maxExpandedBytes: number;
+}
+
+export interface ParsePackOptions {
+  readonly limits?: Partial<ParsePackLimits>;
+}
+
+const DEFAULT_LIMITS: ParsePackLimits = {
+  maxObjectBytes: PUBLISH_LIMITS.maxFileBytes,
+  maxDeltaResultBytes: PUBLISH_LIMITS.maxFileBytes,
+  maxExpandedBytes: PUBLISH_LIMITS.maxTotalBytes,
+};
+
+const limitsFor = (options?: ParsePackOptions): ParsePackLimits => ({
+  ...DEFAULT_LIMITS,
+  ...(options?.limits ?? {}),
+});
+
+const repositoryTooLarge = (message: string): Error =>
+  new Error(`repository too large: ${message}`);
+
+class PackParseError extends Error {
+  constructor(message: string) {
+    super(`pack parse error: ${message}`);
+  }
+}
+
+const requireAvailable = (buf: Uint8Array, pos: number, length: number, what: string): void => {
+  if (pos < 0 || length < 0 || pos + length > buf.length) {
+    throw new PackParseError(`truncated ${what}`);
+  }
+};
+
+const checkedAdd = (a: number, b: number, what: string): number => {
+  const value = a + b;
+  if (!Number.isSafeInteger(value)) throw new PackParseError(`${what} exceeds safe integer range`);
+  return value;
+};
+
+const checkedMul = (a: number, b: number, what: string): number => {
+  const value = a * b;
+  if (!Number.isSafeInteger(value)) throw new PackParseError(`${what} exceeds safe integer range`);
+  return value;
+};
 
 // sha1 over "type len\0data" to compute object id, needed to key REF_DELTA bases.
 // Minimal sha1 (needed because Workers crypto.subtle is async; git object ids are sha1).
@@ -61,6 +111,7 @@ class BitReader {
   }
   bit(): number {
     if (this.bitCnt === 0) {
+      requireAvailable(this.buf, this.pos, 1, "deflate stream");
       this.bitBuf = this.buf[this.pos++];
       this.bitCnt = 8;
     }
@@ -106,7 +157,7 @@ function decodeSym(br: BitReader, h: Huff): number {
     first <<= 1;
     code <<= 1;
   }
-  throw new Error("bad huffman code");
+  throw new PackParseError("bad huffman code");
 }
 const LEN_BASE = [
   3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
@@ -125,7 +176,18 @@ const DIST_EXTRA = [
 const CLEN_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
 // Inflate raw DEFLATE at buf[pos..], return {out, endPos}
-function inflateRaw(buf: Uint8Array, pos: number): { out: Uint8Array; endPos: number } {
+function pushInflated(out: number[], byte: number, maxObjectBytes: number): void {
+  if (out.length + 1 > maxObjectBytes) {
+    throw repositoryTooLarge(`inflated object exceeds ${maxObjectBytes} bytes`);
+  }
+  out.push(byte);
+}
+
+function inflateRaw(
+  buf: Uint8Array,
+  pos: number,
+  limits: Pick<ParsePackLimits, "maxObjectBytes"> = DEFAULT_LIMITS,
+): { out: Uint8Array; endPos: number } {
   const br = new BitReader(buf, pos);
   const out: number[] = [];
   let final = 0;
@@ -134,9 +196,15 @@ function inflateRaw(buf: Uint8Array, pos: number): { out: Uint8Array; endPos: nu
     const type = br.bits(2);
     if (type === 0) {
       br.align();
+      requireAvailable(buf, br.pos, 4, "stored deflate block header");
       const len = buf[br.pos] | (buf[br.pos + 1] << 8);
+      const nlen = buf[br.pos + 2] | (buf[br.pos + 3] << 8);
+      if (((len ^ 0xffff) & 0xffff) !== nlen) {
+        throw new PackParseError("bad stored deflate length");
+      }
       br.pos += 4; // len + nlen
-      for (let i = 0; i < len; i++) out.push(buf[br.pos++]);
+      requireAvailable(buf, br.pos, len, "stored deflate block");
+      for (let i = 0; i < len; i++) pushInflated(out, buf[br.pos++]!, limits.maxObjectBytes);
     } else {
       let litH: Huff, distH: Huff;
       if (type === 1) {
@@ -176,13 +244,18 @@ function inflateRaw(buf: Uint8Array, pos: number): { out: Uint8Array; endPos: nu
       while (true) {
         const sym = decodeSym(br, litH);
         if (sym === 256) break;
-        if (sym < 256) out.push(sym);
+        if (sym < 256) pushInflated(out, sym, limits.maxObjectBytes);
         else {
+          if (sym < 257 || sym > 285) throw new PackParseError(`bad length symbol: ${sym}`);
           const l = LEN_BASE[sym - 257] + br.bits(LEN_EXTRA[sym - 257]);
           const dsym = decodeSym(br, distH);
+          if (dsym < 0 || dsym >= DIST_BASE.length) {
+            throw new PackParseError(`bad distance symbol: ${dsym}`);
+          }
           const dist = DIST_BASE[dsym] + br.bits(DIST_EXTRA[dsym]);
           const start = out.length - dist;
-          for (let i = 0; i < l; i++) out.push(out[start + i]);
+          if (start < 0) throw new PackParseError("deflate distance exceeds output size");
+          for (let i = 0; i < l; i++) pushInflated(out, out[start + i]!, limits.maxObjectBytes);
         }
       }
     }
@@ -191,11 +264,34 @@ function inflateRaw(buf: Uint8Array, pos: number): { out: Uint8Array; endPos: nu
   return { out: Uint8Array.from(out), endPos: br.pos };
 }
 
+function adler32(bytes: Uint8Array): number {
+  let a = 1;
+  let b = 0;
+  for (const byte of bytes) {
+    a = (a + byte) % 65521;
+    b = (b + a) % 65521;
+  }
+  return (b * 65536 + a) >>> 0;
+}
+
 // zlib wrapper: 2-byte header, deflate, 4-byte adler32. Return inflated + end offset.
-function inflateZlib(buf: Uint8Array, pos: number): { out: Uint8Array; endPos: number } {
-  // skip 2-byte zlib header
-  const r = inflateRaw(buf, pos + 2);
-  return { out: r.out, endPos: r.endPos + 4 }; // + adler32
+function inflateZlib(
+  buf: Uint8Array,
+  pos: number,
+  limits: Pick<ParsePackLimits, "maxObjectBytes"> = DEFAULT_LIMITS,
+): { out: Uint8Array; endPos: number } {
+  requireAvailable(buf, pos, 2, "zlib header");
+  const cmf = buf[pos]!;
+  const flg = buf[pos + 1]!;
+  if ((cmf & 0x0f) !== 8) throw new PackParseError("unsupported zlib compression method");
+  if ((cmf * 256 + flg) % 31 !== 0) throw new PackParseError("bad zlib header checksum");
+  if ((flg & 0x20) !== 0) throw new PackParseError("zlib preset dictionaries are not supported");
+  const r = inflateRaw(buf, pos + 2, limits);
+  requireAvailable(buf, r.endPos, 4, "zlib adler32 trailer");
+  const expected = new DataView(buf.buffer, buf.byteOffset + r.endPos, 4).getUint32(0);
+  const actual = adler32(r.out);
+  if (expected !== actual) throw new PackParseError("bad zlib adler32");
+  return { out: r.out, endPos: r.endPos + 4 };
 }
 
 // --- Packfile top-level parse ---
@@ -210,39 +306,61 @@ interface RawObj {
 }
 
 function readVarintSize(buf: Uint8Array, pos: number): { type: number; size: number; pos: number } {
+  requireAvailable(buf, pos, 1, "object header");
   let c = buf[pos++];
   const type = (c >> 4) & 7;
   let size = c & 15;
-  let shift = 4;
+  let multiplier = 16;
+  let bytes = 1;
   while (c & 0x80) {
+    if (bytes >= 7) throw new PackParseError("object size varint is too long");
+    requireAvailable(buf, pos, 1, "object size varint");
     c = buf[pos++];
-    size |= (c & 0x7f) << shift;
-    shift += 7;
+    size = checkedAdd(size, checkedMul(c & 0x7f, multiplier, "object size"), "object size");
+    multiplier = checkedMul(multiplier, 128, "object size multiplier");
+    bytes += 1;
   }
   return { type, size, pos };
 }
 
-function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
+function readDeltaVarint(
+  delta: Uint8Array,
+  pos: number,
+  label: string,
+): { value: number; pos: number } {
+  requireAvailable(delta, pos, 1, label);
+  let c = delta[pos++]!;
+  let value = c & 0x7f;
+  let multiplier = 128;
+  let bytes = 1;
+  while (c & 0x80) {
+    if (bytes >= 7) throw new PackParseError(`${label} varint is too long`);
+    requireAvailable(delta, pos, 1, label);
+    c = delta[pos++]!;
+    value = checkedAdd(value, checkedMul(c & 0x7f, multiplier, label), label);
+    multiplier = checkedMul(multiplier, 128, `${label} multiplier`);
+    bytes += 1;
+  }
+  return { value, pos };
+}
+
+function applyDelta(
+  base: Uint8Array,
+  delta: Uint8Array,
+  limits: Pick<ParsePackLimits, "maxDeltaResultBytes"> = DEFAULT_LIMITS,
+): Uint8Array {
   let p = 0;
-  // base size (varint)
-  let c = delta[p++];
-  let baseSize = c & 0x7f;
-  let shift = 7;
-  while (c & 0x80) {
-    c = delta[p++];
-    baseSize |= (c & 0x7f) << shift;
-    shift += 7;
+  const baseSize = readDeltaVarint(delta, p, "delta base size");
+  p = baseSize.pos;
+  if (baseSize.value !== base.length) {
+    throw new PackParseError("delta base size does not match base object");
   }
-  // result size (varint)
-  c = delta[p++];
-  let resSize = c & 0x7f;
-  shift = 7;
-  while (c & 0x80) {
-    c = delta[p++];
-    resSize |= (c & 0x7f) << shift;
-    shift += 7;
+  const resSize = readDeltaVarint(delta, p, "delta result size");
+  p = resSize.pos;
+  if (resSize.value > limits.maxDeltaResultBytes) {
+    throw repositoryTooLarge(`delta result exceeds ${limits.maxDeltaResultBytes} bytes`);
   }
-  const out = new Uint8Array(resSize);
+  const out = new Uint8Array(resSize.value);
   let o = 0;
   while (p < delta.length) {
     const op = delta[p++];
@@ -250,25 +368,51 @@ function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
       // copy from base
       let cpOff = 0,
         cpLen = 0;
-      if (op & 0x01) cpOff = delta[p++];
-      if (op & 0x02) cpOff |= delta[p++] << 8;
-      if (op & 0x04) cpOff |= delta[p++] << 16;
-      if (op & 0x08) cpOff |= delta[p++] << 24;
-      if (op & 0x10) cpLen = delta[p++];
-      if (op & 0x20) cpLen |= delta[p++] << 8;
-      if (op & 0x40) cpLen |= delta[p++] << 16;
+      if (op & 0x01) {
+        requireAvailable(delta, p, 1, "delta copy offset");
+        cpOff += delta[p++]!;
+      }
+      if (op & 0x02) {
+        requireAvailable(delta, p, 1, "delta copy offset");
+        cpOff += delta[p++]! * 256;
+      }
+      if (op & 0x04) {
+        requireAvailable(delta, p, 1, "delta copy offset");
+        cpOff += delta[p++]! * 65536;
+      }
+      if (op & 0x08) {
+        requireAvailable(delta, p, 1, "delta copy offset");
+        cpOff += delta[p++]! * 16777216;
+      }
+      if (op & 0x10) {
+        requireAvailable(delta, p, 1, "delta copy length");
+        cpLen += delta[p++]!;
+      }
+      if (op & 0x20) {
+        requireAvailable(delta, p, 1, "delta copy length");
+        cpLen += delta[p++]! * 256;
+      }
+      if (op & 0x40) {
+        requireAvailable(delta, p, 1, "delta copy length");
+        cpLen += delta[p++]! * 65536;
+      }
       if (cpLen === 0) cpLen = 0x10000;
+      requireAvailable(base, cpOff, cpLen, "delta copy source");
+      requireAvailable(out, o, cpLen, "delta copy target");
       out.set(base.subarray(cpOff, cpOff + cpLen), o);
       o += cpLen;
     } else if (op) {
       // insert `op` literal bytes
+      requireAvailable(delta, p, op, "delta insert");
+      requireAvailable(out, o, op, "delta insert target");
       out.set(delta.subarray(p, p + op), o);
       o += op;
       p += op;
     } else {
-      throw new Error("bad delta opcode 0");
+      throw new PackParseError("bad delta opcode 0");
     }
   }
+  if (o !== out.length) throw new PackParseError("delta result length does not match header");
   return out;
 }
 
@@ -279,42 +423,78 @@ export interface ParsedPack {
 }
 
 // Parse a full packfile and resolve all deltas. Returns objects keyed by sha.
-export async function parsePack(pack: Uint8Array): Promise<ParsedPack> {
-  if (td.decode(pack.subarray(0, 4)) !== "PACK") throw new Error("not a packfile");
+export async function parsePack(pack: Uint8Array, options?: ParsePackOptions): Promise<ParsedPack> {
+  const limits = limitsFor(options);
+  requireAvailable(pack, 0, 12, "pack header");
+  if (td.decode(pack.subarray(0, 4)) !== "PACK") throw new PackParseError("not a packfile");
   const version = new DataView(pack.buffer, pack.byteOffset + 4, 4).getUint32(0);
+  if (version !== 2 && version !== 3) {
+    throw new PackParseError(`unsupported pack version: ${version}`);
+  }
   const count = new DataView(pack.buffer, pack.byteOffset + 8, 4).getUint32(0);
   let pos = 12;
+  let expandedBytes = 0;
+
+  const accountExpanded = (size: number): void => {
+    expandedBytes = checkedAdd(expandedBytes, size, "expanded pack size");
+    if (expandedBytes > limits.maxExpandedBytes) {
+      throw repositoryTooLarge(`expanded objects exceed ${limits.maxExpandedBytes} bytes`);
+    }
+  };
 
   const raws: RawObj[] = [];
   for (let i = 0; i < count; i++) {
     const start = pos;
-    const { type, pos: p1 } = readVarintSize(pack, pos);
+    const { type, size, pos: p1 } = readVarintSize(pack, pos);
+    if (size > limits.maxObjectBytes && type !== OBJ_OFS_DELTA && type !== OBJ_REF_DELTA) {
+      throw repositoryTooLarge(`object declares ${size} bytes`);
+    }
     pos = p1;
     if (type === OBJ_OFS_DELTA) {
       // negative offset varint
-      let c = pack[pos++];
+      requireAvailable(pack, pos, 1, "ofs-delta base offset");
+      let c = pack[pos++]!;
       let ofs = c & 0x7f;
+      let bytes = 1;
       while (c & 0x80) {
-        c = pack[pos++];
-        ofs = ((ofs + 1) << 7) | (c & 0x7f);
+        if (bytes >= 7) throw new PackParseError("ofs-delta offset varint is too long");
+        requireAvailable(pack, pos, 1, "ofs-delta base offset");
+        c = pack[pos++]!;
+        ofs = checkedAdd(
+          checkedMul(ofs + 1, 128, "ofs-delta offset"),
+          c & 0x7f,
+          "ofs-delta offset",
+        );
+        bytes += 1;
       }
       const baseOfs = start - ofs;
-      const inf = inflateZlib(pack, pos);
+      if (baseOfs < 12 || baseOfs >= start) {
+        throw new PackParseError("ofs-delta base offset is invalid");
+      }
+      const inf = inflateZlib(pack, pos, limits);
       pos = inf.endPos;
+      accountExpanded(inf.out.length);
       raws.push({ type, baseOfs, delta: inf.out, offset: start });
     } else if (type === OBJ_REF_DELTA) {
+      requireAvailable(pack, pos, 20, "ref-delta base sha");
       let hex = "";
       for (let j = 0; j < 20; j++) hex += pack[pos + j].toString(16).padStart(2, "0");
       pos += 20;
-      const inf = inflateZlib(pack, pos);
+      const inf = inflateZlib(pack, pos, limits);
       pos = inf.endPos;
+      accountExpanded(inf.out.length);
       raws.push({ type, baseRef: hex, delta: inf.out, offset: start });
     } else {
-      const inf = inflateZlib(pack, pos);
+      if (type < OBJ_COMMIT || type > OBJ_TAG) {
+        throw new PackParseError(`unsupported object type: ${type}`);
+      }
+      const inf = inflateZlib(pack, pos, limits);
       pos = inf.endPos;
+      accountExpanded(inf.out.length);
       raws.push({ type, data: inf.out, offset: start });
     }
   }
+  requireAvailable(pack, pos, 20, "pack trailer");
 
   // Resolve: first pass non-deltas, then iteratively resolve deltas.
   const byOffset = new Map<number, GitObject>();
@@ -347,7 +527,8 @@ export async function parsePack(pack: Uint8Array): Promise<ParsedPack> {
         still.push(r);
         continue;
       }
-      const resolved = applyDelta(base.data, r.delta!);
+      const resolved = applyDelta(base.data, r.delta!, limits);
+      accountExpanded(resolved.length);
       const obj: GitObject = { type: base.type, data: resolved };
       byOffset.set(r.offset, obj);
       const sha = await gitObjectId(base.type, resolved);
@@ -357,7 +538,7 @@ export async function parsePack(pack: Uint8Array): Promise<ParsedPack> {
     }
     remaining = still;
   }
-  if (remaining.length) throw new Error(`unresolved deltas: ${remaining.length}`);
+  if (remaining.length) throw new PackParseError(`unresolved deltas: ${remaining.length}`);
 
   return { objects, byOffset, count, version } as ParsedPack;
 }
@@ -373,7 +554,7 @@ export interface TreeFile {
 function parseCommit(data: Uint8Array): { tree: string } {
   const text = td.decode(data);
   const m = text.match(/^tree ([0-9a-f]{40})/m);
-  if (!m) throw new Error("commit has no tree");
+  if (!m) throw new PackParseError("commit has no tree");
   return { tree: m[1] };
 }
 
@@ -383,10 +564,13 @@ function parseTree(data: Uint8Array): { mode: string; name: string; sha: string 
   let p = 0;
   while (p < data.length) {
     let sp = p;
-    while (data[sp] !== 0x20) sp++;
+    while (sp < data.length && data[sp] !== 0x20) sp++;
+    if (sp >= data.length) throw new PackParseError("malformed tree entry mode");
     const mode = td.decode(data.subarray(p, sp));
     let nul = sp + 1;
-    while (data[nul] !== 0) nul++;
+    while (nul < data.length && data[nul] !== 0) nul++;
+    if (nul >= data.length) throw new PackParseError("malformed tree entry name");
+    requireAvailable(data, nul + 1, 20, "tree entry sha");
     const name = td.decode(data.subarray(sp + 1, nul));
     let sha = "";
     for (let i = 0; i < 20; i++) sha += data[nul + 1 + i].toString(16).padStart(2, "0");
@@ -399,12 +583,12 @@ function parseTree(data: Uint8Array): { mode: string; name: string; sha: string 
 // Walk from commit sha to a flat file list. Blobs must be present in pack.
 export function walkTree(parsed: ParsedPack, commitSha: string): TreeFile[] {
   const commit = parsed.objects.get(commitSha);
-  if (!commit) throw new Error(`commit ${commitSha} not in pack`);
+  if (!commit) throw new PackParseError(`commit ${commitSha} not in pack`);
   const { tree } = parseCommit(commit.data);
   const files: TreeFile[] = [];
   const recur = (treeSha: string, prefix: string) => {
     const t = parsed.objects.get(treeSha);
-    if (!t) throw new Error(`tree ${treeSha} not in pack`);
+    if (!t) throw new PackParseError(`tree ${treeSha} not in pack`);
     for (const e of parseTree(t.data)) {
       const full = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.mode === "40000" || e.mode === "040000") {
@@ -413,7 +597,7 @@ export function walkTree(parsed: ParsedPack, commitSha: string): TreeFile[] {
         // gitlink/submodule; skip
       } else {
         const blob = parsed.objects.get(e.sha);
-        if (!blob) throw new Error(`blob ${e.sha} (${full}) not in pack`);
+        if (!blob) throw new PackParseError(`blob ${e.sha} (${full}) not in pack`);
         files.push({ path: full, mode: e.mode, sha: e.sha, bytes: blob.data });
       }
     }

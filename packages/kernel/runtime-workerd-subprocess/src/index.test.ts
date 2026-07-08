@@ -1,4 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
@@ -40,7 +42,7 @@ const callTool = async (env, toolPath, args) => {
 
 export default {
   async fetch(request, env) {
-    if (request.url.endsWith("/__health")) return json({ ok: true });
+    if (request.url.endsWith("/__health")) return json({ ok: true, runnerToken: ${JSON.stringify(token)} });
     const input = await request.json();
     if (input.op === "echo") return json({ value: input.value });
     if (input.op === "tool") return json(await callTool(env, input.toolPath, input.args));
@@ -139,6 +141,20 @@ describe.skipIf(!isWorkerdAvailable())("runtime-workerd-subprocess", () => {
       const output = await runner.run<{ status: number; text: string }>({ op: "fetch" });
       expect(output.body.status).toBe(403);
       expect(output.body.text).toContain("Outbound fetch is blocked");
+    } finally {
+      await runner.dispose();
+    }
+  });
+
+  it("writes generated workerd files with private permissions", async () => {
+    const runner = makeRunner();
+    try {
+      await runner.ensureStarted();
+      const tmp = runner.tempDirForTest();
+      if (tmp === undefined) throw new Error("workerd temp dir was unavailable");
+      expect((await stat(tmp)).mode & 0o777).toBe(0o700);
+      expect((await stat(join(tmp, "driver.js"))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(tmp, "config.capnp"))).mode & 0o777).toBe(0o600);
     } finally {
       await runner.dispose();
     }

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { ToolResult } from "@executor-js/sdk";
 
 import { FLUSH, pktLine } from "../git-client/pktline";
@@ -247,6 +247,62 @@ describe("apps plugin schema projection", () => {
 });
 
 describe("apps source sync", () => {
+  it.effect("rejects credential-bearing git URLs before storing a source", () =>
+    Effect.gen(function* () {
+      const store = makeSyncStore();
+      const plugin = makeAppsPlugin({ allowPrivateGitHosts: true });
+      const extension = plugin.extension!({
+        storage: store,
+        providers: {
+          setDefault: () => Effect.succeed("default"),
+          get: () => Effect.succeed(null),
+          remove: () => Effect.void,
+        },
+      } as never);
+      const exit = yield* Effect.exit(
+        extension.createSource({
+          kind: "git",
+          slug: "bad",
+          app: "bad",
+          url: "https://x:secret@example.test/repo",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(store.sources.size).toBe(0);
+    }),
+  );
+
+  it.effect("redacts query strings from persisted source diagnostics", () =>
+    Effect.gen(function* () {
+      const store = makeSyncStore();
+      store.sources.set("bad", {
+        slug: "bad",
+        app: "bad",
+        kind: "git",
+        config: { kind: "git", url: "https://example.test/repo?token=secret" },
+        status: { type: "pending" },
+        updatedAt: 1,
+      });
+      const plugin = makeAppsPlugin({
+        executor: makeInProcessAppToolExecutor(),
+        allowPrivateGitHosts: true,
+      });
+      const extension = plugin.extension!({
+        storage: store,
+        providers: {
+          setDefault: () => Effect.succeed("default"),
+          get: () => Effect.succeed(null),
+          remove: () => Effect.void,
+        },
+      } as never);
+      const result = yield* extension.syncSource("bad");
+      expect(result.status).toBe("failed");
+      const status = store.sources.get("bad")?.status;
+      const diagnostic = status?.type === "failed" ? status.errors[0]?.diagnostics?.[0]?.path : "";
+      expect(diagnostic).toBe("https://example.test/repo");
+    }),
+  );
+
   it.effect("syncs git sources, no-ops unchanged refs, and republishes changed refs", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(() => fixtureFetch());

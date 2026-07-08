@@ -69,6 +69,7 @@ export type WorkerdModuleRunner = {
   readonly run: <T = unknown>(payload: unknown, timeoutMs?: number) => Promise<WorkerdRunResult<T>>;
   readonly dispose: () => Promise<void>;
   readonly crashForTest: () => void;
+  readonly tempDirForTest: () => string | undefined;
 };
 
 type PendingRequest = {
@@ -303,14 +304,24 @@ const startToolServer = async (
   return { server, port };
 };
 
-const waitReady = async (port: number, timeoutMs: number): Promise<void> => {
+const waitReady = async (port: number, token: string, timeoutMs: number): Promise<void> => {
   const startedAt = performance.now();
   let lastError: unknown;
   while (performance.now() - startedAt < timeoutMs) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/__health`, { method: "POST" });
-      if (response.ok) return;
-      lastError = new Error(`health check returned ${response.status}`);
+      const response = await fetch(`http://127.0.0.1:${port}/__health`, {
+        method: "POST",
+        headers: { "x-executor-token": token },
+      });
+      if (response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          readonly runnerToken?: unknown;
+        } | null;
+        if (body?.runnerToken === token) return;
+        lastError = new Error("health check did not echo the runner token");
+      } else {
+        lastError = new Error(`health check returned ${response.status}`);
+      }
     } catch (cause) {
       lastError = cause;
     }
@@ -376,14 +387,15 @@ export const createWorkerdModuleRunner = (
         tmpdir(),
         `executor-workerd-${process.pid}-${Date.now()}-${crypto.randomUUID()}`,
       );
-      await mkdir(tmp, { recursive: true });
+      await mkdir(tmp, { recursive: true, mode: 0o700 });
       for (const [name, source] of Object.entries(options.modules)) {
+        await mkdir(dirname(join(tmp, name)), { recursive: true, mode: 0o700 });
         if (typeof source === "string") {
-          await writeFile(join(tmp, name), source);
+          await writeFile(join(tmp, name), source, { mode: 0o600 });
         } else if (source.kind === "wasm") {
-          await writeFile(join(tmp, name), source.bytes);
+          await writeFile(join(tmp, name), source.bytes, { mode: 0o600 });
         } else {
-          await writeFile(join(tmp, name), source.source);
+          await writeFile(join(tmp, name), source.source, { mode: 0o600 });
         }
       }
 
@@ -402,6 +414,7 @@ export const createWorkerdModuleRunner = (
           unsafeEval: options.unsafeEval ?? false,
           globalOutbound: options.globalOutbound ?? "blocked",
         }),
+        { mode: 0o600 },
       );
       await reservation.close();
 
@@ -426,7 +439,7 @@ export const createWorkerdModuleRunner = (
       });
       processState = { proc, tmp, listenPort, hostServer: hostServer.server };
       try {
-        await waitReady(listenPort, startupTimeoutMs);
+        await waitReady(listenPort, token, startupTimeoutMs);
       } catch (cause) {
         await disposeState(true);
         throw cause;
@@ -492,6 +505,7 @@ export const createWorkerdModuleRunner = (
       const proc = processState?.proc;
       if (proc && !proc.killed) proc.kill("SIGKILL");
     },
+    tempDirForTest: () => processState?.tmp,
   };
 };
 
@@ -531,7 +545,7 @@ const makeToolsProxy = (env, path = []) => new Proxy(() => undefined, {
 
 export default {
   async fetch(request, env) {
-    if (request.url.endsWith("/__health")) return Response.json({ ok: true });
+    if (request.url.endsWith("/__health")) return Response.json({ ok: true, runnerToken: ${JSON.stringify(token)} });
     if (!request.url.endsWith("/run")) return new Response("Not Found", { status: 404 });
     logs.length = 0;
     try {

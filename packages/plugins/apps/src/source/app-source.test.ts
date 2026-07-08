@@ -3,19 +3,22 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit } from "effect";
 
 import { FLUSH, parseInfoRefs, pktLine, resolveWant } from "../git-client/pktline";
 import { handFetch } from "../git-client/hand";
-import { authForHost } from "../git-client/transport";
+import { parsePack, walkTree } from "../git-client/packfile";
+import { authForHost, uploadPack } from "../git-client/transport";
 import { PUBLISH_LIMITS } from "../pipeline/publish";
 import { checkGitAppSourceRefs, fetchGitAppSource, parseGitSourceUrl } from "./git-source";
 import { fetchLocalDirectoryAppSource } from "./local-directory-source";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 const concat = (parts: readonly Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -52,6 +55,59 @@ const advertisement = (sha: string): Uint8Array =>
     pktLine(`${sha} refs/tags/v1^{}\n`),
     FLUSH,
   ]);
+
+const gitObjectId = async (type: string, data: Uint8Array): Promise<string> => {
+  const header = textEncoder.encode(`${type} ${data.length}\0`);
+  const full = concat([header, data]);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", full as BufferSource));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const hexBytes = (hex: string): Uint8Array => {
+  const out = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < out.length; index += 1) {
+    out[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return out;
+};
+
+const packObjectHeader = (type: number, size: number): Uint8Array => {
+  const bytes: number[] = [];
+  let first = (type << 4) | (size & 0x0f);
+  size = Math.floor(size / 16);
+  if (size > 0) first |= 0x80;
+  bytes.push(first);
+  while (size > 0) {
+    let next = size & 0x7f;
+    size = Math.floor(size / 128);
+    if (size > 0) next |= 0x80;
+    bytes.push(next);
+  }
+  return Uint8Array.from(bytes);
+};
+
+const packFile = (objects: readonly Uint8Array[]): Uint8Array => {
+  const header = new Uint8Array(12);
+  header.set(textEncoder.encode("PACK"), 0);
+  const view = new DataView(header.buffer);
+  view.setUint32(4, 2);
+  view.setUint32(8, objects.length);
+  return concat([header, ...objects, new Uint8Array(20)]);
+};
+
+const packedObject = (type: number, data: Uint8Array): Uint8Array =>
+  concat([packObjectHeader(type, data.length), deflateSync(data)]);
+
+const deltaVarint = (value: number): Uint8Array => {
+  const bytes: number[] = [];
+  do {
+    let next = value & 0x7f;
+    value = Math.floor(value / 128);
+    if (value > 0) next |= 0x80;
+    bytes.push(next);
+  } while (value > 0);
+  return Uint8Array.from(bytes);
+};
 
 const readFixture = async () => {
   const dir = join(import.meta.dirname, "fixtures");
@@ -114,6 +170,14 @@ const liveOrSkip = async (url: string): Promise<boolean> => {
   }
 };
 
+type FetchHandler = (
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+) => ReturnType<typeof fetch>;
+
+const testFetch = (handler: FetchHandler): typeof fetch =>
+  Object.assign(handler, { preconnect: () => undefined }) as typeof fetch;
+
 describe("git app sources", () => {
   it("parses github and gitlab advertisements", () => {
     const github = parseInfoRefs(advertisement("1111111111111111111111111111111111111111"));
@@ -145,11 +209,30 @@ describe("git app sources", () => {
     expect(authForHost("codeberg.org", "t").authorization).toBe(`Basic ${btoa("git:t")}`);
   });
 
+  it("rejects truncated and malformed pkt-line responses", () => {
+    expect(() =>
+      parseInfoRefs(concat([pktLine("# service=git-upload-pack\n"), Uint8Array.from([48])])),
+    ).toThrow(/truncated pkt-line/);
+    expect(() => parseInfoRefs(textEncoder.encode("0002"))).toThrow(/bad pkt-line length/);
+  });
+
+  it("rejects truncated upload-pack side-band responses", async () => {
+    await expect(
+      uploadPack("https://example.test/repo", "1".repeat(40), {
+        fetchImpl: testFetch(async () => new Response(textEncoder.encode("0009\u0001PAC"))),
+      }),
+    ).rejects.toThrow(/truncated upload-pack response/);
+  });
+
   it.effect("rejects private git hosts under cloud posture", () =>
     Effect.gen(function* () {
       for (const url of [
         "https://localhost/repo.git",
         "https://127.0.0.1/repo.git",
+        "https://[::ffff:127.0.0.1]/repo.git",
+        "https://2130706433/repo.git",
+        "https://0177.0.0.1/repo.git",
+        "https://0x7f.0.0.1/repo.git",
         "https://10.1.2.3/repo.git",
         "https://169.254.1.1/repo.git",
       ]) {
@@ -159,6 +242,64 @@ describe("git app sources", () => {
       expect(yield* parseGitSourceUrl("https://gitlab.com/acme/tools.git")).toBeInstanceOf(URL);
     }),
   );
+
+  it("rejects redirects to private or non-https git hosts", async () => {
+    const exit = await Effect.runPromiseExit(
+      checkGitAppSourceRefs({
+        url: "https://example.test/repo",
+        fetch: testFetch(
+          async () =>
+            new Response(null, {
+              status: 302,
+              headers: { location: "http://127.0.0.1/repo.git/info/refs" },
+            }),
+        ),
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+  });
+
+  it("enforces pack expansion caps during parse and delta application", async () => {
+    await expect(
+      parsePack(packFile([packedObject(3, textEncoder.encode("tiny"))]), {
+        limits: { maxObjectBytes: 3 },
+      }),
+    ).rejects.toThrow(/repository too large/);
+
+    const base = textEncoder.encode("a");
+    const baseSha = await gitObjectId("blob", base);
+    const delta = concat([deltaVarint(base.length), deltaVarint(1024), Uint8Array.from([1, 120])]);
+    const refDelta = concat([
+      packObjectHeader(7, delta.length),
+      hexBytes(baseSha),
+      deflateSync(delta),
+    ]);
+    await expect(
+      parsePack(packFile([packedObject(3, base), refDelta]), {
+        limits: { maxDeltaResultBytes: 32 },
+      }),
+    ).rejects.toThrow(/repository too large/);
+  });
+
+  it("rejects truncated packs, oversized varints, and malformed trees", async () => {
+    await expect(parsePack(textEncoder.encode("PACK"))).rejects.toThrow(/pack parse error/);
+    await expect(
+      parsePack(
+        packFile([
+          Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0]),
+        ]),
+      ),
+    ).rejects.toThrow(/varint is too long/);
+
+    const malformedTree = textEncoder.encode("100644 missing-nul");
+    const treeSha = await gitObjectId("tree", malformedTree);
+    const commit = textEncoder.encode(`tree ${treeSha}\n\nbad tree\n`);
+    const commitSha = await gitObjectId("commit", commit);
+    const parsed = await parsePack(
+      packFile([packedObject(1, commit), packedObject(2, malformedTree)]),
+    );
+    expect(() => walkTree(parsed, commitSha)).toThrow(/malformed tree/);
+  });
 
   it("fetches a fixture git repo and avoids pack download when the sha is unchanged", async () => {
     const server = await fixtureServer();
@@ -290,6 +431,21 @@ describe("local-directory app sources", () => {
     );
     expect(Exit.isFailure(relative)).toBe(true);
     expect(Exit.isFailure(parent)).toBe(true);
+  });
+
+  it("does not read symlinks that escape the source root", async () => {
+    const root = await mkdtemp();
+    const outside = await mkdtemp();
+    await mkdir(join(root, "tools"));
+    await writeFile(join(outside, "secret.ts"), "export default 'secret';");
+    await symlink(join(outside, "secret.ts"), join(root, "tools", "secret.ts"));
+
+    const result = await run(fetchLocalDirectoryAppSource({ path: root }));
+    expect(result.files).toEqual([]);
+    expect(result.skipped).toContainEqual({
+      path: "tools/secret.ts",
+      reason: "unsupported file type",
+    });
   });
 });
 

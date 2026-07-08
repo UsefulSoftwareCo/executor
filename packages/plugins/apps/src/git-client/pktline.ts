@@ -24,7 +24,10 @@ export interface PktToken {
   data?: Uint8Array;
 }
 
-export function parsePktLines(buf: Uint8Array): { tokens: PktToken[]; consumed: number } {
+export function parsePktLines(
+  buf: Uint8Array,
+  options: { readonly requireComplete?: boolean } = {},
+): { tokens: PktToken[]; consumed: number } {
   const tokens: PktToken[] = [];
   let off = 0;
   while (off + 4 <= buf.length) {
@@ -41,10 +44,14 @@ export function parsePktLines(buf: Uint8Array): { tokens: PktToken[]; consumed: 
       off += 4;
       continue;
     }
+    if (len < 4) throw new Error(`bad pkt-line length: ${lenHex}`);
     if (off + len > buf.length) break; // incomplete; caller supplies more
     const data = buf.subarray(off + 4, off + len);
     tokens.push({ kind: "line", data });
     off += len;
+  }
+  if (options.requireComplete === true && off !== buf.length) {
+    throw new Error("truncated pkt-line response");
   }
   return { tokens, consumed: off };
 }
@@ -60,7 +67,7 @@ export interface RefAdvertisement {
 
 // Parse the response of GET /info/refs?service=git-upload-pack (protocol v1).
 export function parseInfoRefs(bytes: Uint8Array): RefAdvertisement {
-  const { tokens } = parsePktLines(bytes);
+  const { tokens } = parsePktLines(bytes, { requireComplete: true });
   const refs = new Map<string, string>();
   let capabilities: string[] = [];
   let headTarget: string | undefined;

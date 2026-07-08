@@ -33,8 +33,20 @@ export const integration = (slug) => makeIntegrationDeclaration({ slug, mode: "o
 export const defineTool = (definition) => ({ ...definition, "~executorAppTool": true });
 `;
 
-const driverModule = `
+const DEFAULT_REGISTRY_ORIGINS = ["https://registry.npmjs.org"];
+
+const driverModule = (token: string, registryOrigins: readonly string[]): string => `
 import { createWorker } from "./worker-bundler.js";
+
+const allowedRegistryOrigins = new Set(${JSON.stringify(registryOrigins)});
+const originalFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input.url);
+  if (!allowedRegistryOrigins.has(url.origin)) {
+    throw new Error("publish worker outbound fetch blocked: " + url.origin);
+  }
+  return originalFetch(input, init);
+};
 
 const executorAppSource = ${JSON.stringify(executorAppSource)};
 const json = (body, status = 200) => Response.json(body, { status });
@@ -47,7 +59,7 @@ const moduleCode = (module) => {
 
 export default {
   async fetch(request) {
-    if (request.url.endsWith("/__health")) return json({ ok: true });
+    if (request.url.endsWith("/__health")) return json({ ok: true, runnerToken: ${JSON.stringify(token)} });
     if (!request.url.endsWith("/run")) return json({ ok: false, message: "not found" }, 404);
     try {
       const input = await request.json();
@@ -66,6 +78,12 @@ export default {
       const code = moduleCode(result.modules[result.mainModule]);
       if (code === null) {
         return json({ ok: false, message: "worker-bundler did not return JavaScript for " + result.mainModule });
+      }
+      for (const [path, module] of Object.entries(result.modules)) {
+        const source = moduleCode(module) ?? "";
+        if (/\\.node(?:$|[?#])|node-gyp|prebuild-install|node-pre-gyp/.test(path) || /\\.node(?:$|[?#])|node-gyp|prebuild-install|node-pre-gyp/.test(source)) {
+          return json({ ok: false, message: "package dependency includes unsupported native module artifact: " + path });
+        }
       }
       return json({ ok: true, code, warnings: result.warnings ?? [] });
     } catch (error) {
@@ -99,13 +117,31 @@ const bundledWorkerBundler = async (): Promise<{
 
 const workerBundlerModule = bundledWorkerBundler();
 
-const packageScriptError = (input: BundleInput): AppExecutorError | null => {
+const blockedDependencySpec = (spec: string): boolean =>
+  /^(?:https?:|git(?:\\+|:)|file:|workspace:|link:|portal:)/.test(spec);
+
+const packageBoundaryError = (input: BundleInput): AppExecutorError | null => {
+  for (const path of input.files.keys()) {
+    if (/\.node$|(?:^|\/)(?:binding\.gyp|node-gyp|prebuilds?|node_modules\/.*\.node)/.test(path)) {
+      return new AppExecutorError({
+        kind: "bundle",
+        message: `package dependency includes unsupported native module artifact: ${path}`,
+        diagnostics: [
+          { path, message: "native modules are not supported in app publish dependencies" },
+        ],
+      });
+    }
+  }
   const rawPackageJson = input.files.get("package.json");
   if (rawPackageJson === undefined) return null;
   try {
     const parsed = JSON.parse(rawPackageJson) as {
       readonly name?: unknown;
       readonly scripts?: unknown;
+      readonly dependencies?: unknown;
+      readonly devDependencies?: unknown;
+      readonly optionalDependencies?: unknown;
+      readonly peerDependencies?: unknown;
     };
     const scripts =
       parsed.scripts !== null &&
@@ -116,18 +152,43 @@ const packageScriptError = (input: BundleInput): AppExecutorError | null => {
     const blocked = Object.keys(scripts).find((name) =>
       /^(pre|post)?install$|^prepare$/.test(name),
     );
-    if (!blocked) return null;
     const packageName = typeof parsed.name === "string" ? parsed.name : "package.json";
-    return new AppExecutorError({
-      kind: "bundle",
-      message: `package ${packageName} declares unsupported lifecycle script "${blocked}"`,
-      diagnostics: [
-        {
-          path: "package.json",
-          message: `lifecycle script "${blocked}" is not allowed in app publish dependencies`,
-        },
-      ],
-    });
+    if (blocked) {
+      return new AppExecutorError({
+        kind: "bundle",
+        message: `package ${packageName} declares unsupported lifecycle script "${blocked}"`,
+        diagnostics: [
+          {
+            path: "package.json",
+            message: `lifecycle script "${blocked}" is not allowed in app publish dependencies`,
+          },
+        ],
+      });
+    }
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ] as const) {
+      const deps = parsed[field];
+      if (deps === null || typeof deps !== "object" || Array.isArray(deps)) continue;
+      for (const [name, spec] of Object.entries(deps as Record<string, unknown>)) {
+        if (typeof spec === "string" && blockedDependencySpec(spec)) {
+          return new AppExecutorError({
+            kind: "bundle",
+            message: `package dependency ${name} uses unsupported non-registry spec "${spec}"`,
+            diagnostics: [
+              {
+                path: "package.json",
+                message: `dependency ${name} must resolve from an allowed npm registry`,
+              },
+            ],
+          });
+        }
+      }
+    }
+    return null;
   } catch (cause) {
     return new AppExecutorError({
       kind: "bundle",
@@ -169,16 +230,24 @@ export const makeWorkerBundlerBackend = (): BundleBackend => ({
   bundle: (input): Effect.Effect<BundleOutput, AppExecutorError> =>
     Effect.tryPromise({
       try: async () => {
-        const scriptError = packageScriptError(input);
-        if (scriptError) throw scriptError;
+        const boundaryError = packageBoundaryError(input);
+        if (boundaryError) throw boundaryError;
         const modules = await workerBundlerModule;
+        const token = crypto.randomUUID();
+        const registryOrigins = [
+          ...DEFAULT_REGISTRY_ORIGINS,
+          ...(process.env.EXECUTOR_NPM_REGISTRY
+            ? [new URL(process.env.EXECUTOR_NPM_REGISTRY).origin]
+            : []),
+        ];
         const runner = createWorkerdModuleRunner({
           mainModule: "driver.js",
           modules: {
-            "driver.js": driverModule,
+            "driver.js": driverModule(token, registryOrigins),
             "worker-bundler.js": modules.source,
             "esbuild.wasm": { kind: "wasm", bytes: modules.wasm },
           },
+          hostToken: token,
           globalOutbound: "internet",
           restartBackoffMs: 1,
         });

@@ -2,6 +2,7 @@
 import { Data, Effect } from "effect";
 
 import { PublishError, type PublishFile } from "../pipeline/publish";
+import { redactUrl } from "../git-client/url-security";
 
 export interface AppSourceSnapshot {
   readonly files: readonly PublishFile[];
@@ -29,7 +30,7 @@ export interface SyncDiagnostic {
 export const sourceErrorToDiagnostic = (error: AppSourceError): SyncDiagnostic => ({
   stage: "source",
   message: error.message,
-  ...(error.path ? { diagnostics: [{ path: error.path, message: error.message }] } : {}),
+  ...(error.path ? { diagnostics: [{ path: redactUrl(error.path), message: error.message }] } : {}),
 });
 
 export const publishErrorToDiagnostic = (error: PublishError): SyncDiagnostic => ({

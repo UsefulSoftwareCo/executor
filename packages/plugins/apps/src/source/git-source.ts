@@ -2,6 +2,7 @@
 import { Effect, Schema } from "effect";
 
 import { handFetch, handRefsCheck } from "../git-client/hand";
+import { hasTokenLikeQuery, redactUrl, validateGitFetchUrl } from "../git-client/url-security";
 import { PublishError, enforcePublishLimits, type PublishFile } from "../pipeline/publish";
 import { AppSourceError, type AppSourceSnapshot } from "./app-source";
 import {
@@ -35,57 +36,17 @@ export interface GitRefsSnapshot {
 const textDecoder = new TextDecoder();
 const decodeExecutorJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
-const normalizeHost = (host: string): string => host.replace(/^\[|\]$/g, "").toLowerCase();
-
-const isPrivateIpv4 = (host: string): boolean => {
-  const parts = host.split(".");
-  if (parts.length !== 4) return false;
-  const nums = parts.map((part) => Number(part));
-  if (nums.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  const [a, b] = nums;
-  return (
-    a === 10 ||
-    a === 127 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254) ||
-    a === 0
-  );
-};
-
-const isPrivateHost = (host: string): boolean => {
-  const normalized = normalizeHost(host);
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "::1" ||
-    normalized.startsWith("fe80:") ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    isPrivateIpv4(normalized)
-  );
-};
-
 export const parseGitSourceUrl = (
   input: string,
   options: { readonly allowPrivateHosts?: boolean } = {},
 ): Effect.Effect<URL, AppSourceError> =>
   Effect.try({
     try: () => {
-      const url = new URL(input.trim());
-      if (url.protocol !== "https:") {
-        throw new AppSourceError({ message: "git source URL must use https", path: input });
-      }
-      if (url.username || url.password) {
+      const url = validateGitFetchUrl(input.trim(), options);
+      if (hasTokenLikeQuery(url)) {
         throw new AppSourceError({
-          message: "git source URL must not include embedded credentials",
-          path: input,
-        });
-      }
-      if (options.allowPrivateHosts !== true && isPrivateHost(url.hostname)) {
-        throw new AppSourceError({
-          message: "git source URL host is not allowed",
-          path: input,
+          message: "git source URL must not include token query parameters",
+          path: redactUrl(input),
         });
       }
       return url;
@@ -93,7 +54,11 @@ export const parseGitSourceUrl = (
     catch: (cause) =>
       cause instanceof AppSourceError
         ? cause
-        : new AppSourceError({ message: "git source URL is not valid", path: input, cause }),
+        : new AppSourceError({
+            message: cause instanceof Error ? cause.message : "git source URL is not valid",
+            path: redactUrl(input),
+            cause,
+          }),
   });
 
 const descriptionFor = (
@@ -143,18 +108,19 @@ export const checkGitAppSourceRefs = (
         handRefsCheck(input.url, input.ref, {
           ...(input.token ? { token: input.token } : {}),
           ...(input.fetch ? { fetchImpl: input.fetch } : {}),
+          allowPrivateHosts: input.allowPrivateHosts,
         }),
       catch: (cause) =>
         new AppSourceError({
           message: `git refs check failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-          path: input.url,
+          path: redactUrl(input.url),
           cause,
         }),
     });
     if (!checked.ok || !checked.sha || !checked.resolvedRef) {
       return yield* new AppSourceError({
         message: checked.error ?? "git refs check failed",
-        path: input.url,
+        path: redactUrl(input.url),
       });
     }
     return { sourceRef: checked.sha, resolvedRef: checked.resolvedRef };
@@ -171,24 +137,25 @@ export const fetchGitAppSource = (
           ...(input.token ? { token: input.token } : {}),
           ...(input.fetch ? { fetchImpl: input.fetch } : {}),
           ...(input.maxBytes ? { maxBytes: input.maxBytes } : {}),
+          allowPrivateHosts: input.allowPrivateHosts,
         }),
       catch: (cause) =>
         new AppSourceError({
           message: `git fetch failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-          path: input.url,
+          path: redactUrl(input.url),
           cause,
         }),
     });
     if (fetched.truncated === true) {
       return yield* new AppSourceError({
         message: fetched.error ?? "git repository is too large",
-        path: input.url,
+        path: redactUrl(input.url),
       });
     }
     if (!fetched.ok || !fetched.sha || !fetched.resolvedRef || !fetched.files) {
       return yield* new AppSourceError({
         message: fetched.error ?? "git fetch failed",
-        path: input.url,
+        path: redactUrl(input.url),
       });
     }
     const collected = relevantFiles(fetched.files);

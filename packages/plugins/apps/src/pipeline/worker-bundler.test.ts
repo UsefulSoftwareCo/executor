@@ -110,4 +110,64 @@ describe("worker-bundler backend", () => {
       expect(error.message).toContain("postinstall");
     }),
   );
+
+  it.effect("rejects non-registry dependency specs before installing dependencies", () =>
+    Effect.gen(function* () {
+      const error = yield* bundleEntry(
+        {
+          entry: "tools/greet.ts",
+          files: files([
+            [
+              "tools/greet.ts",
+              `
+                import { defineTool } from "executor:app";
+                export default defineTool({
+                  description: "Greet",
+                  async handler() { return { ok: true }; },
+                });
+              `,
+            ],
+            [
+              "package.json",
+              JSON.stringify({
+                name: "blocked-app",
+                dependencies: { external: "https://example.com/external.tgz" },
+              }),
+            ],
+            ["bun.lock", ""],
+          ]),
+        },
+        makeWorkerBundlerBackend(),
+      ).pipe(Effect.flip);
+      expect(error.message).toContain("external");
+      expect(error.message).toContain("unsupported non-registry spec");
+    }),
+  );
+
+  it.effect("rejects native addon artifacts before bundling", () =>
+    Effect.gen(function* () {
+      const error = yield* bundleEntry(
+        {
+          entry: "tools/greet.ts",
+          files: files([
+            [
+              "tools/greet.ts",
+              `
+                import { defineTool } from "executor:app";
+                export default defineTool({
+                  description: "Greet",
+                  async handler() { return { ok: true }; },
+                });
+              `,
+            ],
+            ["package.json", JSON.stringify({ name: "native-app" })],
+            ["node_modules/native/binding.gyp", "{}"],
+            ["bun.lock", ""],
+          ]),
+        },
+        makeWorkerBundlerBackend(),
+      ).pipe(Effect.flip);
+      expect(error.message).toContain("unsupported native module artifact");
+    }),
+  );
 });

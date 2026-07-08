@@ -1,7 +1,7 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: git client returns stable ok/error envelopes before git-source maps to AppSourceError */
 // Hand-rolled shallow fetch. Orchestrates transport and packfile parsing.
 import { resolveWant } from "./pktline";
-import { parsePack, walkTree } from "./packfile";
+import { parsePack, walkTree, type ParsePackLimits } from "./packfile";
 import { authForHost, checkRefs, uploadPack, type AuthRecipe } from "./transport";
 
 export interface FetchResult {
@@ -23,19 +23,28 @@ export interface FetchResult {
 export async function handFetch(
   url: string,
   ref?: string,
-  opts: { token?: string; maxBytes?: number; fetchImpl?: typeof fetch } = {},
+  opts: {
+    token?: string;
+    maxBytes?: number;
+    fetchImpl?: typeof fetch;
+    parseLimits?: Partial<ParsePackLimits>;
+    allowPrivateHosts?: boolean;
+  } = {},
 ): Promise<FetchResult> {
   const t0 = Date.now();
   try {
     const host = new URL(url).host;
     const auth: AuthRecipe = authForHost(host, opts.token);
-    const refs = await checkRefs(url, auth, opts.fetchImpl);
+    const refs = await checkRefs(url, auth, opts.fetchImpl, {
+      allowPrivateHosts: opts.allowPrivateHosts,
+    });
     const { sha, resolvedRef } = resolveWant(refs.adv, ref);
 
     const up = await uploadPack(url, sha, {
       auth,
       fetchImpl: opts.fetchImpl,
       maxBytes: opts.maxBytes,
+      allowPrivateHosts: opts.allowPrivateHosts,
     });
     if (up.truncated) {
       return {
@@ -52,7 +61,7 @@ export async function handFetch(
     }
 
     const tp = Date.now();
-    const parsed = await parsePack(up.packBytes);
+    const parsed = await parsePack(up.packBytes, { limits: opts.parseLimits });
     const files = walkTree(parsed, sha);
     const parseMs = Date.now() - tp;
 
@@ -86,7 +95,7 @@ export async function handFetch(
 export async function handRefsCheck(
   url: string,
   ref?: string,
-  opts: { token?: string; fetchImpl?: typeof fetch } = {},
+  opts: { token?: string; fetchImpl?: typeof fetch; allowPrivateHosts?: boolean } = {},
 ): Promise<{
   ok: boolean;
   refCount?: number;
@@ -101,7 +110,9 @@ export async function handRefsCheck(
   try {
     const host = new URL(url).host;
     const auth = authForHost(host, opts.token);
-    const refs = await checkRefs(url, auth, opts.fetchImpl);
+    const refs = await checkRefs(url, auth, opts.fetchImpl, {
+      allowPrivateHosts: opts.allowPrivateHosts,
+    });
     const head = refs.adv.headTarget;
     const headSha = head ? refs.adv.refs.get(head) : refs.adv.refs.get("HEAD");
     const wanted = resolveWant(refs.adv, ref);

@@ -193,7 +193,7 @@ const serializeFailure = (error, fallbackKind) => {
 
 export default {
   async fetch(request, env) {
-    if (request.url.endsWith("/__health")) return Response.json({ ok: true });
+    if (request.url.endsWith("/__health")) return Response.json({ ok: true, runnerToken: ${JSON.stringify(token)} });
     if (!request.url.endsWith("/run")) return new Response("Not Found", { status: 404 });
     const input = await request.json();
     try {

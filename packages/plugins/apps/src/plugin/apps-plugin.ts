@@ -240,6 +240,18 @@ const makeAppsExtension = (
             message: `app source kind is not enabled: ${config.kind}`,
           });
         }
+        if (config.kind === "git") {
+          yield* parseGitSourceUrl(config.url, {
+            allowPrivateHosts: options?.allowPrivateGitHosts === true,
+          }).pipe(
+            Effect.mapError(
+              () =>
+                new AppPluginError({
+                  message: "git source URL is not valid",
+                }),
+            ),
+          );
+        }
         const slug = slugify(
           input.slug ?? input.app ?? (config.kind === "git" ? config.url : config.path),
         );

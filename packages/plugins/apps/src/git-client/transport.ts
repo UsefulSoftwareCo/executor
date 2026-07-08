@@ -1,6 +1,7 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: smart-HTTP transport errors are caught by git-source and converted to AppSourceError */
 // Smart-HTTP transport over fetch. Runtime-agnostic (Bun + workerd).
 import { parseInfoRefs, type RefAdvertisement } from "./pktline";
+import { redactUrl, validateGitFetchUrl, type GitUrlPolicy } from "./url-security";
 
 export interface AuthRecipe {
   // Authorization header value, or undefined for anonymous.
@@ -47,22 +48,50 @@ export interface RefsResult {
   bytes: number;
 }
 
+const MAX_REDIRECTS = 5;
+
+const fetchGit = async (
+  rawUrl: string,
+  init: RequestInit,
+  fetchImpl: typeof fetch,
+  policy: GitUrlPolicy,
+): Promise<Response> => {
+  let current = validateGitFetchUrl(rawUrl, policy);
+  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+    const response = await fetchImpl(current.toString(), {
+      ...init,
+      redirect: "manual",
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location)
+      throw new Error(`git redirect missing Location from ${redactUrl(current.toString())}`);
+    current = validateGitFetchUrl(new URL(location, current).toString(), policy);
+  }
+  throw new Error(`git redirect depth exceeded for ${redactUrl(rawUrl)}`);
+};
+
 // The cheap "did it change" check: GET info/refs. Returns the ref advertisement.
 export async function checkRefs(
   url: string,
   auth: AuthRecipe = {},
   fetchImpl: typeof fetch = fetch,
+  policy: GitUrlPolicy = {},
 ): Promise<RefsResult> {
   const repo = normalizeRepoUrl(url);
   const infoUrl = `${repo}/info/refs?service=git-upload-pack`;
   const t0 = Date.now();
-  const res = await fetchImpl(infoUrl, {
-    headers: {
-      ...baseHeaders(auth),
-      accept: "*/*",
+  const res = await fetchGit(
+    infoUrl,
+    {
+      headers: {
+        ...baseHeaders(auth),
+        accept: "*/*",
+      },
     },
-    redirect: "follow",
-  });
+    fetchImpl,
+    policy,
+  );
   const buf = new Uint8Array(await res.arrayBuffer());
   const wallMs = Date.now() - t0;
   if (!res.ok) {
@@ -83,6 +112,7 @@ export interface UploadPackOptions {
   // Abort the response body after this many bytes (byte cap).
   maxBytes?: number;
   useV2?: boolean;
+  allowPrivateHosts?: boolean;
 }
 
 export interface UploadPackResult {
@@ -126,17 +156,21 @@ export async function uploadPack(
   const upUrl = `${repo}/git-upload-pack`;
   const body = buildV1Request(sha);
   const t0 = Date.now();
-  const res = await fetchImpl(upUrl, {
-    method: "POST",
-    headers: {
-      ...baseHeaders(opts.auth ?? {}),
-      "content-type": "application/x-git-upload-pack-request",
-      accept: "application/x-git-upload-pack-result",
-      "git-protocol": "version=1",
+  const res = await fetchGit(
+    upUrl,
+    {
+      method: "POST",
+      headers: {
+        ...baseHeaders(opts.auth ?? {}),
+        "content-type": "application/x-git-upload-pack-request",
+        accept: "application/x-git-upload-pack-result",
+        "git-protocol": "version=1",
+      },
+      body: new Uint8Array(body).buffer,
     },
-    body: new Uint8Array(body).buffer,
-    redirect: "follow",
-  });
+    fetchImpl,
+    { allowPrivateHosts: opts.allowPrivateHosts },
+  );
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`upload-pack ${res.status}: ${errText.slice(0, 200)}`);
@@ -208,7 +242,7 @@ function demuxSideBand(raw: Uint8Array): Uint8Array {
 
   while (off + 4 <= raw.length) {
     const len = parseInt(tdLocal.decode(raw.subarray(off, off + 4)), 16);
-    if (Number.isNaN(len)) break;
+    if (Number.isNaN(len)) throw new Error("bad pkt-line length in upload-pack response");
     if (len === 0) {
       off += 4;
       // A flush during preamble ends the negotiation section; keep going into side-band.
@@ -218,7 +252,8 @@ function demuxSideBand(raw: Uint8Array): Uint8Array {
       off += 4;
       continue;
     }
-    if (off + len > raw.length) break;
+    if (len < 4) throw new Error("bad pkt-line length in upload-pack response");
+    if (off + len > raw.length) throw new Error("truncated upload-pack response");
     const payload = raw.subarray(off + 4, off + len);
     if (payload.length === 0) {
       off += len;
@@ -243,6 +278,7 @@ function demuxSideBand(raw: Uint8Array): Uint8Array {
       packChunks.push(payload);
     }
   }
+  if (off !== raw.length) throw new Error("truncated upload-pack response");
   let total = 0;
   for (const c of packChunks) total += c.length;
   const out = new Uint8Array(total);

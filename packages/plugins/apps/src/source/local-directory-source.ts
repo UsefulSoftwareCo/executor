@@ -1,6 +1,7 @@
-/* oxlint-disable executor/no-try-catch-or-throw, executor/no-instanceof-tagged-error -- boundary: filesystem path validation and fs errors normalize to AppSourceError */
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor, executor/no-instanceof-tagged-error -- boundary: filesystem path validation and fs errors normalize to AppSourceError */
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -46,8 +47,44 @@ const validateRoot = (path: string): Effect.Effect<string, AppSourceError> =>
         : new AppSourceError({ message: "invalid local-directory source path", path, cause }),
   });
 
+const isUnderRoot = (root: string, candidate: string): boolean =>
+  candidate === root || candidate.startsWith(`${root}${sep}`);
+
+const readRegularFileNoFollow = (
+  root: string,
+  rootReal: string,
+  child: string,
+): Effect.Effect<Uint8Array, AppSourceError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const fullPath = `${root}${sep}${child}`;
+      const before = await lstat(fullPath);
+      if (!before.isFile()) throw new Error("not a regular file");
+      const resolved = await realpath(fullPath);
+      if (!isUnderRoot(rootReal, resolved)) throw new Error("file resolves outside source root");
+      const handle = await open(fullPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const after = await handle.stat();
+        if (!after.isFile()) throw new Error("not a regular file");
+        if (before.dev !== after.dev || before.ino !== after.ino) {
+          throw new Error("file changed while being read");
+        }
+        return await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+    },
+    catch: (cause) =>
+      new AppSourceError({
+        message: `failed to read local-directory file: ${child}`,
+        path: child,
+        cause,
+      }),
+  });
+
 const walk = (
   root: string,
+  rootReal: string,
   relative = "",
 ): Effect.Effect<
   { readonly files: readonly PublishFile[]; readonly skipped: readonly SourceSkippedFile[] },
@@ -83,7 +120,7 @@ const walk = (
           child.startsWith("ui/") ||
           child.startsWith("skills/")
         ) {
-          const nested = yield* walk(root, child);
+          const nested = yield* walk(root, rootReal, child);
           files.push(...nested.files);
           skipped.push(...nested.skipped);
         }
@@ -99,15 +136,7 @@ const walk = (
         continue;
       }
       if (!isRelevantAppSourcePath(child)) continue;
-      const bytes = yield* Effect.tryPromise({
-        try: () => readFile(`${root}${sep}${child}`),
-        catch: (cause) =>
-          new AppSourceError({
-            message: `failed to read local-directory file: ${child}`,
-            path: child,
-            cause,
-          }),
-      });
+      const bytes = yield* readRegularFileNoFollow(root, rootReal, child);
       files.push({ path: child, bytes });
     }
     const limitError = enforcePublishLimits(files);
@@ -151,7 +180,16 @@ export const fetchLocalDirectoryAppSource = (
 ): Effect.Effect<LocalDirectoryAppSourceSnapshot, AppSourceError | PublishError> =>
   Effect.gen(function* () {
     const root = yield* validateRoot(input.path);
-    const collected = yield* walk(root);
+    const rootReal = yield* Effect.tryPromise({
+      try: () => realpath(root),
+      catch: (cause) =>
+        new AppSourceError({
+          message: "failed to resolve local-directory source root",
+          path: root,
+          cause,
+        }),
+    });
+    const collected = yield* walk(root, rootReal);
     return {
       root,
       files: collected.files,
