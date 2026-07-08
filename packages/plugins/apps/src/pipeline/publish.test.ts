@@ -86,6 +86,23 @@ const makeMemoryStore = (): AppsStore & {
             }
           : null;
       }),
+    getToolForApp: (app, name) =>
+      Effect.sync(() => {
+        const row =
+          descriptor?.app === app ? descriptor.tools.find((item) => item.name === name) : undefined;
+        return row
+          ? {
+              app: descriptor!.app,
+              name: row.name,
+              bundleKey: row.bundleKey,
+              description: row.description,
+              inputSchema: row.inputSchema,
+              outputSchema: row.outputSchema,
+              integrations: row.integrations,
+              annotations: row.annotations,
+            }
+          : null;
+      }),
     putSource: () => Effect.void,
     listSources: () => Effect.succeed([]),
     getSource: () => Effect.succeed(null),

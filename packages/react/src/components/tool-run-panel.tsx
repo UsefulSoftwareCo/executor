@@ -54,6 +54,9 @@ export const toolProxyAddress = (input: {
 }): string =>
   `${input.integration}.${input.connection.owner}.${input.connection.name}.${input.toolName}`;
 
+export const shouldRenderConnectionPicker = (connections: readonly Connection[]): boolean =>
+  connections.length > 1;
+
 type RunResult =
   | {
       readonly kind: "completed";
@@ -261,33 +264,35 @@ export function ToolRunPanel(props: {
   if (connections.length === 0) {
     return <p className="text-sm text-muted-foreground">Add a connection to test tools.</p>;
   }
+  const renderConnectionPicker = shouldRenderConnectionPicker(connections);
 
   return (
     <div className="space-y-4">
       <CardStack>
         <CardStackContent className="space-y-4 px-4 py-4">
-          {/* Connection picker — which account to run against. */}
-          <div className="space-y-1.5">
-            <Label htmlFor="tool-run-connection">Connection</Label>
-            <NativeSelect
-              id="tool-run-connection"
-              className="w-full"
-              value={selectedConnection ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                setSelectedConnection(e.target.value as ConnectionName)
-              }
-              disabled={running}
-            >
-              {connections.map((connection: Connection) => (
-                <NativeSelectOption key={connection.name} value={connection.name}>
-                  {connection.identityLabel || connection.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <p className="text-xs text-muted-foreground">
-              Pick the account whose credentials you want to verify.
-            </p>
-          </div>
+          {renderConnectionPicker && (
+            <div className="space-y-1.5">
+              <Label htmlFor="tool-run-connection">Connection</Label>
+              <NativeSelect
+                id="tool-run-connection"
+                className="w-full"
+                value={selectedConnection ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                  setSelectedConnection(e.target.value as ConnectionName)
+                }
+                disabled={running}
+              >
+                {connections.map((connection: Connection) => (
+                  <NativeSelectOption key={connection.name} value={connection.name}>
+                    {connection.identityLabel || connection.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <p className="text-xs text-muted-foreground">
+                Pick the account whose credentials you want to verify.
+              </p>
+            </div>
+          )}
 
           {/* Arguments editor — dynamic form built from the input JSON Schema,
               with a Raw JSON escape hatch. Both views share the `argsJson`

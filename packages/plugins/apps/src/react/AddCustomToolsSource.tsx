@@ -12,7 +12,6 @@ import { Input } from "@executor-js/react/components/input";
 import { FormErrorAlert, useSlugAlreadyExists } from "@executor-js/react/lib/integration-add";
 
 import {
-  APPS_INTEGRATION_SLUG,
   createCustomToolSourceEffect,
   formatSyncErrors,
   parseGitSourceUrl,
@@ -114,7 +113,7 @@ export default function AddCustomToolsSource(props: {
       return;
     }
     setSyncing(false);
-    props.onComplete(APPS_INTEGRATION_SLUG);
+    props.onComplete(createExit.value.source.app);
   };
 
   return (

@@ -151,7 +151,7 @@ test("apps source sync publishes and invokes a local-directory tool over HTTP", 
   expect(listed.status).toBe(200);
   const tools = (await listed.json()) as ReadonlyArray<{ readonly address: string }>;
   expect(
-    tools.some((tool) => tool.address === "tools.apps.org.published.greeter"),
+    tools.some((tool) => tool.address === "tools.local-greeter.org.published.greeter"),
     JSON.stringify(tools.map((tool) => tool.address)),
   ).toBe(true);
 
@@ -160,7 +160,7 @@ test("apps source sync publishes and invokes a local-directory tool over HTTP", 
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        code: 'export default await tools.apps.org.published.greeter({ name: "Ada" })',
+        code: 'export default await tools["local-greeter.org.published.greeter"]({ name: "Ada" })',
       }),
     }),
   );

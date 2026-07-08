@@ -9,6 +9,7 @@ import {
   ToolName,
   ToolResult,
   definePlugin,
+  IntegrationAlreadyExistsError,
   type PluginCtx,
   type ToolDef,
 } from "@executor-js/sdk";
@@ -37,12 +38,15 @@ import { fetchLocalDirectoryAppSource } from "../source/local-directory-source";
 import { AppSourceError, type AppSourceSnapshot } from "../source/app-source";
 import type { PublishError } from "../pipeline/publish";
 
-const APPS_INTEGRATION = IntegrationSlug.make("apps");
 const APPS_CONNECTION = ConnectionName.make("published");
 const APPS_NO_AUTH = AuthTemplateSlug.make("none");
 
 class AppPluginError extends Data.TaggedError("AppPluginError")<{
   readonly message: string;
+}> {}
+
+class AppSlugConflictError extends Data.TaggedError("AppSlugConflictError")<{
+  readonly app: string;
 }> {}
 
 interface ProjectedToolSchema {
@@ -138,35 +142,90 @@ const sourceConfig = (input: CreateAppSourceInput): AppSourceConfig => {
   return { kind: "local-directory", path: input.path };
 };
 
-const ensureAppsCatalogConnection = (ctx: PluginCtx<AppsStore>): Effect.Effect<void, unknown> =>
+const appDescription = (record: AppSourceRecord, description?: string): string => {
+  if (description) return description;
+  if (record.description) return record.description;
+  if (record.config.kind === "git") return `Custom tools from ${record.config.url}`;
+  return `Custom tools from ${record.config.path}`;
+};
+
+const ensureAppConnection = (
+  ctx: PluginCtx<AppsStore>,
+  record: AppSourceRecord,
+  description?: string,
+): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
+    const appSlug = IntegrationSlug.make(record.app);
     yield* ctx.core.integrations.register({
-      slug: APPS_INTEGRATION,
-      name: "Apps",
-      description: "Published app tools",
+      slug: appSlug,
+      name: record.app,
+      description: appDescription(record, description),
       config: {},
     });
     const existing = yield* ctx.connections.get({
       owner: "org",
-      integration: APPS_INTEGRATION,
+      integration: appSlug,
       name: APPS_CONNECTION,
     });
     if (existing) {
       yield* ctx.connections.refresh({
         owner: "org",
-        integration: APPS_INTEGRATION,
+        integration: appSlug,
         name: APPS_CONNECTION,
       });
       return;
     }
     yield* ctx.connections.create({
       owner: "org",
-      integration: APPS_INTEGRATION,
+      integration: appSlug,
       name: APPS_CONNECTION,
       template: APPS_NO_AUTH,
       values: {},
     });
   });
+
+const guardAppIntegration = (
+  ctx: PluginCtx<AppsStore>,
+  record: AppSourceRecord,
+): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    const appSlug = IntegrationSlug.make(record.app);
+    const existing = yield* ctx.core.integrations.get(appSlug);
+    if (existing && existing.kind !== "apps") {
+      return yield* new IntegrationAlreadyExistsError({ slug: appSlug });
+    }
+    const sources = yield* ctx.storage.listSources();
+    const duplicate = sources.find(
+      (source) => source.slug !== record.slug && source.app === record.app,
+    );
+    if (duplicate) {
+      return yield* new AppSlugConflictError({ app: record.app });
+    }
+  });
+
+const appRegistrationErrorToDiagnostic = (error: unknown): SyncDiagnostic => {
+  if (Predicate.isTagged("IntegrationAlreadyExistsError")(error)) {
+    const slug = String((error as IntegrationAlreadyExistsError).slug);
+    return {
+      stage: "project",
+      message: `Integration slug collides with an existing integration: ${slug}`,
+      diagnostics: [{ path: slug, message: `Integration slug already exists: ${slug}` }],
+    };
+  }
+  if (Predicate.isTagged("AppSlugConflictError")(error)) {
+    const app = (error as AppSlugConflictError).app;
+    const message = `app source already exists for slug: ${app}`;
+    return {
+      stage: "project",
+      message,
+      diagnostics: [{ path: app, message }],
+    };
+  }
+  return {
+    stage: "project",
+    message: "App publish failed",
+  };
+};
 
 const tokenItemId = (slug: string): ProviderItemId =>
   ProviderItemId.make(`apps/source-tokens/${slug}`);
@@ -277,11 +336,9 @@ const makeAppsExtension = (
         const record = yield* ctx.storage.getSource(slug);
         if (record) {
           yield* ctx.storage.removePublished(record.app, "org");
-          yield* ctx.connections.markToolsStale({
-            owner: "org",
-            integration: APPS_INTEGRATION,
-            name: APPS_CONNECTION,
-          });
+          yield* ctx.core.integrations
+            .remove(IntegrationSlug.make(record.app))
+            .pipe(Effect.catchTag("IntegrationRemovalNotAllowedError", () => Effect.void));
         }
         if (
           record?.config.kind === "git" &&
@@ -325,6 +382,17 @@ const makeAppsExtension = (
             return { status: "failed", tools: [], errors: [diagnostic] };
           }
           if (record.sourceRef === checked.success.sourceRef) {
+            const guarded = yield* guardAppIntegration(ctx, record).pipe(Effect.result);
+            if (Result.isFailure(guarded)) {
+              const diagnostic = appRegistrationErrorToDiagnostic(guarded.failure);
+              const failed: AppSourceRecord = {
+                ...record,
+                status: { type: "failed", at: now(), errors: [diagnostic] },
+                updatedAt: now(),
+              };
+              yield* ctx.storage.putSource(failed, "org");
+              return { status: "failed", tools: [], errors: [diagnostic] };
+            }
             const tools = yield* activeToolNamesFor(ctx, record.app);
             const updated: AppSourceRecord = {
               ...record,
@@ -332,7 +400,7 @@ const makeAppsExtension = (
               updatedAt: now(),
             };
             yield* ctx.storage.putSource(updated, "org");
-            yield* ensureAppsCatalogConnection(ctx);
+            yield* ensureAppConnection(ctx, updated);
             return { status: "up-to-date", sourceRef: checked.success.sourceRef, tools };
           }
         }
@@ -363,15 +431,48 @@ const makeAppsExtension = (
         }
         const snapshot: AppSourceSnapshot = fetched.success;
         if (record.sourceRef === snapshot.sourceRef) {
+          const guarded = yield* guardAppIntegration(ctx, record).pipe(Effect.result);
+          if (Result.isFailure(guarded)) {
+            const diagnostic = appRegistrationErrorToDiagnostic(guarded.failure);
+            const failed: AppSourceRecord = {
+              ...record,
+              description: snapshot.description,
+              status: { type: "failed", at: now(), errors: [diagnostic] },
+              updatedAt: now(),
+            };
+            yield* ctx.storage.putSource(failed, "org");
+            return { status: "failed", tools: [], errors: [diagnostic] };
+          }
           const tools = yield* activeToolNamesFor(ctx, record.app);
           const updated: AppSourceRecord = {
             ...record,
+            description: snapshot.description,
             status: { type: "up-to-date", at: now(), tools },
             updatedAt: now(),
           };
           yield* ctx.storage.putSource(updated, "org");
-          yield* ensureAppsCatalogConnection(ctx);
+          yield* ensureAppConnection(ctx, updated, snapshot.description);
           return { status: "up-to-date", sourceRef: snapshot.sourceRef, tools };
+        }
+        const guarded = yield* guardAppIntegration(ctx, record).pipe(Effect.result);
+        if (Result.isFailure(guarded)) {
+          const diagnostic = appRegistrationErrorToDiagnostic(guarded.failure);
+          yield* ctx.storage.putSource(
+            {
+              ...record,
+              sourceRef: snapshot.sourceRef,
+              description: snapshot.description,
+              status: { type: "failed", at: now(), errors: [diagnostic] },
+              updatedAt: now(),
+            },
+            "org",
+          );
+          return {
+            status: "failed",
+            sourceRef: snapshot.sourceRef,
+            tools: [],
+            errors: [diagnostic],
+          };
         }
         const published = yield* publish(
           { store: ctx.storage, executor: activeExecutor, bundler: activeBundler },
@@ -414,7 +515,7 @@ const makeAppsExtension = (
           },
           "org",
         );
-        yield* ensureAppsCatalogConnection(ctx);
+        yield* ensureAppConnection(ctx, record, snapshot.description);
         return {
           status: published.success.noop ? "up-to-date" : "published",
           sourceRef: snapshot.sourceRef,
@@ -445,49 +546,55 @@ export const makeAppsPlugin = (options?: AppsPluginOptions) =>
     },
     storage: ({ blobs, pluginStorage }) => makeAppsStore({ blobs, pluginStorage }),
     extension: (ctx: PluginCtx<AppsStore>) => makeAppsExtension(ctx, options),
-    staticSources: () => [
-      {
-        id: "apps",
-        kind: "apps",
-        name: "Apps",
-        canRemove: false,
-        canRefresh: false,
-        tools: [],
-      },
-    ],
-    resolveTools: ({ storage }) =>
+    resolveTools: ({ storage, connection }) =>
       storage.listActiveTools().pipe(
         Effect.map((tools) => ({
-          tools: tools.map(
-            (tool): ToolDef => ({
-              name: ToolName.make(tool.name),
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-              outputSchema: tool.outputSchema,
-              annotations: {
-                ...(tool.annotations?.requiresApproval !== undefined
-                  ? { requiresApproval: tool.annotations.requiresApproval }
-                  : {}),
-                ...(tool.annotations?.readOnly === true ? { requiresApproval: false } : {}),
-              },
-            }),
-          ),
+          tools: tools
+            .filter((tool) => tool.app === String(connection.integration))
+            .map(
+              (tool): ToolDef => ({
+                name: ToolName.make(tool.name),
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+                annotations: {
+                  ...(tool.annotations?.requiresApproval !== undefined
+                    ? { requiresApproval: tool.annotations.requiresApproval }
+                    : {}),
+                  ...(tool.annotations?.readOnly === true ? { requiresApproval: false } : {}),
+                },
+              }),
+            ),
         })),
       ),
     projectToolSchema: ({ ctx, toolRow, inputSchema, outputSchema }) =>
-      projectAppsToolSchema(ctx, String(toolRow.name), inputSchema, outputSchema),
+      projectAppsToolSchema(
+        ctx,
+        String(toolRow.integration),
+        String(toolRow.name),
+        inputSchema,
+        outputSchema,
+      ),
     validateToolArgs: ({ ctx, toolRow, args }) =>
       Effect.gen(function* () {
-        const tool = yield* ctx.storage.getTool(String(toolRow.name));
+        const tool = yield* ctx.storage.getToolForApp(
+          String(toolRow.integration),
+          String(toolRow.name),
+        );
         if (!tool) return;
         const resolver = makePluginCtxAppsResolver({ ctx });
         yield* resolveIntegrationBindings(tool.integrations, args, resolver);
       }),
     invokeTool: ({ ctx, toolRow, args, invokeOptions }) =>
       Effect.gen(function* () {
-        const tool = yield* ctx.storage.getTool(String(toolRow.name));
+        const tool = yield* ctx.storage.getToolForApp(
+          String(toolRow.integration),
+          String(toolRow.name),
+        );
         if (!tool) {
-          return yield* new AppPluginError({ message: `app tool not found: ${toolRow.name}` });
+          return yield* new AppPluginError({
+            message: `app tool not found: ${toolRow.integration}.${toolRow.name}`,
+          });
         }
         const bundle = yield* ctx.storage.getBlob(tool.bundleKey);
         if (!bundle) {
@@ -528,12 +635,13 @@ export const makeAppsPlugin = (options?: AppsPluginOptions) =>
 
 export const projectAppsToolSchema = (
   ctx: PluginCtx<AppsStore>,
+  app: string,
   toolName: string,
   inputSchema: unknown,
   outputSchema: unknown,
 ): Effect.Effect<ProjectedToolSchema, unknown> =>
   Effect.gen(function* () {
-    const tool = yield* ctx.storage.getTool(toolName);
+    const tool = yield* ctx.storage.getToolForApp(app, toolName);
     if (!tool || !inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) {
       return { inputSchema, outputSchema };
     }
@@ -579,4 +687,4 @@ export const projectAppsToolSchema = (
 
 export const appsPlugin = makeAppsPlugin();
 
-export { APPS_INTEGRATION, APPS_CONNECTION };
+export { APPS_CONNECTION };

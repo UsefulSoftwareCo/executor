@@ -2,7 +2,6 @@ import { Data, Effect, Schema } from "effect";
 
 export const CUSTOM_TOOLS_PLUGIN_KEY = "apps";
 export const CUSTOM_TOOLS_LABEL = "Custom tools";
-export const APPS_INTEGRATION_SLUG = "apps";
 
 export type AppSourceKind = "git" | "local-directory";
 

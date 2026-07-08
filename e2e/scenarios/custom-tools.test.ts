@@ -210,8 +210,14 @@ const addSourceThroughConsole = (input: {
     await step("Sync the custom tools source", async () => {
       await page.locator('input[type="password"]').fill("fixture-token");
       await page.getByRole("button", { name: "Sync source" }).click();
-      await page.waitForURL(/\/integrations\/apps(?:\?|$)/, { timeout: 90_000 });
+      await page.waitForURL(/\/integrations\/repo(?:\?|$)/, { timeout: 90_000 });
       await page.getByText("2 tools").waitFor({ timeout: 90_000 });
+      await page.getByRole("link", { name: "repo" }).waitFor({ timeout: 90_000 });
+      await page.getByRole("tab", { name: "Tools" }).click();
+      await page.getByRole("button", { name: /repo\s+2/ }).click();
+      await page.getByRole("button", { name: "echo-tool", exact: true }).click();
+      await page.getByRole("tab", { name: "Run" }).click();
+      expect(await page.getByLabel("Connection").count()).toBe(0);
     });
   });
 
@@ -224,7 +230,7 @@ const syncSourceInConsole = (input: {
 }) =>
   input.browser.session(input.identity, async ({ page, step }) => {
     await step(`Sync custom tools and see ${input.expectedNotice}`, async () => {
-      await page.goto(new URL("/integrations/apps?tab=source", input.target.baseUrl).toString(), {
+      await page.goto(new URL("/integrations/repo?tab=source", input.target.baseUrl).toString(), {
         waitUntil: "networkidle",
       });
       await page.getByRole("button", { name: "Sync" }).click();
@@ -243,7 +249,7 @@ const removeSourceThroughConsole = (input: {
 }) =>
   input.browser.session(input.identity, async ({ page, step }) => {
     await step("Remove the custom tools source", async () => {
-      await page.goto(new URL("/integrations/apps?tab=source", input.target.baseUrl).toString(), {
+      await page.goto(new URL("/integrations/repo?tab=source", input.target.baseUrl).toString(), {
         waitUntil: "networkidle",
       });
       await page.getByRole("button", { name: "Remove" }).click();
@@ -293,7 +299,7 @@ scenario(
           });
 
           const tools = yield* Effect.promise(() =>
-            request<readonly ToolRow[]>(target, identity, "/api/tools?integration=apps"),
+            request<readonly ToolRow[]>(target, identity, "/api/tools?integration=repo"),
           );
           expect(tools.body.map((tool) => tool.name).sort()).toEqual(["echo-tool", "static-tool"]);
           const echoTool = tools.body.find((tool) => tool.name === "echo-tool");
@@ -319,8 +325,8 @@ scenario(
             ),
           );
           expect(schema.body.inputSchema.properties?.apps).toMatchObject({
-            enum: ["tools.apps.org.published"],
-            default: "tools.apps.org.published",
+            enum: ["tools.repo.org.published"],
+            default: "tools.repo.org.published",
           });
           expect(schema.body.inputSchema.properties?.message).toMatchObject({ type: "string" });
           expect(schema.body.inputSchema.required ?? []).toContain("message");
@@ -330,7 +336,7 @@ scenario(
             execute(
               target,
               identity,
-              `return await tools["apps.org.published.echo-tool"]({ message: "hello", apps: "tools.apps.org.published" });`,
+              `return await tools["repo.org.published.echo-tool"]({ message: "hello", apps: "tools.repo.org.published" });`,
             ),
           );
           expect(invoked.status, invoked.text).toBe("completed");
@@ -359,7 +365,7 @@ scenario(
           yield* removeSourceThroughConsole({ target, browser, identity });
 
           const afterRemove = yield* Effect.promise(() =>
-            request<readonly ToolRow[]>(target, identity, "/api/tools?integration=apps"),
+            request<readonly ToolRow[]>(target, identity, "/api/tools?integration=repo"),
           );
           expect(afterRemove.body).toEqual([]);
         }),

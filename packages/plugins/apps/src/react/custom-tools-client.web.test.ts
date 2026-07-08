@@ -2,7 +2,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import appsClientPlugin, {
-  APPS_INTEGRATION_SLUG,
   CUSTOM_TOOLS_LABEL,
   CUSTOM_TOOLS_PLUGIN_KEY,
   createCustomToolSourceEffect,
@@ -53,7 +52,6 @@ describe("custom tools console client", () => {
 
     expect(plugin.id).toBe(CUSTOM_TOOLS_PLUGIN_KEY);
     expect(plugin.integrationPlugin?.label).toBe(CUSTOM_TOOLS_LABEL);
-    expect(APPS_INTEGRATION_SLUG).toBe("apps");
   });
 
   it("validates and suggests generic https Git repository URLs", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Effect, Exit } from "effect";
 
 import {
@@ -40,12 +40,17 @@ type LoadState =
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "ready"; readonly sources: readonly AppSourceRecord[] };
 
-export default function CustomToolsAccountsPanel() {
+export default function CustomToolsAccountsPanel(props: { readonly sourceId: string }) {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [syncingSlug, setSyncingSlug] = useState<string | null>(null);
   const [removingSlug, setRemovingSlug] = useState<string | null>(null);
   const [notice, setNotice] = useState<Record<string, SyncNoticeModel | undefined>>({});
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const sourcesForApp = useCallback(
+    (sources: readonly AppSourceRecord[]): readonly AppSourceRecord[] =>
+      sources.filter((source) => source.app === props.sourceId),
+    [props.sourceId],
+  );
 
   const loadSources = async () => {
     setLoadState({ status: "loading" });
@@ -54,7 +59,7 @@ export default function CustomToolsAccountsPanel() {
       setLoadState({ status: "error", message: "Failed to load custom tools sources." });
       return;
     }
-    setLoadState({ status: "ready", sources: exit.value.sources });
+    setLoadState({ status: "ready", sources: sourcesForApp(exit.value.sources) });
   };
 
   useEffect(() => {
@@ -66,12 +71,12 @@ export default function CustomToolsAccountsPanel() {
         setLoadState({ status: "error", message: "Failed to load custom tools sources." });
         return;
       }
-      setLoadState({ status: "ready", sources: exit.value.sources });
+      setLoadState({ status: "ready", sources: sourcesForApp(exit.value.sources) });
     })();
     return () => {
       active = false;
     };
-  }, []);
+  }, [props.sourceId, sourcesForApp]);
 
   const syncSource = async (source: AppSourceRecord) => {
     setSyncingSlug(source.slug);
