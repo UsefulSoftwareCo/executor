@@ -310,7 +310,10 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
   },
   "google-search-console": { operation: "webmasters.sites.list" },
   "google-classroom": { operation: "classroom.courses.list" },
-  "google-admin-directory": { operation: "directory.users.list" },
+  "google-admin-directory": {
+    operation: "directory.users.list",
+    args: { customer: "my_customer", maxResults: 1 },
+  },
   "google-apps-script": { operation: "script.processes.list" },
   "google-bigquery": { operation: "bigquery.projects.list" },
   "google-cloud-resource-manager": { operation: "cloudresourcemanager.projects.list" },
