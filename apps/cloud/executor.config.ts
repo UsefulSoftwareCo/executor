@@ -1,7 +1,13 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { googleHttpPlugin } from "@executor-js/plugin-google/api";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-workos-vault";
@@ -42,23 +48,15 @@ interface CloudPluginDeps {
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
-  /** Mirrors `HostConfig.allowLocalNetwork` (`ALLOW_LOCAL_NETWORK`): lets
-   *  `microsoft.addGraph` point at a loopback emulator instead of the pinned
-   *  Microsoft Graph URLs. Off by default; production leaves it unset. */
-  readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({
-    workosCredentials,
-    workosVaultClient,
-    activeToolkitSlug,
-    allowLocalNetwork,
-  }: CloudPluginDeps = {}) =>
+  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
     [
-      openApiHttpPlugin(),
-      googleHttpPlugin(),
-      microsoftHttpPlugin({ allowUnsafeUrlOverrides: allowLocalNetwork === true }),
+      openApiHttpPlugin({
+        presets: [...googleCatalog, ...microsoftCatalog],
+        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+      }),
       mcpHttpPlugin({
         dangerouslyAllowStdioMCP: false,
       }),

@@ -50,6 +50,7 @@ const ConnectionResponse = Schema.Struct({
   oauthClient: Schema.NullOr(OAuthClientSlug),
   oauthClientOwner: Schema.NullOr(Owner),
   oauthScope: Schema.NullOr(Schema.String),
+  missingOAuthScopes: Schema.Array(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

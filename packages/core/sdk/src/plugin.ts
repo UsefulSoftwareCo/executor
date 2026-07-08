@@ -505,11 +505,36 @@ export interface IntegrationPreset {
   readonly endpoint?: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
+  readonly specFormat?: string;
+  readonly defaultSlug?: string;
+  readonly authTemplate?: readonly IntegrationPresetAuthentication[];
+  readonly healthCheck?: HealthCheckSpec;
   readonly transport?: "remote" | "stdio";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
 }
+
+export type IntegrationPresetAuthentication =
+  | {
+      readonly slug: string;
+      readonly kind: "oauth2";
+      readonly authorizationUrl: string;
+      readonly tokenUrl: string;
+      readonly resource?: string | null;
+      readonly scopes: readonly string[];
+      readonly supportsClientIdMetadataDocument?: boolean;
+    }
+  | {
+      readonly kind: "apiKey";
+      readonly slug?: string;
+      readonly name?: string;
+      readonly placements?: readonly unknown[];
+      readonly headers?: Readonly<Record<string, readonly unknown[]>>;
+      readonly queryParams?: Readonly<Record<string, readonly unknown[]>>;
+      readonly cookies?: Readonly<Record<string, readonly unknown[]>>;
+    };
 
 export interface IntegrationPresetCatalogEntry extends IntegrationPreset {
   readonly pluginId: string;

@@ -157,6 +157,9 @@ export function integrationPresetIconUrl(
   const pluginKey = KIND_TO_PLUGIN_KEY[source.kind] ?? source.kind;
   const plugin = integrationPlugins.find((p) => p.key === pluginKey);
   const presets = plugin?.presets ?? [];
+  const exactSlugIcon = presets.find((p) => p.defaultSlug === source.id)?.icon;
+  if (exactSlugIcon) return exactSlugIcon;
+
   const sourceUrl = normalizeUrl(source.url);
   const sourceGoogleService = googleApiServiceFromUrl(source.url);
   const sourceTokens = [...tokenVariants(source.id), ...tokenVariants(source.name)];

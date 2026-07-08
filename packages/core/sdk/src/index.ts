@@ -316,6 +316,7 @@ export {
   type IntegrationConfigureDecl,
   type IntegrationConfigureSchema,
   type IntegrationPreset,
+  type IntegrationPresetAuthentication,
   type IntegrationPresetCatalogEntry,
   type ResolveToolsInput,
   type ResolveToolsResult,

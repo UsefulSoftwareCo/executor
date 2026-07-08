@@ -224,6 +224,28 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/stripe.png");
   });
 
+  it("prefers exact catalog defaultSlug icons for OpenAPI provider services", () => {
+    expect(
+      integrationPresetIconUrl({ id: "google_gmail", kind: "openapi", name: "Gmail" }, [
+        {
+          key: "openapi",
+          label: "OpenAPI",
+          add: () => null,
+          edit: () => null,
+          presets: [
+            {
+              id: "google-gmail",
+              name: "Gmail",
+              summary: "Messages.",
+              defaultSlug: "google_gmail",
+              icon: "https://example.com/gmail.png",
+            },
+          ],
+        },
+      ]),
+    ).toBe("https://example.com/gmail.png");
+  });
+
   it("does not split generic words into brand matches", () => {
     expect(
       integrationPresetIconUrl(

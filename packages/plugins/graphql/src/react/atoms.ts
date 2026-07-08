@@ -33,7 +33,7 @@ export const graphqlConfigAtom = (slug: IntegrationSlug) =>
 // Mutation atoms
 // ---------------------------------------------------------------------------
 
-export const addGraphqlIntegration = GraphqlClient.mutation("graphql", "addIntegration");
+export const createGraphqlIntegration = GraphqlClient.mutation("graphql", "addIntegration");
 
 // Merge-append custom auth methods onto an integration's `authenticationTemplate`.
 export const graphqlConfigure = GraphqlClient.mutation("graphql", "configure");
@@ -41,7 +41,7 @@ export const graphqlConfigure = GraphqlClient.mutation("graphql", "configure");
 // Optimistically slot a pending row into the shared integration catalog so the
 // integrations list reflects the new GraphQL integration before the server
 // round-trips. The reducer mirrors the catalog `Integration` shape.
-export const addGraphqlIntegrationOptimistic = integrationsOptimisticAtom.pipe(
+export const createGraphqlIntegrationOptimistic = integrationsOptimisticAtom.pipe(
   Atom.optimisticFn({
     reducer: (
       current,
@@ -69,6 +69,6 @@ export const addGraphqlIntegrationOptimistic = integrationsOptimisticAtom.pipe(
           a.name.localeCompare(b.name),
         );
       }),
-    fn: addGraphqlIntegration,
+    fn: createGraphqlIntegration,
   }),
 );

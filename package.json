@@ -75,6 +75,7 @@
     "@effect/language-service": "^0.85.1",
     "@effect/tsgo": "^0.5.2",
     "@effect/vitest": "catalog:",
+    "@executor-js/plugin-provider-service-split": "workspace:*",
     "@typescript/native-preview": "^7.0.0-dev.20260410.1",
     "@vitest/expect": "catalog:",
     "@vitest/mocker": "catalog:",

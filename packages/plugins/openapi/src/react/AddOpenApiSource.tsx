@@ -5,10 +5,12 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import {
+  AuthTemplateSlug,
   IntegrationSlug,
   type HealthCheckCandidate,
   type HealthCheckSpec,
 } from "@executor-js/sdk/shared";
+import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { integrationWriteKeys, healthCheckWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { setIntegrationHealthCheck } from "@executor-js/react/api/atoms";
 import {
@@ -43,7 +45,6 @@ import {
 } from "./auth-method-config";
 import { addOpenApiSpec, previewOpenApiSpec } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
-import { openApiPresets } from "../sdk/presets";
 import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
@@ -82,6 +83,58 @@ export const baseUrlFromSpecInput = (input: string): string => {
 export const openApiPreviewFailureMessage = (message: string | null | undefined): string =>
   `Couldn't load or parse this spec: ${message && message.trim().length > 0 ? message : "unknown error"}`;
 
+export function AddOpenApiHealthCheckSection(props: {
+  readonly presetHealthCheck?: HealthCheckSpec;
+  readonly candidates: readonly HealthCheckCandidate[];
+  readonly selected: HealthCheckCandidate | null;
+  readonly operation: string;
+  readonly onOperationChange: (operation: string) => void;
+  readonly identityField: string;
+  readonly onIdentityFieldChange: (field: string) => void;
+  readonly args: Record<string, string>;
+  readonly onArgChange: (name: string, value: string) => void;
+  readonly disabled: boolean;
+}) {
+  if (props.presetHealthCheck) {
+    return (
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium text-foreground">Health check</h3>
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-mono text-foreground">{props.presetHealthCheck.operation}</span>{" "}
+          From the catalog. Change it later from the integration page.
+        </p>
+      </section>
+    );
+  }
+
+  if (props.candidates.length === 0) return null;
+
+  return (
+    <section className="space-y-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
+        <p className="text-[11px] text-muted-foreground">
+          An optional read-only probe adds live upstream depth. For OAuth connections, validity and
+          identity come from the OAuth grant itself. For non-OAuth methods, the probe can validate
+          the credential and identify the account.
+        </p>
+      </div>
+      <HealthCheckConfigFields
+        candidates={props.candidates}
+        selected={props.selected}
+        operation={props.operation}
+        onOperationChange={props.onOperationChange}
+        identityField={props.identityField}
+        onIdentityFieldChange={props.onIdentityFieldChange}
+        args={props.args}
+        onArgChange={props.onArgChange}
+        disabled={props.disabled}
+        idPrefix="add-health-check"
+      />
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component: single progressive form. Post-redesign: preview -> addSpec
 // (register the integration catalog entry with ALL detected auth methods) →
@@ -96,6 +149,10 @@ export default function AddOpenApiSource(props: {
   initialPreset?: string;
   initialNamespace?: string;
 }) {
+  const integrationPlugins = useIntegrationPlugins();
+  const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
+  const openApiPresets = openApiPlugin?.presets;
+  const initialPreset = openApiPresets?.find((preset) => preset.id === props.initialPreset) ?? null;
   const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -106,7 +163,8 @@ export default function AddOpenApiSource(props: {
   // Agent-visible description: prefilled from the spec's `info.description`
   // until the user types (null = untouched, keep deriving from the preview).
   const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
-  const identityFallbackName = preview ? Option.getOrElse(preview.title, () => "") : "";
+  const identityFallbackName =
+    initialPreset?.name ?? (preview ? Option.getOrElse(preview.title, () => "") : "");
   const identity = useIntegrationIdentity({
     fallbackName: identityFallbackName,
     fallbackNamespace: props.initialNamespace,
@@ -159,12 +217,13 @@ export default function AddOpenApiSource(props: {
     ? resolveServerUrl(firstServer.url, Option.getOrUndefined(firstServer.variables), {})
     : "";
   const previewPresetIcon =
-    openApiPresets.find(
+    openApiPresets?.find(
       (preset) => preset.url && normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl),
     )?.icon ?? null;
 
   const resolvedBaseUrl = baseUrl.trim();
   const resolvedSourceId =
+    initialPreset?.defaultSlug ||
     slugifyNamespace(identity.namespace) ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const resolvedDisplayName =
@@ -176,15 +235,26 @@ export default function AddOpenApiSource(props: {
   // Register EVERY spec-detected auth method, not just a single selected one.
   // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
   // freshly-allocated `?? []` fallback arrays.
-  const authenticationTemplate: readonly Authentication[] = useMemo(
-    () =>
-      detectedAuthenticationTemplates(
-        preview?.headerPresets ?? [],
-        preview?.oauth2Presets ?? [],
-        resolvedBaseUrl,
-      ),
-    [preview, resolvedBaseUrl],
-  );
+  const authenticationTemplate: readonly Authentication[] = useMemo(() => {
+    if (initialPreset?.authTemplate) {
+      return initialPreset.authTemplate.flatMap((template): readonly Authentication[] =>
+        template.kind === "oauth2"
+          ? [
+              {
+                ...template,
+                slug: AuthTemplateSlug.make(template.slug),
+                resource: template.resource ?? undefined,
+              },
+            ]
+          : [],
+      );
+    }
+    return detectedAuthenticationTemplates(
+      preview?.headerPresets ?? [],
+      preview?.oauth2Presets ?? [],
+      resolvedBaseUrl,
+    );
+  }, [initialPreset?.authTemplate, preview, resolvedBaseUrl]);
 
   // Editable auth methods, seeded from the spec-detected templates. The add flow
   // registers EVERY method (P6), so this is a LIST, preserving multi-method
@@ -271,7 +341,9 @@ export default function AddOpenApiSource(props: {
     setAnalyzing(true);
     setAnalyzeError(null);
     setAddError(null);
-    const exit = await doPreview({ payload: { spec: specUrl } });
+    const exit = await doPreview({
+      payload: { spec: specUrl, specFormat: initialPreset?.specFormat },
+    });
     if (Exit.isFailure(exit)) {
       setAnalyzeError(errorMessageFromExit(exit, "Failed to parse spec"));
       setAnalyzing(false);
@@ -298,6 +370,9 @@ export default function AddOpenApiSource(props: {
           ? { description: resolvedDescription.trim() }
           : {}),
         baseUrl: resolvedBaseUrl,
+        specFormat: initialPreset?.specFormat,
+        family: initialPreset?.family,
+        healthCheck: initialPreset?.healthCheck,
         // Always send the edited method list (even empty) when the user has
         // inspected a preview: an explicit [] means "no auth methods", while
         // OMITTING the field tells the server to derive defaults from the
@@ -320,6 +395,9 @@ export default function AddOpenApiSource(props: {
     resolvedDescription,
     resolvedBaseUrl,
     editedAuthenticationTemplate,
+    initialPreset?.family,
+    initialPreset?.healthCheck,
+    initialPreset?.specFormat,
   ]);
 
   const handleAdd = async () => {
@@ -465,30 +543,20 @@ export default function AddOpenApiSource(props: {
         />
       )}
 
-      {preview && healthCheckCandidates.length > 0 && (
-        <section className="space-y-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
-            <p className="text-[11px] text-muted-foreground">
-              One read-only call Executor runs to tell whether a connection's credential is still
-              alive and, optionally, whose account it is. You can change this later, and run a live
-              preview against a key, from the integration page.
-            </p>
-          </div>
-          <HealthCheckConfigFields
-            candidates={healthCheckCandidates}
-            selected={hcSelected}
-            operation={hcOperation}
-            onOperationChange={onHcOperationChange}
-            identityField={hcIdentityField}
-            onIdentityFieldChange={setHcIdentityField}
-            args={hcArgs}
-            onArgChange={onHcArgChange}
-            disabled={adding}
-            idPrefix="add-health-check"
-          />
-        </section>
-      )}
+      {preview ? (
+        <AddOpenApiHealthCheckSection
+          presetHealthCheck={initialPreset?.healthCheck}
+          candidates={healthCheckCandidates}
+          selected={hcSelected}
+          operation={hcOperation}
+          onOperationChange={onHcOperationChange}
+          identityField={hcIdentityField}
+          onIdentityFieldChange={setHcIdentityField}
+          args={hcArgs}
+          onArgChange={onHcArgChange}
+          disabled={adding}
+        />
+      ) : null}
 
       {preview && slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
 

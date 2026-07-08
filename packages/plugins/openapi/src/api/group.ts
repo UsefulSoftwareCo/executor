@@ -2,6 +2,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import { ApiKeyAuthMethod, ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 import {
+  HealthCheckSpec,
   InternalError,
   IntegrationAlreadyExistsError,
   IntegrationNotFoundError,
@@ -68,25 +69,31 @@ const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMet
 
 const AddSpecPayload = Schema.Struct({
   spec: OpenApiSpecInputPayload,
-  slug: Schema.String,
+  slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specFormat: Schema.optional(Schema.String),
+  family: Schema.optional(Schema.String),
+  healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
 });
 
 const PreviewSpecPayload = Schema.Struct({
   spec: Schema.String,
+  specFormat: Schema.optional(Schema.String),
 });
 
 // The `configure` payload — the new/updated auth methods to merge onto the
-// integration's `authenticationTemplate`. Reuses the same `AuthenticationPayload`
-// schema as `addSpec` so a custom apiKey method round-trips identically.
+// integration's `authenticationTemplate`, plus request routing metadata.
+// Reuses the same `AuthenticationPayload` schema as `addSpec` so a custom apiKey
+// method round-trips identically.
 const ConfigurePayload = Schema.Struct({
-  authenticationTemplate: Schema.Array(AuthenticationPayload),
+  authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
   mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+  baseUrl: Schema.optional(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

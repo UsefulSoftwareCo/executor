@@ -51,6 +51,10 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Static query params applied to every request (no secret material). */
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Adapter id used to fetch/convert the source format, when not plain OpenAPI. */
+  specFormat: Schema.optional(Schema.String),
+  /** Catalog family for grouped integration display. */
+  family: Schema.optional(Schema.String),
   /** The auth methods a connection's value can be applied through. */
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
 });

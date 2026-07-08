@@ -51,6 +51,14 @@ export {
   type OpenApiPluginExtension,
   type OpenApiPluginOptions,
 } from "./plugin";
+export {
+  resolveSpecFormatAdapter,
+  type ConvertedSpec,
+  type DerivedIdentity,
+  type SpecFetchCredentials,
+  type SpecFetchInput,
+  type SpecFormatAdapter,
+} from "./spec-format";
 export { type OpenapiStore, type StoredOperation, makeDefaultOpenapiStore } from "./store";
 export {
   decodeOpenApiIntegrationConfig,

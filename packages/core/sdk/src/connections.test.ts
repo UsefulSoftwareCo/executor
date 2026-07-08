@@ -618,6 +618,29 @@ describe("tool catalog sync safety", () => {
   );
 });
 
+describe("connections.checkHealth", () => {
+  it.effect("keeps API-key connections without a probe unknown", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "secret-token",
+      });
+
+      const result = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+
+      expect(result.status).toBe("unknown");
+    }),
+  );
+});
+
 describe("execute over a connection", () => {
   it.effect("resolves the credential value and hands it to invokeTool", () =>
     Effect.gen(function* () {

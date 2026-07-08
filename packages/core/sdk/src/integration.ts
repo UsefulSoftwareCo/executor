@@ -22,6 +22,8 @@ import type { IntegrationSlug } from "./ids";
 export interface IntegrationDisplayDescriptor {
   /** Non-secret URL suitable for display metadata such as favicons. */
   readonly url?: string;
+  /** Catalog family derived from plugin config for grouped display. */
+  readonly family?: string;
 }
 
 /** Where a credential value is carried. `header`/`query` place it on an
@@ -100,6 +102,8 @@ export interface Integration {
   /** Non-secret display URL derived by the owning plugin from opaque config.
    *  Used for catalog favicons; never includes credentials or plugin config. */
   readonly displayUrl?: string;
+  /** Catalog family derived by the owning plugin from opaque config. */
+  readonly family?: string;
 }
 
 /** Plugin-owned, opaque-to-core configuration stored on the integration row. The

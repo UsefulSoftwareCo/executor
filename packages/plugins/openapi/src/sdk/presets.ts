@@ -1,3 +1,5 @@
+import type { HealthCheckSpec, IntegrationPresetAuthentication } from "@executor-js/sdk/core";
+
 export interface OpenApiPreset {
   readonly id: string;
   readonly name: string;
@@ -5,6 +7,11 @@ export interface OpenApiPreset {
   readonly url?: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
+  readonly specFormat?: string;
+  readonly defaultSlug?: string;
+  readonly authTemplate?: readonly IntegrationPresetAuthentication[];
+  readonly healthCheck?: HealthCheckSpec;
 }
 
 const openApiOnlyPresets: readonly OpenApiPreset[] = [

@@ -12,9 +12,11 @@
 
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
-import { openApiIntegrationPlugin } from "./source-plugin";
+import { createOpenApiIntegrationPlugin, type OpenApiClientConfig } from "./source-plugin";
 
-export default defineClientPlugin({
-  id: "openapi" as const,
-  integrationPlugin: openApiIntegrationPlugin,
-});
+export default function createOpenApiClientPlugin(config?: OpenApiClientConfig) {
+  return defineClientPlugin({
+    id: "openapi" as const,
+    integrationPlugin: createOpenApiIntegrationPlugin(config),
+  });
+}

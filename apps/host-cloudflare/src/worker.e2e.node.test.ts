@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
+import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
 // End-to-end test for the Cloudflare host: boots the REAL worker on workerd via
@@ -187,13 +188,48 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(integration?.slug).toBe(slug);
   }, 60_000);
 
-  it("registers the Microsoft Graph API route in the runtime plugin set", async () => {
-    const res = await worker.fetch("/api/microsoft/graph", {
+  it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {
+    const microsoftFilesPreset = microsoftCatalog.find(
+      (preset) => preset.defaultSlug === "microsoft_files",
+    );
+    expect(microsoftFilesPreset).toBeTruthy();
+
+    const removedProviderRoute = await worker.fetch("/api/microsoft/graph", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(400);
+    expect(removedProviderRoute.status).toBe(404);
+
+    const slug = `microsoft-files-${runId}`;
+    const add = await worker.fetch("/api/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: SPEC },
+        slug,
+        name: microsoftFilesPreset?.name,
+        description: microsoftFilesPreset?.summary,
+        family: microsoftFilesPreset?.family,
+        authenticationTemplate: microsoftFilesPreset?.authTemplate,
+      }),
+    });
+    expect(add.status).toBe(200);
+
+    const res = await worker.fetch(`/api/integrations/${slug}`);
+    expect(res.status).toBe(200);
+    const integration = (await res.json()) as {
+      readonly slug: string;
+      readonly kind: string;
+      readonly family?: string;
+      readonly authMethods: readonly { readonly template: string; readonly kind: string }[];
+    };
+    expect(integration.slug).toBe(slug);
+    expect(integration.kind).toBe("openapi");
+    expect(integration.family).toBe("microsoft");
+    expect(integration.authMethods.some((method) => method.template === "azureAdDelegated")).toBe(
+      true,
+    );
   });
 
   it("gates the API when dev-auth is on but treats the request as the dev admin", async () => {

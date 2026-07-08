@@ -1,7 +1,13 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { googleHttpPlugin } from "@executor-js/plugin-google/api";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
@@ -26,9 +32,10 @@ interface LocalPluginDeps {
 export default defineExecutorConfig({
   plugins: ({ activeToolkitSlug }: LocalPluginDeps = {}) =>
     [
-      openApiHttpPlugin(),
-      googleHttpPlugin(),
-      microsoftHttpPlugin(),
+      openApiHttpPlugin({
+        presets: [...googleCatalog, ...microsoftCatalog],
+        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+      }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),

@@ -1,7 +1,13 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { googleHttpPlugin } from "@executor-js/plugin-google/api";
-import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
@@ -19,9 +25,10 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 export default defineExecutorConfig({
   plugins: ({ activeToolkitSlug }: { readonly activeToolkitSlug?: string } = {}) =>
     [
-      openApiHttpPlugin(),
-      googleHttpPlugin(),
-      microsoftHttpPlugin(),
+      openApiHttpPlugin({
+        presets: [...googleCatalog, ...microsoftCatalog],
+        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+      }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),

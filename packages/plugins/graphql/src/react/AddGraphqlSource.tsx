@@ -23,7 +23,7 @@ import {
   useSlugAlreadyExists,
 } from "@executor-js/react/lib/integration-add";
 
-import { addGraphqlIntegrationOptimistic } from "./atoms";
+import { createGraphqlIntegrationOptimistic } from "./atoms";
 import { GraphqlSourceFields } from "./GraphqlSourceFields";
 import { graphqlAuthMethodInputsFromPlacements } from "./auth-method-config";
 import type { GraphqlAuthMethodInput } from "../sdk/types";
@@ -52,7 +52,7 @@ export default function AddGraphqlSource(props: {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  const doAddIntegration = useAtomSet(addGraphqlIntegrationOptimistic, {
+  const doAddIntegration = useAtomSet(createGraphqlIntegrationOptimistic, {
     mode: "promiseExit",
   });
 

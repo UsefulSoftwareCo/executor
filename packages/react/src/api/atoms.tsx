@@ -366,6 +366,7 @@ export const addConnectionOptimistic = Atom.family((owner: Owner) =>
             oauthClient: null,
             oauthClientOwner: null,
             oauthScope: null,
+            missingOAuthScopes: [],
             lastHealth: null,
           };
           return [optimistic, ...rows];

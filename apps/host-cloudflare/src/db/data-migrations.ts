@@ -7,7 +7,13 @@ import {
   type SqliteDataMigration,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
-import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
+import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+
+import {
+  providerServiceSplitDataMigration,
+  runSqliteProviderServiceSplitMigration,
+  type BlobRow,
+} from "@executor-js/plugin-provider-service-split";
 
 const TX_CONTROL = new Set(["BEGIN", "BEGIN TRANSACTION", "COMMIT", "ROLLBACK"]);
 
@@ -161,6 +167,61 @@ const copyGoogleOpenApiSpecBlobsToR2 = (
       }),
   });
 
+const copyProviderServiceSplitBlobsToR2 = (
+  client: SqliteDataMigrationClient,
+  bucket: R2Bucket,
+): Effect.Effect<readonly BlobRow[], DataMigrationError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const present: BlobRow[] = [];
+      const result = await client.execute(
+        `SELECT tenant, plugin_id, json_extract(config, '$.specHash') AS spec_hash
+         FROM integration
+         WHERE ((plugin_id = 'google' AND slug = 'google')
+             OR (plugin_id = 'microsoft' AND slug = 'microsoft'))
+           AND config IS NOT NULL
+           AND json_valid(config)
+           AND json_extract(config, '$.specHash') IS NOT NULL
+           AND json_extract(config, '$.specHash') <> ''`,
+      );
+      const seen = new Set<string>();
+      for (const row of result.rows) {
+        if (
+          typeof row.tenant !== "string" ||
+          typeof row.plugin_id !== "string" ||
+          typeof row.spec_hash !== "string"
+        ) {
+          continue;
+        }
+        for (const key of [`spec/${row.spec_hash}`, `defs/${row.spec_hash}`]) {
+          const sourceNamespace = `o:${row.tenant}/${row.plugin_id}`;
+          const sourceKey = r2ObjectName(row.tenant, row.plugin_id, key);
+          const targetKey = r2ObjectName(row.tenant, "openapi", key);
+          const source = await bucket.get(sourceKey);
+          if (source == null) continue;
+          const presenceKey = `${sourceNamespace}/${key}`;
+          if (!seen.has(presenceKey)) {
+            seen.add(presenceKey);
+            present.push({
+              id: JSON.stringify([sourceNamespace, key]),
+              namespace: sourceNamespace,
+              key,
+            });
+          }
+          if ((await bucket.head(targetKey)) == null) {
+            await bucket.put(targetKey, await source.text());
+          }
+        }
+      }
+      return present;
+    },
+    catch: (cause) =>
+      new DataMigrationError({
+        migration: providerServiceSplitDataMigration.name,
+        cause,
+      }),
+  });
+
 const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly SqliteDataMigration[] => [
   {
     name: googleOpenApiOwnershipDataMigration.name,
@@ -168,6 +229,17 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
       Effect.gen(function* () {
         if (bucket) yield* copyGoogleOpenApiSpecBlobsToR2(client, bucket);
         yield* googleOpenApiOwnershipDataMigration.run(client);
+      }),
+  },
+  {
+    name: providerServiceSplitDataMigration.name,
+    run: (client) =>
+      Effect.gen(function* () {
+        const blobs = bucket ? yield* copyProviderServiceSplitBlobsToR2(client, bucket) : [];
+        yield* runSqliteProviderServiceSplitMigration(client, {
+          blobBackend: bucket ? "external" : "database",
+          blobs,
+        }).pipe(Effect.asVoid);
       }),
   },
 ];
