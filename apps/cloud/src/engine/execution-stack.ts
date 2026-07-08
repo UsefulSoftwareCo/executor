@@ -43,6 +43,7 @@ import {
   collectTables,
 } from "@executor-js/api/server";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
+import type { AnyPlugin } from "@executor-js/sdk";
 
 import executorConfig from "../../executor.config";
 import { DbService } from "../db/db";
@@ -54,11 +55,22 @@ export { makeExecutionStack } from "@executor-js/api/server";
 // DbProvider rebuilds the fuma client over the same schema.
 export const CloudDbProvider = cloudDbProviderLayer(collectTables());
 
+const cloudPluginFactory = executorConfig.plugins as (deps: {
+  readonly workosCredentials: {
+    readonly apiKey: string;
+    readonly clientId: string;
+    readonly apiUrl?: string;
+  };
+  readonly activeToolkitSlug?: string;
+  readonly allowLocalNetwork?: boolean;
+  readonly workerLoader?: WorkerLoader;
+}) => readonly AnyPlugin[];
+
 // Fresh plugin instances per request, carrying the Worker env's WorkOS Vault
 // credentials. Matches the old `createScopedExecutor`'s `orgPlugins()`.
 export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(PluginsProvider)({
   plugins: (context) =>
-    executorConfig.plugins({
+    cloudPluginFactory({
       workosCredentials: {
         apiKey: env.WORKOS_API_KEY,
         clientId: env.WORKOS_CLIENT_ID,
@@ -66,6 +78,8 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
       },
       activeToolkitSlug:
         context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
+      allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
+      workerLoader: env.LOADER,
     }),
 });
 

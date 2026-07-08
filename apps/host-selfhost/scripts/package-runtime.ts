@@ -43,6 +43,7 @@ const externalPackages = [
   "@jitl/quickjs-wasmfile-debug-sync",
   "@jitl/quickjs-wasmfile-release-asyncify",
   "@jitl/quickjs-wasmfile-debug-asyncify",
+  "workerd",
   libsqlNativePackage(),
 ] as const;
 

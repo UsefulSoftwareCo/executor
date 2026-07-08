@@ -75,6 +75,10 @@ const makeMemoryStore = (): AppsStore & {
             }
           : null;
       }),
+    putSource: () => Effect.void,
+    listSources: () => Effect.succeed([]),
+    getSource: () => Effect.succeed(null),
+    removeSource: () => Effect.void,
   };
 };
 

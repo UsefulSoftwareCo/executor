@@ -10,6 +10,11 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
+import {
+  makeWorkerdAppToolExecutor,
+  makeWorkerBundlerBackend,
+} from "@executor-js/plugin-apps/selfhost";
+import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
@@ -38,6 +43,12 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
+      appsHttpPlugin({
+        executor: makeWorkerdAppToolExecutor(),
+        bundler: makeWorkerBundlerBackend(),
+        sourceKinds: ["git", "local-directory"],
+        allowPrivateGitHosts: true,
+      }),
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),

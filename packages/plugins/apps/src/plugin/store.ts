@@ -9,6 +9,7 @@ import {
 } from "@executor-js/sdk";
 
 import type { AppDescriptor } from "../pipeline/descriptor";
+import type { SyncDiagnostic } from "../source/app-source";
 
 export class AppPublishConflictError extends Data.TaggedError("AppPublishConflictError")<{
   readonly app: string;
@@ -47,6 +48,44 @@ export const toolCollection = definePluginStorageCollection(
   { indexes: ["app", "name", "tombstoned"] },
 );
 
+export const sourceCollection = definePluginStorageCollection(
+  "apps_sources",
+  {
+    Type: {} as AppSourceRecord,
+  },
+  { indexes: ["kind", "app"] },
+);
+
+export type AppSourceKind = "git" | "local-directory";
+
+export type AppSourceConfig =
+  | {
+      readonly kind: "git";
+      readonly url: string;
+      readonly ref?: string;
+      readonly tokenProvider?: string;
+      readonly tokenItemId?: string;
+    }
+  | {
+      readonly kind: "local-directory";
+      readonly path: string;
+    };
+
+export interface AppSourceRecord {
+  readonly slug: string;
+  readonly app: string;
+  readonly kind: AppSourceKind;
+  readonly config: AppSourceConfig;
+  readonly sourceRef?: string;
+  readonly description?: string;
+  readonly status:
+    | { readonly type: "pending" }
+    | { readonly type: "published"; readonly at: number; readonly tools: readonly string[] }
+    | { readonly type: "up-to-date"; readonly at: number; readonly tools: readonly string[] }
+    | { readonly type: "failed"; readonly at: number; readonly errors: readonly SyncDiagnostic[] };
+  readonly updatedAt: number;
+}
+
 export interface AppsStore {
   readonly putBlob: (body: string, owner: Owner) => Effect.Effect<string, StorageFailure>;
   readonly getBlob: (key: string) => Effect.Effect<string | null, StorageFailure>;
@@ -80,6 +119,13 @@ export interface AppsStore {
     } | null,
     StorageFailure
   >;
+  readonly putSource: (
+    record: AppSourceRecord,
+    owner: Owner,
+  ) => Effect.Effect<void, StorageFailure>;
+  readonly listSources: () => Effect.Effect<readonly AppSourceRecord[], StorageFailure>;
+  readonly getSource: (slug: string) => Effect.Effect<AppSourceRecord | null, StorageFailure>;
+  readonly removeSource: (slug: string, owner: Owner) => Effect.Effect<void, StorageFailure>;
 }
 
 interface PutManyEntry {
@@ -94,6 +140,7 @@ export const makeAppsStore = (input: {
 }): AppsStore => {
   const descriptors = input.pluginStorage.collection(descriptorCollection);
   const tools = input.pluginStorage.collection(toolCollection);
+  const sources = input.pluginStorage.collection(sourceCollection);
   const keyForTool = (app: string, name: string) => `${app}:${name}`;
   return {
     putBlob: (body, owner) =>
@@ -202,5 +249,12 @@ export const makeAppsStore = (input: {
             : null;
         }),
       ),
+    putSource: (record, owner) =>
+      sources.put({ owner, key: record.slug, data: record }).pipe(Effect.asVoid),
+    listSources: () =>
+      sources.list().pipe(Effect.map((entries) => entries.map((entry) => entry.data))),
+    getSource: (slug) =>
+      sources.get({ key: slug }).pipe(Effect.map((entry) => entry?.data ?? null)),
+    removeSource: (slug, owner) => sources.remove({ owner, key: slug }),
   };
 };

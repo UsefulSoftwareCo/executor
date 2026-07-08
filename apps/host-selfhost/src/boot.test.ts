@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -96,4 +96,76 @@ test("POST /executions runs code in the QuickJS sandbox", async () => {
   expect(body.status).toBe("completed");
   expect(body.text).toBe("42");
   expect(body.isError).toBe(false);
+});
+
+test("apps source sync publishes and invokes a local-directory tool over HTTP", async () => {
+  const root = mkdtempSync(join(tmpdir(), "eh-app-src-"));
+  mkdirSync(join(root, "tools"), { recursive: true });
+  writeFileSync(
+    join(root, "tools", "greeter.ts"),
+    `
+      import { defineTool } from "executor:app";
+
+      export default defineTool({
+        description: "Greets through the app source path",
+        input: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+        },
+        async handler(input) {
+          return { greeting: "hello " + input.name };
+        },
+      });
+    `,
+  );
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "local-greeter" }));
+
+  const created = await handler(
+    new Request("http://localhost/api/apps/sources", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "local-directory",
+        slug: "local-greeter",
+        app: "local-greeter",
+        path: root,
+      }),
+    }),
+  );
+  expect(created.status).toBe(200);
+
+  const synced = await handler(
+    new Request("http://localhost/api/apps/sources/local-greeter/sync", { method: "POST" }),
+  );
+  expect(synced.status).toBe(200);
+  const syncBody = (await synced.json()) as {
+    readonly status: string;
+    readonly tools: readonly string[];
+    readonly errors?: readonly unknown[];
+  };
+  expect(syncBody.status, JSON.stringify(syncBody.errors)).toBe("published");
+  expect(syncBody.tools).toEqual(["greeter"]);
+
+  const listed = await handler(new Request("http://localhost/api/tools"));
+  expect(listed.status).toBe(200);
+  const tools = (await listed.json()) as ReadonlyArray<{ readonly address: string }>;
+  expect(
+    tools.some((tool) => tool.address === "tools.apps.org.published.greeter"),
+    JSON.stringify(tools.map((tool) => tool.address)),
+  ).toBe(true);
+
+  const invoked = await handler(
+    new Request("http://localhost/api/executions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: 'export default await tools.apps.org.published.greeter({ name: "Ada" })',
+      }),
+    }),
+  );
+  expect(invoked.status).toBe(200);
+  const output = (await invoked.json()) as { readonly text: string; readonly isError: boolean };
+  expect(output.isError).toBe(false);
+  expect(output.text).toContain("hello Ada");
 });
