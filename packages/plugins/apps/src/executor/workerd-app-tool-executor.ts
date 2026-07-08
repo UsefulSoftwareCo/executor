@@ -86,7 +86,22 @@ const integrationDeclaration = (value) => {
   if (typeof value.slug !== "string" || (value.mode !== "one" && value.mode !== "many")) return null;
   return { slug: value.slug, mode: value.mode, ...(typeof value.description === "string" ? { description: value.description } : {}) };
 };
-const jsonSchemaFor = (schema) => schema === undefined ? undefined : (isRecord(schema) && isRecord(schema["~standard"]) ? {} : schema);
+const jsonSchemaFor = (schema, side, toolName, sourcePath) => {
+  if (schema === undefined) return undefined;
+  if (!isRecord(schema) || !isRecord(schema["~standard"])) return schema;
+  const jsonSchema = schema["~standard"].jsonSchema;
+  if (!isRecord(jsonSchema) || typeof jsonSchema[side] !== "function") {
+    throw fail("collect", 'tool "' + toolName + '" ' + side + ' schema library does not expose the Standard Schema jsonSchema extension', [issue(sourcePath, side + " schema library does not expose the Standard Schema jsonSchema extension")]);
+  }
+  try {
+    const converted = jsonSchema[side]({});
+    if (!isRecord(converted)) return converted;
+    const { $schema: _metaSchema, ...withoutMetaSchema } = converted;
+    return withoutMetaSchema;
+  } catch (cause) {
+    throw fail("collect", 'tool "' + toolName + '" ' + side + ' schema conversion failed', [issue(sourcePath, side + " schema conversion failed")], cause);
+  }
+};
 const collectIntegrations = (toolName, sourcePath, declarations, inputJsonSchema) => {
   if (declarations === undefined) return {};
   if (!isRecord(declarations)) throw fail("collect", 'tool "' + toolName + '" integrations must be a record', [issue(sourcePath, "integrations must be a record")]);
@@ -116,9 +131,9 @@ const projectInputSchema = (inputJsonSchema, integrations) => {
 };
 const collectFromExport = (exported, fileSlug, sourcePath) => {
   if (isDefinedTool(exported)) {
-    const inputJsonSchema = jsonSchemaFor(exported.input);
+    const inputJsonSchema = jsonSchemaFor(exported.input, "input", fileSlug, sourcePath);
     const integrations = collectIntegrations(fileSlug, sourcePath, exported.integrations, inputJsonSchema);
-    return { tools: [{ toolName: fileSlug, description: exported.description, integrations, inputSchema: projectInputSchema(inputJsonSchema, integrations), outputSchema: jsonSchemaFor(exported.output), annotations: exported.annotations }] };
+    return { tools: [{ toolName: fileSlug, description: exported.description, integrations, inputSchema: projectInputSchema(inputJsonSchema, integrations), outputSchema: jsonSchemaFor(exported.output, "output", fileSlug, sourcePath), annotations: exported.annotations }] };
   }
   if (!isRecord(exported)) throw fail("collect", "default export in " + sourcePath + " must be a tool, record, or factory", [issue(sourcePath, "unsupported default export")]);
   const tools = [];
@@ -129,10 +144,10 @@ const collectFromExport = (exported, fileSlug, sourcePath) => {
     if (!validToolKey(key)) throw fail("collect", 'record export key "' + key + '" is not a valid tool slug', [issue(sourcePath, "invalid record key " + key)]);
     const toolName = fileSlug + "__" + key;
     if (seen.has(toolName)) throw fail("collect", 'duplicate tool name "' + toolName + '"', [issue(sourcePath, "duplicate tool name " + toolName)]);
-    const inputJsonSchema = jsonSchemaFor(value.input);
+    const inputJsonSchema = jsonSchemaFor(value.input, "input", toolName, sourcePath);
     const integrations = collectIntegrations(toolName, sourcePath, value.integrations, inputJsonSchema);
     seen.add(toolName);
-    tools.push({ toolName, exportKey: key, description: value.description, integrations, inputSchema: projectInputSchema(inputJsonSchema, integrations), outputSchema: jsonSchemaFor(value.output), annotations: value.annotations });
+    tools.push({ toolName, exportKey: key, description: value.description, integrations, inputSchema: projectInputSchema(inputJsonSchema, integrations), outputSchema: jsonSchemaFor(value.output, "output", toolName, sourcePath), annotations: value.annotations });
   }
   if (tools.length === 0) throw fail("collect", "record export in " + sourcePath + " contains no defineTool entries", [issue(sourcePath, "no tools found")]);
   return { tools };
@@ -208,7 +223,7 @@ export default {
           const exported = await resolveDefault();
           const tool = selectTool(exported, input.toolName);
           if (!isDefinedTool(tool)) throw fail("invoke", "tool not found in bundle: " + input.toolName);
-          const inputJsonSchema = jsonSchemaFor(tool.input);
+          const inputJsonSchema = jsonSchemaFor(tool.input, "input", input.toolName, input.toolName);
           const integrations = collectIntegrations(input.toolName, input.toolName, tool.integrations, inputJsonSchema);
           const split = splitInvokeInput(env, input.toolName, input.input, integrations);
           const decoded = await validateStandard(tool.input, split.input, "input");

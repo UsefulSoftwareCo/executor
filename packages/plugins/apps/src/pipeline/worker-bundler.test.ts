@@ -63,6 +63,11 @@ describe("worker-bundler backend", () => {
         sourcePath: "tools/greet.ts",
       });
       expect(collected.tools.map((tool) => tool.toolName)).toEqual(["greet"]);
+      expect(collected.tools[0]?.inputSchema).toMatchObject({
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      });
       const invoked = yield* executor.invoke(
         bundled.code,
         { toolName: "greet" },

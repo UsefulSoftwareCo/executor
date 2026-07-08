@@ -1,7 +1,6 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-double-cast, executor/no-promise-reject, executor/no-instanceof-tagged-error -- boundary: in-process dynamic-import backing converts JavaScript exceptions into typed AppExecutorError */
 import { Buffer } from "node:buffer";
 import { Data, Effect, Predicate } from "effect";
-import { z } from "zod";
 
 import { validToolKey } from "../pipeline/discover";
 import { stableStringify } from "../pipeline/descriptor";
@@ -114,13 +113,39 @@ const validateStandard = async (
   return isRecord(result) && "value" in result ? result.value : value;
 };
 
-const jsonSchemaFor = (schema: unknown): unknown => {
+const jsonSchemaFor = (
+  schema: unknown,
+  side: "input" | "output",
+  toolName: string,
+  sourcePath: string,
+): unknown => {
   if (schema === undefined) return undefined;
   if (isRecord(schema) && isRecord(schema["~standard"])) {
+    const jsonSchema = schema["~standard"].jsonSchema;
+    if (!isRecord(jsonSchema) || typeof jsonSchema[side] !== "function") {
+      throw new AppExecutorError({
+        kind: "collect",
+        message: `tool "${toolName}" ${side} schema library does not expose the Standard Schema jsonSchema extension`,
+        diagnostics: [
+          {
+            path: sourcePath,
+            message: `${side} schema library does not expose the Standard Schema jsonSchema extension`,
+          },
+        ],
+      });
+    }
     try {
-      return z.toJSONSchema(schema as unknown as z.ZodType);
-    } catch {
-      return {};
+      const converted = jsonSchema[side]({});
+      if (!isRecord(converted)) return converted;
+      const { $schema: _metaSchema, ...withoutMetaSchema } = converted;
+      return withoutMetaSchema;
+    } catch (cause) {
+      throw new AppExecutorError({
+        kind: "collect",
+        message: `tool "${toolName}" ${side} schema conversion failed`,
+        diagnostics: [{ path: sourcePath, message: `${side} schema conversion failed` }],
+        cause,
+      });
     }
   }
   return schema;
@@ -243,7 +268,7 @@ const collectFromExport = (
   sourcePath: string,
 ): CollectedModule => {
   if (isDefinedTool(exported)) {
-    const inputJsonSchema = jsonSchemaFor(exported.input);
+    const inputJsonSchema = jsonSchemaFor(exported.input, "input", fileSlug, sourcePath);
     const integrations = collectIntegrations(
       fileSlug,
       sourcePath,
@@ -257,7 +282,7 @@ const collectFromExport = (
           description: exported.description,
           integrations,
           inputSchema: projectInputSchema(inputJsonSchema, integrations),
-          outputSchema: jsonSchemaFor(exported.output),
+          outputSchema: jsonSchemaFor(exported.output, "output", fileSlug, sourcePath),
           annotations: exported.annotations,
         },
       ],
@@ -296,7 +321,7 @@ const collectFromExport = (
         diagnostics: [{ path: sourcePath, message: `duplicate tool name "${toolName}"` }],
       });
     }
-    const inputJsonSchema = jsonSchemaFor(value.input);
+    const inputJsonSchema = jsonSchemaFor(value.input, "input", toolName, sourcePath);
     const integrations = collectIntegrations(
       toolName,
       sourcePath,
@@ -310,7 +335,7 @@ const collectFromExport = (
       description: value.description,
       integrations,
       inputSchema: projectInputSchema(inputJsonSchema, integrations),
-      outputSchema: jsonSchemaFor(value.output),
+      outputSchema: jsonSchemaFor(value.output, "output", toolName, sourcePath),
       annotations: value.annotations,
     });
   }
@@ -442,7 +467,12 @@ export const makeInProcessAppToolExecutor = (): AppToolExecutor => ({
                 message: `tool not found in bundle: ${entry.toolName}`,
               });
             }
-            const inputJsonSchema = jsonSchemaFor(tool.input);
+            const inputJsonSchema = jsonSchemaFor(
+              tool.input,
+              "input",
+              entry.toolName,
+              entry.toolName,
+            );
             const integrations = collectIntegrations(
               entry.toolName,
               entry.toolName,
