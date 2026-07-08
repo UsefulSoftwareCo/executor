@@ -33,13 +33,19 @@ import {
 } from "@executor-js/sdk";
 
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
-import { googleCatalog, googleDiscoveryAdapter } from "@executor-js/plugin-google";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
 import { graphqlPlugin } from "@executor-js/plugin-graphql";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { mcpPlugin } from "@executor-js/plugin-mcp";
 import { onepasswordPlugin } from "@executor-js/plugin-onepassword";
 import { openApiPlugin, variable } from "@executor-js/plugin-openapi";
-import { microsoftCatalog, microsoftGraphAdapter } from "@executor-js/plugin-microsoft";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { workosVaultPlugin } from "@executor-js/plugin-workos-vault";
 
 // ---------------------------------------------------------------------------

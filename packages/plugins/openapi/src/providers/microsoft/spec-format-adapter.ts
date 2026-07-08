@@ -1,5 +1,6 @@
 import { Effect } from "effect";
-import type { SpecFormatAdapter } from "@executor-js/plugin-openapi";
+
+import type { SpecFormatAdapter } from "../../sdk/spec-format";
 
 import { buildMicrosoftGraphOpenApiSpec, microsoftGraphKeepPathItem } from "./graph";
 

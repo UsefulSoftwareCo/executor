@@ -3,18 +3,17 @@ import type { Layer } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { AuthTemplateSlug } from "@executor-js/sdk/core";
+import { AuthenticationSchema, type OpenApiIntegrationConfig } from "../../sdk/config";
+import { OpenApiParseError } from "../../sdk/errors";
 import {
-  AuthenticationSchema,
-  OpenApiParseError,
   parseEntry,
   parseHead,
   parseSmallComponents,
   structuralSplit,
-  type Authentication,
   type KeepPathItem,
-  type OpenApiIntegrationConfig,
   type SpecStructure,
-} from "@executor-js/plugin-openapi";
+} from "../../sdk/split";
+import type { Authentication } from "../../sdk/types";
 
 import {
   MICROSOFT_AUTHORIZATION_URL,

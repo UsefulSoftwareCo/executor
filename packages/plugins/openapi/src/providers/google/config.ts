@@ -1,5 +1,7 @@
 import { Option, Schema } from "effect";
-import { AuthenticationSchema, type Authentication } from "@executor-js/plugin-openapi";
+
+import { AuthenticationSchema } from "../../sdk/config";
+import type { Authentication } from "../../sdk/types";
 
 export const GoogleIntegrationConfigSchema = Schema.Struct({
   specHash: Schema.optional(Schema.String),

@@ -29,7 +29,7 @@ import {
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
   microsoftCatalog,
   microsoftGraphAdapter,
-} from "@executor-js/plugin-microsoft";
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { ConnectionName, IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 

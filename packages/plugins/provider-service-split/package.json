@@ -16,8 +16,6 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@executor-js/plugin-google": "workspace:*",
-    "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "effect": "catalog:"

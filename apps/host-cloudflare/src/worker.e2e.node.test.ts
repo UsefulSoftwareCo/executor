@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
-import { microsoftCatalog } from "@executor-js/plugin-microsoft";
+import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
 // End-to-end test for the Cloudflare host: boots the REAL worker on workerd via

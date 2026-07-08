@@ -17,7 +17,7 @@ import {
   type ToolPolicyRow,
   type ToolRow,
 } from "./planner";
-import { googleCatalog } from "@executor-js/plugin-google";
+import { googleCatalog } from "@executor-js/plugin-openapi/providers/google";
 
 const now = "2026-01-01T00:00:00.000Z";
 

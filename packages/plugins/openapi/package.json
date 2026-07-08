@@ -22,6 +22,8 @@
     "./react": "./src/react/index.ts",
     "./client": "./src/react/plugin-client.tsx",
     "./presets": "./src/sdk/presets.ts",
+    "./providers/google": "./src/providers/google/index.ts",
+    "./providers/microsoft": "./src/providers/microsoft/index.ts",
     "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
@@ -43,6 +45,18 @@
         "import": {
           "types": "./dist/react/plugin-client.d.ts",
           "default": "./dist/client.js"
+        }
+      },
+      "./providers/google": {
+        "import": {
+          "types": "./dist/providers/google/index.d.ts",
+          "default": "./dist/providers/google.js"
+        }
+      },
+      "./providers/microsoft": {
+        "import": {
+          "types": "./dist/providers/microsoft/index.d.ts",
+          "default": "./dist/providers/microsoft.js"
         }
       },
       "./testing": {

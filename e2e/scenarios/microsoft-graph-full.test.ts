@@ -8,7 +8,7 @@ import {
   MICROSOFT_GRAPH_OPENAPI_URL,
   microsoftCatalog,
   microsoftGraphAdapter,
-} from "@executor-js/plugin-microsoft";
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 

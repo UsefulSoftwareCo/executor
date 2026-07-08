@@ -7,7 +7,7 @@ import {
   type SqliteDataMigration,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
-import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
+import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
 
 import {
   providerServiceSplitDataMigration,

@@ -5,7 +5,8 @@
 import { Effect, Option, Predicate, Schema, SchemaGetter } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-import { OpenApiParseError, type Authentication } from "@executor-js/plugin-openapi";
+import { OpenApiParseError } from "../../sdk/errors";
+import type { Authentication } from "../../sdk/types";
 import { compactGoogleOAuthScopes } from "./oauth-scopes";
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 

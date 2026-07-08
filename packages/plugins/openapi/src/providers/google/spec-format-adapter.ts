@@ -1,10 +1,7 @@
 import { Effect, Schema } from "effect";
 
-import {
-  OpenApiParseError,
-  type DerivedIdentity,
-  type SpecFormatAdapter,
-} from "@executor-js/plugin-openapi";
+import { OpenApiParseError } from "../../sdk/errors";
+import { type DerivedIdentity, type SpecFormatAdapter } from "../../sdk/spec-format";
 
 import {
   convertGoogleDiscoveryBundleToOpenApi,

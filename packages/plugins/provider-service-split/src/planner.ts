@@ -1,11 +1,14 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor, executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-json-parse -- boundary: one-shot provider service split planner preserves the throwing dry-run contract used by migration tooling */
 import { createHash } from "node:crypto";
 
-import { googleCatalog, googlePresetForDiscoveryUrl } from "@executor-js/plugin-google";
+import {
+  googleCatalog,
+  googlePresetForDiscoveryUrl,
+} from "@executor-js/plugin-openapi/providers/google";
 import {
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   microsoftCatalog,
-} from "@executor-js/plugin-microsoft";
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import type { OpenApiPreset } from "@executor-js/plugin-openapi/presets";
 
 type MonolithPluginId = "google" | "microsoft";

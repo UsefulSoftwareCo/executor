@@ -1,6 +1,12 @@
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { googleCatalog, googleDiscoveryAdapter } from "@executor-js/plugin-google";
-import { microsoftCatalog, microsoftGraphAdapter } from "@executor-js/plugin-microsoft";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
