@@ -26,7 +26,17 @@ export interface CollectedTool {
   readonly description: string;
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
-  readonly integrations: Readonly<Record<string, { readonly slug: string }>>;
+  readonly integrations: Readonly<
+    Record<
+      string,
+      {
+        readonly slug: string;
+        readonly mode: "one" | "many";
+        readonly all: boolean;
+        readonly description?: string;
+      }
+    >
+  >;
   readonly annotations?: {
     readonly readOnly?: boolean;
     readonly destructive?: boolean;
@@ -59,8 +69,6 @@ export interface AppToolExecutor {
     limits: { readonly timeoutMs: number },
   ) => Effect.Effect<InvokeOutcome, AppExecutorError>;
 }
-
-const EXECUTOR_INTEGRATION_META = "~executor";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -119,104 +127,111 @@ const jsonSchemaFor = (schema: unknown): unknown => {
   return schema;
 };
 
-const integrationMarker = (value: unknown): { readonly slug: string } | null => {
+type CollectedIntegrationDecl = CollectedTool["integrations"][string];
+
+const integrationDeclaration = (value: unknown): CollectedIntegrationDecl | null => {
   if (!isRecord(value)) return null;
-  const direct = value[EXECUTOR_INTEGRATION_META];
-  if (isRecord(direct) && direct.kind === "integration" && typeof direct.slug === "string") {
-    return { slug: direct.slug };
+  if (value.kind !== "integration") return null;
+  if (typeof value.slug !== "string" || (value.mode !== "one" && value.mode !== "many")) {
+    return null;
   }
-  const meta = isRecord(value._def) ? value._def.metadata : undefined;
-  const marker = isRecord(meta) ? meta[EXECUTOR_INTEGRATION_META] : undefined;
-  return isRecord(marker) && marker.kind === "integration" && typeof marker.slug === "string"
-    ? { slug: marker.slug }
-    : null;
-};
-
-const shapeOf = (schema: unknown): Record<string, unknown> | null => {
-  if (!isRecord(schema)) return null;
-  const shape = schema.shape;
-  if (isRecord(shape)) return shape;
-  if (typeof shape === "function") {
-    const out = shape();
-    return isRecord(out) ? out : null;
-  }
-  return null;
-};
-
-const findNestedIntegration = (
-  value: unknown,
-  path: readonly string[],
-): readonly string[] | null => {
-  if (integrationMarker(value)) return path;
-  const shape = shapeOf(value);
-  if (shape) {
-    for (const [key, child] of Object.entries(shape)) {
-      const nested = findNestedIntegration(child, [...path, key]);
-      if (nested) return nested;
-    }
-  }
-  return null;
+  return {
+    slug: value.slug,
+    mode: value.mode,
+    all: value.allConnections === true,
+    ...(typeof value.description === "string" ? { description: value.description } : {}),
+  };
 };
 
 const collectIntegrations = (
   toolName: string,
   sourcePath: string,
-  input: unknown,
-): Readonly<Record<string, { readonly slug: string }>> => {
-  const shape = shapeOf(input);
-  if (!shape) return {};
-  const out: Record<string, { readonly slug: string }> = {};
-  for (const [field, fieldSchema] of Object.entries(shape)) {
-    const marker = integrationMarker(fieldSchema);
-    if (marker) {
-      out[field] = marker;
-      continue;
-    }
-    const nested = findNestedIntegration(fieldSchema, [field]);
-    if (nested) {
+  declarations: unknown,
+  inputJsonSchema: unknown,
+): CollectedTool["integrations"] => {
+  if (declarations === undefined) return {};
+  if (!isRecord(declarations)) {
+    throw new AppExecutorError({
+      kind: "collect",
+      message: `tool "${toolName}" integrations must be a record`,
+      diagnostics: [{ path: sourcePath, message: "integrations must be a record" }],
+    });
+  }
+  const inputProperties =
+    isRecord(inputJsonSchema) && isRecord(inputJsonSchema.properties)
+      ? inputJsonSchema.properties
+      : {};
+  const out: Record<string, CollectedIntegrationDecl> = {};
+  for (const [field, raw] of Object.entries(declarations)) {
+    if (Object.prototype.hasOwnProperty.call(inputProperties, field)) {
       throw new AppExecutorError({
         kind: "collect",
-        message: `tool "${toolName}" declares nested integration at "${nested.join(".")}"`,
+        message: `tool "${toolName}" integration key "${field}" collides with input field`,
         diagnostics: [
-          {
-            path: sourcePath,
-            message: `integration() fields must be top-level input fields: ${nested.join(".")}`,
-          },
+          { path: sourcePath, message: `integration key collides with input: ${field}` },
         ],
       });
     }
+    const decl = integrationDeclaration(raw);
+    if (!decl) {
+      throw new AppExecutorError({
+        kind: "collect",
+        message: `tool "${toolName}" integration "${field}" is not a valid declaration`,
+        diagnostics: [{ path: sourcePath, message: `invalid integration declaration: ${field}` }],
+      });
+    }
+    if (decl.mode === "one" && decl.all) {
+      throw new AppExecutorError({
+        kind: "collect",
+        message: `tool "${toolName}" integration "${field}" calls .all() without .array()`,
+        diagnostics: [{ path: sourcePath, message: `.all() requires .array(): ${field}` }],
+      });
+    }
+    out[field] = decl;
   }
   return out;
 };
 
-const projectInputSchema = (schema: unknown): unknown => {
-  const shape = shapeOf(schema);
-  if (!shape) return jsonSchemaFor(schema);
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
-  for (const [field, fieldSchema] of Object.entries(shape)) {
-    const marker = integrationMarker(fieldSchema);
-    if (marker) {
+const projectInputSchema = (
+  inputJsonSchema: unknown,
+  integrations: CollectedTool["integrations"],
+): unknown => {
+  const base = isRecord(inputJsonSchema) ? inputJsonSchema : {};
+  const properties = isRecord(base.properties) ? { ...base.properties } : {};
+  const required = Array.isArray(base.required) ? [...base.required] : [];
+  for (const [field, decl] of Object.entries(integrations)) {
+    if (decl.mode === "one") {
       properties[field] = {
         type: "string",
-        description: `Connection address for ${marker.slug}`,
+        description: decl.description ?? `Connection for ${decl.slug}`,
       };
       required.push(field);
     } else {
-      properties[field] = jsonSchemaFor(fieldSchema);
+      properties[field] = {
+        type: "array",
+        items: { type: "string" },
+        description: decl.description ?? `Connections for ${decl.slug}`,
+      };
+      if (!decl.all) required.push(field);
     }
   }
-  return { type: "object", properties, ...(required.length > 0 ? { required } : {}) };
+  return {
+    ...base,
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required: [...new Set(required)] } : {}),
+  };
 };
 
 const isDefinedTool = (
   value: unknown,
 ): value is {
   readonly description: string;
+  readonly integrations?: unknown;
   readonly input: unknown;
   readonly output?: unknown;
   readonly annotations?: CollectedTool["annotations"];
-  readonly handler: (input: unknown, ctx: Record<string, never>) => unknown;
+  readonly handler: (input: unknown, ctx: Record<string, unknown>) => unknown;
 } =>
   isRecord(value) &&
   value["~executorAppTool"] === true &&
@@ -230,13 +245,20 @@ const collectFromExport = (
   sourcePath: string,
 ): CollectedModule => {
   if (isDefinedTool(exported)) {
+    const inputJsonSchema = jsonSchemaFor(exported.input);
+    const integrations = collectIntegrations(
+      fileSlug,
+      sourcePath,
+      exported.integrations,
+      inputJsonSchema,
+    );
     return {
       tools: [
         {
           toolName: fileSlug,
           description: exported.description,
-          integrations: collectIntegrations(fileSlug, sourcePath, exported.input),
-          inputSchema: projectInputSchema(exported.input),
+          integrations,
+          inputSchema: projectInputSchema(inputJsonSchema, integrations),
           outputSchema: jsonSchemaFor(exported.output),
           annotations: exported.annotations,
         },
@@ -276,13 +298,20 @@ const collectFromExport = (
         diagnostics: [{ path: sourcePath, message: `duplicate tool name "${toolName}"` }],
       });
     }
+    const inputJsonSchema = jsonSchemaFor(value.input);
+    const integrations = collectIntegrations(
+      toolName,
+      sourcePath,
+      value.integrations,
+      inputJsonSchema,
+    );
     seen.add(toolName);
     tools.push({
       toolName,
       exportKey: key,
       description: value.description,
-      integrations: collectIntegrations(toolName, sourcePath, value.input),
-      inputSchema: projectInputSchema(value.input),
+      integrations,
+      inputSchema: projectInputSchema(inputJsonSchema, integrations),
       outputSchema: jsonSchemaFor(value.output),
       annotations: value.annotations,
     });
@@ -323,16 +352,53 @@ const timeout = <A>(promise: Promise<A>, timeoutMs: number): Promise<A> =>
     }),
   ]);
 
-const makeClient = (prefix: readonly string[], bridge: AppToolBridge): unknown =>
+const makeClient = (root: string, prefix: readonly string[], bridge: AppToolBridge): unknown =>
   new Proxy(() => undefined, {
     get(_target, prop) {
       if (prop === "then" || typeof prop === "symbol") return undefined;
-      return makeClient([...prefix, String(prop)], bridge);
+      return makeClient(root, [...prefix, String(prop)], bridge);
     },
     apply(_target, _thisArg, args) {
-      return bridge.call(prefix.join("."), args[0] ?? {});
+      return bridge.call(`${root}.${prefix.join(".")}`, args[0] ?? {});
     },
   });
+
+const splitInvokeInput = (
+  toolName: string,
+  input: unknown,
+  integrations: CollectedTool["integrations"],
+  bridge: AppToolBridge,
+): { readonly input: Record<string, unknown>; readonly integrations: Record<string, unknown> } => {
+  const payload = isRecord(input) ? input : {};
+  const dataInput: Record<string, unknown> = { ...payload };
+  const handles: Record<string, unknown> = {};
+  for (const [field, decl] of Object.entries(integrations)) {
+    const raw = payload[field];
+    delete dataInput[field];
+    if (decl.mode === "one") {
+      if (typeof raw !== "string" || raw.length === 0) {
+        throw new AppExecutorError({
+          kind: "input_validation",
+          message: `tool "${toolName}" integration "${field}" must be a connection address`,
+        });
+      }
+      handles[field] = makeClient(field, [], bridge);
+      continue;
+    }
+    if (raw === undefined && decl.all) {
+      handles[field] = [];
+      continue;
+    }
+    if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string" || item.length === 0)) {
+      throw new AppExecutorError({
+        kind: "input_validation",
+        message: `tool "${toolName}" integration "${field}" must be connection addresses`,
+      });
+    }
+    handles[field] = raw.map((_address, index) => makeClient(`${field}#${index}`, [], bridge));
+  }
+  return { input: dataInput, integrations: handles };
+};
 
 /** In-process backing for unit tests only. It is not a security boundary. */
 export const makeInProcessAppToolExecutor = (): AppToolExecutor => ({
@@ -382,18 +448,16 @@ export const makeInProcessAppToolExecutor = (): AppToolExecutor => ({
                 message: `tool not found in bundle: ${entry.toolName}`,
               });
             }
-            const integrations = collectIntegrations(entry.toolName, entry.toolName, tool.input);
-            const decoded = (await validateStandard(tool.input, input, "input")) as Record<
-              string,
-              unknown
-            >;
-            const handlerInput = { ...decoded };
-            for (const field of Object.keys(integrations)) {
-              handlerInput[field] = makeClient([], {
-                call: (toolPath, args) => bridge.call(`${field}.${toolPath}`, args),
-              });
-            }
-            const output = await tool.handler(handlerInput, {});
+            const inputJsonSchema = jsonSchemaFor(tool.input);
+            const integrations = collectIntegrations(
+              entry.toolName,
+              entry.toolName,
+              tool.integrations,
+              inputJsonSchema,
+            );
+            const split = splitInvokeInput(entry.toolName, input, integrations, bridge);
+            const decoded = await validateStandard(tool.input, split.input, "input");
+            const output = await tool.handler(decoded, split.integrations);
             return { output: await validateStandard(tool.output, output, "output") };
           })(),
           limits.timeoutMs,

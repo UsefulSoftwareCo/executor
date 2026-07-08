@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
-import type { AppsStore } from "../plugin/store";
+import { AppPublishConflictError, type AppsStore } from "../plugin/store";
 import { makeInProcessAppToolExecutor } from "../executor/app-tool-executor";
 import type { AppDescriptor } from "./descriptor";
 import { discover } from "./discover";
@@ -21,12 +21,16 @@ const tool = (description = "Tool") => `
   });
 `;
 
-const makeMemoryStore = (): AppsStore & { readonly rows: Map<string, unknown> } => {
+const makeMemoryStore = (): AppsStore & {
+  readonly rows: Map<string, unknown>;
+  readonly blobs: Map<string, string>;
+} => {
   const blobs = new Map<string, string>();
   const rows = new Map<string, unknown>();
   let descriptor: AppDescriptor | null = null;
   return {
     rows,
+    blobs,
     putBlob: (body) =>
       Effect.sync(() => {
         const key = `blob:${body.length}:${blobs.size}`;
@@ -40,9 +44,18 @@ const makeMemoryStore = (): AppsStore & { readonly rows: Map<string, unknown> } 
           ? { sourceRef: descriptor.sourceRef, descriptorKey: descriptor.descriptorKey }
           : null,
       ),
-    putPublished: (next) =>
-      Effect.sync(() => {
+    putPublished: (next, _owner, expectedSourceRef) =>
+      Effect.gen(function* () {
+        const actualSourceRef = descriptor?.sourceRef ?? null;
+        if (actualSourceRef !== expectedSourceRef) {
+          return yield* new AppPublishConflictError({
+            app: next.app,
+            expectedSourceRef,
+            actualSourceRef,
+          });
+        }
         descriptor = next;
+        for (const key of rows.keys()) rows.delete(key);
         for (const item of next.tools) rows.set(item.name, item);
       }),
     listActiveTools: () => Effect.sync(() => descriptor?.tools ?? []),
@@ -62,6 +75,28 @@ const makeMemoryStore = (): AppsStore & { readonly rows: Map<string, unknown> } 
             }
           : null;
       }),
+  };
+};
+
+const makeBarrierStore = () => {
+  const store = makeMemoryStore();
+  let reads = 0;
+  let release: (() => void) | null = null;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    ...store,
+    getDescriptorRecord: () =>
+      Effect.promise(async () => {
+        reads += 1;
+        if (reads === 2) release?.();
+        if (reads <= 2) await barrier;
+        return null;
+      }),
+  } satisfies AppsStore & {
+    readonly rows: Map<string, unknown>;
+    readonly blobs: Map<string, string>;
   };
 };
 
@@ -142,6 +177,61 @@ describe("publish", () => {
         },
       ).pipe(Effect.flip);
       expect(store.rows.size).toBe(0);
+    }),
+  );
+
+  it.effect("leaves no rows or blobs when one tool fails collect", () =>
+    Effect.gen(function* () {
+      const store = makeMemoryStore();
+      yield* publish(
+        { store, executor: makeInProcessAppToolExecutor() },
+        {
+          app: "crm",
+          sourceRef: "sha-1",
+          files: [
+            file("tools/ok.ts", tool("OK")),
+            file(
+              "tools/bad.ts",
+              `
+                import { z } from "zod";
+                import { defineTool, integration } from "executor:app";
+                export default defineTool({
+                  description: "Bad",
+                  integrations: { crm: integration("dealcloud").all() },
+                  input: z.object({}),
+                  handler(input) { return input; },
+                });
+              `,
+            ),
+          ],
+        },
+      ).pipe(Effect.flip);
+      expect(store.rows.size).toBe(0);
+      expect(store.blobs.size).toBe(0);
+    }),
+  );
+
+  it.effect("guards concurrent publishes for the same app", () =>
+    Effect.gen(function* () {
+      const store = makeBarrierStore();
+      const results = yield* Effect.all(
+        [
+          publish(
+            { store, executor: makeInProcessAppToolExecutor(), now: () => 1 },
+            { app: "crm", sourceRef: "sha-a", files: [file("tools/a.ts", tool("A"))] },
+          ).pipe(Effect.result),
+          publish(
+            { store, executor: makeInProcessAppToolExecutor(), now: () => 2 },
+            { app: "crm", sourceRef: "sha-b", files: [file("tools/b.ts", tool("B"))] },
+          ).pipe(Effect.result),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const successes = results.filter(Result.isSuccess);
+      const failures = results.filter(Result.isFailure);
+      expect(successes).toHaveLength(1);
+      expect(failures).toHaveLength(1);
+      expect([...store.rows.keys()]).toHaveLength(1);
     }),
   );
 });

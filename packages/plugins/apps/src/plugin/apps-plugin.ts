@@ -103,7 +103,7 @@ export const makeAppsPlugin = (options?: { readonly executor?: AppToolExecutor }
       }),
   }))();
 
-const projectAppsToolSchema = (
+export const projectAppsToolSchema = (
   ctx: PluginCtx<AppsStore>,
   toolName: string,
   inputSchema: unknown,
@@ -123,10 +123,11 @@ const projectAppsToolSchema = (
         : {};
     for (const [field, decl] of Object.entries(tool.integrations)) {
       const connections = yield* ctx.connections.list({ integration: decl.slug as never });
-      properties[field] = {
-        type: "string",
-        enum: connections.map((connection) => String(connection.address)),
-      };
+      const enumValues = connections.map((connection) => String(connection.address));
+      properties[field] =
+        decl.mode === "many"
+          ? { type: "array", items: { type: "string", enum: enumValues } }
+          : { type: "string", enum: enumValues };
     }
     return { inputSchema: { ...schema, properties }, outputSchema };
   });

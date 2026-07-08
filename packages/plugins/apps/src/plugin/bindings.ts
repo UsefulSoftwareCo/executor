@@ -34,7 +34,7 @@ export interface ClientResolver {
 
 export interface ResolvedBindings {
   readonly input: Record<string, unknown>;
-  readonly bindings: Readonly<Record<string, string>>;
+  readonly bindings: Readonly<Record<string, string | readonly string[]>>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -68,6 +68,25 @@ const resolveRequested = (
     return connection.address;
   });
 
+const resolveManyRequested = (
+  field: string,
+  decl: IntegrationDecl,
+  requested: readonly unknown[],
+  resolver: ClientResolver,
+): Effect.Effect<readonly string[], BindingError> =>
+  Effect.forEach(requested, (item) => {
+    if (typeof item !== "string" || item.length === 0) {
+      return Effect.fail(
+        new BindingError({
+          role: field,
+          integration: decl.slug,
+          message: `connection set for integration field "${field}" (${decl.slug}) must contain non-empty strings`,
+        }),
+      );
+    }
+    return resolveRequested(field, decl, item, resolver);
+  });
+
 export const resolveIntegrationBindings = (
   declared: Readonly<Record<string, IntegrationDecl>>,
   args: unknown,
@@ -76,9 +95,25 @@ export const resolveIntegrationBindings = (
   Effect.gen(function* () {
     const payload = isRecord(args) ? args : {};
     const input: Record<string, unknown> = { ...payload };
-    const bindings: Record<string, string> = {};
+    const bindings: Record<string, string | readonly string[]> = {};
     for (const [field, decl] of Object.entries(declared)) {
       const raw = payload[field];
+      if (decl.mode === "many") {
+        if (raw === undefined && decl.all) {
+          bindings[field] = [];
+          continue;
+        }
+        if (!Array.isArray(raw)) {
+          return yield* new BindingError({
+            role: field,
+            integration: decl.slug,
+            message: `connection set for integration field "${field}" (${decl.slug}) must be an array`,
+          });
+        }
+        bindings[field] = yield* resolveManyRequested(field, decl, raw, resolver);
+        delete input[field];
+        continue;
+      }
       if (typeof raw !== "string" || raw.length === 0) {
         return yield* new BindingError({
           role: field,
@@ -95,14 +130,23 @@ export const resolveIntegrationBindings = (
 
 export const buildBridge = (input: {
   readonly declared: Readonly<Record<string, IntegrationDecl>>;
-  readonly bindings: Readonly<Record<string, string>>;
+  readonly bindings: Readonly<Record<string, string | readonly string[]>>;
   readonly resolver: ClientResolver;
   readonly invokeOptions?: InvokeOptions;
 }): AppToolBridge => ({
   call: (toolPath, args) => {
-    const [field, ...path] = toolPath.split(".");
+    const [root, ...path] = toolPath.split(".");
+    const [field, rawIndex] = (root ?? "").split("#");
     const decl = input.declared[field ?? ""];
-    const connection = input.bindings[field ?? ""];
+    const binding = input.bindings[field ?? ""];
+    const connection =
+      rawIndex === undefined
+        ? typeof binding === "string"
+          ? binding
+          : undefined
+        : Array.isArray(binding)
+          ? binding[Number(rawIndex)]
+          : undefined;
     if (!field || !decl || !connection || path.length === 0) {
       return Effect.runPromise(
         Effect.fail(

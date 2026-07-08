@@ -134,12 +134,31 @@ export const publish = (
       }
     }
 
-    const tools: ToolDescriptor[] = [];
+    const staged: {
+      readonly entry: string;
+      readonly bundle: string;
+      readonly collected: readonly CollectedTool[];
+      readonly source: ModuleSourceRef;
+    }[] = [];
     for (const artifact of discovered.tools) {
       const bundled = yield* bundleEntry({ files, entry: artifact.entry }).pipe(
         Effect.mapError((cause) => toPublishError("bundle", artifact.entry, cause)),
       );
-      const bundleKey = yield* deps.store.putBlob(bundled.code, owner).pipe(
+      const collected = yield* deps.executor
+        .collect(bundled.code, { fileSlug: artifact.name, sourcePath: artifact.entry })
+        .pipe(Effect.mapError((cause) => toPublishError("collect", artifact.entry, cause)));
+      const source = yield* sourceRef(artifact.entry, files.get(artifact.entry) ?? "");
+      staged.push({
+        entry: artifact.entry,
+        bundle: bundled.code,
+        collected: collected.tools,
+        source,
+      });
+    }
+
+    const tools: ToolDescriptor[] = [];
+    for (const artifact of staged) {
+      const bundleKey = yield* deps.store.putBlob(artifact.bundle, owner).pipe(
         Effect.mapError(
           () =>
             new PublishError({
@@ -149,13 +168,14 @@ export const publish = (
             }),
         ),
       );
-      const collected = yield* deps.executor
-        .collect(bundled.code, { fileSlug: artifact.name, sourcePath: artifact.entry })
-        .pipe(Effect.mapError((cause) => toPublishError("collect", artifact.entry, cause)));
-      const source = yield* sourceRef(artifact.entry, files.get(artifact.entry) ?? "");
-      for (const tool of collected.tools) {
+      for (const tool of artifact.collected) {
         tools.push(
-          toolDescriptor({ collected: tool, sourcePath: artifact.entry, bundleKey, source }),
+          toolDescriptor({
+            collected: tool,
+            sourcePath: artifact.entry,
+            bundleKey,
+            source: artifact.source,
+          }),
         );
       }
     }
@@ -197,15 +217,21 @@ export const publish = (
       ),
     );
     const finalDescriptor: AppDescriptor = { ...descriptor, descriptorKey: finalDescriptorKey };
-    yield* deps.store.putPublished(finalDescriptor, owner).pipe(
-      Effect.mapError(
-        () =>
-          new PublishError({
+    yield* deps.store.putPublished(finalDescriptor, owner, existing?.sourceRef ?? null).pipe(
+      Effect.mapError((cause) => {
+        if (Predicate.isTagged("AppPublishConflictError")(cause)) {
+          return new PublishError({
             stage: "project",
-            message: "failed to persist app publication",
-            diagnostics: [],
-          }),
-      ),
+            message: `app "${input.app}" changed during publish`,
+            diagnostics: [{ path: "", message: "publish sourceRef changed during publish" }],
+          });
+        }
+        return new PublishError({
+          stage: "project",
+          message: "failed to persist app publication",
+          diagnostics: [],
+        });
+      }),
     );
     return {
       descriptor: finalDescriptor,

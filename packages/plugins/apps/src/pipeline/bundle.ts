@@ -65,16 +65,18 @@ export default artifact;
 `;
 
 const executorAppSource = `
-import { z } from "zod";
-const EXECUTOR_INTEGRATION_META = "~executor";
-export const integration = (slug) => {
-  const schema = z.custom().meta({ [EXECUTOR_INTEGRATION_META]: { kind: "integration", slug } });
-  Object.defineProperty(schema, EXECUTOR_INTEGRATION_META, {
-    value: { kind: "integration", slug },
-    enumerable: false,
-  });
-  return schema;
-};
+const makeIntegrationDeclaration = (state) => Object.freeze({
+  kind: "integration",
+  slug: state.slug,
+  mode: state.mode,
+  allConnections: state.allConnections,
+  ...(state.description !== undefined ? { description: state.description } : {}),
+  array: () => makeIntegrationDeclaration({ ...state, mode: "many" }),
+  all: () => makeIntegrationDeclaration({ ...state, allConnections: true }),
+  describe: (text) => makeIntegrationDeclaration({ ...state, description: text }),
+});
+export const integration = (slug) =>
+  makeIntegrationDeclaration({ slug, mode: "one", allConnections: false });
 export const defineTool = (definition) => ({ ...definition, "~executorAppTool": true });
 `;
 

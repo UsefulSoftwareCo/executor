@@ -13,16 +13,17 @@ const bundle = (source: string) =>
   });
 
 describe("in-process app tool executor", () => {
-  it.effect("detects top-level integration fields", () =>
+  it.effect("detects integration declarations and merges projected input fields", () =>
     Effect.gen(function* () {
       const bundled = yield* bundle(`
         import { z } from "zod";
         import { defineTool, integration } from "executor:app";
         export default defineTool({
           description: "Refresh deals",
-          input: z.object({ crm: integration("dealcloud"), updatedSince: z.string().optional() }),
+          integrations: { crm: integration("dealcloud").describe("CRM account") },
+          input: z.object({ updatedSince: z.string().optional() }),
           output: z.object({ synced: z.number() }),
-          async handler(input) {
+          async handler(input, { crm }) {
             return { synced: 1 };
           },
         });
@@ -31,21 +32,53 @@ describe("in-process app tool executor", () => {
         fileSlug: "sync-deals",
         sourcePath: "tools/sync-deals.ts",
       });
-      expect(collected.tools[0]?.integrations).toEqual({ crm: { slug: "dealcloud" } });
+      expect(collected.tools[0]?.integrations).toEqual({
+        crm: { slug: "dealcloud", mode: "one", all: false, description: "CRM account" },
+      });
       expect(collected.tools[0]?.inputSchema).toMatchObject({
-        properties: { crm: { type: "string" } },
+        properties: { crm: { type: "string", description: "CRM account" } },
+        required: ["crm"],
       });
     }),
   );
 
-  it.effect("rejects nested integration fields with a named diagnostic", () =>
+  it.effect("keeps many all declarations optional and round-trips the flag", () =>
     Effect.gen(function* () {
       const bundled = yield* bundle(`
         import { z } from "zod";
         import { defineTool, integration } from "executor:app";
         export default defineTool({
-          description: "Bad nesting",
-          input: z.object({ nested: z.object({ crm: integration("dealcloud") }) }),
+          description: "Fan out",
+          integrations: { inboxes: integration("gmail").array().all() },
+          input: z.object({ q: z.string() }),
+          async handler(input, { inboxes }) {
+            return { count: inboxes.length };
+          },
+        });
+      `);
+      const collected = yield* makeInProcessAppToolExecutor().collect(bundled.code, {
+        fileSlug: "sync-deals",
+        sourcePath: "tools/sync-deals.ts",
+      });
+      expect(collected.tools[0]?.integrations).toEqual({
+        inboxes: { slug: "gmail", mode: "many", all: true },
+      });
+      expect(collected.tools[0]?.inputSchema).toMatchObject({
+        properties: { inboxes: { type: "array", items: { type: "string" } } },
+        required: ["q"],
+      });
+    }),
+  );
+
+  it.effect("rejects integration keys that collide with input fields", () =>
+    Effect.gen(function* () {
+      const bundled = yield* bundle(`
+        import { z } from "zod";
+        import { defineTool, integration } from "executor:app";
+        export default defineTool({
+          description: "Bad collision",
+          integrations: { crm: integration("dealcloud") },
+          input: z.object({ crm: z.string() }),
           async handler(input) {
             return input;
           },
@@ -57,7 +90,31 @@ describe("in-process app tool executor", () => {
           sourcePath: "tools/sync-deals.ts",
         })
         .pipe(Effect.flip);
-      expect(error).toMatchObject({ message: expect.stringContaining("nested.crm") });
+      expect(error).toMatchObject({ message: expect.stringContaining("collides") });
+    }),
+  );
+
+  it.effect("rejects all on single integration declarations", () =>
+    Effect.gen(function* () {
+      const bundled = yield* bundle(`
+        import { z } from "zod";
+        import { defineTool, integration } from "executor:app";
+        export default defineTool({
+          description: "Bad all",
+          integrations: { crm: integration("dealcloud").all() },
+          input: z.object({}),
+          async handler(input) {
+            return input;
+          },
+        });
+      `);
+      const error = yield* makeInProcessAppToolExecutor()
+        .collect(bundled.code, {
+          fileSlug: "sync-deals",
+          sourcePath: "tools/sync-deals.ts",
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining(".all()") });
     }),
   );
 
@@ -120,10 +177,11 @@ describe("in-process app tool executor", () => {
         import { defineTool, integration } from "executor:app";
         export default defineTool({
           description: "Refresh deals",
-          input: z.object({ crm: integration("dealcloud") }),
+          integrations: { crm: integration("dealcloud") },
+          input: z.object({ updatedSince: z.string().optional() }),
           output: z.object({ synced: z.number() }),
-          async handler(input) {
-            const deals = await input.crm.deals.list({ limit: 2 });
+          async handler({ updatedSince }, { crm }) {
+            const deals = await crm.deals.list({ limit: 2, updatedSince });
             return { synced: deals.length };
           },
         });
@@ -142,7 +200,49 @@ describe("in-process app tool executor", () => {
         { timeoutMs: 1000 },
       );
       expect(result.output).toEqual({ synced: 2 });
-      expect(calls).toEqual([{ toolPath: "crm.deals.list", args: { limit: 2 } }]);
+      expect(calls).toEqual([
+        { toolPath: "crm.deals.list", args: { limit: 2, updatedSince: undefined } },
+      ]);
+    }),
+  );
+
+  it.effect("passes fan-out integrations as arrays of proxies", () =>
+    Effect.gen(function* () {
+      const bundled = yield* bundle(`
+        import { z } from "zod";
+        import { defineTool, integration } from "executor:app";
+        export default defineTool({
+          description: "Fan out",
+          integrations: { inboxes: integration("gmail").array() },
+          input: z.object({ q: z.string() }),
+          output: z.object({ seen: z.number() }),
+          async handler({ q }, { inboxes }) {
+            const batches = await Promise.all(inboxes.map((inbox) => inbox.messages.list({ q })));
+            return { seen: batches.flat().length };
+          },
+        });
+      `);
+      const calls: unknown[] = [];
+      const result = yield* makeInProcessAppToolExecutor().invoke(
+        bundled.code,
+        { toolName: "sync-deals" },
+        {
+          q: "unread",
+          inboxes: ["tools.gmail.org.work", "tools.gmail.user.personal"],
+        },
+        {
+          call: async (toolPath, args) => {
+            calls.push({ toolPath, args });
+            return toolPath.startsWith("inboxes#0.") ? [{ id: 1 }] : [{ id: 2 }, { id: 3 }];
+          },
+        },
+        { timeoutMs: 1000 },
+      );
+      expect(result.output).toEqual({ seen: 3 });
+      expect(calls).toEqual([
+        { toolPath: "inboxes#0.messages.list", args: { q: "unread" } },
+        { toolPath: "inboxes#1.messages.list", args: { q: "unread" } },
+      ]);
     }),
   );
 

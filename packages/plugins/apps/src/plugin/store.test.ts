@@ -169,8 +169,8 @@ describe("apps store", () => {
         blobs: pluginBlobStore(makeInMemoryBlobStore(), { org: "tenant", user: null }, "apps"),
         pluginStorage: makeMemoryPluginStorage(),
       });
-      yield* store.putPublished(descriptor([tool("first"), tool("second")]), "org");
-      yield* store.putPublished(descriptor([tool("first")]), "org");
+      yield* store.putPublished(descriptor([tool("first"), tool("second")]), "org", null);
+      yield* store.putPublished(descriptor([tool("first")]), "org", "sha-1");
       const active = yield* store.listActiveTools();
       expect(active.map((item) => item.name)).toEqual(["first"]);
     }),

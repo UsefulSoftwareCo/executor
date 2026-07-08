@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import {
   definePluginStorageCollection,
   sha256Hex,
@@ -9,6 +9,12 @@ import {
 } from "@executor-js/sdk";
 
 import type { AppDescriptor } from "../pipeline/descriptor";
+
+export class AppPublishConflictError extends Data.TaggedError("AppPublishConflictError")<{
+  readonly app: string;
+  readonly expectedSourceRef: string | null;
+  readonly actualSourceRef: string | null;
+}> {}
 
 export const descriptorCollection = definePluginStorageCollection("apps_descriptors", {
   Type: {} as {
@@ -54,7 +60,8 @@ export interface AppsStore {
   readonly putPublished: (
     descriptor: AppDescriptor,
     owner: Owner,
-  ) => Effect.Effect<void, StorageFailure>;
+    expectedSourceRef: string | null,
+  ) => Effect.Effect<void, StorageFailure | AppPublishConflictError>;
   readonly listActiveTools: () => Effect.Effect<
     readonly AppDescriptor["tools"][number][],
     StorageFailure
@@ -106,8 +113,17 @@ export const makeAppsStore = (input: {
             : null,
         ),
       ),
-    putPublished: (descriptor, owner) =>
+    putPublished: (descriptor, owner, expectedSourceRef) =>
       Effect.gen(function* () {
+        const current = yield* descriptors.get({ key: descriptor.app });
+        const actualSourceRef = current?.data.sourceRef ?? null;
+        if (actualSourceRef !== expectedSourceRef) {
+          return yield* new AppPublishConflictError({
+            app: descriptor.app,
+            expectedSourceRef,
+            actualSourceRef,
+          });
+        }
         const now = descriptor.publishedAt;
         const existing = yield* tools.query({ where: { app: descriptor.app } });
         const activeNames = new Set(descriptor.tools.map((tool) => tool.name));
