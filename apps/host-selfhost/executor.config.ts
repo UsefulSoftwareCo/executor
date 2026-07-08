@@ -46,7 +46,8 @@ export default defineExecutorConfig({
       appsHttpPlugin({
         executor: makeWorkerdAppToolExecutor(),
         bundler: makeWorkerBundlerBackend(),
-        sourceKinds: ["github", "local-directory"],
+        sourceKinds: ["git", "local-directory"],
+        allowPrivateGitHosts: true,
       }),
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.

@@ -94,7 +94,7 @@ export default defineExecutorConfig({
               bundler: makeNativeWorkerBundlerBackend(),
             }
           : {}),
-        sourceKinds: ["github"],
+        sourceKinds: ["git"],
       }),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({

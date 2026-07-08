@@ -8,13 +8,12 @@ const SourceSlugParams = {
 
 const CreateSourcePayload = Schema.Union([
   Schema.Struct({
-    kind: Schema.Literal("github"),
+    kind: Schema.Literal("git"),
     slug: Schema.optional(Schema.String),
     app: Schema.optional(Schema.String),
     url: Schema.String,
     ref: Schema.optional(Schema.String),
     token: Schema.optional(Schema.String),
-    baseUrl: Schema.optional(Schema.String),
   }),
   Schema.Struct({
     kind: Schema.Literal("local-directory"),
@@ -49,7 +48,7 @@ const SourceStatus = Schema.Union([
 const SourceRecord = Schema.Struct({
   slug: Schema.String,
   app: Schema.String,
-  kind: Schema.Literals(["github", "local-directory"]),
+  kind: Schema.Literals(["git", "local-directory"]),
   config: CreateSourcePayload,
   sourceRef: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),

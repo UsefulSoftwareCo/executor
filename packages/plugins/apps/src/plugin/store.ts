@@ -56,15 +56,15 @@ export const sourceCollection = definePluginStorageCollection(
   { indexes: ["kind", "app"] },
 );
 
-export type AppSourceKind = "github" | "local-directory";
+export type AppSourceKind = "git" | "local-directory";
 
 export type AppSourceConfig =
   | {
-      readonly kind: "github";
+      readonly kind: "git";
       readonly url: string;
       readonly ref?: string;
-      readonly token?: string;
-      readonly baseUrl?: string;
+      readonly tokenProvider?: string;
+      readonly tokenItemId?: string;
     }
   | {
       readonly kind: "local-directory";
