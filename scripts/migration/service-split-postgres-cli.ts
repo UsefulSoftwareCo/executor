@@ -120,8 +120,7 @@ export const readDatabaseInput = async (
          OR slug IN ('google', 'microsoft')
          OR tenant IN (
           SELECT tenant FROM integration
-          WHERE (plugin_id = 'google' AND slug = 'google')
-             OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+          WHERE plugin_id IN ('google', 'microsoft')
          )
       ORDER BY tenant, slug
     `,
@@ -136,8 +135,7 @@ export const readDatabaseInput = async (
       FROM connection
       WHERE tenant IN (
         SELECT tenant FROM integration
-        WHERE (plugin_id = 'google' AND slug = 'google')
-           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        WHERE plugin_id IN ('google', 'microsoft')
       )
       ORDER BY tenant, integration, owner, subject, name
     `,
@@ -150,10 +148,8 @@ export const readDatabaseInput = async (
       FROM tool
       WHERE tenant IN (
         SELECT tenant FROM integration
-        WHERE (plugin_id = 'google' AND slug = 'google')
-           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        WHERE plugin_id IN ('google', 'microsoft')
       )
-        AND integration IN ('google', 'microsoft')
       ORDER BY tenant, integration, connection, name
     `,
   );
@@ -164,15 +160,12 @@ export const readDatabaseInput = async (
       FROM plugin_storage
       WHERE tenant IN (
         SELECT tenant FROM integration
-        WHERE (plugin_id = 'google' AND slug = 'google')
-           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        WHERE plugin_id IN ('google', 'microsoft')
         )
         AND plugin_id IN ('google', 'microsoft')
         AND collection = 'operation'
-        AND (key LIKE $1 OR key LIKE $2 OR key LIKE 'google.%' OR key LIKE 'microsoft.%')
       ORDER BY tenant, plugin_id, collection, key
     `,
-    [operationKeyPrefix("google"), operationKeyPrefix("microsoft")],
   );
   const blobs = await readRows<BlobRow[]>(
     sql,
@@ -182,8 +175,7 @@ export const readDatabaseInput = async (
       WHERE namespace IN (
         SELECT 'o:' || tenant || '/' || plugin_id
         FROM integration
-        WHERE (plugin_id = 'google' AND slug = 'google')
-           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        WHERE plugin_id IN ('google', 'microsoft')
       )
         AND (key LIKE 'spec/%' OR key LIKE 'defs/%')
       ORDER BY namespace, key
@@ -197,8 +189,7 @@ export const readDatabaseInput = async (
       FROM tool_policy
       WHERE tenant IN (
         SELECT tenant FROM integration
-        WHERE (plugin_id = 'google' AND slug = 'google')
-           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        WHERE plugin_id IN ('google', 'microsoft')
       )
       ORDER BY tenant, owner, subject, position, id
     `,
@@ -333,15 +324,16 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
     }
 
     for (const integration of org.integrations) {
-      for (const toolName of integration.servingState.operationToolNames) {
-        const [operation] = await tx.unsafe<
-          {
-            readonly data: unknown;
-            readonly created_at: string;
-            readonly updated_at: string;
-          }[]
-        >(
-          `
+      for (const contribution of integration.sourceContributions) {
+        for (const toolName of contribution.operationToolNames) {
+          const [operation] = await tx.unsafe<
+            {
+              readonly data: unknown;
+              readonly created_at: string;
+              readonly updated_at: string;
+            }[]
+          >(
+            `
             SELECT data, created_at::text, updated_at::text
             FROM plugin_storage
             WHERE tenant = $1
@@ -358,21 +350,21 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
               )
             LIMIT 1
           `,
-          [
-            org.tenant,
-            integration.source.plugin_id,
-            operationStorageKey(integration.source.slug, toolName),
-            integration.source.slug,
-            toolName,
-          ],
-        );
-        if (!operation) {
-          throw new Error(
-            `Missing operation row for ${tenantHash(org.tenant)}/${integration.source.slug}/${toolName}`,
+            [
+              org.tenant,
+              contribution.source.plugin_id,
+              operationStorageKey(contribution.source.slug, toolName),
+              contribution.source.slug,
+              toolName,
+            ],
           );
-        }
-        await tx.unsafe(
-          `
+          if (!operation) {
+            throw new Error(
+              `Missing operation row for ${tenantHash(org.tenant)}/${contribution.source.slug}/${toolName}`,
+            );
+          }
+          await tx.unsafe(
+            `
             INSERT INTO plugin_storage (
               plugin_id, collection, key, data, created_at, updated_at, row_id,
               tenant, owner, subject
@@ -381,24 +373,24 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
             ON CONFLICT (tenant, owner, subject, plugin_id, collection, key)
             DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
           `,
-          [
-            integration.target.pluginId,
-            operationStorageKey(integration.target.slug, toolName),
-            JSON.stringify(
-              scrubJson({
-                ...storageDataRecord(operation),
-                integration: integration.target.slug,
-                toolName,
-              }),
-            ),
-            operation.created_at,
-            now,
-            stableId("operation", org.tenant, integration.target.slug, toolName),
-            org.tenant,
-          ],
-        );
-        await tx.unsafe(
-          `
+            [
+              integration.target.pluginId,
+              operationStorageKey(integration.target.slug, toolName),
+              JSON.stringify(
+                scrubJson({
+                  ...storageDataRecord(operation),
+                  integration: integration.target.slug,
+                  toolName,
+                }),
+              ),
+              operation.created_at,
+              now,
+              stableId("operation", org.tenant, integration.target.slug, toolName),
+              org.tenant,
+            ],
+          );
+          await tx.unsafe(
+            `
             INSERT INTO tool (
               integration, connection, plugin_id, name, description, input_schema, output_schema,
               annotations, created_at, updated_at, row_id, tenant, owner, subject
@@ -409,16 +401,17 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
             WHERE tenant = $5 AND integration = $6 AND name = $7
             ON CONFLICT (tenant, owner, subject, integration, connection, name) DO NOTHING
           `,
-          [
-            integration.target.slug,
-            integration.target.pluginId,
-            now,
-            stableId("tool", org.tenant, integration.target.slug),
-            org.tenant,
-            integration.source.slug,
-            toolName,
-          ],
-        );
+            [
+              integration.target.slug,
+              integration.target.pluginId,
+              now,
+              stableId("tool", org.tenant, integration.target.slug),
+              org.tenant,
+              contribution.source.slug,
+              toolName,
+            ],
+          );
+        }
       }
     }
 
@@ -543,7 +536,11 @@ const writeDryRun = (planInput: MigrationInput): void => {
   const zeroOperationIntegrations = plan.orgs
     .filter((org) => !org.completed && org.hardErrors.length === 0)
     .flatMap((org) => org.integrations)
-    .filter((integration) => integration.servingState.operationsToBuild === 0);
+    .filter(
+      (integration) =>
+        integration.servingState.operationsToBuild === 0 &&
+        !integration.servingState.expectedZeroOperations,
+    );
   if (zeroOperationIntegrations.length > 0) {
     throw new Error(
       `Serving operation check failed for ${zeroOperationIntegrations.length} planned integration(s)`,
@@ -601,7 +598,11 @@ const main = async (): Promise<void> => {
     const zeroOperationIntegrations = plan.orgs
       .filter((org) => !org.completed && org.hardErrors.length === 0)
       .flatMap((org) => org.integrations)
-      .filter((integration) => integration.servingState.operationsToBuild === 0);
+      .filter(
+        (integration) =>
+          integration.servingState.operationsToBuild === 0 &&
+          !integration.servingState.expectedZeroOperations,
+      );
     if (zeroOperationIntegrations.length > 0) {
       throw new Error(
         `Serving operation check failed for ${zeroOperationIntegrations.length} planned integration(s)`,
