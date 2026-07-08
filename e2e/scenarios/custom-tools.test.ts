@@ -59,13 +59,14 @@ const advertisement = (sha: string): Uint8Array =>
 
 const readFixture = async () => {
   const dir = join(import.meta.dirname, "..", "fixtures", "custom-tools-git");
-  const [shas, pack1, pack2] = await Promise.all([
+  const [shas, pack1, pack2, pack3] = await Promise.all([
     readFile(join(dir, "custom-tools-shas.txt"), "utf8"),
     readFile(join(dir, "custom-tools-v1.pack")),
     readFile(join(dir, "custom-tools-v2.pack")),
+    readFile(join(dir, "custom-tools-v3.pack")),
   ]);
-  const [sha1, sha2] = shas.trim().split("\n");
-  return { sha1: sha1!, sha2: sha2!, pack1, pack2 };
+  const [sha1, sha2, sha3] = shas.trim().split("\n");
+  return { sha1: sha1!, sha2: sha2!, sha3: sha3!, pack1, pack2, pack3 };
 };
 
 const fixtureGitServer = Effect.acquireRelease(
@@ -108,6 +109,12 @@ const fixtureGitServer = Effect.acquireRelease(
     return {
       url: `http://127.0.0.1:${address.port}/repo.git`,
       advance: () => {
+        current = { sha: fixture.sha2, pack: new Uint8Array(fixture.pack2) };
+      },
+      failCollect: () => {
+        current = { sha: fixture.sha3, pack: new Uint8Array(fixture.pack3) };
+      },
+      restoreGood: () => {
         current = { sha: fixture.sha2, pack: new Uint8Array(fixture.pack2) };
       },
       packRequests: () => packRequests,
@@ -306,6 +313,30 @@ const syncSourceInConsole = (input: {
     });
   });
 
+const syncCollectFailureInConsole = (input: {
+  readonly target: TargetShape;
+  readonly browser: BrowserSurface;
+  readonly identity: Identity;
+}) =>
+  input.browser.session(input.identity, async ({ page, step }) => {
+    await step("Sync custom tools and see the collect diagnostic", async () => {
+      await page.goto(new URL("/integrations/repo?tab=source", input.target.baseUrl).toString(), {
+        waitUntil: "networkidle",
+      });
+      await page.getByRole("button", { name: "Sync" }).click();
+      await page.getByText("Sync failed.").waitFor({ timeout: 90_000 });
+      await page
+        .locator("p")
+        .filter({ hasText: "collect: record export key" })
+        .first()
+        .waitFor({ timeout: 90_000 });
+      await page
+        .locator("p")
+        .filter({ hasText: /^0 tools$/ })
+        .waitFor({ timeout: 90_000 });
+    });
+  });
+
 const removeSourceThroughConsole = (input: {
   readonly target: TargetShape;
   readonly browser: BrowserSurface;
@@ -431,6 +462,27 @@ scenario(
             expectedToolCount: "3 tools",
           });
 
+          yield* syncSourceInConsole({
+            target,
+            browser,
+            identity,
+            expectedNotice: "Already up to date.",
+            expectedToolCount: "3 tools",
+          });
+
+          git.failCollect();
+          yield* syncCollectFailureInConsole({ target, browser, identity });
+
+          const afterFailedCollect = yield* Effect.promise(() =>
+            request<readonly ToolRow[]>(target, identity, "/api/tools?integration=repo"),
+          );
+          expect(afterFailedCollect.body.map((tool) => tool.name).sort()).toEqual([
+            "echo-tool",
+            "extra-tool",
+            "static-tool",
+          ]);
+
+          git.restoreGood();
           yield* syncSourceInConsole({
             target,
             browser,
