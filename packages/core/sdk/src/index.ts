@@ -124,6 +124,9 @@ export {
   rankResponseSample,
 } from "./health-check";
 
+// Tool-sync status vocabulary (catalog freshness, distinct from health).
+export { ToolsSyncError, TOOLS_SYNC_STALE_THRESHOLD, isToolsSyncStale } from "./tools-sync";
+
 // Core schema.
 export {
   bigintColumn,
@@ -401,6 +404,7 @@ export {
   oauthClientGcSqliteMigration,
   runSqliteOAuthClientGcMigration,
 } from "./sqlite-oauth-client-gc-migration";
+export { toolSyncHealthCleanupDataMigration } from "./sqlite-tool-sync-health-migration";
 export {
   authToolFailure,
   type AuthToolFailureCode,

@@ -234,9 +234,11 @@ describe("OpenAPI plugin — spec blob storage", () => {
             beforeTools.map((tool) => String(tool.name)).sort(),
           );
           expect(afterDefinitions).toHaveLength(beforeDefinitions.length);
-          expect(connection?.lastHealth).toMatchObject({
-            status: "degraded",
-            detail: expect.stringContaining("OpenAPI spec could not be parsed"),
+          // Sync trouble is catalog metadata, not a health verdict.
+          expect(connection?.lastHealth ?? null).toBeNull();
+          expect(connection?.toolsSyncError).toMatchObject({
+            failures: 1,
+            reason: expect.stringContaining("OpenAPI spec could not be parsed"),
           });
         }),
       ),
@@ -307,9 +309,11 @@ describe("OpenAPI plugin — spec blob storage", () => {
           beforeTools.map((tool) => String(tool.name)).sort(),
         );
         expect(afterDefinitions).toHaveLength(beforeDefinitions.length);
-        expect(connection?.lastHealth).toMatchObject({
-          status: "degraded",
-          detail: expect.stringContaining("OpenAPI spec blob could not be loaded"),
+        // Sync trouble is catalog metadata, not a health verdict.
+        expect(connection?.lastHealth ?? null).toBeNull();
+        expect(connection?.toolsSyncError).toMatchObject({
+          failures: 1,
+          reason: expect.stringContaining("OpenAPI spec blob could not be loaded"),
         });
       }),
     ),

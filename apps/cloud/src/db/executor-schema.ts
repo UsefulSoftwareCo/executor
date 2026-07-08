@@ -45,6 +45,7 @@ export const connection = pgTable(
     description: text("description"),
     last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
+    tools_sync_error: json("tools_sync_error"),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),
@@ -164,7 +165,9 @@ export const definition = pgTable(
     integration: varchar("integration", { length: 255 }).notNull(),
     connection: varchar("connection", { length: 255 }).notNull(),
     plugin_id: text("plugin_id").notNull(),
-    name: varchar("name", { length: 255 }).notNull(),
+    // Manually widened from the generated varchar(255): definition names can
+    // exceed 255 chars (see dd7aaf60). Re-apply if the generator overwrites.
+    name: text("name").notNull(),
     schema: json("schema").notNull(),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })

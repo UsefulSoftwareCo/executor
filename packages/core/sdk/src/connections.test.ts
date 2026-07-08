@@ -416,9 +416,11 @@ describe("tool catalog sync safety", () => {
           });
 
           expect(tools.map((tool) => String(tool.name)).sort()).toEqual(["deploy", "list"]);
-          expect(connection?.lastHealth).toMatchObject({
-            status: "degraded",
-            detail: expect.stringContaining("authoritative empty catalog"),
+          // Sync trouble is recorded on its own column, never as a health verdict.
+          expect(connection?.lastHealth ?? null).toBeNull();
+          expect(connection?.toolsSyncError).toMatchObject({
+            failures: 1,
+            reason: expect.stringContaining("authoritative empty catalog"),
           });
         }),
       ),
@@ -477,7 +479,7 @@ describe("tool catalog sync safety", () => {
     ),
   );
 
-  it.effect("successful sync clears a prior tool-sync failure health record", () =>
+  it.effect("failed syncs extend a consecutive-failure streak; success clears it", () =>
     Effect.scoped(
       Effect.gen(function* () {
         let incomplete = false;
@@ -521,40 +523,41 @@ describe("tool catalog sync safety", () => {
           value: "secret-token",
         });
 
-        incomplete = true;
-        yield* Effect.promise(() =>
-          config.db.updateMany("connection", {
-            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
-            set: { tools_synced_at: null },
-          }),
-        );
-        yield* executor.tools.list({ integration: INTEG });
-        expect(
-          (yield* executor.connections.get({
+        const markStale = () =>
+          Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+              set: { tools_synced_at: null },
+            }),
+          );
+        const getConnection = () =>
+          executor.connections.get({
             owner: "org",
             integration: INTEG,
             name: ConnectionName.make("main"),
-          }))?.lastHealth,
-        ).toMatchObject({
-          status: "degraded",
-          detail: expect.stringContaining("temporary catalog outage"),
-        });
+          });
 
-        incomplete = false;
-        yield* Effect.promise(() =>
-          config.db.updateMany("connection", {
-            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
-            set: { tools_synced_at: null },
-          }),
-        );
+        // Two failed syncs in a row: the streak counts up, health is untouched.
+        incomplete = true;
+        yield* markStale();
         yield* executor.tools.list({ integration: INTEG });
-        const connection = yield* executor.connections.get({
-          owner: "org",
-          integration: INTEG,
-          name: ConnectionName.make("main"),
+        expect((yield* getConnection())?.toolsSyncError).toMatchObject({
+          failures: 1,
+          reason: expect.stringContaining("temporary catalog outage"),
         });
+        yield* markStale();
+        yield* executor.tools.list({ integration: INTEG });
+        const failing = yield* getConnection();
+        expect(failing?.toolsSyncError).toMatchObject({ failures: 2 });
+        expect(failing?.lastHealth ?? null).toBeNull();
 
-        expect(connection?.lastHealth).toBeNull();
+        // One successful sync ends the streak entirely.
+        incomplete = false;
+        yield* markStale();
+        yield* executor.tools.list({ integration: INTEG });
+        const recovered = yield* getConnection();
+        expect(recovered?.toolsSyncError ?? null).toBeNull();
+        expect(recovered?.lastHealth ?? null).toBeNull();
       }),
     ),
   );

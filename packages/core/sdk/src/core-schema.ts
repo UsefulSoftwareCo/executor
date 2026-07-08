@@ -176,6 +176,13 @@ export const coreTables = defineTables({
       // Epoch ms of the last tool (re)production for this connection. Stale
       // vs the integration's `config_revised_at` → re-produced on next read.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      // Catalog-sync trouble (ToolsSyncError JSON: at, failures, reason) —
+      // deliberately a SEPARATE column from `last_health`: a failed sync means
+      // the tool catalog may be stale, not that the credential is unhealthy,
+      // and the two signals must never overwrite each other. Null = the last
+      // sync was authoritative. Cleared by any successful sync; failures
+      // increment a consecutive count so display can debounce transients.
+      tools_sync_error: nullableJsonColumn("tools_sync_error"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for

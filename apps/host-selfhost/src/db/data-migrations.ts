@@ -5,7 +5,11 @@
 // renamed.
 // ---------------------------------------------------------------------------
 
-import { sqliteDataMigration, type SqliteDataMigration } from "@executor-js/sdk";
+import {
+  sqliteDataMigration,
+  toolSyncHealthCleanupDataMigration,
+  type SqliteDataMigration,
+} from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import {
   openApiOutputSchemaDataMigration,
@@ -31,4 +35,7 @@ export const selfHostDataMigrations: readonly SqliteDataMigration[] = [
   openApiSpecBlobDataMigration,
   graphqlIntrospectionBlobDataMigration,
   googleOpenApiOwnershipDataMigration,
+  // Clear "Tool sync failing" pseudo-verdicts out of last_health (sync status
+  // moved to its own tools_sync_error column; mirrors cloud drizzle 0010).
+  toolSyncHealthCleanupDataMigration,
 ];

@@ -239,6 +239,7 @@ describe("runCloudflareDataMigrations", () => {
       const d1 = makeFakeD1(db.client);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([
         "2026-06-20-google-openapi-ownership",
+        "2026-07-07-clear-tool-sync-health-verdicts",
       ]);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
 
@@ -280,6 +281,7 @@ describe("runCloudflareDataMigrations", () => {
       const d1 = makeFakeD1(db.client);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([
         "2026-06-20-google-openapi-ownership",
+        "2026-07-07-clear-tool-sync-health-verdicts",
       ]);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
 

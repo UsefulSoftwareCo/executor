@@ -4,6 +4,7 @@ import type { D1Database, D1DatabaseSession, R2Bucket } from "@cloudflare/worker
 import {
   DataMigrationError,
   runSqliteDataMigrations,
+  toolSyncHealthCleanupDataMigration,
   type SqliteDataMigration,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
@@ -170,6 +171,9 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
         yield* googleOpenApiOwnershipDataMigration.run(client);
       }),
   },
+  // Clear "Tool sync failing" pseudo-verdicts out of last_health (sync status
+  // moved to its own tools_sync_error column; mirrors cloud drizzle 0010).
+  toolSyncHealthCleanupDataMigration,
 ];
 
 export const runCloudflareDataMigrations = (

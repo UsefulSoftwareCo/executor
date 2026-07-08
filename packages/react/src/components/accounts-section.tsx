@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { IntegrationSlug, type Connection, type Owner } from "@executor-js/sdk/shared";
+import {
+  IntegrationSlug,
+  isToolsSyncStale,
+  type Connection,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { toast } from "sonner";
 
@@ -148,6 +153,19 @@ function AccountRow(props: {
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
             This connection wasn't granted all the access this integration now needs.
+          </CardStackEntryDescription>
+        ) : null}
+        {isToolsSyncStale(connection.toolsSyncError) ? (
+          // Catalog freshness, NOT credential health: several consecutive tool
+          // syncs failed, so the tool list may be stale. Muted on purpose — the
+          // status dot above stays a pure credential-health signal.
+          <CardStackEntryDescription
+            className="mt-1 text-xs text-muted-foreground"
+            title={connection.toolsSyncError?.reason}
+          >
+            Tool list may be out of date: the last{" "}
+            {connection.toolsSyncError ? connection.toolsSyncError.failures : 0} sync attempts
+            failed.
           </CardStackEntryDescription>
         ) : null}
       </CardStackEntryContent>

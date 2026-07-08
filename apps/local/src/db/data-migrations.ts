@@ -9,6 +9,7 @@ import {
   Effect,
   oauthClientGcSqliteMigration,
   sqliteDataMigration,
+  toolSyncHealthCleanupDataMigration,
   type SqliteDataMigration,
 } from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
@@ -45,4 +46,7 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   // GC dead DCR oauth_client rows (old always-register duplicates) and backfill
   // the surviving DCR rows' origin_issuer from token_url (issue #1120, Part C).
   oauthClientGcSqliteMigration,
+  // Clear "Tool sync failing" pseudo-verdicts out of last_health (sync status
+  // moved to its own tools_sync_error column; mirrors cloud drizzle 0010).
+  toolSyncHealthCleanupDataMigration,
 ];

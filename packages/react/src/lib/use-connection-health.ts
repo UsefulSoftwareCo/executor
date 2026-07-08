@@ -2,9 +2,9 @@
 // render a connection's health (the detail page's AccountRow and the
 // integrations-list summary), and both must revalidate the same way: render
 // the persisted `lastHealth` verdict instantly, then probe in the background
-// unless the verdict is healthy and fresh. Keeping the guard, the `ifStaleMs`
-// semantics, and the freshness window here means the two surfaces cannot
-// drift apart.
+// unless the verdict is steady (healthy/unknown) and fresh. Keeping the guard,
+// the `ifStaleMs` semantics, and the freshness window here means the two
+// surfaces cannot drift apart.
 
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { RegistryContext, useAtomSet } from "@effect/atom-react";
@@ -26,21 +26,26 @@ const connectionParams = (connection: Connection) => ({
   name: connection.name,
 });
 
-/** Whether a persisted verdict may render as-is without a background probe.
- *  Healthy-and-fresh renders untouched. Everything else revalidates: stale or
- *  never-checked for obvious reasons, and NON-healthy always; an expired dot
- *  is exactly the verdict the user is waiting to see change, so recovery must
- *  show on the next load, not after the freshness window. */
-const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
-  last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
+/** Statuses that may render as-is when fresh, without a background probe.
+ *  `healthy` for the obvious reason; `unknown` because it means "no health
+ *  check configured / not supported" — re-probing it on every page load just
+ *  rewrites the same verdict (row churn, no signal). Expired/degraded always
+ *  revalidate: a bad dot is exactly the verdict the user is waiting to see
+ *  change, so recovery must show on the next load, not after the window. */
+const STEADY_STATUSES: ReadonlySet<HealthStatus> = new Set(["healthy", "unknown"]);
 
-/** The revalidation query: a healthy (but stale) verdict defers to the
+const steadyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
+  last != null &&
+  STEADY_STATUSES.has(last.status) &&
+  Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
+
+/** The revalidation query: a steady (but stale) verdict defers to the
  *  server-enforced window so N open tabs can't stampede the upstream; a
- *  missing or non-healthy verdict forces a fresh probe. */
+ *  missing or non-steady verdict forces a fresh probe. */
 const revalidateQuery = (
   last: HealthCheckResult | null | undefined,
 ): { readonly ifStaleMs?: number } =>
-  last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
+  last != null && STEADY_STATUSES.has(last.status) ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
 
 /**
  * Imperative invalidation of the connections cache for one owner. The server
@@ -86,7 +91,7 @@ export function useConnectionHealth(connection: Connection): {
   useEffect(() => {
     if (revalidated.current) return;
     const last = connection.lastHealth;
-    if (healthyAndFresh(last)) return;
+    if (steadyAndFresh(last)) return;
     revalidated.current = true;
     void doCheck({
       params: connectionParams(connection),
@@ -148,7 +153,7 @@ export function useConnectionsHealth(
       const key = probeKey(connection);
       if (revalidated.current.has(key)) continue;
       const last = connection.lastHealth;
-      if (healthyAndFresh(last)) continue;
+      if (steadyAndFresh(last)) continue;
       revalidated.current.add(key);
       void doCheck({
         params: connectionParams(connection),

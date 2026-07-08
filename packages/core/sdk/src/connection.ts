@@ -9,6 +9,7 @@ import type {
   ProviderKey,
 } from "./ids";
 import type { HealthCheckResult, HealthCheckSpec } from "./health-check";
+import type { ToolsSyncError } from "./tools-sync";
 
 /* A Connection is THE saved credential — secret, account, and connection are one
  * concept — bound to exactly ONE integration (born wired; there is no unwired
@@ -56,8 +57,14 @@ export interface Connection {
   readonly oauthScope?: string | null;
   /** Last health-check verdict, persisted by every `checkHealth` run. Answers
    *  "has this expired?" at a glance in the connections list without probing.
-   *  Null/absent = never checked. */
+   *  Null/absent = never checked. Written by health probes ONLY — catalog-sync
+   *  trouble lives on `toolsSyncError`, never here. */
   readonly lastHealth?: HealthCheckResult | null;
+  /** Catalog-sync trouble: set when the last tool sync was non-authoritative
+   *  (source unreachable, spec unloadable), cleared by any successful sync.
+   *  Carries a consecutive-failure count so surfaces can debounce transient
+   *  blips (see `isToolsSyncStale`). Independent of credential health. */
+  readonly toolsSyncError?: ToolsSyncError | null;
 }
 
 /** Identify one connection — unique by (owner, integration, name). */

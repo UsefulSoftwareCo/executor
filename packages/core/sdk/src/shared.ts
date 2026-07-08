@@ -124,6 +124,9 @@ export {
   rankResponseSample,
 } from "./health-check";
 
+// Tool-sync status vocabulary (catalog freshness, distinct from health).
+export { ToolsSyncError, TOOLS_SYNC_STALE_THRESHOLD, isToolsSyncStale } from "./tools-sync";
+
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {
   type OAuthGrant,

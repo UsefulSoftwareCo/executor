@@ -1168,8 +1168,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // -----------------------------------------------------------------------
     resolveTools: ({ config, connection, template, getValues, httpClientLayer }) =>
       Effect.gen(function* () {
+        // Each non-authoritative exit says WHY: the reason is persisted on the
+        // connection's sync-error record, and a bare "incomplete" told
+        // operators nothing about whether the server was down, auth-walled,
+        // or misconfigured.
+        const incomplete = (reason: string) => ({
+          tools: [] as readonly ToolDef[],
+          incomplete: true,
+          incompleteReason: reason,
+        });
         const parsed = parseMcpIntegrationConfig(config);
-        if (!parsed) return { tools: [] as readonly ToolDef[], incomplete: true };
+        if (!parsed) return incomplete("MCP integration config could not be parsed.");
 
         // Discovery tolerates unresolved credentials (an open server lists
         // tools unauthenticated; a bad value just yields zero tools).
@@ -1188,18 +1197,27 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
+        if (!Result.isSuccess(built)) {
+          // buildConnectorInput fails only with McpConnectionError: `message`
+          // is a typed field, not an unknown-error read.
+          return incomplete(`MCP connector could not be constructed: ${built.failure.message}`);
+        }
+        const manifest = yield* discoverTools(built.success).pipe(
+          Effect.map((m) => ({ ok: true as const, manifest: m, reason: null })),
+          Effect.catchTag("McpToolDiscoveryError", (cause) =>
+            Effect.succeed({
+              ok: false as const,
+              manifest: null,
+              reason: `${cause.stage === "connect" ? "server connect failed" : "tool listing failed"}: ${cause.message}`,
+            }),
+          ),
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
 
         if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+          return incomplete(`MCP tool discovery failed: ${manifest.reason ?? "unknown cause"}`);
         }
         return { tools: manifest.manifest.tools.map(toToolDef) };
       }).pipe(
@@ -1207,7 +1225,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           attributes: { "mcp.connection.name": String(connection.name) },
         }),
       ) as Effect.Effect<
-        { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
+        {
+          readonly tools: readonly ToolDef[];
+          readonly incomplete?: boolean;
+          readonly incompleteReason?: string;
+        },
         StorageFailure
       >,
 

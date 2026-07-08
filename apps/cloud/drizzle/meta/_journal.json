@@ -71,6 +71,13 @@
       "when": 1783025157233,
       "tag": "0009_true_lake",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783476768302,
+      "tag": "0010_stormy_red_ghost",
+      "breakpoints": true
     }
   ]
 }
