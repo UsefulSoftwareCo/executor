@@ -83,6 +83,17 @@
       "bucket_name": "executor-cloud-blobs",
     },
   ],
+  // `executor.cache` backend (derived-data cache; eventually consistent). The
+  // code path is guarded (engine/execution-stack.ts reads `env.CACHE`
+  // optionally), so shipping without the binding just means the in-memory
+  // fallback. To enable: `wrangler kv namespace create executor-cloud-cache`,
+  // then uncomment with the returned id.
+  // "kv_namespaces": [
+  //   {
+  //     "binding": "CACHE",
+  //     "id": "<id from wrangler kv namespace create>",
+  //   },
+  // ],
   "placement": {
     "region": "aws:us-east-1",
   },

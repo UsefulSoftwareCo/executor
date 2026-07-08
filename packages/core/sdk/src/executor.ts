@@ -1,5 +1,6 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import { Clock, Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
+import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
 import { withQueryContext, type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
@@ -375,6 +376,14 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   ) => Effect.Effect<unknown, ExecuteError>;
 
   readonly close: () => Effect.Effect<void, StorageFailure>;
+
+  /** Ephemeral key-value cache for derived data. Host-provided when durable
+   *  storage exists (e.g. Cloudflare KV via `ExecutorConfig.cache`); otherwise
+   *  a bounded in-memory TTL store scoped to this executor. Consumers must
+   *  treat entries as best-effort and re-derivable — a cold cache is always
+   *  correct — and must NOT key anything tenant-sensitive without prefixing,
+   *  since a host-provided namespace may outlive and span executors. */
+  readonly cache: KeyValueStore.KeyValueStore;
 } & PluginExtensions<TPlugins>;
 
 export interface ExecutorDb {
@@ -402,6 +411,13 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * values stay out of the relational tier.
    */
   readonly blobs?: BlobStore;
+  /**
+   * Backend for `executor.cache`. Hosts with a durable KV tier hand one in
+   * (e.g. `makeCloudflareKeyValueStore` from `@executor-js/cloudflare/key-value-store`);
+   * without one the executor falls back to a bounded in-memory TTL store,
+   * which only helps within a single long-lived process.
+   */
+  readonly cache?: KeyValueStore.KeyValueStore;
   readonly plugins?: TPlugins;
   /** Config-level credential providers, merged with every
    *  `plugin.credentialProviders`. Config providers register first, so the
@@ -488,6 +504,66 @@ const validateExecutorDbTables = (required: FumaTables, actual: FumaTables): voi
 
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
+
+// ---------------------------------------------------------------------------
+// Default `executor.cache` backend — a bounded in-memory string store with TTL
+// expiry and LRU eviction (Map iteration order is insertion order; touched
+// keys are re-inserted). Deliberately modest: it exists so cache consumers can
+// be written against one interface everywhere, while hosts with real KV
+// (Cloudflare) swap in a durable backend via `ExecutorConfig.cache`.
+// ---------------------------------------------------------------------------
+
+const MEMORY_CACHE_CAPACITY = 2_048;
+const MEMORY_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const makeMemoryCacheStore = (): KeyValueStore.KeyValueStore => {
+  const rows = new Map<string, { readonly value: string; readonly expiresAt: number }>();
+  const evictExpired = (now: number): void => {
+    for (const [key, entry] of rows) {
+      if (entry.expiresAt <= now) rows.delete(key);
+    }
+  };
+  const evictOverCapacity = (): void => {
+    while (rows.size > MEMORY_CACHE_CAPACITY) {
+      const oldest = rows.keys().next().value;
+      if (oldest === undefined) break;
+      rows.delete(oldest);
+    }
+  };
+  return KeyValueStore.makeStringOnly({
+    get: (key) =>
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        const entry = rows.get(key);
+        if (entry === undefined) return undefined;
+        if (entry.expiresAt <= now) {
+          rows.delete(key);
+          return undefined;
+        }
+        // LRU touch: move to the back of the insertion order.
+        rows.delete(key);
+        rows.set(key, entry);
+        return entry.value;
+      }),
+    set: (key, value) =>
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        evictExpired(now);
+        rows.delete(key);
+        rows.set(key, { value, expiresAt: now + MEMORY_CACHE_TTL_MS });
+        evictOverCapacity();
+      }),
+    remove: (key) =>
+      Effect.sync(() => {
+        rows.delete(key);
+      }),
+    clear: Effect.sync(() => {
+      rows.clear();
+    }),
+    size: Effect.map(Clock.currentTimeMillis, (now) => {
+      evictExpired(now);
+      return rows.size;
+    }),
+  });
+};
 
 const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
   storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
@@ -1363,6 +1439,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
+    const cacheStore = config.cache ?? makeMemoryCacheStore();
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
     // Populated once, never mutated after startup.
@@ -3994,6 +4071,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       },
       execute,
       close,
+      cache: cacheStore,
     };
 
     const toExecutor = (value: unknown): Executor<TPlugins> => value as Executor<TPlugins>;

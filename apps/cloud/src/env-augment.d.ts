@@ -30,6 +30,12 @@ declare global {
       // what `@executor-js/cloudflare/blob-store` accepts.
       BLOBS?: import("@cloudflare/workers-types").R2Bucket;
 
+      // `executor.cache` backend (wrangler.jsonc `kv_namespaces`). Optional for
+      // the same reason as BLOBS: absent, the executor uses its in-memory
+      // fallback. Typed via @cloudflare/workers-types to match what
+      // `@executor-js/cloudflare/key-value-store` accepts.
+      CACHE?: import("@cloudflare/workers-types").KVNamespace;
+
       // SSRF / private-network egress guard. Unset in production -> the guard is
       // ON; the test workers set "true" so fixtures can reach localhost.
       ALLOW_LOCAL_NETWORK?: string;

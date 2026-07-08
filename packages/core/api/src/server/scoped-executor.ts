@@ -32,6 +32,7 @@
 // ---------------------------------------------------------------------------
 
 import { Context, Effect, Option } from "effect";
+import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 
 import type { McpResource } from "@executor-js/host-mcp";
 import {
@@ -213,6 +214,11 @@ export const makeScopedExecutor = <
     const { db, blobs } = yield* DbProvider;
     const { plugins: pluginsFactory } = yield* PluginsProvider;
     const config = yield* HostConfig;
+    // Optional durable cache seam: a host boot layer that provides an Effect
+    // KeyValueStore (e.g. Cloudflare KV) makes it `executor.cache`; absent one
+    // the executor's bounded in-memory fallback applies. Read optionally so it
+    // never enters the `R` channel for hosts without a KV tier.
+    const cache = yield* Effect.serviceOption(KeyValueStore.KeyValueStore);
     // Explicit config wins; otherwise fall back to the request origin if a host
     // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
     // non-request callers — `coreTools.webBaseUrl` is optional and only the
@@ -263,6 +269,10 @@ export const makeScopedExecutor = <
       subject: Subject.make(accountId),
       db,
       blobs,
+      ...Option.match(cache, {
+        onNone: () => ({}),
+        onSome: (store) => ({ cache: store }),
+      }),
       plugins,
       httpClientLayer,
       fetch: hostedFetch,

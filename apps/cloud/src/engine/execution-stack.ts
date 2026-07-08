@@ -42,6 +42,7 @@ import {
   PluginsProvider,
   collectTables,
 } from "@executor-js/api/server";
+import { layerCloudflareKeyValueStore } from "@executor-js/cloudflare/key-value-store";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 
 import executorConfig from "../../executor.config";
@@ -104,6 +105,16 @@ export const CloudCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Laye
  * exported so that overlay builds over the SAME four seams. There is no neutral
  * no-op-decorator variant anymore: every cloud execution meters.
  */
+// Durable `executor.cache` backend (wrangler.jsonc `kv_namespaces`). Typed as
+// `Layer<never>` because the binding is optional: test workers / older local
+// setups run without it, and `makeScopedExecutor` reads the service with
+// `Effect.serviceOption` — absent, the executor falls back to its in-memory
+// cache (which on per-request cloud executors means effectively no caching:
+// correct, just cold).
+export const CloudCacheLayer: Layer.Layer<never> = env.CACHE
+  ? layerCloudflareKeyValueStore(env.CACHE)
+  : Layer.empty;
+
 export const CloudExecutionSeamsLayer: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider,
   never,
@@ -113,4 +124,5 @@ export const CloudExecutionSeamsLayer: Layer.Layer<
   CloudPluginsProvider,
   CloudHostConfig,
   CloudCodeExecutorProvider,
+  CloudCacheLayer,
 );
