@@ -64,7 +64,12 @@ if (sentryDsn) {
 import { Argument as Args, Command, Flag as Options } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { FileSystem, Path as PlatformPath } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
@@ -131,7 +136,9 @@ import {
 import {
   canAutoStartCliServerConnection,
   chooseCliServerConnectionWithActiveLocal,
+  describeUnauthorizedCliServer,
   parseCliExecutorServerConnection,
+  profileNameFromConnectionKey,
   type CliServerConnectionSource,
   withCliServerAuthFallback,
 } from "./server-connection";
@@ -743,9 +750,6 @@ const resolveRequestedExecutorServerConnection = (
 // login. The refreshed tokens are written back to the originating profile.
 const OAUTH_REFRESH_SKEW_SECONDS = 60;
 
-const profileNameFromKey = (key: string): string | null =>
-  key.startsWith("profile:") ? key.slice("profile:".length) : null;
-
 const refreshOAuthConnection = (
   connection: ExecutorServerConnection,
 ): Effect.Effect<ExecutorServerConnection, never, FileSystem.FileSystem | PlatformPath.Path> =>
@@ -780,7 +784,7 @@ const refreshOAuthConnection = (
       },
     });
 
-    const profileName = profileNameFromKey(connection.key);
+    const profileName = profileNameFromConnectionKey(connection.key);
     if (profileName) {
       yield* upsertCliServerConnectionProfile({
         name: profileName,
@@ -1061,6 +1065,17 @@ const makeApiClient = (connection: ExecutorServerConnection) => {
           ),
         }
       : {}),
+    // A 401 on an endpoint that doesn't model it is a sign-in problem: rewrite
+    // the transport-level error into the login hint. Without this the client
+    // fails decoding the unexpected status and prints the opaque
+    // `Decode error (401 GET .../api/tools)`. Declared 401s (typed API errors)
+    // decode before this catch and pass through untouched.
+    transformResponse: (effect) =>
+      Effect.catchIf(
+        effect,
+        (cause) => HttpClientError.isHttpClientError(cause) && cause.response?.status === 401,
+        () => Effect.fail(new Error(describeUnauthorizedCliServer({ connection, cliPrefix }))),
+      ),
   }).pipe(Effect.provide(FetchHttpClient.layer));
 };
 
@@ -2307,9 +2322,13 @@ const chooseLoginProfileName = (
   }
 };
 
+/** Where `executor login` lands with no flags and no stored profiles. */
+const DEFAULT_LOGIN_ORIGIN = "https://executor.sh";
+
 // Resolve which server a login/logout targets: an existing profile (--server
-// or the default) or a bare origin (--base-url). The profile name is decided
-// later, from the authenticated account.
+// or the default), a bare origin (--base-url), or hosted Executor when
+// nothing is configured yet. The profile name is decided later, from the
+// authenticated account.
 const resolveLoginOrigin = (input: {
   readonly baseUrl: Option.Option<string>;
   readonly server: Option.Option<string>;
@@ -2337,11 +2356,7 @@ const resolveLoginOrigin = (input: {
     const store = yield* readCliServerConnectionStore();
     const profile = defaultCliServerConnectionProfile(store);
     if (profile) return { origin: profile.connection.origin, profile };
-    return yield* Effect.fail(
-      new Error(
-        "No server to log in to. Pass --base-url <https://your-host> or --server <profile>.",
-      ),
-    );
+    return { origin: DEFAULT_LOGIN_ORIGIN, profile: null };
   });
 
 const loginNameOption = Options.string("name").pipe(
@@ -2366,6 +2381,9 @@ const loginCommand = Command.make(
     Effect.gen(function* () {
       const target = yield* resolveLoginOrigin({ baseUrl, server });
       const explicitName = Option.getOrUndefined(name);
+      // The target may have been picked implicitly (default profile, or the
+      // hosted fallback): say where the login is going before the device flow.
+      console.log(`Signing in to ${target.origin}`);
       const discovery = yield* Effect.tryPromise({
         try: () => discoverCliLogin(target.origin),
         catch: toError,
@@ -2425,7 +2443,11 @@ const loginCommand = Command.make(
       if (org) console.log(`Organization: ${org}`);
       else if (sub) console.log(`User: ${sub}`);
     }),
-).pipe(Command.withDescription("Sign in to a hosted Executor server in the browser (device flow)"));
+).pipe(
+  Command.withDescription(
+    "Sign in to a hosted Executor server in the browser (device flow). Defaults to https://executor.sh.",
+  ),
+);
 
 const logoutCommand = Command.make(
   "logout",

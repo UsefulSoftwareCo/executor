@@ -1,8 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { normalizeExecutorServerConnection } from "@executor-js/sdk/shared";
+
 import {
   canAutoStartCliServerConnection,
   chooseCliServerConnectionWithActiveLocal,
+  describeUnauthorizedCliServer,
   parseCliExecutorServerConnection,
   withCliServerAuthFallback,
 } from "./server-connection";
@@ -133,5 +136,55 @@ describe("CLI server connection", () => {
         active,
       }).kind,
     ).toBe("conflict");
+  });
+});
+
+describe("describeUnauthorizedCliServer", () => {
+  it("names the profile and its login command for a stale oauth login", () => {
+    const connection = normalizeExecutorServerConnection({
+      key: "profile:work",
+      origin: "https://executor.example",
+      auth: { kind: "oauth", accessToken: "stale", expiresAt: 1 },
+    });
+
+    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
+    expect(message).toContain("You're signed out");
+    expect(message).toContain('profile "work"');
+    expect(message).toContain("executor login --server work");
+  });
+
+  it("points an unauthenticated origin at login --base-url", () => {
+    const connection = normalizeExecutorServerConnection({
+      origin: "https://executor.example",
+    });
+
+    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
+    expect(message).toContain("no credentials are stored");
+    expect(message).toContain("executor login --base-url https://executor.example");
+  });
+
+  it("mentions the env vars when a profile-less bearer key is rejected", () => {
+    const connection = normalizeExecutorServerConnection({
+      origin: "https://executor.example",
+      auth: { kind: "bearer", token: "key_bad" },
+    });
+
+    const message = describeUnauthorizedCliServer({ connection, cliPrefix: "executor" });
+    expect(message).toContain("rejected the stored bearer credentials");
+    expect(message).toContain("EXECUTOR_API_KEY");
+  });
+
+  it("uses the dev entrypoint prefix verbatim", () => {
+    const connection = normalizeExecutorServerConnection({
+      key: "profile:hosted",
+      origin: "https://executor.example",
+      auth: { kind: "oauth", accessToken: "stale" },
+    });
+
+    const message = describeUnauthorizedCliServer({
+      connection,
+      cliPrefix: "bun run apps/cli/src/main.ts",
+    });
+    expect(message).toContain("bun run apps/cli/src/main.ts login --server hosted");
   });
 });

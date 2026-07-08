@@ -52,6 +52,50 @@ export const canAutoStartCliServerConnection = (connection: ExecutorServerConnec
   return url.protocol === "http:" && canAutoStartLocalDaemonForHost(url.hostname);
 };
 
+export const profileNameFromConnectionKey = (key: string): string | null =>
+  key.startsWith("profile:") ? key.slice("profile:".length) : null;
+
+// A 401 from the server means the stored credential is stale, revoked, or
+// missing: a sign-in problem, not a transport problem. Rendered instead of
+// the raw HTTP client error so the user learns the recovery command, not the
+// failing endpoint.
+export const describeUnauthorizedCliServer = (input: {
+  readonly connection: ExecutorServerConnection;
+  readonly cliPrefix: string;
+}): string => {
+  const { connection, cliPrefix } = input;
+  const profileName = profileNameFromConnectionKey(connection.key);
+  const loginCommand = profileName
+    ? `${cliPrefix} login --server ${profileName}`
+    : `${cliPrefix} login --base-url ${connection.origin}`;
+  const server = profileName
+    ? `${connection.origin} (profile "${profileName}")`
+    : connection.origin;
+
+  if (!connection.auth) {
+    return [
+      `${server} requires authentication, and no credentials are stored for it.`,
+      `Run \`${loginCommand}\` to sign in.`,
+    ].join("\n");
+  }
+
+  if (connection.auth.kind === "oauth") {
+    return [
+      `You're signed out of ${server}: the stored login was rejected (401).`,
+      `Run \`${loginCommand}\` to sign in again.`,
+    ].join("\n");
+  }
+
+  const envHint =
+    connection.auth.kind === "bearer" && !profileName
+      ? " If the key came from EXECUTOR_API_KEY or EXECUTOR_AUTH_TOKEN, check that value."
+      : "";
+  return [
+    `${server} rejected the stored ${connection.auth.kind} credentials (401).${envHint}`,
+    `Run \`${loginCommand}\` to sign in again.`,
+  ].join("\n");
+};
+
 export type CliServerConnectionSource =
   | "explicit"
   | "default-profile"
