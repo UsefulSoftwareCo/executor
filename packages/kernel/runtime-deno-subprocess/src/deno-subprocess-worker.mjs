@@ -41,11 +41,9 @@ const createToolCaller = (toolPath) => (args) =>
     });
   });
 
-const toolsEnumerationError = (path) =>
-  new Error(
-    (path.length === 0 ? "tools" : "tools." + path.join(".")) +
-      ' is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
-  );
+const toolsEnumerationMessage = (path) =>
+  (path.length === 0 ? "tools" : "tools." + path.join(".")) +
+  ' is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.';
 
 const createToolsProxy = (path = []) => {
   const callable = () => undefined;
@@ -57,10 +55,10 @@ const createToolsProxy = (path = []) => {
       return createToolsProxy([...path, prop]);
     },
     ownKeys() {
-      throw toolsEnumerationError(path);
+      throw new Error(toolsEnumerationMessage(path));
     },
     getOwnPropertyDescriptor() {
-      throw toolsEnumerationError(path);
+      throw new Error(toolsEnumerationMessage(path));
     },
     apply(_target, _thisArg, args) {
       const toolPath = path.join(".");
