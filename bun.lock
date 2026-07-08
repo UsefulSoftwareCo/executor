@@ -50,6 +50,7 @@
       },
       "devDependencies": {
         "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
         "bun-types": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",

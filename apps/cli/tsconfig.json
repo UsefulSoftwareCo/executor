@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "declaration": true,
-    "types": ["bun-types"]
+    "types": ["bun-types", "node"]
   },
   "include": ["src", "bin"]
 }
