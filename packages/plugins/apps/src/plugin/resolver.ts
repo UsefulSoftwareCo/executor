@@ -1,15 +1,21 @@
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 import {
   ConnectionName,
   IntegrationSlug,
   ToolAddress,
   isToolResult,
+  type ExecuteError,
   type ConnectionRef,
   type Owner,
   type PluginCtx,
 } from "@executor-js/sdk";
 
-import { BindingError, type ClientResolver, type ConnectionCandidate } from "./bindings";
+import {
+  AppInnerToolError,
+  BindingError,
+  type ClientResolver,
+  type ConnectionCandidate,
+} from "./bindings";
 
 export interface AppsResolverPluginCtx {
   readonly connections: Pick<PluginCtx["connections"], "list" | "get">;
@@ -43,6 +49,34 @@ const toCandidate = (connection: {
         )}`,
   integration: String(connection.integration),
 });
+
+const innerMessageFromCause = (cause: ExecuteError): string => {
+  if (
+    Predicate.isTagged("ToolInvocationError")(cause) ||
+    Predicate.isTagged("CredentialResolutionError")(cause) ||
+    Predicate.isTagged("StorageError")(cause)
+  ) {
+    // oxlint-disable-next-line executor/no-unknown-error-message -- typed ExecuteError variants expose message as caller-facing failure text
+    return cause.message;
+  }
+  if (Predicate.isTagged("ToolNotFoundError")(cause)) return `Tool not found: ${cause.address}`;
+  if (Predicate.isTagged("ToolBlockedError")(cause)) return `Tool blocked: ${cause.address}`;
+  if (Predicate.isTagged("PluginNotLoadedError")(cause)) {
+    return `Plugin not loaded for tool: ${cause.address}`;
+  }
+  if (Predicate.isTagged("NoHandlerError")(cause)) return `No handler for tool: ${cause.address}`;
+  if (Predicate.isTagged("ConnectionNotFoundError")(cause)) {
+    return `Connection not found: ${cause.integration}.${cause.owner}.${cause.name}`;
+  }
+  if (Predicate.isTagged("CredentialProviderNotRegisteredError")(cause)) {
+    return `Credential provider not registered: ${cause.provider}`;
+  }
+  if (Predicate.isTagged("ElicitationDeclinedError")(cause)) {
+    return `Tool approval ${cause.action === "cancel" ? "cancelled" : "declined"}: ${cause.address}`;
+  }
+  if (Predicate.isTagged("UniqueViolationError")(cause)) return "storage unique violation";
+  return "inner tool failed";
+};
 
 export const makePluginCtxAppsResolver = (input: {
   readonly ctx: AppsResolverPluginCtx;
@@ -98,22 +132,19 @@ export const makePluginCtxAppsResolver = (input: {
       const address = ToolAddress.make(`${connection}.${path.join(".")}`);
       const result = yield* input.ctx.execute(address, args, invokeOptions).pipe(
         Effect.mapError(
-          () =>
-            new BindingError({
-              role: integration,
-              integration,
-              requestedConnection: connection,
-              message: `failed to execute ${address}`,
+          (cause) =>
+            new AppInnerToolError({
+              address,
+              innerMessage: innerMessageFromCause(cause),
             }),
         ),
       );
       if (isToolResult(result)) {
         if (result.ok) return result.data;
-        return yield* new BindingError({
-          role: integration,
-          integration,
-          requestedConnection: connection,
-          message: result.error.message,
+        return yield* new AppInnerToolError({
+          address,
+          code: result.error.code,
+          innerMessage: result.error.message,
         });
       }
       return result;

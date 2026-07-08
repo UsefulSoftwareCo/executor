@@ -1,5 +1,5 @@
-import { Data, Effect } from "effect";
-import { ToolName, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
+import { Data, Effect, Predicate } from "effect";
+import { ToolName, ToolResult, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
 
 import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
 import { publish } from "../pipeline/publish";
@@ -18,6 +18,43 @@ interface ProjectedToolSchema {
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
 }
+
+const innerToolError = (
+  cause: unknown,
+): { readonly address: string; readonly innerMessage: string; readonly code?: string } | null => {
+  const direct =
+    Predicate.isTagged("AppInnerToolError")(cause) && typeof cause === "object" && cause !== null
+      ? (cause as {
+          readonly address?: unknown;
+          readonly innerMessage?: unknown;
+          readonly code?: unknown;
+        })
+      : null;
+  const nested =
+    direct === null &&
+    cause !== null &&
+    typeof cause === "object" &&
+    "cause" in cause &&
+    Predicate.isTagged("AppInnerToolError")(cause.cause)
+      ? (cause.cause as {
+          readonly address?: unknown;
+          readonly innerMessage?: unknown;
+          readonly code?: unknown;
+        })
+      : direct;
+  if (
+    nested === null ||
+    typeof nested.address !== "string" ||
+    typeof nested.innerMessage !== "string"
+  ) {
+    return null;
+  }
+  return {
+    address: nested.address,
+    innerMessage: nested.innerMessage,
+    ...(typeof nested.code === "string" ? { code: nested.code } : {}),
+  };
+};
 
 const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor) => ({
   publish: (input: Parameters<typeof publish>[1]) =>
@@ -92,14 +129,28 @@ export const makeAppsPlugin = (options?: { readonly executor?: AppToolExecutor }
           resolver,
           invokeOptions,
         });
-        const result = yield* (options?.executor ?? makeInProcessAppToolExecutor()).invoke(
-          bundle,
-          { toolName: tool.name },
-          { ...bindings.input, ...bindings.bindings },
-          bridge,
-          { timeoutMs: 30_000 },
-        );
-        return result.output;
+        const result = yield* (options?.executor ?? makeInProcessAppToolExecutor())
+          .invoke(
+            bundle,
+            { toolName: tool.name },
+            { ...bindings.input, ...bindings.bindings },
+            bridge,
+            { timeoutMs: 30_000 },
+          )
+          .pipe(
+            Effect.catch((cause: unknown) => {
+              const inner = innerToolError(cause);
+              return inner
+                ? Effect.succeed(
+                    ToolResult.fail({
+                      code: inner.code ?? "inner_tool_error",
+                      message: `Inner tool ${inner.address} failed: "${inner.innerMessage}"`,
+                    }),
+                  )
+                : Effect.fail(cause);
+            }),
+          );
+        return "output" in result ? result.output : result;
       }),
   }))();
 

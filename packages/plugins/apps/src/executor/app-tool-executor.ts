@@ -1,6 +1,6 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-double-cast, executor/no-promise-reject, executor/no-instanceof-tagged-error -- boundary: in-process dynamic-import backing converts JavaScript exceptions into typed AppExecutorError */
 import { Buffer } from "node:buffer";
-import { Data, Effect } from "effect";
+import { Data, Effect, Predicate } from "effect";
 import { z } from "zod";
 
 import { validToolKey } from "../pipeline/discover";
@@ -124,6 +124,13 @@ const jsonSchemaFor = (schema: unknown): unknown => {
     }
   }
   return schema;
+};
+
+const innerToolFailureMessage = (cause: unknown): string | null => {
+  if (!Predicate.isTagged("AppInnerToolError")(cause)) return null;
+  const error = cause as { readonly address?: unknown; readonly innerMessage?: unknown };
+  if (typeof error.address !== "string" || typeof error.innerMessage !== "string") return null;
+  return `Inner tool ${error.address} failed: "${error.innerMessage}"`;
 };
 
 type CollectedIntegrationDecl = CollectedTool["integrations"][string];
@@ -452,6 +459,10 @@ export const makeInProcessAppToolExecutor = (): AppToolExecutor => ({
       catch: (cause) =>
         cause instanceof AppExecutorError
           ? cause
-          : new AppExecutorError({ kind: "invoke", message: "app tool invocation failed", cause }),
+          : new AppExecutorError({
+              kind: "invoke",
+              message: innerToolFailureMessage(cause) ?? "app tool invocation failed",
+              cause,
+            }),
     }),
 });

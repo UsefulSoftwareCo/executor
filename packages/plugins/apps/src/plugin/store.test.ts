@@ -139,7 +139,6 @@ const descriptor = (tools: readonly AppDescriptor["tools"][number][]): AppDescri
   version: 6,
   app: "crm",
   sourceRef: "sha-1",
-  descriptorKey: "descriptor",
   publishedAt: 1,
   toolchain: {
     bundler: { name: "esbuild", version: "0" },
@@ -169,8 +168,13 @@ describe("apps store", () => {
         blobs: pluginBlobStore(makeInMemoryBlobStore(), { org: "tenant", user: null }, "apps"),
         pluginStorage: makeMemoryPluginStorage(),
       });
-      yield* store.putPublished(descriptor([tool("first"), tool("second")]), "org", null);
-      yield* store.putPublished(descriptor([tool("first")]), "org", "sha-1");
+      yield* store.putPublished(
+        descriptor([tool("first"), tool("second")]),
+        "descriptor",
+        "org",
+        null,
+      );
+      yield* store.putPublished(descriptor([tool("first")]), "descriptor-2", "org", "sha-1");
       const active = yield* store.listActiveTools();
       expect(active.map((item) => item.name)).toEqual(["first"]);
     }),

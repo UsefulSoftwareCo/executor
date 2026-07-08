@@ -11,6 +11,15 @@ export class BindingError extends Data.TaggedError("BindingError")<{
   readonly requestedConnection?: string;
 }> {}
 
+export class AppInnerToolError extends Data.TaggedError("AppInnerToolError")<{
+  readonly address: string;
+  readonly innerMessage: string;
+  readonly code?: string;
+}> {}
+
+export const appInnerToolFailureMessage = (error: AppInnerToolError): string =>
+  `Inner tool ${error.address} failed: "${error.innerMessage}"`;
+
 export interface ConnectionCandidate {
   readonly address: string;
   readonly integration: string;
@@ -29,7 +38,7 @@ export interface ClientResolver {
     readonly path: readonly string[];
     readonly args: unknown;
     readonly invokeOptions?: InvokeOptions;
-  }) => Effect.Effect<unknown, BindingError>;
+  }) => Effect.Effect<unknown, BindingError | AppInnerToolError>;
 }
 
 export interface ResolvedBindings {

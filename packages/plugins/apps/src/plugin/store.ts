@@ -59,6 +59,7 @@ export interface AppsStore {
   >;
   readonly putPublished: (
     descriptor: AppDescriptor,
+    descriptorKey: string,
     owner: Owner,
     expectedSourceRef: string | null,
   ) => Effect.Effect<void, StorageFailure | AppPublishConflictError>;
@@ -113,7 +114,7 @@ export const makeAppsStore = (input: {
             : null,
         ),
       ),
-    putPublished: (descriptor, owner, expectedSourceRef) =>
+    putPublished: (descriptor, descriptorKey, owner, expectedSourceRef) =>
       Effect.gen(function* () {
         const current = yield* descriptors.get({ key: descriptor.app });
         const actualSourceRef = current?.data.sourceRef ?? null;
@@ -134,7 +135,7 @@ export const makeAppsStore = (input: {
             app: descriptor.app,
             name: tool.name,
             sourceRef: descriptor.sourceRef,
-            descriptorKey: descriptor.descriptorKey,
+            descriptorKey,
             bundleKey: tool.bundleKey,
             description: tool.description,
             inputSchema: tool.inputSchema,
@@ -161,7 +162,7 @@ export const makeAppsStore = (input: {
           data: {
             app: descriptor.app,
             sourceRef: descriptor.sourceRef,
-            descriptorKey: descriptor.descriptorKey,
+            descriptorKey,
             publishedAt: descriptor.publishedAt,
             toolchain: descriptor.toolchain,
           },

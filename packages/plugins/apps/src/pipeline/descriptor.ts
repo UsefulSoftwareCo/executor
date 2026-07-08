@@ -48,7 +48,6 @@ export interface AppDescriptor {
   readonly version: typeof DESCRIPTOR_VERSION;
   readonly app: string;
   readonly sourceRef: string;
-  readonly descriptorKey: string;
   readonly publishedAt: number;
   readonly toolchain: ToolchainRef;
   readonly tools: readonly ToolDescriptor[];

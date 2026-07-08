@@ -180,11 +180,10 @@ export const publish = (
       }
     }
 
-    const descriptorSeed = {
+    const descriptor: AppDescriptor = {
       version: DESCRIPTOR_VERSION,
       app: input.app,
       sourceRef: input.sourceRef,
-      descriptorKey: "",
       publishedAt: deps.now?.() ?? Date.now(),
       toolchain: toolchainRef(),
       tools,
@@ -193,8 +192,8 @@ export const publish = (
       skills: discovered.skipped.filter((item) => item.path.startsWith("skills/")),
       skipped: discovered.skipped,
     };
-    const descriptorBodyWithoutKey = stableStringify(descriptorSeed);
-    const descriptorKey = yield* deps.store.putBlob(descriptorBodyWithoutKey, owner).pipe(
+    const descriptorBody = stableStringify(descriptor);
+    const descriptorKey = yield* deps.store.putBlob(descriptorBody, owner).pipe(
       Effect.mapError(
         () =>
           new PublishError({
@@ -204,38 +203,27 @@ export const publish = (
           }),
       ),
     );
-    const descriptor: AppDescriptor = { ...descriptorSeed, descriptorKey };
-    const descriptorBody = stableStringify(descriptor);
-    const finalDescriptorKey = yield* deps.store.putBlob(descriptorBody, owner).pipe(
-      Effect.mapError(
-        () =>
-          new PublishError({
-            stage: "project",
-            message: "failed to write final descriptor blob",
-            diagnostics: [],
-          }),
-      ),
-    );
-    const finalDescriptor: AppDescriptor = { ...descriptor, descriptorKey: finalDescriptorKey };
-    yield* deps.store.putPublished(finalDescriptor, owner, existing?.sourceRef ?? null).pipe(
-      Effect.mapError((cause) => {
-        if (Predicate.isTagged("AppPublishConflictError")(cause)) {
+    yield* deps.store
+      .putPublished(descriptor, descriptorKey, owner, existing?.sourceRef ?? null)
+      .pipe(
+        Effect.mapError((cause) => {
+          if (Predicate.isTagged("AppPublishConflictError")(cause)) {
+            return new PublishError({
+              stage: "project",
+              message: `app "${input.app}" changed during publish`,
+              diagnostics: [{ path: "", message: "publish sourceRef changed during publish" }],
+            });
+          }
           return new PublishError({
             stage: "project",
-            message: `app "${input.app}" changed during publish`,
-            diagnostics: [{ path: "", message: "publish sourceRef changed during publish" }],
+            message: "failed to persist app publication",
+            diagnostics: [],
           });
-        }
-        return new PublishError({
-          stage: "project",
-          message: "failed to persist app publication",
-          diagnostics: [],
-        });
-      }),
-    );
+        }),
+      );
     return {
-      descriptor: finalDescriptor,
-      publishedTools: finalDescriptor.tools.map((tool) => tool.name),
+      descriptor,
+      publishedTools: descriptor.tools.map((tool) => tool.name),
       skipped: discovered.skipped,
       noop: false,
     };

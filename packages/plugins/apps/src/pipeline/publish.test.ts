@@ -28,6 +28,7 @@ const makeMemoryStore = (): AppsStore & {
   const blobs = new Map<string, string>();
   const rows = new Map<string, unknown>();
   let descriptor: AppDescriptor | null = null;
+  let descriptorKey: string | null = null;
   return {
     rows,
     blobs,
@@ -40,11 +41,9 @@ const makeMemoryStore = (): AppsStore & {
     getBlob: (key) => Effect.sync(() => blobs.get(key) ?? null),
     getDescriptorRecord: () =>
       Effect.sync(() =>
-        descriptor
-          ? { sourceRef: descriptor.sourceRef, descriptorKey: descriptor.descriptorKey }
-          : null,
+        descriptor ? { sourceRef: descriptor.sourceRef, descriptorKey: descriptorKey ?? "" } : null,
       ),
-    putPublished: (next, _owner, expectedSourceRef) =>
+    putPublished: (next, nextDescriptorKey, _owner, expectedSourceRef) =>
       Effect.gen(function* () {
         const actualSourceRef = descriptor?.sourceRef ?? null;
         if (actualSourceRef !== expectedSourceRef) {
@@ -55,6 +54,7 @@ const makeMemoryStore = (): AppsStore & {
           });
         }
         descriptor = next;
+        descriptorKey = nextDescriptorKey;
         for (const key of rows.keys()) rows.delete(key);
         for (const item of next.tools) rows.set(item.name, item);
       }),
@@ -132,6 +132,7 @@ describe("publish", () => {
       expect(result.publishedTools).toEqual(["sync"]);
       expect(result.skipped).toEqual([{ path: "workflows/later.ts", reason: "not supported yet" }]);
       expect(result.descriptor.toolchain.executor.name).toBe("in-process-data-url");
+      expect(store.blobs.size).toBe(2);
     }),
   );
 
