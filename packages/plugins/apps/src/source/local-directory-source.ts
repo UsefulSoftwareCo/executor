@@ -1,3 +1,4 @@
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-instanceof-tagged-error -- boundary: filesystem path validation and fs errors normalize to AppSourceError */
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";

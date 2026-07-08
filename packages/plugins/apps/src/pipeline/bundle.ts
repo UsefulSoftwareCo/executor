@@ -23,6 +23,12 @@ export interface BundleInput {
 
 export interface BundleOutput {
   readonly code: string;
+  readonly toolchain?: ToolchainRef;
+}
+
+export interface BundleBackend {
+  readonly bundle: (input: BundleInput) => Effect.Effect<BundleOutput, AppExecutorError>;
+  readonly toolchain: () => ToolchainRef;
 }
 
 const EsbuildDiagnostic = Schema.Struct({ text: Schema.String });
@@ -136,38 +142,46 @@ const fileSetPlugin = (files: ReadonlyMap<string, string>, authorEntry: string) 
   },
 });
 
-export const bundleEntry = (input: BundleInput): Effect.Effect<BundleOutput, AppExecutorError> =>
-  Effect.tryPromise({
-    try: () =>
-      build({
-        entryPoints: [VIRTUAL_ENTRY],
-        bundle: true,
-        write: false,
-        format: "esm",
-        platform: "neutral",
-        target: BUNDLE_TARGET,
-        minify: false,
-        treeShaking: true,
-        jsx: "automatic",
-        logLevel: "silent",
-        plugins: [fileSetPlugin(input.files, input.entry) as never],
+export const inProcessBundleBackend = (): BundleBackend => ({
+  toolchain: toolchainRef,
+  bundle: (input) =>
+    Effect.tryPromise({
+      try: () =>
+        build({
+          entryPoints: [VIRTUAL_ENTRY],
+          bundle: true,
+          write: false,
+          format: "esm",
+          platform: "neutral",
+          target: BUNDLE_TARGET,
+          minify: false,
+          treeShaking: true,
+          jsx: "automatic",
+          logLevel: "silent",
+          plugins: [fileSetPlugin(input.files, input.entry) as never],
+        }),
+      catch: (cause) =>
+        new AppExecutorError({
+          kind: "bundle",
+          message: bundleFailureMessage(input.entry, cause),
+          cause,
+        }),
+    }).pipe(
+      Effect.flatMap((result) => {
+        const out = result.outputFiles?.[0]?.text;
+        return out === undefined
+          ? Effect.fail(
+              new AppExecutorError({
+                kind: "bundle",
+                message: `bundle failed for ${input.entry}: esbuild produced no output`,
+              }),
+            )
+          : Effect.succeed({ code: out, toolchain: toolchainRef() });
       }),
-    catch: (cause) =>
-      new AppExecutorError({
-        kind: "bundle",
-        message: bundleFailureMessage(input.entry, cause),
-        cause,
-      }),
-  }).pipe(
-    Effect.flatMap((result) => {
-      const out = result.outputFiles?.[0]?.text;
-      return out === undefined
-        ? Effect.fail(
-            new AppExecutorError({
-              kind: "bundle",
-              message: `bundle failed for ${input.entry}: esbuild produced no output`,
-            }),
-          )
-        : Effect.succeed({ code: out });
-    }),
-  );
+    ),
+});
+
+export const bundleEntry = (
+  input: BundleInput,
+  backend: BundleBackend = inProcessBundleBackend(),
+): Effect.Effect<BundleOutput, AppExecutorError> => backend.bundle(input);

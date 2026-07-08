@@ -1,0 +1,2 @@
+export const WORKER_BUNDLER_VERSION = "0.2.1";
+export const WORKER_BUNDLER_ESBUILD_VERSION = "0.28.0";

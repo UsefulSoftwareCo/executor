@@ -1,3 +1,4 @@
+/* oxlint-disable executor/no-unknown-error-message -- boundary: SyncDiagnostic intentionally serializes typed source and publish error messages */
 import { Data, Effect } from "effect";
 
 import { PublishError, type PublishFile } from "../pipeline/publish";

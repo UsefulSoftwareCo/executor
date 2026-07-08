@@ -1,7 +1,9 @@
+/* oxlint-disable executor/no-try-catch-or-throw -- boundary: plugin source config validation is converted into the extension Effect failure channel */
 import { Data, Effect, Predicate, Result } from "effect";
 import { ToolName, ToolResult, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
 
 import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
+import type { BundleBackend } from "../pipeline/bundle";
 import { publish } from "../pipeline/publish";
 import { buildBridge, resolveIntegrationBindings } from "./bindings";
 import { makePluginCtxAppsResolver } from "./resolver";
@@ -130,17 +132,28 @@ const sourceConfig = (input: CreateAppSourceInput): AppSourceConfig => {
 const fetchSource = (config: AppSourceConfig): Effect.Effect<AppSourceSnapshot, unknown> =>
   config.kind === "github" ? fetchGitHubAppSource(config) : fetchLocalDirectoryAppSource(config);
 
-const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor) => {
+const makeAppsExtension = (
+  ctx: PluginCtx<AppsStore>,
+  options?: Pick<AppsPluginOptions, "executor" | "bundler" | "sourceKinds">,
+) => {
+  const executor = options?.executor;
   const activeExecutor = executor ?? makeInProcessAppToolExecutor();
+  const activeBundler = options?.bundler;
+  const sourceKinds = options?.sourceKinds ?? ["github", "local-directory"];
   const now = () => Date.now();
   return {
     publish: (input: Parameters<typeof publish>[1]) =>
-      publish({ store: ctx.storage, executor: activeExecutor }, input),
+      publish({ store: ctx.storage, executor: activeExecutor, bundler: activeBundler }, input),
     listSources: () => ctx.storage.listSources(),
     getSource: (slug: string) => ctx.storage.getSource(slug),
     createSource: (input: CreateAppSourceInput) =>
       Effect.gen(function* () {
         const config = sourceConfig(input);
+        if (!sourceKinds.includes(config.kind)) {
+          return yield* new AppPluginError({
+            message: `app source kind is not enabled: ${config.kind}`,
+          });
+        }
         const slug = slugify(
           input.slug ?? input.app ?? (config.kind === "github" ? config.url : config.path),
         );
@@ -163,6 +176,11 @@ const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor
       Effect.gen(function* () {
         const record = yield* ctx.storage.getSource(slug);
         if (!record) return yield* new AppPluginError({ message: `app source not found: ${slug}` });
+        if (!sourceKinds.includes(record.config.kind)) {
+          return yield* new AppPluginError({
+            message: `app source kind is not enabled: ${record.config.kind}`,
+          });
+        }
         const fetched = yield* fetchSource(record.config).pipe(Effect.result);
         if (Result.isFailure(fetched)) {
           const error = fetched.failure;
@@ -191,7 +209,7 @@ const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor
           return { status: "up-to-date", sourceRef: snapshot.sourceRef, tools };
         }
         const published = yield* publish(
-          { store: ctx.storage, executor: activeExecutor },
+          { store: ctx.storage, executor: activeExecutor, bundler: activeBundler },
           {
             app: record.app,
             files: snapshot.files,
@@ -244,6 +262,8 @@ export type AppsExtension = ReturnType<typeof makeAppsExtension>;
 
 export interface AppsPluginOptions {
   readonly executor?: AppToolExecutor;
+  readonly bundler?: BundleBackend;
+  readonly sourceKinds?: readonly AppSourceConfig["kind"][];
 }
 
 export const makeAppsPlugin = (options?: AppsPluginOptions) =>
@@ -256,7 +276,7 @@ export const makeAppsPlugin = (options?: AppsPluginOptions) =>
       [sourceCollection.name]: sourceCollection,
     },
     storage: ({ blobs, pluginStorage }) => makeAppsStore({ blobs, pluginStorage }),
-    extension: (ctx: PluginCtx<AppsStore>) => makeAppsExtension(ctx, options?.executor),
+    extension: (ctx: PluginCtx<AppsStore>) => makeAppsExtension(ctx, options),
     staticSources: () => [
       {
         id: "apps",

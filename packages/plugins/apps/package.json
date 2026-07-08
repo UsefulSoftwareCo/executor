@@ -19,6 +19,8 @@
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
     "./authoring": "./src/authoring.ts",
+    "./cloud": "./src/cloud.ts",
+    "./selfhost": "./src/selfhost.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
@@ -29,6 +31,7 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@cloudflare/worker-bundler": "0.2.1",
     "@executor-js/api": "workspace:*",
     "@executor-js/runtime-workerd-subprocess": "workspace:*",
     "@executor-js/sdk": "workspace:*",

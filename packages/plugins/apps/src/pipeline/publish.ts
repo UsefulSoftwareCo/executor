@@ -3,7 +3,7 @@ import { sha256Hex, type Owner } from "@executor-js/sdk";
 
 import type { AppToolExecutor, CollectedTool } from "../executor/app-tool-executor";
 import type { AppsStore } from "../plugin/store";
-import { bundleEntry } from "./bundle";
+import { bundleEntry, inProcessBundleBackend, type BundleBackend } from "./bundle";
 import {
   DESCRIPTOR_VERSION,
   stableStringify,
@@ -11,7 +11,6 @@ import {
   type ModuleSourceRef,
   type ToolDescriptor,
 } from "./descriptor";
-import { toolchainRef } from "./bundle";
 import { discover, PublishError, type SkippedArtifact } from "./discover";
 export { PublishError } from "./discover";
 
@@ -43,6 +42,7 @@ export interface PublishResult {
 export interface PublishDeps {
   readonly store: AppsStore;
   readonly executor: AppToolExecutor;
+  readonly bundler?: BundleBackend;
   readonly now?: () => number;
 }
 
@@ -143,6 +143,7 @@ export const publish = (
 ): Effect.Effect<PublishResult, PublishError> =>
   Effect.gen(function* () {
     const owner = input.owner ?? "org";
+    const bundler = deps.bundler ?? inProcessBundleBackend();
     const limitError = enforcePublishLimits(input.files);
     if (limitError) return yield* limitError;
     const files = fileMap(input.files);
@@ -188,7 +189,7 @@ export const publish = (
       readonly source: ModuleSourceRef;
     }[] = [];
     for (const artifact of discovered.tools) {
-      const bundled = yield* bundleEntry({ files, entry: artifact.entry }).pipe(
+      const bundled = yield* bundleEntry({ files, entry: artifact.entry }, bundler).pipe(
         Effect.mapError((cause) => toPublishError("bundle", artifact.entry, cause)),
       );
       const collected = yield* deps.executor
@@ -232,7 +233,7 @@ export const publish = (
       app: input.app,
       sourceRef: input.sourceRef,
       publishedAt: deps.now?.() ?? Date.now(),
-      toolchain: toolchainRef(),
+      toolchain: bundler.toolchain(),
       tools,
       workflows: discovered.skipped.filter((item) => item.path.startsWith("workflows/")),
       ui: discovered.skipped.filter((item) => item.path.startsWith("ui/")),

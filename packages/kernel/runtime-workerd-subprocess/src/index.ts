@@ -32,14 +32,26 @@ export type WorkerdToolBridge = {
   readonly call: (toolPath: string, args: unknown) => Promise<unknown>;
 };
 
+export type WorkerdModuleSource =
+  | string
+  | {
+      readonly kind: "esModule";
+      readonly source: string;
+    }
+  | {
+      readonly kind: "wasm";
+      readonly bytes: Uint8Array;
+    };
+
 export type WorkerdModuleRunnerOptions = {
-  readonly modules: Readonly<Record<string, string>>;
+  readonly modules: Readonly<Record<string, WorkerdModuleSource>>;
   readonly mainModule: string;
   readonly compatibilityDate?: string;
   readonly compatibilityFlags?: readonly string[];
   readonly toolBridge?: WorkerdToolBridge;
   readonly hostToken?: string;
   readonly unsafeEval?: boolean;
+  readonly globalOutbound?: "blocked" | "internet";
   readonly workerdBin?: string;
   readonly startupTimeoutMs?: number;
   readonly restartBackoffMs?: number;
@@ -192,11 +204,12 @@ const capnpString = (value: string): string => JSON.stringify(value);
 const buildConfig = (input: {
   readonly listenPort: number;
   readonly hostPort: number | null;
-  readonly modules: Readonly<Record<string, string>>;
+  readonly modules: Readonly<Record<string, WorkerdModuleSource>>;
   readonly mainModule: string;
   readonly compatibilityDate: string;
   readonly compatibilityFlags: readonly string[];
   readonly unsafeEval: boolean;
+  readonly globalOutbound: "blocked" | "internet";
 }): string => {
   const moduleNames = [
     input.mainModule,
@@ -205,7 +218,11 @@ const buildConfig = (input: {
       .sort(),
   ];
   const moduleEntries = moduleNames
-    .map((name) => `( name = ${capnpString(name)}, esModule = embed ${capnpString(name)} )`)
+    .map((name) => {
+      const source = input.modules[name];
+      const field = typeof source === "object" && source.kind === "wasm" ? "wasm" : "esModule";
+      return `( name = ${capnpString(name)}, ${field} = embed ${capnpString(name)} )`;
+    })
     .join(",\n    ");
   const services = [
     '( name = "main", worker = .mainWorker )',
@@ -241,7 +258,7 @@ const mainWorker :Workerd.Worker = (
     ${moduleEntries},
   ],
   compatibilityDate = ${capnpString(input.compatibilityDate)},${flags}${bindings}
-  globalOutbound = "blocked",
+  globalOutbound = ${capnpString(input.globalOutbound)},
 );
 
 const blockedWorker :Workerd.Worker = (
@@ -361,7 +378,13 @@ export const createWorkerdModuleRunner = (
       );
       await mkdir(tmp, { recursive: true });
       for (const [name, source] of Object.entries(options.modules)) {
-        await writeFile(join(tmp, name), source);
+        if (typeof source === "string") {
+          await writeFile(join(tmp, name), source);
+        } else if (source.kind === "wasm") {
+          await writeFile(join(tmp, name), source.bytes);
+        } else {
+          await writeFile(join(tmp, name), source.source);
+        }
       }
 
       const hostServer = await startToolServer(options.toolBridge, token);
@@ -377,6 +400,7 @@ export const createWorkerdModuleRunner = (
           compatibilityDate,
           compatibilityFlags,
           unsafeEval: options.unsafeEval ?? false,
+          globalOutbound: options.globalOutbound ?? "blocked",
         }),
       );
       await reservation.close();
