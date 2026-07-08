@@ -14,18 +14,21 @@ export type AppIntegrationClient = {
 
 export type IntegrationMode = "one" | "many";
 
-export interface IntegrationDeclaration<Slug extends string = string> {
+export interface IntegrationDeclaration<
+  Slug extends string = string,
+  Mode extends IntegrationMode = IntegrationMode,
+> {
   readonly kind: "integration";
   readonly slug: Slug;
-  readonly mode: IntegrationMode;
+  readonly mode: Mode;
   readonly description?: string;
   /**
    * Ask the caller to choose a set of connections. Future author-chosen binding modes should not
    * project optional caller fields: optional fields are suggestions, and model callers under-fill
    * them.
    */
-  readonly array: () => IntegrationDeclaration<Slug>;
-  readonly describe: (text: string) => IntegrationDeclaration<Slug>;
+  readonly array: () => IntegrationDeclaration<Slug, "many">;
+  readonly describe: (text: string) => IntegrationDeclaration<Slug, Mode>;
 }
 
 export type IntegrationClients<TIntegrations> =
@@ -41,9 +44,12 @@ export type IntegrationClients<TIntegrations> =
 
 export type IntegrationDeclarations = Readonly<Record<string, IntegrationDeclaration>>;
 
-interface IntegrationDeclarationState<Slug extends string = string> {
+interface IntegrationDeclarationState<
+  Slug extends string = string,
+  Mode extends IntegrationMode = IntegrationMode,
+> {
   readonly slug: Slug;
-  readonly mode: IntegrationMode;
+  readonly mode: Mode;
   readonly description?: string;
 }
 
@@ -53,15 +59,15 @@ export interface SerializedIntegrationDeclaration {
   readonly description?: string;
 }
 
-const makeIntegrationDeclaration = <Slug extends string>(
-  state: IntegrationDeclarationState<Slug>,
-): IntegrationDeclaration<Slug> => {
+const makeIntegrationDeclaration = <Slug extends string, Mode extends IntegrationMode>(
+  state: IntegrationDeclarationState<Slug, Mode>,
+): IntegrationDeclaration<Slug, Mode> => {
   const declaration = {
     kind: "integration" as const,
     slug: state.slug,
     mode: state.mode,
     ...(state.description !== undefined ? { description: state.description } : {}),
-    array: () => makeIntegrationDeclaration({ ...state, mode: "many" }),
+    array: () => makeIntegrationDeclaration({ ...state, mode: "many" as const }),
     describe: (text: string) => makeIntegrationDeclaration({ ...state, description: text }),
   };
   return Object.freeze(declaration);
@@ -105,8 +111,8 @@ export interface DefinedTool<
   readonly "~executorAppTool": true;
 }
 
-export const integration = <Slug extends string>(slug: Slug): IntegrationDeclaration<Slug> =>
-  makeIntegrationDeclaration({ slug, mode: "one" });
+export const integration = <Slug extends string>(slug: Slug): IntegrationDeclaration<Slug, "one"> =>
+  makeIntegrationDeclaration({ slug, mode: "one" as const });
 
 export const defineTool = <
   TInputSchema extends ToolSchema,
