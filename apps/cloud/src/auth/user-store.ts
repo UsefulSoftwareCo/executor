@@ -13,6 +13,7 @@ import { generateOrgSlug } from "@executor-js/api";
 
 import { accounts, organizations } from "../db/schema";
 import type { DrizzleDb } from "../db/db";
+import { purgeOrganizationData } from "../db/org-deletion";
 
 export type Account = typeof accounts.$inferSelect;
 export type Organization = typeof organizations.$inferSelect;
@@ -96,5 +97,10 @@ export const makeUserStore = (db: DrizzleDb) => {
       const rows = await db.select().from(organizations).where(eq(organizations.slug, slug));
       return rows[0] ?? null;
     },
+
+    // Permanently delete an org and everything it owns (tenant data, secrets,
+    // identity mirror + cascaded memberships) in a single transaction. Callers
+    // sequence the external WorkOS/Autumn deletions around this.
+    deleteOrganizationCascade: (id: string) => purgeOrganizationData(db, id),
   };
 };

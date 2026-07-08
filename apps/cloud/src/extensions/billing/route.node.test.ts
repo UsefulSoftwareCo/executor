@@ -44,13 +44,19 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug: org.id,
           createdAt,
         }),
-        getOrganization: async (id: string) => ({ id, name: `Org ${id}`, slug: id, createdAt }),
+        getOrganization: async (id: string) => ({
+          id,
+          name: `Org ${id}`,
+          slug: id,
+          createdAt,
+        }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug === URL_SLUG ? URL_ORG : "org_outsider",
           name: `Org ${slug}`,
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });

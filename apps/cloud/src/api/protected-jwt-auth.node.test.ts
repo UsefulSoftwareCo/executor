@@ -83,6 +83,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });
@@ -143,7 +144,10 @@ describe("protected JWT (device-login) auth", () => {
 
       const error = yield* Effect.flip(run(request(token), config));
 
-      expect(error).toMatchObject({ _tag: "Unauthorized", code: "invalid_access_token" });
+      expect(error).toMatchObject({
+        _tag: "Unauthorized",
+        code: "invalid_access_token",
+      });
     }),
   );
 
@@ -154,7 +158,10 @@ describe("protected JWT (device-login) auth", () => {
 
       const error = yield* Effect.flip(run(request(token), config));
 
-      expect(error).toMatchObject({ _tag: "NoOrganization", code: "no_organization" });
+      expect(error).toMatchObject({
+        _tag: "NoOrganization",
+        code: "no_organization",
+      });
     }),
   );
 
@@ -166,7 +173,10 @@ describe("protected JWT (device-login) auth", () => {
 
       const error = yield* Effect.flip(run(request(token), config));
 
-      expect(error).toMatchObject({ _tag: "NoOrganization", code: "no_organization" });
+      expect(error).toMatchObject({
+        _tag: "NoOrganization",
+        code: "no_organization",
+      });
     }),
   );
 });

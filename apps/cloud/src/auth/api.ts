@@ -44,6 +44,16 @@ const CreateOrganizationResponse = Schema.Struct({
   slug: Schema.String,
 });
 
+// Deleting an org requires re-typing its name (the label the UI shows) as a
+// deliberate, non-automatable confirmation. Verified server-side too.
+const DeleteOrganizationBody = Schema.Struct({
+  confirmName: Schema.String,
+});
+
+const DeleteOrganizationResponse = Schema.Struct({
+  success: Schema.Boolean,
+});
+
 // CLI device-login discovery (`executor login`). Tells the CLI where to run
 // the OAuth 2.0 Device Authorization Grant (RFC 8628) and which public client
 // to use. The CLI hits these provider endpoints directly, gets a WorkOS access
@@ -146,6 +156,15 @@ export class McpSessionForbiddenError extends Schema.TaggedErrorClass<McpSession
   { httpApiStatus: 403 },
 ) {}
 
+// Refused org deletion: the caller is not an admin of the org, or the typed
+// confirmation did not match. Deliberately one error for both so it never
+// reveals which check failed.
+export class OrganizationDeletionForbidden extends Schema.TaggedErrorClass<OrganizationDeletionForbidden>()(
+  "OrganizationDeletionForbidden",
+  {},
+  { httpApiStatus: 403 },
+) {}
+
 export const AUTH_PATHS = {
   login: "/api/auth/login",
   logout: "/api/auth/logout",
@@ -168,7 +187,11 @@ export class CloudAuthPublicApi extends HttpApiGroup.make("cloudAuthPublic")
       error: AuthErrors,
     }),
   )
-  .add(HttpApiEndpoint.get("cliLogin", "/auth/cli-login", { success: CliLoginResponse })) {}
+  .add(
+    HttpApiEndpoint.get("cliLogin", "/auth/cli-login", {
+      success: CliLoginResponse,
+    }),
+  ) {}
 
 /** Session auth endpoints — require a logged-in user, may not have an org */
 export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
@@ -190,6 +213,13 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
       payload: CreateOrganizationBody,
       success: CreateOrganizationResponse,
       error: AuthErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("deleteOrganization", "/auth/delete-organization", {
+      payload: DeleteOrganizationBody,
+      success: DeleteOrganizationResponse,
+      error: [...AuthErrors, NoOrganization, OrganizationDeletionForbidden],
     }),
   )
   .add(
