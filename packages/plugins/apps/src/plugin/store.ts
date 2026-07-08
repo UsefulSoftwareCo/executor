@@ -102,8 +102,9 @@ export interface AppsStore {
     owner: Owner,
     expectedSourceRef: string | null,
   ) => Effect.Effect<void, StorageFailure | AppPublishConflictError>;
+  readonly removePublished: (app: string, owner: Owner) => Effect.Effect<void, StorageFailure>;
   readonly listActiveTools: () => Effect.Effect<
-    readonly AppDescriptor["tools"][number][],
+    readonly (AppDescriptor["tools"][number] & { readonly app: string })[],
     StorageFailure
   >;
   readonly getTool: (name: string) => Effect.Effect<
@@ -215,10 +216,27 @@ export const makeAppsStore = (input: {
           },
         });
       }),
+    removePublished: (app, owner) =>
+      Effect.gen(function* () {
+        const existing = yield* tools.query({ where: { app } });
+        const now = Date.now();
+        const entries: PutManyEntry[] = existing
+          .filter((entry) => !entry.data.tombstoned)
+          .map((entry) => ({
+            collection: toolCollection.name,
+            key: entry.key,
+            data: { ...entry.data, tombstoned: true, updatedAt: now },
+          }));
+        if (entries.length > 0) {
+          yield* input.pluginStorage.putMany({ owner, entries });
+        }
+        yield* descriptors.remove({ owner, key: app });
+      }),
     listActiveTools: () =>
       tools.query({ where: { tombstoned: false } }).pipe(
         Effect.map((entries) =>
           entries.map((entry) => ({
+            app: entry.data.app,
             name: entry.data.name,
             sourcePath: "",
             source: { path: "", sourceHash: "" },

@@ -74,7 +74,17 @@ const makeSyncStore = (): AppsStore & {
         descriptor = next;
         descriptorKey = nextDescriptorKey;
       }),
-    listActiveTools: () => Effect.sync(() => descriptor?.tools ?? []),
+    removePublished: (app) =>
+      Effect.sync(() => {
+        if (descriptor?.app === app) {
+          descriptor = null;
+          descriptorKey = null;
+        }
+      }),
+    listActiveTools: () =>
+      Effect.sync(
+        () => descriptor?.tools.map((tool) => ({ ...tool, app: descriptor?.app ?? "" })) ?? [],
+      ),
     getTool: (name) =>
       Effect.sync(() => {
         const tool = descriptor?.tools.find((item) => item.name === name);
@@ -145,6 +155,7 @@ const makeInvokeStore = (input: {
   getBlob: () => Effect.succeed(input.bundle),
   getDescriptorRecord: () => Effect.succeed(null),
   putPublished: () => Effect.void,
+  removePublished: () => Effect.void,
   listActiveTools: () => Effect.succeed([]),
   getTool: () =>
     Effect.succeed({
@@ -190,6 +201,7 @@ describe("apps plugin schema projection", () => {
         getBlob: () => Effect.succeed(null),
         getDescriptorRecord: () => Effect.succeed(null),
         putPublished: () => Effect.void,
+        removePublished: () => Effect.void,
         listActiveTools: () => Effect.succeed([]),
         putSource: () => Effect.void,
         listSources: () => Effect.succeed([]),
@@ -233,14 +245,18 @@ describe("apps plugin schema projection", () => {
       );
       expect(result.inputSchema).toMatchObject({
         properties: {
-          crm: { enum: ["tools.dealcloud.org.main"] },
+          crm: {
+            enum: ["tools.dealcloud.org.main"],
+            default: "tools.dealcloud.org.main",
+          },
           inboxes: {
+            default: ["tools.gmail.org.work", "tools.gmail.user.personal"],
             items: {
               enum: ["tools.gmail.org.work", "tools.gmail.user.personal"],
             },
           },
         },
-        required: ["crm", "inboxes"],
+        required: undefined,
       });
     }),
   );

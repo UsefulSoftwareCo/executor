@@ -20,6 +20,8 @@
     "./api": "./src/api.ts",
     "./authoring": "./src/authoring.ts",
     "./cloud": "./src/cloud.ts",
+    "./client": "./src/react/plugin-client.tsx",
+    "./react": "./src/react/index.ts",
     "./selfhost": "./src/selfhost.ts",
     "./testing": "./src/testing/index.ts"
   },
@@ -39,14 +41,36 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
+    "@executor-js/react": "workspace:*",
     "@types/node": "catalog:",
+    "@types/react": "catalog:",
     "bun-types": "catalog:",
     "effect": "catalog:",
+    "react": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "effect": "catalog:"
+    "@effect/atom-react": "catalog:",
+    "@executor-js/react": "workspace:*",
+    "@tanstack/react-router": "catalog:",
+    "effect": "catalog:",
+    "react": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "@executor-js/react": {
+      "optional": true
+    },
+    "@tanstack/react-router": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }

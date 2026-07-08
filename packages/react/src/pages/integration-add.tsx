@@ -1,8 +1,11 @@
 import { Suspense } from "react";
+import { useAtomRefresh } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { integrationDetailTabForAddCompletion } from "../lib/integration-detail-tabs";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -18,6 +21,7 @@ export function AddIntegrationPage(props: {
   const { pluginKey, url, preset, namespace } = props;
   const navigate = useNavigate();
   const integrationPlugins = useIntegrationPlugins();
+  const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
 
   const plugin = integrationPlugins.find((p) => p.key === pluginKey);
 
@@ -59,9 +63,15 @@ export function AddIntegrationPage(props: {
                 plugin_key: pluginKey,
                 ...(slug ? { integration_slug: slug } : {}),
               });
+              refreshIntegrations();
+              const tab = integrationDetailTabForAddCompletion(pluginKey);
               void navigate(
                 slug
-                  ? { to: "/{-$orgSlug}/integrations/$namespace", params: { namespace: slug } }
+                  ? {
+                      to: "/{-$orgSlug}/integrations/$namespace",
+                      params: { namespace: slug },
+                      search: tab ? { tab } : {},
+                    }
                   : { to: "/{-$orgSlug}" },
               );
             }}

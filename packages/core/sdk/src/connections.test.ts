@@ -362,13 +362,14 @@ describe("connections.refresh", () => {
 
 describe("tool catalog sync safety", () => {
   it.effect(
-    "background sync preserves a nonzero catalog when a plugin returns authoritative empty",
+    "background sync preserves a nonzero remote catalog when a plugin returns authoritative empty",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           let empty = false;
           const guardedPlugin = definePlugin(() => ({
             id: "guarded" as const,
+            remoteToolCatalog: true,
             credentialProviders: [memoryProvider()],
             storage: () => ({}),
             resolveTools: () =>
@@ -420,6 +421,66 @@ describe("tool catalog sync safety", () => {
             status: "degraded",
             detail: expect.stringContaining("authoritative empty catalog"),
           });
+        }),
+      ),
+  );
+
+  it.effect(
+    "background sync clears a non-remote catalog when a plugin returns authoritative empty",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let empty = false;
+          const storedStatePlugin = definePlugin(() => ({
+            id: "stored-state" as const,
+            credentialProviders: [memoryProvider()],
+            storage: () => ({}),
+            resolveTools: () =>
+              Effect.sync(() => ({
+                tools: empty
+                  ? []
+                  : [
+                      { name: ToolName.make("deploy"), description: "deploy" },
+                      { name: ToolName.make("list"), description: "list" },
+                    ],
+              })),
+            invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+            extension: (ctx) => ({
+              seed: () =>
+                ctx.core.integrations.register({
+                  slug: INTEG,
+                  description: "Vercel",
+                  config: {},
+                }),
+            }),
+          }))();
+          const config = makeTestConfig({ plugins: [storedStatePlugin] as const });
+          const executor = yield* createExecutor(config);
+          yield* executor["stored-state"].seed();
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+
+          empty = true;
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+              set: { tools_synced_at: null },
+            }),
+          );
+          const tools = yield* executor.tools.list({ integration: INTEG });
+          const connection = yield* executor.connections.get({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+
+          expect(tools).toEqual([]);
+          expect(connection?.lastHealth).toBeNull();
         }),
       ),
   );

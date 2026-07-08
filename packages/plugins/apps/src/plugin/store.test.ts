@@ -177,6 +177,27 @@ describe("apps store", () => {
       yield* store.putPublished(descriptor([tool("first")]), "descriptor-2", "org", "sha-1");
       const active = yield* store.listActiveTools();
       expect(active.map((item) => item.name)).toEqual(["first"]);
+      expect(active.map((item) => item.app)).toEqual(["crm"]);
+    }),
+  );
+
+  it.effect("removes a published app catalog", () =>
+    Effect.gen(function* () {
+      const store = makeAppsStore({
+        blobs: pluginBlobStore(makeInMemoryBlobStore(), { org: "tenant", user: null }, "apps"),
+        pluginStorage: makeMemoryPluginStorage(),
+      });
+      yield* store.putPublished(
+        descriptor([tool("first"), tool("second")]),
+        "descriptor",
+        "org",
+        null,
+      );
+      yield* store.removePublished("crm", "org");
+      const active = yield* store.listActiveTools();
+      const descriptorRecord = yield* store.getDescriptorRecord("crm");
+      expect(active).toEqual([]);
+      expect(descriptorRecord).toBeNull();
     }),
   );
 

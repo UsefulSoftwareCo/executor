@@ -2167,7 +2167,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
         }
 
-        if (mode === "background" && result.tools.length === 0) {
+        if (
+          mode === "background" &&
+          runtime.plugin.remoteToolCatalog === true &&
+          result.tools.length === 0
+        ) {
           const keptRows = yield* core.findMany("tool", { where });
           if (keptRows.length > 0) {
             const reason =

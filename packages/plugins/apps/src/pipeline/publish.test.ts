@@ -58,7 +58,18 @@ const makeMemoryStore = (): AppsStore & {
         for (const key of rows.keys()) rows.delete(key);
         for (const item of next.tools) rows.set(item.name, item);
       }),
-    listActiveTools: () => Effect.sync(() => descriptor?.tools ?? []),
+    removePublished: (app) =>
+      Effect.sync(() => {
+        if (descriptor?.app === app) {
+          descriptor = null;
+          descriptorKey = null;
+        }
+        for (const key of rows.keys()) rows.delete(key);
+      }),
+    listActiveTools: () =>
+      Effect.sync(
+        () => descriptor?.tools.map((tool) => ({ ...tool, app: descriptor?.app ?? "" })) ?? [],
+      ),
     getTool: (name) =>
       Effect.sync(() => {
         const row = descriptor?.tools.find((item) => item.name === name);

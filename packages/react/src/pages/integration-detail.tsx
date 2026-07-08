@@ -36,6 +36,12 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import {
+  integrationDetailInternalTabFromSearch,
+  integrationDetailSearchTabForInternal,
+  type IntegrationDetailInternalTab,
+  type IntegrationDetailSearchTab,
+} from "../lib/integration-detail-tabs";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
 // the integration's per-owner connections; a tool's policy id is
@@ -52,7 +58,10 @@ type ToolRow = {
   readonly static?: boolean;
 };
 
-export function IntegrationDetailPage(props: { namespace: string }) {
+export function IntegrationDetailPage(props: {
+  namespace: string;
+  tab?: IntegrationDetailSearchTab;
+}) {
   const { namespace } = props;
   const slug = IntegrationSlug.make(namespace);
   const integrationPlugins = useIntegrationPlugins();
@@ -89,7 +98,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"accounts" | "tools">("accounts");
+  const [activeTab, setActiveTab] = useState<IntegrationDetailInternalTab>(() =>
+    integrationDetailInternalTabFromSearch(props.tab),
+  );
   const [manualAccountHandoff, setManualAccountHandoff] =
     useState<IntegrationAccountHandoff | null>(null);
   const [locationSearch] = useState(() =>
@@ -101,9 +112,14 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setEditSheetOpen(false);
   }, [namespace]);
 
+  useEffect(() => {
+    setActiveTab(integrationDetailInternalTabFromSearch(props.tab));
+  }, [namespace, props.tab]);
+
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
   useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
+  const isAppsIntegration = integrationData?.kind === "apps";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
@@ -153,6 +169,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   // Find the plugin edit component based on integration kind
   const editPlugin = useMemo(() => {
     if (!integrationData) return null;
+    if (integrationData.kind === "apps") {
+      return integrationPlugins.find((p) => p.key === "apps") ?? null;
+    }
     return integrationPlugins.find((p) => p.key === integrationData.kind) ?? null;
   }, [integrationData, integrationPlugins]);
 
@@ -347,6 +366,18 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
   };
 
+  const handleTabChange = (value: string) => {
+    const nextTab = value === "tools" ? "tools" : "accounts";
+    setActiveTab(nextTab);
+    void navigate({
+      to: "/{-$orgSlug}/integrations/$namespace",
+      params: { namespace },
+      search: {
+        tab: integrationDetailSearchTabForInternal(integrationData?.kind, nextTab),
+      },
+    });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header bar */}
@@ -363,7 +394,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {!confirmDelete && !isBuiltInIntegration && integrationData && (
+          {!confirmDelete && !isBuiltInIntegration && !isAppsIntegration && integrationData && (
             <Button variant="outline" size="sm" onClick={() => setEditSheetOpen(true)}>
               Edit
             </Button>
@@ -381,6 +412,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
           )}
 
           {canRemove &&
+            !isAppsIntegration &&
             (confirmDelete ? (
               <div className="flex items-center gap-2">
                 <Button
@@ -415,12 +447,16 @@ export function IntegrationDetailPage(props: { namespace: string }) {
 
       <Tabs
         value={currentTab}
-        onValueChange={(value: string) => setActiveTab(value as "accounts" | "tools")}
+        onValueChange={handleTabChange}
         className="min-h-0 flex-1 gap-0 overflow-hidden"
       >
         <div className="shrink-0 border-b border-border/60 px-4 py-2">
           <TabsList variant="line">
-            {!isBuiltInIntegration && <TabsTrigger value="accounts">Accounts</TabsTrigger>}
+            {!isBuiltInIntegration && (
+              <TabsTrigger value="accounts">
+                {isAppsIntegration ? "Source" : "Accounts"}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="tools">Tools</TabsTrigger>
           </TabsList>
         </div>

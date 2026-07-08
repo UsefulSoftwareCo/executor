@@ -136,12 +136,18 @@ export const isPrivateGitHost = (host: string): boolean => {
 
 export const validateGitFetchUrl = (input: string, policy: GitUrlPolicy = {}): URL => {
   const url = new URL(input);
-  if (url.protocol !== "https:") throw new Error("git source URL must use https");
+  const privateHost = isPrivateGitHost(url.hostname);
+  if (
+    url.protocol !== "https:" &&
+    !(url.protocol === "http:" && policy.allowPrivateHosts === true && privateHost)
+  ) {
+    throw new Error("git source URL must use https");
+  }
   if (url.username || url.password)
     throw new Error("git source URL must not include embedded credentials");
   if (hasTokenLikeQuery(url))
     throw new Error("git source URL must not include token query parameters");
-  if (policy.allowPrivateHosts !== true && isPrivateGitHost(url.hostname)) {
+  if (policy.allowPrivateHosts !== true && privateHost) {
     throw new Error("git source URL host is not allowed");
   }
   return url;

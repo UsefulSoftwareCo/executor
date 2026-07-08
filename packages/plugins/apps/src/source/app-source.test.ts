@@ -227,6 +227,7 @@ describe("git app sources", () => {
   it.effect("rejects private git hosts under cloud posture", () =>
     Effect.gen(function* () {
       for (const url of [
+        "http://localhost/repo.git",
         "https://localhost/repo.git",
         "https://127.0.0.1/repo.git",
         "https://[::ffff:127.0.0.1]/repo.git",
@@ -239,6 +240,11 @@ describe("git app sources", () => {
         const exit = yield* Effect.exit(parseGitSourceUrl(url));
         expect(Exit.isFailure(exit)).toBe(true);
       }
+      expect(
+        yield* parseGitSourceUrl("http://127.0.0.1:9999/repo.git", {
+          allowPrivateHosts: true,
+        }),
+      ).toBeInstanceOf(URL);
       expect(yield* parseGitSourceUrl("https://gitlab.com/acme/tools.git")).toBeInstanceOf(URL);
     }),
   );

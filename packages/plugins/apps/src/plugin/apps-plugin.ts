@@ -207,13 +207,7 @@ const activeToolNamesFor = (
 ): Effect.Effect<readonly string[], unknown> =>
   ctx.storage
     .listActiveTools()
-    .pipe(
-      Effect.map((tools) =>
-        tools
-          .filter((tool) => tool.name.startsWith(`${app}__`) || tool.name === app)
-          .map((tool) => tool.name),
-      ),
-    );
+    .pipe(Effect.map((tools) => tools.filter((tool) => tool.app === app).map((tool) => tool.name)));
 
 const makeAppsExtension = (
   ctx: PluginCtx<AppsStore>,
@@ -281,6 +275,14 @@ const makeAppsExtension = (
     deleteSource: (slug: string) =>
       Effect.gen(function* () {
         const record = yield* ctx.storage.getSource(slug);
+        if (record) {
+          yield* ctx.storage.removePublished(record.app, "org");
+          yield* ctx.connections.markToolsStale({
+            owner: "org",
+            integration: APPS_INTEGRATION,
+            name: APPS_CONNECTION,
+          });
+        }
         if (
           record?.config.kind === "git" &&
           record.config.tokenProvider &&
@@ -435,6 +437,7 @@ export const makeAppsPlugin = (options?: AppsPluginOptions) =>
   definePlugin(() => ({
     id: "apps",
     packageName: "@executor-js/plugin-apps",
+    clientConfig: { sourceKinds: options?.sourceKinds ?? ["git", "local-directory"] },
     pluginStorage: {
       [descriptorCollection.name]: descriptorCollection,
       [toolCollection.name]: toolCollection,
@@ -546,10 +549,29 @@ export const projectAppsToolSchema = (
       const enumValues = connections.map((connection) => String(connection.address));
       properties[field] =
         decl.mode === "many"
-          ? { type: "array", items: { type: "string", enum: enumValues } }
-          : { type: "string", enum: enumValues };
+          ? {
+              type: "array",
+              items: { type: "string", enum: enumValues },
+              default: enumValues,
+            }
+          : {
+              type: "string",
+              enum: enumValues,
+              ...(enumValues[0] ? { default: enumValues[0] } : {}),
+            };
     }
-    return { inputSchema: { ...schema, properties }, outputSchema };
+    const projectedFields = new Set(Object.keys(tool.integrations));
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((field) => !projectedFields.has(String(field)))
+      : undefined;
+    return {
+      inputSchema: {
+        ...schema,
+        properties,
+        ...(required && required.length > 0 ? { required } : { required: undefined }),
+      },
+      outputSchema,
+    };
   });
 
 export const appsPlugin = makeAppsPlugin();

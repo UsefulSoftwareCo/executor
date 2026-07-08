@@ -9,6 +9,7 @@
     "types": ["bun-types", "node"],
     "noUnusedLocals": true,
     "noImplicitOverride": true,
+    "jsx": "react-jsx",
     "plugins": [
       {
         "name": "@effect/language-service",
@@ -18,5 +19,5 @@
       }
     ]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
