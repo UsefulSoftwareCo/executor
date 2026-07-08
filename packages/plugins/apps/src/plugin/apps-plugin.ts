@@ -122,6 +122,7 @@ export const projectAppsToolSchema = (
         ? { ...(schema.properties as Record<string, unknown>) }
         : {};
     for (const [field, decl] of Object.entries(tool.integrations)) {
+      if (decl.all) continue;
       const connections = yield* ctx.connections.list({ integration: decl.slug as never });
       const enumValues = connections.map((connection) => String(connection.address));
       properties[field] =

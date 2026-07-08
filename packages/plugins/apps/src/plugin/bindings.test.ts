@@ -19,6 +19,7 @@ const resolver: ClientResolver = {
 
 const one = (slug: string) => ({ slug, mode: "one" as const, all: false });
 const many = (slug: string) => ({ slug, mode: "many" as const, all: false });
+const manyAll = (slug: string) => ({ slug, mode: "many" as const, all: true });
 
 describe("integration bindings", () => {
   it.effect("resolves caller-supplied connection addresses", () =>
@@ -125,6 +126,59 @@ describe("integration bindings", () => {
       expect(result).toEqual({
         input: { q: "unread" },
         bindings: { inboxes: ["tools.gmail.org.work", "tools.gmail.user.personal"] },
+      });
+    }),
+  );
+
+  it.effect("expands all declarations to every visible connection", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveIntegrationBindings(
+        { inboxes: manyAll("gmail") },
+        { q: "unread" },
+        {
+          ...resolver,
+          listConnections: ({ integration }) =>
+            Effect.succeed([
+              { integration, address: "tools.gmail.org.work" },
+              { integration, address: "tools.gmail.user.personal" },
+              { integration, address: "tools.gmail.org.shared" },
+            ]),
+        },
+      );
+      expect(result).toEqual({
+        input: { q: "unread" },
+        bindings: {
+          inboxes: ["tools.gmail.org.work", "tools.gmail.user.personal", "tools.gmail.org.shared"],
+        },
+      });
+    }),
+  );
+
+  it.effect("fails all declarations with no visible connections", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveIntegrationBindings(
+        { inboxes: manyAll("gmail") },
+        { q: "unread" },
+        { ...resolver, listConnections: () => Effect.succeed([]) },
+      ).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BindingError",
+        role: "inboxes",
+        integration: "gmail",
+      });
+    }),
+  );
+
+  it.effect("rejects caller-supplied fields for all declarations", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveIntegrationBindings(
+        { inboxes: manyAll("gmail") },
+        { q: "unread", inboxes: ["tools.gmail.org.work"] },
+        resolver,
+      ).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BindingError",
+        message: expect.stringContaining("binds all connections automatically"),
       });
     }),
   );

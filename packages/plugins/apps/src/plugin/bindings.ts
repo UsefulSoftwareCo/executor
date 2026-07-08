@@ -87,6 +87,26 @@ const resolveManyRequested = (
     return resolveRequested(field, decl, item, resolver);
   });
 
+const resolveAllConnections = (
+  field: string,
+  decl: IntegrationDecl,
+  resolver: ClientResolver,
+): Effect.Effect<readonly string[], BindingError> =>
+  Effect.gen(function* () {
+    const candidates = yield* resolver.listConnections({ integration: decl.slug });
+    const connections = candidates
+      .filter((candidate) => candidate.integration === decl.slug)
+      .map((candidate) => candidate.address);
+    if (connections.length === 0) {
+      return yield* new BindingError({
+        role: field,
+        integration: decl.slug,
+        message: `no connections available for integration field "${field}" (${decl.slug})`,
+      });
+    }
+    return connections;
+  });
+
 export const resolveIntegrationBindings = (
   declared: Readonly<Record<string, IntegrationDecl>>,
   args: unknown,
@@ -99,8 +119,15 @@ export const resolveIntegrationBindings = (
     for (const [field, decl] of Object.entries(declared)) {
       const raw = payload[field];
       if (decl.mode === "many") {
-        if (raw === undefined && decl.all) {
-          bindings[field] = [];
+        if (decl.all) {
+          if (Object.prototype.hasOwnProperty.call(payload, field)) {
+            return yield* new BindingError({
+              role: field,
+              integration: decl.slug,
+              message: `integration field "${field}" (${decl.slug}) binds all connections automatically`,
+            });
+          }
+          bindings[field] = yield* resolveAllConnections(field, decl, resolver);
           continue;
         }
         if (!Array.isArray(raw)) {

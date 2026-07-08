@@ -21,6 +21,11 @@ export interface IntegrationDeclaration<Slug extends string = string> {
   readonly allConnections: boolean;
   readonly description?: string;
   readonly array: () => IntegrationDeclaration<Slug>;
+  /**
+   * Bind every visible connection for this integration. This does not project a caller field:
+   * optional fields are suggestions, and model callers under-fill them. Tools that search
+   * everything must not expose a connections parameter.
+   */
   readonly all: () => IntegrationDeclaration<Slug>;
   readonly describe: (text: string) => IntegrationDeclaration<Slug>;
 }

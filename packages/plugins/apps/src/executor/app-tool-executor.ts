@@ -200,20 +200,21 @@ const projectInputSchema = (
   const properties = isRecord(base.properties) ? { ...base.properties } : {};
   const required = Array.isArray(base.required) ? [...base.required] : [];
   for (const [field, decl] of Object.entries(integrations)) {
+    if (decl.all) continue;
     if (decl.mode === "one") {
       properties[field] = {
         type: "string",
         description: decl.description ?? `Connection for ${decl.slug}`,
       };
       required.push(field);
-    } else {
-      properties[field] = {
-        type: "array",
-        items: { type: "string" },
-        description: decl.description ?? `Connections for ${decl.slug}`,
-      };
-      if (!decl.all) required.push(field);
+      continue;
     }
+    properties[field] = {
+      type: "array",
+      items: { type: "string" },
+      description: decl.description ?? `Connections for ${decl.slug}`,
+    };
+    required.push(field);
   }
   return {
     ...base,
