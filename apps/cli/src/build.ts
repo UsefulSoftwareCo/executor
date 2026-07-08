@@ -2,7 +2,7 @@ import { cp, mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { $ } from "bun";
 
@@ -11,6 +11,8 @@ const cliRoot = resolve(repoRoot, "apps/cli");
 const webRoot = resolve(repoRoot, "apps/local");
 const distDir = resolve(cliRoot, "dist");
 const ONEPASSWORD_CORE_WASM_FILENAME = "onepassword-core_bg.wasm";
+const WORKERD_VERSION = "1.20260708.1";
+const WORKER_BUNDLER_DIRNAME = "worker-bundler";
 
 const resolveQuickJsWasmPath = (): string => {
   const req = createRequire(join(repoRoot, "packages/kernel/runtime-quickjs/package.json"));
@@ -31,6 +33,34 @@ const resolveOnePasswordCoreWasmPath = (): string => {
   const wasmPath = join(dirname(sdkCorePkg), "nodejs/core_bg.wasm");
   if (!existsSync(wasmPath)) throw new Error(`1Password SDK core WASM not found at ${wasmPath}`);
   return wasmPath;
+};
+
+const resolveWorkerBundlerDistPath = (): string => {
+  const req = createRequire(join(repoRoot, "packages/plugins/apps/package.json"));
+  const pkgJson = req.resolve("@cloudflare/worker-bundler/package.json");
+  const distPath = join(dirname(pkgJson), "dist");
+  if (!existsSync(join(distPath, "index.js")) || !existsSync(join(distPath, "esbuild.wasm"))) {
+    throw new Error(`@cloudflare/worker-bundler dist files not found at ${distPath}`);
+  }
+  return distPath;
+};
+
+const createPackedWorkerBundlerSource = async (distPath: string): Promise<string> => {
+  const esbuildPath = join(repoRoot, "node_modules/.bun/node_modules/esbuild/lib/main.js");
+  if (!existsSync(esbuildPath)) throw new Error(`esbuild not found at ${esbuildPath}`);
+  const { build } = await import(pathToFileURL(esbuildPath).href);
+  const result = await build({
+    entryPoints: [join(distPath, "index.js")],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    external: ["./esbuild.wasm"],
+    logLevel: "silent",
+    write: false,
+  });
+  const source = result.outputFiles[0]?.text;
+  if (source === undefined) throw new Error("failed to bundle @cloudflare/worker-bundler");
+  return source;
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +149,7 @@ const bunTarget = (t: Target): Bun.Build.CompileTarget => {
 };
 
 const binaryName = (t: Target) => (t.os === "win32" ? "executor.exe" : "executor");
+const workerdBinaryName = (t: Target) => (t.os === "win32" ? "workerd.exe" : "workerd");
 
 const isCurrentPlatform = (t: Target) =>
   t.os === process.platform && t.arch === process.arch && !t.abi;
@@ -209,6 +240,41 @@ const resolveLibsqlNative = (t: Target): string | null => {
     );
     return existsSync(bunPath) ? bunPath : null;
   }
+};
+
+const resolveWorkerdBinary = (t: Target): string | null => {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "@cloudflare/workerd-darwin-arm64",
+    "darwin-x64": "@cloudflare/workerd-darwin-64",
+    "linux-arm64": "@cloudflare/workerd-linux-arm64",
+    "linux-x64": "@cloudflare/workerd-linux-64",
+    "win32-x64": "@cloudflare/workerd-windows-64",
+  };
+  const key = [t.os, t.arch, t.abi].filter(Boolean).join("-");
+  const pkg = platformMap[key];
+  if (!pkg) return null;
+  const binary = workerdBinaryName(t);
+  try {
+    const req = createRequire(
+      join(repoRoot, "packages/kernel/runtime-workerd-subprocess/package.json"),
+    );
+    const pkgJson = req.resolve(`${pkg}/package.json`);
+    for (const candidate of [
+      join(dirname(pkgJson), "bin", binary),
+      join(dirname(pkgJson), binary),
+    ]) {
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch {
+    const packageRoot = join(
+      repoRoot,
+      `node_modules/.bun/${pkg.replace("/", "+")}@${WORKERD_VERSION}/node_modules/${pkg}`,
+    );
+    for (const candidate of [join(packageRoot, "bin", binary), join(packageRoot, binary)]) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 };
 
 // ---------------------------------------------------------------------------
@@ -333,6 +399,8 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
 
   const quickJsWasmPath = resolveQuickJsWasmPath();
   const onePasswordCoreWasmPath = resolveOnePasswordCoreWasmPath();
+  const workerBundlerDistPath = resolveWorkerBundlerDistPath();
+  const packedWorkerBundlerSource = await createPackedWorkerBundlerSource(workerBundlerDistPath);
 
   try {
     for (const target of targets) {
@@ -375,12 +443,35 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
         await cp(libsqlNative, join(binDir, "libsql.node"));
       }
 
+      const workerdBinary = resolveWorkerdBinary(target);
+      if (workerdBinary && existsSync(workerdBinary)) {
+        await cp(workerdBinary, join(binDir, workerdBinaryName(target)));
+        if (target.os !== "win32") await chmod(join(binDir, workerdBinaryName(target)), 0o755);
+      }
+
+      await cp(workerBundlerDistPath, join(binDir, WORKER_BUNDLER_DIRNAME, "dist"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(binDir, WORKER_BUNDLER_DIRNAME, "dist", "index.bundled.js"),
+        packedWorkerBundlerSource,
+      );
+
       // Smoke test on current platform
       if (isCurrentPlatform(target)) {
         const bin = join(binDir, binaryName(target));
         console.log(`  Smoke test: ${bin} --version`);
         const version = await $`${bin} --version`.text();
         console.log(`  OK: ${version.trim()}`);
+        console.log(`  Smoke test: packed apps source sync and invoke`);
+        const smoke = Bun.spawn(
+          ["bun", "run", join(cliRoot, "scripts/smoke-packed-apps.ts"), bin],
+          {
+            cwd: repoRoot,
+            stdio: ["ignore", "inherit", "inherit"],
+          },
+        );
+        if ((await smoke.exited) !== 0) throw new Error("packed apps smoke failed");
       }
 
       // Variant package.json. All variants publish to the SAME npm package

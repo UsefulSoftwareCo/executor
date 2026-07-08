@@ -1,4 +1,4 @@
-/* oxlint-disable executor/no-try-catch-or-throw, executor/no-double-cast, executor/no-promise-reject, executor/no-instanceof-tagged-error -- workerd boundary converts worker envelopes into typed AppExecutorError */
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-double-cast, executor/no-promise-reject, executor/no-instanceof-tagged-error, executor/no-instanceof-error, executor/no-unknown-error-message -- workerd boundary converts worker envelopes and subprocess startup failures into typed AppExecutorError */
 import { Effect } from "effect";
 
 import {
@@ -47,7 +47,7 @@ const mapCause = (cause: unknown, kind: AppExecutorError["kind"], message: strin
     ? cause
     : new AppExecutorError({
         kind,
-        message,
+        message: `${message}: ${cause instanceof Error ? cause.message : String(cause)}`,
         cause,
       });
 

@@ -1,4 +1,5 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-unknown-error-message, executor/no-error-constructor, executor/no-json-parse, executor/no-instanceof-tagged-error, executor/no-instanceof-error -- boundary: subprocess-backed bundler validates package JSON and converts worker failures into typed AppExecutorError */
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,6 @@ import {
   createWorkerdModuleRunner,
   WORKERD_VERSION,
 } from "@executor-js/runtime-workerd-subprocess";
-import { build } from "esbuild";
 import { Effect } from "effect";
 
 import { AppExecutorError } from "../executor/app-tool-executor";
@@ -18,7 +18,9 @@ import { WORKER_BUNDLER_ESBUILD_VERSION, WORKER_BUNDLER_VERSION } from "./worker
 
 const textEncoder = new TextEncoder();
 const packageDir = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const workerBundlerDir = join(packageDir, "node_modules", "@cloudflare", "worker-bundler");
+const workerBundlerDir =
+  process.env.EXECUTOR_WORKER_BUNDLER_DIR ??
+  join(packageDir, "node_modules", "@cloudflare", "worker-bundler");
 
 const executorAppSource = `
 const makeIntegrationDeclaration = (state) => Object.freeze({
@@ -97,19 +99,24 @@ const bundledWorkerBundler = async (): Promise<{
   readonly source: string;
   readonly wasm: Uint8Array;
 }> => {
-  const entry = join(workerBundlerDir, "dist", "index.js");
-  const [result, wasm] = await Promise.all([
-    build({
-      entryPoints: [entry],
-      bundle: true,
-      format: "esm",
-      platform: "browser",
-      write: false,
-      external: ["./esbuild.wasm"],
-      logLevel: "silent",
-    }),
-    readFile(join(workerBundlerDir, "dist", "esbuild.wasm")),
+  const distDir = join(workerBundlerDir, "dist");
+  const bundledEntry = join(distDir, "index.bundled.js");
+  const [sourceFromDisk, wasm] = await Promise.all([
+    existsSync(bundledEntry) ? readFile(bundledEntry, "utf8") : Promise.resolve(null),
+    readFile(join(distDir, "esbuild.wasm")),
   ]);
+  if (sourceFromDisk !== null) return { source: sourceFromDisk, wasm };
+
+  const { build } = await import("esbuild");
+  const result = await build({
+    entryPoints: [join(distDir, "index.js")],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    write: false,
+    external: ["./esbuild.wasm"],
+    logLevel: "silent",
+  });
   const source = result.outputFiles[0]?.text;
   if (source === undefined) throw new Error("failed to bundle @cloudflare/worker-bundler");
   return { source, wasm };

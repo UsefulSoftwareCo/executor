@@ -1,11 +1,10 @@
 // ---------------------------------------------------------------------------
 // Native-binding bootstrap for the `bun build --compile` binary.
 //
-// `bun --compile` bundles JS into bunfs but does NOT include `.node` native
-// addons, so a dynamic `require('@libsql/<platform>')` / keyring walk inside
-// the binary fails. build.ts copies each platform's `.node` next to the
-// executable (`libsql.node`, `keyring.node`); here we publish their on-disk
-// paths via env vars the loaders read.
+// `bun --compile` bundles JS into bunfs but does NOT include native binaries,
+// wasm sidecars, or runtime-read package files. build.ts copies those artifacts
+// next to the executable; here we publish their on-disk paths via env vars the
+// loaders read.
 //
 // This MUST be the FIRST import in main.ts. ES modules evaluate every import
 // before the importer's own body, and libSQL resolves its native addon EAGERLY
@@ -42,4 +41,19 @@ if (
   existsSync(keyringNodeOnDisk)
 ) {
   process.env.EXECUTOR_KEYRING_NATIVE_PATH = keyringNodeOnDisk;
+}
+
+const workerdOnDisk = join(execDir, process.platform === "win32" ? "workerd.exe" : "workerd");
+if (typeof Bun !== "undefined" && !process.env.EXECUTOR_WORKERD_BIN && existsSync(workerdOnDisk)) {
+  process.env.EXECUTOR_WORKERD_BIN = workerdOnDisk;
+}
+
+const workerBundlerOnDisk = join(execDir, "worker-bundler");
+if (
+  typeof Bun !== "undefined" &&
+  !process.env.EXECUTOR_WORKER_BUNDLER_DIR &&
+  existsSync(join(workerBundlerOnDisk, "dist", "index.js")) &&
+  existsSync(join(workerBundlerOnDisk, "dist", "esbuild.wasm"))
+) {
+  process.env.EXECUTOR_WORKER_BUNDLER_DIR = workerBundlerOnDisk;
 }

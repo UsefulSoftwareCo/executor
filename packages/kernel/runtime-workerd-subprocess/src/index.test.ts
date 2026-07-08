@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -9,6 +10,7 @@ import {
   createWorkerdModuleRunner,
   isWorkerdAvailable,
   makeWorkerdSubprocessExecutor,
+  workerdBinaryCandidatesForTest,
   WORKERD_VERSION,
 } from "./index";
 
@@ -105,6 +107,44 @@ const waitUntilGone = async (pid: number): Promise<boolean> => {
 
 it("exports the pinned workerd version", () => {
   expect(WORKERD_VERSION).toBe("1.20260708.1");
+});
+
+describe("workerd binary resolution", () => {
+  it("honors EXECUTOR_WORKERD_BIN before probing", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "executor-workerd-bin-test-"));
+    const previous = process.env.EXECUTOR_WORKERD_BIN;
+    const bin = join(tmp, "workerd");
+    try {
+      await writeFile(bin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await chmod(bin, 0o755);
+      process.env.EXECUTOR_WORKERD_BIN = bin;
+      expect(isWorkerdAvailable()).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.EXECUTOR_WORKERD_BIN;
+      } else {
+        process.env.EXECUTOR_WORKERD_BIN = previous;
+      }
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("orders generic package probes before platform package probes", () => {
+    const roots = ["/app", "/workspace"];
+    expect(workerdBinaryCandidatesForTest(roots, "darwin", "arm64")).toEqual([
+      "/app/node_modules/workerd/bin/workerd",
+      "/workspace/node_modules/workerd/bin/workerd",
+      "/app/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd",
+      "/app/node_modules/@cloudflare/workerd-darwin-arm64/workerd",
+      "/workspace/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd",
+      "/workspace/node_modules/@cloudflare/workerd-darwin-arm64/workerd",
+    ]);
+  });
+
+  it("probes workerd.exe in the Windows package root layout", () => {
+    const candidates = workerdBinaryCandidatesForTest(["C:\\app"], "win32", "x64");
+    expect(candidates).toContain("C:\\app/node_modules/@cloudflare/workerd-windows-64/workerd.exe");
+  });
 });
 
 describe.skipIf(!isWorkerdAvailable())("runtime-workerd-subprocess", () => {
