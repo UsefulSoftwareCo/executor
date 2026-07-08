@@ -917,4 +917,56 @@ describe("makeDynamicWorkerExecutor", () => {
       expect(result.result).toBe("a.b.c.d.e");
     }),
   );
+
+  it.effect("tools proxy throws a search hint on enumeration", () =>
+    Effect.gen(function* () {
+      const executor = makeDynamicWorkerExecutor({ loader });
+      const invoker = makeInvoker(() => null);
+
+      const result = yield* executor.execute(
+        `async () => {
+          const outcomes = {};
+          try {
+            Object.keys(tools);
+            outcomes.keys = "no error";
+          } catch (e) {
+            outcomes.keys = e instanceof Error ? e.message : String(e);
+          }
+          try {
+            ({ ...tools.github });
+            outcomes.spread = "no error";
+          } catch (e) {
+            outcomes.spread = e instanceof Error ? e.message : String(e);
+          }
+          return outcomes;
+        }`,
+        invoker,
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        spread:
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+      });
+    }),
+  );
+
+  it.effect("tools proxy still invokes and chains after the enumeration traps", () =>
+    Effect.gen(function* () {
+      const executor = makeDynamicWorkerExecutor({ loader });
+      const invoker = makeInvoker(({ path }) => path);
+
+      const result = yield* executor.execute(
+        `async () => {
+          try { Object.keys(tools); } catch {}
+          return tools.a.b.c({});
+        }`,
+        invoker,
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toBe("a.b.c");
+    }),
+  );
 });

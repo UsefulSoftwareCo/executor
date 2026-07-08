@@ -338,4 +338,50 @@ describe("quickjs executor", () => {
       });
     }),
   );
+
+  it.effect("tools proxy throws a search hint on enumeration", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        const outcomes = {};
+        try {
+          Object.keys(tools);
+          outcomes.keys = "no error";
+        } catch (e) {
+          outcomes.keys = e instanceof Error ? e.message : String(e);
+        }
+        try {
+          ({ ...tools.github });
+          outcomes.spread = "no error";
+        } catch (e) {
+          outcomes.spread = e instanceof Error ? e.message : String(e);
+        }
+        return outcomes;
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        spread:
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+      });
+    }),
+  );
+
+  it.effect("tools proxy still invokes and chains after the enumeration traps", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        try { Object.keys(tools); } catch {}
+        return tools.a.b.c({});
+        `,
+        makeTestInvoker({ "a.b.c": () => "a.b.c" }),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toBe("a.b.c");
+    }),
+  );
 });
