@@ -12,6 +12,7 @@ import {
   ProviderKey,
   identityPathTier,
   rankResponseSample,
+  type Connection,
   type HealthCheckCandidate,
   type HealthCheckResult,
   type HealthCheckSpec,
@@ -1251,6 +1252,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
     () => buildUsageMap(AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []),
     [connectionsResult],
   );
+  // A fresh OAuth connect targeting an existing (owner, name) is rejected by
+  // `oauth.start`, but only after the popup has already been reserved — the
+  // user sees a window blip open and close. Check against the loaded
+  // connection list first so the conflict surfaces as an error with no popup.
+  const connectionNameTaken = useCallback(
+    (connectionOwner: Owner, name: ConnectionName): boolean =>
+      (AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []).some(
+        (connection: Connection) =>
+          connection.owner === connectionOwner &&
+          connection.integration === integration &&
+          String(connection.name) === String(name),
+      ),
+    [connectionsResult, integration],
+  );
 
   const method = useMemo(
     () => allMethods.find((m: AuthMethod) => m.id === methodId) ?? allMethods[0],
@@ -1660,7 +1675,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
           success: true,
         });
       },
-      onError: () => {
+      onError: (message: string) => {
+        toast.error(message);
         trackEvent("connection_reconnected", {
           integration_slug: String(integration),
           owner: connectionOwner,
@@ -1907,11 +1923,21 @@ function AddAccountModalView(props: AddAccountModalProps) {
       integrationName,
       organizationId,
     );
+    const connectionName = connectionNameFrom(
+      label,
+      connectionOwner,
+      integrationName,
+      organizationId,
+    );
+    if (connectionNameTaken(connectionOwner, connectionName)) {
+      oauthPopup.setError(connectionExistsMessage(identityLabel));
+      return;
+    }
     const payload = {
       client: chosenClient.slug,
       clientOwner: chosenClient.owner,
       owner: connectionOwner,
-      name: connectionNameFrom(label, connectionOwner, integrationName, organizationId),
+      name: connectionName,
       integration,
       template: method.template,
       identityLabel,
@@ -1985,6 +2011,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const cimdOwner = owner;
     const connectionName = connectionNameFrom(label, cimdOwner, integrationName, organizationId);
     const identityLabel = connectionLabelForHost(label, cimdOwner, integrationName, organizationId);
+    if (connectionNameTaken(cimdOwner, connectionName)) {
+      toast.error(connectionExistsMessage(identityLabel));
+      return;
+    }
     setCimdBusy(true);
     const outcome = await runCimdConnect(
       {
@@ -2061,6 +2091,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const dcrOwner = owner;
     const connectionName = connectionNameFrom(label, dcrOwner, integrationName, organizationId);
     const identityLabel = connectionLabelForHost(label, dcrOwner, integrationName, organizationId);
+    if (connectionNameTaken(dcrOwner, connectionName)) {
+      toast.error(connectionExistsMessage(identityLabel));
+      return;
+    }
     setDcrBusy(true);
     const outcome = await runDcrConnect(
       {

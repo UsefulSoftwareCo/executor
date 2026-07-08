@@ -386,6 +386,7 @@ export function useOAuthPopupFlow<
               template: input.payload.template,
               identityLabel: input.payload.identityLabel,
               redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
+              reconnect: input.payload.reconnect,
             },
           }).then((exit) =>
             Exit.isSuccess(exit)
