@@ -1,4 +1,4 @@
-// Cross-target (browser): the Add OpenAPI source form's floating action bar.
+// Cross-target (browser): the Add OpenAPI integration form's floating action bar.
 // Rohil (shared-tcc) reported the "Add integration" button rendering doubled /
 // ghosted on click. This pins the flow: paste a spec, click Add integration,
 // land on the created integration. The trace's DOM snapshots are the artifact
@@ -22,7 +22,7 @@ const singleServerSpec = JSON.stringify({
 });
 
 scenario(
-  "OpenAPI · Add integration commits the source and the action bar is a single node",
+  "OpenAPI · Add integration commits the integration and the action bar is a single node",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -31,7 +31,7 @@ scenario(
       const identity = yield* target.newIdentity();
 
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Open the Add OpenAPI source form", async () => {
+        await step("Open the Add OpenAPI integration form", async () => {
           await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
           await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
         });
@@ -52,7 +52,7 @@ scenario(
         });
 
         await step(
-          "Submitting commits the source and lands on the created integration",
+          "Submitting commits the integration and lands on the created integration",
           async () => {
             // The reported ghost was the bar painting doubled when the submit
             // button changed width on click. The single-node counts (above and

@@ -76,7 +76,7 @@ scenario(
 
           const listed = yield* chat.tool(
             {
-              name: "executor tools sources",
+              name: "executor tools integrations",
               result: (rows) =>
                 rows.map((r) => String(r.slug)).includes(slug) ? `${slug} is listed` : "NOT listed",
             },
@@ -103,7 +103,7 @@ scenario(
             Effect.gen(function* () {
               const survived = yield* chat.tool(
                 {
-                  name: "executor tools sources",
+                  name: "executor tools integrations",
                   result: (rows) =>
                     rows.map((r) => String(r.slug)).includes(slug)
                       ? `${slug} SURVIVED the reboot`

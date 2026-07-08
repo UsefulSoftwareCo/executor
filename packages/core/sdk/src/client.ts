@@ -177,7 +177,7 @@ export type EditSheetApplyResult =
   | { readonly ok: false };
 
 export interface EditSheetSectionProps {
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly onPendingChange?: (apply: (() => Promise<EditSheetApplyResult>) | null) => void;
 }
 
@@ -199,7 +199,7 @@ export interface IntegrationPlugin {
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */
   readonly edit?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly onSave: () => void;
   }>;
   /** Plugin-owned configuration rendered inside the integration's Edit sheet,
@@ -210,7 +210,7 @@ export interface IntegrationPlugin {
    *  apply keeps the sheet open with the section showing its own error. */
   readonly editSheet?: ComponentType<EditSheetSectionProps>;
   readonly summary?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly variant?: "badge" | "panel";
     readonly onAction?: () => void;
   }>;
@@ -218,7 +218,7 @@ export interface IntegrationPlugin {
    *  the detail page's Accounts tab. Plugins that declare auth methods implement
    *  this; the page falls back to a generic accounts list when absent. */
   readonly accounts?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly integrationName: string;
     readonly accountHandoff?: IntegrationAccountHandoff | null;
   }>;
@@ -248,7 +248,7 @@ export interface ClientPluginSpec<TId extends string = string> {
   readonly widgets?: readonly WidgetDecl[];
   readonly slots?: Record<string, SlotComponent>;
   /** Integration plugin contribution — populated by plugins that expose
-   *  `kind` rows in the core `source` table (openapi, mcp, graphql).
+   *  `kind` rows in the core `integration` table (openapi, mcp, graphql).
    *  The host's integrations page derives its provider
    *  list from the union of every loaded plugin's `integrationPlugin`. */
   readonly integrationPlugin?: IntegrationPlugin;

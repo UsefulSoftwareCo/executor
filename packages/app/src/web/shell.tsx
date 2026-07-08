@@ -138,7 +138,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                     { id: slug, kind: integration.kind },
                     integrationPlugins,
                   )}
-                  sourceId={slug}
+                  integrationId={slug}
                   size="sm"
                 />
                 <span className="flex-1 truncate">{name}</span>
@@ -204,7 +204,7 @@ function SidebarContent(props: {
 
         <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
-        {/* Sources list */}
+        {/* Integrations list */}
         <Link
           to="/{-$orgSlug}"
           className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground"
@@ -268,7 +268,7 @@ function SidebarContent(props: {
 export function Shell() {
   const location = useLocation();
   const pathname = location.pathname;
-  const refreshSources = useAtomRefresh(integrationsAtom);
+  const refreshIntegrations = useAtomRefresh(integrationsAtom);
   const refreshTools = useAtomRefresh(toolsAllAtom);
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -294,7 +294,7 @@ export function Shell() {
     }
 
     const refreshBackendData = () => {
-      refreshSources();
+      refreshIntegrations();
       refreshTools();
     };
 
@@ -303,7 +303,7 @@ export function Shell() {
     return () => {
       import.meta.hot?.off("executor:backend-updated", refreshBackendData);
     };
-  }, [refreshSources, refreshTools]);
+  }, [refreshIntegrations, refreshTools]);
 
   return (
     <div className="flex h-screen overflow-hidden">

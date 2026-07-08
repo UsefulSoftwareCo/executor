@@ -92,12 +92,12 @@ export interface OpenApiEchoTestServerShape extends OpenApiTestServerShape {
   readonly clearRequests: Effect.Effect<void>;
 }
 
-export type OpenApiTestSourceOptions = Omit<OpenApiSpecConfig, "spec" | "baseUrl" | "slug"> & {
+export type OpenApiTestIntegrationOptions = Omit<OpenApiSpecConfig, "spec" | "baseUrl" | "slug"> & {
   readonly baseUrl?: string | null;
   readonly slug?: string;
 };
 
-export type OpenApiHttpApiTestSourceOptions = Omit<
+export type OpenApiHttpApiTestIntegrationOptions = Omit<
   OpenApiSpecConfig,
   "spec" | "slug" | "baseUrl"
 > & {
@@ -113,12 +113,12 @@ type OpenApiHttpApiAddSpecHeadersInput = {
 };
 
 export type OpenApiHttpApiTestAddSpecPayloadOptions = Omit<
-  OpenApiHttpApiTestSourceOptions,
+  OpenApiHttpApiTestIntegrationOptions,
   "headers" | "queryParams"
 > &
   OpenApiHttpApiAddSpecHeadersInput;
 
-export type OpenApiTestSourceExecutor = {
+export type OpenApiTestIntegrationExecutor = {
   readonly openapi: Pick<OpenApiPluginExtension, "addSpec">;
 };
 
@@ -160,11 +160,11 @@ export interface OpenApiTestConnection {
 export const addOpenApiTestConnection = (
   executor: OpenApiTestConnectionExecutor,
   server: OpenApiTestServerShape,
-  sourceOptions: OpenApiTestSourceOptions,
+  integrationOptions: OpenApiTestIntegrationOptions,
   connectionOptions: OpenApiTestConnectionOptions = {},
 ): Effect.Effect<OpenApiTestConnection, unknown> =>
   Effect.gen(function* () {
-    const config = makeOpenApiTestSourceConfig(server, sourceOptions);
+    const config = makeOpenApiTestIntegrationConfig(server, integrationOptions);
     const result = yield* executor.openapi.addSpec(config);
     const slug = String(result.slug);
     const owner: Owner = connectionOptions.owner ?? "org";
@@ -209,9 +209,9 @@ export const makeOpenApiTestSpecJson = (
   return JSON.stringify(OpenApi.fromApi(annotated));
 };
 
-export const makeOpenApiTestSourceConfig = (
+export const makeOpenApiTestIntegrationConfig = (
   server: OpenApiTestServerShape,
-  options: OpenApiTestSourceOptions,
+  options: OpenApiTestIntegrationOptions,
 ): OpenApiSpecConfig => {
   const { baseUrl, slug, ...rest } = options;
   return {
@@ -222,15 +222,15 @@ export const makeOpenApiTestSourceConfig = (
   } satisfies OpenApiSpecConfig;
 };
 
-export const addOpenApiTestSource = (
-  executor: OpenApiTestSourceExecutor,
+export const addOpenApiTestIntegration = (
+  executor: OpenApiTestIntegrationExecutor,
   server: OpenApiTestServerShape,
-  options: OpenApiTestSourceOptions,
-) => executor.openapi.addSpec(makeOpenApiTestSourceConfig(server, options));
+  options: OpenApiTestIntegrationOptions,
+) => executor.openapi.addSpec(makeOpenApiTestIntegrationConfig(server, options));
 
-export const makeOpenApiHttpApiTestSourceConfig = (
+export const makeOpenApiHttpApiTestIntegrationConfig = (
   api: HttpApi.Any,
-  options: OpenApiHttpApiTestSourceOptions,
+  options: OpenApiHttpApiTestIntegrationOptions,
 ): OpenApiSpecConfig => {
   const { baseUrl, specBaseUrl, transformSpec, slug, ...config } = options;
   return {
@@ -244,18 +244,18 @@ export const makeOpenApiHttpApiTestSourceConfig = (
   } satisfies OpenApiSpecConfig;
 };
 
-export const addOpenApiHttpApiTestSource = (
-  executor: OpenApiTestSourceExecutor,
+export const addOpenApiHttpApiTestIntegration = (
+  executor: OpenApiTestIntegrationExecutor,
   api: HttpApi.Any,
-  options: OpenApiHttpApiTestSourceOptions,
-) => executor.openapi.addSpec(makeOpenApiHttpApiTestSourceConfig(api, options));
+  options: OpenApiHttpApiTestIntegrationOptions,
+) => executor.openapi.addSpec(makeOpenApiHttpApiTestIntegrationConfig(api, options));
 
 export const makeOpenApiHttpApiTestAddSpecPayload = (
   api: HttpApi.Any,
   options: OpenApiHttpApiTestAddSpecPayloadOptions,
 ) => {
-  const { headers, queryParams, ...sourceOptions } = options;
-  const config = makeOpenApiHttpApiTestSourceConfig(api, sourceOptions);
+  const { headers, queryParams, ...integrationOptions } = options;
+  const config = makeOpenApiHttpApiTestIntegrationConfig(api, integrationOptions);
   return {
     spec: config.spec,
     slug: config.slug,

@@ -839,7 +839,7 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   operation: OperationBinding,
   args: Record<string, unknown>,
   resolvedHeaders: Record<string, string>,
-  sourceQueryParams: Record<string, string> = {},
+  integrationQueryParams: Record<string, string> = {},
 ) {
   const resolvedPath = yield* resolvePath(operation.pathTemplate, args, operation.parameters);
 
@@ -851,7 +851,7 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   // can override it; the upstream still gets a User-Agent if nothing else sets one.
   request = HttpClientRequest.setHeader(request, "User-Agent", DEFAULT_USER_AGENT);
 
-  for (const [name, value] of Object.entries(sourceQueryParams)) {
+  for (const [name, value] of Object.entries(integrationQueryParams)) {
     request = HttpClientRequest.setUrlParam(request, name, value);
   }
 
@@ -998,7 +998,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   operation: OperationBinding,
   args: Record<string, unknown>,
   resolvedHeaders: Record<string, string>,
-  sourceQueryParams: Record<string, string> = {},
+  integrationQueryParams: Record<string, string> = {},
   options: InvokeOptions = {},
 ) {
   const client = yield* HttpClient.HttpClient;
@@ -1011,7 +1011,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
     "plugin.openapi.headers.resolved_count": Object.keys(resolvedHeaders).length,
   });
 
-  const request = yield* buildRequest(operation, args, resolvedHeaders, sourceQueryParams);
+  const request = yield* buildRequest(operation, args, resolvedHeaders, integrationQueryParams);
 
   const responseHeadersTimeoutMs = options.responseHeadersTimeoutMs ?? RESPONSE_HEADERS_TIMEOUT_MS;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
@@ -1161,7 +1161,7 @@ export const invokeWithLayer = (
   args: Record<string, unknown>,
   baseUrl: string,
   resolvedHeaders: Record<string, string>,
-  sourceQueryParams: Record<string, string>,
+  integrationQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   options: InvokeOptions = {},
 ) => {
@@ -1176,7 +1176,7 @@ export const invokeWithLayer = (
       ).pipe(Layer.provide(httpClientLayer))
     : httpClientLayer;
 
-  return invoke(operation, args, resolvedHeaders, sourceQueryParams, options).pipe(
+  return invoke(operation, args, resolvedHeaders, integrationQueryParams, options).pipe(
     Effect.provide(clientWithBaseUrl),
     // `invoke` annotates http.status_code on ITS span (`OpenApi.invoke`,
     // via Effect.fn) — annotateCurrentSpan inside it never reaches this

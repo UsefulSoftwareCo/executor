@@ -41,7 +41,7 @@ scenario(
     yield* browser.session(anonymous, async ({ page, step }) => {
       await step("Signed out, the root redirects to /login", async () => {
         await page.goto("/", { waitUntil: "commit" });
-        await page.getByText("Sign in to manage your tools and sources").waitFor();
+        await page.getByText("Sign in to manage your tools and integrations").waitFor();
       });
       expect(new URL(page.url()).pathname, "the signed-out root lands on /login").toBe("/login");
 

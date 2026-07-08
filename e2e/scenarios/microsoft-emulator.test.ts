@@ -133,7 +133,7 @@ scenario(
           );
           expect(
             appOnlyTemplate?.kind,
-            "the Microsoft source exposes an app-only OAuth method",
+            "the Microsoft integration exposes an app-only OAuth method",
           ).toBe("oauth2");
           expect(
             appOnlyTemplate?.kind === "oauth2" ? appOnlyTemplate.scopes : [],

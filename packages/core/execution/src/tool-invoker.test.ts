@@ -630,7 +630,7 @@ describe("tool discovery", () => {
       const executor = yield* makeSearchExecutor();
 
       const listed = yield* createExecutionEngine({ executor, codeExecutor }).execute(
-        "return await tools.executor.sources.list();",
+        "return await tools.executor.integrations.list();",
         { onElicitation: acceptAll },
       );
       expect(listed.error).toBeUndefined();
@@ -666,7 +666,7 @@ describe("tool discovery", () => {
 
       // total = 2 (github, crm), sorted by id ("crm" < "github")
       const firstPage = yield* engine.execute(
-        "return await tools.executor.sources.list({ limit: 1 });",
+        "return await tools.executor.integrations.list({ limit: 1 });",
         { onElicitation: acceptAll },
       );
       expect(firstPage.error).toBeUndefined();
@@ -680,7 +680,7 @@ describe("tool discovery", () => {
       );
 
       const secondPage = yield* engine.execute(
-        "return await tools.executor.sources.list({ limit: 1, offset: 1 });",
+        "return await tools.executor.integrations.list({ limit: 1, offset: 1 });",
         { onElicitation: acceptAll },
       );
       expect(secondPage.error).toBeUndefined();
@@ -719,7 +719,7 @@ describe("tool discovery", () => {
       const badList = yield* engine.execute(
         [
           "try {",
-          "  await tools.executor.sources.list({ offset: -5 });",
+          "  await tools.executor.integrations.list({ offset: -5 });",
           '  return "unexpected";',
           "} catch (error) {",
           "  return error instanceof Error ? error.message : String(error);",
@@ -729,7 +729,7 @@ describe("tool discovery", () => {
       );
       expect(badList.error).toBeUndefined();
       expect(String(badList.result)).toContain(
-        "tools.executor.sources.list offset must be a non-negative number when provided",
+        "tools.executor.integrations.list offset must be a non-negative number when provided",
       );
     }),
   );
@@ -876,13 +876,13 @@ describe("tool discovery", () => {
       const execution = yield* engine.execute(
         [
           "const searchDetails = await tools.describe.tool({ path: 'search' });",
-          "const sourceDetails = await tools.describe.tool({ path: 'executor.sources.list' });",
+          "const integrationDetails = await tools.describe.tool({ path: 'executor.integrations.list' });",
           "const describeDetails = await tools.describe.tool({ path: 'describe.tool' });",
           "return {",
           "  searchDetails,",
           "  searchResult: await tools.search({ query: 'repo details', limit: 2 }),",
-          "  sourceDetails,",
-          "  sourceResult: await tools.executor.sources.list({ limit: 2 }),",
+          "  integrationDetails,",
+          "  integrationResult: await tools.executor.integrations.list({ limit: 2 }),",
           "  describeDetails,",
           "  describeResult: await tools.describe.tool({ path: 'github.org.main.getRepositoryDetails' }),",
           "};",
@@ -894,8 +894,8 @@ describe("tool discovery", () => {
       const observed = execution.result as {
         readonly searchDetails: DescribedToolContract;
         readonly searchResult: unknown;
-        readonly sourceDetails: DescribedToolContract;
-        readonly sourceResult: unknown;
+        readonly integrationDetails: DescribedToolContract;
+        readonly integrationResult: unknown;
         readonly describeDetails: DescribedToolContract;
         readonly describeResult: unknown;
       };
@@ -904,7 +904,7 @@ describe("tool discovery", () => {
         typeCheckDescribedInvocation(observed.searchDetails, observed.searchResult, ""),
       ).toEqual([]);
       expect(
-        typeCheckDescribedInvocation(observed.sourceDetails, observed.sourceResult, ""),
+        typeCheckDescribedInvocation(observed.integrationDetails, observed.integrationResult, ""),
       ).toEqual([]);
       expect(
         typeCheckDescribedInvocation(observed.describeDetails, observed.describeResult, ""),

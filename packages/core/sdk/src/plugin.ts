@@ -145,9 +145,9 @@ export interface IntegrationRecord extends Integration {
 
 // ---------------------------------------------------------------------------
 // PluginCtx — threaded into every extension method, static tool handler, and
-// dynamic tool handler. The v2 fold: `core.sources` → `core.integrations`,
-// `secrets`/`connections`/`credentialBindings` → `connections` (provider-
-// resolved) + `providers`, `scopes` → `owner`.
+// dynamic tool handler. The v2 fold folded `core.sources` into
+// `core.integrations`, `secrets`/`connections`/`credentialBindings` into
+// `connections` (provider-resolved) + `providers`, and `scopes` into `owner`.
 // ---------------------------------------------------------------------------
 
 export interface PluginCtx<TStore = unknown> {
@@ -290,11 +290,11 @@ export interface ResolveToolsResult {
   readonly tools: readonly ToolDef[];
   /** Shared JSON-schema `$defs` reachable from the tools' `$ref`s. */
   readonly definitions?: Record<string, unknown>;
-  /** The source could not be (fully) enumerated: unreachable server, auth not
+  /** The integration could not be (fully) enumerated: unreachable server, auth not
    *  ready, listing aborted. The result is non-authoritative, so the executor
    *  keeps the connection's existing persisted catalog instead of replacing it
    *  (a transient outage must not wipe working tools). Omit / `false` when the
-   *  listing is authoritative, including a genuine "this source has zero
+   *  listing is authoritative, including a genuine "this integration has zero
    *  tools". */
   readonly incomplete?: boolean;
   /** Human-readable reason for an incomplete listing. Persisted by core when it
@@ -354,7 +354,7 @@ export interface HealthCheckCandidatesInput<TStore = unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Static tool / source declarations. Unchanged from v1 except the ctx shape.
+// Static tool / integration declarations. Unchanged from v1 except the ctx shape.
 // ---------------------------------------------------------------------------
 
 export interface StaticToolHandlerInput<TStore = unknown> {
@@ -433,7 +433,7 @@ export const tool = <
     ),
 });
 
-export interface StaticSourceDecl<TStore = unknown> {
+export interface StaticIntegrationDecl<TStore = unknown> {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
@@ -574,12 +574,14 @@ export interface PluginSpec<
   readonly integrationPresets?: readonly IntegrationPreset[];
 
   /** Build the plugin's extension API — becomes `executor[plugin.id]` and the
-   *  `self` passed to `staticSources`. Field order matters: `extension` MUST
-   *  appear before `staticSources`. */
+   *  `self` passed to `staticIntegrations`. Field order matters: `extension` MUST
+   *  appear before `staticIntegrations`. */
   readonly extension?: (ctx: PluginCtx<TStore>) => TExtension;
 
-  /** Static sources contributed by this plugin with inline tool handlers. */
-  readonly staticSources?: (self: NoInfer<TExtension>) => readonly StaticSourceDecl<TStore>[];
+  /** Static integrations contributed by this plugin with inline tool handlers. */
+  readonly staticIntegrations?: (
+    self: NoInfer<TExtension>,
+  ) => readonly StaticIntegrationDecl<TStore>[];
 
   /** HttpApiGroup contributed by this plugin. */
   readonly routes?: () => TGroup;

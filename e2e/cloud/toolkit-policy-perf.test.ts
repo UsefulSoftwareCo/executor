@@ -7,12 +7,12 @@
 // the policy engine over the WHOLE catalog to decide tool visibility. A
 // per-tool policy resolution there is an N+1 that scales with total catalog
 // size, not toolkit size: a workspace with thousands of tools across a dozen
-// sources pushes the connect past the MCP client's connect timeout, and the
+// integrations pushes the connect past the MCP client's connect timeout, and the
 // toolkit appears permanently "failed" even though nothing is broken.
 //
 // This scenario seeds a production-shaped catalog (one real OpenAPI spec plus
-// enough synthetic sources to look like a working workspace, ~3,300 tools over
-// 11 sources) and asserts the catalog size adds only a small, bounded cost to
+// enough synthetic integrations to look like a working workspace, ~3,300 tools over
+// 11 integrations) and asserts the catalog size adds only a small, bounded cost to
 // connect. The control is a fresh identity with a near-empty catalog: it pays
 // the same OAuth + MCP handshake, so the DIFFERENCE isolates the catalog-walk
 // cost the fix removes. Before the fix this delta is tens of seconds (and in
@@ -141,14 +141,14 @@ scenario(
       let seededCatalog: SeededCatalog | undefined;
 
       yield* Effect.gen(function* () {
-        // 1 real source (Vercel, 322 ops) + 10 synthetic = 11 sources, ~2,200
+        // 1 real integration (Vercel, 322 ops) + 10 synthetic = 11 integrations, ~2,200
         // tools. Sized so the pre-fix N+1 connect (~27s here) still completes
         // under the MCP client's connect timeout, so the regression surfaces as
         // a failed ASSERTION on the overhead rather than a connect crash.
         const seeded = yield* seedLargeCatalog(bigClient, {
           includeRealSpec: true,
-          syntheticSources: 10,
-          opsPerSource: 190,
+          syntheticIntegrations: 10,
+          opsPerIntegration: 190,
         });
         seededCatalog = seeded;
         expect(
@@ -157,7 +157,7 @@ scenario(
         ).toBeGreaterThan(2_000);
         expect(
           seeded.integrationSlugs.length,
-          "the catalog spans a production-like number of sources",
+          "the catalog spans a production-like number of integrations",
         ).toBeGreaterThanOrEqual(11);
 
         const big = yield* timeToolkitConnect(
@@ -172,7 +172,7 @@ scenario(
         const overhead = big.elapsedMs - control.elapsedMs;
         expect(
           overhead,
-          `catalog of ${seeded.toolCount} tools across ${seeded.integrationSlugs.length} sources ` +
+          `catalog of ${seeded.toolCount} tools across ${seeded.integrationSlugs.length} integrations ` +
             `added ${overhead}ms to connect (big ${big.elapsedMs}ms vs control ${control.elapsedMs}ms); ` +
             `the per-tool policy N+1 would make this scale into tens of seconds`,
         ).toBeLessThan(MAX_CATALOG_CONNECT_OVERHEAD_MS);

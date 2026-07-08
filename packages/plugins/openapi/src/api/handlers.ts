@@ -96,7 +96,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const config = yield* ext.getConfig(params.slug);
           return config
             ? {
-                sourceUrl: config.sourceUrl,
+                specUrl: config.specUrl,
                 baseUrl: config.baseUrl,
                 headers: config.headers ? { ...config.headers } : undefined,
                 queryParams: config.queryParams ? { ...config.queryParams } : undefined,

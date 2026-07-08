@@ -26,7 +26,7 @@ export interface DerivedIdentity {
 
 export interface ConvertedSpec {
   readonly specText: string;
-  readonly sourceUrl?: string;
+  readonly specUrl?: string;
   readonly baseUrl?: string;
   readonly authenticationTemplate?: readonly Authentication[];
   readonly config?: Partial<OpenApiIntegrationConfig> & Readonly<Record<string, unknown>>;

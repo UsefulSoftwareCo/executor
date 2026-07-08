@@ -166,7 +166,7 @@ const graphqlAuthToolFailure = (failure: GraphqlAuthRequiredError) =>
   authToolFailure({
     code: failure.code,
     message: failure.message,
-    source: { id: failure.integration, scope: failure.owner },
+    integration: { id: failure.integration, scope: failure.owner },
     credential: {
       kind: failure.credentialKind,
       ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),
@@ -641,7 +641,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         : [],
     });
 
-  /** Register the integration in the catalog. Registering a source is a
+  /** Register the integration in the catalog. Registering an integration is a
    *  catalog statement ("we use this GraphQL endpoint now") and MUST NOT make a
    *  network call or require auth — exactly like MCP defers discovery. Live
    *  introspection (and the operation bindings it yields) is deferred to
@@ -899,7 +899,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
     describeAuthMethods: describeGraphqlAuthMethods,
     describeIntegrationDisplay: describeGraphqlIntegrationDisplay,
 
-    staticSources: (self: GraphqlPluginExtension) => [
+    staticIntegrations: (self: GraphqlPluginExtension) => [
       {
         id: "graphql",
         kind: "executor",
@@ -1149,7 +1149,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
               code: "connection_rejected",
               status: result.status,
               message: `Upstream rejected credentials for GraphQL integration "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection before retrying this tool.`,
-              source: { id: integration, scope: credential.owner },
+              integration: { id: integration, scope: credential.owner },
               credential: { kind: "upstream", label: "Upstream authorization" },
               upstream: {
                 status: result.status,

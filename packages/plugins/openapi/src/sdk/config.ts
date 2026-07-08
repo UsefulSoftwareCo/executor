@@ -44,7 +44,7 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
    *  blob (`spec/<hash>` in the plugin blob store). */
   specHash: Schema.optional(Schema.String),
   /** Origin URL the spec was fetched from, when known. Enables refresh. */
-  sourceUrl: Schema.optional(Schema.String),
+  specUrl: Schema.optional(Schema.String),
   /** Optional base URL override. */
   baseUrl: Schema.optional(Schema.String),
   /** Static headers applied to every request (no secret material). */

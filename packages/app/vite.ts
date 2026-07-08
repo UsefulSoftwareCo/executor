@@ -17,7 +17,7 @@ interface AppPluginOptions {
    * point this at their own (typically `apps/local/executor.config.ts`).
    *
    * If omitted, no plugin UIs get bundled — the renderer still works
-   * for built-in pages but Sources / Connections / etc. plugin pages
+   * for built-in pages but Integrations / Connections / etc. plugin pages
    * stay empty.
    */
   readonly executorConfigPath?: string;

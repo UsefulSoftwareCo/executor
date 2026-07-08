@@ -198,7 +198,7 @@ type ToolkitConnectionGroup = {
 
 type IntegrationMeta = {
   readonly name: string;
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly icon?: string | null;
   readonly url?: string;
 };
@@ -327,17 +327,17 @@ const integrationMetaFor = (
   const fallbackName = group.integration
     .replace(/[_-]/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
-  const source = {
+  const integrationSummary = {
     id: group.integration,
     kind: integration?.kind ?? group.integration,
     name: integration?.name ?? fallbackName,
     url: integration?.displayUrl,
   };
   return {
-    name: source.name,
-    sourceId: group.integration,
-    icon: integrationPresetIconUrl(source, integrationPlugins),
-    ...(source.url ? { url: source.url } : {}),
+    name: integrationSummary.name,
+    integrationId: group.integration,
+    icon: integrationPresetIconUrl(integrationSummary, integrationPlugins),
+    ...(integrationSummary.url ? { url: integrationSummary.url } : {}),
   };
 };
 
@@ -346,7 +346,7 @@ type ConfiguredConnectionView = {
   readonly title: string;
   readonly subtitle: string;
   readonly pattern: string;
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly icon?: string | null;
   readonly url?: string;
 };
@@ -368,7 +368,7 @@ const configuredConnectionViews = (
         title: connection.pattern,
         subtitle: "Configured pattern",
         pattern: connection.pattern,
-        sourceId: connection.pattern.split(".")[0] ?? "toolkit",
+        integrationId: connection.pattern.split(".")[0] ?? "toolkit",
       };
     }
     const meta = integrationMetaFor(group, integrations, integrationPlugins);
@@ -377,7 +377,7 @@ const configuredConnectionViews = (
       title: connectionDisplayTitle(group, meta),
       subtitle: connectionDisplaySubtitleForHost(group, meta, showOwnerLabels),
       pattern: connection.pattern,
-      sourceId: meta.sourceId,
+      integrationId: meta.integrationId,
       icon: meta.icon,
       ...(meta.url ? { url: meta.url } : {}),
     };
@@ -437,7 +437,7 @@ function ToolkitConnectionIconStack(props: { connections: readonly ConfiguredCon
           >
             <IntegrationFavicon
               icon={connection.icon}
-              sourceId={connection.sourceId}
+              integrationId={connection.integrationId}
               url={connection.url}
               size={14}
             />
@@ -887,7 +887,7 @@ function AddConnectionDialog(props: {
                       <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/30">
                         <IntegrationFavicon
                           icon={meta.icon}
-                          sourceId={meta.sourceId}
+                          integrationId={meta.integrationId}
                           url={meta.url}
                           size={18}
                         />

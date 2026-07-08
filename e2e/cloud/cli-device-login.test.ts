@@ -6,7 +6,7 @@
 // URL, confirms the code, and clicks "Authorize device" on the WorkOS
 // emulator's verification page, exactly the human hop, the way the MCP
 // approval scenarios drive their browser step. The terminal then runs `whoami`
-// and `tools sources`; a clean exit of that chain proves the resulting WorkOS
+// and `tools integrations`; a clean exit of that chain proves the resulting WorkOS
 // access token (a JWT) is accepted by the protected `/api/*` plane.
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -83,12 +83,12 @@ scenario(
 
       // The terminal journey, recorded to terminal.cast. `&&` means a clean
       // exit only happens if every step, including the authenticated /api call
-      // (`tools sources`), succeeded.
+      // (`tools integrations`), succeeded.
       const cli_ = `bun run ${CLI_ENTRY}`;
       const journey =
         `${cli_} login --base-url ${CLOUD_BASE_URL} --no-browser --name cloud && ` +
         `${cli_} whoami --server cloud && ` +
-        `${cli_} tools sources --server cloud`;
+        `${cli_} tools integrations --server cloud`;
 
       const terminal = cli.session(
         ["bash", "-c", journey],

@@ -63,7 +63,7 @@ afterAll(() => dispose());
 
 const BASE = "http://localhost:4788";
 
-const addOrgSource = async (organizationId: string): Promise<void> => {
+const addOrgIntegration = async (organizationId: string): Promise<void> => {
   // Register the integration and attach an org-owned connection, on its own
   // connection to the shared DB file. WAL makes the committed rows visible to
   // the server. Org-owned connections (and their per-connection tools) are
@@ -119,7 +119,7 @@ test("a user's MCP execute sandbox can reach an org-owned connection's tools", a
   );
   const organizationId = ((await meRes.json()) as { organization: { id: string } }).organization.id;
 
-  await addOrgSource(organizationId);
+  await addOrgIntegration(organizationId);
 
   const mcp = (body: unknown, sessionId?: string) =>
     handler(

@@ -516,7 +516,7 @@ describe("active tool-policy provider", () => {
   const staticPlugin = definePlugin(() => ({
     id: "toolkit-fixture" as const,
     storage: () => ({}),
-    staticSources: () => [
+    staticIntegrations: () => [
       {
         id: "toolkit-fixture.ctl",
         kind: "control" as const,

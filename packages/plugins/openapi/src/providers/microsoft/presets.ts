@@ -59,7 +59,7 @@ export const MICROSOFT_GRAPH_PRESET_ID = "microsoft";
 export const microsoftGraphPreset: MicrosoftGraphPreset = {
   id: MICROSOFT_GRAPH_PRESET_ID,
   name: "Microsoft Graph",
-  summary: "Bundle Microsoft 365 workloads into one Graph source and one OAuth consent.",
+  summary: "Bundle Microsoft 365 workloads into one Graph integration and one OAuth consent.",
   icon: MICROSOFT_ICON,
   featured: true,
 };

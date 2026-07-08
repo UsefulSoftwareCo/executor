@@ -122,7 +122,7 @@ export interface UpdateSpecResult {
 
 export interface OpenApiUpdateSpecInput {
   /** New spec source. Omit to re-fetch from the integration's stored
-   *  `sourceUrl`. */
+   *  `specUrl`. */
   readonly spec?: OpenApiSpecInput;
 }
 
@@ -273,7 +273,7 @@ const AuthenticationSchema = Schema.Union([
   ApiKeyAuthTemplate,
 ]);
 
-const AddSourceInputSchema = Schema.Struct({
+const AddIntegrationInputSchema = Schema.Struct({
   spec: OpenApiSpecInputSchema,
   slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
@@ -287,7 +287,7 @@ const AddSourceInputSchema = Schema.Struct({
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
 });
 
-const AddSourceOutputSchema = Schema.Struct({
+const AddIntegrationOutputSchema = Schema.Struct({
   slug: Schema.String,
   toolCount: Schema.Number,
 });
@@ -298,11 +298,11 @@ const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
 const PreviewSpecOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticPreviewSpecOutputSchema),
 );
-const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(AddSourceInputSchema),
+const AddIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddIntegrationInputSchema),
 );
-const AddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(AddSourceOutputSchema),
+const AddIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddIntegrationOutputSchema),
 );
 
 const openApiToolFailure = (code: string, message: string, details?: unknown) =>
@@ -378,7 +378,7 @@ const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => (
   })),
 });
 
-const specInputToSourceUrl = (spec: OpenApiSpecInput): string | undefined =>
+const specInputToSpecUrl = (spec: OpenApiSpecInput): string | undefined =>
   spec.kind === "url" ? spec.url : undefined;
 
 const OAUTH_DISCOVERED_SCHEME_NAME = "DiscoveredOAuth2";
@@ -418,7 +418,7 @@ const addProbeCandidate = (candidates: string[], value: string | undefined): voi
 
 const oauthProbeCandidates = (
   preview: SpecPreview,
-  sourceUrl: string | undefined,
+  specUrl: string | undefined,
   baseUrl: string | undefined,
 ): readonly string[] => {
   const candidates: string[] = [];
@@ -429,7 +429,7 @@ const oauthProbeCandidates = (
       resolveServerUrl(server.url, Option.getOrUndefined(server.variables), {}),
     );
   }
-  addProbeCandidate(candidates, sourceUrl);
+  addProbeCandidate(candidates, specUrl);
   return candidates;
 };
 
@@ -574,7 +574,7 @@ export const describeOpenApiIntegrationDisplay = (
 ): { readonly url?: string; readonly family?: string } => {
   const config = decodeOpenApiIntegrationConfig(record.config);
   return {
-    url: config?.baseUrl ?? config?.sourceUrl,
+    url: config?.baseUrl ?? config?.specUrl,
     ...(config?.family ? { family: config.family } : {}),
   };
 };
@@ -624,7 +624,7 @@ export const openApiPlugin = definePlugin<
         const specText = yield* resolveSpecText(config.spec.url).pipe(
           Effect.provide(httpClientLayer),
         );
-        return { specText, sourceUrl: config.spec.url };
+        return { specText, specUrl: config.spec.url };
       }
       return { specText: config.spec.value };
     });
@@ -654,13 +654,13 @@ export const openApiPlugin = definePlugin<
       const enrichPreviewWithDiscoveredOAuth = (input: {
         readonly specText: string;
         readonly preview: SpecPreview;
-        readonly sourceUrl?: string;
+        readonly specUrl?: string;
         readonly baseUrl?: string;
       }): Effect.Effect<SpecPreview, OpenApiParseError | OpenApiExtractionError> =>
         Effect.gen(function* () {
           if (input.preview.oauth2Presets.length > 0) return input.preview;
 
-          const candidates = oauthProbeCandidates(input.preview, input.sourceUrl, input.baseUrl);
+          const candidates = oauthProbeCandidates(input.preview, input.specUrl, input.baseUrl);
           if (candidates.length === 0) return input.preview;
 
           for (const candidate of candidates) {
@@ -741,7 +741,7 @@ export const openApiPlugin = definePlugin<
                     enrichPreviewWithDiscoveredOAuth({
                       specText: resolved.specText,
                       preview: rawPreview,
-                      sourceUrl: resolved.sourceUrl ?? specInputToSourceUrl(config.spec),
+                      specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
                       baseUrl: explicitBaseUrl,
                     }),
                   ),
@@ -772,8 +772,8 @@ export const openApiPlugin = definePlugin<
           const integrationConfig: OpenApiIntegrationConfig = {
             ...(resolved.config ?? {}),
             specHash,
-            ...((resolved.sourceUrl ?? specInputToSourceUrl(config.spec)) !== undefined
-              ? { sourceUrl: resolved.sourceUrl ?? specInputToSourceUrl(config.spec) }
+            ...((resolved.specUrl ?? specInputToSpecUrl(config.spec)) !== undefined
+              ? { specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec) }
               : {}),
             // baseUrl is an optional override only. The host is otherwise
             // resolved per call from the operation's `servers` (extracted from
@@ -822,7 +822,7 @@ export const openApiPlugin = definePlugin<
                   resolvedSlug,
                 config: integrationConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
                 canRemove: true,
-                canRefresh: integrationConfig.sourceUrl != null,
+                canRefresh: integrationConfig.specUrl != null,
               });
               if (config.healthCheck) {
                 yield* ctx.core.integrations.setHealthCheck(slug, config.healthCheck);
@@ -871,7 +871,7 @@ export const openApiPlugin = definePlugin<
           // where the spec originally came from. A pasted-blob integration has
           // no origin, so updating it requires a new input.
           const specInput: OpenApiSpecInput | null =
-            input?.spec ?? (current.sourceUrl ? { kind: "url", url: current.sourceUrl } : null);
+            input?.spec ?? (current.specUrl ? { kind: "url", url: current.specUrl } : null);
           if (specInput === null) {
             return yield* new OpenApiParseError({
               message:
@@ -911,8 +911,8 @@ export const openApiPlugin = definePlugin<
           const nextConfig: OpenApiIntegrationConfig = {
             ...current,
             specHash,
-            ...((resolved.sourceUrl ?? specInputToSourceUrl(specInput)) !== undefined
-              ? { sourceUrl: resolved.sourceUrl ?? specInputToSourceUrl(specInput) }
+            ...((resolved.specUrl ?? specInputToSpecUrl(specInput)) !== undefined
+              ? { specUrl: resolved.specUrl ?? specInputToSpecUrl(specInput) }
               : {}),
           };
 
@@ -992,7 +992,7 @@ export const openApiPlugin = definePlugin<
             return yield* enrichPreviewWithDiscoveredOAuth({
               specText: resolved.specText,
               preview,
-              sourceUrl: resolved.sourceUrl ?? (spec.kind === "url" ? spec.url : undefined),
+              specUrl: resolved.specUrl ?? (spec.kind === "url" ? spec.url : undefined),
             });
           }),
 
@@ -1071,7 +1071,7 @@ export const openApiPlugin = definePlugin<
       };
     },
 
-    staticSources: (self: OpenApiPluginExtension) => [
+    staticIntegrations: (self: OpenApiPluginExtension) => [
       {
         id: "openapi",
         kind: "executor",
@@ -1104,9 +1104,9 @@ export const openApiPlugin = definePlugin<
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI integration",
             },
-            inputSchema: AddSourceInputStandardSchema,
-            outputSchema: AddSourceOutputStandardSchema,
-            execute: (input: typeof AddSourceInputSchema.Type) =>
+            inputSchema: AddIntegrationInputStandardSchema,
+            outputSchema: AddIntegrationOutputStandardSchema,
+            execute: (input: typeof AddIntegrationInputSchema.Type) =>
               self
                 .addSpec({
                   spec: input.spec,

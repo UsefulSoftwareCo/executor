@@ -10,7 +10,7 @@ export type AuthToolFailureCode =
 export type AuthToolFailureInput = {
   readonly code: AuthToolFailureCode;
   readonly message: string;
-  readonly source?: {
+  readonly integration?: {
     readonly id: string;
     readonly scope?: string;
   };
@@ -27,12 +27,12 @@ export type AuthToolFailureInput = {
     readonly details?: unknown;
   };
   readonly recovery?: {
-    readonly configureSourceTool?: string;
+    readonly configureIntegrationTool?: string;
   };
 };
 
 // In v1.5 a connection IS the credential: there is no standalone secret to
-// "bind" to a source afterward. Manually-entered credentials are created via
+// "bind" to an integration afterward. Manually-entered credentials are created via
 // the connection handoff (the user enters the value in the web UI, which
 // creates the bound connection in one step); OAuth credentials are minted by
 // the OAuth start flow. These strings are read by the agent resolving the
@@ -41,7 +41,9 @@ const authRecovery = (input?: AuthToolFailureInput["recovery"]) => ({
   createConnectionTool: "executor.coreTools.connections.createHandoff",
   startOAuthTool: "executor.coreTools.oauth.start",
   listConnectionsTool: "executor.coreTools.connections.list",
-  ...(input?.configureSourceTool ? { configureSourceTool: input.configureSourceTool } : {}),
+  ...(input?.configureIntegrationTool
+    ? { configureIntegrationTool: input.configureIntegrationTool }
+    : {}),
   connectionInstructions:
     "For API keys and tokens, call createConnectionTool for the integration to get a browser URL; the user enters the credential there, which creates the bound connection. Do not ask the user to paste secrets into chat. Then call listConnectionsTool to confirm the connection exists before retrying this tool.",
   oauthInstructions:
@@ -56,7 +58,7 @@ export const authToolFailure = <T = never>(input: AuthToolFailureInput): ToolRes
     ...(input.status !== undefined ? { status: input.status } : {}),
     details: {
       category: "authentication",
-      ...(input.source ? { source: input.source } : {}),
+      ...(input.integration ? { integration: input.integration } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
       ...(input.upstream ? { upstream: input.upstream } : {}),
       recovery: authRecovery(input.recovery),

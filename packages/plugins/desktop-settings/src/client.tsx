@@ -198,8 +198,8 @@ function SettingsPage() {
   const authLabel = "Bearer token";
   const cliProfileCommand = `executor server add desktop ${connection.origin} --default`;
   const cliUseCommand = authToken
-    ? `EXECUTOR_AUTH_TOKEN=${authToken} executor tools sources --server desktop`
-    : "executor tools sources --server desktop";
+    ? `EXECUTOR_AUTH_TOKEN=${authToken} executor tools integrations --server desktop`
+    : "executor tools integrations --server desktop";
 
   return (
     <div style={pageFrameStyle}>
@@ -360,8 +360,8 @@ function SettingsPage() {
               <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
               <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
                 Packs app and server logs, crash dumps, and version info into a zip in your
-                Downloads folder — attach it when reporting a bug. Your sources, secrets, and bearer
-                token are not included.
+                Downloads folder — attach it when reporting a bug. Your integrations, secrets, and
+                bearer token are not included.
               </span>
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
@@ -430,7 +430,7 @@ export default defineClientPlugin({
       path: "/",
       component: SettingsPage,
       // Only contribute a nav entry when running inside the desktop app.
-      // Web users see an empty Sources nav without a non-functional
+      // Web users see an empty Integrations nav without a non-functional
       // "Settings" link.
       ...(inDesktop ? { nav: { label: "Settings" } } : {}),
     },

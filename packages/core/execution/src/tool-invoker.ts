@@ -105,16 +105,16 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     },
   ],
   [
-    "executor.sources.list",
+    "executor.integrations.list",
     {
-      path: "executor.sources.list",
-      name: "executor.sources.list",
+      path: "executor.integrations.list",
+      name: "executor.integrations.list",
       description: "List configured Executor integrations.",
       inputTypeScript: "{ query?: string; limit?: number; offset?: number; }",
       outputTypeScript:
-        "{ items: ExecutorSourceListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+        "{ items: ExecutorIntegrationListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
       typeScriptDefinitions: {
-        ExecutorSourceListItem:
+        ExecutorIntegrationListItem:
           "{ id: string; name: string; description?: string; kind: string; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
       },
     },
@@ -245,7 +245,7 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
 /**
  * Extract the integration namespace from a tool path. v2 addresses look like
  * `<integration>.<owner>.<connection>.<tool>`; static fqids look like
- * `<source>.<op>`. We take the first segment as a cheap, non-lookup namespace
+ * `<integration>.<op>`. We take the first segment as a cheap, non-lookup namespace
  * for the span attribute so it's always populated without a catalog read.
  */
 const extractNamespace = (path: string): string => {
@@ -364,7 +364,7 @@ export type ToolDiscoveryResult = {
   readonly score: number;
 };
 
-export type ExecutorSourceListItem = {
+export type ExecutorIntegrationListItem = {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
@@ -390,7 +390,7 @@ export interface ToolDiscoveryProvider {
 
 /**
  * Page of results from a list-style discovery tool. Shared by
- * `tools.search` and `tools.executor.sources.list` so the model sees one
+ * `tools.search` and `tools.executor.integrations.list` so the model sees one
  * consistent shape:
  *
  *   - `items`      — the page (slice).
@@ -674,10 +674,10 @@ export const defaultToolDiscoveryProvider: ToolDiscoveryProvider = {
     searchTools(executor, query, limit, { namespace, offset }),
 };
 
-/** What `tools.executor.sources.list()` calls inside the sandbox. v2: the
- *  "sources" are the integration catalog; tool counts come from the
+/** What `tools.executor.integrations.list()` calls inside the sandbox. v2: the
+ *  integrations are the integration catalog; tool counts come from the
  *  per-connection tool list. */
-export const listExecutorSources = Effect.fn("executor.sources.list")(function* (
+export const listExecutorIntegrations = Effect.fn("executor.integrations.list")(function* (
   executor: Executor,
   options?: {
     readonly query?: string;
@@ -731,7 +731,7 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
           id: String(integration.slug),
           name: String(integration.slug),
           // The integration's catalog description — user-editable context the
-          // agent can use to pick a source. Omitted when it just repeats the
+          // agent can use to pick an integration. Omitted when it just repeats the
           // slug or display name (no information beyond identity).
           ...(integration.description &&
           integration.description.toLowerCase() !== String(integration.slug).toLowerCase() &&
@@ -742,17 +742,17 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
           canRemove: integration.canRemove,
           canRefresh: integration.canRefresh,
           toolCount: toolCountByIntegration.get(String(integration.slug)) ?? 0,
-        }) satisfies ExecutorSourceListItem,
+        }) satisfies ExecutorIntegrationListItem,
     )
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
   const page = paginate(sortedWithCounts, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
-    "executor.sources.candidate_count": integrations.length,
-    "executor.sources.match_count": sortedWithCounts.length,
-    "executor.sources.result_count": page.items.length,
-    "executor.sources.has_more": page.hasMore,
+    "executor.integrations.candidate_count": integrations.length,
+    "executor.integrations.match_count": sortedWithCounts.length,
+    "executor.integrations.result_count": page.items.length,
+    "executor.integrations.has_more": page.hasMore,
   });
   return page;
 });

@@ -723,7 +723,7 @@ it.effect(
     }),
 );
 
-it.effect("bundles Google Discovery documents into one Google OpenAPI source", () =>
+it.effect("bundles Google Discovery documents into one Google OpenAPI integration", () =>
   Effect.gen(function* () {
     const result = yield* convertGoogleDiscoveryBundleToOpenApi({
       documents: [

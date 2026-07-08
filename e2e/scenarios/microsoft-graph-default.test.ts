@@ -67,7 +67,9 @@ scenario(
             specFormat: "microsoft-graph",
           },
         });
-        expect(added.slug, "the Microsoft Graph source keeps the requested slug").toBe(integration);
+        expect(added.slug, "the Microsoft Graph integration keeps the requested slug").toBe(
+          integration,
+        );
         expect(
           added.toolCount,
           "the Microsoft files catalog preset extracts a focused operation subtree",

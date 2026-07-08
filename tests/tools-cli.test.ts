@@ -6,7 +6,7 @@ import {
   buildToolPath,
   filterToolPathChildren,
   buildInvokeToolCode,
-  buildListSourcesCode,
+  buildListIntegrationsCode,
   buildSearchToolsCode,
   extractPausedInteraction,
   extractExecutionId,
@@ -54,19 +54,19 @@ describe("CLI tooling helpers", () => {
     expect(() => buildToolPath(["github", "issues", "create now"])).toThrow();
   });
 
-  it("builds search and sources code snippets", () => {
+  it("builds search and integrations code snippets", () => {
     const searchCode = buildSearchToolsCode({
       query: "google calendar events",
       namespace: "google",
       limit: 5,
     });
-    const sourcesCode = buildListSourcesCode({ query: "google", limit: 20 });
+    const integrationsCode = buildListIntegrationsCode({ query: "google", limit: 20 });
 
     expect(searchCode).toBe(
       'return await tools.search({"query":"google calendar events","limit":5,"namespace":"google"});',
     );
-    expect(sourcesCode).toBe(
-      'return await tools.executor.sources.list({"limit":20,"query":"google"});',
+    expect(integrationsCode).toBe(
+      'return await tools.executor.integrations.list({"limit":20,"query":"google"});',
     );
   });
 

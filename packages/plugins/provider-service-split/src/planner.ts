@@ -159,7 +159,7 @@ export interface ServiceTarget {
   readonly slug: string;
   readonly name: string;
   readonly description: string;
-  readonly sourceUrl?: string;
+  readonly specUrl?: string;
   readonly specFormat: "google-discovery" | "microsoft-graph";
   readonly authenticationTemplate?: readonly unknown[];
   readonly healthCheck?: unknown;
@@ -480,7 +480,7 @@ const serviceTargetForPreset = (
       slug: preset.defaultSlug ?? preset.id,
       name: preset.name,
       description: preset.summary,
-      ...(preset.url ? { sourceUrl: preset.url } : {}),
+      ...(preset.url ? { specUrl: preset.url } : {}),
       specFormat: "google-discovery",
       ...(preset.authTemplate ? { authenticationTemplate: preset.authTemplate } : {}),
       ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
@@ -495,7 +495,7 @@ const serviceTargetForPreset = (
     slug: preset.defaultSlug ?? preset.id,
     name: preset.name,
     description: preset.summary,
-    ...(preset.url ? { sourceUrl: preset.url } : {}),
+    ...(preset.url ? { specUrl: preset.url } : {}),
     specFormat: "microsoft-graph",
     ...(preset.authTemplate ? { authenticationTemplate: preset.authTemplate } : {}),
     ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
@@ -634,7 +634,7 @@ const configForService = (source: IntegrationRow, target: ServiceTarget): unknow
     typeof config.specHash === "string" && config.specHash.length > 0 ? config.specHash : undefined;
   return {
     ...(specHash ? { specHash } : {}),
-    ...(target.sourceUrl ? { sourceUrl: target.sourceUrl } : {}),
+    ...(target.specUrl ? { specUrl: target.specUrl } : {}),
     specFormat: target.specFormat,
     family: target.family,
     ...(target.authenticationTemplate

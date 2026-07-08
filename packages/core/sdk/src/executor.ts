@@ -118,7 +118,7 @@ import type {
   PluginCtx,
   PluginExtensions,
   ResolveToolsResult,
-  StaticSourceDecl,
+  StaticIntegrationDecl,
   StaticToolDecl,
   StorageDeps,
   ToolPolicyProvider,
@@ -1241,7 +1241,7 @@ const approvalArgumentPreview = (args: unknown): string => {
 // ---------------------------------------------------------------------------
 
 interface StaticTools {
-  readonly source: StaticSourceDecl;
+  readonly integration: StaticIntegrationDecl;
   readonly tool: StaticToolDecl;
   readonly pluginId: string;
   readonly ctx: PluginCtx<unknown>;
@@ -1253,9 +1253,9 @@ interface PluginRuntime {
   readonly ctx: PluginCtx<unknown>;
 }
 
-const EXECUTOR_SOURCE_ID = "executor";
-const EXECUTOR_SOURCE: StaticSourceDecl = {
-  id: EXECUTOR_SOURCE_ID,
+const EXECUTOR_INTEGRATION_ID = "executor";
+const EXECUTOR_INTEGRATION: StaticIntegrationDecl = {
+  id: EXECUTOR_INTEGRATION_ID,
   kind: "built-in",
   name: "Executor",
   canRemove: false,
@@ -1374,32 +1374,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const credentialProviderOrder: string[] = [];
 
     const staticToolOwner = (): Owner => (subject == null ? "org" : "user");
-    const staticToolConnection = (source: StaticSourceDecl): ConnectionName =>
-      ConnectionName.make(source.id === EXECUTOR_SOURCE_ID ? "coreTools" : "static");
+    const staticToolConnection = (integration: StaticIntegrationDecl): ConnectionName =>
+      ConnectionName.make(integration.id === EXECUTOR_INTEGRATION_ID ? "coreTools" : "static");
 
-    const staticSources = (): readonly StaticSourceDecl[] => {
-      const byId = new Map<string, StaticSourceDecl>();
+    const staticIntegrations = (): readonly StaticIntegrationDecl[] => {
+      const byId = new Map<string, StaticIntegrationDecl>();
       for (const entry of staticTools.values()) {
-        if (!byId.has(entry.source.id)) byId.set(entry.source.id, entry.source);
+        if (!byId.has(entry.integration.id)) byId.set(entry.integration.id, entry.integration);
       }
       return [...byId.values()];
     };
 
-    const staticSourceToIntegration = (source: StaticSourceDecl): Integration => ({
-      slug: IntegrationSlug.make(source.id),
-      name: source.name,
-      description: source.name,
-      kind: source.kind,
-      canRemove: source.canRemove ?? false,
-      canRefresh: source.canRefresh ?? false,
+    const staticDeclToIntegration = (integration: StaticIntegrationDecl): Integration => ({
+      slug: IntegrationSlug.make(integration.id),
+      name: integration.name,
+      description: integration.name,
+      kind: integration.kind,
+      canRemove: integration.canRemove ?? false,
+      canRefresh: integration.canRefresh ?? false,
       authMethods: [],
     });
 
     const staticToolToTool = (entry: StaticTools): Tool => ({
-      address: ToolAddress.make(`${entry.source.id}.${entry.tool.name}`),
+      address: ToolAddress.make(`${entry.integration.id}.${entry.tool.name}`),
       owner: staticToolOwner(),
-      integration: IntegrationSlug.make(entry.source.id),
-      connection: staticToolConnection(entry.source),
+      integration: IntegrationSlug.make(entry.integration.id),
+      connection: staticToolConnection(entry.integration),
       name: ToolName.make(entry.tool.name),
       pluginId: entry.pluginId,
       description: entry.tool.description,
@@ -1814,21 +1814,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationsList = (): Effect.Effect<readonly Integration[], StorageFailure> =>
       Effect.gen(function* () {
         const rows = yield* core.findMany("integration", {});
-        const staticIntegrations = staticSources().map(staticSourceToIntegration);
+        const staticIntegrationList = staticIntegrations().map(staticDeclToIntegration);
         const dbIntegrations = rows.map((row) =>
           rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row)),
         );
         // A scoped toolkit must not advertise providers it grants no tools from
-        // (mirrors `connectionsList`). Static sources are system namespaces, not
+        // (mirrors `connectionsList`). Static integrations are system namespaces, not
         // user providers, so they stay; DB-backed integrations are filtered to
         // those that contribute at least one visible tool under the active policy.
-        if (!activeToolPolicyProvider) return [...staticIntegrations, ...dbIntegrations];
+        if (!activeToolPolicyProvider) return [...staticIntegrationList, ...dbIntegrations];
         const visibleTools = yield* toolsList({ includeAnnotations: false });
         const visibleIntegrationSlugs = new Set(
           visibleTools.filter((tool) => !tool.static).map((tool) => String(tool.integration)),
         );
         return [
-          ...staticIntegrations,
+          ...staticIntegrationList,
           ...dbIntegrations.filter((integration) =>
             visibleIntegrationSlugs.has(String(integration.slug)),
           ),
@@ -1839,8 +1839,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       slug: IntegrationSlug,
     ): Effect.Effect<Integration | null, StorageFailure> =>
       Effect.gen(function* () {
-        const staticSource = staticSources().find((source) => source.id === String(slug));
-        if (staticSource) return staticSourceToIntegration(staticSource);
+        const staticIntegration = staticIntegrations().find(
+          (integration) => integration.id === String(slug),
+        );
+        if (staticIntegration) return staticDeclToIntegration(staticIntegration);
         const row = yield* findIntegrationRow(slug);
         return row
           ? rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row))
@@ -2135,7 +2137,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           );
 
         if (result.incomplete === true) {
-          // Non-authoritative listing (source unreachable, auth not ready).
+          // Non-authoritative listing (integration unreachable, auth not ready).
           // Keep the existing catalog — replacing it would wipe working tools
           // over a transient outage — and stamp the sync time anyway so a down
           // server isn't re-dialed on every read; the freshness TTL re-attempts
@@ -3871,21 +3873,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
       }
 
-      // Build extension FIRST so it's available as `self` for staticSources.
+      // Build extension FIRST so it's available as `self` for staticIntegrations.
       const extension: object = plugin.extension ? plugin.extension(ctx) : {};
       if (plugin.extension) {
         extensions[plugin.id] = extension;
       }
 
-      const decls = plugin.staticSources ? plugin.staticSources(extension) : [];
-      for (const source of decls) {
-        const mountUnderExecutor = source.kind === "executor";
-        const mountedSource = mountUnderExecutor ? EXECUTOR_SOURCE : source;
-        for (const tool of source.tools) {
+      const decls = plugin.staticIntegrations ? plugin.staticIntegrations(extension) : [];
+      for (const integration of decls) {
+        const mountUnderExecutor = integration.kind === "executor";
+        const mountedIntegration = mountUnderExecutor ? EXECUTOR_INTEGRATION : integration;
+        for (const tool of integration.tools) {
           const mountedTool = mountUnderExecutor
-            ? { ...tool, name: `${source.id}.${tool.name}` }
+            ? { ...tool, name: `${integration.id}.${tool.name}` }
             : tool;
-          const fqid = `${mountedSource.id}.${mountedTool.name}`;
+          const fqid = `${mountedIntegration.id}.${mountedTool.name}`;
           if (staticTools.has(fqid)) {
             return yield* new StorageError({
               message: `Duplicate static tool id: ${fqid} (plugin ${plugin.id})`,
@@ -3893,7 +3895,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           staticTools.set(fqid, {
-            source: mountedSource,
+            integration: mountedIntegration,
             tool: mountedTool,
             pluginId: plugin.id,
             ctx,

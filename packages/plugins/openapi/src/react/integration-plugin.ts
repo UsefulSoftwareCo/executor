@@ -2,7 +2,7 @@ import { lazy } from "react";
 import type { IntegrationPlugin, IntegrationPreset } from "@executor-js/sdk/client";
 import { openApiPresets } from "../sdk/presets";
 
-const importAdd = () => import("./AddOpenApiSource");
+const importAdd = () => import("./AddOpenApiIntegration");
 const importEditSheet = () => import("./UpdateSpecSection");
 const importAccounts = () => import("./OpenApiAccountsPanel");
 

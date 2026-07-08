@@ -10,7 +10,7 @@ import {
   type IntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 
-export function GraphqlSourceFields(props: {
+export function GraphqlIntegrationFields(props: {
   readonly endpoint: string;
   readonly onEndpointChange: (endpoint: string) => void;
   readonly identity: IntegrationIdentity;

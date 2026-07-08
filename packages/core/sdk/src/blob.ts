@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // BlobStore — the seam for large, opaque, write-once data. Blobs are stored
-// in FumaDB with their own lifecycle and namespacing, separate from source
+// in FumaDB with their own lifecycle and namespacing, separate from integration
 // metadata and plugin-owned config rows.
 //
 // Plugins see a `PluginBlobStore` that's already namespaced to the

@@ -186,8 +186,8 @@ function StdioReadOnly(props: {
       <div className="space-y-1">
         <p className="text-sm font-medium text-foreground">Server command</p>
         <p className="text-xs text-muted-foreground">
-          Stdio MCP sources cannot be edited. Remove and recreate the source with the updated
-          command.
+          Stdio MCP integrations cannot be edited. Remove and recreate the integration with the
+          updated command.
         </p>
       </div>
       <div className="flex items-center gap-3 rounded-md border border-border/60 bg-muted/40 px-3 py-2">
@@ -204,11 +204,14 @@ function StdioReadOnly(props: {
 
 // ---------------------------------------------------------------------------
 // Main component — the mcp plugin's section of the integration Edit sheet.
-// `sourceId` is the integration slug (v2).
+// `integrationId` is the integration slug (v2).
 // ---------------------------------------------------------------------------
 
-export default function EditMcpSource({ sourceId, onPendingChange }: EditSheetSectionProps) {
-  const slug = IntegrationSlug.make(sourceId);
+export default function EditMcpIntegration({
+  integrationId,
+  onPendingChange,
+}: EditSheetSectionProps) {
+  const slug = IntegrationSlug.make(integrationId);
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
 

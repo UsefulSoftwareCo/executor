@@ -2,11 +2,11 @@ import { lazy, type ComponentProps, type ComponentType } from "react";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { mcpPresets } from "../sdk/presets";
 
-const importAdd = () => import("./AddMcpSource");
-const importEditSheet = () => import("./EditMcpSource");
+const importAdd = () => import("./AddMcpIntegration");
+const importEditSheet = () => import("./EditMcpIntegration");
 const importAccounts = () => import("./McpAccountsPanel");
 
-const LazyAddMcpSource = lazy(importAdd);
+const LazyAddMcpIntegration = lazy(importAdd);
 const LazyEditMcpSheet = lazy(importEditSheet);
 const LazyMcpAccountsPanel = lazy(importAccounts);
 
@@ -14,7 +14,7 @@ type AddProps = ComponentProps<IntegrationPlugin["add"]>;
 
 export interface McpIntegrationPluginOptions {
   /**
-   * Enable the stdio transport in the add-source UI (tab + presets).
+   * Enable the stdio transport in the add-integration UI (tab + presets).
    *
    * Off by default — stdio is a high-risk transport on any server deployment
    * (see `dangerouslyAllowStdioMCP` on the server-side plugin). Only enable in
@@ -29,7 +29,7 @@ export const createMcpIntegrationPlugin = (
   const allowStdio = options?.allowStdio ?? false;
 
   const AddWithFlag: ComponentType<AddProps> = (props) => (
-    <LazyAddMcpSource {...props} allowStdio={allowStdio} />
+    <LazyAddMcpIntegration {...props} allowStdio={allowStdio} />
   );
 
   const presets = allowStdio

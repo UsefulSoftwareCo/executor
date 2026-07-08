@@ -28,7 +28,7 @@ export const microsoftGraphAdapter: SpecFormatAdapter = {
     ).pipe(
       Effect.map((graphSpec) => ({
         specText: graphSpec.specText,
-        sourceUrl: graphSpec.specUrl,
+        specUrl: graphSpec.specUrl,
         baseUrl: graphSpec.baseUrl,
         authenticationTemplate: graphSpec.authenticationTemplate,
         // Stream the full Graph source straight to persisted bindings. This is

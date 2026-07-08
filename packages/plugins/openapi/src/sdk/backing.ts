@@ -141,7 +141,7 @@ const openApiAuthToolFailure = (failure: {
   authToolFailure({
     code: failure.code as Parameters<typeof authToolFailure>[0]["code"],
     message: failure.message,
-    source: { id: failure.integration, scope: failure.owner },
+    integration: { id: failure.integration, scope: failure.owner },
     credential: {
       kind: failure.credentialKind,
       ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),

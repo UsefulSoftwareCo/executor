@@ -35,7 +35,7 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 import {
   addOpenApiTestConnection,
-  makeOpenApiHttpApiTestSourceConfig,
+  makeOpenApiHttpApiTestIntegrationConfig,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
@@ -118,7 +118,7 @@ const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(FailureApi, { slug: "f", baseUrl }),
+      makeOpenApiHttpApiTestIntegrationConfig(FailureApi, { slug: "f", baseUrl }),
     );
     yield* executor.connections.create({
       owner: "org",

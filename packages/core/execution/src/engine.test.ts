@@ -31,7 +31,7 @@ const succeedingExecutor: CodeExecutor<FakeRuntimeError> = {
 const emptyPlugin = definePlugin(() => ({
   id: "empty-test" as const,
   storage: () => ({}),
-  staticSources: () => [],
+  staticIntegrations: () => [],
 }));
 
 const makeExecutor = () => createExecutor(makeTestConfig({ plugins: [emptyPlugin()] as const }));

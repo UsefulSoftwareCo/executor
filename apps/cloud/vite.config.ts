@@ -66,7 +66,7 @@ export default defineConfig(({ command, mode }) => {
   }
 
   // Deps vite only discovers once a lazy-loaded React chunk actually renders
-  // (e.g. opening the MCP/OpenAPI "add source" flow). Discovering them mid-run
+  // (e.g. opening the MCP/OpenAPI "add integration" flow). Discovering them mid-run
   // forces a re-optimize + full program reload; in workerd (apps/cloud's SSR
   // worker) each reload stacks a new isolate's heap on top of the last one
   // without freeing it, so a handful of reloads exhausts the worker's heap

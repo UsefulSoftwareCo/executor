@@ -52,7 +52,7 @@ const EMPTY_INPUT_SCHEMA = Schema.toStandardSchemaV1(
 const elicitingTestPlugin = definePlugin(() => ({
   id: "eliciting-test" as const,
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "e2e",
       kind: "in-memory",

@@ -41,7 +41,7 @@ import { openApiPlugin } from "./plugin";
 import { type AuthenticationInput } from "./types";
 import {
   addOpenApiTestConnection,
-  makeOpenApiHttpApiTestSourceConfig,
+  makeOpenApiHttpApiTestIntegrationConfig,
   serveMutableOpenApiSpecTestServer,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
@@ -104,7 +104,7 @@ const ItemsGroup = HttpApiGroup.make("items")
 const TestApi = HttpApi.make("testApi").add(ItemsGroup);
 
 const testApiSpecText = () => {
-  const spec = makeOpenApiHttpApiTestSourceConfig(TestApi, {}).spec;
+  const spec = makeOpenApiHttpApiTestIntegrationConfig(TestApi, {}).spec;
   if (spec.kind === "blob") return spec.value;
   return spec.url;
 };

@@ -75,7 +75,7 @@ export const googleDiscoveryAdapter: SpecFormatAdapter = {
             );
       return {
         specText: conversion.specText,
-        sourceUrl: documents[0]?.discoveryUrl,
+        specUrl: documents[0]?.discoveryUrl,
         baseUrl: conversion.baseUrl,
         authenticationTemplate: conversion.authenticationTemplate,
         document,

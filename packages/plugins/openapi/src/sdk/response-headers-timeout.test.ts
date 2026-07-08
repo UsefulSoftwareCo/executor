@@ -13,7 +13,7 @@ import {
   ToolAddress,
 } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
-import { makeOpenApiHttpApiTestSourceConfig, unwrapInvocation } from "../testing";
+import { makeOpenApiHttpApiTestIntegrationConfig, unwrapInvocation } from "../testing";
 
 import { invokeWithLayer } from "./invoke";
 import { openApiPlugin } from "./plugin";
@@ -46,7 +46,7 @@ const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(TimeoutApi, { slug: "headers_timeout", baseUrl }),
+      makeOpenApiHttpApiTestIntegrationConfig(TimeoutApi, { slug: "headers_timeout", baseUrl }),
     );
     yield* executor.connections.create({
       owner: "org",

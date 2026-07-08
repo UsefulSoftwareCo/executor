@@ -18,7 +18,7 @@ export {
   defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
   searchTools,
-  listExecutorSources,
+  listExecutorIntegrations,
   describeTool,
   type ToolDiscoveryInput,
   type ToolDiscoveryProvider,

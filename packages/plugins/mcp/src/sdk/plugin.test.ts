@@ -624,7 +624,7 @@ describe("mcpPlugin", () => {
               retryable: false,
               details: {
                 category: "authentication",
-                source: { id: slug },
+                integration: { id: slug },
                 credential: { kind: "upstream", label: "main" },
                 upstream: { status },
               },

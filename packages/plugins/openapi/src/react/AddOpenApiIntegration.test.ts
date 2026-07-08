@@ -5,7 +5,7 @@ import {
   AddOpenApiHealthCheckSection,
   baseUrlFromSpecInput,
   openApiPreviewFailureMessage,
-} from "./AddOpenApiSource";
+} from "./AddOpenApiIntegration";
 
 const visibleText = (node: React.ReactNode): string => {
   if (node === null || node === undefined || typeof node === "boolean") return "";

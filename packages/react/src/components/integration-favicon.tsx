@@ -32,8 +32,8 @@ export function integrationFaviconFallbackUrl(
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`;
 }
 
-export function integrationLocalIconUrl(sourceId: string | undefined): string | null {
-  if (sourceId !== "executor") return null;
+export function integrationLocalIconUrl(integrationId: string | undefined): string | null {
+  if (integrationId !== "executor") return null;
   return "/favicon-32.png";
 }
 
@@ -125,12 +125,12 @@ const tokenVariants = (value: string | undefined): readonly string[] => {
   return [...tokens];
 };
 
-export function integrationInferredUrl(source: {
+export function integrationInferredUrl(integration: {
   readonly id: string;
   readonly name?: string;
 }): string | null {
   const hostPattern = /^[a-z0-9][a-z0-9.-]*\.(?:app|co|com|dev|io|net|org)(?:\/.*)?$/i;
-  const hostLike = [source.name, source.id.replaceAll("_", ".")]
+  const hostLike = [integration.name, integration.id.replaceAll("_", ".")]
     .filter((value): value is string => value != null && value.length > 0)
     .find((value) => hostPattern.test(value.trim()));
   if (hostLike) return `https://${hostLike.trim().replace(/^https?:\/\//i, "")}`;
@@ -138,15 +138,15 @@ export function integrationInferredUrl(source: {
   return null;
 }
 
-const tokenMatches = (sourceValue: string, presetValue: string): boolean =>
+const tokenMatches = (integrationValue: string, presetValue: string): boolean =>
   presetValue.length > 0 &&
-  sourceValue.length > 0 &&
-  (sourceValue === presetValue ||
-    sourceValue.includes(presetValue) ||
-    presetValue.includes(sourceValue));
+  integrationValue.length > 0 &&
+  (integrationValue === presetValue ||
+    integrationValue.includes(presetValue) ||
+    presetValue.includes(integrationValue));
 
 export function integrationPresetIconUrl(
-  source: {
+  integration: {
     readonly id: string;
     readonly kind: string;
     readonly name?: string;
@@ -154,25 +154,25 @@ export function integrationPresetIconUrl(
   },
   integrationPlugins: readonly IntegrationPlugin[],
 ): string | null {
-  const pluginKey = KIND_TO_PLUGIN_KEY[source.kind] ?? source.kind;
+  const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
   const plugin = integrationPlugins.find((p) => p.key === pluginKey);
   const presets = plugin?.presets ?? [];
-  const exactSlugIcon = presets.find((p) => p.defaultSlug === source.id)?.icon;
+  const exactSlugIcon = presets.find((p) => p.defaultSlug === integration.id)?.icon;
   if (exactSlugIcon) return exactSlugIcon;
 
-  const sourceUrl = normalizeUrl(source.url);
-  const sourceGoogleService = googleApiServiceFromUrl(source.url);
-  const sourceTokens = [...tokenVariants(source.id), ...tokenVariants(source.name)];
+  const integrationUrl = normalizeUrl(integration.url);
+  const integrationGoogleService = googleApiServiceFromUrl(integration.url);
+  const integrationTokens = [...tokenVariants(integration.id), ...tokenVariants(integration.name)];
 
   const preset = presets.find((p) => {
     const presetUrl = normalizeUrl(p.url);
     const presetGoogleService = googleApiServiceFromUrl(p.url);
     const presetTokens = [...tokenVariants(p.id), ...tokenVariants(p.name)];
     return (
-      (sourceUrl !== null && presetUrl === sourceUrl) ||
-      (sourceGoogleService !== null && presetGoogleService === sourceGoogleService) ||
-      sourceTokens.some((sourceToken) =>
-        presetTokens.some((presetToken) => tokenMatches(sourceToken, presetToken)),
+      (integrationUrl !== null && presetUrl === integrationUrl) ||
+      (integrationGoogleService !== null && presetGoogleService === integrationGoogleService) ||
+      integrationTokens.some((integrationToken) =>
+        presetTokens.some((presetToken) => tokenMatches(integrationToken, presetToken)),
       )
     );
   });
@@ -181,14 +181,14 @@ export function integrationPresetIconUrl(
 }
 
 // Resolution cascade for the rendered favicon: first non-null, non-failed of an
-// explicit preset icon, the bundled local icon for a known source id, the
-// integrations.sh logo proxy derived from the source URL, then the Google
-// favicon service as a last resort. The built-in executor source has no preset
-// icon and no URL, so it resolves ONLY through the sourceId branch: callers
-// that drop sourceId fall through to the neutral BoxIcon placeholder.
+// explicit preset icon, the bundled local icon for a known integration id, the
+// integrations.sh logo proxy derived from the integration URL, then the Google
+// favicon service as a last resort. The built-in executor integration has no preset
+// icon and no URL, so it resolves ONLY through the integrationId branch: callers
+// that drop integrationId fall through to the neutral BoxIcon placeholder.
 export function integrationFaviconSrc(args: {
   icon?: string | null;
-  sourceId?: string;
+  integrationId?: string;
   url?: string;
   size: number;
   failedSrcs?: readonly string[];
@@ -197,7 +197,7 @@ export function integrationFaviconSrc(args: {
   return (
     [
       args.icon ?? null,
-      integrationLocalIconUrl(args.sourceId),
+      integrationLocalIconUrl(args.integrationId),
       integrationFaviconUrl(args.url, args.size),
       integrationFaviconFallbackUrl(args.url, args.size),
     ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
@@ -206,17 +206,17 @@ export function integrationFaviconSrc(args: {
 
 export function IntegrationFavicon({
   icon,
-  sourceId,
+  integrationId,
   url,
   size = 16,
 }: {
   icon?: string | null;
-  sourceId?: string;
+  integrationId?: string;
   url?: string;
   size?: number;
 }) {
   const [failedSrcs, setFailedSrcs] = useState<readonly string[]>([]);
-  const src = integrationFaviconSrc({ icon, sourceId, url, size, failedSrcs });
+  const src = integrationFaviconSrc({ icon, integrationId, url, size, failedSrcs });
 
   if (!src) {
     return (

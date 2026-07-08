@@ -303,7 +303,7 @@ export {
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
   type IntegrationRecord,
-  type StaticSourceDecl,
+  type StaticIntegrationDecl,
   type StaticToolDecl,
   type StaticToolSchema,
   type StaticToolExecuteContext,

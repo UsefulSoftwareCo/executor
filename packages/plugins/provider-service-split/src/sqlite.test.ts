@@ -207,7 +207,7 @@ describe("providerServiceSplitDataMigration", () => {
       expect(integrations.rows[0]?.plugin_id).toBe("openapi");
       expect(parseJson(String(integrations.rows[0]?.config))).toMatchObject({
         specHash: "mono-hash",
-        sourceUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+        specUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
         specFormat: "google-discovery",
         family: "google",
       });

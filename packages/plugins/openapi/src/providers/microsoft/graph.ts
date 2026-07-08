@@ -86,7 +86,7 @@ export type MicrosoftGraphIntegrationConfig = OpenApiIntegrationConfig & {
 
 const MicrosoftGraphIntegrationConfigSchema = Schema.Struct({
   specHash: Schema.optional(Schema.String),
-  sourceUrl: Schema.optional(Schema.String),
+  specUrl: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -298,7 +298,7 @@ const validateSelectionUrls = (
     const specUrl = normalizeMicrosoftGraphSpecUrl(selection.specUrl, policy);
     if (!specUrl) {
       return yield* new OpenApiParseError({
-        message: "Microsoft Graph specUrl must point to the trusted Microsoft Graph OpenAPI source",
+        message: "Microsoft Graph specUrl must point to the trusted Microsoft Graph OpenAPI spec",
       });
     }
     const baseUrl = normalizeMicrosoftGraphBaseUrl(selection.baseUrl, policy);

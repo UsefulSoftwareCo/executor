@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
-// ConfigFileSink — best-effort write-back of source changes to executor.jsonc.
+// ConfigFileSink — best-effort write-back of integration changes to executor.jsonc.
 //
-// Plugins (openapi, graphql, mcp) call `sink.upsertSource` after their DB
+// Plugins (openapi, graphql, mcp) call `sink.upsertIntegration` after their DB
 // writes so the committable file stays in sync with runtime state. Errors
 // are logged and swallowed — a failed file write must never fail a DB
 // mutation, and the next successful mutation (or a boot-time sync) will
@@ -15,8 +15,8 @@ import { Effect } from "effect";
 import type { Layer } from "effect";
 import type { FileSystem } from "effect";
 
-import { SECRET_REF_PREFIX, type ConfigHeaderValue, type SourceConfig } from "./schema";
-import { addSourceToConfig, removeSourceFromConfig } from "./write";
+import { SECRET_REF_PREFIX, type ConfigHeaderValue, type IntegrationConfig } from "./schema";
+import { addIntegrationToConfig, removeIntegrationFromConfig } from "./write";
 
 // Translate a plugin-side header value (`{ secretId, prefix? }` for secret
 // refs) into the config file's `secret-public-ref:<id>` string form.
@@ -38,8 +38,8 @@ export const headersToConfigValues = (
 };
 
 export interface ConfigFileSink {
-  readonly upsertSource: (source: SourceConfig) => Effect.Effect<void>;
-  readonly removeSource: (namespace: string) => Effect.Effect<void>;
+  readonly upsertIntegration: (integration: IntegrationConfig) => Effect.Effect<void>;
+  readonly removeIntegration: (namespace: string) => Effect.Effect<void>;
 }
 
 export interface ConfigFileSinkOptions {
@@ -57,14 +57,14 @@ export const makeFileConfigSink = (options: ConfigFileSinkOptions): ConfigFileSi
   const { path, fsLayer, onError = defaultOnError } = options;
 
   return {
-    upsertSource: (source) =>
-      addSourceToConfig(path, source).pipe(
+    upsertIntegration: (integration) =>
+      addIntegrationToConfig(path, integration).pipe(
         Effect.provide(fsLayer),
         Effect.catch((err: unknown) => Effect.sync(() => onError("upsert", err))),
       ),
 
-    removeSource: (namespace) =>
-      removeSourceFromConfig(path, namespace).pipe(
+    removeIntegration: (namespace) =>
+      removeIntegrationFromConfig(path, namespace).pipe(
         Effect.provide(fsLayer),
         Effect.catch((err: unknown) => Effect.sync(() => onError("remove", err))),
       ),

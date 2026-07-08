@@ -42,7 +42,7 @@ const outcomeSummary = (outcome: UpdateOutcome): string => {
 };
 
 export default function UpdateSpecSection(props: EditSheetSectionProps) {
-  const slug = IntegrationSlug.make(props.sourceId);
+  const slug = IntegrationSlug.make(props.integrationId);
   const configResult = useAtomValue(openApiConfigAtom(slug));
   const doUpdate = useAtomSet(updateOpenApiSpec, { mode: "promiseExit" });
   const [refetchStaged, setRefetchStaged] = useState(false);
@@ -52,7 +52,7 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
   const config =
     AsyncResult.isSuccess(configResult) && configResult.value ? configResult.value : null;
 
-  const sourceUrl = config?.sourceUrl;
+  const specUrl = config?.specUrl;
 
   // The staged apply, rebuilt whenever the staged inputs change. Reported to
   // the sheet through a ref-stable callback so Save can run it.
@@ -95,7 +95,7 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
         </p>
       </div>
 
-      {sourceUrl ? (
+      {specUrl ? (
         <div className="space-y-2">
           <Label className="flex items-start gap-2 text-sm font-normal">
             <Checkbox
@@ -107,7 +107,7 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
             <span className="space-y-0.5">
               <span className="block">Re-fetch the spec on save</span>
               <span className="block break-all font-mono text-xs text-muted-foreground">
-                {sourceUrl}
+                {specUrl}
               </span>
             </span>
           </Label>

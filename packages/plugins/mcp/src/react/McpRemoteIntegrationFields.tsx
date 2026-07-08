@@ -22,7 +22,7 @@ import {
   type IntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 
-export type McpRemoteSourcePreview = {
+export type McpRemoteIntegrationPreview = {
   readonly name: string;
   readonly serverName: string | null;
   readonly connected: boolean;
@@ -31,7 +31,7 @@ export type McpRemoteSourcePreview = {
   readonly toolCount: number | null;
 };
 
-export function McpRemoteSourceFields(props: {
+export function McpRemoteIntegrationFields(props: {
   readonly url: string;
   readonly onUrlChange: (url: string) => void;
   readonly identity: IntegrationIdentity;
@@ -39,7 +39,7 @@ export function McpRemoteSourceFields(props: {
    *  `instructions` when the probe connected). */
   readonly description?: string;
   readonly onDescriptionChange?: (value: string) => void;
-  readonly preview: McpRemoteSourcePreview | null;
+  readonly preview: McpRemoteIntegrationPreview | null;
   readonly probing?: boolean;
   readonly error?: string | null;
   readonly onRetry?: () => void;

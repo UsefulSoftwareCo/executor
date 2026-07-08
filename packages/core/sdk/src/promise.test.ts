@@ -15,7 +15,7 @@ import { Effect, Schema } from "effect";
 const echoPlugin = definePlugin(() => ({
   id: "echo" as const,
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "echo.ctl",
       kind: "control" as const,
@@ -72,7 +72,7 @@ describe("promise/createExecutor", () => {
     const approvedPlugin = definePlugin(() => ({
       id: "ap" as const,
       storage: () => ({}),
-      staticSources: () => [
+      staticIntegrations: () => [
         {
           id: "ap.ctl",
           kind: "control" as const,

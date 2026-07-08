@@ -33,7 +33,7 @@ export const GOOGLE_PHOTOS_ICON =
 export const googleOpenApiBundlePreset: GooglePreset = {
   id: GOOGLE_BUNDLE_PRESET_ID,
   name: "Google",
-  summary: "Bundle Gmail, Calendar, Drive, Docs, and other Google APIs into one source.",
+  summary: "Bundle Gmail, Calendar, Drive, Docs, and other Google APIs into one integration.",
   icon: GOOGLE_G,
   featured: true,
 };

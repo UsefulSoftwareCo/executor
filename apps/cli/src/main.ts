@@ -162,7 +162,7 @@ import {
   buildDescribeToolCode,
   filterToolPathChildren,
   buildInvokeToolCode,
-  buildListSourcesCode,
+  buildListIntegrationsCode,
   buildSearchToolsCode,
   extractExecutionId,
   extractPausedInteraction,
@@ -2052,8 +2052,8 @@ const toolsSearchCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Search tools by natural-language query"));
 
-const toolsSourcesCommand = Command.make(
-  "sources",
+const toolsIntegrationsCommand = Command.make(
+  "integrations",
   {
     query: Options.string("query").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(50)),
@@ -2065,7 +2065,7 @@ const toolsSourcesCommand = Command.make(
     Effect.gen(function* () {
       applyScope(scope);
       const target = serverTargetFromOptions({ baseUrl, server });
-      const code = buildListSourcesCode({
+      const code = buildListIntegrationsCode({
         query: Option.getOrUndefined(query),
         limit,
       });
@@ -2077,7 +2077,7 @@ const toolsSourcesCommand = Command.make(
         outcome: result.outcome,
       });
     }),
-).pipe(Command.withDescription("List configured sources and tool counts"));
+).pipe(Command.withDescription("List configured integrations and tool counts"));
 
 const toolsDescribeCommand = Command.make(
   "describe",
@@ -2102,8 +2102,12 @@ const toolsDescribeCommand = Command.make(
 ).pipe(Command.withDescription("Describe a tool's TypeScript and JSON schema"));
 
 const toolsCommand = Command.make("tools").pipe(
-  Command.withSubcommands([toolsSearchCommand, toolsSourcesCommand, toolsDescribeCommand] as const),
-  Command.withDescription("Discover available tools and sources"),
+  Command.withSubcommands([
+    toolsSearchCommand,
+    toolsIntegrationsCommand,
+    toolsDescribeCommand,
+  ] as const),
+  Command.withDescription("Discover available tools and integrations"),
 );
 
 const profileConnectionInput = (input: {

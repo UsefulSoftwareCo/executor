@@ -180,7 +180,7 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
           pluginId: "openapi",
           config: {
             specHash: "stripehash",
-            sourceUrl: "https://stripe.example/openapi.json",
+            specUrl: "https://stripe.example/openapi.json",
           },
         }),
       );

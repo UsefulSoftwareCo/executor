@@ -313,7 +313,7 @@ describe("provider service split migration planner", () => {
 
     expect(planned?.config).toEqual({
       specHash: "mono-hash",
-      sourceUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+      specUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
       specFormat: "google-discovery",
       family: "google",
       authenticationTemplate: [
@@ -380,13 +380,13 @@ describe("provider service split migration planner", () => {
     const planned = plan.orgs[0]?.integrations[0];
 
     expect(planned?.config).toMatchObject({
-      sourceUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+      specUrl: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
       specFormat: "google-discovery",
       family: "google",
     });
-    expect(
-      (planned?.config as { readonly sourceUrl?: string } | undefined)?.sourceUrl,
-    ).not.toContain("oauth2");
+    expect((planned?.config as { readonly specUrl?: string } | undefined)?.specUrl).not.toContain(
+      "oauth2",
+    );
     expect(planned?.servingState.operationToolNames).toEqual(["calendar.events.list"]);
   });
 

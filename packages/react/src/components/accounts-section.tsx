@@ -397,7 +397,7 @@ export function AccountsSection(props: {
   // added widened the consent).
   //
   // Spec-derived oauth scopes are the full per-operation catalog union (e.g. an
-  // OpenAPI source like PostHog declares hundreds of scopes). Those are requested
+  // OpenAPI integration like PostHog declares hundreds of scopes). Those are requested
   // broadly but not individually required: a provider that narrows the grant to
   // the user's actual access is healthy, not in need of reconnect. So only treat
   // CUSTOM (user-configured) scopes as required here; never the spec catalog.

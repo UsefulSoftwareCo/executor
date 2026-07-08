@@ -151,7 +151,7 @@ const live = process.env.MCP_PROBE_LIVE === "1";
 // Run the full probe path (the function the React UI calls). The result
 // surfaces `requiresOAuth` / `supportsDynamicRegistration`, which is what
 // drives the OAuth popup vs. credentials-editor branches in
-// AddMcpSource. For OAuth-protected servers we want this to be `true`;
+// AddMcpIntegration. For OAuth-protected servers we want this to be `true`;
 // for API-key MCPs (Cubic) it should fail with the auth-required
 // message; for unauth public servers (Hugging Face, etc.) it should
 // succeed with `requiresOAuth: false` and a tool count.

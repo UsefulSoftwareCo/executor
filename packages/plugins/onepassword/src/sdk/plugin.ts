@@ -336,7 +336,7 @@ export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOption
 
     extension: (ctx) => makeOnePasswordExtension(ctx, timeoutMs, preferSdk),
 
-    staticSources: (self) => [
+    staticIntegrations: (self) => [
       {
         id: "onepassword",
         kind: "executor",

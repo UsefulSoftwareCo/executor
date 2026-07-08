@@ -22,7 +22,7 @@ const executor = await createExecutor({
 });
 
 // Public endpoint — no auth
-await executor.graphql.addSource({
+await executor.graphql.addIntegration({
   scope: executor.scopes[0]!.id,
   endpoint: "https://graphql.anilist.co",
   namespace: "anilist",
@@ -55,7 +55,7 @@ await executor.secrets.set({
   scope,
 });
 
-await executor.graphql.addSource({
+await executor.graphql.addIntegration({
   scope,
   endpoint: "https://api.github.com/graphql",
   namespace: "github",

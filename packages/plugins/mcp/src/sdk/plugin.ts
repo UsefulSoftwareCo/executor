@@ -299,7 +299,7 @@ const mcpInvocationAuthFailure = (input: {
       input.status === 403
         ? `MCP server rejected connection "${input.connection}" with HTTP 403. The credential may lack access or required scope; re-authenticate or update the connection before retrying this tool.`
         : `MCP server rejected connection "${input.connection}" with HTTP 401. Re-authenticate or update the connection before retrying this tool.`,
-    source: { id: input.integration },
+    integration: { id: input.integration },
     credential: { kind: "upstream", label: input.connection },
     status: input.status,
     upstream: { status: input.status },
@@ -312,7 +312,7 @@ const mcpInvocationOAuthReauthFailure = (input: {
   authToolFailure({
     code: "oauth_reauth_required",
     message: `OAuth connection "${input.connection}" requires reauthorization before retrying this MCP tool.`,
-    source: { id: input.integration },
+    integration: { id: input.integration },
     credential: { kind: "oauth", label: input.connection },
   });
 
@@ -1244,7 +1244,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               return authToolFailure({
                 code: "connection_value_missing",
                 message: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}. Re-create the connection with the required value(s).`,
-                source: { id: String(credential.integration) },
+                integration: { id: String(credential.integration) },
                 credential: { kind: "upstream", label: String(credential.connection) },
               });
             }
@@ -1335,7 +1335,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             authToolFailure({
               code: "connection_rejected",
               message: error.message,
-              source: { id: String(credential.integration) },
+              integration: { id: String(credential.integration) },
               credential: { kind: "upstream", label: String(credential.connection) },
             }),
           );
@@ -1518,7 +1518,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }),
     },
 
-    staticSources: (self) => [
+    staticIntegrations: (self) => [
       {
         id: "mcp",
         kind: "executor",

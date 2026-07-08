@@ -232,7 +232,8 @@ export function IntegrationEditSheet(props: {
           <SheetTitle>Edit integration</SheetTitle>
           <SheetDescription>
             The name is what people see; the description is agent-visible context — agents read it
-            when browsing sources and as fallback context on connections without one of their own.
+            when browsing integrations and as fallback context on connections without one of their
+            own.
           </SheetDescription>
         </SheetHeader>
 
@@ -275,7 +276,7 @@ export function IntegrationEditSheet(props: {
 
           {props.pluginSection ? (
             <Suspense fallback={null}>
-              <props.pluginSection sourceId={slug} onPendingChange={handlePendingChange} />
+              <props.pluginSection integrationId={slug} onPendingChange={handlePendingChange} />
             </Suspense>
           ) : null}
         </div>

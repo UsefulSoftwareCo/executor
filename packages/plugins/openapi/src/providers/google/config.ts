@@ -5,7 +5,7 @@ import type { Authentication } from "../../sdk/types";
 
 export const GoogleIntegrationConfigSchema = Schema.Struct({
   specHash: Schema.optional(Schema.String),
-  sourceUrl: Schema.optional(Schema.String),
+  specUrl: Schema.optional(Schema.String),
   googleDiscoveryUrls: Schema.optional(Schema.Array(Schema.String)),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),

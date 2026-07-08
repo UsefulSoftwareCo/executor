@@ -458,7 +458,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
               { id: slug, kind: integration.kind, name, url: integration.displayUrl },
               integrationPlugins,
             )}
-            sourceId={slug}
+            integrationId={slug}
             url={integration.displayUrl ?? integrationInferredUrl({ id: slug, name }) ?? undefined}
           />
           <CardStackEntryContent>
@@ -468,7 +468,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
           <CardStackEntryActions>
             {SummaryComponent && (
               <Suspense fallback={null}>
-                <SummaryComponent sourceId={slug} />
+                <SummaryComponent integrationId={slug} />
               </Suspense>
             )}
             <IntegrationHealthSummary integration={integration.slug} />

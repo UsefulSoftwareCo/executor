@@ -4,7 +4,7 @@
 // each rendered from its own credential input; the merge-append configureAuth
 // flow (a custom API key must never displace a detected OAuth method);
 // declaring a method on a server that advertises none; GraphQL's multi-method
-// add — and the EXTREME case end-to-end: a source declaring
+// add — and the EXTREME case end-to-end: an integration declaring
 // [oauth] [bearer header + team-id query] [bearer header] [query token],
 // one connection per credential method, every invocation asserted against
 // what a real recording MCP server received.
@@ -192,7 +192,7 @@ scenario(
 );
 
 scenario(
-  "Auth methods · a GraphQL source registers multiple auth methods at add time",
+  "Auth methods · a GraphQL integration registers multiple auth methods at add time",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -239,7 +239,7 @@ scenario(
 );
 
 // ---------------------------------------------------------------------------
-// THE EXTREME CASE — one source, four methods, three live connections, every
+// THE EXTREME CASE — one integration, four methods, three live connections, every
 // invocation asserted against what the server actually received:
 //   [oauth2]                              (declared; connect flow not exercised here)
 //   [bearer header + team-id query]      (TWO inputs on ONE method)
@@ -248,7 +248,7 @@ scenario(
 // ---------------------------------------------------------------------------
 
 scenario(
-  "Auth methods · one source mixes oauth, a 2-input header+query method, a bearer header, and a query token",
+  "Auth methods · one integration mixes oauth, a 2-input header+query method, a bearer header, and a query token",
   {},
   Effect.scoped(
     Effect.gen(function* () {

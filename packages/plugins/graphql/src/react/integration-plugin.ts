@@ -2,7 +2,7 @@ import { lazy } from "react";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { graphqlPresets } from "../sdk/presets";
 
-const importAdd = () => import("./AddGraphqlSource");
+const importAdd = () => import("./AddGraphqlIntegration");
 const importAccounts = () => import("./GraphqlAccountsPanel");
 
 // No `editSheet`: GraphQL has no plugin-specific configuration beyond auth

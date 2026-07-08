@@ -134,7 +134,7 @@ const IntegrationView = Schema.Struct({
 // deliberately NOT served: it's a multi-MB build artifact in the plugin blob
 // store, and no client reads it (the configure UI only touches the template).
 const OpenApiConfigView = Schema.Struct({
-  sourceUrl: Schema.optional(Schema.String),
+  specUrl: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),

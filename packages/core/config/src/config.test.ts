@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { ExecutorFileConfig } from "./schema";
 import { ConfigParseError, loadConfig } from "./load";
 import {
-  addSourceToConfig,
-  removeSourceFromConfig,
+  addIntegrationToConfig,
+  removeIntegrationFromConfig,
   writeConfig,
   addSecretToConfig,
   removeSecretFromConfig,
@@ -27,15 +27,15 @@ const withTmpDir = <A, E>(fn: (dir: string) => Effect.Effect<A, E, FileSystem.Fi
 
 describe("ExecutorFileConfig schema", () => {
   it("decodes a minimal config", () => {
-    const raw = { sources: [] };
+    const raw = { integrations: [] };
     const result = decodeExecutorFileConfig(raw);
-    expect(result.sources).toEqual([]);
+    expect(result.integrations).toEqual([]);
   });
 
-  it("decodes a full config with all source types", () => {
+  it("decodes a full config with all integration types", () => {
     const raw = {
       name: "test",
-      sources: [
+      integrations: [
         {
           kind: "openapi",
           spec: "https://example.com/openapi.json",
@@ -73,14 +73,14 @@ describe("ExecutorFileConfig schema", () => {
     };
 
     const result = decodeExecutorFileConfig(raw);
-    expect(result.sources).toHaveLength(4);
+    expect(result.integrations).toHaveLength(4);
     expect(result.name).toBe("test");
     expect(result.secrets!["my-token"]!.name).toBe("My Token");
   });
 
-  it("rejects invalid source kind", () => {
+  it("rejects invalid integration kind", () => {
     const raw = {
-      sources: [{ kind: "invalid", endpoint: "http://example.com" }],
+      integrations: [{ kind: "invalid", endpoint: "http://example.com" }],
     };
     expect(() => decodeExecutorFileConfig(raw)).toThrow();
   });
@@ -106,7 +106,7 @@ describe("loadConfig", () => {
           `{
   // This is a comment
   "name": "test",
-  "sources": [
+  "integrations": [
     {
       "kind": "openapi",
       "spec": "https://example.com/spec.json"
@@ -118,7 +118,7 @@ describe("loadConfig", () => {
         const result = yield* loadConfig(path);
         expect(result).not.toBeNull();
         expect(result!.name).toBe("test");
-        expect(result!.sources).toHaveLength(1);
+        expect(result!.integrations).toHaveLength(1);
       }),
     ),
   );
@@ -140,13 +140,13 @@ describe("loadConfig", () => {
 });
 
 describe("write operations", () => {
-  it.effect("addSourceToConfig creates file and adds source", () =>
+  it.effect("addIntegrationToConfig creates file and adds integration", () =>
     withTmpDir((dir) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = join(dir, "executor.jsonc");
 
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "openapi",
           spec: "https://example.com/spec.json",
           namespace: "example",
@@ -157,38 +157,38 @@ describe("write operations", () => {
         expect(content).toContain("example");
 
         const config = yield* loadConfig(path);
-        expect(config!.sources).toHaveLength(1);
-        expect(config!.sources![0]!.kind).toBe("openapi");
+        expect(config!.integrations).toHaveLength(1);
+        expect(config!.integrations![0]!.kind).toBe("openapi");
       }),
     ),
   );
 
-  it.effect("addSourceToConfig appends to existing sources", () =>
+  it.effect("addIntegrationToConfig appends to existing integrations", () =>
     withTmpDir((dir) =>
       Effect.gen(function* () {
         const path = join(dir, "executor.jsonc");
 
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "openapi",
           spec: "https://example.com/spec.json",
           namespace: "first",
         });
 
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "graphql",
           endpoint: "https://example.com/graphql",
           namespace: "second",
         });
 
         const config = yield* loadConfig(path);
-        expect(config!.sources).toHaveLength(2);
-        expect(config!.sources![0]!.kind).toBe("openapi");
-        expect(config!.sources![1]!.kind).toBe("graphql");
+        expect(config!.integrations).toHaveLength(2);
+        expect(config!.integrations![0]!.kind).toBe("openapi");
+        expect(config!.integrations![1]!.kind).toBe("graphql");
       }),
     ),
   );
 
-  it.effect("addSourceToConfig preserves comments", () =>
+  it.effect("addIntegrationToConfig preserves comments", () =>
     withTmpDir((dir) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -199,7 +199,7 @@ describe("write operations", () => {
           `{
   // My project config
   "name": "test",
-  "sources": [
+  "integrations": [
     {
       "kind": "openapi",
       "spec": "https://example.com/spec.json",
@@ -209,7 +209,7 @@ describe("write operations", () => {
 }`,
         );
 
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "graphql",
           endpoint: "https://example.com/graphql",
           namespace: "second",
@@ -222,19 +222,19 @@ describe("write operations", () => {
     ),
   );
 
-  it.effect("addSourceToConfig replaces existing source with same namespace", () =>
+  it.effect("addIntegrationToConfig replaces existing integration with same namespace", () =>
     withTmpDir((dir) =>
       Effect.gen(function* () {
         const path = join(dir, "executor.jsonc");
 
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "openapi",
           spec: "https://example.com/v1.json",
           namespace: "example",
         });
 
         // Add again with same namespace but different spec
-        yield* addSourceToConfig(path, {
+        yield* addIntegrationToConfig(path, {
           kind: "openapi",
           spec: "https://example.com/v2.json",
           namespace: "example",
@@ -242,19 +242,21 @@ describe("write operations", () => {
 
         const config = yield* loadConfig(path);
         // Should have 1, not 2
-        expect(config!.sources).toHaveLength(1);
-        expect((config!.sources![0] as { spec: string }).spec).toBe("https://example.com/v2.json");
+        expect(config!.integrations).toHaveLength(1);
+        expect((config!.integrations![0] as { spec: string }).spec).toBe(
+          "https://example.com/v2.json",
+        );
       }),
     ),
   );
 
-  it.effect("removeSourceFromConfig removes by namespace", () =>
+  it.effect("removeIntegrationFromConfig removes by namespace", () =>
     withTmpDir((dir) =>
       Effect.gen(function* () {
         const path = join(dir, "executor.jsonc");
 
         yield* writeConfig(path, {
-          sources: [
+          integrations: [
             {
               kind: "openapi",
               spec: "https://example.com/spec.json",
@@ -268,11 +270,11 @@ describe("write operations", () => {
           ],
         });
 
-        yield* removeSourceFromConfig(path, "remove-me");
+        yield* removeIntegrationFromConfig(path, "remove-me");
 
         const config = yield* loadConfig(path);
-        expect(config!.sources).toHaveLength(1);
-        expect(config!.sources![0]!.kind).toBe("openapi");
+        expect(config!.integrations).toHaveLength(1);
+        expect(config!.integrations![0]!.kind).toBe("openapi");
       }),
     ),
   );
@@ -282,7 +284,7 @@ describe("write operations", () => {
       Effect.gen(function* () {
         const path = join(dir, "executor.jsonc");
 
-        yield* writeConfig(path, { sources: [] });
+        yield* writeConfig(path, { integrations: [] });
 
         yield* addSecretToConfig(path, "my-token", {
           name: "My Token",

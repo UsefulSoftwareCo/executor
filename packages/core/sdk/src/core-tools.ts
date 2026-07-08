@@ -514,7 +514,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
   storage: () => ({}),
   extension: () => ({}),
 
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "coreTools",
       kind: "executor",

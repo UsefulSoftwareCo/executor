@@ -484,13 +484,13 @@ describe("migrateOpenApiSourceConfig", () => {
     });
     const config = r.config as {
       readonly spec?: string;
-      readonly sourceUrl?: string;
+      readonly specUrl?: string;
       readonly baseUrl?: string;
       readonly headers?: Record<string, string>;
       readonly authenticationTemplate?: unknown;
     };
     expect(config.spec).toBe("{openapi}");
-    expect(config.sourceUrl).toBe("https://api.example.com/openapi.json");
+    expect(config.specUrl).toBe("https://api.example.com/openapi.json");
     expect(config.baseUrl).toBe("https://api.example.com");
     // The literal header is static config; the credential header became a template.
     expect(config.headers).toEqual({ "User-Agent": "executor/1.0" });

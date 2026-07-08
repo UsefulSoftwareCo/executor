@@ -1095,7 +1095,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         Effect.succeed(
           makePausedResult(
             "exec_confirm",
-            FormElicitation.make({ message: "Confirm source add", requestedSchema: {} }),
+            FormElicitation.make({ message: "Confirm integration add", requestedSchema: {} }),
           ),
         ),
     });

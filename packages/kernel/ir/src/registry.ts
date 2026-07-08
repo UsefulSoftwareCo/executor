@@ -4,7 +4,7 @@ import type { JsonSchema } from "effect/JsonSchema";
 export const ToolRegistration = Schema.Struct({
   path: Schema.String,
   description: Schema.optional(Schema.String),
-  sourceId: Schema.String,
+  integrationId: Schema.String,
   input: Schema.optional(Schema.String),
   output: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
@@ -21,7 +21,7 @@ export type SerializedCatalog = typeof SerializedCatalog.Type;
 export interface LiveToolRegistration {
   readonly path: string;
   readonly description?: string;
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly input?: Schema.Top;
   readonly output?: Schema.Top;
   readonly error?: Schema.Top;

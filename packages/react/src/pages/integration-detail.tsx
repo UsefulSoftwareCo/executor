@@ -433,7 +433,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
             {editPlugin?.accounts ? (
               <Suspense fallback={<AccountsSkeleton />}>
                 <editPlugin.accounts
-                  sourceId={namespace}
+                  integrationId={namespace}
                   integrationName={integrationData?.name || namespace}
                   accountHandoff={accountHandoff}
                 />

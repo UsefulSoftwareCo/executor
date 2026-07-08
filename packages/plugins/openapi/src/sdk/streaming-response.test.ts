@@ -13,7 +13,7 @@ import {
   ToolAddress,
 } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
-import { makeOpenApiHttpApiTestSourceConfig, unwrapInvocation } from "../testing";
+import { makeOpenApiHttpApiTestIntegrationConfig, unwrapInvocation } from "../testing";
 
 import { collectStreamingBody, STREAM_MAX_BYTES } from "./invoke";
 import { openApiPlugin } from "./plugin";
@@ -37,7 +37,7 @@ const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(StreamingApi, { slug: "streaming", baseUrl }),
+      makeOpenApiHttpApiTestIntegrationConfig(StreamingApi, { slug: "streaming", baseUrl }),
     );
     yield* executor.connections.create({
       owner: "org",

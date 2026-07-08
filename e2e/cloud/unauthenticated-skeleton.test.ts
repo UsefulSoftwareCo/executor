@@ -33,7 +33,7 @@ scenario(
 
       await step("Open the cloud root while signed out → redirected to /login", async () => {
         await page.goto("/", { waitUntil: "commit" });
-        await page.getByText("Sign in to manage your tools and sources").waitFor();
+        await page.getByText("Sign in to manage your tools and integrations").waitFor();
       });
 
       // Snapshot DURING the /account/me window — where the skeleton used to be.
@@ -41,7 +41,9 @@ scenario(
         url: new URL(page.url()).pathname,
         appShellSkeletons: await page.locator('[data-slot="skeleton"]').count(),
         sidebarShown: await page.locator("aside").first().isVisible(),
-        loginShown: await page.getByText("Sign in to manage your tools and sources").isVisible(),
+        loginShown: await page
+          .getByText("Sign in to manage your tools and integrations")
+          .isVisible(),
       };
 
       expect(

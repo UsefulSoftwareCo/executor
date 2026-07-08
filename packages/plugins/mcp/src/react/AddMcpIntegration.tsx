@@ -36,7 +36,7 @@ import {
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
-import { McpRemoteSourceFields } from "./McpRemoteSourceFields";
+import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
@@ -161,7 +161,7 @@ function reducer(state: State, action: Action): State {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function AddMcpSource(props: {
+export default function AddMcpIntegration(props: {
   onComplete: (slug?: string) => void;
   onCancel: () => void;
   initialUrl?: string;
@@ -418,7 +418,7 @@ export default function AddMcpSource(props: {
 
       {transport === "remote" ? (
         <>
-          <McpRemoteSourceFields
+          <McpRemoteIntegrationFields
             url={state.url}
             onUrlChange={(url) => dispatch({ type: "set-url", url })}
             identity={remoteIdentity}

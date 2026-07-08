@@ -1,11 +1,11 @@
 export {
   ExecutorFileConfig,
   PluginConfig,
-  SourceConfig,
-  OpenApiSourceConfig,
-  GraphqlSourceConfig,
-  McpRemoteSourceConfig,
-  McpStdioSourceConfig,
+  IntegrationConfig,
+  OpenApiIntegrationConfig,
+  GraphqlIntegrationConfig,
+  McpRemoteIntegrationConfig,
+  McpStdioIntegrationConfig,
   McpAuthConfig,
   SecretMetadata,
   ConfigHeaderValue,
@@ -17,8 +17,8 @@ export { loadPluginsFromJsonc } from "./load-plugins";
 export type { LoadPluginsFromJsoncOptions } from "./load-plugins";
 
 export {
-  addSourceToConfig,
-  removeSourceFromConfig,
+  addIntegrationToConfig,
+  removeIntegrationFromConfig,
   writeConfig,
   addSecretToConfig,
   removeSecretFromConfig,

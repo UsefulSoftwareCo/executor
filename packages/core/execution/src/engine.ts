@@ -15,7 +15,7 @@ import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-
 import {
   defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
-  listExecutorSources,
+  listExecutorIntegrations,
   describeTool,
   type ToolDiscoveryProvider,
 } from "./tool-invoker";
@@ -298,12 +298,12 @@ const makeFullInvoker = (
             }),
           );
       }
-      if (path === "executor.sources.list") {
+      if (path === "executor.integrations.list") {
         if (args !== undefined && !isRecord(args)) {
           return Effect.fail(
             new ExecutionToolError({
               message:
-                "tools.executor.sources.list expects an object: { query?: string; limit?: number; offset?: number }",
+                "tools.executor.integrations.list expects an object: { query?: string; limit?: number; offset?: number }",
             }),
           );
         }
@@ -311,14 +311,14 @@ const makeFullInvoker = (
         if (isRecord(args) && args.query !== undefined && typeof args.query !== "string") {
           return Effect.fail(
             new ExecutionToolError({
-              message: "tools.executor.sources.list query must be a string when provided",
+              message: "tools.executor.integrations.list query must be a string when provided",
             }),
           );
         }
 
         const limit = readOptionalLimit(
           isRecord(args) ? args.limit : undefined,
-          "tools.executor.sources.list",
+          "tools.executor.integrations.list",
         );
         if (Predicate.isTagged(limit, "ExecutionToolError")) {
           return Effect.fail(limit);
@@ -326,13 +326,13 @@ const makeFullInvoker = (
 
         const offset = readOptionalOffset(
           isRecord(args) ? args.offset : undefined,
-          "tools.executor.sources.list",
+          "tools.executor.integrations.list",
         );
         if (Predicate.isTagged(offset, "ExecutionToolError")) {
           return Effect.fail(offset);
         }
 
-        return listExecutorSources(executor, {
+        return listExecutorIntegrations(executor, {
           query: isRecord(args) && typeof args.query === "string" ? args.query : undefined,
           limit,
           offset,

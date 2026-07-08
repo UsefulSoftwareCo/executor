@@ -21,9 +21,9 @@ set its policy once, and every agent shares it over MCP. Your integrations,
 auth, and policies live in one place instead of being scattered across each
 client.
 
-- **Any source.** First-party support for MCP servers, OpenAPI, GraphQL, and
+- **Any integration.** First-party support for MCP servers, OpenAPI, GraphQL, and
   Google Discovery. If you can describe it with a JSON schema, it can be an
-  integration. The plugin system is open to any source type.
+  integration. The plugin system is open to any integration type.
 - **One catalog, every agent.** Anything MCP-compatible connects to the same
   set of tools.
 - **Governed by policy.** Each tool is allowed, gated behind approval, or
@@ -100,12 +100,12 @@ appear.
 
 ## Add an integration
 
-From the web UI, click **Add Source**, paste an OpenAPI, GraphQL, or MCP URL,
+From the web UI, click **Add Integration**, paste an OpenAPI, GraphQL, or MCP URL,
 and Executor detects the type, indexes the tools, and handles auth. Or add one
 from the CLI:
 
 ```bash
-executor call executor openapi addSource '{
+executor call executor openapi addIntegration '{
   "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
   "namespace": "petstore",
   "baseUrl": "https://petstore3.swagger.io/api/v3"
@@ -113,7 +113,7 @@ executor call executor openapi addSource '{
 ```
 
 Use `baseUrl` when the OpenAPI document has relative `servers` entries (for
-example `"/api/v3"`). Confirm it is live with `executor tools sources`.
+example `"/api/v3"`). Confirm it is live with `executor tools integrations`.
 
 ## Using tools
 
@@ -169,7 +169,7 @@ executor call <path...> --help      # browse namespaces/resources/methods
 executor call <path...> --help --match "<text>" --limit <n> # narrow huge namespaces
 executor resume --execution-id <id> # resume paused execution
 executor tools search "<query>"     # search tools by intent
-executor tools sources              # list configured sources + tool counts
+executor tools integrations         # list configured integrations + tool counts
 executor tools describe <path>      # show tool TypeScript/JSON schema
 ```
 
@@ -190,7 +190,7 @@ apps/
 packages/
   core/            contracts, plugin wiring, scopes, policies, SDK, API, CLI core
   kernel/          execution runtimes (QuickJS, Deno subprocess, dynamic worker)
-  plugins/         source and provider plugins (openapi, graphql, mcp, google,
+  plugins/         integration and provider plugins (openapi, graphql, mcp, google,
                    microsoft, 1password, keychain, encrypted/file secrets, ...)
   hosts/           host adapters (MCP surface, Cloudflare)
   react/           shared React UI

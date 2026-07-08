@@ -68,13 +68,13 @@ describe("createPluginAtomClient", () => {
   });
 
   it("can apply dynamic server connection URL and auth to plugin requests", () => {
-    const request = HttpClientRequest.get("/graphql/sources");
+    const request = HttpClientRequest.get("/graphql/integrations");
     const transformed = applyPluginAtomClientRequestTransform(request, {
       baseUrl: () => "https://executor.example/api",
       authorizationHeader: () => "Bearer key_123",
     });
 
-    expect(transformed.url).toBe("https://executor.example/api/graphql/sources");
+    expect(transformed.url).toBe("https://executor.example/api/graphql/integrations");
     expect(transformed.headers.authorization).toBe("Bearer key_123");
   });
 

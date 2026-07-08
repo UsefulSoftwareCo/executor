@@ -71,7 +71,7 @@ const PingGroup = HttpApiGroup.make("default", { topLevel: true }).add(
   HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
 );
 
-const MissingAuthSourceApi = HttpApi.make("localAuthFailureSource").add(PingGroup);
+const MissingAuthIntegrationApi = HttpApi.make("localAuthFailureIntegration").add(PingGroup);
 
 const TestApi = addGroup(OpenApiGroup);
 type TestApiShape =
@@ -230,7 +230,7 @@ describe("local auth tool failures", () => {
       yield* run((client) =>
         client.openapi.addSpec({
           payload: {
-            ...makeOpenApiHttpApiTestAddSpecPayload(MissingAuthSourceApi, {
+            ...makeOpenApiHttpApiTestAddSpecPayload(MissingAuthIntegrationApi, {
               slug: integration,
               authenticationTemplate: [
                 {

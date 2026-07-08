@@ -24,7 +24,7 @@ import {
 } from "@executor-js/react/lib/integration-add";
 
 import { createGraphqlIntegrationOptimistic } from "./atoms";
-import { GraphqlSourceFields } from "./GraphqlSourceFields";
+import { GraphqlIntegrationFields } from "./GraphqlIntegrationFields";
 import { graphqlAuthMethodInputsFromPlacements } from "./auth-method-config";
 import type { GraphqlAuthMethodInput } from "../sdk/types";
 
@@ -38,7 +38,7 @@ import type { GraphqlAuthMethodInput } from "../sdk/types";
 // — a fresh [] every render would re-seed the list each render).
 const NO_SEEDS: readonly AuthMethodSeed[] = [];
 
-export default function AddGraphqlSource(props: {
+export default function AddGraphqlIntegration(props: {
   onComplete: (slug?: string) => void;
   onCancel: () => void;
   initialUrl?: string;
@@ -93,7 +93,7 @@ export default function AddGraphqlSource(props: {
 
   const canAdd = endpoint.trim().length > 0 && apiKeyComplete && !adding && !slugAlreadyExists;
 
-  const sourceIdentity = useCallback(() => {
+  const integrationIdentity = useCallback(() => {
     const trimmedEndpoint = endpoint.trim();
     const slug = resolvedSlug;
     const displayName =
@@ -104,7 +104,7 @@ export default function AddGraphqlSource(props: {
   const handleAdd = async (): Promise<void> => {
     setAdding(true);
     setAddError(null);
-    const { trimmedEndpoint, slug, displayName } = sourceIdentity();
+    const { trimmedEndpoint, slug, displayName } = integrationIdentity();
 
     const integrationExit = await doAddIntegration({
       payload: {
@@ -119,7 +119,7 @@ export default function AddGraphqlSource(props: {
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(integrationExit)) {
-      setAddError(addIntegrationErrorMessage(integrationExit, slug, "Failed to add source"));
+      setAddError(addIntegrationErrorMessage(integrationExit, slug, "Failed to add integration"));
       setAdding(false);
       return;
     }
@@ -132,7 +132,7 @@ export default function AddGraphqlSource(props: {
     <div className="flex flex-1 flex-col gap-6">
       <h1 className="text-xl font-semibold text-foreground">Add GraphQL integration</h1>
 
-      <GraphqlSourceFields
+      <GraphqlIntegrationFields
         endpoint={endpoint}
         onEndpointChange={setEndpoint}
         identity={identity}

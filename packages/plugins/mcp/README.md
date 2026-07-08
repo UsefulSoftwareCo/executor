@@ -1,6 +1,6 @@
 # @executor-js/plugin-mcp
 
-Register [Model Context Protocol](https://modelcontextprotocol.io) servers as tool sources for an executor. Supports both stdio-launched servers and remote (HTTP) servers, with optional OAuth.
+Register [Model Context Protocol](https://modelcontextprotocol.io) servers as tool integrations for an executor. Supports both stdio-launched servers and remote (HTTP) servers, with optional OAuth.
 
 ## Install
 
@@ -18,7 +18,7 @@ import { mcpPlugin } from "@executor-js/plugin-mcp";
 
 const executor = await createExecutor({
   onElicitation: "accept-all",
-  // Stdio sources spawn a local subprocess and inherit `process.env` —
+  // Stdio integrations spawn a local subprocess and inherit `process.env` —
   // only enable for trusted single-user contexts.
   plugins: [mcpPlugin({ dangerouslyAllowStdioMCP: true })] as const,
 });
@@ -26,7 +26,7 @@ const executor = await createExecutor({
 const scope = executor.scopes[0]!.id;
 
 // Remote MCP server
-await executor.mcp.addSource({
+await executor.mcp.addIntegration({
   scope,
   transport: "remote",
   name: "Context7",
@@ -34,7 +34,7 @@ await executor.mcp.addSource({
 });
 
 // Stdio MCP server (requires `dangerouslyAllowStdioMCP: true` above)
-await executor.mcp.addSource({
+await executor.mcp.addIntegration({
   scope,
   transport: "stdio",
   name: "My Server",

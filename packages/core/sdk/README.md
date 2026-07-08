@@ -1,6 +1,6 @@
 # @executor-js/sdk
 
-A TypeScript SDK for building executors that wire together tool sources, secrets, and policies across MCP, OpenAPI, GraphQL, and custom plugins.
+A TypeScript SDK for building executors that wire together integrations, secrets, and policies across MCP, OpenAPI, GraphQL, and custom plugins.
 
 The default surface is `Promise`-based — plugins are built on [Effect](https://effect.website/) under the hood, but consumers never have to touch it.
 
@@ -132,7 +132,7 @@ The same pattern is what every shipped `@executor-js/plugin-*` package does inte
 
 These plugin packages are published from the monorepo:
 
-- [`@executor-js/plugin-mcp`](https://www.npmjs.com/package/@executor-js/plugin-mcp) — Model Context Protocol sources (stdio + remote)
+- [`@executor-js/plugin-mcp`](https://www.npmjs.com/package/@executor-js/plugin-mcp) — Model Context Protocol integrations (stdio + remote)
 - [`@executor-js/plugin-openapi`](https://www.npmjs.com/package/@executor-js/plugin-openapi) — OpenAPI specs and Google Discovery documents as tools
 - [`@executor-js/plugin-graphql`](https://www.npmjs.com/package/@executor-js/plugin-graphql) — GraphQL endpoints as tools
 - [`@executor-js/plugin-file-secrets`](https://www.npmjs.com/package/@executor-js/plugin-file-secrets) — file-backed secret store
@@ -161,7 +161,7 @@ const value = await executor.secrets.get("github-token");
 const refs = await executor.secrets.list();
 ```
 
-Plugins that need a token — HTTP-backed sources, OAuth flows, etc. — accept a secret id at the source-config layer and resolve through the executor, so token strings never live in your config files.
+Plugins that need a token — HTTP-backed integrations, OAuth flows, etc. — accept a secret id at the integration-config layer and resolve through the executor, so token strings never live in your config files.
 
 ## Status
 

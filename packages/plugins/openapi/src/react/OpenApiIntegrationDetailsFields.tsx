@@ -23,7 +23,7 @@ import {
  *  URL; pasted document content gets a multi-line editor instead. */
 const isUrlInput = (value: string): boolean => URL.canParse(value.trim());
 
-export function OpenApiSourceDetailsFields(props: {
+export function OpenApiIntegrationDetailsFields(props: {
   readonly title: string;
   readonly subtitle?: string;
   readonly identity: IntegrationIdentity;

@@ -34,7 +34,7 @@ class FakeOpenApiInvocationError extends Data.TaggedError("OpenApiInvocationErro
 const leakyPlugin = definePlugin(() => ({
   id: "leaky-test" as const,
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "leaky",
       kind: "in-memory",

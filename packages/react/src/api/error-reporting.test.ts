@@ -18,14 +18,14 @@ describe("frontend error reporting", () => {
   });
 
   it("extracts stable messages from Effect exits", () => {
-    const exit = Exit.fail({ message: "Could not update source" });
+    const exit = Exit.fail({ message: "Could not update integration" });
 
-    expect(messageFromExit(exit, "Fallback")).toBe("Could not update source");
+    expect(messageFromExit(exit, "Fallback")).toBe("Could not update integration");
     expect(messageFromExit(Exit.fail({ reason: "unknown" }), "Fallback")).toBe("Fallback");
   });
 
   it("reports failed exits with the provided context", () => {
-    const exit = Exit.fail({ message: "Could not update source" });
+    const exit = Exit.fail({ message: "Could not update integration" });
     const calls: Array<{ error: unknown; context: FrontendErrorContext }> = [];
 
     reportExitFailure(
@@ -34,15 +34,15 @@ describe("frontend error reporting", () => {
       },
       exit,
       {
-        surface: "sources",
+        surface: "integrations",
         action: "update",
-        message: "Could not update source",
+        message: "Could not update integration",
       },
     );
 
     expect(calls).toHaveLength(1);
     expect(Cause.isCause(calls[0]!.error)).toBe(true);
-    expect(calls[0]!.context.surface).toBe("sources");
+    expect(calls[0]!.context.surface).toBe("integrations");
     expect(calls[0]!.context.action).toBe("update");
   });
 });

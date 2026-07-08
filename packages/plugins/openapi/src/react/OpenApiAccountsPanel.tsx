@@ -51,12 +51,12 @@ const NO_AUTH_METHOD: AuthMethod = {
 // ---------------------------------------------------------------------------
 
 export default function OpenApiAccountsPanel(props: {
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly integrationName: string;
   readonly accountHandoff?: IntegrationAccountHandoff | null;
 }) {
-  const { sourceId, integrationName, accountHandoff } = props;
-  const slug = IntegrationSlug.make(sourceId);
+  const { integrationId, integrationName, accountHandoff } = props;
+  const slug = IntegrationSlug.make(integrationId);
   const configResult = useAtomValue(openApiConfigAtom(slug));
   const doConfigure = useAtomSet(openapiConfigure, { mode: "promiseExit" });
 

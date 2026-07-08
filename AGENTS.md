@@ -65,7 +65,7 @@ a given Git URL into `.reference` and pull latest before using it.
 
 ## Package Roles
 
-- `packages/core/sdk`: core contracts, plugin wiring, scopes, sources, secrets,
+- `packages/core/sdk`: core contracts, plugin wiring, scopes, integrations, secrets,
   policies, fixtures. `@executor-js/sdk/http-auth` carries the shared auth-method
   vocabulary the HTTP protocol plugins compose (core never imports it, keeping it
   carrier-agnostic).

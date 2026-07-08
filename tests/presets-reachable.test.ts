@@ -176,7 +176,7 @@ describe("public preset URLs are detected by the correct plugin", () => {
       () =>
         Effect.gen(function* () {
           const executor = yield* makeExecutor();
-          const results = yield* executor.sources.detect(preset.url);
+          const results = yield* executor.integrations.detect(preset.url);
 
           expect(
             results.length,

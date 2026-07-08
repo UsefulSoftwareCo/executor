@@ -44,7 +44,7 @@ import {
   openApiWireAuthInput,
 } from "./auth-method-config";
 import { addOpenApiSpec, previewOpenApiSpec } from "./atoms";
-import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
+import { OpenApiIntegrationDetailsFields } from "./OpenApiIntegrationDetailsFields";
 import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
@@ -142,7 +142,7 @@ export function AddOpenApiHealthCheckSection(props: {
 // flow no longer creates a connection.
 // ---------------------------------------------------------------------------
 
-export default function AddOpenApiSource(props: {
+export default function AddOpenApiIntegration(props: {
   onComplete: (slug?: string) => void;
   onCancel: () => void;
   initialUrl?: string;
@@ -222,13 +222,15 @@ export default function AddOpenApiSource(props: {
     )?.icon ?? null;
 
   const resolvedBaseUrl = baseUrl.trim();
-  const resolvedSourceId =
+  const resolvedIntegrationId =
     initialPreset?.defaultSlug ||
     slugifyNamespace(identity.namespace) ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const resolvedDisplayName =
     identity.name.trim() ||
-    (preview ? Option.getOrElse(preview.title, () => resolvedSourceId) : resolvedSourceId);
+    (preview
+      ? Option.getOrElse(preview.title, () => resolvedIntegrationId)
+      : resolvedIntegrationId);
   const resolvedDescription =
     descriptionDraft ?? (preview ? Option.getOrElse(preview.description, () => "") : "");
 
@@ -324,7 +326,7 @@ export default function AddOpenApiSource(props: {
   // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
   // whose slug already exists clobbers the existing one's connections/policies,
   // so the API blocks it. Surface that here from the tenant-scoped catalog list.
-  const slugAlreadyExists = useSlugAlreadyExists(resolvedSourceId);
+  const slugAlreadyExists = useSlugAlreadyExists(resolvedIntegrationId);
 
   // The base URL is optional when the spec declares servers (resolved per call);
   // required only when it doesn't. A drafted health check must have its required
@@ -364,7 +366,7 @@ export default function AddOpenApiSource(props: {
     const exit = await doAdd({
       payload: {
         spec: specInputForAdd(specUrl),
-        slug: resolvedSourceId,
+        slug: resolvedIntegrationId,
         name: resolvedDisplayName,
         ...(resolvedDescription.trim().length > 0
           ? { description: resolvedDescription.trim() }
@@ -383,14 +385,16 @@ export default function AddOpenApiSource(props: {
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(exit)) {
-      setAddError(addIntegrationErrorMessage(exit, resolvedSourceId, "Failed to add integration"));
+      setAddError(
+        addIntegrationErrorMessage(exit, resolvedIntegrationId, "Failed to add integration"),
+      );
       return null;
     }
     return exit.value.slug;
   }, [
     specUrl,
     doAdd,
-    resolvedSourceId,
+    resolvedIntegrationId,
     resolvedDisplayName,
     resolvedDescription,
     resolvedBaseUrl,
@@ -499,7 +503,7 @@ export default function AddOpenApiSource(props: {
       ) : null}
 
       {preview ? (
-        <OpenApiSourceDetailsFields
+        <OpenApiIntegrationDetailsFields
           title={Option.getOrElse(preview.title, () => "API")}
           subtitle={`${Option.getOrElse(preview.version, () => "")}${
             Option.isSome(preview.version) ? " · " : ""
@@ -558,7 +562,9 @@ export default function AddOpenApiSource(props: {
         />
       ) : null}
 
-      {preview && slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
+      {preview && slugAlreadyExists && !adding && (
+        <SlugCollisionAlert slug={resolvedIntegrationId} />
+      )}
 
       {addError && <FormErrorAlert message={addError} />}
 
