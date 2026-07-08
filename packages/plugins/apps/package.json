@@ -1,0 +1,44 @@
+{
+  "name": "@executor-js/plugin-apps",
+  "version": "0.1.0",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/apps",
+  "bugs": {
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
+    "directory": "packages/plugins/apps"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./src/api.ts",
+    "./authoring": "./src/authoring.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*",
+    "esbuild": "^0.27.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "effect": "catalog:",
+    "tsup": "catalog:",
+    "vitest": "catalog:"
+  }
+}
