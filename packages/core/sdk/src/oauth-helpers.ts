@@ -470,7 +470,9 @@ const stringClaim = (
   key: string,
 ): string | undefined => {
   const value = claims[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 };
 
 const decodeJwtPayload = (token: string): Readonly<Record<string, unknown>> | null => {
@@ -479,7 +481,12 @@ const decodeJwtPayload = (token: string): Readonly<Record<string, unknown>> | nu
   if (!/^[A-Za-z0-9_-]+$/.test(payload) || payload.length % 4 === 1) return null;
   const base64 = payload.replaceAll("-", "+").replaceAll("_", "/");
   const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
-  const decoded = decodeJwtClaims(globalThis.atob(padded));
+  // atob yields latin1 code units; JWT payloads are UTF-8 bytes, so re-decode
+  // them properly or non-ASCII claim values (accented emails, names) garble.
+  const utf8 = new TextDecoder().decode(
+    Uint8Array.from(globalThis.atob(padded), (char) => char.charCodeAt(0)),
+  );
+  const decoded = decodeJwtClaims(utf8);
   return Option.isSome(decoded) ? decoded.value : null;
 };
 

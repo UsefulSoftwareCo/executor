@@ -211,12 +211,28 @@ const OAUTH_SCOPE_ALIASES: Readonly<Record<string, string>> = {
 
 const informationalOAuthScopes = new Set(["openid", "email", "profile", "offline_access"]);
 
-const canonicalOAuthScope = (scope: string): string => OAUTH_SCOPE_ALIASES[scope] ?? scope;
+/** Canonicalize a scope for granted-vs-requested comparison. Microsoft's token
+ *  endpoint returns Graph scopes fully qualified
+ *  (`https://graph.microsoft.com/Mail.ReadWrite`) even when the request used
+ *  the short form, so resource-URI prefixes are stripped down to the scope's
+ *  final path segment before comparing. */
+const canonicalOAuthScope = (scope: string): string => {
+  const aliased = OAUTH_SCOPE_ALIASES[scope];
+  if (aliased) return aliased;
+  if (/^https?:\/\/graph\.microsoft\.(com|us|de)\//i.test(scope)) {
+    return scope.slice(scope.lastIndexOf("/") + 1);
+  }
+  return scope;
+};
+
+/** `.default` is a request-time meta-scope (Microsoft expands it server-side
+ *  and never echoes it in the granted scope), so it can never be "missing". */
+const isMetaOAuthScope = (scope: string): boolean => scope.toLowerCase().endsWith("/.default");
 
 const normalizedOAuthScopeSet = (scopes: readonly string[]): ReadonlySet<string> =>
   new Set(scopes.map((scope) => canonicalOAuthScope(scope.trim())).filter(Boolean));
 
-const missingGrantedOAuthScopes = (
+export const missingGrantedOAuthScopes = (
   requestedScopes: readonly string[],
   recordedScope: string | null,
 ): readonly string[] => {
@@ -224,7 +240,9 @@ const missingGrantedOAuthScopes = (
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of requestedScopes) {
-    const scope = canonicalOAuthScope(raw.trim());
+    const trimmed = raw.trim();
+    if (isMetaOAuthScope(trimmed)) continue;
+    const scope = canonicalOAuthScope(trimmed);
     if (scope.length === 0 || informationalOAuthScopes.has(scope) || seen.has(scope)) continue;
     seen.add(scope);
     if (!granted.has(scope)) out.push(scope);

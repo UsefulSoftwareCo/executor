@@ -12,6 +12,7 @@ import {
 } from "./ids";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
+import { missingGrantedOAuthScopes } from "./oauth-service";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
@@ -1176,4 +1177,46 @@ describe("oauth.complete regional token-endpoint rebind (Datadog multi-site)", (
       }),
     ),
   );
+});
+
+describe("missingGrantedOAuthScopes canonicalization", () => {
+  it("treats Microsoft fully-qualified granted scopes as covering short-form requests", () => {
+    const missing = missingGrantedOAuthScopes(
+      [
+        "offline_access",
+        "User.Read",
+        "https://graph.microsoft.com/.default",
+        "Mail.ReadWrite",
+        "Mail.Send",
+        "MailboxSettings.ReadWrite",
+      ],
+      [
+        "https://graph.microsoft.com/Mail.ReadWrite",
+        "https://graph.microsoft.com/Mail.Send",
+        "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+        "https://graph.microsoft.com/User.Read",
+      ].join(" "),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("still reports genuinely ungranted scopes under the qualified Microsoft shape", () => {
+    const missing = missingGrantedOAuthScopes(
+      ["User.Read", "Mail.ReadWrite", "Mail.Send"],
+      "https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite",
+    );
+    expect(missing).toEqual(["Mail.Send"]);
+  });
+
+  it("maps Google userinfo aliases and ignores identity meta-scopes", () => {
+    const missing = missingGrantedOAuthScopes(
+      ["openid", "email", "profile", "https://www.googleapis.com/auth/calendar"],
+      [
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/calendar",
+      ].join(" "),
+    );
+    expect(missing).toEqual([]);
+  });
 });

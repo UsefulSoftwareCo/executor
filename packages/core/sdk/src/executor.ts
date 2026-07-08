@@ -2709,9 +2709,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           );
 
     const healthFromCredentialResolutionFailure = (
-      failure: StorageFailure | CredentialResolutionError,
+      failure: CredentialResolutionError,
     ): HealthCheckResult =>
-      Predicate.isTagged("CredentialResolutionError")(failure) && failure.reauthRequired === true
+      failure.reauthRequired === true
         ? {
             status: "expired",
             checkedAt: Date.now(),
@@ -2721,20 +2721,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         : {
             status: "degraded",
             checkedAt: Date.now(),
-            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: failures here carry typed safe messages
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
           };
 
+    // Genuine storage failures propagate: an infra blip must fail the request,
+    // not persist as a "degraded" verdict on the connection.
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
-    ): Effect.Effect<HealthCheckResult, never> =>
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
       resolveConnectionValues(row).pipe(
         Effect.as({
           status: "healthy" as const,
           checkedAt: Date.now(),
           detail: "Credential resolved (no probe configured).",
         }),
-        Effect.catch((failure) => Effect.succeed(healthFromCredentialResolutionFailure(failure))),
+        Effect.catchTag("CredentialResolutionError", (failure) =>
+          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+        ),
       );
 
     // Resolve an in-flight credential's value map (key-first validation) without
