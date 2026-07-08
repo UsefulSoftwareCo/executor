@@ -115,6 +115,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const authenticationTemplate = yield* ext.configure(params.slug, {
             authenticationTemplate: payload.authenticationTemplate,
             mode: payload.mode ?? "merge",
+            baseUrl: payload.baseUrl,
           });
           return { authenticationTemplate: [...authenticationTemplate] };
         }),

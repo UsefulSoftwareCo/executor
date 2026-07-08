@@ -87,11 +87,13 @@ const PreviewSpecPayload = Schema.Struct({
 });
 
 // The `configure` payload — the new/updated auth methods to merge onto the
-// integration's `authenticationTemplate`. Reuses the same `AuthenticationPayload`
-// schema as `addSpec` so a custom apiKey method round-trips identically.
+// integration's `authenticationTemplate`, plus request routing metadata.
+// Reuses the same `AuthenticationPayload` schema as `addSpec` so a custom apiKey
+// method round-trips identically.
 const ConfigurePayload = Schema.Struct({
-  authenticationTemplate: Schema.Array(AuthenticationPayload),
+  authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
   mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+  baseUrl: Schema.optional(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

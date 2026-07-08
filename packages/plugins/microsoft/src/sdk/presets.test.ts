@@ -1,9 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect, Layer } from "effect";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { parseEntry, structuralSplit, type KeepPathItem } from "@executor-js/plugin-openapi";
 
+import { microsoftGraphAdapter } from "./spec-format-adapter";
 import {
   MICROSOFT_GRAPH_ALL_PRESET_IDS,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
+  MICROSOFT_GRAPH_OPENAPI_URL,
   microsoftCatalog,
   microsoftGraphExactPathsForPresetIds,
   microsoftGraphPathPrefixesForPresetIds,
@@ -12,6 +17,81 @@ import {
   microsoftGraphScopesForPresetIds,
   microsoftGraphTagPrefixesForPresetIds,
 } from "./presets";
+
+const graphHealthCheckFixture = `
+openapi: 3.0.4
+info:
+  title: Microsoft Graph Fixture
+  version: v1.0
+servers:
+  - url: https://graph.microsoft.com/v1.0
+paths:
+  /me:
+    get:
+      operationId: me.GetUser
+      security:
+        - azureAdDelegated:
+            - User.Read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.user'
+  /me/messages:
+    get:
+      operationId: me.messages.ListMessages
+      security:
+        - azureAdDelegated:
+            - Mail.ReadWrite
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    microsoft.graph.user:
+      type: object
+      properties:
+        mail:
+          type: string
+`;
+
+const graphHealthCheckHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+  HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        new Response(
+          request.url === MICROSOFT_GRAPH_OPENAPI_URL ? graphHealthCheckFixture : "not found",
+          {
+            status: request.url === MICROSOFT_GRAPH_OPENAPI_URL ? 200 : 404,
+            headers: { "content-type": "application/yaml" },
+          },
+        ),
+      ),
+    ),
+  ),
+);
+
+const operationIdsFromStructure = (
+  specText: string,
+  keepPathItem: KeepPathItem,
+): readonly string[] => {
+  const structure = structuralSplit(specText);
+  expect(structure, "fixture structurally splits").not.toBeNull();
+  return structure!.pathItems.flatMap((range) => {
+    const entry = parseEntry(structure!.text, range, 2);
+    expect(entry, "fixture path item parses").not.toBeNull();
+    const [path, rawPathItem] = entry!;
+    const pathItem = keepPathItem(path, rawPathItem as Record<string, unknown>);
+    if (!pathItem) return [];
+    return Object.values(pathItem as Record<string, unknown>).flatMap((operation) => {
+      const operationId = (operation as { readonly operationId?: unknown }).operationId;
+      return typeof operationId === "string" ? [operationId] : [];
+    });
+  });
+};
 
 const FROZEN_MICROSOFT_SLUGS = [
   "microsoft_profile",
@@ -210,4 +290,34 @@ describe("Microsoft Graph scope presets", () => {
       expect(preset.authTemplate?.map((template) => template.kind)).toEqual(["oauth2", "oauth2"]);
     }
   });
+
+  it.effect("resolves fixture-backed Microsoft catalog health checks in workload splits", () =>
+    Effect.gen(function* () {
+      const fixtureCases = [
+        { presetId: "profile", expectedOperation: "me.GetUser" },
+        { presetId: "mail", expectedOperation: undefined },
+      ] as const;
+
+      for (const { presetId, expectedOperation } of fixtureCases) {
+        const preset = microsoftCatalog.find(
+          (candidate) => candidate.id === `microsoft-${presetId}`,
+        );
+        expect(preset, `${presetId} catalog row exists`).toBeTruthy();
+        expect(preset?.healthCheck?.operation, `${presetId} catalog health check`).toBe(
+          expectedOperation,
+        );
+
+        const converted = yield* microsoftGraphAdapter.fetch({
+          urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${presetId}`],
+          httpClientLayer: graphHealthCheckHttpClientLayer,
+        });
+        expect(converted.keepPathItem, `${presetId} keeps a workload split`).toBeTruthy();
+        const operationIds = operationIdsFromStructure(converted.specText, converted.keepPathItem!);
+        expect(
+          expectedOperation === undefined || operationIds.includes(expectedOperation),
+          `${presetId} fixture resolves declared health check`,
+        ).toBe(true);
+      }
+    }),
+  );
 });

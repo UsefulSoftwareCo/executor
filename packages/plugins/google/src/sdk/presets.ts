@@ -1,6 +1,6 @@
 import { normalizeGoogleDiscoveryUrl } from "./discovery";
 import { compactGoogleOAuthScopes } from "./oauth-scopes";
-import type { IntegrationPreset } from "@executor-js/sdk/core";
+import type { HealthCheckSpec, IntegrationPreset } from "@executor-js/sdk/core";
 
 export interface GooglePreset {
   readonly id: string;
@@ -284,10 +284,37 @@ const GOOGLE_OAUTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/
 const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
 const GOOGLE_IDENTITY_SCOPES: readonly string[] = ["openid", "email", "profile"];
-const GOOGLE_USERINFO_HEALTH_CHECK = {
-  operation: "oauth2.userinfo.get",
-  identityField: "email",
-} as const;
+const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
+  "google-calendar": { operation: "calendar.calendarList.list" },
+  "google-gmail": {
+    operation: "gmail.users.labels.list",
+    args: { userId: "me" },
+  },
+  "google-drive": {
+    operation: "drive.about.get",
+    args: { fields: "user" },
+    identityField: "user.emailAddress",
+  },
+  "google-tasks": { operation: "tasks.tasklists.list" },
+  "google-people": {
+    operation: "people.people.get",
+    args: { resourceName: "people/me", personFields: "emailAddresses" },
+    identityField: "emailAddresses.0.value",
+  },
+  "google-photos-library": { operation: "photoslibrary.albums.list" },
+  "google-chat": { operation: "chat.spaces.list" },
+  "google-keep": { operation: "keep.notes.list" },
+  "google-youtube-data": {
+    operation: "youtube.channels.list",
+    args: { part: "id", mine: true },
+  },
+  "google-search-console": { operation: "webmasters.sites.list" },
+  "google-classroom": { operation: "classroom.courses.list" },
+  "google-admin-directory": { operation: "directory.users.list" },
+  "google-apps-script": { operation: "script.processes.list" },
+  "google-bigquery": { operation: "bigquery.projects.list" },
+  "google-cloud-resource-manager": { operation: "cloudresourcemanager.projects.list" },
+};
 
 const googleCatalogAuthTemplate = (presetId: string) => [
   {
@@ -313,7 +340,7 @@ export const googleCatalog: readonly IntegrationPreset[] = googleOpenApiPresets.
   specFormat: "google-discovery",
   defaultSlug: googleServiceSlug(preset.id),
   authTemplate: googleCatalogAuthTemplate(preset.id),
-  healthCheck: GOOGLE_USERINFO_HEALTH_CHECK,
+  ...(GOOGLE_HEALTH_CHECKS[preset.id] ? { healthCheck: GOOGLE_HEALTH_CHECKS[preset.id] } : {}),
 }));
 
 // ---------------------------------------------------------------------------

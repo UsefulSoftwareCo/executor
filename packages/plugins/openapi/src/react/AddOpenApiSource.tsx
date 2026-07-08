@@ -170,8 +170,8 @@ export default function AddOpenApiSource(props: {
 
   const resolvedBaseUrl = baseUrl.trim();
   const resolvedSourceId =
-    slugifyNamespace(identity.namespace) ||
     initialPreset?.defaultSlug ||
+    slugifyNamespace(identity.namespace) ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const resolvedDisplayName =
     identity.name.trim() ||

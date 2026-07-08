@@ -99,14 +99,16 @@ export interface OpenApiExtensionFailure {
 }
 
 /** Add / merge custom auth methods onto an existing OpenAPI integration's
- *  `authenticationTemplate`. Mirrors the GraphQL plugin's `configure`. */
+ *  `authenticationTemplate`, and update request routing metadata. Mirrors the
+ *  GraphQL plugin's `configure`. */
 export interface OpenApiConfigureInput {
   /** The auth methods to add. Each entry is appended to (or, when its `slug`
    *  already exists, replaces) the integration's existing template array. A
    *  custom apiKey method with no `slug` is assigned a generated `custom_<id>`
    *  slug that is collision-checked against the existing template. */
-  readonly authenticationTemplate: readonly AuthenticationInput[];
+  readonly authenticationTemplate?: readonly AuthenticationInput[];
   readonly mode?: "merge" | "replace";
+  readonly baseUrl?: string;
 }
 
 /** What changed in the tool catalog when a spec was updated in place. Tool
@@ -1043,14 +1045,19 @@ export const openApiPlugin = definePlugin<
               const current = decodeOpenApiIntegrationConfig(record.config);
               if (!current) return [] as readonly Authentication[];
 
-              const incoming = normalizeOpenApiAuthInputs(input.authenticationTemplate);
               const merged =
-                input.mode === "replace"
-                  ? incoming
-                  : mergeAuthTemplates(current.authenticationTemplate ?? [], incoming);
+                input.authenticationTemplate === undefined
+                  ? (current.authenticationTemplate ?? [])
+                  : input.mode === "replace"
+                    ? normalizeOpenApiAuthInputs(input.authenticationTemplate)
+                    : mergeAuthTemplates(
+                        current.authenticationTemplate ?? [],
+                        normalizeOpenApiAuthInputs(input.authenticationTemplate),
+                      );
 
               const next: OpenApiIntegrationConfig = {
                 ...current,
+                ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
                 authenticationTemplate: merged,
               };
 
