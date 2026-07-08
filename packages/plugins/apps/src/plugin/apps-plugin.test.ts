@@ -261,7 +261,9 @@ describe("apps plugin schema projection", () => {
       // undefined fails encoding (the /api/tools/schema 400), so the key must
       // be absent entirely when all required fields were projected away.
       expect("required" in (result.inputSchema as Record<string, unknown>)).toBe(false);
-      expect(JSON.parse(JSON.stringify(result.inputSchema))).toEqual(result.inputSchema);
+      expect(Object.values(result.inputSchema as Record<string, unknown>).includes(undefined)).toBe(
+        false,
+      );
     }),
   );
 });
