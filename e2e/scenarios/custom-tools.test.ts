@@ -304,7 +304,11 @@ scenario(
               readonly inputSchema: {
                 readonly properties?: Record<
                   string,
-                  { readonly enum?: readonly string[]; readonly default?: unknown }
+                  {
+                    readonly type?: string;
+                    readonly enum?: readonly string[];
+                    readonly default?: unknown;
+                  }
                 >;
                 readonly required?: readonly string[];
               };
@@ -318,6 +322,8 @@ scenario(
             enum: ["tools.apps.org.published"],
             default: "tools.apps.org.published",
           });
+          expect(schema.body.inputSchema.properties?.message).toMatchObject({ type: "string" });
+          expect(schema.body.inputSchema.required ?? []).toContain("message");
           expect(schema.body.inputSchema.required ?? []).not.toContain("apps");
 
           const invoked = yield* Effect.promise(() =>
