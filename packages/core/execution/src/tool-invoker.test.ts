@@ -305,6 +305,27 @@ const unmarkedErrorPlugin = makeTestPlugin({
   ],
 });
 
+const bindingErrorPlugin = makeTestPlugin({
+  pluginId: "binding-error-test",
+  integration: "binding",
+  tools: [
+    {
+      name: "sync",
+      description: "Sync with a caller-selected connection",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () =>
+        Effect.fail({
+          _tag: "BindingError",
+          message: 'unknown connection "personal" for role "github" (github)',
+          role: "github",
+          integration: "github",
+          requestedConnection: "personal",
+        }),
+    },
+  ],
+});
+
 const oauthErrorPlugin = definePlugin(() => ({
   id: "oauth-error-test" as const,
   storage: () => ({}),
@@ -1209,6 +1230,33 @@ describe("tool discovery", () => {
               expect.objectContaining({ path: ["owner"], message: "Missing key" }),
               expect.objectContaining({ path: ["repo"], message: "Missing key" }),
             ]),
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("returns binding errors as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([bindingErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "binding-error-test", integration: "binding" },
+      ]);
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "binding.org.main.sync", args: {} });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "binding_error",
+          message: 'unknown connection "personal" for role "github" (github)',
+          details: {
+            role: "github",
+            integration: "github",
+            requestedConnection: "personal",
           },
         },
       });
