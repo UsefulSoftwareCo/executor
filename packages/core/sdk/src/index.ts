@@ -68,6 +68,7 @@ export {
   IntegrationNotFoundError,
   IntegrationAlreadyExistsError,
   IntegrationRemovalNotAllowedError,
+  ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,

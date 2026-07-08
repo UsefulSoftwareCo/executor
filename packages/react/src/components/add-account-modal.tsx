@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   ConnectionName,
@@ -10,6 +12,7 @@ import {
   ProviderKey,
   identityPathTier,
   rankResponseSample,
+  type Connection,
   type HealthCheckCandidate,
   type HealthCheckResult,
   type HealthCheckSpec,
@@ -542,6 +545,19 @@ export const connectionLabelForHost = (
   integrationName: string,
   organizationId: string | null,
 ): string => label.trim() || `${ownerLabelForHost(owner, organizationId)} ${integrationName}`;
+
+/** The create endpoint rejected the name as taken (409). Like
+ *  `isIntegrationAlreadyExistsExit`: the error's `message` is a getter derived
+ *  from its fields, so it doesn't survive the wire — match the tag and rebuild
+ *  the message client-side. */
+export const isConnectionAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
+  Option.match(Exit.findErrorOption(exit), {
+    onNone: () => false,
+    onSome: Predicate.isTagged("ConnectionAlreadyExistsError"),
+  });
+
+export const connectionExistsMessage = (label: string): string =>
+  `A connection named "${label}" already exists. Pick a different name, or remove the existing connection first.`;
 
 /** The default owner a new connection is saved under when the user makes no
  *  explicit choice. Personal: a connection is most often a personal credential. */
@@ -1236,6 +1252,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
     () => buildUsageMap(AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []),
     [connectionsResult],
   );
+  // A fresh OAuth connect targeting an existing (owner, name) is rejected by
+  // `oauth.start`, but only after the popup has already been reserved — the
+  // user sees a window blip open and close. Check against the loaded
+  // connection list first so the conflict surfaces as an error with no popup.
+  const connectionNameTaken = useCallback(
+    (connectionOwner: Owner, name: ConnectionName): boolean =>
+      (AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []).some(
+        (connection: Connection) =>
+          connection.owner === connectionOwner &&
+          connection.integration === integration &&
+          String(connection.name) === String(name),
+      ),
+    [connectionsResult, integration],
+  );
 
   const method = useMemo(
     () => allMethods.find((m: AuthMethod) => m.id === methodId) ?? allMethods[0],
@@ -1636,6 +1666,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         integration,
         template: oauthMethod.template,
         ...(handoff.identityLabel !== undefined ? { identityLabel: handoff.identityLabel } : {}),
+        reconnect: true,
       },
       onAuthorizationStarted: () => {
         trackEvent("connection_reconnected", {
@@ -1644,7 +1675,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
           success: true,
         });
       },
-      onError: () => {
+      onError: (message: string) => {
+        toast.error(message);
         trackEvent("connection_reconnected", {
           integration_slug: String(integration),
           owner: connectionOwner,
@@ -1746,7 +1778,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
     });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
-      toast.error(messageFromExit(exit, "Failed to add connection"));
+      // The conflict error's message is a getter derived from its fields, so
+      // it doesn't survive the wire — rebuild it from the tag (the same
+      // pattern as isIntegrationAlreadyExistsExit).
+      toast.error(
+        isConnectionAlreadyExistsExit(exit)
+          ? connectionExistsMessage(
+              connectionLabelForHost(label, owner, integrationName, organizationId),
+            )
+          : messageFromExit(exit, "Failed to add connection"),
+      );
       return;
     }
     toast.success("Connection added");
@@ -1882,11 +1923,21 @@ function AddAccountModalView(props: AddAccountModalProps) {
       integrationName,
       organizationId,
     );
+    const connectionName = connectionNameFrom(
+      label,
+      connectionOwner,
+      integrationName,
+      organizationId,
+    );
+    if (connectionNameTaken(connectionOwner, connectionName)) {
+      toast.error(connectionExistsMessage(identityLabel));
+      return;
+    }
     const payload = {
       client: chosenClient.slug,
       clientOwner: chosenClient.owner,
       owner: connectionOwner,
-      name: connectionNameFrom(label, connectionOwner, integrationName, organizationId),
+      name: connectionName,
       integration,
       template: method.template,
       identityLabel,
@@ -1960,6 +2011,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const cimdOwner = owner;
     const connectionName = connectionNameFrom(label, cimdOwner, integrationName, organizationId);
     const identityLabel = connectionLabelForHost(label, cimdOwner, integrationName, organizationId);
+    if (connectionNameTaken(cimdOwner, connectionName)) {
+      toast.error(connectionExistsMessage(identityLabel));
+      return;
+    }
     setCimdBusy(true);
     const outcome = await runCimdConnect(
       {
@@ -2036,6 +2091,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const dcrOwner = owner;
     const connectionName = connectionNameFrom(label, dcrOwner, integrationName, organizationId);
     const identityLabel = connectionLabelForHost(label, dcrOwner, integrationName, organizationId);
+    if (connectionNameTaken(dcrOwner, connectionName)) {
+      toast.error(connectionExistsMessage(identityLabel));
+      return;
+    }
     setDcrBusy(true);
     const outcome = await runDcrConnect(
       {

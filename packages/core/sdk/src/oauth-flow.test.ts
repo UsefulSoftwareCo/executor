@@ -635,6 +635,173 @@ describe("oauth.start / oauth.complete", () => {
       }),
     ),
   );
+
+  // The OAuth callback mints by upsert, so without a guard a FRESH connect
+  // aimed at an existing name would silently overwrite that connection when
+  // the user returns from the provider. `start` rejects it up front (and
+  // `complete` re-checks for connections created mid-flight); an explicit
+  // `reconnect: true` keeps the intentional re-mint for re-consent flows.
+  it.effect("a fresh start targeting an existing connection name is rejected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        // An existing connection occupies the name (a static credential —
+        // exactly what a silent OAuth overwrite would destroy).
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "precious-static-key",
+        });
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const startError = yield* executor.oauth
+          .start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          })
+          .pipe(Effect.flip);
+        expect(startError).toBeInstanceOf(OAuthStartError);
+        expect(startError.message).toContain("already exists");
+
+        // The existing connection is untouched.
+        const rows = yield* executor.connections.list();
+        expect(rows.length).toBe(1);
+        expect(String(rows[0]?.template)).toBe("apiKey");
+      }),
+    ),
+  );
+
+  it.effect("reconnect: true re-mints the same connection through the full flow", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        // First connect mints the connection.
+        const first = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(first.status).toBe("redirect");
+        if (first.status !== "redirect") return;
+        const firstCallback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: first.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: first.state, code: firstCallback.code });
+
+        // Reconnect (re-consent) explicitly targets the SAME connection.
+        const again = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          reconnect: true,
+        });
+        expect(again.status).toBe("redirect");
+        if (again.status !== "redirect") return;
+        const againCallback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: again.authorizationUrl,
+        });
+        const reminted = yield* executor.oauth.complete({
+          state: again.state,
+          code: againCallback.code,
+        });
+        expect(String(reminted.name)).toBe("main");
+        expect((yield* executor.connections.list()).length).toBe(1);
+      }),
+    ),
+  );
+
+  // The start-time guard has a window: a connection created AFTER start but
+  // BEFORE the callback lands. `complete` re-checks and refuses to redeem.
+  it.effect("complete refuses when the name was taken mid-flight", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        // While the user is at the provider, the name gets taken.
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "created-mid-flight",
+        });
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const completeError = yield* executor.oauth
+          .complete({ state: started.state, code: callback.code })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged("OAuthCompleteError")(completeError)).toBe(true);
+        expect(completeError.message).toContain("already exists");
+
+        // The mid-flight connection survives with its static credential.
+        const rows = yield* executor.connections.list();
+        expect(rows.length).toBe(1);
+        expect(String(rows[0]?.template)).toBe("apiKey");
+      }),
+    ),
+  );
 });
 
 describe("oauth token refresh in resolveConnectionValue", () => {

@@ -257,20 +257,34 @@ scenario(
           const oauthRequest = page
             .waitForRequest((request) => oauthReconnectRequest(request.url()), { timeout: 30_000 })
             .then((request) => request.url());
+          // Reconnect re-mints the SAME connection name, so the start call must
+          // carry `reconnect: true` and succeed. A 4xx here is the regression
+          // where the flag was dropped and the popup blipped open and closed.
+          const startResponse = page.waitForResponse(
+            (response) =>
+              response.url().includes("/api/oauth/start") && response.request().method() === "POST",
+            { timeout: 30_000 },
+          );
 
           await menuTrigger.click();
           await page.getByRole("menuitem", { name: "Reconnect" }).click();
 
           await dialog.waitFor({ state: "visible", timeout: 30_000 });
           const reachedOAuth = await oauthRequest;
+          const started = await startResponse;
+          const startedBody = await started.text();
           await page.waitForTimeout(2_000);
           await dialog.waitFor({ state: "visible", timeout: 1_000 });
           console.info(
             `[MCP OAuth repro] reconnect dialog stayed open; OAuth requests: ${
               oauthRequests.join(", ") || reachedOAuth
-            }`,
+            }; start: ${started.status()} ${startedBody}`,
           );
           expect(reachedOAuth, "Reconnect should issue an OAuth request").toBeTruthy();
+          expect(
+            started.status(),
+            `reconnect OAuth start must succeed (reconnect flag reached the server); body: ${startedBody}`,
+          ).toBe(200);
         });
       });
     }),

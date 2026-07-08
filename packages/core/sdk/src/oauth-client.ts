@@ -125,6 +125,11 @@ export interface OAuthStartInput {
   readonly identityLabel?: string | null;
   /** Browser-facing callback URL for this flow. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
+  /** True when this flow re-runs OAuth for an EXISTING connection (re-consent,
+   *  widened scopes, fresh refresh token): the completed flow re-mints the same
+   *  (owner, integration, name) row. A fresh connect (the default) targeting an
+   *  existing name fails at start instead of silently overwriting it. */
+  readonly reconnect?: boolean;
 }
 
 export interface OAuthCompleteInput {

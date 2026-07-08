@@ -125,6 +125,98 @@ describe("connections.create", () => {
     }),
   );
 
+  // Create is never a replace: a second create with the same (owner,
+  // integration, name) must fail with ConnectionAlreadyExistsError and leave
+  // the first connection fully intact — including its stored secret, which a
+  // silent upsert would overwrite (the pasted value's item id is derived from
+  // the name, so the provider write alone clobbers it).
+  it.effect("rejects a duplicate (owner, integration, name) and keeps the original intact", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "original-token",
+        description: "original",
+      });
+
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "clobbered-token",
+          description: "clobbered",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ConnectionAlreadyExistsError")(result.failure)).toBe(true);
+
+      // The original row and its secret both survived.
+      const connections = yield* executor.connections.list();
+      expect(connections.length).toBe(1);
+      expect(connections[0]?.description).toBe("original");
+      const value = yield* executor.demo.resolveValue("org", "main");
+      expect(value).toBe("original-token");
+    }),
+  );
+
+  // Names collide AFTER identifier normalization: "my-api-key" and "my api key"
+  // both normalize to myApiKey, so the second must be rejected even though the
+  // raw inputs differ.
+  it.effect("rejects a duplicate that only collides after name normalization", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("my-api-key"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "v1",
+      });
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("my api key"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "v2",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ConnectionAlreadyExistsError")(result.failure)).toBe(true);
+      const value = yield* executor.demo.resolveValue("org", "myApiKey");
+      expect(value).toBe("v1");
+    }),
+  );
+
+  it.effect("allows the same name under a different owner", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      const personal = yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+      expect(String(personal.address)).toBe("tools.vercel.user.main");
+      expect((yield* executor.connections.list()).length).toBe(2);
+    }),
+  );
+
   it.effect("external `from` references a provider item without writing it", () =>
     Effect.gen(function* () {
       const executor = yield* setup();

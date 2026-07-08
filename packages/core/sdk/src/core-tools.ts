@@ -24,6 +24,7 @@ import {
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
+import { ToolResult } from "./tool-result";
 
 const schemaToStandard = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
   Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
@@ -309,6 +310,7 @@ const OAuthStartInput = Schema.Struct({
   template: Schema.String,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  reconnect: Schema.optional(Schema.Boolean),
 });
 const OAuthStartOutput = Schema.Union([
   Schema.Struct({
@@ -578,7 +580,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "connections.create",
           description:
-            'Low-level create or replace for a saved connection from provider item references. For a no-auth integration (public MCP server, public REST API), pass `template: "none"` with no `from`/`inputs` to wire it up directly. For normal API keys/tokens, use `connections.createHandoff` so the user enters the credential in the web UI. OAuth credentials should use `oauth.start`.',
+            'Low-level create for a saved connection from provider item references. Fails if a connection with the same owner, integration, and name already exists (remove it first, or pick a different name). For a no-auth integration (public MCP server, public REST API), pass `template: "none"` with no `from`/`inputs` to wire it up directly. For normal API keys/tokens, use `connections.createHandoff` so the user enters the credential in the web UI. OAuth credentials should use `oauth.start`.',
           inputSchema: ConnectionCreateInputStd,
           outputSchema: ConnectionOutputStd,
           // Creating a connection binds a credential reference and roots a new
@@ -589,9 +591,25 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // approval-gated (the v1 `sources.configure` carried the same guard).
           annotations: { requiresApproval: true },
           execute: (input: typeof ConnectionCreateInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.connections.create(createConnectionInputFromTool(input)),
-              connectionToOutput,
+            ctx.connections.create(createConnectionInputFromTool(input)).pipe(
+              Effect.map(connectionToOutput),
+              // Expected, caller-actionable failures resolve as ToolResult.fail
+              // (the sandbox sees `{ ok: false, error }`); anything else stays
+              // a defect and surfaces as the opaque internal-error generic.
+              Effect.catchTags({
+                ConnectionAlreadyExistsError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "connection_already_exists", message: error.message }),
+                  ),
+                IntegrationNotFoundError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "integration_not_found", message: error.message }),
+                  ),
+                InvalidConnectionInputError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "invalid_connection_input", message: error.message }),
+                  ),
+              }),
             ),
         }),
         tool({
@@ -815,7 +833,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.start",
           description:
-            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state.",
+            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state. Fails if the connection name is already taken unless `reconnect: true` re-runs the flow for that existing connection.",
           inputSchema: OAuthStartInputStd,
           outputSchema: OAuthStartOutputStd,
           // This is the materialization step that turns a registered client
@@ -837,6 +855,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 template: AuthTemplateSlug.make(input.template),
                 identityLabel: input.identityLabel,
                 redirectUri: input.redirectUri,
+                reconnect: input.reconnect ?? undefined,
               }),
               (result) =>
                 result.status === "connected"

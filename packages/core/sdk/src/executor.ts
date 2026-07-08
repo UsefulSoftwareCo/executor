@@ -53,6 +53,7 @@ import {
 
 export type { OnElicitation, InvokeOptions } from "./elicitation";
 import {
+  ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
@@ -298,6 +299,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     ) => Effect.Effect<
       Connection,
       | IntegrationNotFoundError
+      | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
       | StorageFailure
@@ -2237,6 +2239,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<
       Connection,
       | IntegrationNotFoundError
+      | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
       | StorageFailure
@@ -2255,6 +2258,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (!integrationRow) {
           return yield* new IntegrationNotFoundError({
             slug: input.integration,
+          });
+        }
+
+        // Create is never a replace. Checked BEFORE the provider writes below:
+        // a pasted value's item id is derived from (owner, integration, name),
+        // so proceeding past this point would overwrite the existing
+        // connection's stored secret even if the row write were rejected.
+        // Re-checked inside the transaction to close the create/create race.
+        const duplicate = yield* findConnectionRow({
+          owner: input.owner,
+          integration: input.integration,
+          name,
+        });
+        if (duplicate) {
+          return yield* new ConnectionAlreadyExistsError({
+            owner: input.owner,
+            integration: input.integration,
+            name,
           });
         }
 
@@ -2338,47 +2359,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               integration: input.integration,
               name,
             });
-            const set: Record<string, unknown> = {
+            if (existing) {
+              return yield* new ConnectionAlreadyExistsError({
+                owner: input.owner,
+                integration: input.integration,
+                name,
+              });
+            }
+            yield* core.create("connection", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              integration: String(input.integration),
+              name: String(name),
               template: String(input.template),
               provider: providerKey,
               item_ids: itemIds,
               identity_label: input.identityLabel ?? null,
-              // Re-saving a credential keeps an existing curated description
-              // unless the caller explicitly provides one.
-              ...(input.description !== undefined ? { description: input.description } : {}),
+              description: input.description ?? null,
+              oauth_client: null,
+              refresh_item_id: null,
+              expires_at: null,
+              oauth_scope: null,
+              provider_state: null,
+              created_at: now,
               updated_at: now,
-            };
-            if (existing) {
-              yield* core.updateMany("connection", {
-                where: (b: AnyCb) =>
-                  b.and(
-                    byOwner(input.owner)(b),
-                    b("integration", "=", String(input.integration)),
-                    b("name", "=", String(name)),
-                  ),
-                set,
-              });
-            } else {
-              yield* core.create("connection", {
-                tenant: keys.tenant,
-                owner: keys.owner,
-                subject: keys.subject,
-                integration: String(input.integration),
-                name: String(name),
-                template: String(input.template),
-                provider: providerKey,
-                item_ids: itemIds,
-                identity_label: input.identityLabel ?? null,
-                description: input.description ?? null,
-                oauth_client: null,
-                refresh_item_id: null,
-                expires_at: null,
-                oauth_scope: null,
-                provider_state: null,
-                created_at: now,
-                updated_at: now,
-              });
-            }
+            });
           }),
         );
 
@@ -2418,8 +2424,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     // Mint (or re-mint) an OAuth connection: write the connection row with its
     // OAuth lifecycle fields (the access token is already stored in the provider
-    // by the OAuth service) + produce the connection's tools. Mirrors
-    // `connectionsCreate`'s upsert + tool-production, stamping the OAuth columns.
+    // by the OAuth service) + produce the connection's tools. Unlike
+    // `connectionsCreate` (which rejects an existing name), this path upserts on
+    // purpose: reconnect/refresh re-mints the SAME connection, stamping the
+    // OAuth columns.
     const mintOAuthConnection = (
       input: MintOAuthConnectionInput,
     ): Effect.Effect<Connection, StorageFailure> =>
@@ -3729,6 +3737,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
+      // Normalize the name exactly as the mint does, so the fresh-connect
+      // guard sees the same row the callback would overwrite.
+      findConnection: (ref) =>
+        findConnectionRow({
+          owner: ref.owner,
+          integration: ref.integration,
+          name: connectionIdentifier(String(ref.name)),
+        }).pipe(Effect.map((row) => (row ? rowToConnection(row) : null))),
       // One integration-row read + one projector run. Resolve the method this
       // template selects exactly as the runtime's `selectAuthMethod` does —
       // exact slug match, else the sole declared method (single-method

@@ -917,6 +917,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                       Effect.fail(
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
                       ),
+                    ConnectionAlreadyExistsError: (cause) =>
+                      Effect.fail(
+                        new McpConnectionError({ transport: "stdio", message: cause.message }),
+                      ),
                     CredentialProviderNotRegisteredError: (cause) =>
                       Effect.fail(
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
