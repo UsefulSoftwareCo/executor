@@ -5,6 +5,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
+import { workerBundlerArtifact } from "@executor-js/plugin-apps/vite";
 import { unstable_readConfig } from "wrangler";
 
 import { routes } from "./tsr.routes";
@@ -125,6 +126,7 @@ export default defineConfig(({ command, mode }) => {
     },
     plugins: [
       devCrashGuard(),
+      workerBundlerArtifact(),
       tailwindcss(),
       executorVitePlugin(),
       cloudflare({ viteEnvironment: { name: "ssr" }, inspectorPort: false }),

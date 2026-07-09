@@ -23,10 +23,16 @@
     "./client": "./src/react/plugin-client.tsx",
     "./react": "./src/react/index.ts",
     "./selfhost": "./src/selfhost.ts",
-    "./testing": "./src/testing/index.ts"
+    "./testing": "./src/testing/index.ts",
+    "./vite": {
+      "types": "./src/vite.ts",
+      "bun": "./src/vite.ts",
+      "default": "./dist/vite.js"
+    }
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "build:bundle": "tsup",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -41,6 +47,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.15.0",
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@executor-js/react": "workspace:*",
@@ -50,6 +57,7 @@
     "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {

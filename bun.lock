@@ -803,6 +803,7 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.15.0",
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
         "@executor-js/react": "workspace:*",
@@ -812,6 +813,7 @@
         "effect": "catalog:",
         "react": "catalog:",
         "tsup": "catalog:",
+        "vite": "catalog:",
         "vitest": "catalog:",
       },
       "peerDependencies": {

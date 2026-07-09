@@ -12,7 +12,7 @@ import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import {
   makeDynamicWorkerAppToolExecutor,
-  makeNativeWorkerBundlerBackend,
+  makeDynamicWorkerBundlerBackend,
 } from "@executor-js/plugin-apps/cloud";
 import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-workos-vault";
@@ -58,17 +58,29 @@ interface CloudPluginDeps {
   readonly allowLocalNetwork?: boolean;
   readonly workerLoader?: {
     readonly get: (
-      name: string,
+      name: string | null,
       factory: () => {
         readonly compatibilityDate: string;
-        readonly compatibilityFlags?: string[];
+        readonly compatibilityFlags?: readonly string[];
         readonly mainModule: string;
-        readonly modules: Readonly<Record<string, string>>;
+        readonly modules: Readonly<Record<string, string | { readonly wasm: ArrayBuffer }>>;
         readonly globalOutbound?: null;
       },
     ) => { readonly getEntrypoint: () => unknown };
+    readonly load?: (code: {
+      readonly compatibilityDate: string;
+      readonly compatibilityFlags?: readonly string[];
+      readonly mainModule: string;
+      readonly modules: Readonly<Record<string, string | { readonly wasm: ArrayBuffer }>>;
+      readonly globalOutbound?: null;
+    }) => { readonly getEntrypoint: () => unknown };
   };
 }
+
+const base64ToArrayBuffer = (value: string): ArrayBuffer => {
+  const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+};
 
 export default defineExecutorConfig({
   plugins: ({
@@ -91,7 +103,16 @@ export default defineExecutorConfig({
         ...(workerLoader
           ? {
               executor: makeDynamicWorkerAppToolExecutor({ loader: workerLoader }),
-              bundler: makeNativeWorkerBundlerBackend(),
+              bundler: makeDynamicWorkerBundlerBackend({
+                loader: workerLoader,
+                artifact: async () => {
+                  const artifact = await import("virtual:executor/worker-bundler-artifact");
+                  return {
+                    source: artifact.source,
+                    wasm: base64ToArrayBuffer(artifact.wasmBase64),
+                  };
+                },
+              }),
             }
           : {}),
         sourceKinds: ["git"],

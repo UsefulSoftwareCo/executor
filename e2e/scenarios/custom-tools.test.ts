@@ -232,10 +232,10 @@ const addSourceThroughConsole = (input: {
       await page.locator('input[type="password"]').fill(FIXTURE_GIT_TOKEN);
       await page.getByRole("button", { name: "Sync source" }).click();
       await page.waitForURL(/\/integrations\/repo(?:\?|$)/, { timeout: 90_000 });
-      await page.getByLabel("Source").getByText("2 tools").waitFor({ timeout: 90_000 });
+      await page.getByLabel("Source").getByText("3 tools").waitFor({ timeout: 90_000 });
       await page.getByRole("link", { name: "repo" }).waitFor({ timeout: 90_000 });
       await page.getByRole("tab", { name: "Tools" }).click();
-      await page.getByRole("button", { name: /repo\s+2/ }).click();
+      await page.getByRole("button", { name: /repo\s+3/ }).click();
       await page.getByRole("button", { name: "echo-tool", exact: true }).click();
       await page.getByRole("tab", { name: "Run" }).click();
       expect(await page.getByLabel("Connection").count()).toBe(0);
@@ -411,7 +411,11 @@ scenario(
           const tools = yield* Effect.promise(() =>
             request<readonly ToolRow[]>(target, identity, "/api/tools?integration=repo"),
           );
-          expect(tools.body.map((tool) => tool.name).sort()).toEqual(["echo-tool", "static-tool"]);
+          expect(tools.body.map((tool) => tool.name).sort()).toEqual([
+            "echo-tool",
+            "effect-tool",
+            "static-tool",
+          ]);
           const echoTool = tools.body.find((tool) => tool.name === "echo-tool");
           expect(echoTool).toBeDefined();
 
@@ -454,6 +458,15 @@ scenario(
           expect(JSON.stringify(invoked.structured)).toContain("hello");
           expect(JSON.stringify(invoked.structured)).toContain("v1");
 
+          const effectInvoked = yield* Effect.promise(() =>
+            execute(target, identity, `return await tools["repo.org.published.effect-tool"]({});`),
+          );
+          expect(effectInvoked.status, effectInvoked.text).toBe("completed");
+          expect(effectInvoked.isError, effectInvoked.text).toBe(false);
+          expect(effectInvoked.structured).toMatchObject({
+            result: { ok: true, data: { ok: true, dependency: "effect" } },
+          });
+
           expect(git.packRequests(), "initial publish fetched one pack").toBe(1);
           git.advance();
           yield* syncSourceInConsole({
@@ -461,7 +474,7 @@ scenario(
             browser,
             identity,
             expectedNotice: "Added: extra-tool",
-            expectedToolCount: "3 tools",
+            expectedToolCount: "4 tools",
           });
 
           yield* syncSourceInConsole({
@@ -469,7 +482,7 @@ scenario(
             browser,
             identity,
             expectedNotice: "Already up to date.",
-            expectedToolCount: "3 tools",
+            expectedToolCount: "4 tools",
           });
 
           git.failCollect();
@@ -480,6 +493,7 @@ scenario(
           );
           expect(afterFailedCollect.body.map((tool) => tool.name).sort()).toEqual([
             "echo-tool",
+            "effect-tool",
             "extra-tool",
             "static-tool",
           ]);
@@ -490,7 +504,7 @@ scenario(
             browser,
             identity,
             expectedNotice: "Already up to date.",
-            expectedToolCount: "3 tools",
+            expectedToolCount: "4 tools",
           });
 
           yield* removeSourceThroughConsole({ target, browser, identity });

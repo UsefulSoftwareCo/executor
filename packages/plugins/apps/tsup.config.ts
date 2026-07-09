@@ -6,10 +6,11 @@ export default defineConfig({
     api: "src/api.ts",
     authoring: "src/authoring.ts",
     "testing/index": "src/testing/index.ts",
+    vite: "src/vite.ts",
   },
   format: ["esm"],
   dts: false,
   sourcemap: true,
   clean: true,
-  external: [/^@executor-js\//, /^effect/, /^@effect\//, "esbuild", "zod"],
+  external: [/^@executor-js\//, /^effect/, /^@effect\//, "esbuild", "zod", "vite"],
 });

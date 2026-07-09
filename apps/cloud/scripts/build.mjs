@@ -22,7 +22,7 @@ const steps = [
   // Workspace packages whose exports app code (or this very vite config)
   // resolves from dist under Node — vite's config loader externalizes bare
   // imports, so they must be built before vite starts.
-  "turbo run build --filter @executor-js/vite-plugin --filter @executor-js/react",
+  "turbo run build --filter @executor-js/vite-plugin --filter @executor-js/react --filter @executor-js/plugin-apps",
   "vite build",
 ];
 
