@@ -271,7 +271,9 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       // Build the description here so `executor.connections.list()` stays under
       // the DO startup span and the MCP SDK receives a concrete string instead
       // of invoking `engine.getDescription` across its async boundary.
-      const description = yield* buildExecuteDescription(executor);
+      const description = yield* buildExecuteDescription(executor).pipe(
+        Effect.withSpan("mcp.execute.description.build"),
+      );
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
       const mcpServer = yield* createExecutorMcpServer({
         engine,
