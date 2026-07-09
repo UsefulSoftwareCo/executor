@@ -7,30 +7,31 @@
 //   1. An OAuth connection's access token expires (per-client TTL of 1s via
 //      the emulator's DCR `access_token_ttl_seconds` extension, well inside
 //      the 60s refresh skew).
-//   2. A health check resolves the connection → triggers the refresh-token
-//      grant. The grant SUCCEEDS and the authorization server ROTATES the
-//      refresh token (single use — the emulator mirrors AuthKit).
-//   3. Persisting the new tokens does read → `PUT /vault/v1/kv/:id`. The PUT
-//      fails (in prod: 409 version conflict, an OAuth-shaped 400, or an HTML
-//      error page; here: the armed 400 with `error`/`error_description`, the
-//      exact shape the WorkOS SDK maps to OauthException — Sentry issue -53).
-//   4. The write failure surfaces as `StorageError: WorkOS Vault secret write
+//   2. A health check resolves the connection → the refresh path runs. Vault
+//      writes go through read → `PUT /vault/v1/kv/:id`; the PUT fails (in
+//      prod: 409 version conflict, an OAuth-shaped 400, or an HTML error
+//      page; here: the armed 400 with `error`/`error_description`, the exact
+//      shape the WorkOS SDK maps to OauthException — Sentry issue -53).
+//   3. The write failure surfaces as `StorageError: WorkOS Vault secret write
 //      failed` → the health endpoint answers a typed InternalError (the 500
-//      Sentry records).
+//      Sentry records). Crucially it must fail BEFORE the refresh-token grant
+//      (the AS rotates the single-use token; consuming it with an unwritable
+//      store loses the rotated copy forever).
 //
-// The second scenario pins the DAMAGE, not just the surface error: the vault
-// write failed AFTER the refresh token was consumed and rotated, so the new
-// refresh token is lost and the stored one is revoked. Once the vault
-// recovers, the connection must recover too — today it cannot (the next
-// refresh gets invalid_grant → the connection reads "expired" and demands a
-// re-auth). Red until the refresh/persist ordering is made crash-safe.
+// The second scenario pins the DAMAGE the surface error used to hide: when
+// the vault write failed AFTER the refresh token was consumed and rotated,
+// the rotated token was lost and the stored one already revoked — the next
+// refresh got invalid_grant and the connection demanded a re-auth over a
+// storage blip. The fix gates the grant on a proof-of-writability rewrite of
+// the stored refresh token, so a vault outage fails BEFORE the single-use
+// token is spent and the connection recovers with the vault.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
-import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
+import { connectEmulator } from "@executor-js/emulate";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   AuthTemplateSlug,
@@ -243,13 +244,15 @@ scenario(
         ).toBe("InternalError");
 
         // The proof this is the production mechanism and not an incidental
-        // failure: the product performed the refresh grant and then hit the
-        // injected fault on the vault update.
+        // failure: the product hit the injected fault on the vault update leg.
         const ledger = yield* Effect.promise(() => workos.ledger.list(200));
         const faultedPut = ledger.find((entry) => entry.faulted === true && entry.method === "PUT");
         expect(faultedPut?.path, "the failure came from the injected vault-update fault").toMatch(
           /\/vault\/v1\/kv\//,
         );
+        // The crash-safety contract: the write-gate fails BEFORE the refresh
+        // grant, so the single-use refresh token is never consumed while the
+        // store cannot persist its rotated successor.
         const refreshGrant = ledger.find(
           (entry) =>
             entry.path.endsWith("/oauth2/token") &&
@@ -257,8 +260,8 @@ scenario(
         );
         expect(
           refreshGrant,
-          "the vault write that failed was persisting a completed refresh grant",
-        ).toBeDefined();
+          "no refresh grant is issued while the vault cannot persist the rotated token",
+        ).toBeUndefined();
       }),
       Effect.gen(function* () {
         yield* Effect.promise(() => workos.faults.clear());
