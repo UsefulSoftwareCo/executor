@@ -1,5 +1,25 @@
 # @executor-js/host-selfhost
 
+## 0.0.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/runtime-quickjs@1.5.30
+  - @executor-js/execution@1.5.30
+  - @executor-js/plugin-graphql@1.5.30
+  - @executor-js/plugin-mcp@1.5.30
+  - @executor-js/plugin-openapi@1.5.30
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.50
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.1
+  - @executor-js/plugin-encrypted-secrets@0.0.29
+  - @executor-js/plugin-provider-service-split@0.0.1
+  - @executor-js/plugin-toolkits@1.5.22
+  - @executor-js/react@1.4.50
+
 ## 0.0.28
 
 ### Patch Changes

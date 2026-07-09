@@ -1,5 +1,12 @@
 # @executor-js/config
 
+## 1.5.30
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+
 ## 1.5.29
 
 ### Patch Changes
