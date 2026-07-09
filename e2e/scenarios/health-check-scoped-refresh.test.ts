@@ -36,6 +36,10 @@ type WatcherState = {
   readonly violation: RowTitleSample | null;
 };
 
+type WatcherWindow<State> = Window & {
+  [WATCHER_KEY]?: State;
+};
+
 const newSlug = (prefix: string) =>
   IntegrationSlug.make(`${prefix}-${randomBytes(4).toString("hex")}`);
 
@@ -180,7 +184,7 @@ const installRowTitleWatcher = (
     const normalize = (value: string | null | undefined) =>
       (value ?? "").replace(/\s+/g, " ").trim();
     const state: MutableWatcherState = { done: false, samples: [], violation: null };
-    const globalWindow = window as Window & Record<string, MutableWatcherState | undefined>;
+    const globalWindow = window as WatcherWindow<MutableWatcherState>;
     globalWindow[key] = state;
     const startedAt = performance.now();
     const readCurrentTitle = () => {
@@ -209,10 +213,10 @@ const installRowTitleWatcher = (
   }, input);
 
 const readWatcherState = (page: Page) =>
-  page.evaluate((key) => {
-    const globalWindow = window as Window & Record<string, WatcherState | undefined>;
-    return globalWindow[key] ?? null;
-  }, WATCHER_KEY);
+  page.evaluate(() => {
+    const globalWindow = window as WatcherWindow<WatcherState>;
+    return globalWindow.__executorHealthScopedRefreshWatcher ?? null;
+  });
 
 scenario(
   "Health checks (UI) · Check now keeps sibling account identities scoped",
@@ -336,12 +340,11 @@ scenario(
               await page.getByRole("menuitem", { name: "Check now", exact: true }).click();
               await Promise.all([
                 page.waitForFunction(
-                  (key) => {
-                    const globalWindow = window as Window &
-                      Record<string, WatcherState | undefined>;
-                    return globalWindow[key]?.done === true;
+                  () => {
+                    const globalWindow = window as WatcherWindow<WatcherState>;
+                    return globalWindow.__executorHealthScopedRefreshWatcher?.done === true;
                   },
-                  WATCHER_KEY,
+                  undefined,
                   { timeout: 5_000 },
                 ),
                 page
