@@ -4,6 +4,12 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/server.ts",
+  // The vite plugin fills in assets.directory (dist/client); the binding must
+  // be declared here or env.ASSETS does not exist at runtime. The apps plugin
+  // fetches the worker-bundler artifact through it on first sync.
+  "assets": {
+    "binding": "ASSETS",
+  },
   "routes": [
     {
       "pattern": "executor.sh",

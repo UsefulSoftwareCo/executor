@@ -75,11 +75,28 @@ interface CloudPluginDeps {
       readonly globalOutbound?: null;
     }) => { readonly getEntrypoint: () => unknown };
   };
+  readonly workerAssets?: {
+    readonly fetch: (request: Request) => Promise<Response>;
+  };
 }
 
 const base64ToArrayBuffer = (value: string): ArrayBuffer => {
   const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+};
+
+const assetRequest = (path: string): Request => new Request(new URL(path, "https://assets.local"));
+
+const fetchAsset = async (
+  assets: { readonly fetch: (request: Request) => Promise<Response> },
+  path: string,
+): Promise<Response> => {
+  const response = await assets.fetch(assetRequest(path));
+  if (!response.ok) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: worker artifact asset fetch must reject the dynamic bundler setup
+    throw new Error(`failed to fetch worker-bundler asset ${path}: ${response.status}`);
+  }
+  return response;
 };
 
 export default defineExecutorConfig({
@@ -89,6 +106,7 @@ export default defineExecutorConfig({
     activeToolkitSlug,
     allowLocalNetwork,
     workerLoader,
+    workerAssets,
   }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin({
@@ -107,9 +125,27 @@ export default defineExecutorConfig({
                 loader: workerLoader,
                 artifact: async () => {
                   const artifact = await import("virtual:executor/worker-bundler-artifact");
+                  if (artifact.source !== undefined && artifact.wasmBase64 !== undefined) {
+                    return {
+                      source: artifact.source,
+                      wasm: base64ToArrayBuffer(artifact.wasmBase64),
+                    };
+                  }
+                  if (workerAssets === undefined) {
+                    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: worker artifact asset binding is required for production bundler setup
+                    throw new Error("worker-bundler artifact assets binding is unavailable");
+                  }
+                  const [source, wasm] = await Promise.all([
+                    fetchAsset(workerAssets, artifact.sourcePath).then((response) =>
+                      response.text(),
+                    ),
+                    fetchAsset(workerAssets, artifact.wasmPath).then((response) =>
+                      response.arrayBuffer(),
+                    ),
+                  ]);
                   return {
-                    source: artifact.source,
-                    wasm: base64ToArrayBuffer(artifact.wasmBase64),
+                    source,
+                    wasm,
                   };
                 },
               }),

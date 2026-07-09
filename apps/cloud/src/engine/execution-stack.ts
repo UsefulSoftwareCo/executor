@@ -64,6 +64,7 @@ const cloudPluginFactory = executorConfig.plugins as (deps: {
   readonly activeToolkitSlug?: string;
   readonly allowLocalNetwork?: boolean;
   readonly workerLoader?: WorkerLoader;
+  readonly workerAssets?: { readonly fetch: (request: Request) => Promise<Response> };
 }) => readonly AnyPlugin[];
 
 // Fresh plugin instances per request, carrying the Worker env's WorkOS Vault
@@ -80,6 +81,7 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
         context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
       allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
       workerLoader: env.LOADER,
+      workerAssets: env.ASSETS,
     }),
 });
 
