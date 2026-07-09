@@ -3,13 +3,23 @@
 // ---------------------------------------------------------------------------
 
 import { env } from "cloudflare:workers";
-import { Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Context, Data, Effect, Layer, Option, Predicate, Schema } from "effect";
 import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
+import { defaults as ironDefaults, unseal as unsealIron } from "iron-webcrypto";
+import { decodeJwt, jwtVerify } from "jose";
+import { JWKSInvalid, JWKSNoMatchingKey, JWKSTimeout } from "jose/errors";
 import { parseCookie } from "./cookies";
-import { tryPromiseService, withServiceLogging, workosErrorFromFailure } from "./errors";
+import { createCachedRemoteJWKSet, type CachedRemoteJWKSet } from "./jwks-cache";
+import {
+  ServiceAdapterError,
+  tryPromiseService,
+  withServiceLogging,
+  workosErrorFromFailure,
+} from "./errors";
 
 const COOKIE_NAME = "wos-session";
 const INVALID_COOKIE_PASSWORD_MESSAGE = "WORKOS_COOKIE_PASSWORD must be at least 32 characters";
+const WORKOS_SEAL_VERSION_DELIMITER = "~";
 
 type RawWorkOS = WorkOS & {
   readonly get: (
@@ -58,6 +68,178 @@ const RawWorkOSListResponse = Schema.Struct({
 });
 
 const decodeRawWorkOSListResponse = Schema.decodeUnknownOption(RawWorkOSListResponse);
+
+const SealedSessionUser = Schema.Struct({
+  id: Schema.String,
+  email: Schema.String,
+  firstName: Schema.NullOr(Schema.String),
+  lastName: Schema.NullOr(Schema.String),
+  profilePictureUrl: Schema.NullOr(Schema.String),
+});
+
+const SealedSessionPayload = Schema.Struct({
+  accessToken: Schema.String,
+  refreshToken: Schema.String,
+  user: SealedSessionUser,
+  authenticationMethod: Schema.optional(Schema.Unknown),
+  impersonator: Schema.optional(Schema.Unknown),
+});
+
+const decodeSealedSessionPayload = Schema.decodeUnknownOption(SealedSessionPayload);
+
+const JwtClaims = Schema.Struct({
+  sid: Schema.String,
+  org_id: Schema.optional(Schema.String),
+});
+
+const decodeJwtClaims = Schema.decodeUnknownOption(JwtClaims);
+
+const LegacySealedSessionPayload = Schema.Struct({
+  persistent: Schema.Unknown,
+});
+
+const decodeLegacySealedSessionPayload = Schema.decodeUnknownOption(LegacySealedSessionPayload);
+
+type SealedSessionPayload = typeof SealedSessionPayload.Type;
+
+type LocalSessionVerification =
+  | {
+      readonly _tag: "Valid";
+      readonly session: SealedSessionPayload;
+      readonly organizationId: string | undefined;
+      readonly sessionId: string;
+    }
+  | { readonly _tag: "Refresh" }
+  | { readonly _tag: "InvalidCookie" };
+
+class LocalSessionCookieError extends Data.TaggedError("LocalSessionCookieError")<{
+  readonly cause: unknown;
+}> {}
+
+const isLocalSessionValid = Predicate.isTagged("Valid") as (
+  value: LocalSessionVerification,
+) => value is Extract<LocalSessionVerification, { readonly _tag: "Valid" }>;
+
+const isLocalSessionInvalidCookie = Predicate.isTagged("InvalidCookie") as (
+  value: LocalSessionVerification,
+) => value is Extract<LocalSessionVerification, { readonly _tag: "InvalidCookie" }>;
+
+const ErrorWithCode = Schema.Struct({ code: Schema.String });
+const isErrorWithCode = Schema.is(ErrorWithCode);
+
+const isJwtVerificationFailure = (cause: unknown): boolean =>
+  isErrorWithCode(cause) &&
+  (cause.code.startsWith("ERR_JWT_") ||
+    cause.code.startsWith("ERR_JWS_") ||
+    cause.code === JWKSNoMatchingKey.code);
+
+const isJwksSystemFailure = (cause: unknown): boolean =>
+  isErrorWithCode(cause) && (cause.code === JWKSTimeout.code || cause.code === JWKSInvalid.code);
+
+const parseWorkOSSeal = (
+  seal: string,
+): { readonly sealWithoutVersion: string; readonly tokenVersion: number | null } => {
+  const [sealWithoutVersion = "", tokenVersionAsString] = seal.split(WORKOS_SEAL_VERSION_DELIMITER);
+  return {
+    sealWithoutVersion,
+    tokenVersion:
+      tokenVersionAsString === undefined ? null : Number.parseInt(tokenVersionAsString, 10),
+  };
+};
+
+const unsealWorkOSSession = async (
+  sessionData: string,
+  cookiePassword: string,
+): Promise<unknown> => {
+  const { sealWithoutVersion, tokenVersion } = parseWorkOSSeal(sessionData);
+  const data =
+    (await unsealIron(sealWithoutVersion, { 1: cookiePassword }, { ...ironDefaults, ttl: 0 })) ??
+    {};
+  // Mirrors the SDK's unsealData version handling: current (v2) seals hold the
+  // payload directly, OTHER versioned seals nest it under `persistent`, and an
+  // unversioned seal is the payload itself.
+  if (tokenVersion === 2 || tokenVersion === null) return data;
+  return Option.match(decodeLegacySealedSessionPayload(data), {
+    onNone: () => data,
+    onSome: (legacy) => legacy.persistent,
+  });
+};
+
+const getWorkOSSessionJwks = (() => {
+  const resolvers = new Map<string, CachedRemoteJWKSet>();
+  return (url: URL): CachedRemoteJWKSet => {
+    const key = url.toString();
+    const existing = resolvers.get(key);
+    if (existing) return existing;
+    const created = createCachedRemoteJWKSet(url);
+    resolvers.set(key, created);
+    return created;
+  };
+})();
+
+const verifyJwtOnce = (accessToken: string, jwks: CachedRemoteJWKSet) =>
+  Effect.tryPromise({
+    try: () => jwtVerify(accessToken, jwks),
+    catch: (cause) => new ServiceAdapterError({ cause }),
+  });
+
+const verifyJwtWithRefreshRetry = (
+  accessToken: string,
+  jwks: CachedRemoteJWKSet,
+): Effect.Effect<boolean, ServiceAdapterError> =>
+  verifyJwtOnce(accessToken, jwks).pipe(
+    Effect.as(true),
+    Effect.catchTag("ServiceAdapterError", (error) => {
+      if (isErrorWithCode(error.cause) && error.cause.code === JWKSNoMatchingKey.code) {
+        return Effect.sync(() => jwks.forceRefresh()).pipe(
+          Effect.flatMap(() => verifyJwtOnce(accessToken, jwks)),
+          Effect.as(true),
+          Effect.catchTag("ServiceAdapterError", (retryError) =>
+            isJwtVerificationFailure(retryError.cause)
+              ? Effect.succeed(false)
+              : Effect.fail(retryError),
+          ),
+        );
+      }
+      if (isJwtVerificationFailure(error.cause)) return Effect.succeed(false);
+      if (isJwksSystemFailure(error.cause)) return Effect.fail(error);
+      return Effect.fail(error);
+    }),
+  );
+
+const verifySealedSessionLocally = (
+  sessionData: string,
+  cookiePassword: string,
+  jwks: CachedRemoteJWKSet,
+): Effect.Effect<LocalSessionVerification, ServiceAdapterError> =>
+  Effect.gen(function* () {
+    const unsealed = yield* Effect.tryPromise({
+      try: () => unsealWorkOSSession(sessionData, cookiePassword),
+      catch: (cause) => new LocalSessionCookieError({ cause }),
+    }).pipe(
+      Effect.catchTag("LocalSessionCookieError", () => Effect.succeed(null as unknown | null)),
+    );
+    if (!unsealed) return { _tag: "InvalidCookie" };
+
+    const session = Option.match(decodeSealedSessionPayload(unsealed), {
+      onNone: (): SealedSessionPayload | null => null,
+      onSome: (payload) => payload,
+    });
+    if (!session) return { _tag: "InvalidCookie" };
+
+    const verified = yield* verifyJwtWithRefreshRetry(session.accessToken, jwks);
+    if (!verified) return { _tag: "Refresh" };
+
+    const claims = Option.getOrNull(decodeJwtClaims(decodeJwt(session.accessToken)));
+    if (!claims) return { _tag: "Refresh" };
+
+    return {
+      _tag: "Valid",
+      session,
+      organizationId: claims.org_id,
+      sessionId: claims.sid,
+    };
+  });
 
 const completedListMetadata = {
   before: null,
@@ -150,6 +332,7 @@ const make = Effect.gen(function* () {
     clientId,
     ...workosApiUrlOptions(env.WORKOS_API_URL),
   });
+  const sessionJwks = getWorkOSSessionJwks(new URL(workos.userManagement.getJwksUrl(clientId)));
 
   // The public `WorkOSError` carries the upstream HTTP status when the SDK
   // exception had one (all its typed exceptions do), so consumers can tell a
@@ -171,22 +354,26 @@ const make = Effect.gen(function* () {
         cookiePassword,
       });
 
-      const result = yield* use(() => session.authenticate());
+      const local = yield* withServiceLogging(
+        "workos.session.local_verify",
+        workosErrorFromFailure,
+        verifySealedSessionLocally(sessionData, cookiePassword, sessionJwks),
+      );
 
-      if (result.authenticated) {
+      if (isLocalSessionValid(local)) {
         return {
-          userId: result.user.id,
-          email: result.user.email,
-          firstName: result.user.firstName,
-          lastName: result.user.lastName,
-          avatarUrl: result.user.profilePictureUrl,
-          organizationId: result.organizationId,
-          sessionId: result.sessionId,
+          userId: local.session.user.id,
+          email: local.session.user.email,
+          firstName: local.session.user.firstName,
+          lastName: local.session.user.lastName,
+          avatarUrl: local.session.user.profilePictureUrl,
+          organizationId: local.organizationId,
+          sessionId: local.sessionId,
           refreshedSession: undefined as string | undefined,
         };
       }
 
-      if (result.reason === "no_session_cookie_provided") return null;
+      if (isLocalSessionInvalidCookie(local)) return null;
 
       // Try refreshing
       const refreshed = yield* use(() => session.refresh()).pipe(

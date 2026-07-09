@@ -210,9 +210,13 @@ export const makeScopedExecutor = <
   options?: { readonly plugins?: PluginsProviderContext },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
-    const { db, blobs } = yield* DbProvider;
-    const { plugins: pluginsFactory } = yield* PluginsProvider;
-    const config = yield* HostConfig;
+    const { db, blobs } = yield* DbProvider.asEffect().pipe(
+      Effect.withSpan("executor.stack.db_provider"),
+    );
+    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect().pipe(
+      Effect.withSpan("executor.stack.plugins_provider"),
+    );
+    const config = yield* HostConfig.asEffect().pipe(Effect.withSpan("executor.stack.host_config"));
     // Explicit config wins; otherwise fall back to the request origin if a host
     // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
     // non-request callers — `coreTools.webBaseUrl` is optional and only the
@@ -248,7 +252,9 @@ export const makeScopedExecutor = <
       oauthCallbackPath: config.oauthCallbackPath,
     });
 
-    const plugins = pluginsFactory(options?.plugins);
+    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins)).pipe(
+      Effect.withSpan("executor.plugins.init"),
+    );
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
     };
@@ -274,7 +280,7 @@ export const makeScopedExecutor = <
         orgSlug,
         includeProviders: config.exposeCredentialProviders ?? true,
       },
-    });
+    }).pipe(Effect.withSpan("executor.stack.create_executor"));
     // The seam erases the plugin tuple type; the caller re-narrows via the
     // `TPlugins` phantom. Runtime shape is identical to a typed
     // `createExecutor({ plugins })` call.

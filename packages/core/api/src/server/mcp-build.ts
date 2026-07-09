@@ -42,6 +42,7 @@ export const makeMcpBuildServer =
     makeExecutionStack(principal.accountId, principal.organizationId, principal.organizationName, {
       mcpResource: options?.resource,
     }).pipe(
+      Effect.withSpan("mcp.execution_stack.build"),
       Effect.map(({ engine }) => engine),
       // Pin browser-handoff URLs to the principal's org slug when present;
       // absent slug leaves the service unprovided and the URL stays bare.
@@ -52,6 +53,7 @@ export const makeMcpBuildServer =
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap((engine) =>
         createExecutorMcpServer({ engine, ...(options ?? {}) }).pipe(
+          Effect.withSpan("mcp.server.create"),
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),
