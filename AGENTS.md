@@ -30,7 +30,8 @@ For any test or demo needing an upstream API, OAuth/OIDC provider, or webhook
 source, use the `@executor-js/emulate` emulators instead of writing a stub:
 wire-level and stateful, real SDKs run unmodified, each serves a full OpenAPI
 spec, mints real-shaped credentials, and records every call in a request ledger
-to assert against. Hosted at `https://<service>.emulators.dev`. See the `emulate`
+to assert against. Hosted on emulators.dev (create a per-run instance via
+`POST https://<service>.emulators.dev/_emulate/instances`). See the `emulate`
 skill (`.claude/skills/emulate/SKILL.md`). They are a standalone project
 (`github.com/UsefulSoftwareCo/emulate`) consumed here as the published package:
 full autonomy to change, publish, and deploy them on their `main`; don't re-vendor.
