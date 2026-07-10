@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-example",
-  "version": "1.5.31",
+  "version": "1.5.32",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/example",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"

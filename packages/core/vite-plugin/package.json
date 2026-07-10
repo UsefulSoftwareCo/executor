@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/vite-plugin",
-  "version": "0.0.48",
+  "version": "0.0.49",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/vite-plugin",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"

@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cli",
-  "version": "0.2.38",
+  "version": "0.2.39",
   "description": "CLI for the executor SDK — schema generation, migrations",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/cli",
   "bugs": {

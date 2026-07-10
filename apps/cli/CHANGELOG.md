@@ -1,5 +1,19 @@
 # executor
 
+## 1.5.32
+
+### Patch Changes
+
+- [#1395](https://github.com/UsefulSoftwareCo/executor/pull/1395) [`d90d8be`](https://github.com/UsefulSoftwareCo/executor/commit/d90d8be38fa26d3a6b8a5ac648af815191f537bb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Policy create now defaults a new rule's position below any more-specific existing rule on the server, so a broad rule written without an explicit position (stale UI, API, agent tool) cannot shadow an existing narrower rule.
+
+- [#1394](https://github.com/UsefulSoftwareCo/executor/pull/1394) [`1ca5111`](https://github.com/UsefulSoftwareCo/executor/commit/1ca511101fad057d129db9941b5c9bce963baf0a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Ship the platform workerd binary in the self-host Docker runtime; without it custom app tools failed to sync or invoke with "workerd is unavailable on this platform".
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/runtime-quickjs@1.5.32
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.52
+
 ## 1.5.31
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-apps",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/apps",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"
