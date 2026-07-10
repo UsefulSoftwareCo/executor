@@ -36,6 +36,30 @@ const libsqlNativePackage = (): string => {
   return `@libsql/${target}`;
 };
 
+// The `workerd` package's bin/workerd is a Node shim that execs the real
+// binary from the per-platform optional dependency
+// (`@cloudflare/workerd-<os>-<arch>`); without it the runtime throws
+// "workerd is unavailable on this platform" on first app-tool bundle or
+// invoke. Same per-platform shape as libsql above.
+const workerdPlatformPackage = (): string => {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "workerd-darwin-arm64",
+    "darwin-x64": "workerd-darwin-64",
+    "linux-arm64": "workerd-linux-arm64",
+    "linux-x64": "workerd-linux-64",
+    "win32-x64": "workerd-windows-64",
+  };
+  const key = `${process.platform}-${process.arch}`;
+  const target = platformMap[key];
+  if (!target) {
+    throw new Error(
+      `package-runtime: no workerd platform package mapped for ${key}. ` +
+        "Add it to the platform map in apps/host-selfhost/scripts/package-runtime.ts.",
+    );
+  }
+  return `@cloudflare/${target}`;
+};
+
 const externalPackages = [
   "@cloudflare/worker-bundler",
   "quickjs-emscripten",
@@ -46,6 +70,7 @@ const externalPackages = [
   "@jitl/quickjs-wasmfile-release-asyncify",
   "@jitl/quickjs-wasmfile-debug-asyncify",
   "workerd",
+  workerdPlatformPackage(),
   libsqlNativePackage(),
 ] as const;
 
