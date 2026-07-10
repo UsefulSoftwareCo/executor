@@ -1,6 +1,7 @@
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 const root = process.cwd();
 const out = join(root, ".selfhost-runtime");
@@ -36,6 +37,7 @@ const libsqlNativePackage = (): string => {
 };
 
 const externalPackages = [
+  "@cloudflare/worker-bundler",
   "quickjs-emscripten",
   "quickjs-emscripten-core",
   "@jitl/quickjs-ffi-types",
@@ -64,12 +66,39 @@ const copyPackage = (name: string): void => {
   cpSync(packageDir(name), destination, { recursive: true, dereference: true });
 };
 
+// The worker-bundler backend (packages/plugins/apps/src/pipeline/
+// worker-bundler-artifact.ts) loads `dist/index.bundled.js` from the resolved
+// package, falling back to bundling `dist/index.js` with esbuild at runtime.
+// The npm package doesn't ship the bundled entry and the runtime image has no
+// esbuild, so produce it here, the same way apps/cli/src/build.ts does for the
+// packed CLI.
+const writeBundledWorkerBundler = async (): Promise<void> => {
+  const distPath = join(packageDir("@cloudflare/worker-bundler"), "dist");
+  const esbuildEntry = requireFromSelfHost.resolve("esbuild", {
+    paths: [join(root, "node_modules/.bun/node_modules")],
+  });
+  const { build } = await import(pathToFileURL(esbuildEntry).href);
+  const result = await build({
+    entryPoints: [join(distPath, "index.js")],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    external: ["./esbuild.wasm"],
+    logLevel: "silent",
+    write: false,
+  });
+  const source = result.outputFiles[0]?.text;
+  if (source === undefined) throw new Error("failed to bundle @cloudflare/worker-bundler");
+  writeFileSync(join(out, "node_modules/@cloudflare/worker-bundler/dist/index.bundled.js"), source);
+};
+
 rmSync(out, { recursive: true, force: true });
 mkdirSync(serverOut, { recursive: true });
 
 await Bun.$`bun build apps/host-selfhost/src/serve.ts --target=bun --format=esm --outdir=${serverOut} ${quickJsExternals.map((name) => `--external=${name}`)}`;
 
 for (const name of externalPackages) copyPackage(name);
+await writeBundledWorkerBundler();
 
 if (!existsSync(join(serverOut, "serve.js"))) {
   throw new Error(
