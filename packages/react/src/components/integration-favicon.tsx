@@ -76,46 +76,6 @@ const googleApiServiceFromUrl = (url: string | undefined): string | null => {
   return null;
 };
 
-const normalizeToken = (value: string | undefined): string =>
-  value?.toLowerCase().replace(/[^a-z0-9]+/g, "") ?? "";
-
-const tokenVariants = (value: string | undefined): readonly string[] => {
-  const tokens = new Set<string>();
-  const normalized = normalizeToken(value);
-  if (normalized.length > 0) tokens.add(normalized);
-
-  const parts =
-    value
-      ?.toLowerCase()
-      .split(/[^a-z0-9]+/g)
-      .filter(Boolean) ?? [];
-  const noise = new Set([
-    "api",
-    "mcp",
-    "openapi",
-    "rest",
-    "graphql",
-    "web",
-    "com",
-    "net",
-    "org",
-    "dev",
-  ]);
-  const cleaned = parts.filter((part) => !noise.has(part));
-  const cleanedToken = cleaned.join("");
-  if (cleanedToken.length > 0) tokens.add(cleanedToken);
-  const aliases: Record<string, string> = {
-    pscale: "planetscale",
-  };
-  for (const part of cleaned) {
-    tokens.add(part);
-    const alias = aliases[part];
-    if (alias) tokens.add(alias);
-  }
-
-  return [...tokens];
-};
-
 export function integrationInferredUrl(integration: {
   readonly id: string;
   readonly name?: string;
@@ -129,13 +89,12 @@ export function integrationInferredUrl(integration: {
   return null;
 }
 
-// Exact equality only: substring containment matched unrelated brands that
-// merely share a fragment ("ClickHouse Cloud" ⊂ "Cloudflare" via "cloud"). A
-// missed match is recoverable (the cascade falls through to the domain-derived
-// integrations.sh favicon); a wrong-brand icon is not.
-const tokenMatches = (integrationValue: string, presetValue: string): boolean =>
-  presetValue.length > 0 && integrationValue === presetValue;
-
+// Exact identity signals only — preset defaultSlug, normalized URL equality,
+// or the same Google discovery service. Fuzzy name/slug token matching used to
+// live here and matched unrelated brands sharing a word fragment ("ClickHouse
+// Cloud" rendered Cloudflare's logo via "cloud"). A missed match is recoverable
+// (the cascade falls through to the domain-derived integrations.sh favicon,
+// which is always the right brand); a wrong-brand icon is not.
 export function integrationPresetIconUrl(
   integration: {
     readonly id: string;
@@ -153,18 +112,13 @@ export function integrationPresetIconUrl(
 
   const integrationUrl = normalizeUrl(integration.url);
   const integrationGoogleService = googleApiServiceFromUrl(integration.url);
-  const integrationTokens = [...tokenVariants(integration.id), ...tokenVariants(integration.name)];
 
   const preset = presets.find((p) => {
     const presetUrl = normalizeUrl(p.url);
     const presetGoogleService = googleApiServiceFromUrl(p.url);
-    const presetTokens = [...tokenVariants(p.id), ...tokenVariants(p.name)];
     return (
       (integrationUrl !== null && presetUrl === integrationUrl) ||
-      (integrationGoogleService !== null && presetGoogleService === integrationGoogleService) ||
-      integrationTokens.some((integrationToken) =>
-        presetTokens.some((presetToken) => tokenMatches(integrationToken, presetToken)),
-      )
+      (integrationGoogleService !== null && presetGoogleService === integrationGoogleService)
     );
   });
 
