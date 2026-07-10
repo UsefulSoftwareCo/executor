@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/example-docs-sdk-quickstart",
-  "version": "0.0.33",
+  "version": "0.0.34",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,5 +1,17 @@
 # @executor-js/plugin-openapi
 
+## 1.5.31
+
+### Patch Changes
+
+- [#1389](https://github.com/UsefulSoftwareCo/executor/pull/1389) [`9e38928`](https://github.com/UsefulSoftwareCo/executor/commit/9e38928f0fda9032b64b26990270c5d2b6690d13) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Advertise NDJSON operation outputs as arrays. Endpoints declaring `application/stream+json`, `application/x-ndjson`, or `application/jsonl` responses (for example Vercel's runtime-logs) spec the schema of one line, but invocations return an array of parsed lines; describe previews now wrap the line schema in an array so generated code matches what actually comes back. Existing integrations with NDJSON operations are stale-marked once so their tool catalogs rebuild with the corrected schemas.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.31
+  - @executor-js/config@1.5.31
+  - @executor-js/api@1.4.51
+  - @executor-js/react@1.4.51
+
 ## 1.5.30
 
 ### Patch Changes
