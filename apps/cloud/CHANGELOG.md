@@ -1,5 +1,26 @@
 # @executor-js/cloud
 
+## 1.4.49
+
+### Patch Changes
+
+- Updated dependencies [[`9e38928`](https://github.com/UsefulSoftwareCo/executor/commit/9e38928f0fda9032b64b26990270c5d2b6690d13)]:
+  - @executor-js/plugin-openapi@1.5.31
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/sdk@1.5.31
+  - @executor-js/runtime-quickjs@1.5.31
+  - @executor-js/execution@1.5.31
+  - @executor-js/plugin-graphql@1.5.31
+  - @executor-js/plugin-mcp@1.5.31
+  - @executor-js/api@1.4.51
+  - @executor-js/vite-plugin@0.0.48
+  - @executor-js/cloudflare@0.0.30
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.2
+  - @executor-js/plugin-toolkits@1.5.23
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.51
+
 ## 1.4.48
 
 ### Patch Changes

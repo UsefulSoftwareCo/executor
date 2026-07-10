@@ -1,5 +1,17 @@
 # executor
 
+## 1.5.31
+
+### Patch Changes
+
+- [#1390](https://github.com/UsefulSoftwareCo/executor/pull/1390) [`d95e63c`](https://github.com/UsefulSoftwareCo/executor/commit/d95e63cc33ade4ce0996678cfa51a5e4c784a9ea) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Ship @cloudflare/worker-bundler in the self-host Docker runtime so the server starts; it was resolved at runtime since the dynamic Worker bundler change but never copied into the image.
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.31
+  - @executor-js/runtime-quickjs@1.5.31
+  - @executor-js/api@1.4.51
+
 ## 1.5.30
 
 ### Patch Changes
