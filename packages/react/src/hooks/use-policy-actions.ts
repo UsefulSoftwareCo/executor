@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
@@ -22,8 +22,12 @@ export interface PolicyAction {
    *  already exists, update it. Otherwise create with auto-placed
    *  position so more-specific rules keep precedence. */
   readonly set: (pattern: string, action: ToolPolicyAction) => Promise<void>;
-  /** Remove the user rule with this exact pattern, if any. No-op if none. */
-  readonly clear: (pattern: string) => Promise<void>;
+  /** Remove the user rule with this exact pattern, if any. `policyId` is the
+   *  id of the rule the caller believes is active (e.g. from the tool's
+   *  resolved EffectivePolicy); it is the fallback when the local policies
+   *  list is mid-refresh and doesn't contain the rule yet — without it a
+   *  clear in that window silently no-ops. */
+  readonly clear: (pattern: string, policyId?: string) => Promise<void>;
   /** True while a write is in flight. */
   readonly busy: boolean;
 }
@@ -69,6 +73,14 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
 
   const busy = policies.waiting;
 
+  // Server-assigned ids of rules this hook created, by pattern. The local
+  // policies list is optimistic: right after a create it holds a placeholder
+  // row with a fake `pending-*` id (and the resolved EffectivePolicy a caller
+  // hands back can carry that same fake id), so neither is safe to DELETE
+  // with. The create response is the one authoritative id source in that
+  // window.
+  const createdIdByPattern = useRef(new Map<string, string>());
+
   // Specificity-aware placement (below any more-specific rule) via the shared
   // sdk helper — the same computation the server applies when no position is
   // sent. Computing it here too keeps the optimistic UI's final order stable;
@@ -102,24 +114,33 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
         return;
       }
       const position = computePosition(pattern);
-      await doCreate({
+      const created = await doCreate({
         payload:
           position === undefined
             ? { owner, pattern, action }
             : { owner, pattern, action, position },
         reactivityKeys: policyWriteKeys,
       });
+      createdIdByPattern.current.set(pattern, String(created.id));
       trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
     },
     [owner, doCreate, doUpdate, findExact, computePosition],
   );
 
   const clear = useCallback(
-    async (pattern: string) => {
+    async (pattern: string, policyId?: string) => {
+      // Resolve the id to delete, most-authoritative first. The local list
+      // and the caller's resolved policy can both hold an optimistic
+      // `pending-*` placeholder id right after a create (before the
+      // post-commit refetch lands); the create response we recorded is real,
+      // and a placeholder id must never reach the server.
       const existing = findExact(pattern);
-      if (!existing) return;
+      const isReal = (id: string | undefined): id is string => !!id && !id.startsWith("pending-");
+      const id = [existing?.id, createdIdByPattern.current.get(pattern), policyId].find(isReal);
+      if (!id) return;
+      createdIdByPattern.current.delete(pattern);
       await doRemove({
-        params: { policyId: PolicyId.make(existing.id) },
+        params: { policyId: PolicyId.make(id) },
         payload: { owner },
         reactivityKeys: policyWriteKeys,
       });
