@@ -170,7 +170,7 @@ const buildExecutionSource = (code: string): string => {
     "};",
     "const __toolsEnumerationError = (path) => new Error(",
     "  (path.length === 0 ? 'tools' : 'tools.' + path.join('.')) +",
-    "    ' is a lazy proxy and cannot be enumerated. Use tools.search({ query: \"...\" }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',",
+    '    \' is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.\',',
     ");",
     "const __makeToolsProxy = (path = []) => new Proxy(() => undefined, {",
     "  get(_target, prop) {",

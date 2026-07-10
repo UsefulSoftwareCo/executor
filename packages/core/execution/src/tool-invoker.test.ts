@@ -31,6 +31,7 @@ import { createExecutionEngine } from "./engine";
 import { ExecutionToolError } from "./errors";
 import {
   describeTool,
+  listExecutorIntegrations,
   makeExecutorToolInvoker,
   searchTools,
   type ToolDiscoveryProvider,
@@ -499,6 +500,105 @@ describe("tool discovery", () => {
       expect(matches.total).toBe(0);
       expect(matches.hasMore).toBe(false);
       expect(matches.nextOffset).toBeNull();
+    }),
+  );
+
+  it.effect("enumerates a namespace's full catalog for an empty query with a namespace", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+
+      // Enumeration, not search: every github tool, path-sorted, score 0.
+      // `total` is the census an agent can reconcile against the integration's
+      // reported toolCount — keyword search can only ever lower-bound it.
+      const enumerated = yield* searchTools(executor, "", 100, { namespace: "github" });
+      expect(enumerated.items.length).toBeGreaterThan(0);
+      expect(enumerated.total).toBe(enumerated.items.length);
+      expect(enumerated.items.map((item) => item.path)).toEqual(
+        [...enumerated.items.map((item) => item.path)].sort((a, b) => a.localeCompare(b)),
+      );
+      expect(enumerated.items.every((item) => item.integration === "github")).toBe(true);
+      expect(enumerated.items.every((item) => item.score === 0)).toBe(true);
+
+      // The census matches what the integrations list reports for the same
+      // namespace — the reconciliation #1383 could not perform.
+      const integrations = yield* listExecutorIntegrations(executor, { limit: 50 });
+      const github = integrations.items.find((item) => item.id === "github");
+      expect(github?.toolCount).toBe(enumerated.total);
+
+      // Enumeration pages like any other discovery result.
+      const firstPage = yield* searchTools(executor, "", 1, { namespace: "github" });
+      expect(firstPage.items).toEqual([enumerated.items[0]]);
+      expect(firstPage.total).toBe(enumerated.total);
+      expect(firstPage.hasMore).toBe(enumerated.total > 1);
+    }),
+  );
+
+  it.effect("enumeration scopes by exact slug, not the prefix matching ranked search uses", () =>
+    Effect.gen(function* () {
+      // Prefix-sibling integrations: "google" is a token prefix of both
+      // "google_gmail" and "google_sheets". Ranked search deliberately treats
+      // namespace as a fuzzy prefix filter; enumeration must NOT, or its
+      // `total` stops being a census of one integration.
+      const google = makeTestPlugin({
+        pluginId: "google-test",
+        integration: "google",
+        tools: [
+          {
+            name: "ping",
+            description: "Ping",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+        ],
+      });
+      const gmail = makeTestPlugin({
+        pluginId: "google-gmail-test",
+        integration: "google_gmail",
+        tools: [
+          {
+            name: "listMessages",
+            description: "List messages",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+          {
+            name: "sendMessage",
+            description: "Send a message",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+        ],
+      });
+      const executor = yield* makeExecutorWith([google, gmail] as const);
+      yield* provision(executor as never, [
+        { pluginId: "google-test", integration: "google" },
+        { pluginId: "google-gmail-test", integration: "google_gmail" },
+      ]);
+
+      const parent = yield* searchTools(executor, "", 100, { namespace: "google" });
+      expect(
+        parent.items.map((item) => item.integration),
+        "enumerating 'google' returns only the google integration's tools",
+      ).toEqual(["google"]);
+      expect(parent.total).toBe(1);
+
+      const sibling = yield* searchTools(executor, "", 100, { namespace: "google_gmail" });
+      expect(
+        sibling.items.every((item) => item.integration === "google_gmail"),
+        "enumerating the sibling returns only its own tools",
+      ).toBe(true);
+      expect(sibling.total).toBe(2);
+
+      // Ranked search keeps its fuzzy namespace semantics: a keyword search
+      // scoped to "google" may still match tools in google_gmail.
+      const fuzzy = yield* searchTools(executor, "message", 100, { namespace: "google" });
+      expect(
+        fuzzy.items.some((item) => item.integration === "google_gmail"),
+        "ranked search still prefix-matches sibling namespaces",
+      ).toBe(true);
     }),
   );
 

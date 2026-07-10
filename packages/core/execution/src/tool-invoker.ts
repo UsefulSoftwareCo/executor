@@ -94,7 +94,8 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     {
       path: "search",
       name: "search",
-      description: "Search available Executor tools.",
+      description:
+        "Search available Executor tools. An empty query with a namespace enumerates that integration's full catalog, sorted by path.",
       inputTypeScript: "{ query: string; namespace?: string; limit?: number; offset?: number; }",
       outputTypeScript:
         "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
@@ -655,15 +656,20 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ...(options?.namespace ? { "executor.search.namespace": options.namespace } : {}),
   });
 
-  const empty: PagedResult<ToolDiscoveryResult> = {
-    items: [],
-    total: 0,
-    hasMore: false,
-    nextOffset: null,
-  };
+  const emptyQuery = normalizeSearchText(query).length === 0;
+  const hasNamespace =
+    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0;
 
-  if (normalizeSearchText(query).length === 0) {
-    return empty;
+  // An empty query with no namespace stays empty: it carries neither a
+  // ranking signal nor a scope, and listing the whole workspace "by default"
+  // is exactly the arbitrary dump the ranked search refuses to be.
+  if (emptyQuery && !hasNamespace) {
+    return {
+      items: [],
+      total: 0,
+      hasMore: false,
+      nextOffset: null,
+    } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
   const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
@@ -676,11 +682,31 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ),
   );
   const searchable = all.map(toSearchableTool);
-  const ranked = searchable
-    .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-    .map((tool: SearchableTool) => scoreToolMatch(tool, query))
-    .filter(Predicate.isNotNull)
-    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  // An empty query WITH a namespace is enumeration, not search: there is no
+  // ranking signal, so the namespace's whole catalog comes back sorted by
+  // path (score 0) and paged. Enumeration scopes by EXACT integration slug —
+  // the token-prefix `matchesNamespace` used for ranked search would also
+  // sweep in prefix-sibling integrations (namespace "google" matching
+  // google_gmail and google_sheets), which would silently break the census
+  // guarantee: `total` here must reconcile against
+  // `executor.integrations.list`'s per-integration toolCount.
+  const ranked: readonly ToolDiscoveryResult[] = emptyQuery
+    ? searchable
+        .filter((tool) => tool.integration === options?.namespace?.trim())
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .map((tool) => ({
+          path: tool.path,
+          name: tool.name,
+          integration: tool.integration,
+          score: 0,
+          ...(tool.description !== undefined ? { description: tool.description } : {}),
+        }))
+    : searchable
+        .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+        .filter(Predicate.isNotNull)
+        .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
 

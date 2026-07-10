@@ -43,7 +43,7 @@ const createToolCaller = (toolPath) => (args) =>
 
 const toolsEnumerationMessage = (path) =>
   (path.length === 0 ? "tools" : "tools." + path.join(".")) +
-  ' is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.';
+  ' is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.';
 
 const createToolsProxy = (path = []) => {
   const callable = () => undefined;
