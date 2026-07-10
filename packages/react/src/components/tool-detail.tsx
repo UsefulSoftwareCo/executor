@@ -171,7 +171,7 @@ export function ToolDetail(props: {
   /** When provided, the policy badge becomes a dropdown trigger that
    *  applies a user rule to this tool's exact id. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
-  onClearPolicy?: (pattern: string) => void;
+  onClearPolicy?: (pattern: string, policyId?: string) => void;
   patternForDisplay?: (displayPattern: string) => string;
   /** Run-tab wiring. When `integration` + `runToolName` are provided, a third
    *  "Run" tab hosts the per-connection tool tester. */
@@ -413,7 +413,7 @@ function PolicyBadgeMenu(props: {
   staticTool?: boolean;
   policy?: EffectivePolicy;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
-  onClearPolicy?: (pattern: string) => void;
+  onClearPolicy?: (pattern: string, policyId?: string) => void;
   patternForDisplay?: (displayPattern: string) => string;
 }) {
   const interactive = !!props.onSetPolicy;
@@ -487,7 +487,10 @@ function PolicyBadgeMenu(props: {
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onSelect={() => props.onClearPolicy?.(pattern)}
+              // Pass the resolved rule's id: right after this menu authored
+              // the rule, the policies list may still be mid-refresh, and a
+              // pattern-only lookup there would silently no-op the clear.
+              onSelect={() => props.onClearPolicy?.(pattern, props.policy?.policyId)}
               className="text-muted-foreground"
             >
               Clear

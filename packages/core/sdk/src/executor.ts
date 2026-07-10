@@ -5,8 +5,6 @@ import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
 import { withQueryContext, type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
 import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 import type { AnyColumn } from "@executor-js/fumadb/schema";
-import { generateKeyBetween } from "fractional-indexing";
-
 import {
   StorageError,
   isStorageFailure,
@@ -99,6 +97,7 @@ import {
   comparePolicyRow,
   isValidPattern,
   matchPattern,
+  positionForNewPattern,
   resolveEffectivePolicy,
   rowToToolPolicy,
   type CreateToolPolicyInput,
@@ -3407,11 +3406,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const existing = yield* core.findMany("tool_policy", {
           where: byOwner(input.owner),
         });
-        const minPosition = existing
-          .map((row) => row.position)
-          .sort()
-          .at(0);
-        const position = input.position ?? generateKeyBetween(null, minPosition ?? null);
+        // Default placement is specificity-aware (below any more-specific
+        // rule), not top-of-list: a client that omits position — the UI when
+        // its policy list is stale, the API, an agent tool — must not have its
+        // broad rule silently shadow an existing narrow one.
+        const position = input.position ?? positionForNewPattern(input.pattern, existing);
         const id = PolicyId.make(
           `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
         );

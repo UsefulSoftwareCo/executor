@@ -157,7 +157,9 @@ export function ToolsPage() {
                       staticTool={selection?.static}
                       policy={selectedTool.policy}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                      onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                      onClearPolicy={(pattern, policyId) =>
+                        void policyActions.clear(pattern, policyId)
+                      }
                     />
                   ) : (
                     <ToolDetailEmpty hasTools={summaries.length > 0} />

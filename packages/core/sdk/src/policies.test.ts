@@ -367,7 +367,7 @@ describe("executor.policies", () => {
     }),
   );
 
-  it.effect("create defaults new rules to the top of the list", () =>
+  it.effect("create defaults new rules above equally-or-less-specific ones", () =>
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const first = yield* executor.policies.create({
@@ -384,6 +384,47 @@ describe("executor.policies", () => {
 
       const rules = yield* executor.policies.list();
       expect(rules.map((r) => r.pattern)).toEqual(["vercel.delete", "vercel.*"]);
+    }),
+  );
+
+  it.effect("create places a broad rule below an existing narrower one", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      // Narrow leaf rule first, then a broad category rule WITHOUT an explicit
+      // position — the category rule must not shadow the leaf rule.
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*.*.records.create",
+        action: "block",
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*.*.records.*",
+        action: "require_approval",
+      });
+
+      const rules = yield* executor.policies.list();
+      expect(rules.map((r) => r.pattern)).toEqual([
+        "vercel.*.*.records.create",
+        "vercel.*.*.records.*",
+      ]);
+
+      const rows = rules.map(
+        (r) =>
+          ({
+            id: String(r.id),
+            owner: r.owner,
+            subject: "",
+            pattern: r.pattern,
+            action: r.action,
+            position: r.position,
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+          }) as ToolPolicyRow,
+      );
+      const match = resolveToolPolicy("vercel.org.acct.records.create", rows, () => 0);
+      expect(match?.action).toBe("block");
+      expect(match?.pattern).toBe("vercel.*.*.records.create");
     }),
   );
 

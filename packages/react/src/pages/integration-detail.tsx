@@ -526,7 +526,9 @@ export function IntegrationDetailPage(props: {
                         staticTool={selection?.static}
                         policy={selectedTool.policy}
                         onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                        onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                        onClearPolicy={(pattern, policyId) =>
+                          void policyActions.clear(pattern, policyId)
+                        }
                         {...(!selection?.static && selectedBareName
                           ? {
                               integration: slug,

@@ -88,6 +88,8 @@ export {
   isValidPattern,
   effectivePolicyFromSorted,
   comparePolicyRow,
+  patternSpecificity,
+  positionForNewPattern,
   ToolPolicyActionSchema,
   type ToolPolicy,
   type CreateToolPolicyInput,
