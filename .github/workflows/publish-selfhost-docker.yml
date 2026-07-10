@@ -163,10 +163,121 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Release gate: run the full selfhost-docker e2e project against the exact
+  # by-digest image each build leg pushed, before any user-visible tag moves.
+  # Build-only smoke misses startup crashes and feature-path breaks (a package
+  # resolved at runtime but missing from the packaged runtime shipped broken in
+  # v1.5.30 exactly this way); per-arch matters too — the libsql native-addon
+  # bug was arm64-only.
+  e2e:
+    needs:
+      - metadata
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.release_tag }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-1.3.11-
+
+      # Scenario helpers spawn Node sidecars; pin the same Node 24 runtime the
+      # other workflows use.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-playwright-
+
+      # Install from e2e so bunx resolves ITS pinned playwright (the version
+      # the tests run against) rather than floating to the latest.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        working-directory: e2e
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digest
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests
+
+      - name: Resolve image reference
+        id: image_ref
+        shell: bash
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest_file="$(find "$RUNNER_TEMP/digests" -maxdepth 1 -type f | head -n 1)"
+          if [ -z "$digest_file" ]; then
+            echo "No image digest was downloaded."
+            exit 1
+          fi
+          ref="${IMAGE}@sha256:$(basename "$digest_file")"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          docker pull "$ref"
+
+      - name: Run selfhost-docker scenarios against the published digest
+        env:
+          E2E_SELFHOST_DOCKER_IMAGE: ${{ steps.image_ref.outputs.ref }}
+        run: bunx vitest run --project selfhost-docker --retry=2
+        working-directory: e2e
+
+      - name: Upload run artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-runs-selfhost-docker-${{ matrix.arch }}
+          path: |
+            e2e/runs/
+            e2e/selfhost-docker.boot.log
+          retention-days: 7
+
   merge:
     needs:
       - metadata
       - build
+      - e2e
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       packages: write

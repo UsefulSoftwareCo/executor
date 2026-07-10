@@ -50,7 +50,7 @@ export const signInSession = async (
 // mcporter's `cookieConsentStrategy` only handles the old direct-code redirect,
 // so this completes the screen the way the page does: sign in, drive authorize,
 // then POST the same `/api/auth/oauth2/consent` grant the Allow button fires.
-const forcedMcpConsent =
+export const forcedMcpConsent =
   (baseUrl: string, credentials: { readonly email: string; readonly password: string }) =>
   async ({ authorizationUrl }: { authorizationUrl: string }): Promise<{ code: string }> => {
     const origin = new URL(baseUrl).origin;

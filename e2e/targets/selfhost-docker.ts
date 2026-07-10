@@ -6,12 +6,10 @@
 // lives in setup/selfhost-docker.globalsetup.ts.
 import { Effect } from "effect";
 
-import { cookieConsentStrategy } from "@executor-js/mcporter";
-
 import { e2ePort } from "../src/ports";
 import type { Identity, Target } from "../src/target";
 import { runSelfhostContainer, stopSelfhostContainer } from "../setup/selfhost-docker.boot";
-import { SELFHOST_ADMIN, signInSession } from "./selfhost";
+import { forcedMcpConsent, SELFHOST_ADMIN, signInSession } from "./selfhost";
 
 export const SELFHOST_DOCKER_PORT = e2ePort("E2E_SELFHOST_DOCKER_PORT", 5);
 export const SELFHOST_DOCKER_BASE_URL =
@@ -35,11 +33,14 @@ export const selfhostDockerTarget = (): Target => ({
         cookies,
       };
     }),
+  // Same forced-consent completion as the selfhost dev target: the app forces
+  // `prompt=consent` on every MCP authorize, so authorize redirects to the
+  // relative `/mcp-consent?consent_code=...` screen instead of straight to the
+  // callback — mcporter's cookieConsentStrategy can't parse that redirect.
   mcpConsent: (identity: Identity) =>
-    cookieConsentStrategy({
-      appBaseUrl: SELFHOST_DOCKER_BASE_URL,
+    forcedMcpConsent(SELFHOST_DOCKER_BASE_URL, {
       email: identity.credentials?.email ?? SELFHOST_ADMIN.email,
-      password: identity.credentials?.password ?? SELFHOST_ADMIN.password,
+      password: identity.credentials?.password || SELFHOST_ADMIN.password,
     }),
   // A real deployment cycle, not a warm `docker restart`: graceful stop
   // (SIGTERM + docker's grace), remove the container, start a NEW one from
