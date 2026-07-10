@@ -78,11 +78,12 @@ const decryptSecret = (key: Buffer, payload: string): Effect.Effect<string, Stor
 
 const ENCRYPTED_PROVIDER_KEY = ProviderKey.make("encrypted");
 
-/** Map the executor's (tenant, subject?) binding onto the storage `Owner`
- *  literal: a bound subject writes the user's own partition, otherwise the
- *  org-shared one. */
-const ownerOf = (binding: OwnerBinding): Owner =>
-  binding.subject == null ? Owner.make("org") : Owner.make("user");
+/** Always store encrypted secrets at the org partition so that any subject
+ *  within the tenant — a human user who completed browser OAuth or a Service
+ *  Token driving an MCP tool call — can retrieve them. Access control is
+ *  enforced by the connection row's own (tenant, owner, subject) partition;
+ *  the provider is a shared, opaque-key vault. */
+const ownerOf = (_binding: OwnerBinding): Owner => Owner.make("org");
 
 const makeEncryptedProvider = (
   key: Buffer,
