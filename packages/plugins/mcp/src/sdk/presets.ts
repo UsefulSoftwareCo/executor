@@ -30,7 +30,7 @@ export const mcpPresets: readonly McpPreset[] = [
     summary: "Deterministic MCP fixtures for validating native text and image content.",
     url: "https://emulators.dev/mcp/query/mcp?token=demo-token",
     endpoint: "https://emulators.dev/mcp/query/mcp?token=demo-token",
-    icon: "https://emulators.dev/favicon.ico",
+    icon: "https://integrations.sh/logo/emulators.dev",
   },
   {
     id: "deepwiki",
@@ -142,7 +142,7 @@ export const mcpPresets: readonly McpPreset[] = [
     id: "chrome-devtools",
     name: "Chrome DevTools",
     summary: "Debug a live Chrome browser session via local stdio.",
-    icon: "https://www.google.com/chrome/static/images/favicons/favicon-32x32.png",
+    icon: "https://integrations.sh/logo/chrome.com",
     featured: true,
     transport: "stdio",
     command: "npx",

@@ -14,22 +14,13 @@ const integrationFaviconDomain = (url: string | undefined): string | null => {
 };
 
 // integrations.sh/logo proxies context.dev's Logo Link behind an edge cache
-// and is executor's single logo source; Google's favicon service remains in
-// the cascade as the fallback the <img> onError walks to when the proxy is
-// unreachable or serves nothing for the domain.
+// and is executor's single logo source. Fallbacks (Google's favicon service,
+// a letter placeholder for unknown domains) live inside the proxy, so clients
+// never resolve favicons against a third party directly.
 export function integrationFaviconUrl(url: string | undefined, size: number): string | null {
   const domain = integrationFaviconDomain(url);
   if (!domain) return null;
   return `https://integrations.sh/logo/${domain}?sz=${size * 2}`;
-}
-
-export function integrationFaviconFallbackUrl(
-  url: string | undefined,
-  size: number,
-): string | null {
-  const domain = integrationFaviconDomain(url);
-  if (!domain) return null;
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`;
 }
 
 export function integrationLocalIconUrl(integrationId: string | undefined): string | null {
@@ -181,9 +172,9 @@ export function integrationPresetIconUrl(
 }
 
 // Resolution cascade for the rendered favicon: first non-null, non-failed of an
-// explicit preset icon, the bundled local icon for a known integration id, the
-// integrations.sh logo proxy derived from the integration URL, then the Google
-// favicon service as a last resort. The built-in executor integration has no preset
+// explicit preset icon, the bundled local icon for a known integration id, then
+// the integrations.sh logo proxy derived from the integration URL (which owns
+// its own upstream fallbacks). The built-in executor integration has no preset
 // icon and no URL, so it resolves ONLY through the integrationId branch: callers
 // that drop integrationId fall through to the neutral BoxIcon placeholder.
 export function integrationFaviconSrc(args: {
@@ -199,7 +190,6 @@ export function integrationFaviconSrc(args: {
       args.icon ?? null,
       integrationLocalIconUrl(args.integrationId),
       integrationFaviconUrl(args.url, args.size),
-      integrationFaviconFallbackUrl(args.url, args.size),
     ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
   );
 }
