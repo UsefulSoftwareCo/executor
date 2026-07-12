@@ -1,5 +1,12 @@
 # @executor-js/vite-plugin
 
+## 0.0.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.33
+
 ## 0.0.49
 
 ### Patch Changes

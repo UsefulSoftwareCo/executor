@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-keychain",
-  "version": "1.5.32",
+  "version": "1.5.33",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/keychain",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"
