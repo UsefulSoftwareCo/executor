@@ -3,7 +3,7 @@ import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { makeLocalApiHandler } from "./app";
-import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
+import { disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -81,25 +81,29 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // engine instance (the browser-approval + stdio surface is local-only and not
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
-    const { executor } = await getExecutorBundle();
+    const bundle = await getExecutorBundle();
     const engine = createExecutionEngine({
-      executor,
+      executor: bundle.executor,
       codeExecutor: makeQuickJsExecutor(),
     });
     mcp = createMcpRequestHandler({
       defaultConfig: { engine },
       createConfigForResource: async (resource) => {
         if (resource.kind === "default") return { config: { engine } };
-        const handle = await createExecutorHandle({
+        // A toolkit resource differs from the default only in its plugin scope,
+        // so it derives from the boot bundle's ALREADY-OPEN database. Opening a
+        // second owned database here would deadlock against the data-dir
+        // ownership lock this very process holds, failing every request.
+        const scoped = await bundle.createScopedExecutor({
           activeToolkitSlug: resource.slug,
         });
         const toolkitEngine = createExecutionEngine({
-          executor: handle.executor,
+          executor: scoped.executor,
           codeExecutor: makeQuickJsExecutor(),
         });
         return {
           config: { engine: toolkitEngine },
-          close: handle.dispose,
+          close: scoped.dispose,
         };
       },
     });
