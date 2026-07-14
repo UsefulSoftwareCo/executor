@@ -1,6 +1,6 @@
 // The e2e dev CLI: the same primitives scenarios use, interactive.
 //
-//   bun scripts/cli.ts up selfhost [--share] [--keep-data]
+//   bun scripts/cli.ts up selfhost [--share] [--fresh]
 //   bun scripts/cli.ts up cloud    [--share]
 //   bun scripts/cli.ts status
 //   bun scripts/cli.ts identity <target> [--no-org]
@@ -223,7 +223,12 @@ const run = async (target: "selfhost" | "cloud", flags: ReadonlySet<string>) => 
         webBaseUrl: baseUrl,
         admin,
         host: share ? "0.0.0.0" : undefined,
-        fresh: !flags.has("--keep-data"),
+        // A dev-CLI instance is persistent by design (see selfhost.boot.ts): its
+        // data dir, including registered MCP OAuth clients, survives a restart so
+        // a connected client does not have to re-register every bounce. Opt into a
+        // clean slate with --fresh; the vitest globalsetup stays hermetic on its
+        // own (it calls bootSelfhost with fresh defaulted on).
+        fresh: flags.has("--fresh"),
         logFile,
       });
       teardown = async () => {
@@ -543,9 +548,11 @@ const logs = (targetName: string) => {
 
 const HELP = `e2e dev CLI — the scenario primitives, interactive (see e2e/AGENTS.md)
 
-  up <target> [--share]      boot selfhost|cloud; stays up until \`down\`.
+  up <target> [--share] [--fresh]   boot selfhost|cloud; stays up until \`down\`.
                              --share = reachable over the tailnet
                              (cloud --share fronts app+WorkOS with tailscale HTTPS)
+                             --fresh = wipe the data dir first (default: persist,
+                             so MCP OAuth client registrations survive a restart)
   status                     list running instances
   identity <target> [--no-org]  mint a fresh identity (headers/cookies/creds)
   api <target> <group.endpoint> [json]   typed API call as a fresh identity
