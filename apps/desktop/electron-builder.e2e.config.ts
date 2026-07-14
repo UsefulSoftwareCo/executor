@@ -28,6 +28,9 @@ const config: Configuration = {
   },
   win: {
     ...base.win,
+    // E2E packages must stay unsigned even if a developer shell exports the
+    // Azure Trusted Signing env vars used by the release workflow.
+    azureSignOptions: null,
     target: ["dir"],
   },
   linux: {
