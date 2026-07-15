@@ -25,11 +25,13 @@ export type DenoWorkerProcessCallbacks = {
   onStdoutLine: (line: string) => void;
   onStderr: (chunk: string) => void;
   onError: (error: Error) => void;
+  onStdinError: (error: Error) => void;
   onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
 };
 
 export type DenoWorkerProcess = {
-  stdin: NodeJS.WritableStream;
+  ready: Promise<void>;
+  write: (data: string) => Promise<void>;
   dispose: () => void;
 };
 
@@ -81,6 +83,20 @@ export const spawnDenoWorkerProcess = (
     throw new Error("Failed to create piped stdio for Deno worker subprocess");
   }
 
+  const ready = new Promise<void>((resolve, reject) => {
+    const onSpawn = () => {
+      child.removeListener("error", onSpawnError);
+      resolve();
+    };
+    const onSpawnError = (cause: unknown) => {
+      child.removeListener("spawn", onSpawn);
+      reject(normalizeError(cause));
+    };
+
+    child.once("spawn", onSpawn);
+    child.once("error", onSpawnError);
+  });
+
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
 
@@ -109,16 +125,43 @@ export const spawnDenoWorkerProcess = (
     callbacks.onError(normalizeError(cause));
   };
 
+  const onStdinError = (cause: unknown) => {
+    callbacks.onStdinError(normalizeError(cause));
+  };
+
+  const onStdinClose = () => {
+    child.stdin.removeListener("error", onStdinError);
+  };
+
   const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
     callbacks.onExit(code, signal);
   };
 
   child.stdout.on("data", onStdoutData);
   child.stderr.on("data", onStderrData);
+  child.stdin.on("error", onStdinError);
+  child.stdin.once("close", onStdinClose);
   child.on("error", onError);
   child.on("exit", onExit);
 
   let disposed = false;
+
+  const write = (data: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (disposed || !child.stdin.writable) {
+        reject(new Error("Deno subprocess stdin is not writable"));
+        return;
+      }
+
+      child.stdin.write(data, (cause: Error | null | undefined) => {
+        if (cause) {
+          reject(cause);
+          return;
+        }
+
+        resolve();
+      });
+    });
 
   const dispose = () => {
     if (disposed) {
@@ -130,6 +173,7 @@ export const spawnDenoWorkerProcess = (
     child.stderr!.removeListener("data", onStderrData);
     child.removeListener("error", onError);
     child.removeListener("exit", onExit);
+    child.stdin.destroy();
 
     if (!child.killed) {
       child.kill("SIGKILL");
@@ -137,7 +181,8 @@ export const spawnDenoWorkerProcess = (
   };
 
   return {
-    stdin: child.stdin,
+    ready,
+    write,
     dispose,
   };
 };
