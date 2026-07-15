@@ -1,4 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { buildSync } from "esbuild";
 import { Effect } from "effect";
 
 import { bundleEntry } from "../pipeline/bundle";
@@ -13,6 +16,28 @@ const bundle = (source: string) =>
   });
 
 describe("in-process app tool executor", () => {
+  it("releases the invocation timeout after a successful call", () => {
+    const fixture = join(import.meta.dirname, "app-tool-executor-process.fixture.ts");
+    const script = buildSync({
+      entryPoints: [fixture],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node24",
+      write: false,
+    })
+      .outputFiles.map((output) => output.text)
+      .join("\n");
+    const result = spawnSync(process.execPath, ["--input-type=module"], {
+      encoding: "utf8",
+      input: script,
+      timeout: 5_000,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("invocation complete");
+  });
+
   it.effect("detects integration declarations and merges projected input fields", () =>
     Effect.gen(function* () {
       const bundled = yield* bundle(`
