@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useRef } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { toast } from "sonner";
 import {
   PolicyId,
   positionForNewPattern,
@@ -16,6 +18,7 @@ import {
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
 import { trackEvent } from "../api/analytics";
+import { messageFromExit } from "../api/error-reporting";
 
 export interface PolicyAction {
   /** Set the action on a pattern. If a user rule with this exact pattern
@@ -44,9 +47,9 @@ export interface PolicyAction {
  */
 export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
   const policies = useAtomValue(policiesOptimisticAtom);
-  const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promise" });
-  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promise" });
-  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promise" });
+  const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
+  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
+  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
 
   // Sorted by position ASC (lowest position = highest precedence first),
   // matching server evaluation order. Optimistic placeholder rows carry
@@ -105,23 +108,31 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
       const existing = findExact(pattern);
       if (existing) {
         if (existing.action === action) return;
-        await doUpdate({
+        const exit = await doUpdate({
           params: { policyId: PolicyId.make(existing.id) },
           payload: { owner, action },
           reactivityKeys: policyWriteKeys,
         });
+        if (Exit.isFailure(exit)) {
+          toast.error(messageFromExit(exit, "Failed to update policy"));
+          return;
+        }
         trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
         return;
       }
       const position = computePosition(pattern);
-      const created = await doCreate({
+      const exit = await doCreate({
         payload:
           position === undefined
             ? { owner, pattern, action }
             : { owner, pattern, action, position },
         reactivityKeys: policyWriteKeys,
       });
-      createdIdByPattern.current.set(pattern, String(created.id));
+      if (Exit.isFailure(exit)) {
+        toast.error(messageFromExit(exit, "Failed to create policy"));
+        return;
+      }
+      createdIdByPattern.current.set(pattern, String(exit.value.id));
       trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
     },
     [owner, doCreate, doUpdate, findExact, computePosition],
@@ -138,12 +149,16 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
       const isReal = (id: string | undefined): id is string => !!id && !id.startsWith("pending-");
       const id = [existing?.id, createdIdByPattern.current.get(pattern), policyId].find(isReal);
       if (!id) return;
-      createdIdByPattern.current.delete(pattern);
-      await doRemove({
+      const exit = await doRemove({
         params: { policyId: PolicyId.make(id) },
         payload: { owner },
         reactivityKeys: policyWriteKeys,
       });
+      if (Exit.isFailure(exit)) {
+        toast.error(messageFromExit(exit, "Failed to clear policy"));
+        return;
+      }
+      createdIdByPattern.current.delete(pattern);
       trackEvent("tool_policy_cleared", {
         pattern_kind: pattern.endsWith(".*") ? "group" : "exact",
         owner,
