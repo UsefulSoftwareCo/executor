@@ -19,6 +19,8 @@ export class GraphqlExtractionError extends Schema.TaggedErrorClass<GraphqlExtra
 export class GraphqlInvocationError extends Data.TaggedError("GraphqlInvocationError")<{
   readonly message: string;
   readonly statusCode: Option.Option<number>;
+  readonly reason?: "invocation_timeout";
+  readonly timeoutMs?: number;
   readonly cause?: unknown;
 }> {}
 
