@@ -4,6 +4,7 @@ import {
   collectTables,
   DataMigrationError,
   runSqliteDataMigrations,
+  sha256Hex,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
 import { createSqliteTestFumaDb } from "@executor-js/sdk/testing";
@@ -47,7 +48,12 @@ const insertIntegration = (
     ],
   });
 
-const insertConnection = (client: SqliteDataMigrationClient, tenant = "org_1") =>
+const insertConnection = (
+  client: SqliteDataMigrationClient,
+  tenant = "org_1",
+  name = "main",
+  options: { readonly integration?: string; readonly rowId?: string } = {},
+) =>
   client.execute({
     sql: `INSERT INTO connection
       (integration, name, template, provider, item_ids, identity_label, description,
@@ -56,8 +62,8 @@ const insertConnection = (client: SqliteDataMigrationClient, tenant = "org_1") =
        row_id, tenant, owner, subject)
       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      "google",
-      "main",
+      options.integration ?? "google",
+      name,
       "googleOAuth",
       "vault",
       JSON.stringify({ token: "access_item", refresh: "refresh_item" }),
@@ -72,7 +78,7 @@ const insertConnection = (client: SqliteDataMigrationClient, tenant = "org_1") =
       JSON.stringify({ token: "metadata" }),
       now,
       now,
-      `conn_google_${tenant}`,
+      options.rowId ?? `conn_google_${tenant}${name === "main" ? "" : `_${name}`}`,
       tenant,
       "org",
       "",
@@ -278,6 +284,92 @@ describe("providerServiceSplitDataMigration", () => {
       yield* seedCalendarOrg(client, "org_1", { includeBlobs: false });
 
       expect(yield* runSqliteProviderServiceSplitMigration(client)).toBe(0);
+
+      const integrations = yield* Effect.promise(() =>
+        client.execute("SELECT slug, plugin_id FROM integration ORDER BY slug"),
+      );
+      expect(integrations.rows).toEqual([{ slug: "google", plugin_id: "google" }]);
+
+      yield* Effect.promise(() => db.close());
+    }),
+  );
+
+  it.effect("preserves connections whose legacy migration row IDs collide", () =>
+    Effect.gen(function* () {
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
+      const client = db.client;
+
+      yield* Effect.promise(() =>
+        insertIntegration(client, {
+          rowId: "google_row",
+          tenant: "org_1",
+          slug: "google",
+          pluginId: "google",
+          config: {
+            googleDiscoveryUrls: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"],
+            specHash: "mono-hash",
+          },
+        }),
+      );
+      yield* Effect.promise(() => insertConnection(client, "org_1", "ypw3e5cb"));
+      yield* Effect.promise(() => insertConnection(client, "org_1", "al4jix0b"));
+      yield* Effect.promise(() => insertBlob(client, "spec/mono-hash"));
+      yield* Effect.promise(() => insertBlob(client, "defs/mono-hash"));
+
+      expect(yield* runSqliteProviderServiceSplitMigration(client)).toBe(1);
+
+      const connections = yield* Effect.promise(() =>
+        client.execute("SELECT integration, name FROM connection ORDER BY name"),
+      );
+      expect(connections.rows).toEqual([
+        { integration: "google_calendar", name: "al4jix0b" },
+        { integration: "google_calendar", name: "ypw3e5cb" },
+      ]);
+
+      yield* Effect.promise(() => db.close());
+    }),
+  );
+
+  it.effect("rolls back instead of ignoring an unrelated row ID conflict", () =>
+    Effect.gen(function* () {
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
+      const client = db.client;
+      const connectionRowId = `service_split_${yield* sha256Hex(
+        JSON.stringify(["connection", "org_1", "org", "", "google_calendar", "main"]),
+      )}`;
+
+      yield* Effect.promise(() =>
+        insertIntegration(client, {
+          rowId: "google_row",
+          tenant: "org_1",
+          slug: "google",
+          pluginId: "google",
+          config: {
+            googleDiscoveryUrls: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"],
+            specHash: "mono-hash",
+          },
+        }),
+      );
+      yield* Effect.promise(() => insertConnection(client));
+      yield* Effect.promise(() =>
+        insertConnection(client, "org_1", "existing", {
+          integration: "google_calendar",
+          rowId: connectionRowId,
+        }),
+      );
+      yield* Effect.promise(() => insertBlob(client, "spec/mono-hash"));
+      yield* Effect.promise(() => insertBlob(client, "defs/mono-hash"));
+
+      const failure = yield* Effect.flip(runSqliteProviderServiceSplitMigration(client));
+      expect(failure).toBeInstanceOf(DataMigrationError);
+
+      const connections = yield* Effect.promise(() =>
+        client.execute("SELECT integration, name FROM connection ORDER BY integration, name"),
+      );
+      expect(connections.rows).toEqual([
+        { integration: "google", name: "main" },
+        { integration: "google_calendar", name: "existing" },
+      ]);
 
       const integrations = yield* Effect.promise(() =>
         client.execute("SELECT slug, plugin_id FROM integration ORDER BY slug"),
