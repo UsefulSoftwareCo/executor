@@ -41,9 +41,12 @@ const standardOidcIdentityScopes = ["openid", "email", "profile"] as const;
 
 const identityScopesForPreset = (
   identityScopes: OAuth2Preset["identityScopes"],
+  advertisedScopes: ReadonlySet<string>,
 ): readonly string[] => {
   if (identityScopes === false) return [];
-  return identityScopes === "auto" ? standardOidcIdentityScopes : identityScopes;
+  return identityScopes === "auto"
+    ? standardOidcIdentityScopes.filter((scope) => advertisedScopes.has(scope))
+    : identityScopes;
 };
 
 export const resolvedOAuthScopes = (
@@ -51,7 +54,7 @@ export const resolvedOAuthScopes = (
   identityScopes: OAuth2Preset["identityScopes"],
 ): string[] => {
   const merged = new Set(apiScopes);
-  for (const scope of identityScopesForPreset(identityScopes)) merged.add(scope);
+  for (const scope of identityScopesForPreset(identityScopes, merged)) merged.add(scope);
   return [...merged];
 };
 
@@ -141,9 +144,10 @@ const oauthTemplateFromPreset = (
 // ---------------------------------------------------------------------------
 // All spec-detected auth methods → the union of stored `Authentication`
 // templates. Header presets become apiKey templates; each oauth2 preset becomes
-// an oauth template (with its declared API scopes plus, for auth-code flows,
-// the standard identity scopes). Slugs stay deterministic per method so the
-// stored template is stable across previews of the same spec.
+// an oauth template with its declared scopes. Auto identity detection only
+// preserves standard OIDC scopes the provider advertised; it never invents
+// scopes unsupported by a plain OAuth provider. Slugs stay deterministic per
+// method so the stored template is stable across previews of the same spec.
 // ---------------------------------------------------------------------------
 
 export const detectedAuthenticationTemplates = (
