@@ -54,6 +54,7 @@ import {
   discoverProtectedResourceMetadata,
   OAuthDiscoveryError,
   registerDynamicClient as registerDynamicClientDcr,
+  type OAuthAuthorizationServerMetadata,
 } from "./oauth-discovery";
 import {
   assertSupportedOAuthEndpointUrl,
@@ -414,6 +415,14 @@ const canonicalUrlString = (value: string): string => {
   return url.toString();
 };
 
+const oauthMetadataMatchesClient = (
+  client: Pick<LoadedOAuthClient, "authorizationUrl" | "tokenUrl">,
+  metadata: OAuthAuthorizationServerMetadata,
+): boolean =>
+  canonicalUrlString(metadata.authorization_endpoint) ===
+    canonicalUrlString(client.authorizationUrl) &&
+  canonicalUrlString(metadata.token_endpoint) === canonicalUrlString(client.tokenUrl);
+
 const isWellKnownOAuthMetadataUrl = (value: string): boolean => {
   const path = new URL(value.trim()).pathname.toLowerCase();
   return (
@@ -494,7 +503,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         Effect.catch(() => Effect.succeed(null)),
         Effect.provide(httpClientLayer),
       );
-      return intersectScopes(requestedScopes, as?.metadata.scopes_supported);
+      if (!as || !oauthMetadataMatchesClient(client, as.metadata)) return requestedScopes;
+      return intersectScopes(requestedScopes, as.metadata.scopes_supported);
     }).pipe(Effect.catch(() => Effect.succeed(requestedScopes)));
 
   // Caps on server-controlled discovery input — a hostile or buggy server must
