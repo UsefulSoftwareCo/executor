@@ -1592,18 +1592,34 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(
-                  Effect.mapError((cause) =>
-                    cause.error === "invalid_grant"
-                      ? reauth(
-                          // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
-                          `OAuth token refresh was rejected (invalid_grant): ${cause.message}`,
-                        )
-                      : new StorageError({
-                          // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
-                          message: `OAuth token refresh failed: ${cause.message}`,
-                          cause,
-                        }),
-                  ),
+                  Effect.mapError((cause) => {
+                    // An RFC 6749 §5.2 error code is the AS's definitive
+                    // verdict on this grant — retrying cannot change it.
+                    // invalid_grant means the refresh token itself is dead
+                    // (re-auth required); every other code must still reach
+                    // the caller as an auth failure, because a StorageError
+                    // is scrubbed to "Internal tool error [id]" at the
+                    // sandbox boundary (the Pylon prod regression: the AS
+                    // rejected refreshes with a non-invalid_grant 400 and
+                    // callers saw only the opaque defect). Code-less
+                    // failures (transport blips, non-OAuth-shaped responses)
+                    // stay StorageError so the next invoke retries.
+                    if (cause.error !== undefined) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected (${cause.error}): ${cause.message}`,
+                        reauthRequired: cause.error === "invalid_grant",
+                      });
+                    }
+                    return new StorageError({
+                      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                      message: `OAuth token refresh failed: ${cause.message}`,
+                      cause,
+                    });
+                  }),
                 );
               });
 

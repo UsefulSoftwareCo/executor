@@ -55,6 +55,10 @@ export interface OAuthTestServerOptions {
   readonly supportRefresh?: boolean;
   readonly tokenExpiresInSeconds?: number;
   readonly invalidRefreshTokenDescription?: string;
+  /** RFC 6749 error code returned when a refresh-token grant is rejected.
+   *  Defaults to `invalid_grant`; set to e.g. `invalid_request` to mirror
+   *  authorization servers that reject dead refresh tokens with other codes. */
+  readonly invalidRefreshTokenErrorCode?: string;
   readonly idTokenClaims?: Readonly<Record<string, unknown>>;
   readonly refreshIdTokenClaims?: Readonly<Record<string, unknown>>;
   /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
@@ -426,6 +430,7 @@ export const serveOAuthTestServer = (
     const tokenExpiresInSeconds = options.tokenExpiresInSeconds ?? 3600;
     const invalidRefreshTokenDescription =
       options.invalidRefreshTokenDescription ?? "Unknown refresh token";
+    const invalidRefreshTokenErrorCode = options.invalidRefreshTokenErrorCode ?? "invalid_grant";
     const scopes = options.scopes ?? defaultScopes;
     const omittedTokenResponseScopes = new Set(options.omitTokenResponseScopes ?? []);
     const tokenResponseScope = (scope: string | null): string | undefined => {
@@ -671,7 +676,7 @@ export const serveOAuthTestServer = (
             const refreshToken = params.get("refresh_token");
             const record = refreshToken ? refreshTokens.get(refreshToken) : undefined;
             if (!supportRefresh || !refreshToken || !record || record.clientId !== clientId) {
-              return oauthError(400, "invalid_grant", invalidRefreshTokenDescription);
+              return oauthError(400, invalidRefreshTokenErrorCode, invalidRefreshTokenDescription);
             }
             const nextAccessToken = `at_${randomUUID()}`;
             const nextRefreshToken = `rt_${randomUUID()}`;
