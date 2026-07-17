@@ -19,7 +19,11 @@ import {
 } from "@executor-js/api/server";
 import type { FumaDb, FumaTables } from "@executor-js/sdk";
 
-import { SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
+import {
+  SELF_HOST_NAMESPACE,
+  SELF_HOST_SCHEMA_VERSION,
+  type SelfHostDatabaseConfig,
+} from "../config";
 
 // ---------------------------------------------------------------------------
 // SQLite executor DB factory, inline (like apps/local's sqlite-fumadb.ts and
@@ -57,10 +61,10 @@ export interface SelfHostDbHandle<TTables extends FumaTables = FumaTables> {
   readonly fuma: FumaDB<SelfHostFumaSchema<TTables>[]>;
   readonly drizzle: LibSQLDatabase<Record<string, unknown>>;
   /**
-   * The libSQL client for this handle's `file:` URL. Better Auth's LibsqlDialect
+   * The libSQL client for this handle's local or remote URL. Better Auth's LibsqlDialect
    * is built on THIS client (one shared connection — see better-auth.ts), and
    * the seed reads Better Auth's tables through it too. `url` is retained for
-   * callers that still need the `file:` string (diagnostics, edge swap).
+   * callers that need the connection URL for diagnostics.
    */
   readonly client: Client;
   readonly url: string;
@@ -71,30 +75,40 @@ export interface CreateSqliteExecutorDbOptions<TTables extends FumaTables = Fuma
   readonly tables: TTables;
   readonly namespace: string;
   readonly version?: string;
-  readonly path: string;
+  readonly database: SelfHostDatabaseConfig;
 }
 
 export const createSqliteExecutorDb = async <const TTables extends FumaTables>(
   options: CreateSqliteExecutorDbOptions<TTables>,
 ): Promise<SelfHostDbHandle<TTables>> => {
   const version = options.version ?? SELF_HOST_SCHEMA_VERSION;
-  if (options.path !== ":memory:") {
-    mkdirSync(dirname(options.path), { recursive: true });
+  if (options.database.kind === "file" && options.database.path !== ":memory:") {
+    mkdirSync(dirname(options.database.path), { recursive: true });
   }
 
-  const url = toLibsqlFileUrl(options.path);
-  const client = createClient({ url });
+  const url =
+    options.database.kind === "file"
+      ? toLibsqlFileUrl(options.database.path)
+      : options.database.url;
+  const client = createClient({
+    url,
+    ...(options.database.kind === "remote" && options.database.authToken
+      ? { authToken: options.database.authToken }
+      : {}),
+  });
   // Connection PRAGMAs. This is the ONE libSQL connection for the process —
   // drizzle (executor tables) and Better Auth's LibsqlDialect both run on this
   // same client (see better-auth.ts), so these apply to every query, auth
   // included. WAL is a file-level mode; foreign_keys/busy_timeout/synchronous
   // are connection-level and set once here.
   await client.execute("PRAGMA foreign_keys = ON");
-  await client.execute("PRAGMA journal_mode = WAL");
-  // Survive concurrent writes from the multi-user HTTP server, and trade
-  // fsync-per-commit for fsync-per-checkpoint (durable under WAL).
-  await client.execute("PRAGMA busy_timeout = 5000");
-  await client.execute("PRAGMA synchronous = NORMAL");
+  if (options.database.kind === "file") {
+    await client.execute("PRAGMA journal_mode = WAL");
+    // Survive concurrent writes from the multi-user HTTP server, and trade
+    // fsync-per-commit for fsync-per-checkpoint (durable under WAL).
+    await client.execute("PRAGMA busy_timeout = 5000");
+    await client.execute("PRAGMA synchronous = NORMAL");
+  }
 
   const schema = createDrizzleRuntimeSchemaFromTables({
     tables: options.tables,
@@ -142,22 +156,22 @@ export class SelfHostDb extends Context.Service<SelfHostDb, SelfHostDbHandle>()(
 ) {}
 
 export interface SelfHostDbLayerOptions {
-  readonly path: string;
+  readonly database: SelfHostDatabaseConfig;
   readonly namespace?: string;
   readonly version?: string;
 }
 
 /**
  * Open the self-host DB with the full plugin table set. Used both by the layer
- * and by the composition root (which needs the raw handle eagerly so Better
- * Auth can open its own libSQL connection to the same `file:` URL).
+ * and by the composition root, which needs the raw handle eagerly so Better
+ * Auth can share its libSQL client.
  */
 export const createSelfHostDb = (options: SelfHostDbLayerOptions): Promise<SelfHostDbHandle> =>
   createSqliteExecutorDb({
     tables: collectTables(),
     namespace: options.namespace ?? SELF_HOST_NAMESPACE,
     version: options.version ?? SELF_HOST_SCHEMA_VERSION,
-    path: options.path,
+    database: options.database,
   });
 
 // Shared DbProvider seam (P2a). The self-host handle keeps its libSQL driver,

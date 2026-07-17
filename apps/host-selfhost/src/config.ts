@@ -18,12 +18,24 @@ import {
 export const SELF_HOST_NAMESPACE = "executor_selfhost";
 export const SELF_HOST_SCHEMA_VERSION = "1.0.0";
 
+export type SelfHostDatabaseConfig =
+  | { readonly kind: "file"; readonly path: string }
+  | {
+      readonly kind: "remote";
+      readonly url: string;
+      readonly authToken?: string;
+    };
+
+export type SelfHostMcpMode = "stateful" | "stateless";
+
 export interface SelfHostConfig {
   /** Bind address. Defaults to loopback. */
   readonly host: string;
   readonly port: number;
-  /** Absolute path to the SQLite database file. */
-  readonly dbPath: string;
+  /** Local SQLite file or remote libSQL database. */
+  readonly database: SelfHostDatabaseConfig;
+  /** Stateful by default; stateless is intended for request-isolated platforms. */
+  readonly mcpMode: SelfHostMcpMode;
   /** Public base URL used by core tools that build absolute links. */
   readonly webBaseUrl: string;
   /**
@@ -45,10 +57,34 @@ export interface SelfHostConfig {
   readonly orgSlug: string;
 }
 
-export const resolveDataDir = (): string =>
-  process.env.EXECUTOR_DATA_DIR ?? join(process.cwd(), ".executor-selfhost");
+export const resolveDataDir = (env: NodeJS.ProcessEnv = process.env): string =>
+  env.EXECUTOR_DATA_DIR ?? join(process.cwd(), ".executor-selfhost");
 
 let cachedSecretKey: string | undefined;
+
+/**
+ * Request-isolated hosts cannot persist generated keys between instances.
+ * Their image sets this guard so a missing managed key fails before boot.
+ */
+export const assertManagedSecretsConfigured = (
+  env: NodeJS.ProcessEnv = process.env,
+  mcpMode: SelfHostMcpMode = resolveMcpMode(env),
+  database?: SelfHostDatabaseConfig,
+): void => {
+  const requiresManagedSecrets =
+    env.EXECUTOR_REQUIRE_MANAGED_SECRETS === "true" ||
+    mcpMode === "stateless" ||
+    database?.kind === "remote";
+  if (!requiresManagedSecrets) return;
+
+  const authSecret = (env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET)?.trim();
+  if (!authSecret || !env.EXECUTOR_SECRET_KEY?.trim()) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: ephemeral hosts must not generate instance-local encryption or session keys
+    throw new Error(
+      "BETTER_AUTH_SECRET (or AUTH_SECRET) and EXECUTOR_SECRET_KEY are required on this host",
+    );
+  }
+};
 
 /**
  * Master key for the encrypted secret provider. Prefers EXECUTOR_SECRET_KEY;
@@ -56,25 +92,27 @@ let cachedSecretKey: string | undefined;
  * boot (so a single-container deploy is encrypted-by-default without manual
  * setup). Memoized so repeated per-request reads are cheap.
  */
-export const resolveSecretKey = (): string => {
-  if (cachedSecretKey) return cachedSecretKey;
-  const fromEnv = process.env.EXECUTOR_SECRET_KEY?.trim();
+export const resolveSecretKey = (env: NodeJS.ProcessEnv = process.env): string => {
+  const cache = env === process.env;
+  if (cache && cachedSecretKey) return cachedSecretKey;
+  const fromEnv = env.EXECUTOR_SECRET_KEY?.trim();
   if (fromEnv) {
-    cachedSecretKey = fromEnv;
+    if (cache) cachedSecretKey = fromEnv;
     return fromEnv;
   }
-  const keyPath = join(resolveDataDir(), "secret.key");
+  const keyPath = join(resolveDataDir(env), "secret.key");
   if (existsSync(keyPath)) {
-    cachedSecretKey = readFileSync(keyPath, "utf8").trim();
-    return cachedSecretKey;
+    const stored = readFileSync(keyPath, "utf8").trim();
+    if (cache) cachedSecretKey = stored;
+    return stored;
   }
-  mkdirSync(resolveDataDir(), { recursive: true });
+  mkdirSync(resolveDataDir(env), { recursive: true });
   const generated = randomBytes(32).toString("base64");
   writeFileSync(keyPath, generated, { mode: 0o600 });
   console.warn(
     `[executor] generated a secret-encryption key at ${keyPath}. Set EXECUTOR_SECRET_KEY to manage it explicitly (and to keep secrets readable across data-dir changes).`,
   );
-  cachedSecretKey = generated;
+  if (cache) cachedSecretKey = generated;
   return generated;
 };
 
@@ -86,29 +124,91 @@ let cachedAuthSecret: string | undefined;
  * first boot (so a single-container deploy boots with no env and keeps sessions
  * valid across restarts). Memoized; mirrors {@link resolveSecretKey}.
  */
-export const resolveAuthSecret = (): string => {
-  if (cachedAuthSecret) return cachedAuthSecret;
-  const fromEnv = (process.env.BETTER_AUTH_SECRET ?? process.env.AUTH_SECRET)?.trim();
+export const resolveAuthSecret = (env: NodeJS.ProcessEnv = process.env): string => {
+  const cache = env === process.env;
+  if (cache && cachedAuthSecret) return cachedAuthSecret;
+  const fromEnv = (env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET)?.trim();
   if (fromEnv) {
-    cachedAuthSecret = fromEnv;
+    if (cache) cachedAuthSecret = fromEnv;
     return fromEnv;
   }
-  const keyPath = join(resolveDataDir(), "auth-secret.key");
+  const keyPath = join(resolveDataDir(env), "auth-secret.key");
   if (existsSync(keyPath)) {
-    cachedAuthSecret = readFileSync(keyPath, "utf8").trim();
-    return cachedAuthSecret;
+    const stored = readFileSync(keyPath, "utf8").trim();
+    if (cache) cachedAuthSecret = stored;
+    return stored;
   }
-  mkdirSync(resolveDataDir(), { recursive: true });
+  mkdirSync(resolveDataDir(env), { recursive: true });
   const generated = randomBytes(32).toString("base64");
   writeFileSync(keyPath, generated, { mode: 0o600 });
   console.warn(
     `[executor] generated a session secret at ${keyPath}. Set BETTER_AUTH_SECRET to manage it explicitly (rotating it signs everyone out).`,
   );
-  cachedAuthSecret = generated;
+  if (cache) cachedAuthSecret = generated;
   return generated;
 };
 
 let warnedNoPublicUrl = false;
+
+const REMOTE_DATABASE_PROTOCOLS = new Set(["libsql:", "https:", "http:", "wss:", "ws:"]);
+
+/** Resolve the local SQLite or remote libSQL connection from environment variables. */
+export const resolveDatabaseConfig = (
+  env: NodeJS.ProcessEnv = process.env,
+): SelfHostDatabaseConfig => {
+  const executorUrl = env.EXECUTOR_DB_URL?.trim() || undefined;
+  const executorAuthToken = env.EXECUTOR_DB_AUTH_TOKEN?.trim() || undefined;
+  const tursoUrl = env.TURSO_DATABASE_URL?.trim() || undefined;
+  const tursoAuthToken = env.TURSO_AUTH_TOKEN?.trim() || undefined;
+  const url = executorUrl ?? tursoUrl;
+  const authToken = executorUrl ? executorAuthToken : tursoAuthToken;
+
+  if ((executorAuthToken && !executorUrl) || (tursoAuthToken && !tursoUrl)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: incomplete database credentials must fail before boot
+    throw new Error(
+      "EXECUTOR_DB_AUTH_TOKEN or TURSO_AUTH_TOKEN requires EXECUTOR_DB_URL or TURSO_DATABASE_URL",
+    );
+  }
+
+  if (url) {
+    let protocol: string;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: operator-provided database URL is validated once at startup
+    try {
+      protocol = new URL(url).protocol;
+    } catch {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: invalid database URL must fail before boot
+      throw new Error("EXECUTOR_DB_URL or TURSO_DATABASE_URL must be an absolute URL");
+    }
+    if (!REMOTE_DATABASE_PROTOCOLS.has(protocol)) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: unsupported database transport must fail before boot
+      throw new Error(
+        "EXECUTOR_DB_URL or TURSO_DATABASE_URL must use libsql, https, http, wss, or ws",
+      );
+    }
+    return authToken ? { kind: "remote", url, authToken } : { kind: "remote", url };
+  }
+
+  if (resolveMcpMode(env) === "stateless") {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: request-isolated hosts must not silently persist state to ephemeral storage
+    throw new Error(
+      "EXECUTOR_DB_URL or TURSO_DATABASE_URL is required when EXECUTOR_MCP_MODE=stateless",
+    );
+  }
+
+  const dataDir = env.EXECUTOR_DATA_DIR ?? join(process.cwd(), ".executor-selfhost");
+  return {
+    kind: "file",
+    path: env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
+  };
+};
+
+/** Resolve the MCP serving mode, rejecting silent typos at startup. */
+export const resolveMcpMode = (env: NodeJS.ProcessEnv = process.env): SelfHostMcpMode => {
+  const mode = env.EXECUTOR_MCP_MODE?.trim() ?? "stateful";
+  if (mode === "stateful" || mode === "stateless") return mode;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: unsupported serving mode must fail before boot
+  throw new Error('EXECUTOR_MCP_MODE must be either "stateful" or "stateless"');
+};
 
 // The public origin used to build absolute links (OAuth redirects, MCP OAuth
 // metadata, the connect-card URL). Priority via the shared resolver: an explicit
@@ -117,45 +217,69 @@ let warnedNoPublicUrl = false;
 // from the request `Host` — that's spoofable and would let host-header injection
 // poison those links (the request origin is only trusted for the CSRF/
 // `trustedOrigins` check, which is same-origin-safe; see better-auth.ts).
-const resolveWebBaseUrl = (port: number): string => {
+const resolveWebBaseUrl = (port: number, env: NodeJS.ProcessEnv = process.env): string => {
   const resolved = resolvePublicOrigin({
-    explicit: process.env.EXECUTOR_WEB_BASE_URL,
-    env: process.env,
+    explicit: env.EXECUTOR_WEB_BASE_URL,
+    env,
   });
   if (resolved) return resolved;
   const fallback = `http://localhost:${port}`;
   // A deployed instance with no detectable origin mints localhost links — warn
   // once (unless local dev/test) so the operator sets the variable.
-  if (!warnedNoPublicUrl && shouldWarnMissingPublicOrigin(process.env.NODE_ENV)) {
+  if (!warnedNoPublicUrl && shouldWarnMissingPublicOrigin(env.NODE_ENV)) {
     warnedNoPublicUrl = true;
-    console.warn(missingPublicOriginWarning({ varName: "EXECUTOR_WEB_BASE_URL", fallback }));
+    console.warn(
+      missingPublicOriginWarning({
+        varName: "EXECUTOR_WEB_BASE_URL",
+        fallback,
+      }),
+    );
   }
   return fallback;
 };
 
-export const loadConfig = (): SelfHostConfig => {
-  const port = Number.parseInt(process.env.PORT ?? "4788", 10);
-  const dataDir = resolveDataDir();
+export interface LoadSelfHostConfigOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly database?: SelfHostDatabaseConfig;
+  readonly mcpMode?: SelfHostMcpMode;
+}
+
+export const loadHostConfig = (
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<SelfHostConfig, "host" | "port" | "webBaseUrl" | "allowLocalNetwork"> => {
+  const port = Number.parseInt(env.PORT ?? "4788", 10);
   return {
-    host: process.env.EXECUTOR_HOST ?? "127.0.0.1",
+    host: env.EXECUTOR_HOST ?? "127.0.0.1",
     port,
-    dbPath: process.env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
-    webBaseUrl: resolveWebBaseUrl(port),
-    allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
-    authSecret: resolveAuthSecret(),
-    bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
-    bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
-    bootstrapAdminName: process.env.EXECUTOR_BOOTSTRAP_ADMIN_NAME ?? "Admin",
-    organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
-    orgSlug: resolveOrgSlug(),
+    webBaseUrl: resolveWebBaseUrl(port, env),
+    allowLocalNetwork: env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+  };
+};
+
+export const loadConfig = (options: LoadSelfHostConfigOptions = {}): SelfHostConfig => {
+  const env = options.env ?? process.env;
+  const host = loadHostConfig(env);
+  const mcpMode = options.mcpMode ?? resolveMcpMode(env);
+  const database = options.database ?? resolveDatabaseConfig(env);
+  assertManagedSecretsConfigured(env, mcpMode, database);
+  return {
+    ...host,
+    database,
+    mcpMode,
+    authSecret: resolveAuthSecret(env),
+    bootstrapAdminEmail: env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
+    bootstrapAdminPassword: env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
+    bootstrapAdminName: env.EXECUTOR_BOOTSTRAP_ADMIN_NAME ?? "Admin",
+    organizationName: env.EXECUTOR_ORG_NAME ?? "Default",
+    orgSlug: resolveOrgSlug(env),
   };
 };
 
 // The org slug doubles as a URL segment (`/<slug>/policies`), so an
 // operator-set value must fit the shared grammar and avoid reserved root
 // segments (api, mcp, login, …) — a colliding slug would shadow real routes.
-const resolveOrgSlug = (): string => {
-  const slug = process.env.EXECUTOR_ORG_SLUG;
+const resolveOrgSlug = (env: NodeJS.ProcessEnv = process.env): string => {
+  const slug = env.EXECUTOR_ORG_SLUG;
   if (!slug) return "default";
   if (!isValidOrgSlug(slug) && slug !== "default") {
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a colliding org slug would shadow app routes; refuse to boot

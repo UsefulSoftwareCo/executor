@@ -10,6 +10,7 @@ import type {
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import type { SelfHostDbHandle } from "../db/self-host-db";
+import type { SelfHostMcpMode } from "../config";
 import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
@@ -133,8 +134,9 @@ export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
   webBaseUrl?: string,
+  mode: SelfHostMcpMode = "stateful",
 ): SelfHostMcpSeams => {
-  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
+  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl, mode);
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );

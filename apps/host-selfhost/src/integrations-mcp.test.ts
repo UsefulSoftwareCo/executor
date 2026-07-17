@@ -69,7 +69,7 @@ const addOrgIntegration = async (organizationId: string): Promise<void> => {
   // the server. Org-owned connections (and their per-connection tools) are
   // shared across every member of the tenant.
   const seedDb = await createSelfHostDb({
-    path: dbPath,
+    database: { kind: "file", path: dbPath },
     namespace: "executor_selfhost",
     version: "1.0.0",
   });

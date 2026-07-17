@@ -82,6 +82,8 @@ type SharedMcpServerConfig = {
    * Enable verbose MCP capability / elicitation debug logging.
    */
   readonly debug?: boolean;
+  /** Disable tools and outcomes that require state to survive another request. */
+  readonly stateless?: true;
   /**
    * Controls how elicitation is handled for this MCP connection. The default
    * is model-managed resume, where paused executions expose interaction
@@ -122,9 +124,7 @@ type SharedMcpServerConfig = {
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
   | (ExecutionEngineConfig<E> & SharedMcpServerConfig)
-  | ({ readonly engine: ExecutionEngine<E> } & SharedMcpServerConfig)
-  | (ExecutionEngineConfig<E> & SharedMcpServerConfig & { readonly stateless: true })
-  | ({ readonly engine: ExecutionEngine<E>; readonly stateless: true } & SharedMcpServerConfig);
+  | ({ readonly engine: ExecutionEngine<E> } & SharedMcpServerConfig);
 
 export type BrowserApprovalStore = {
   readonly takeResponse: (executionId: string) => Effect.Effect<ResumeResponse | null>;
@@ -594,6 +594,16 @@ const missingExecutionResult = (executionId: string): McpToolResult =>
 const alreadySettledResult = (executionId: string): McpToolResult =>
   resumeUnavailableResult({ status: "execution_already_settled", executionId });
 
+const statelessPauseUnsupportedResult = (): McpToolResult => {
+  const text =
+    "This execution requires an interaction, but this MCP endpoint is stateless and cannot resume paused executions. Change the relevant policy to allow, or use a stateful Executor host.";
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: { status: "interaction_unavailable", reason: "stateless_mcp" },
+    isError: true,
+  };
+};
+
 const fallbackOutcomeResult = (
   executionId: string,
   outcome: ResumeFallbackOutcome,
@@ -677,6 +687,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // re-enter Effect-land at each callback edge.
     const context = yield* Effect.context<never>();
     const debugEnabled = config.debug ?? readDebugDefault();
+    const stateless = "stateless" in config && config.stateless === true;
     const debugLog = (event: string, data: Record<string, unknown>) => {
       if (!debugEnabled) return;
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: debug logging must tolerate non-serializable SDK capability snapshots
@@ -788,6 +799,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         if (outcome.status === "paused") {
+          if (stateless) {
+            // A pausable execution owns a detached sandbox fiber. Stateless
+            // hosts cannot expose resume, so cancel it before returning the
+            // unsupported-interaction result instead of orphaning that fiber.
+            yield* engine.resume(outcome.execution.id, { action: "cancel" }).pipe(Effect.ignore);
+            return statelessPauseUnsupportedResult();
+          }
           const deadline = pauseDeadline();
           yield* Effect.annotateCurrentSpan({
             "mcp.execute.paused": true,
@@ -970,7 +988,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     );
 
     yield* Effect.sync(() => {
-      if (elicitationMode.mode === "native") {
+      if (elicitationMode.mode === "native" || stateless) {
         return undefined;
       }
 
@@ -1019,19 +1037,20 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     );
 
     yield* Effect.sync(() => {
+      const resumeEnabled = !stateless && elicitationMode.mode !== "native";
       console.error(
         "[executor] MCP session mode",
         JSON.stringify({
           ...capabilitySnapshot(server),
           elicitationMode: elicitationMode.mode,
-          resumeEnabled: elicitationMode.mode !== "native",
+          resumeEnabled,
         }),
       );
       debugLog("tool.visibility", {
         clientCapabilities: server.server.getClientCapabilities() ?? null,
         elicitationSupport: getElicitationSupport(server),
         elicitationMode: elicitationMode.mode,
-        resumeEnabled: elicitationMode.mode !== "native",
+        resumeEnabled,
       });
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
 

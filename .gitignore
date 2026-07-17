@@ -115,3 +115,4 @@ scratch/
 # Throwaway UX prototype (not part of the app)
 ux-demo/
 
+.vercel

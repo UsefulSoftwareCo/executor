@@ -110,6 +110,25 @@ describe("McpServingRoutes envelope", () => {
     expect(response.headers.get("access-control-allow-headers") ?? "").toContain("authorization");
   });
 
+  it("answers a stateless client's post-init SSE probe with 405", async () => {
+    const StatelessStoreLive = Layer.succeed(McpSessionStore)({
+      supportsServerSentEvents: false,
+      dispatch: (): Effect.Effect<McpDispatchResult> =>
+        Effect.die("stateless GET probe should not dispatch"),
+      dispose: () => Effect.void,
+    });
+    const handler = buildHandler(StatelessStoreLive, McpErrorReporterNoop);
+    const response = await handler(
+      new Request("https://host.test/mcp", {
+        method: "GET",
+        headers: { authorization: "Bearer x", accept: "text/event-stream" },
+      }),
+    );
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST, DELETE, OPTIONS");
+  });
+
   it("renders 500 -32603 + CORS and fires the reporter on an orchestration defect", async () => {
     const reported = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]));
     const RecordingReporter = Layer.succeed(McpErrorReporter)({

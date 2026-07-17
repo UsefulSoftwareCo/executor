@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import { HttpApiSwagger } from "effect/unstable/httpapi";
 import { Effect, Layer } from "effect";
 
@@ -24,7 +26,7 @@ import {
   SelfHostPluginsProvider,
 } from "../execution";
 import executorConfig from "../../executor.config";
-import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
+import { resolveDataDir, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
 import {
   makeSelfHostMcpSessionStore,
   selfHostMcpReporter,
@@ -138,7 +140,10 @@ const stubMcpAuth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = Layer
     return {
       discoveryRoutes: [
         { path: PROTECTED_RESOURCE_METADATA_PATH, handler: notFoundResponse },
-        { path: AUTHORIZATION_SERVER_METADATA_PATH, handler: notFoundResponse },
+        {
+          path: AUTHORIZATION_SERVER_METADATA_PATH,
+          handler: notFoundResponse,
+        },
       ],
       resourceMetadataUrl: resourceMetadataUrlFor,
       authenticate: (request: Request): Effect.Effect<AuthOutcome> =>
@@ -180,10 +185,11 @@ export interface SelfHostTestHandler {
 export const makeSelfHostTestApp = async (
   options: MakeSelfHostTestAppOptions,
 ): Promise<SelfHostTestHandler> => {
-  const config = loadConfig();
-
   const dbHandle = await createSelfHostDb({
-    path: options.dbPath ?? config.dbPath,
+    database: {
+      kind: "file",
+      path: options.dbPath ?? process.env.EXECUTOR_DB_PATH ?? join(resolveDataDir(), "data.db"),
+    },
     namespace: SELF_HOST_NAMESPACE,
     version: SELF_HOST_SCHEMA_VERSION,
   });
@@ -221,7 +227,9 @@ export const makeSelfHostTestApp = async (
     },
     extensions: {
       routes: [
-        HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
+        HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), {
+          path: "/docs",
+        }),
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },

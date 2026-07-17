@@ -65,6 +65,7 @@ export interface BuiltMcpServer {
 /** The browser-mode wiring the store hands a build call when a session opts in. */
 export interface McpBuildServerOptions {
   readonly resource?: McpResource;
+  readonly stateless?: true;
   readonly elicitationMode?:
     | { readonly mode: "browser"; readonly approvalUrl: (executionId: string) => string }
     | { readonly mode: "model" }
