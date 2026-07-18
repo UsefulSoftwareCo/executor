@@ -406,6 +406,14 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    *  `plugin.credentialProviders`. Config providers register first, so the
    *  default (first writable) store is selected from them when present. */
   readonly providers?: readonly CredentialProvider[];
+  /** Preferred key for the default writable credential store. When set and the
+   *  named provider is registered and writable, it is chosen as the default
+   *  store (for OAuth tokens and pasted secrets) ahead of registration order.
+   *  Lets a host on ephemeral infrastructure force a durable on-disk store
+   *  (e.g. "file") instead of an in-memory system keychain whose secrets do
+   *  not survive a fresh machine. Falls back to registration order when unset
+   *  or when the named provider is absent or read-only. */
+  readonly defaultCredentialProvider?: ProviderKey;
   /**
    * How to respond when a tool requests user input mid-invocation. Pass
    * `"accept-all"` for tests / non-interactive hosts, or a handler.
@@ -1442,7 +1450,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       yield* registerCredentialProvider(provider, "config");
     }
 
+    const preferredProviderKey =
+      config.defaultCredentialProvider != null ? String(config.defaultCredentialProvider) : null;
+
     const defaultWritableProvider = (): CredentialProvider | null => {
+      if (preferredProviderKey !== null) {
+        const preferred = credentialProviders.get(preferredProviderKey);
+        if (preferred?.writable) return preferred;
+      }
       for (const key of credentialProviderOrder) {
         const provider = credentialProviders.get(key);
         if (provider?.writable) return provider;
