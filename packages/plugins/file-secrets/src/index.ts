@@ -11,10 +11,11 @@ import {
 } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
-// XDG data dir resolution
+// Auth file location
 // ---------------------------------------------------------------------------
 
 const APP_NAME = "executor";
+const AUTH_FILE_NAME = "auth.json";
 
 export const xdgDataHome = (): string => {
   if (process.env.XDG_DATA_HOME?.trim()) return process.env.XDG_DATA_HOME.trim();
@@ -28,9 +29,34 @@ export const xdgDataHome = (): string => {
   return path.join(process.env.HOME || "~", ".local", "share");
 };
 
-const authDir = (overrideDir?: string): string => overrideDir ?? path.join(xdgDataHome(), APP_NAME);
+interface AuthLocation {
+  readonly filePath: string;
+  readonly legacyFilePath: string | null;
+}
 
-const authFilePath = (overrideDir?: string): string => path.join(authDir(overrideDir), "auth.json");
+const legacyAuthFilePath = (): string => path.join(xdgDataHome(), APP_NAME, AUTH_FILE_NAME);
+
+const resolveAuthLocation = (config: FileSecretsPluginConfig | undefined): AuthLocation => {
+  if (config?.directory !== undefined) {
+    return {
+      filePath: path.join(config.directory, AUTH_FILE_NAME),
+      legacyFilePath: null,
+    };
+  }
+
+  const dataDir = process.env.EXECUTOR_DATA_DIR?.trim();
+  if (dataDir) {
+    return {
+      filePath: path.join(dataDir, AUTH_FILE_NAME),
+      legacyFilePath: legacyAuthFilePath(),
+    };
+  }
+
+  return {
+    filePath: legacyAuthFilePath(),
+    legacyFilePath: null,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Schema for the auth file
@@ -96,7 +122,10 @@ const writeAll = (
       });
     }
     yield* Effect.try({
-      try: () => fs.writeFileSync(tmp, JSON.stringify(secrets, null, 2), { mode: 0o600 }),
+      try: () => {
+        fs.writeFileSync(tmp, JSON.stringify(secrets, null, 2), { mode: 0o600 });
+        fs.chmodSync(tmp, 0o600);
+      },
       catch: toStorageError("Failed to write temporary auth file"),
     });
     yield* Effect.try({
@@ -106,12 +135,30 @@ const writeAll = (
   });
 };
 
+const migrateLegacyAuthFile = ({
+  filePath,
+  legacyFilePath,
+}: AuthLocation): Effect.Effect<void, StorageError> => {
+  if (legacyFilePath === null || fs.existsSync(filePath) || !fs.existsSync(legacyFilePath)) {
+    return Effect.void;
+  }
+
+  return readAll(legacyFilePath).pipe(
+    Effect.matchEffect({
+      // A legacy file that cannot be read or decoded must not block startup.
+      // The active data-dir store remains empty and all later I/O uses it only.
+      onFailure: () => Effect.void,
+      onSuccess: (secrets) => writeAll(filePath, secrets),
+    }),
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------
 
 export interface FileSecretsPluginConfig {
-  /** Override the directory for auth.json (default: XDG data dir) */
+  /** Override the directory for auth.json (default: EXECUTOR_DATA_DIR, then XDG data dir) */
   readonly directory?: string;
 }
 
@@ -119,8 +166,8 @@ export interface FileSecretsPluginConfig {
 // Plugin extension — public API on executor.fileSecrets
 // ---------------------------------------------------------------------------
 
-const makeFileSecretsExtension = (options: FileSecretsPluginConfig | undefined) => ({
-  filePath: resolveFilePath(options),
+const makeFileSecretsExtension = (filePath: string) => ({
+  filePath,
 });
 
 export type FileSecretsExtension = ReturnType<typeof makeFileSecretsExtension>;
@@ -135,54 +182,85 @@ export type FileSecretsExtension = ReturnType<typeof makeFileSecretsExtension>;
 
 const FILE_PROVIDER_KEY = ProviderKey.make("file");
 
-const makeFileProvider = (filePath: string): CredentialProvider => ({
-  key: FILE_PROVIDER_KEY,
-  writable: true,
+const makeFileProvider = (location: AuthLocation): CredentialProvider => {
+  let migrationComplete = false;
+  const ensureMigration = Effect.suspend(() => {
+    if (migrationComplete) return Effect.void;
+    return migrateLegacyAuthFile(location).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          migrationComplete = true;
+        }),
+      ),
+    );
+  });
 
-  get: (id: ProviderItemId) => readAll(filePath).pipe(Effect.map((data) => data[id] ?? null)),
+  return {
+    key: FILE_PROVIDER_KEY,
+    writable: true,
 
-  has: (id: ProviderItemId) => readAll(filePath).pipe(Effect.map((data) => id in data)),
+    get: (id: ProviderItemId) =>
+      ensureMigration.pipe(
+        Effect.andThen(Effect.suspend(() => readAll(location.filePath))),
+        Effect.map((data) => data[id] ?? null),
+      ),
 
-  set: (id: ProviderItemId, value: string) =>
-    Effect.gen(function* () {
-      const data = yield* readAll(filePath);
-      data[id] = value;
-      yield* writeAll(filePath, data);
-    }),
+    has: (id: ProviderItemId) =>
+      ensureMigration.pipe(
+        Effect.andThen(Effect.suspend(() => readAll(location.filePath))),
+        Effect.map((data) => id in data),
+      ),
 
-  delete: (id: ProviderItemId) =>
-    Effect.gen(function* () {
-      const data = yield* readAll(filePath);
-      if (id in data) {
-        delete data[id];
-        yield* writeAll(filePath, data);
-      }
-    }),
+    set: (id: ProviderItemId, value: string) =>
+      ensureMigration.pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const data = yield* readAll(location.filePath);
+            data[id] = value;
+            yield* writeAll(location.filePath, data);
+          }),
+        ),
+      ),
 
-  list: () =>
-    readAll(filePath).pipe(
-      Effect.map((data) => Object.keys(data).map((k) => ({ id: ProviderItemId.make(k), name: k }))),
-    ),
-});
+    delete: (id: ProviderItemId) =>
+      ensureMigration.pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const data = yield* readAll(location.filePath);
+            if (id in data) {
+              delete data[id];
+              yield* writeAll(location.filePath, data);
+            }
+          }),
+        ),
+      ),
+
+    list: () =>
+      ensureMigration.pipe(
+        Effect.andThen(Effect.suspend(() => readAll(location.filePath))),
+        Effect.map((data) =>
+          Object.keys(data).map((k) => ({ id: ProviderItemId.make(k), name: k })),
+        ),
+      ),
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Plugin definition
 //
-// Compute the file path identically in `extension` (for `filePath`) and
-// `credentialProviders` (for the provider's read/write). Both are called once
-// per createExecutor.
+// Resolve the path once when the configured plugin is constructed. The provider
+// performs the one-time migration before its first read or write.
 // ---------------------------------------------------------------------------
 
-const resolveFilePath = (config: FileSecretsPluginConfig | undefined): string =>
-  authFilePath(config?.directory);
+export const fileSecretsPlugin = definePlugin((options?: FileSecretsPluginConfig) => {
+  const location = resolveAuthLocation(options);
 
-export const fileSecretsPlugin = definePlugin((options?: FileSecretsPluginConfig) => ({
-  id: "fileSecrets" as const,
-  storage: () => ({}),
+  return {
+    id: "fileSecrets" as const,
+    storage: () => ({}),
 
-  extension: () => makeFileSecretsExtension(options),
+    extension: () => makeFileSecretsExtension(location.filePath),
 
-  credentialProviders: (): readonly CredentialProvider[] => [
-    makeFileProvider(resolveFilePath(options)),
-  ],
-}));
+    credentialProviders: (): readonly CredentialProvider[] => [makeFileProvider(location)],
+  };
+});
