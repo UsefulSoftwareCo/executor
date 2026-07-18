@@ -1,5 +1,14 @@
 # @executor-js/plugin-file-secrets
 
+## 1.5.34
+
+### Patch Changes
+
+- [#1431](https://github.com/UsefulSoftwareCo/executor/pull/1431) [`39c2bfd`](https://github.com/UsefulSoftwareCo/executor/commit/39c2bfdc605b03c18bb332ea1dfa14df7e374a00) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - `fileSecretsPlugin()` now stores `auth.json` under `EXECUTOR_DATA_DIR` when that variable is set (an explicit `directory` option still wins; the XDG location remains the fallback when it is unset). Existing secrets in the legacy XDG location are migrated automatically on first use. This keeps all daemon state under one directory, so persisting `EXECUTOR_DATA_DIR` alone preserves credentials across environment recreation.
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+
 ## 1.5.33
 
 ### Patch Changes

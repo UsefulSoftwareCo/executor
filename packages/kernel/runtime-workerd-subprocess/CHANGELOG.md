@@ -1,5 +1,12 @@
 # @executor-js/runtime-workerd-subprocess
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.34
+
 ## 0.0.5
 
 ### Patch Changes

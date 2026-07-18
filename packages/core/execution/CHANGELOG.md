@@ -1,5 +1,15 @@
 # @executor-js/execution
 
+## 1.5.34
+
+### Patch Changes
+
+- [#1422](https://github.com/UsefulSoftwareCo/executor/pull/1422) [`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - A token refresh the authorization server definitively rejects (any RFC 6749 error code, not just `invalid_grant`) now surfaces to the sandbox as an `oauth_refresh_failed` auth failure carrying the server's error code and description, instead of being scrubbed to "Internal tool error". `invalid_grant` still classifies as `oauth_reauth_required`. Code-less failures (transport blips) keep retrying as before.
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/codemode-core@1.5.34
+
 ## 1.5.33
 
 ### Patch Changes

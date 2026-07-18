@@ -1,5 +1,21 @@
 # @executor-js/plugin-openapi
 
+## 1.5.34
+
+### Patch Changes
+
+- [#1430](https://github.com/UsefulSoftwareCo/executor/pull/1430) [`a86cc4e`](https://github.com/UsefulSoftwareCo/executor/commit/a86cc4e6d0252c90834f40ee09837d8a19cab7fe) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - OpenAPI invocations now bound how long a buffered (non-streaming) response body may take to arrive. An upstream that returns headers quickly and then stalls the body previously hung the call indefinitely on runtimes without a platform subrequest limit; it now aborts after the response-body timeout (default 60s, configurable via `invokeOptions.responseBodyTimeoutMs`) with a distinct `upstream_response_body_timeout` failure.
+
+- [#1427](https://github.com/UsefulSoftwareCo/executor/pull/1427) [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Apply persisted RFC 6902 overrides to OpenAPI specifications during preview, import, and refresh so upstream documents can be corrected without maintaining a fork. Figma imports automatically narrow OAuth to the scopes supported by its OAuth app configuration.
+
+- [#1426](https://github.com/UsefulSoftwareCo/executor/pull/1426) [`171de20`](https://github.com/UsefulSoftwareCo/executor/commit/171de204725d10405c693549febc3a1cce2c24d8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Do not add unadvertised OpenID Connect identity scopes to OAuth authorization requests derived from OpenAPI specifications.
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/api@1.4.54
+  - @executor-js/config@1.5.34
+  - @executor-js/react@1.4.54
+
 ## 1.5.33
 
 ### Patch Changes
