@@ -24,6 +24,7 @@ export {
   invokeWithLayer,
   buildRequest,
   annotationsForOperation,
+  RESPONSE_BODY_TIMEOUT_MS,
   RESPONSE_HEADERS_TIMEOUT_MS,
   type InvokeOptions,
 } from "./invoke";

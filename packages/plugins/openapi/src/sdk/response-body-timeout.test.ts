@@ -18,6 +18,7 @@ import { makeOpenApiHttpApiTestIntegrationConfig } from "../testing";
 import { openApiPlugin } from "./plugin";
 
 const BODY_READ_DEADLINE_MS = 15_000;
+const RESPONSE_BODY_TIMEOUT_MS = 100;
 const TOOL = "data.getData";
 
 const DataGroup = HttpApiGroup.make("data").add(
@@ -31,7 +32,13 @@ const TimeoutApi = HttpApi.make("responseBodyTimeoutTest")
   .annotateMerge(OpenApi.annotations({ title: "ResponseBodyTimeoutTest", version: "1.0.0" }));
 
 const testPlugins = () =>
-  [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
+  [
+    openApiPlugin({
+      httpClientLayer: FetchHttpClient.layer,
+      invokeOptions: { responseBodyTimeoutMs: RESPONSE_BODY_TIMEOUT_MS },
+    }),
+    memoryCredentialsPlugin(),
+  ] as const;
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
@@ -116,8 +123,6 @@ describe("OpenAPI response body timeout", () => {
         const { executor, address } = yield* buildExecutor(server.baseUrl);
         const startedAt = Date.now();
 
-        // No response-body timeout option exists yet. The fix should add an
-        // InvokeOptions seam so this regression can use a shorter deadline.
         const invocation = yield* executor.execute(address, {}).pipe(Effect.forkDetach);
         const result = yield* observeUntil(invocation, BODY_READ_DEADLINE_MS);
         const elapsedMs = Date.now() - startedAt;
