@@ -33,17 +33,10 @@ const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
 const normalizeOAuthCallbackState = (request: Request): Request => {
   if (request.method !== "GET" && request.method !== "HEAD") return request;
-
   const url = new URL(request.url);
   if (url.pathname !== OAUTH_CALLBACK_PATH) return request;
-
   const callbackState = decodeOAuthCallbackState(url.searchParams.get("state"));
   if (callbackState === null) return request;
-
-  // Executor persists the raw random state but sends providers an encoded state
-  // containing the org slug. Cloud's host middleware unwraps that before the
-  // shared OAuth handler runs; the single-tenant Cloudflare host needs the same
-  // normalization or OAuth callbacks cannot find their pending session.
   url.searchParams.set("state", callbackState.state);
   return new Request(url, request);
 };
