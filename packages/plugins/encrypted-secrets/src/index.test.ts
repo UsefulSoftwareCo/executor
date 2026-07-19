@@ -9,10 +9,8 @@ import { decryptSecret, deriveKey, encryptSecret, encryptedSecretsPlugin } from 
 // In-memory PluginStorageFacade fake (owner-partitioned), enough to exercise
 // the provider exactly as the executor's plugin-storage table would.
 //
-// v2: the provider keys values by the opaque `ProviderItemId` (the storage
-// `key`); writes carry an `owner` the host supplies. Reads via `get`/`list`
-// are not owner-filtered — the connection row that references the id owns the
-// partition.
+// v2: the provider keys values by the opaque `ProviderItemId` and uses the
+// explicit connection scope for owner-partitioned reads and writes.
 // ---------------------------------------------------------------------------
 
 const makeFakeStorage = () => {
@@ -131,11 +129,24 @@ describe("provider", () => {
     expect(stored.startsWith("v1.")).toBe(true);
   });
 
-  // removed: "a secret in one scope is invisible to another scope" — v2 drops
-  // the scope arg entirely. The provider keys solely by the opaque
-  // `ProviderItemId`; the referencing connection row owns the (tenant, owner,
-  // subject) partition, so cross-scope isolation is no longer the provider's
-  // concern to enforce or test.
+  test("a user-bound executor stores and resolves an org connection secret in the org partition", async () => {
+    const { provider, rows } = makeProvider("master", Owner.make("user"));
+    const orgConnection = { owner: "org" as const, subject: "" };
+
+    await Effect.runPromise(provider.set!(id("oauth:org:linear"), "token", orgConnection));
+
+    expect([...rows.values()][0]!.owner).toBe("org");
+    expect(
+      await Effect.runPromise(provider.get(id("oauth:org:linear"), orgConnection)),
+    ).toBe("token");
+    // A different user-bound executor uses the same explicit org scope; its
+    // caller subject is intentionally irrelevant to the provider lookup.
+    expect(
+      await Effect.runPromise(
+        provider.get(id("oauth:org:linear"), { owner: "org", subject: "" }),
+      ),
+    ).toBe("token");
+  });
 
   test("get returns null for a missing id", async () => {
     const { provider } = makeProvider("master");

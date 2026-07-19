@@ -106,7 +106,11 @@ import {
   type ToolPolicy,
   type UpdateToolPolicyInput,
 } from "./policies";
-import type { CredentialProvider, ProviderEntry } from "./provider";
+import type {
+  CredentialProvider,
+  CredentialProviderScope,
+  ProviderEntry,
+} from "./provider";
 import type {
   AnyPlugin,
   Elicit,
@@ -1371,6 +1375,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const ownerContext: ExecutorOwnerPolicyContext = { tenant, subject };
     const rootDb = withQueryContext(rootDbUntyped, ownerContext);
     const fuma = makeFumaClient(rootDb);
+    const sessionFuma = makeFumaClient(rootDbUntyped);
     const core = makeCoreDb(fuma);
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
@@ -1492,6 +1497,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const connectionKey = (row: ConnectionRow): string =>
       `${row.owner}:${row.subject}:${row.integration}:${row.name}`;
 
+    const connectionCredentialScope = (row: ConnectionRow): CredentialProviderScope => ({
+      owner: row.owner as Owner,
+      subject: String(row.subject),
+    });
+
     const loadOAuthClientRow = (
       owner: Owner,
       slug: string,
@@ -1526,7 +1536,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         // The secret is stored in the provider (a vault item id), not inline.
         const clientSecret = clientRow.client_secret_item_id
-          ? ((yield* provider.get(ProviderItemId.make(String(clientRow.client_secret_item_id)))) ??
+          ? ((yield* provider.get(ProviderItemId.make(String(clientRow.client_secret_item_id)), {
+              owner: clientRow.owner as Owner,
+              subject: String(clientRow.subject),
+            })) ??
             "")
           : "";
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
@@ -1576,7 +1589,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (!row.refresh_item_id) {
                   return yield* reauth("No refresh token is stored for this connection.");
                 }
-                const refreshToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
+                const refreshToken = yield* provider.get(
+                  ProviderItemId.make(row.refresh_item_id),
+                  connectionCredentialScope(row),
+                );
                 if (!refreshToken) {
                   return yield* reauth("Stored refresh token could not be resolved.");
                 }
@@ -1629,9 +1645,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tokenItemId =
             connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
             `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
+          const credentialScope = connectionCredentialScope(row);
+          yield* provider.set(
+            ProviderItemId.make(tokenItemId),
+            token.access_token,
+            credentialScope,
+          );
           if (token.refresh_token && row.refresh_item_id) {
-            yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
+            yield* provider.set(
+              ProviderItemId.make(row.refresh_item_id),
+              token.refresh_token,
+              credentialScope,
+            );
           }
         }
 
@@ -1729,7 +1754,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         const out: Record<string, string | null> = {};
         for (const [variable, itemId] of Object.entries(connectionItemIds(row))) {
-          out[variable] = yield* provider.get(ProviderItemId.make(itemId));
+          out[variable] = yield* provider.get(
+            ProviderItemId.make(itemId),
+            connectionCredentialScope(row),
+          );
         }
         return out;
       }).pipe(
@@ -2391,10 +2419,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           providerKey = String(provider.key);
+          const credentialScope = yield* Effect.try({
+            try: () => ownedKeys(input.owner),
+            catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
+          });
           for (const i of pasted) {
             const itemId = `connection:${input.owner}:${input.integration}:${name}:${i.variable}`;
             if ("value" in i.origin && provider.set) {
-              yield* provider.set(ProviderItemId.make(itemId), i.origin.value);
+              yield* provider.set(ProviderItemId.make(itemId), i.origin.value, credentialScope);
             }
             itemIds[i.variable] = itemId;
           }
@@ -3870,6 +3902,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const oauth = makeOAuthService({
       fuma,
+      sessionFuma,
       owner: ownerBinding,
       tenant,
       subject,

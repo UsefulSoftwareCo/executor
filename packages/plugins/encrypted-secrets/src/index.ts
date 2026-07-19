@@ -9,6 +9,7 @@ import {
   ProviderKey,
   StorageError,
   type CredentialProvider,
+  type CredentialProviderScope,
   type OwnerBinding,
   type PluginCtx,
 } from "@executor-js/sdk";
@@ -26,11 +27,10 @@ import {
 // server, replacing the OS-keychain/plaintext-file providers that assume a
 // single desktop user.
 //
-// v2: the provider sees only an opaque `ProviderItemId` — there is NO scope
-// arg. The connection row that references the id owns the (tenant, owner,
-// subject) partition; the encrypted value is keyed solely by the opaque id.
-// Plugin storage writes still carry an `owner` (the executor's binding), which
-// is captured once from the ctx at provider construction.
+// v2: the encrypted value is keyed by an opaque `ProviderItemId`, while
+// connection operations explicitly supply the connection row's owner scope.
+// This keeps org credentials tenant-shared even when a user-bound executor
+// creates or refreshes them, and keeps user credentials under their subject.
 // ---------------------------------------------------------------------------
 
 type PluginStorage = PluginCtx<unknown>["pluginStorage"];
@@ -87,40 +87,48 @@ const ownerOf = (binding: OwnerBinding): Owner =>
 const makeEncryptedProvider = (
   key: Buffer,
   storage: PluginStorage,
-  owner: Owner,
-): CredentialProvider => ({
-  key: ENCRYPTED_PROVIDER_KEY,
-  writable: true,
+  defaultOwner: Owner,
+): CredentialProvider => {
+  const ownerFor = (scope?: CredentialProviderScope): Owner =>
+    Owner.make(scope?.owner ?? defaultOwner);
 
-  get: (id: ProviderItemId) =>
-    storage
-      .get<string>({ collection: COLLECTION, key: id })
-      .pipe(
-        Effect.flatMap((entry) => (entry ? decryptSecret(key, entry.data) : Effect.succeed(null))),
-      ),
+  return {
+    key: ENCRYPTED_PROVIDER_KEY,
+    writable: true,
 
-  has: (id: ProviderItemId) =>
-    storage.get({ collection: COLLECTION, key: id }).pipe(Effect.map((entry) => entry !== null)),
-
-  set: (id: ProviderItemId, value: string) =>
-    encryptSecret(key, value).pipe(
-      Effect.flatMap((payload) =>
-        storage.put({ collection: COLLECTION, key: id, owner, data: payload }),
-      ),
-      Effect.asVoid,
-    ),
-
-  delete: (id: ProviderItemId) => storage.remove({ collection: COLLECTION, key: id, owner }),
-
-  list: () =>
-    storage
-      .list<string>({ collection: COLLECTION })
-      .pipe(
-        Effect.map((entries) =>
-          entries.map((entry) => ({ id: ProviderItemId.make(entry.key), name: entry.key })),
+    get: (id: ProviderItemId, scope?: CredentialProviderScope) =>
+      storage
+        .getForOwner<string>({ collection: COLLECTION, key: id, owner: ownerFor(scope) })
+        .pipe(
+          Effect.flatMap((entry) => (entry ? decryptSecret(key, entry.data) : Effect.succeed(null))),
         ),
+
+    has: (id: ProviderItemId, scope?: CredentialProviderScope) =>
+      storage
+        .getForOwner({ collection: COLLECTION, key: id, owner: ownerFor(scope) })
+        .pipe(Effect.map((entry) => entry !== null)),
+
+    set: (id: ProviderItemId, value: string, scope?: CredentialProviderScope) =>
+      encryptSecret(key, value).pipe(
+        Effect.flatMap((payload) =>
+          storage.put({ collection: COLLECTION, key: id, owner: ownerFor(scope), data: payload }),
+        ),
+        Effect.asVoid,
       ),
-});
+
+    delete: (id: ProviderItemId, scope?: CredentialProviderScope) =>
+      storage.remove({ collection: COLLECTION, key: id, owner: ownerFor(scope) }),
+
+    list: () =>
+      storage
+        .list<string>({ collection: COLLECTION })
+        .pipe(
+          Effect.map((entries) =>
+            entries.map((entry) => ({ id: ProviderItemId.make(entry.key), name: entry.key })),
+          ),
+        ),
+  };
+};
 
 export interface EncryptedSecretsPluginConfig {
   /**

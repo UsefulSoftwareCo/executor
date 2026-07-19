@@ -114,6 +114,8 @@ export type OAuthScopePolicy =
  *  connection row + produces tools), the owner binding, and the redirect base. */
 export interface OAuthServiceDeps {
   readonly fuma: IFumaClient;
+  /** Policy-free handle used only for OAuth callback state lifecycle. */
+  readonly sessionFuma: IFumaClient;
   readonly owner: OwnerBinding;
   readonly tenant: string;
   readonly subject: string | null;
@@ -1173,9 +1175,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: OAuthCompleteInput,
   ): Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure> =>
     Effect.gen(function* () {
-      const sessionRow = yield* deps.fuma.use("oauth_session.findFirst", (db) =>
+      // OAuth callbacks may arrive under a different authenticated identity than
+      // the browser that started the flow. State is an unguessable 256-bit value
+      // with a 15-minute TTL, so this single lookup deliberately bypasses owner
+      // visibility while retaining tenant/state matching.
+      const sessionRow = yield* deps.sessionFuma.use("oauth_session.findFirst", (db) =>
         looseDb(db).findFirst("oauth_session", {
-          where: (b: any) => b("state", "=", String(input.state)),
+          where: (b: any) =>
+            b.and(b("tenant", "=", deps.tenant), b("state", "=", String(input.state))),
         }),
       );
       if (!sessionRow) {
@@ -1327,12 +1334,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       const itemId = accessItemId(target.owner, target.integration, target.name);
-      yield* provider.set(ProviderItemId.make(itemId), token.access_token);
+      const credentialScope = deps.ownedKeys(target.owner);
+      yield* provider.set(ProviderItemId.make(itemId), token.access_token, credentialScope);
 
       let refreshItemId: string | null = null;
       if (token.refresh_token) {
         refreshItemId = refreshItemIdFor(itemId);
-        yield* provider.set(ProviderItemId.make(refreshItemId), token.refresh_token);
+        yield* provider.set(
+          ProviderItemId.make(refreshItemId),
+          token.refresh_token,
+          credentialScope,
+        );
       }
 
       const oauthScope = recordedOAuthScope(token, requestedScopes);
@@ -1362,10 +1374,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     });
 
   const deleteSession = (state: OAuthState): Effect.Effect<void, StorageFailure> =>
-    deps.fuma
+    deps.sessionFuma
       .use("oauth_session.delete", (db) =>
         looseDb(db).deleteMany("oauth_session", {
-          where: (b: any) => b("state", "=", String(state)),
+          where: (b: any) =>
+            b.and(b("tenant", "=", deps.tenant), b("state", "=", String(state))),
         }),
       )
       .pipe(Effect.asVoid);

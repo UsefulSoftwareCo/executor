@@ -18,6 +18,14 @@ export interface ProviderEntry {
   readonly name: string;
 }
 
+/** Partition that owns a connection credential. Providers without partitioned
+ * storage may ignore it. */
+export interface CredentialProviderScope {
+  readonly owner: "org" | "user";
+  /** Empty for org credentials; the connection row's subject for user credentials. */
+  readonly subject: string;
+}
+
 export interface CredentialProvider {
   readonly key: ProviderKey;
   /** If false, we never write here — `set`/`delete` are skipped and a referenced
@@ -25,10 +33,23 @@ export interface CredentialProvider {
   readonly writable: boolean;
   /** Resolve a value by opaque id. The single hop a credential goes through
    *  before its template is applied. The provider interprets the id. */
-  readonly get: (id: ProviderItemId) => Effect.Effect<string | null, StorageFailure>;
-  readonly has?: (id: ProviderItemId) => Effect.Effect<boolean, StorageFailure>;
-  readonly set?: (id: ProviderItemId, value: string) => Effect.Effect<void, StorageFailure>;
-  readonly delete?: (id: ProviderItemId) => Effect.Effect<void, StorageFailure>;
+  readonly get: (
+    id: ProviderItemId,
+    scope?: CredentialProviderScope,
+  ) => Effect.Effect<string | null, StorageFailure>;
+  readonly has?: (
+    id: ProviderItemId,
+    scope?: CredentialProviderScope,
+  ) => Effect.Effect<boolean, StorageFailure>;
+  readonly set?: (
+    id: ProviderItemId,
+    value: string,
+    scope?: CredentialProviderScope,
+  ) => Effect.Effect<void, StorageFailure>;
+  readonly delete?: (
+    id: ProviderItemId,
+    scope?: CredentialProviderScope,
+  ) => Effect.Effect<void, StorageFailure>;
   /** Browse entries for discovery (pick a 1Password item). Optional — some
    *  backends can't enumerate. */
   readonly list?: () => Effect.Effect<readonly ProviderEntry[], StorageFailure>;

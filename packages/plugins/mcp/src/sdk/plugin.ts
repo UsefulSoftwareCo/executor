@@ -44,7 +44,6 @@ import { createMcpConnector, type ConnectorInput, type McpConnector } from "./co
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
-  McpInvocationError,
   McpOAuthReauthorizationRequired,
   McpToolDiscoveryError,
 } from "./errors";

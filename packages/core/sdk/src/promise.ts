@@ -38,7 +38,7 @@ export type {
 // Credential providers are Effect-native (their `get`/`set` return `Effect`s),
 // but Promise consumers still author them to register an inline writable store
 // via `createExecutor({ providers })`.
-export type { CredentialProvider, ProviderEntry } from "./provider";
+export type { CredentialProvider, CredentialProviderScope, ProviderEntry } from "./provider";
 export type {
   CreateToolPolicyInput,
   RemoveToolPolicyInput,
