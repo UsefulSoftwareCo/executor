@@ -22,7 +22,7 @@
     {
       "binding": "DB",
       "database_name": "executor",
-      "database_id": "ae748ca1-032c-4427-a1a0-fe39db77d1a9",
+      "database_id": "029d8b51-2a1b-43ec-961b-991a3fea0a0c",
     },
   ],
   // Plugin blob seam backend: multi-MB values (resolved OpenAPI specs,
@@ -55,13 +55,15 @@
   // (the at-rest secret-encryption key) is a SECRET — set it with
   // `wrangler secret put EXECUTOR_SECRET_KEY`, never in vars.
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "mateusz-7ac.cloudflareaccess.com",
+    "ACCESS_AUD": "44e8b9acc8e46bae7e4671d7bb6af41d56a042864cf14dea70e33b85b6f99922",
     "ACCESS_NAME_CLAIM": "name",
     "ACCESS_GROUPS_CLAIM": "groups",
-    "ADMIN_EMAILS": "",
+    "ADMIN_EMAILS": "mateusz@synthetic.ai",
     "SELF_HOSTED_ORG_ID": "default",
-    "SELF_HOSTED_ORG_NAME": "Default",
+    "SELF_HOSTED_ORG_NAME": "Synthetic",
+    "VITE_PUBLIC_SITE_URL": "https://executor-cloudflare.mateusz-7ac.workers.dev",
+    "SELF_HOSTED_ORG_SLUG": "synthetic",
     // VITE_PUBLIC_SITE_URL is intentionally unset: with no static URL the worker
     // derives the web base URL from each request's origin (RequestWebOrigin), so
     // secret/OAuth handoff links match whatever host the user actually reached.

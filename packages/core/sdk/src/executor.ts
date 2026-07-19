@@ -1658,6 +1658,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const refreshConnectionToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
+      options?: { readonly force?: boolean },
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
       // Share a single refresh per connection so concurrent resolves of the same
       // connection all await one refresh-token grant (the AS rotates the refresh
@@ -1666,14 +1667,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // expiry can refresh again.
       Effect.gen(function* () {
         const key = connectionKey(row);
+        if (options?.force) refreshInFlight.delete(key);
         const existing = refreshInFlight.get(key);
         if (existing) return yield* existing;
-        // `Effect.cached` memoizes the grant onto a deferred: it runs once and
-        // replays to every awaiter sharing this entry.
-        const memoized = yield* Effect.cached(performTokenRefresh(row, provider));
-        const gated = memoized.pipe(
-          Effect.ensuring(Effect.sync(() => refreshInFlight.delete(key))),
+        // Cache the grant with cleanup attached to the underlying execution,
+        // rather than to an awaiting caller fiber. This keeps the entry only for
+        // the grant's de-duplication window, regardless of waiter interruption.
+        let gated!: Effect.Effect<
+          string | null,
+          StorageFailure | CredentialResolutionError
+        >;
+        const grant = performTokenRefresh(row, provider).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (refreshInFlight.get(key) === gated) refreshInFlight.delete(key);
+            }),
+          ),
         );
+        gated = yield* Effect.cached(grant);
         // Re-check after building (a peer fiber may have registered first while
         // we built ours) so everyone converges on the same shared grant.
         const winner = refreshInFlight.get(key) ?? gated;
@@ -1687,8 +1698,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // first (always single-input → `{ token: <access> }`).
     const resolveConnectionValues = (
       row: ConnectionRow,
+      options?: { readonly force?: boolean },
     ): Effect.Effect<Record<string, string | null>, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
+        // The caller may hold a row loaded by an earlier operation. Re-read it
+        // before consulting expiry or provider values so rotations performed by
+        // another executor instance are observed.
+        const freshRow = yield* findConnectionRow({
+          owner: row.owner as Owner,
+          integration: IntegrationSlug.make(row.integration),
+          name: ConnectionName.make(row.name),
+        });
+        if (!freshRow) return {};
+        row = freshRow;
         const provider = credentialProviders.get(row.provider);
         if (!provider) {
           return yield* new CredentialProviderNotRegisteredError({
@@ -1698,8 +1720,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // OAuth connections refresh their access token before resolving when
         // it has expired (or is within the skew window).
         const expiresAt = row.expires_at == null ? null : Number(row.expires_at);
-        if (row.oauth_client != null && shouldRefreshToken({ expiresAt })) {
-          const access = yield* refreshConnectionToken(row, provider);
+        if (
+          row.oauth_client != null &&
+          (options?.force === true || shouldRefreshToken({ expiresAt }))
+        ) {
+          const access = yield* refreshConnectionToken(row, provider, options);
           return { [PRIMARY_INPUT_VARIABLE]: access };
         }
         const out: Record<string, string | null> = {};
@@ -1724,8 +1749,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  callers that only ever need one value. */
     const resolveConnectionValue = (
       row: ConnectionRow,
+      options?: { readonly force?: boolean },
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
-      resolveConnectionValues(row).pipe(
+      resolveConnectionValues(row, options).pipe(
         Effect.map((values) => values[PRIMARY_INPUT_VARIABLE] ?? null),
       );
 
@@ -1749,23 +1775,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const resolveConnectionValueByRef = (
       ref: ConnectionRef,
+      options?: { readonly force?: boolean },
     ): Effect.Effect<string | null, StorageFailure> =>
       foldResolutionFailure(
         Effect.gen(function* () {
           const row = yield* findConnectionRow(ref);
           if (!row) return null;
-          return yield* resolveConnectionValue(row);
+          return yield* resolveConnectionValue(row, options);
         }),
       );
 
     const resolveConnectionValuesByRef = (
       ref: ConnectionRef,
+      options?: { readonly force?: boolean },
     ): Effect.Effect<Record<string, string | null>, StorageFailure> =>
       foldResolutionFailure(
         Effect.gen(function* () {
           const row = yield* findConnectionRow(ref);
           if (!row) return {};
-          return yield* resolveConnectionValues(row);
+          return yield* resolveConnectionValues(row, options);
         }),
       );
 
@@ -2167,8 +2195,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             connection: ref,
             template: existingRow ? AuthTemplateSlug.make(existingRow.template) : null,
             storage: runtime.storage,
-            getValue: () => resolveConnectionValueByRef(ref),
-            getValues: () => resolveConnectionValuesByRef(ref),
+            getValue: (options) => resolveConnectionValueByRef(ref, options),
+            getValues: (options) => resolveConnectionValuesByRef(ref, options),
           })
           .pipe(
             Effect.mapError((cause) =>
@@ -3966,7 +3994,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           remove: (ref) => connectionsRemove(ref),
           refresh: (ref) => connectionsRefresh(ref),
           markToolsStale: (ref) => connectionsMarkToolsStale(ref),
-          resolveValue: (ref) => resolveConnectionValueByRef(ref),
+          resolveValue: (ref, options) => resolveConnectionValueByRef(ref, options),
         },
         providers: {
           list: () => providersList(),

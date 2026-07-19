@@ -239,7 +239,10 @@ export interface PluginCtx<TStore = unknown> {
     readonly markToolsStale: (ref: ConnectionRef) => Effect.Effect<void, StorageFailure>;
     /** Resolve a connection's value through its provider (and OAuth refresh).
      *  null if the provider can't produce one. */
-    readonly resolveValue: (ref: ConnectionRef) => Effect.Effect<string | null, StorageFailure>;
+    readonly resolveValue: (
+      ref: ConnectionRef,
+      options?: { readonly force?: boolean },
+    ) => Effect.Effect<string | null, StorageFailure>;
   };
 
   /** Registered credential backends — for discovery (browse a backend's items). */
@@ -314,11 +317,15 @@ export interface ResolveToolsInput<TStore = unknown> {
   readonly template: AuthTemplateSlug | null;
   /** Lazily resolve the connection's credential value via its provider — only
    *  the kinds that actually call out (mcp) pay for it. */
-  readonly getValue: () => Effect.Effect<string | null, StorageFailure>;
+  readonly getValue: (options?: {
+    readonly force?: boolean;
+  }) => Effect.Effect<string | null, StorageFailure>;
   /** Lazily resolve every credential input (`variable → value`) — the
    *  multi-input analog of `getValue`, for methods whose placements reference
    *  more than one variable. Empty map when the connection isn't persisted. */
-  readonly getValues: () => Effect.Effect<Record<string, string | null>, StorageFailure>;
+  readonly getValues: (options?: {
+    readonly force?: boolean;
+  }) => Effect.Effect<Record<string, string | null>, StorageFailure>;
 }
 
 export interface ResolveToolsResult {

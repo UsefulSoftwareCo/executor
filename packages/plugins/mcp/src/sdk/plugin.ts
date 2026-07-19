@@ -44,6 +44,7 @@ import { createMcpConnector, type ConnectorInput, type McpConnector } from "./co
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
+  McpInvocationError,
   McpOAuthReauthorizationRequired,
   McpToolDiscoveryError,
 } from "./errors";
@@ -1247,12 +1248,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const transport: string =
           parsed.transport === "stdio" ? "stdio" : (parsed.remoteTransport ?? "auto");
 
+        const authMethod =
+          parsed.transport === "remote"
+            ? selectAuthMethod(parsed, String(credential.template))
+            : undefined;
+
         // An apikey method with unresolved inputs fails the invocation
         // explicitly instead of dialing unauthenticated.
         if (parsed.transport === "remote") {
-          const method = selectAuthMethod(parsed, String(credential.template));
-          if (method?.kind === "apikey") {
-            const missing = requiredPlacementVariables(method.placements).filter(
+          if (authMethod?.kind === "apikey") {
+            const missing = requiredPlacementVariables(authMethod.placements).filter(
               (variable) => credential.values[variable] == null,
             );
             if (missing.length > 0) {
@@ -1265,14 +1270,6 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             }
           }
         }
-
-        const connector: McpConnector = yield* buildConnectorInput(
-          parsed,
-          credential.values,
-          String(credential.template),
-          allowStdio,
-          options?.httpClientLayer ?? ctx.httpClientLayer,
-        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
 
         const connectionRef = {
           owner: credential.owner,
@@ -1287,6 +1284,59 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         // tools read re-lists instead of serving the drifted catalog.
         let toolListChanged = false;
 
+        const invokeWithValues = (values: Record<string, string | null>) =>
+          buildConnectorInput(
+            parsed,
+            values,
+            String(credential.template),
+            allowStdio,
+            options?.httpClientLayer ?? ctx.httpClientLayer,
+          ).pipe(
+            Effect.map((ci) => createMcpConnector(ci)),
+            Effect.flatMap((connector: McpConnector) =>
+              invokeMcpTool({
+                toolId: String(toolRow.name),
+                toolName: stamp.toolName,
+                args,
+                transport,
+                connector,
+                elicit,
+                onToolListChanged: () => {
+                  toolListChanged = true;
+                },
+              }),
+            ),
+            Effect.onExit(() =>
+              toolListChanged
+                ? ctx.connections.markToolsStale(connectionRef).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+          );
+
+        const raw = yield* invokeWithValues(credential.values).pipe(
+          Effect.catchTag("McpInvocationError", (error) => {
+            if (
+              authMethod?.kind !== "oauth2" ||
+              (error.status !== 401 && error.status !== 403)
+            ) {
+              return Effect.fail(error);
+            }
+            return ctx.connections.resolveValue(connectionRef, { force: true }).pipe(
+              Effect.flatMap((value) =>
+                invokeWithValues({ ...credential.values, [TOKEN_VARIABLE]: value }),
+              ),
+            );
+          }),
+        );
+/* discarded common-ancestor conflict variant
+        const connector: McpConnector = yield* buildConnectorInput(
+          parsed,
+          credential.values,
+          String(credential.template),
+          allowStdio,
+          options?.httpClientLayer ?? ctx.httpClientLayer,
+        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+
         const raw = yield* invokeMcpTool({
           toolId: String(toolRow.name),
           toolName: stamp.toolName,
@@ -1294,16 +1344,64 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           transport,
           connector,
           elicit,
-          onToolListChanged: () => {
-            toolListChanged = true;
-          },
-        }).pipe(
-          Effect.onExit(() =>
-            toolListChanged
-              ? ctx.connections.markToolsStale(connectionRef).pipe(Effect.ignore)
-              : Effect.void,
-          ),
+        });
+*/ /* discarded pre-upstream conflict variant
+        const invokeWithValues = (
+          values: Record<string, string | null>,
+        ): Effect.Effect<
+          unknown,
+          McpConnectionError | McpInvocationError | McpOAuthReauthorizationRequired
+        > =>
+          buildConnectorInput(
+            parsed,
+            values,
+            String(credential.template),
+            allowStdio,
+            options?.httpClientLayer ?? ctx.httpClientLayer,
+          ).pipe(
+            Effect.map((ci) => createMcpConnector(ci)),
+            Effect.flatMap((connector: McpConnector) =>
+              invokeMcpTool({
+                toolId: String(toolRow.name),
+                toolName: stamp.toolName,
+                args,
+                transport,
+                connector,
+                elicit,
+              }),
+            ),
+          );
+
+        // A locally unexpired OAuth token can still have been revoked or
+        // rotated. On an upstream auth response, force one refresh and retry
+        // with the newly resolved value. The retry is deliberately outside any
+        // recursive/looping path: a second auth failure reaches the existing
+        // error mapping below unchanged.
+        const raw = yield* invokeWithValues(credential.values).pipe(
+          Effect.catchTag("McpInvocationError", (error) => {
+            if (
+              authMethod?.kind !== "oauth2" ||
+              (error.status !== 401 && error.status !== 403)
+            ) {
+              return Effect.fail(error);
+            }
+            return ctx.connections
+              .resolveValue(
+                {
+                  owner: credential.owner,
+                  integration: credential.integration,
+                  name: credential.connection,
+                },
+                { force: true },
+              )
+              .pipe(
+                Effect.flatMap((value) =>
+                  invokeWithValues({ ...credential.values, [TOKEN_VARIABLE]: value }),
+                ),
+              );
+          }),
         );
+*/
 
         const envelope = Option.getOrUndefined(decodeMcpToolCallEnvelope(raw));
         if (envelope?.isError === true) {
