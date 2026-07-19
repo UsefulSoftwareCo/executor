@@ -51,11 +51,24 @@ const requireContext = (
 };
 
 /** The rows the bound `{ tenant, subject }` may see/mutate: org rows in the
- *  tenant, plus this subject's own user rows. */
+ *  tenant, plus this subject's own user rows.
+ *
+ *  `context` is `undefined` for policy-free handles that deliberately bypass
+ *  owner visibility while relying on their OWN explicit `tenant` filter in the
+ *  caller's `where` clause (e.g. the OAuth session lookup/delete-by-`state`,
+ *  which may run under a different identity than the one that started the
+ *  flow). Returning `true` here means "add no extra restriction" (see
+ *  `mergePolicyCondition` in the fumadb orm) — it does NOT mean "no rows", and
+ *  it does NOT scope by tenant on its own; callers without a bound context
+ *  MUST supply their own tenant filter or risk a cross-tenant read. Do not
+ *  reach for this for anything that lacks that explicit tenant filter — writes
+ *  still hard-require context via `requireContext` in `assertOwnerWritable`/
+ *  `assertOwnerPatch`. */
 export const ownerVisibilityCondition = (
   builder: AnyConditionBuilder,
-  context: ExecutorOwnerPolicyContext,
+  context: ExecutorOwnerPolicyContext | undefined,
 ): Condition | boolean => {
+  if (!context) return true;
   const orgClause = builder.and(
     builder("tenant", "=", context.tenant),
     builder("owner", "=", "org"),

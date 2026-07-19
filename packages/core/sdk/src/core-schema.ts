@@ -33,7 +33,7 @@ export const dateColumn = (name: string) => column(name, "timestamp");
 // The policy callback hands us a `ConditionBuilder` typed to the specific table's
 // columns; it isn't assignable to the generic `Record<string, AnyColumn>` builder
 // (column-name positions are contravariant), so accept it loosely and re-narrow.
-const ownerVisibility = (builder: unknown, context: ExecutorOwnerPolicyContext) =>
+const ownerVisibility = (builder: unknown, context: ExecutorOwnerPolicyContext | undefined) =>
   ownerVisibilityCondition(builder as AnyConditionBuilder, context) as Condition | boolean;
 
 /** A truly global table (the blob store). Isolation is carried in the row's
