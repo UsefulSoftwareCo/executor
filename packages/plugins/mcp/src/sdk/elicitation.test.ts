@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema, Semaphore } from "effect";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation/types";
 
@@ -26,7 +26,10 @@ import { makeElicitationMcpServer, serveMcpServer } from "../testing";
 
 const isFormElicitation = Schema.is(FormElicitation);
 
-const serveElicitationTestServer = serveMcpServer(makeElicitationMcpServer);
+const elicitationServerSemaphore = Semaphore.makeUnsafe(1);
+const serveElicitationTestServer = Effect.acquireRelease(elicitationServerSemaphore.take(1), () =>
+  elicitationServerSemaphore.release(1).pipe(Effect.asVoid),
+).pipe(Effect.flatMap(() => serveMcpServer(makeElicitationMcpServer)));
 
 const schemaValidator = new CfWorkerJsonSchemaValidator({ shortcircuit: false });
 
@@ -56,8 +59,9 @@ const TEMPLATE = AuthTemplateSlug.make("none");
 // ---------------------------------------------------------------------------
 
 const makeTestExecutor = (serverUrl: string) =>
-  createExecutor(
-    makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+  Effect.acquireRelease(
+    createExecutor(makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const })),
+    (executor) => executor.close().pipe(Effect.ignore),
   ).pipe(
     Effect.tap((executor) =>
       Effect.gen(function* () {
@@ -85,7 +89,7 @@ const findTool = (tools: readonly Tool[], name: string): Tool =>
 // ---------------------------------------------------------------------------
 
 describe("MCP elicitation (end-to-end)", () => {
-  it.effect("form elicitation accepted → tool returns approved result", () =>
+  it.effect("reuses the session while installing each invoke's elicitation handler", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
@@ -93,12 +97,19 @@ describe("MCP elicitation (end-to-end)", () => {
       const tools = yield* executor.tools.list();
       const gatedEcho = findTool(tools, "gated_echo");
 
-      const elicitationMessages: string[] = [];
+      const acceptedMessages: string[] = [];
+      const declinedMessages: string[] = [];
+      let capturedAddress: string | undefined;
+      let capturedArgs: unknown;
+      let capturedRequest: unknown;
 
       const options: InvokeOptions = {
         onElicitation: (ctx) => {
+          capturedAddress = String(ctx.address);
+          capturedArgs = ctx.args;
+          capturedRequest = ctx.request;
           if (isFormElicitation(ctx.request)) {
-            elicitationMessages.push(ctx.request.message);
+            acceptedMessages.push(ctx.request.message);
           }
           return Effect.succeed(
             ElicitationResponse.make({
@@ -109,36 +120,50 @@ describe("MCP elicitation (end-to-end)", () => {
         },
       };
 
-      const result = yield* executor.execute(gatedEcho.address, { value: "hello" }, options);
-
-      expect(result).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "approved:hello" }] },
-      });
-      expect(elicitationMessages.length).toBeGreaterThanOrEqual(1);
-      expect(elicitationMessages.some((m) => m.includes('Approve echo for "hello"?'))).toBe(true);
-    }),
-  );
-
-  it.effect("form elicitation declined → tool returns denied result", () =>
-    Effect.gen(function* () {
-      const server = yield* serveElicitationTestServer;
-      const executor = yield* makeTestExecutor(server.url);
-      const tools = yield* executor.tools.list();
-      const gatedEcho = findTool(tools, "gated_echo");
-
-      const result = yield* executor.execute(
+      yield* server.clearRequests;
+      const accepted = yield* executor.execute(gatedEcho.address, { value: "hello" }, options);
+      const declined = yield* executor.execute(
         gatedEcho.address,
         { value: "nope" },
         {
-          onElicitation: () => Effect.succeed(ElicitationResponse.make({ action: "decline" })),
+          onElicitation: (ctx) => {
+            if (isFormElicitation(ctx.request)) {
+              declinedMessages.push(ctx.request.message);
+            }
+            return Effect.succeed(ElicitationResponse.make({ action: "decline" }));
+          },
         },
       );
+      yield* executor.close();
 
-      expect(result).toMatchObject({
+      expect(accepted).toMatchObject({
+        ok: true,
+        data: { content: [{ type: "text", text: "approved:hello" }] },
+      });
+      expect(declined).toMatchObject({
         ok: true,
         data: { content: [{ type: "text", text: "denied:nope" }] },
       });
+      expect(acceptedMessages).toEqual(['Approve echo for "hello"?']);
+      expect(declinedMessages).toEqual(['Approve echo for "nope"?']);
+      expect(capturedAddress).toBe(String(gatedEcho.address));
+      expect(capturedArgs).toEqual({ value: "hello" });
+      expect(isFormElicitation(capturedRequest)).toBe(true);
+      const form = capturedRequest as FormElicitation;
+      expect(form.message).toContain('Approve echo for "hello"?');
+      expect(form.requestedSchema).toEqual({
+        type: "object",
+        properties: {
+          approved: { type: "boolean", title: "Approve" },
+        },
+        required: ["approved"],
+      });
+      const sessionIds = new Set(
+        (yield* server.requests)
+          .map((request) => request.sessionId)
+          .filter(Predicate.isNotUndefined),
+      );
+      expect(sessionIds.size).toBe(1);
     }),
   );
 
@@ -316,54 +341,4 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(integration?.description).toBe("Gmail");
     }),
   );
-
-  it.effect("handler receives correct address, args, and FormElicitation schema", () =>
-    Effect.gen(function* () {
-      const server = yield* serveElicitationTestServer;
-      const executor = yield* makeTestExecutor(server.url);
-      const tools = yield* executor.tools.list();
-      const gatedEcho = findTool(tools, "gated_echo");
-
-      let capturedAddress: string | undefined;
-      let capturedArgs: unknown;
-      let capturedRequest: unknown;
-
-      yield* executor.execute(
-        gatedEcho.address,
-        { value: "ctx-test" },
-        {
-          onElicitation: (ctx) => {
-            capturedAddress = String(ctx.address);
-            capturedArgs = ctx.args;
-            capturedRequest = ctx.request;
-            return Effect.succeed(
-              ElicitationResponse.make({
-                action: "accept",
-                content: { approved: true },
-              }),
-            );
-          },
-        },
-      );
-
-      expect(capturedAddress).toBe(String(gatedEcho.address));
-      expect(capturedArgs).toEqual({ value: "ctx-test" });
-      expect(isFormElicitation(capturedRequest)).toBe(true);
-
-      const form = capturedRequest as FormElicitation;
-      expect(form.message).toContain('Approve echo for "ctx-test"?');
-      expect(form.requestedSchema).toEqual({
-        type: "object",
-        properties: {
-          approved: { type: "boolean", title: "Approve" },
-        },
-        required: ["approved"],
-      });
-    }),
-  );
-
-  // removed: "connection is reused across multiple tool calls" — v2 does not
-  // cache MCP client connections across invocations (Hyperdrive request-scoped
-  // rule; each invoke dials and closes its own connection). Session reuse is no
-  // longer a property of the plugin, so the assertion no longer applies.
 });
