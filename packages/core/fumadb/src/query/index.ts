@@ -6,9 +6,20 @@ import type {
   TableInsertValues,
   TableUpdateValues,
 } from "../schema/create";
+import type {
+  JsonCountOptions,
+  JsonGroupCountOptions,
+  JsonGroupCountRow,
+  JsonPageOptions,
+  JsonStats,
+  JsonStatsOptions,
+  JsonTimeBucketOptions,
+  JsonTimeBucketRow,
+} from "./aggregate";
 import type { Condition, ConditionBuilder } from "./condition-builder";
 import type { ORMAdapter } from "./orm";
 
+export type * from "./aggregate";
 export type { Condition, ConditionBuilder } from "./condition-builder";
 export { ConditionType } from "./condition-builder";
 export { withQueryContext } from "./orm";
@@ -208,4 +219,39 @@ export interface AbstractQuery<S extends AnySchema> {
           eb: ConditionBuilder<S["tables"][TableName]["columns"]>
         ) => Condition | boolean;
       }) => Promise<void>;
+
+  // --- JSON-document aggregation + keyset pagination -----------------------
+  // Operate over values addressed inside a JSON document column. Only adapters
+  // that implement the matching `ORMAdapter` hooks support these; the rest
+  // throw `[FumaDB] <op> is not supported by this adapter`.
+
+  /** Count rows matching the real-column `where` and JSON-path `filter`. */
+  jsonCount: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    options: JsonCountOptions<S["tables"][TableName]["columns"]>
+  ) => Promise<number>;
+
+  /** Group by a JSON path and count rows per distinct value. */
+  jsonGroupCount: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    options: JsonGroupCountOptions<S["tables"][TableName]["columns"]>
+  ) => Promise<JsonGroupCountRow[]>;
+
+  /** Bucket a numeric JSON path by `bucketMs` and count rows per bucket. */
+  jsonTimeBuckets: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    options: JsonTimeBucketOptions<S["tables"][TableName]["columns"]>
+  ) => Promise<JsonTimeBucketRow[]>;
+
+  /** Compute count/min/max and percentiles over a numeric JSON path. */
+  jsonStats: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    options: JsonStatsOptions<S["tables"][TableName]["columns"]>
+  ) => Promise<JsonStats>;
+
+  /** Keyset-paginate rows ordered by JSON paths with a real-column tiebreak. */
+  jsonPage: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    options: JsonPageOptions<S["tables"][TableName]["columns"]>
+  ) => Promise<TableToColumnValues<S["tables"][TableName]>[]>;
 }

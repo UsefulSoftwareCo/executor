@@ -12,6 +12,16 @@ import type {
   JoinBuilder,
   OrderBy,
 } from "..";
+import type {
+  JsonCountAdapterOptions,
+  JsonGroupCountAdapterOptions,
+  JsonGroupCountRow,
+  JsonPageAdapterOptions,
+  JsonStats,
+  JsonStatsAdapterOptions,
+  JsonTimeBucketAdapterOptions,
+  JsonTimeBucketRow,
+} from "../aggregate";
 import { buildCondition, createBuilder, type Condition } from "../condition-builder";
 
 export interface CompiledJoin {
@@ -311,6 +321,25 @@ export interface ORMAdapter<S extends AnySchema = AnySchema> {
   transaction: <T>(
     run: (transactionInstance: AbstractQuery<S>) => Promise<T>,
   ) => Promise<T>;
+
+  // --- JSON-document aggregation + keyset pagination (optional) ------------
+  // Adapters that can push these into the database implement them; `toORM`
+  // throws a clear error for adapters that don't.
+
+  jsonCount?: (table: AnyTable, options: JsonCountAdapterOptions) => Promise<number>;
+  jsonGroupCount?: (
+    table: AnyTable,
+    options: JsonGroupCountAdapterOptions,
+  ) => Promise<JsonGroupCountRow[]>;
+  jsonTimeBuckets?: (
+    table: AnyTable,
+    options: JsonTimeBucketAdapterOptions,
+  ) => Promise<JsonTimeBucketRow[]>;
+  jsonStats?: (table: AnyTable, options: JsonStatsAdapterOptions) => Promise<JsonStats>;
+  jsonPage?: (
+    table: AnyTable,
+    options: JsonPageAdapterOptions,
+  ) => Promise<Record<string, unknown>[]>;
 }
 
 export interface ToORMOptions {
@@ -332,6 +361,33 @@ export function toORM<S extends AnySchema>(
     if (!table) throw new Error(`[FumaDB] Invalid table name ${String(name)}.`);
 
     return table;
+  }
+
+  function toColumn(table: AnyTable, name: string): AnyColumn {
+    const column = table.columns[name];
+    if (!column)
+      throw new Error(`[FumaDB] Invalid column name ${name} in ${table.ormName}.`);
+    return column;
+  }
+
+  // Compiles a public where builder, applies read policies, and yields the
+  // scoping condition. Returns `false` when the query is statically empty.
+  async function compileScopedWhere(
+    table: AnyTable,
+    where:
+      | ((eb: ReturnType<typeof createBuilder>) => Condition | boolean)
+      | undefined,
+  ): Promise<Condition | undefined | false> {
+    let conditions = where ? buildCondition(table.columns, where) : undefined;
+    if (conditions === true) conditions = undefined;
+    if (conditions === false) return false;
+    return applyReadPolicies(table, conditions, context);
+  }
+
+  function requireJsonOp<T>(op: T | undefined, name: string): T {
+    if (!op)
+      throw new Error(`[FumaDB] ${name} is not supported by this adapter.`);
+    return op;
   }
 
   const query = {
@@ -427,6 +483,69 @@ export function toORM<S extends AnySchema>(
       );
       if (constrainedWhere === false) return;
       return internal.updateMany(table, { set, where: constrainedWhere });
+    },
+    async jsonCount(name, { column, where, filter }) {
+      const op = requireJsonOp(internal.jsonCount, "jsonCount");
+      const table = toTable(name);
+      const scopedWhere = await compileScopedWhere(table, where);
+      if (scopedWhere === false) return 0;
+      return op(table, { column: toColumn(table, column), where: scopedWhere, filter });
+    },
+    async jsonGroupCount(name, { column, where, filter, path, valueType }) {
+      const op = requireJsonOp(internal.jsonGroupCount, "jsonGroupCount");
+      const table = toTable(name);
+      const scopedWhere = await compileScopedWhere(table, where);
+      if (scopedWhere === false) return [];
+      return op(table, {
+        column: toColumn(table, column),
+        where: scopedWhere,
+        filter,
+        path,
+        valueType,
+      });
+    },
+    async jsonTimeBuckets(name, { column, where, filter, path, bucketMs }) {
+      const op = requireJsonOp(internal.jsonTimeBuckets, "jsonTimeBuckets");
+      const table = toTable(name);
+      const scopedWhere = await compileScopedWhere(table, where);
+      if (scopedWhere === false) return [];
+      return op(table, {
+        column: toColumn(table, column),
+        where: scopedWhere,
+        filter,
+        path,
+        bucketMs,
+      });
+    },
+    async jsonStats(name, { column, where, filter, path, percentiles }) {
+      const op = requireJsonOp(internal.jsonStats, "jsonStats");
+      const table = toTable(name);
+      const scopedWhere = await compileScopedWhere(table, where);
+      if (scopedWhere === false)
+        return { count: 0, min: null, max: null, percentiles: [] };
+      return op(table, {
+        column: toColumn(table, column),
+        where: scopedWhere,
+        filter,
+        path,
+        percentiles,
+      });
+    },
+    async jsonPage(name, options) {
+      const op = requireJsonOp(internal.jsonPage, "jsonPage");
+      const table = toTable(name);
+      const scopedWhere = await compileScopedWhere(table, options.where);
+      if (scopedWhere === false) return [];
+      return op(table, {
+        column: toColumn(table, options.column),
+        where: scopedWhere,
+        filter: options.filter,
+        orderBy: options.orderBy,
+        keyColumn: toColumn(table, options.keyColumn),
+        keyDirection: options.keyDirection ?? "asc",
+        cursor: options.cursor,
+        limit: options.limit,
+      }) as Promise<Record<string, unknown>[]>;
     },
     async transaction(run) {
       return internal.transaction((transactionInstance) =>

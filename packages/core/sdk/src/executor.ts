@@ -2,7 +2,21 @@ import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
-import { withQueryContext, type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
+import {
+  withQueryContext,
+  type Condition,
+  type ConditionBuilder,
+  type JsonCompareOperator,
+  type JsonFilter,
+  type JsonGroupCountRow,
+  type JsonKeysetCursor,
+  type JsonKeysetOrder,
+  type JsonPath,
+  type JsonScalar,
+  type JsonStats,
+  type JsonTimeBucketRow,
+  type JsonValueType,
+} from "@executor-js/fumadb/query";
 import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 import type { AnyColumn } from "@executor-js/fumadb/schema";
 import {
@@ -687,6 +701,31 @@ type CoreProjectedRow<TName extends CoreTableName, TSelect> = TSelect extends re
   ? Pick<CoreRow<TName>, Extract<K, keyof CoreRow<TName>>>
   : CoreRow<TName>;
 
+type CoreJsonBase = {
+  readonly column: string;
+  readonly where?: CoreWhere;
+  readonly filter?: JsonFilter;
+};
+type CoreJsonGroupCountOptions = CoreJsonBase & {
+  readonly path: JsonPath;
+  readonly valueType?: JsonValueType;
+};
+type CoreJsonTimeBucketOptions = CoreJsonBase & {
+  readonly path: JsonPath;
+  readonly bucketMs: number;
+};
+type CoreJsonStatsOptions = CoreJsonBase & {
+  readonly path: JsonPath;
+  readonly percentiles?: readonly number[];
+};
+type CoreJsonPageOptions = CoreJsonBase & {
+  readonly orderBy: readonly JsonKeysetOrder[];
+  readonly keyColumn: string;
+  readonly keyDirection?: "asc" | "desc";
+  readonly cursor?: JsonKeysetCursor;
+  readonly limit: number;
+};
+
 type LooseStorageDb = {
   readonly count: (tableName: string, options?: unknown) => Promise<number>;
   readonly create: (
@@ -707,6 +746,20 @@ type LooseStorageDb = {
     options?: unknown,
   ) => Promise<readonly Record<string, unknown>[]>;
   readonly updateMany: (tableName: string, options: unknown) => Promise<void>;
+  readonly jsonCount: (tableName: string, options: unknown) => Promise<number>;
+  readonly jsonGroupCount: (
+    tableName: string,
+    options: unknown,
+  ) => Promise<readonly JsonGroupCountRow[]>;
+  readonly jsonTimeBuckets: (
+    tableName: string,
+    options: unknown,
+  ) => Promise<readonly JsonTimeBucketRow[]>;
+  readonly jsonStats: (tableName: string, options: unknown) => Promise<JsonStats>;
+  readonly jsonPage: (
+    tableName: string,
+    options: unknown,
+  ) => Promise<readonly Record<string, unknown>[]>;
 };
 
 const asLooseStorageDb = (db: unknown): LooseStorageDb => db as LooseStorageDb;
@@ -764,6 +817,37 @@ const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
     fuma.use(`${tableName}.updateMany`, (db) =>
       asLooseStorageDb(db).updateMany(tableName, options),
     ),
+  jsonCount: (
+    tableName: CoreTableName,
+    options: CoreJsonBase,
+  ): Effect.Effect<number, StorageFailure> =>
+    fuma.use(`${tableName}.jsonCount`, (db) => asLooseStorageDb(db).jsonCount(tableName, options)),
+  jsonGroupCount: (
+    tableName: CoreTableName,
+    options: CoreJsonGroupCountOptions,
+  ): Effect.Effect<readonly JsonGroupCountRow[], StorageFailure> =>
+    fuma.use(`${tableName}.jsonGroupCount`, (db) =>
+      asLooseStorageDb(db).jsonGroupCount(tableName, options),
+    ),
+  jsonTimeBuckets: (
+    tableName: CoreTableName,
+    options: CoreJsonTimeBucketOptions,
+  ): Effect.Effect<readonly JsonTimeBucketRow[], StorageFailure> =>
+    fuma.use(`${tableName}.jsonTimeBuckets`, (db) =>
+      asLooseStorageDb(db).jsonTimeBuckets(tableName, options),
+    ),
+  jsonStats: (
+    tableName: CoreTableName,
+    options: CoreJsonStatsOptions,
+  ): Effect.Effect<JsonStats, StorageFailure> =>
+    fuma.use(`${tableName}.jsonStats`, (db) => asLooseStorageDb(db).jsonStats(tableName, options)),
+  jsonPage: <TName extends CoreTableName>(
+    tableName: TName,
+    options: CoreJsonPageOptions,
+  ): Effect.Effect<readonly CoreRow<TName>[], StorageFailure> =>
+    fuma.use(`${tableName}.jsonPage`, (db) =>
+      asLooseStorageDb(db).jsonPage(tableName, options),
+    ) as Effect.Effect<readonly CoreRow<TName>[], StorageFailure>,
 });
 
 type CoreDb = ReturnType<typeof makeCoreDb>;
@@ -837,6 +921,17 @@ const pluginStorageWhereOperators = ["eq", "in", "gt", "gte", "lt", "lte"] as co
 const isPluginStorageWhereFilter = (value: unknown): value is Readonly<Record<string, unknown>> =>
   isPluginStorageRecord(value) && pluginStorageWhereOperators.some((operator) => operator in value);
 
+const pluginStorageJsonCompareOperators = {
+  eq: "=",
+  gt: ">",
+  gte: ">=",
+  lt: "<",
+  lte: "<=",
+} satisfies Record<
+  Exclude<(typeof pluginStorageWhereOperators)[number], "in">,
+  JsonCompareOperator
+>;
+
 const pluginStorageComparableValue = (value: unknown): string | number | boolean | null => {
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
@@ -899,6 +994,92 @@ const rowMatchesPluginStorageWhere = (
   return true;
 };
 
+const inferJsonValueType = (value: unknown): JsonValueType => {
+  if (value instanceof Date) return "number";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "text";
+};
+
+const pluginStorageJsonScalar = (value: unknown): JsonScalar => pluginStorageComparableValue(value);
+
+// Translate the facade's indexed-field `where` into a JSON-path filter the SQL
+// pushdown understands. Field value types are inferred from the operands.
+const pluginStorageWhereToJsonFilter = (
+  where: Readonly<Record<string, unknown>> | undefined,
+): JsonFilter | undefined => {
+  if (!where) return undefined;
+  const items: JsonFilter[] = [];
+  for (const [field, condition] of Object.entries(where)) {
+    const path: JsonPath = [field];
+    if (isPluginStorageWhereFilter(condition)) {
+      for (const [operator, operand] of Object.entries(condition)) {
+        if (operator === "in") {
+          const values = Array.isArray(operand) ? operand : [];
+          items.push({
+            kind: "array",
+            path,
+            valueType: inferJsonValueType(values[0]),
+            operator: "in",
+            values: values.map(pluginStorageJsonScalar),
+          });
+          continue;
+        }
+        if (!(operator in pluginStorageJsonCompareOperators)) continue;
+        const compareOperator =
+          pluginStorageJsonCompareOperators[
+            operator as keyof typeof pluginStorageJsonCompareOperators
+          ];
+        items.push({
+          kind: "compare",
+          path,
+          valueType: inferJsonValueType(operand),
+          operator: compareOperator,
+          value: pluginStorageJsonScalar(operand),
+        });
+      }
+    } else {
+      items.push({
+        kind: "compare",
+        path,
+        valueType: inferJsonValueType(condition),
+        operator: "=",
+        value: pluginStorageJsonScalar(condition),
+      });
+    }
+  }
+  if (items.length === 0) return undefined;
+  if (items.length === 1) return items[0]!;
+  return { kind: "and", items };
+};
+
+const pluginStorageFieldsValidationError = (
+  definition: PluginStorageRuntimeCollectionDefinition,
+  fields: Iterable<string>,
+): StorageError | null => {
+  const indexedFields = pluginStorageCollectionIndexedFields(definition);
+  for (const field of fields) {
+    if (!indexedFields.has(field)) {
+      return new StorageError({
+        message: `Plugin storage collection "${definition.name}" cannot query field "${field}" because it is not declared as an index`,
+        cause: undefined,
+      });
+    }
+  }
+  return null;
+};
+
+const pluginStorageInvalidLimitError = (
+  definition: PluginStorageRuntimeCollectionDefinition,
+  limit: number,
+): StorageError | null =>
+  Number.isInteger(limit) && limit >= 0
+    ? null
+    : new StorageError({
+        message: `Plugin storage collection "${definition.name}" received an invalid query limit`,
+        cause: undefined,
+      });
+
 const makePluginStorageFacade = (input: {
   readonly core: CoreDb;
   readonly pluginId: string;
@@ -922,6 +1103,18 @@ const makePluginStorageFacade = (input: {
         b("plugin_id", "=", input.pluginId),
         b("collection", "=", collection),
         key === undefined ? true : b("key", "=", key),
+      );
+
+  // Like `whereFor` but with an optional key-prefix match, used by the
+  // pushdown aggregate/keyset paths. Owner/tenant scoping is added by the
+  // table policy, exactly as for `whereFor`.
+  const whereForPrefix =
+    (collection: string, keyPrefix?: string): CoreWhere =>
+    (b: AnyCb) =>
+      b.and(
+        b("plugin_id", "=", input.pluginId),
+        b("collection", "=", collection),
+        keyPrefix === undefined ? true : b("key", "starts with", keyPrefix),
       );
 
   const whereOwner = (owner: Owner, collection: string, key: string): CoreWhere => {
@@ -1208,6 +1401,120 @@ const makePluginStorageFacade = (input: {
       query: (storageInput) => queryCollection(definition, storageInput),
       count: (storageInput) =>
         queryCollection(definition, storageInput).pipe(Effect.map((rows) => rows.length)),
+      queryKeyset: (storageInput) =>
+        Effect.gen(function* () {
+          const fields = new Set<string>([
+            ...Object.keys(storageInput.where ?? {}),
+            ...storageInput.orderBy.map((order) => order.field),
+          ]);
+          const validationError = pluginStorageFieldsValidationError(definition, fields);
+          if (validationError) return yield* validationError;
+          const limitError = pluginStorageInvalidLimitError(definition, storageInput.limit);
+          if (limitError) return yield* limitError;
+
+          const orderBy: JsonKeysetOrder[] = storageInput.orderBy.map((order) => ({
+            path: [order.field],
+            valueType: order.valueType ?? "text",
+            direction: order.direction ?? "asc",
+          }));
+          const keyDirection = orderBy[0]?.direction ?? "asc";
+
+          const rows = yield* input.core.jsonPage("plugin_storage", {
+            column: "data",
+            where: whereForPrefix(definition.name, storageInput.keyPrefix),
+            filter: pluginStorageWhereToJsonFilter(
+              storageInput.where as Readonly<Record<string, unknown>> | undefined,
+            ),
+            orderBy,
+            keyColumn: "key",
+            keyDirection,
+            cursor: storageInput.cursor,
+            limit: storageInput.limit,
+          });
+
+          const entries = rows.map((row) =>
+            pluginStorageEntryFromRow<PluginStorageCollectionData<typeof definition>>(row),
+          );
+          const last = entries.at(-1);
+          const nextCursor =
+            last && entries.length >= storageInput.limit
+              ? {
+                  values: storageInput.orderBy.map((order) =>
+                    pluginStorageJsonScalar(pluginStorageDataField(last.data, order.field)),
+                  ),
+                  key: last.key,
+                }
+              : null;
+          return { entries, nextCursor };
+        }),
+      aggregate: {
+        count: (storageInput) =>
+          Effect.gen(function* () {
+            const validationError = pluginStorageFieldsValidationError(
+              definition,
+              Object.keys(storageInput?.where ?? {}),
+            );
+            if (validationError) return yield* validationError;
+            return yield* input.core.jsonCount("plugin_storage", {
+              column: "data",
+              where: whereForPrefix(definition.name, storageInput?.keyPrefix),
+              filter: pluginStorageWhereToJsonFilter(
+                storageInput?.where as Readonly<Record<string, unknown>> | undefined,
+              ),
+            });
+          }),
+        groupCount: (storageInput) =>
+          Effect.gen(function* () {
+            const validationError = pluginStorageFieldsValidationError(definition, [
+              storageInput.field,
+              ...Object.keys(storageInput.where ?? {}),
+            ]);
+            if (validationError) return yield* validationError;
+            return yield* input.core.jsonGroupCount("plugin_storage", {
+              column: "data",
+              where: whereForPrefix(definition.name, storageInput.keyPrefix),
+              filter: pluginStorageWhereToJsonFilter(
+                storageInput.where as Readonly<Record<string, unknown>> | undefined,
+              ),
+              path: [storageInput.field],
+              valueType: storageInput.valueType ?? "text",
+            });
+          }),
+        timeBuckets: (storageInput) =>
+          Effect.gen(function* () {
+            const validationError = pluginStorageFieldsValidationError(definition, [
+              storageInput.field,
+              ...Object.keys(storageInput.where ?? {}),
+            ]);
+            if (validationError) return yield* validationError;
+            return yield* input.core.jsonTimeBuckets("plugin_storage", {
+              column: "data",
+              where: whereForPrefix(definition.name, storageInput.keyPrefix),
+              filter: pluginStorageWhereToJsonFilter(
+                storageInput.where as Readonly<Record<string, unknown>> | undefined,
+              ),
+              path: [storageInput.field],
+              bucketMs: storageInput.bucketMs,
+            });
+          }),
+        stats: (storageInput) =>
+          Effect.gen(function* () {
+            const validationError = pluginStorageFieldsValidationError(definition, [
+              storageInput.field,
+              ...Object.keys(storageInput.where ?? {}),
+            ]);
+            if (validationError) return yield* validationError;
+            return yield* input.core.jsonStats("plugin_storage", {
+              column: "data",
+              where: whereForPrefix(definition.name, storageInput.keyPrefix),
+              filter: pluginStorageWhereToJsonFilter(
+                storageInput.where as Readonly<Record<string, unknown>> | undefined,
+              ),
+              path: [storageInput.field],
+              percentiles: storageInput.percentiles,
+            });
+          }),
+      },
       remove: (storageInput) => removeImpl(storageInput.owner, definition.name, storageInput.key),
     }),
     get: (storageInput) => getVisible(storageInput.collection, storageInput.key),

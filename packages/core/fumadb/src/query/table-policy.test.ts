@@ -103,12 +103,35 @@ const comments = table("policy_comments", {
   },
 });
 
+const events = table("policy_events", {
+  id: idColumn("id", "varchar(255)"),
+  tenantId: column("tenant_id", "varchar(255)"),
+  data: column("data", "json"),
+}).policy<TenantPolicyContext>({
+  name: "tenant.events",
+  onRead: ({ builder, context }) => {
+    if (isReadDenied("events", context)) return false;
+    return builder("tenantId", "in", [...context.allowedTenantIds]);
+  },
+  onCreate: ({ values, context }) => assertTenantAllowed("events", context, values.tenantId),
+  onUpdate: ({ builder, set, context }) => {
+    observe(context, "events:update");
+    if (set.tenantId !== undefined) assertTenantAllowed("events", context, set.tenantId);
+    return builder("tenantId", "in", [...context.allowedTenantIds]);
+  },
+  onDelete: ({ builder, context }) => {
+    observe(context, "events:delete");
+    return builder("tenantId", "in", [...context.allowedTenantIds]);
+  },
+});
+
 const v1 = schema({
   version: "1.0.0",
   tables: {
     authors,
     posts,
     comments,
+    events,
   },
   relations: {
     authors: ({ many }) => ({
@@ -233,6 +256,33 @@ const seedTenants = async (orm: TablePolicyQuery) => {
       tenantId: "tenant-b",
       postId: "post-b-1",
       body: "B comment",
+    },
+  ]);
+
+  await seed.createMany("events", [
+    {
+      id: "event-a-1",
+      tenantId: "tenant-a",
+      data: {
+        status: "completed",
+        startedAt: 1000,
+      },
+    },
+    {
+      id: "event-a-2",
+      tenantId: "tenant-a",
+      data: {
+        status: "failed",
+        startedAt: 2000,
+      },
+    },
+    {
+      id: "event-b-1",
+      tenantId: "tenant-b",
+      data: {
+        status: "completed",
+        startedAt: 3000,
+      },
     },
   ]);
 };
@@ -457,6 +507,67 @@ describe("FumaDB table policies", () => {
           author: null,
         },
       ]);
+    }),
+  );
+
+  it.effect("applies read policies before JSON aggregation and keyset queries", () =>
+    useHarness(async (orm) => {
+      await seedTenants(orm);
+
+      const tenantAContext = makeContext(["tenant-a"], "tenant-a");
+      const tenantA = withQueryContext(orm, tenantAContext);
+
+      await expect(tenantA.jsonCount("events", { column: "data" })).resolves.toBe(2);
+      await expect(
+        tenantA.jsonCount("events", {
+          column: "data",
+          filter: {
+            kind: "compare",
+            path: ["status"],
+            valueType: "text",
+            operator: "=",
+            value: "completed",
+          },
+        }),
+      ).resolves.toBe(1);
+
+      const groups = await tenantA.jsonGroupCount("events", {
+        column: "data",
+        path: ["status"],
+      });
+      expect(Object.fromEntries(groups.map((row) => [row.value, row.count]))).toEqual({
+        completed: 1,
+        failed: 1,
+      });
+
+      await expect(
+        tenantA.jsonPage("events", {
+          column: "data",
+          orderBy: [{ path: ["startedAt"], valueType: "number", direction: "asc" }],
+          keyColumn: "id",
+          keyDirection: "asc",
+          limit: 10,
+        }),
+      ).resolves.toMatchObject([{ id: "event-a-1" }, { id: "event-a-2" }]);
+
+      const deniedEvents = withQueryContext(
+        orm,
+        makeContext(["tenant-a"], "denied-events", ["events"]),
+      );
+      await expect(deniedEvents.jsonCount("events", { column: "data" })).resolves.toBe(0);
+      await expect(
+        deniedEvents.jsonPage("events", {
+          column: "data",
+          orderBy: [{ path: ["startedAt"], valueType: "number", direction: "asc" }],
+          keyColumn: "id",
+          keyDirection: "asc",
+          limit: 10,
+        }),
+      ).resolves.toEqual([]);
+
+      expect(tenantAContext.observed).toEqual(
+        expect.arrayContaining(["tenant-a:events:read"]),
+      );
     }),
   );
 

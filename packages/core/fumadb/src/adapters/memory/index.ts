@@ -1,5 +1,14 @@
 import type { FumaDBAdapter } from "../";
 import type { AbstractQuery } from "../../query";
+import type { JsonScalar } from "../../query/aggregate";
+import {
+  bucketFloor,
+  coerceJsonValue,
+  compareNullableAscending,
+  computePercentiles,
+  extractJsonPath,
+  matchesJsonFilter,
+} from "../../query/aggregate-eval";
 import { ConditionType, type Condition } from "../../query/condition-builder";
 import { toORM, type SimplifyFindOptions } from "../../query/orm";
 import type { AnyColumn, AnySchema, AnyTable } from "../../schema";
@@ -188,6 +197,100 @@ export function memoryAdapter(options: MemoryAdapterOptions = {}): FumaDBAdapter
         async deleteMany(table, v) {
           const rows = tableRows(db, table);
           db[table.ormName] = rows.filter((row) => !matchesCondition(row, v.where));
+        },
+        async jsonCount(table, { column, where, filter }) {
+          return tableRows(db, table).filter(
+            (row) =>
+              matchesCondition(row, where) &&
+              (!filter || matchesJsonFilter(row[column.ormName], filter)),
+          ).length;
+        },
+        async jsonGroupCount(table, { column, where, filter, path, valueType }) {
+          const counts = new Map<JsonScalar, number>();
+          for (const row of tableRows(db, table)) {
+            if (!matchesCondition(row, where)) continue;
+            if (filter && !matchesJsonFilter(row[column.ormName], filter)) continue;
+            const value = coerceJsonValue(
+              extractJsonPath(row[column.ormName], path),
+              valueType ?? "text",
+            );
+            counts.set(value, (counts.get(value) ?? 0) + 1);
+          }
+          return [...counts.entries()].map(([value, count]) => ({ value, count }));
+        },
+        async jsonTimeBuckets(table, { column, where, filter, path, bucketMs }) {
+          const counts = new Map<number, number>();
+          for (const row of tableRows(db, table)) {
+            if (!matchesCondition(row, where)) continue;
+            if (filter && !matchesJsonFilter(row[column.ormName], filter)) continue;
+            const raw = coerceJsonValue(extractJsonPath(row[column.ormName], path), "number");
+            if (typeof raw !== "number") continue;
+            const bucket = bucketFloor(raw, bucketMs);
+            counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+          }
+          return [...counts.entries()]
+            .map(([bucket, count]) => ({ bucket, count }))
+            .sort((a, b) => a.bucket - b.bucket);
+        },
+        async jsonStats(table, { column, where, filter, path, percentiles }) {
+          const values: number[] = [];
+          for (const row of tableRows(db, table)) {
+            if (!matchesCondition(row, where)) continue;
+            if (filter && !matchesJsonFilter(row[column.ormName], filter)) continue;
+            const raw = coerceJsonValue(extractJsonPath(row[column.ormName], path), "number");
+            if (typeof raw === "number") values.push(raw);
+          }
+          if (values.length === 0) return { count: 0, min: null, max: null, percentiles: [] };
+          values.sort((a, b) => a - b);
+          return {
+            count: values.length,
+            min: values[0]!,
+            max: values[values.length - 1]!,
+            percentiles: computePercentiles(values, percentiles ?? []),
+          };
+        },
+        async jsonPage(table, { column, where, filter, orderBy, keyColumn, keyDirection, cursor, limit }) {
+          const sortValue = (row: Record<string, unknown>, index: number): JsonScalar =>
+            coerceJsonValue(
+              extractJsonPath(row[column.ormName], orderBy[index]!.path),
+              orderBy[index]!.valueType,
+            );
+          const keyOf = (row: Record<string, unknown>): string => String(row[keyColumn.ormName]);
+          const keyDir = keyDirection === "desc" ? -1 : 1;
+
+          let rows = tableRows(db, table).filter(
+            (row) =>
+              matchesCondition(row, where) &&
+              (!filter || matchesJsonFilter(row[column.ormName], filter)),
+          );
+
+          rows = [...rows].sort((a, b) => {
+            for (let index = 0; index < orderBy.length; index += 1) {
+              const direction = orderBy[index]!.direction === "desc" ? -1 : 1;
+              const compared =
+                compareNullableAscending(sortValue(a, index), sortValue(b, index)) * direction;
+              if (compared !== 0) return compared;
+            }
+            return compareNullableAscending(keyOf(a), keyOf(b)) * keyDir;
+          });
+
+          if (cursor) {
+            const cursorValues = cursor.values.map((value, index) =>
+              coerceJsonValue(value, orderBy[index]!.valueType),
+            );
+            rows = rows.filter((row) => {
+              for (let index = 0; index < orderBy.length; index += 1) {
+                const direction = orderBy[index]!.direction === "desc" ? -1 : 1;
+                const compared =
+                  compareNullableAscending(sortValue(row, index), cursorValues[index] ?? null) *
+                  direction;
+                if (compared !== 0) return compared > 0;
+              }
+              return compareNullableAscending(keyOf(row), cursor.key) * keyDir > 0;
+            });
+          }
+
+          return rows.slice(0, limit).map((row) => selectRow(table, row, true));
         },
         async transaction<T>(run: (transactionInstance: AbstractQuery<AnySchema>) => Promise<T>) {
           const snapshot = cloneValue(db);
