@@ -234,19 +234,51 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
     }),
   );
 
-  it.effect("respects timeout", () =>
-    Effect.gen(function* () {
-      const executor = makeDenoSubprocessExecutor({
-        timeoutMs: 500,
-      });
-      const toolInvoker = makeTestInvoker({});
+  it("suspends the execution deadline while a tool dispatch is in flight", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("slow result")),
+    };
 
-      const output = yield* executor.execute("await new Promise(() => {}); return 1;", toolInvoker);
+    const output = await Effect.runPromise(
+      executor.execute("return await tools.slow.wait({});", toolInvoker),
+    );
 
-      expect(output.result).toBeNull();
-      expect(output.error).toContain("timed out");
-    }),
-  );
+    expect(output.error).toBeUndefined();
+    expect(output.result).toBe("slow result");
+  });
+
+  it("still times out continuous autonomous compute", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker = makeTestInvoker({});
+
+    const output = await Effect.runPromise(
+      executor.execute("await new Promise(() => {}); return 1;", toolInvoker),
+    );
+
+    expect(output.result).toBeNull();
+    expect(output.error).toBe(`Deno subprocess execution timed out after ${timeoutMs}ms`);
+  });
+
+  it("resets the execution deadline after a tool dispatch returns", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("done")),
+    };
+
+    const output = await Effect.runPromise(
+      executor.execute(
+        "await tools.slow.wait({}); await new Promise(() => {}); return 1;",
+        toolInvoker,
+      ),
+    );
+
+    expect(output.result).toBeNull();
+    expect(output.error).toBe(`Deno subprocess execution timed out after ${timeoutMs}ms`);
+  });
 
   it.effect("network access is denied by default", () =>
     Effect.gen(function* () {

@@ -10,7 +10,6 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import {
   getQuickJS,
-  shouldInterruptAfterDeadline,
   type QuickJSContext,
   type QuickJSDeferredPromise,
   type QuickJSHandle,
@@ -109,9 +108,45 @@ const looksLikeInterruptedError = (message: string): boolean => /\binterrupted\b
 const timeoutMessage = (timeoutMs: number): string =>
   `QuickJS execution timed out after ${timeoutMs}ms`;
 
-const normalizeExecutionError = (cause: unknown, deadlineMs: number, timeoutMs: number): string => {
+type DeadlineTracker = {
+  /** Current absolute deadline, or null while at least one dispatch is in flight. */
+  readonly deadlineMs: () => number | null;
+  readonly dispatchStarted: () => void;
+  readonly dispatchReturned: () => void;
+};
+
+const makeDeadlineTracker = (timeoutMs: number): DeadlineTracker => {
+  const start = Date.now();
+  let inFlight = 0;
+  let lastReturnedAt = start;
+
+  return {
+    deadlineMs: () => (inFlight > 0 ? null : Math.max(start, lastReturnedAt) + timeoutMs),
+    dispatchStarted: () => {
+      inFlight += 1;
+    },
+    dispatchReturned: () => {
+      inFlight -= 1;
+      lastReturnedAt = Date.now();
+    },
+  };
+};
+
+const shouldInterruptAfterDeadline =
+  (deadline: DeadlineTracker): (() => boolean) =>
+  () => {
+    const deadlineMs = deadline.deadlineMs();
+    return deadlineMs !== null && Date.now() >= deadlineMs;
+  };
+
+const normalizeExecutionError = (
+  cause: unknown,
+  deadline: DeadlineTracker,
+  timeoutMs: number,
+): string => {
   const message = toErrorMessage(cause);
-  return Date.now() >= deadlineMs && looksLikeInterruptedError(message)
+  const deadlineMs = deadline.deadlineMs();
+  return deadlineMs !== null && Date.now() >= deadlineMs && looksLikeInterruptedError(message)
     ? timeoutMessage(timeoutMs)
     : message;
 };
@@ -252,6 +287,7 @@ const createToolBridge = (
   toolInvoker: SandboxToolInvoker,
   pendingDeferreds: Set<QuickJSDeferredPromise>,
   runPromise: RunPromise,
+  deadline: DeadlineTracker,
 ): QuickJSHandle =>
   context.newFunction("__executor_invokeTool", (pathHandle, argsHandle) => {
     const path = context.getString(pathHandle);
@@ -265,8 +301,10 @@ const createToolBridge = (
       pendingDeferreds.delete(deferred);
     });
 
+    deadline.dispatchStarted();
     void runPromise(toolInvoker.invoke({ path, args })).then(
       (value) => {
+        deadline.dispatchReturned();
         if (!deferred.alive) {
           return;
         }
@@ -282,6 +320,7 @@ const createToolBridge = (
         valueHandle.dispose();
       },
       (cause) => {
+        deadline.dispatchReturned();
         if (!deferred.alive) {
           return;
         }
@@ -308,11 +347,12 @@ const createToolBridge = (
 const drainJobs = (
   context: QuickJSContext,
   runtime: QuickJSRuntime,
-  deadlineMs: number,
+  deadline: DeadlineTracker,
   timeoutMs: number,
 ): void => {
   while (runtime.hasPendingJob()) {
-    if (Date.now() >= deadlineMs) {
+    const deadlineMs = deadline.deadlineMs();
+    if (deadlineMs !== null && Date.now() >= deadlineMs) {
       throw new Error(timeoutMessage(timeoutMs));
     }
 
@@ -327,9 +367,16 @@ const drainJobs = (
 
 const waitForDeferreds = async (
   pendingDeferreds: ReadonlySet<QuickJSDeferredPromise>,
-  deadlineMs: number,
+  deadline: DeadlineTracker,
   timeoutMs: number,
 ): Promise<void> => {
+  const settled = Promise.race([...pendingDeferreds].map((deferred) => deferred.settled));
+  const deadlineMs = deadline.deadlineMs();
+  if (deadlineMs === null) {
+    await settled;
+    return;
+  }
+
   const remainingMs = deadlineMs - Date.now();
   if (remainingMs <= 0) {
     throw new Error(timeoutMessage(timeoutMs));
@@ -338,7 +385,7 @@ const waitForDeferreds = async (
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      Promise.race([...pendingDeferreds].map((deferred) => deferred.settled)),
+      settled,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(timeoutMessage(timeoutMs))), remainingMs);
       }),
@@ -354,17 +401,17 @@ const drainAsync = async (
   context: QuickJSContext,
   runtime: QuickJSRuntime,
   pendingDeferreds: ReadonlySet<QuickJSDeferredPromise>,
-  deadlineMs: number,
+  deadline: DeadlineTracker,
   timeoutMs: number,
 ): Promise<void> => {
-  drainJobs(context, runtime, deadlineMs, timeoutMs);
+  drainJobs(context, runtime, deadline, timeoutMs);
 
   while (pendingDeferreds.size > 0) {
-    await waitForDeferreds(pendingDeferreds, deadlineMs, timeoutMs);
-    drainJobs(context, runtime, deadlineMs, timeoutMs);
+    await waitForDeferreds(pendingDeferreds, deadline, timeoutMs);
+    drainJobs(context, runtime, deadline, timeoutMs);
   }
 
-  drainJobs(context, runtime, deadlineMs, timeoutMs);
+  drainJobs(context, runtime, deadline, timeoutMs);
 };
 
 const evaluateInQuickJs = async (
@@ -374,7 +421,7 @@ const evaluateInQuickJs = async (
   runPromise: RunPromise,
 ): Promise<ExecuteResult> => {
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const deadlineMs = Date.now() + timeoutMs;
+  const deadline = makeDeadlineTracker(timeoutMs);
   const logs: string[] = [];
   const pendingDeferreds = new Set<QuickJSDeferredPromise>();
   const QuickJS = await resolveQuickJS();
@@ -384,7 +431,7 @@ const evaluateInQuickJs = async (
     runtime.setMemoryLimit(options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES);
     runtime.setMaxStackSize(options.maxStackSizeBytes ?? DEFAULT_MAX_STACK_SIZE_BYTES);
 
-    runtime.setInterruptHandler(shouldInterruptAfterDeadline(deadlineMs));
+    runtime.setInterruptHandler(shouldInterruptAfterDeadline(deadline));
 
     const context = runtime.newContext();
     try {
@@ -392,7 +439,13 @@ const evaluateInQuickJs = async (
       context.setProp(context.global, "__executor_log", logBridge);
       logBridge.dispose();
 
-      const toolBridge = createToolBridge(context, toolInvoker, pendingDeferreds, runPromise);
+      const toolBridge = createToolBridge(
+        context,
+        toolInvoker,
+        pendingDeferreds,
+        runPromise,
+        deadline,
+      );
       context.setProp(context.global, "__executor_invokeTool", toolBridge);
       toolBridge.dispose();
 
@@ -402,7 +455,7 @@ const evaluateInQuickJs = async (
         evaluated.error.dispose();
         return {
           result: null,
-          error: normalizeExecutionError(error, deadlineMs, timeoutMs),
+          error: normalizeExecutionError(error, deadline, timeoutMs),
           logs,
         } satisfies ExecuteResult;
       }
@@ -418,14 +471,14 @@ const evaluateInQuickJs = async (
         stateResult.error.dispose();
         return {
           result: null,
-          error: normalizeExecutionError(error, deadlineMs, timeoutMs),
+          error: normalizeExecutionError(error, deadline, timeoutMs),
           logs,
         } satisfies ExecuteResult;
       }
 
       const stateHandle = stateResult.value;
       try {
-        await drainAsync(context, runtime, pendingDeferreds, deadlineMs, timeoutMs);
+        await drainAsync(context, runtime, pendingDeferreds, deadline, timeoutMs);
         const state = readResultState(context, stateHandle);
         if (!state.settled) {
           return {
@@ -439,7 +492,7 @@ const evaluateInQuickJs = async (
         if (typeof state.error !== "undefined") {
           return {
             result: null,
-            error: normalizeExecutionError(state.error, deadlineMs, timeoutMs),
+            error: normalizeExecutionError(state.error, deadline, timeoutMs),
             output: readOutputItems(context),
             logs,
           } satisfies ExecuteResult;
@@ -466,7 +519,7 @@ const evaluateInQuickJs = async (
   } catch (cause) {
     return {
       result: null,
-      error: normalizeExecutionError(cause, deadlineMs, timeoutMs),
+      error: normalizeExecutionError(cause, deadline, timeoutMs),
       logs,
     } satisfies ExecuteResult;
   } finally {
