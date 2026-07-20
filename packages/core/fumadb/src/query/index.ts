@@ -175,6 +175,22 @@ export interface AbstractQuery<S extends AnySchema> {
   ) => Promise<void>;
 
   /**
+   * Bulk upsert rows by a unique column target.
+   *
+   * Adapters with native conflict support should implement this as one or more
+   * `INSERT ... ON CONFLICT ... DO UPDATE` statements. Other adapters may fall
+   * back to per-row `upsert`.
+   */
+  upsertMany: <TableName extends keyof S["tables"]>(
+    table: TableName,
+    v: {
+      target: (keyof S["tables"][TableName]["columns"])[];
+      update: (keyof S["tables"][TableName]["columns"])[];
+      values: TableToInsertValues<S["tables"][TableName]>[];
+    }
+  ) => Promise<void>;
+
+  /**
    * Note: you cannot update the id of a row, some databases don't support that (including MongoDB).
    */
   updateMany: <TableName extends keyof S["tables"]>(

@@ -143,6 +143,7 @@ const makeSafeFumaQuery = <TSchema extends AnySchema>(
       db.transaction((transactionDb) => run(makeSafeFumaQuery(transactionDb, options))),
     updateMany: (name, value) => db.updateMany(table(name), value),
     upsert: (name, value) => db.upsert(table(name), value),
+    upsertMany: (name, value) => db.upsertMany(table(name), value),
   };
 
   return Object.freeze(query);
