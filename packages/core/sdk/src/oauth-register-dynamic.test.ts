@@ -560,6 +560,10 @@ describe("oauth.registerDynamicClient", () => {
         });
         yield* server.clearRequests;
 
+        const originalSlug = yield* Effect.map(executor.oauth.listClients(), (clients) =>
+          String(clients[0]!.slug),
+        );
+
         // Recreated sandbox: same persisted oauth_client rows, NEW callback
         // origin. The register call runs again the way the connect flow does.
         const recreatedRedirectUri = "https://localhost:6410/api/oauth/callback";
@@ -579,9 +583,17 @@ describe("oauth.registerDynamicClient", () => {
         });
 
         // The changed redirect URI must have minted a FRESH registration whose
-        // redirect_uris carry the recreated callback. Today this is 0: the
-        // stale client is reused and the authorize hop below 400s.
+        // redirect_uris carry the recreated callback — reusing the stale
+        // client would make the authorize hop below the reported 400. The new
+        // client takes a DIFFERENT slug so it does not clobber the stale row
+        // (existing connections still refresh through the old client_id).
         expect(registerRequestCount(yield* server.requests)).toBe(1);
+        expect(String(slug)).not.toBe(originalSlug);
+        const slugsAfter = yield* Effect.map(executor.oauth.listClients(), (clients) =>
+          clients.map((client) => String(client.slug)),
+        );
+        expect(slugsAfter).toContain(originalSlug);
+        expect(slugsAfter).toContain(String(slug));
 
         const started = yield* executor.oauth.start({
           owner: "org",
