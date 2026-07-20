@@ -26,6 +26,8 @@ export interface SelfHostConfig {
   readonly dbPath: string;
   /** Public base URL used by core tools that build absolute links. */
   readonly webBaseUrl: string;
+  /** Browser origins allowed to send cookie-authenticated requests. */
+  readonly trustedOrigins: readonly string[];
   /**
    * Whether sandboxed code may reach loopback/private network addresses.
    * Defaults to false — adversarial LLM code should not hit the host's
@@ -133,14 +135,50 @@ const resolveWebBaseUrl = (port: number): string => {
   return fallback;
 };
 
+const normalizeTrustedOrigin = (value: string): string => {
+  if (!URL.canParse(value)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: invalid operator configuration must fail at boot instead of silently weakening or breaking origin checks
+    throw new Error(
+      `EXECUTOR_TRUSTED_ORIGINS contains ${JSON.stringify(value)}, which is not a valid URL origin`,
+    );
+  }
+  const url = new URL(value);
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.hostname.includes("*") ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: invalid operator configuration must fail at boot instead of silently weakening or breaking origin checks
+    throw new Error(
+      `EXECUTOR_TRUSTED_ORIGINS entry ${JSON.stringify(value)} must be an exact http(s) origin (scheme, host, and optional port only)`,
+    );
+  }
+  return url.origin;
+};
+
+const resolveTrustedOrigins = (webBaseUrl: string): readonly string[] => {
+  const additional = (process.env.EXECUTOR_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map(normalizeTrustedOrigin);
+  return [...new Set([webBaseUrl, ...additional])];
+};
+
 export const loadConfig = (): SelfHostConfig => {
   const port = Number.parseInt(process.env.PORT ?? "4788", 10);
   const dataDir = resolveDataDir();
+  const webBaseUrl = resolveWebBaseUrl(port);
   return {
     host: process.env.EXECUTOR_HOST ?? "127.0.0.1",
     port,
     dbPath: process.env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
-    webBaseUrl: resolveWebBaseUrl(port),
+    webBaseUrl,
+    trustedOrigins: resolveTrustedOrigins(webBaseUrl),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,

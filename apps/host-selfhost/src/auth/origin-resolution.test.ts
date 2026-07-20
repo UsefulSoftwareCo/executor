@@ -20,6 +20,7 @@ process.env.EXECUTOR_DATA_DIR ??= mkdtempSync(join(tmpdir(), "origin-cfg-"));
 // try/finally — these are the only env vars these cases read).
 const PLATFORM_VARS = [
   "EXECUTOR_WEB_BASE_URL",
+  "EXECUTOR_TRUSTED_ORIGINS",
   "RAILWAY_PUBLIC_DOMAIN",
   "RENDER_EXTERNAL_URL",
   "RENDER_EXTERNAL_HOSTNAME",
@@ -33,7 +34,9 @@ const resetOriginEnv = (): void => {
 
 test("webBaseUrl falls back to localhost with no public origin", () => {
   resetOriginEnv();
-  expect(loadConfig().webBaseUrl).toBe("http://localhost:4788");
+  const config = loadConfig();
+  expect(config.webBaseUrl).toBe("http://localhost:4788");
+  expect(config.trustedOrigins).toEqual(["http://localhost:4788"]);
 });
 
 test("webBaseUrl auto-resolves from a platform host var (Railway, host only → https)", () => {
@@ -59,4 +62,28 @@ test("an explicit EXECUTOR_WEB_BASE_URL always wins over a platform var", () => 
   process.env.RAILWAY_PUBLIC_DOMAIN = "ignored.up.railway.app";
   process.env.EXECUTOR_WEB_BASE_URL = "https://pinned.example.com";
   expect(loadConfig().webBaseUrl).toBe("https://pinned.example.com");
+});
+
+test("additional trusted origins are trimmed, normalized, and deduplicated", () => {
+  resetOriginEnv();
+  process.env.EXECUTOR_WEB_BASE_URL = "https://executor.example.com";
+  process.env.EXECUTOR_TRUSTED_ORIGINS =
+    " http://executor.home.arpa:4788/, https://executor.example.com, http://192.0.2.10:4788 ";
+  expect(loadConfig().trustedOrigins).toEqual([
+    "https://executor.example.com",
+    "http://executor.home.arpa:4788",
+    "http://192.0.2.10:4788",
+  ]);
+});
+
+test("additional trusted origins must be exact http(s) origins", () => {
+  resetOriginEnv();
+  process.env.EXECUTOR_TRUSTED_ORIGINS = "https://executor.example.com/login";
+  expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
+
+  process.env.EXECUTOR_TRUSTED_ORIGINS = "file:///tmp/executor";
+  expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
+
+  process.env.EXECUTOR_TRUSTED_ORIGINS = "https://*.example.com";
+  expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
 });

@@ -88,16 +88,16 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       type: "sqlite" as const,
     },
     secret,
-    // The browser Origin must match this exactly; CLI/MCP bearer requests carry
-    // no Origin and are unaffected. `config.webBaseUrl` resolves from an explicit
-    // EXECUTOR_WEB_BASE_URL, else a platform-injected origin (Railway/Render/Fly/
-    // …), else localhost — so a PaaS deploy is zero-config and any other host
-    // sets the one variable (a loud warning fires on the localhost fallback).
-    // See config.ts. We deliberately do NOT derive this from the request `Host`:
-    // matching the ecosystem (Windmill `BASE_URL`, n8n `WEBHOOK_URL`), a pinned
-    // origin keeps host-header injection out of OAuth redirects and links.
+    // The canonical browser Origin is config.webBaseUrl; explicitly configured
+    // aliases may also send cookie-authenticated requests. CLI/MCP bearer
+    // requests carry no Origin and are unaffected. We deliberately do NOT derive
+    // either value from the request `Host`: matching the ecosystem (Windmill
+    // `BASE_URL`, n8n `WEBHOOK_URL`), a pinned origin keeps host-header injection
+    // out of OAuth redirects and links. Additional trusted origins affect only
+    // Better Auth's request validation; generated links and OAuth callbacks stay
+    // pinned to config.webBaseUrl.
     baseURL: config.webBaseUrl,
-    trustedOrigins: [config.webBaseUrl],
+    trustedOrigins: [...config.trustedOrigins],
     emailAndPassword: { enabled: true },
     // `apiKey` issues long-lived personal keys (the API-keys page). With
     // `enableSessionForAPIKeys`, presenting a key resolves to its owner's
