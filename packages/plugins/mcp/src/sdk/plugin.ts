@@ -41,6 +41,7 @@ import {
 } from "@executor-js/sdk/http-auth";
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
+import { createMcpConnectionPool } from "./connection-pool";
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
@@ -615,6 +616,33 @@ const buildConnectorInput = (
   });
 };
 
+// Record fields are key-sorted before stringifying: the key only guards
+// same-identity reuse (a mismatch merely costs a fresh dial), but insertion
+// order must not make two equal identities look distinct.
+const sortedRecord = (
+  record: Record<string, string | null | undefined> | undefined,
+): Record<string, string | null> =>
+  Object.fromEntries(
+    Object.entries(record ?? {})
+      .filter((entry): entry is [string, string | null] => entry[1] !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+
+const connectionPoolKey = (
+  input: Extract<ConnectorInput, { readonly transport: "remote" }>,
+  template: string,
+  values: Record<string, string | null>,
+): string =>
+  JSON.stringify({
+    endpoint: input.endpoint,
+    transport: input.transport,
+    remoteTransport: input.remoteTransport,
+    headers: sortedRecord(input.headers),
+    queryParams: sortedRecord(input.queryParams),
+    template,
+    values: sortedRecord(values),
+  });
+
 // ---------------------------------------------------------------------------
 // Declared auth methods — project the stored MCP config into the catalog's
 // plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. Pure and
@@ -699,6 +727,7 @@ export interface McpPluginOptions {
 
 export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
   const allowStdio = options?.dangerouslyAllowStdioMCP ?? false;
+  const connectionPool = createMcpConnectionPool();
 
   const presetEntries = (
     allowStdio
@@ -731,6 +760,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // factory reads `allowStdio` and gates the stdio tab + presets.
     clientConfig: { allowStdio },
     storage: () => ({}),
+    close: () => connectionPool.close(),
 
     extension: (ctx: PluginCtx) => {
       const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
@@ -1266,13 +1296,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }
         }
 
-        const connector: McpConnector = yield* buildConnectorInput(
+        const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           String(credential.template),
           allowStdio,
           options?.httpClientLayer ?? ctx.httpClientLayer,
-        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+        );
+        const connector: McpConnector = createMcpConnector(connectorInput);
+        const poolKey =
+          connectorInput.transport === "remote"
+            ? connectionPoolKey(connectorInput, String(credential.template), credential.values)
+            : undefined;
 
         const connectionRef = {
           owner: credential.owner,
@@ -1293,6 +1328,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           args,
           transport,
           connector,
+          ...(poolKey === undefined ? {} : { connectionPool, connectionPoolKey: poolKey }),
           elicit,
           onToolListChanged: () => {
             toolListChanged = true;
