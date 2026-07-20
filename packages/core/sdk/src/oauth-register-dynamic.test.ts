@@ -527,6 +527,89 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  // Repro: a recreated sandbox changes the executor's callback origin while
+  // the DCR client minted for the OLD callback survives in storage. Reuse is
+  // keyed on (owner, issuer, resource) and never compares the redirect URI the
+  // client was registered with, so `oauth.start` pairs the stale registration
+  // with the NEW callback — and a strict authorization server (the test AS
+  // included) rejects the authorize request with 400 `redirect_uri is not
+  // registered`. Contract: a changed flow redirect URI must trigger a fresh
+  // registration instead of reusing the stale client.
+  it.effect("re-registers instead of reusing the DCR client when the redirect URI changed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        // Original sandbox: DCR registration carries the ORIGINAL callback.
+        yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("original-sandbox"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        yield* server.clearRequests;
+
+        // Recreated sandbox: same persisted oauth_client rows, NEW callback
+        // origin. The register call runs again the way the connect flow does.
+        const recreatedRedirectUri = "https://localhost:6410/api/oauth/callback";
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("recreated-sandbox"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: recreatedRedirectUri,
+          originIntegration: INTEG,
+        });
+
+        // The changed redirect URI must have minted a FRESH registration whose
+        // redirect_uris carry the recreated callback. Today this is 0: the
+        // stale client is reused and the authorize hop below 400s.
+        expect(registerRequestCount(yield* server.requests)).toBe(1);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: slug,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          redirectUri: recreatedRedirectUri,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        // The strict AS accepts the authorize request only when the flow's
+        // redirect_uri matches the client's registration — with the stale
+        // reused client this hop is the reported 400.
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+        expect(String(connection.address)).toBe("tools.acme.org.main");
+      }),
+    ),
+  );
+
   // Regression: issue #770. Vercel (and other RFC 8252-strict servers) only
   // approve loopback redirect URIs for anonymous DCR, so a hosted/tailnet/LAN
   // origin trips `invalid_redirect_uri`. The failure must explain the loopback
