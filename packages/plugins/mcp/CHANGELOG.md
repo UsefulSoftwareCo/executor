@@ -1,5 +1,17 @@
 # @executor-js/plugin-mcp
 
+## 1.5.35
+
+### Patch Changes
+
+- [#1435](https://github.com/UsefulSoftwareCo/executor/pull/1435) [`af95edb`](https://github.com/UsefulSoftwareCo/executor/commit/af95edbb0bbde544bb1f4c6e18e9d64a2bcab0f8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Reuse downstream MCP sessions across tool calls. Remote MCP invocations now lease connections from a per-plugin-instance pool (one idle session per resolved credential identity, exclusive per invoke, 5-minute idle TTL) instead of dialing a fresh connection per call, so servers that key state by `Mcp-Session-Id` (workspace selection and similar) see consecutive calls in the same session. A reused session rejected with HTTP 404 is redialed once transparently; stdio transports and endpoint probing remain per-call.
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/config@1.5.35
+  - @executor-js/react@1.4.55
+
 ## 1.5.34
 
 ### Patch Changes

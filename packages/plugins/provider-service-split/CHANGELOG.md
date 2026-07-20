@@ -1,5 +1,13 @@
 # @executor-js/plugin-provider-service-split
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/plugin-openapi@1.5.35
+
 ## 0.0.5
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @executor-js/runtime-quickjs
 
+## 1.5.35
+
+### Patch Changes
+
+- [#1437](https://github.com/UsefulSoftwareCo/executor/pull/1437) [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Suspend sandbox execution deadlines while tool calls await the host, and reset the autonomous-compute budget after each dispatch returns.
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.35
+
 ## 1.5.34
 
 ### Patch Changes
