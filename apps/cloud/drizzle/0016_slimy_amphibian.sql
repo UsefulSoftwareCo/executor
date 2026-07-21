@@ -1,0 +1,1 @@
+ALTER TABLE "oauth_client" ADD COLUMN "token_endpoint_auth_method" text;

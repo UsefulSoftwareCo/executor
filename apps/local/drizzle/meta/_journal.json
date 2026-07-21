@@ -36,6 +36,13 @@
       "when": 1784581228503,
       "tag": "0004_cultured_shadowcat",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784661475760,
+      "tag": "0005_chemical_black_widow",
+      "breakpoints": true
     }
   ]
 }
