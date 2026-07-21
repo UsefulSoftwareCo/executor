@@ -86,9 +86,27 @@ scenario(
       });
 
       await step("Sign out through the product flow", async () => {
-        // The shell's sign-out POSTs the logout endpoint from the page, so
-        // the response's Set-Cookie clears apply to this browser context.
-        await page.evaluate(() => fetch("/api/auth/logout", { method: "POST" }));
+        // The shell's sign-out is a top-level navigation: POST the logout
+        // endpoint, ride its redirect through WorkOS's session-end page, and
+        // land back on the public homepage. (A fetch can't make this trip —
+        // the WorkOS hop is cross-origin.)
+        // Bounded retry: a click can land while the shell is still hydrating
+        // and the radix menu never opens (same idiom as org-switcher).
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await page.keyboard.press("Escape");
+            await page.getByRole("button", { name: /Test User/ }).click();
+            await page.getByRole("menuitem", { name: "Sign out" }).click({ timeout: 5_000 });
+            break;
+          } catch (error) {
+            if (attempt >= 3) throw error;
+          }
+        }
+        // The return URL is "/", which the SSR gate bounces to /login for a
+        // signed-out browser — either is proof the round trip landed home.
+        await page.waitForURL((url) => url.pathname === "/" || url.pathname === "/login", {
+          timeout: 15_000,
+        });
       });
 
       const names = (await page.context().cookies()).map((cookie) => cookie.name);
