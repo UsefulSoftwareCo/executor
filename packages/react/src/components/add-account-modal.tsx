@@ -2188,6 +2188,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   tokenUrl: editingClient.tokenUrl,
                   resource: editingClient.resource ?? null,
                   grant: editingClient.grant,
+                  // Carry the stored auth method so editing a Basic client and
+                  // saving does not silently rewrite the row to body.
+                  tokenEndpointAuthMethod: editingClient.tokenEndpointAuthMethod,
                   clientId: editingClient.clientId,
                 }}
                 onCreated={() => setEditingClient(null)}

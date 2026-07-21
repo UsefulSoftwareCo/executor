@@ -69,6 +69,9 @@ const CreateClientPayload = Schema.Struct({
   /** Integration whose connect dialog registered this manual app. Recorded so
    *  the picker matches it to this integration by intent, not root domain. */
   originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
+  /** Token-endpoint client auth: "body" (client_secret_post, default) or
+   *  "basic" (client_secret_basic). Omitted means "body". */
+  tokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
 });
 
 const CreateClientResponse = Schema.Struct({
@@ -115,6 +118,8 @@ const OAuthClientSummaryResponse = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
+  /** Token-endpoint client auth ("body" | "basic"); omitted means "body". */
+  tokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
   origin: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("manual") }),
     Schema.Struct({

@@ -384,6 +384,14 @@ export type ClientAuthMethod = "body" | "basic";
  */
 export const DEFAULT_CLIENT_AUTH_METHOD: ClientAuthMethod = "body";
 
+/** Resolve a stored/raw token-endpoint client-auth value to a {@link
+ *  ClientAuthMethod}. Only `"basic"` is distinguished; everything else,
+ *  including null (old `oauth_client` rows) and unknown strings, falls through
+ *  to {@link DEFAULT_CLIENT_AUTH_METHOD} (`"body"`). Unlike the OAuth grant,
+ *  an unrecognised value here is a benign default, not a corrupt-row error. */
+export const parseClientAuthMethod = (value: unknown): ClientAuthMethod =>
+  value === "basic" ? "basic" : DEFAULT_CLIENT_AUTH_METHOD;
+
 const asFromTokenUrl = (
   tokenUrl: string,
   endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
