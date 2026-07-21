@@ -123,6 +123,25 @@ const insertOperationStorage = (
   });
 
 describe("runCloudflareDataMigrations", () => {
+  it.effect("adds the OAuth client token endpoint authentication method column", () =>
+    Effect.gen(function* () {
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
+      const { bucket } = makeFakeR2();
+
+      yield* Effect.promise(() =>
+        db.client.execute("ALTER TABLE oauth_client DROP COLUMN token_endpoint_auth_method"),
+      );
+
+      const d1 = makeFakeD1(db.client);
+      yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket));
+
+      const columns = yield* Effect.promise(() =>
+        db.client.execute("PRAGMA table_info('oauth_client')"),
+      );
+      expect(columns.rows.map((row) => row.name)).toContain("token_endpoint_auth_method");
+    }),
+  );
+
   it.effect("rebuilds legacy connection tables from item_id to item_ids", () =>
     Effect.gen(function* () {
       const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
