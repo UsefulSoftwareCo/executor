@@ -25,6 +25,8 @@ interface SignupGate {
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
 
+let warnedInsecureTrustedOrigin = false;
+
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
 // tables ("one connection, two schema regions").
@@ -63,6 +65,15 @@ const SIGNUP_PATH = "/sign-up/email";
 
 const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?: SignupGate) => {
   const config = loadConfig();
+  const hasInsecureTrustedOrigin = config.trustedOrigins.some(
+    (origin) => new URL(origin).protocol === "http:",
+  );
+  if (hasInsecureTrustedOrigin && !warnedInsecureTrustedOrigin) {
+    warnedInsecureTrustedOrigin = true;
+    console.warn(
+      "[executor] HTTP trusted origins require session cookies without the Secure attribute. Use HTTPS-only origins to keep session cookies transport-secure.",
+    );
+  }
   // Always resolved (generated + persisted when no env is set); this guards only
   // an explicitly-set env secret that is too weak.
   const secret = config.authSecret;
@@ -98,6 +109,7 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     // pinned to config.webBaseUrl.
     baseURL: config.webBaseUrl,
     trustedOrigins: [...config.trustedOrigins],
+    advanced: { useSecureCookies: !hasInsecureTrustedOrigin },
     emailAndPassword: { enabled: true },
     // `apiKey` issues long-lived personal keys (the API-keys page). With
     // `enableSessionForAPIKeys`, presenting a key resolves to its owner's
