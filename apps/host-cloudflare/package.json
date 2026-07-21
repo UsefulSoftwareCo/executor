@@ -30,6 +30,7 @@
     "@executor-js/plugin-provider-service-split": "workspace:*",
     "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/react": "workspace:*",
+    "@executor-js/runtime-dynamic-worker": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@jitl/quickjs-wasmfile-release-sync": "catalog:",
