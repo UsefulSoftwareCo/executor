@@ -270,8 +270,10 @@ function PasteCredentialInputs(props: {
             // from offering to GENERATE a password here; the app's own 1Password
             // picker covers filling an existing secret.
             <div className="flex h-9 w-full min-w-0 items-stretch overflow-hidden rounded-md border border-input bg-transparent font-mono text-sm shadow-xs transition-colors focus-within:border-ring dark:bg-input/30">
-              <span className="flex shrink-0 select-none items-center whitespace-pre border-r border-input bg-muted/40 px-3 text-muted-foreground/70">
-                {props.affix}
+              {/* min-w-0 + inner ellipsis: a method saved with a very long
+                  prefix must truncate inside the field, not stretch it. */}
+              <span className="flex min-w-0 max-w-[60%] select-none items-center border-r border-input bg-muted/40 px-3 text-muted-foreground/70">
+                <span className="overflow-hidden text-ellipsis whitespace-pre">{props.affix}</span>
               </span>
               {/* oxlint-disable-next-line react/forbid-elements */}
               <input
