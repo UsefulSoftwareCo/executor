@@ -66,6 +66,7 @@ import {
   planDownloadedUpdate,
   planFatalAutoInstallOnQuit,
   planUpdateCheck,
+  handleUpdateDownloadRejection,
   statusAfterUpdateError,
   type UpdateCheckTrigger,
 } from "./updater-state";
@@ -962,6 +963,7 @@ interface UpdateCheckOptions {
 type UpdateCheckResult = {
   readonly isUpdateAvailable?: boolean;
   readonly updateInfo?: { readonly version?: string };
+  readonly downloadPromise?: Promise<unknown> | null;
 };
 
 const runUpdateCheck = async ({ alertOnFail, trigger }: UpdateCheckOptions) => {
@@ -980,6 +982,10 @@ const runUpdateCheck = async ({ alertOnFail, trigger }: UpdateCheckOptions) => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: surface network/update failures only when the user asked
   try {
     const result = (await autoUpdater.checkForUpdates()) as UpdateCheckResult | null;
+    handleUpdateDownloadRejection(result?.downloadPromise, () => {
+      // The autoUpdater error event already logs the failure and updates state.
+      // Catching here prevents autoDownload failures from surfacing globally.
+    });
     const newer = result?.isUpdateAvailable === true;
     const promptAfterCheck = planCompletedUpdateCheck({
       stagedVersion: checkPlan.promptVersionAfterCheck,

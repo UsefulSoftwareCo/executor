@@ -46,6 +46,12 @@ const config: Configuration = {
   // artifact only exists once a leg stages an arm64 executor for it.
   win: {
     target: ["nsis"],
+    // CI release builds must fail if a Windows Authenticode certificate is not
+    // provided. Local packaging can still produce unsigned smoke builds.
+    // publisherName is intentionally not set: electron-builder derives it from
+    // the signing certificate subject, and pinning it here would risk drifting
+    // from the cert embedded in the installer.
+    forceCodeSigning: process.env.CI === "true",
   },
   nsis: {
     oneClick: true,

@@ -136,18 +136,18 @@ jobs:
           # --publish never here and attach assets explicitly in the release
           # job so we don't fight electron-updater's metadata expectations.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Apple signing + notarization. electron-builder picks these up:
-          #   CSC_LINK / CSC_KEY_PASSWORD → import the Developer ID Application
-          #     cert (.p12, base64) into a temp keychain for codesign
-          #   APPLE_API_KEY (file path) / APPLE_API_KEY_ID / APPLE_API_ISSUER
-          #     → notarytool authentication for the notarization upload
-          # When the secrets aren't set (forks, local), electron-builder
-          # silently produces an unsigned build.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Mac signing + notarization. Keep CSC_LINK scoped to mac so the
+          # Windows leg cannot reuse the Developer ID Application certificate.
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
           APPLE_API_KEY: ${{ env.APPLE_API_KEY_PATH }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Windows Authenticode signing. electron-builder derives
+          # resources/app-update.yml publisherName from this certificate.
+          # Missing secrets fail the CI Windows build via win.forceCodeSigning.
+          WIN_CSC_LINK: ${{ matrix.platform == 'win' && secrets.WIN_CSC_LINK || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
         run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
 
