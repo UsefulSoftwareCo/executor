@@ -12,7 +12,10 @@ import {
 import { AutumnProvider } from "autumn-js/react";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
-import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
+import {
+  frontendErrorCapturePayload,
+  type FrontendErrorReporter,
+} from "@executor-js/react/api/error-reporting";
 import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
@@ -66,10 +69,12 @@ const analyticsClient: AnalyticsClient | undefined =
     : undefined;
 
 const captureFrontendError: FrontendErrorReporter = (error, context) => {
-  Sentry.captureException(error, (scope) => {
+  const { exception, causePretty } = frontendErrorCapturePayload(error);
+  Sentry.captureException(exception, (scope) => {
     scope.setTag("executor.ui.surface", context.surface);
     scope.setTag("executor.ui.action", context.action);
     scope.setTag("executor.ui.severity", context.severity ?? "error");
+    if (causePretty !== null) scope.setExtra("cause_pretty", causePretty);
     scope.setContext("executor.ui", {
       surface: context.surface,
       action: context.action,
