@@ -4,6 +4,11 @@ Stable contracts live here. Current setup and server mechanics are in
 [RUNNING.md](RUNNING.md); e2e invariants are in
 [e2e/AGENTS.md](e2e/AGENTS.md). Run `bun run bootstrap` in every fresh rift.
 
+## Worktree location
+
+- Put new worktrees under `<main>/.worktrees/<slug>` (or the tool's native
+  root); never `git worktree add ../…` siblings next to the main checkout.
+
 ## Verification and evidence
 
 - Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
