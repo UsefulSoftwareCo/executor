@@ -70,8 +70,8 @@ export interface OAuthClient {
   readonly resource?: string | null;
   /** How the client authenticates to the token endpoint: `"body"`
    *  (`client_secret_post`, the default) or `"basic"` (`client_secret_basic`,
-   *  base64 `client_id:client_secret` in the Authorization header). Some
-   *  providers only accept Basic for confidential clients.
+   *  base64 of the literal UTF-8 `client_id:client_secret` pair in the
+   *  Authorization header). Some providers only accept Basic for confidential clients.
    *  Omitted/undefined is treated as `"body"` throughout. */
   readonly tokenEndpointAuthMethod?: ClientAuthMethod;
 }

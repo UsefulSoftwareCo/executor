@@ -546,27 +546,6 @@ describe("exchangeAuthorizationCode", () => {
     ),
   );
 
-  it.effect("uses HTTP Basic auth when clientAuth=basic (Stripe-style)", () =>
-    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
-      Effect.gen(function* () {
-        yield* exchangeAuthorizationCode({
-          tokenUrl,
-          clientId: "cid",
-          clientSecret: "csecret",
-          redirectUrl: "https://app.example.com/cb",
-          codeVerifier: "verifier",
-          code: "abc",
-          clientAuth: "basic",
-        });
-        const call = (yield* calls)[0]!;
-        const expected = `Basic ${Buffer.from("cid:csecret").toString("base64")}`;
-        expect(call.headers["authorization"]).toBe(expected);
-        expect(call.body.has("client_id")).toBe(false);
-        expect(call.body.has("client_secret")).toBe(false);
-      }),
-    ),
-  );
-
   it.effect("uses the documented 20-second timeout default", () =>
     withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl }) =>
       Effect.gen(function* () {
@@ -685,6 +664,26 @@ describe("exchangeAuthorizationCode", () => {
 });
 
 describe("exchangeClientCredentials", () => {
+  it.effect("uses literal HTTP Basic credentials when clientAuth=basic", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeClientCredentials({
+          tokenUrl,
+          clientId: "client_id-with-punctuation",
+          clientSecret: "client_secret-with-punctuation",
+          clientAuth: "basic",
+        });
+        const call = (yield* calls)[0]!;
+        const expected = `Basic ${Buffer.from(
+          "client_id-with-punctuation:client_secret-with-punctuation",
+        ).toString("base64")}`;
+        expect(call.headers["authorization"]).toBe(expected);
+        expect(call.body.has("client_id")).toBe(false);
+        expect(call.body.has("client_secret")).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("routes token grant requests through the injected fetch", () =>
     withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl }) =>
       Effect.gen(function* () {
