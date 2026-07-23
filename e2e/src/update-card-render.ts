@@ -12,6 +12,40 @@ import { scenario } from "./scenario";
 import { Browser, Target } from "./services";
 
 export const FORCED_LATEST = "99.0.0";
+const CHANGELOG_FIXTURE = {
+  releases: [
+    {
+      version: FORCED_LATEST,
+      entries: [
+        {
+          body: "**First mocked highlight** ships a compact update summary for the sidebar. More detail follows.",
+          prNumber: 2001,
+          prUrl: "https://github.com/UsefulSoftwareCo/executor/pull/2001",
+        },
+        {
+          body: "Add [`docs`](https://executor.sh/docs) shortcuts beside upgrade actions.",
+          prNumber: 2000,
+          prUrl: "https://github.com/UsefulSoftwareCo/executor/pull/2000",
+        },
+      ],
+    },
+    {
+      version: "98.0.0",
+      entries: [
+        {
+          body: "Fix `executor web` update notices when registries are slow.",
+          prNumber: 1999,
+          prUrl: "https://github.com/UsefulSoftwareCo/executor/pull/1999",
+        },
+        {
+          body: "This fourth mocked entry should not be rendered.",
+          prNumber: 1998,
+          prUrl: "https://github.com/UsefulSoftwareCo/executor/pull/1998",
+        },
+      ],
+    },
+  ],
+};
 
 export const registerUpdateCardRenderScenario = (name: string): void =>
   scenario(
@@ -31,6 +65,12 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
             body: JSON.stringify({ latest: FORCED_LATEST, beta: `${FORCED_LATEST}-beta.1` }),
           }),
         );
+        await page.route("**/changelog.json", (route) =>
+          route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify(CHANGELOG_FIXTURE),
+          }),
+        );
 
         await step("Open the console", async () => {
           await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -40,6 +80,12 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
         await step("The sidebar surfaces the update-available card", async () => {
           await page.getByText("Update available").waitFor({ timeout: 30_000 });
           await page.getByText(`v${FORCED_LATEST}`).waitFor({ timeout: 5_000 });
+          const highlights = page.getByTestId("update-card-highlight");
+          await highlights.first().waitFor({ timeout: 5_000 });
+          expect(await highlights.count(), "renders the top three changelog highlights").toBe(3);
+          expect(await highlights.first().textContent(), "renders the newest entry first").toBe(
+            "First mocked highlight ships a compact update summary for the sidebar.",
+          );
           // Self-host and Cloudflare upgrade via their own deploy (image pull /
           // rebuild / redeploy), not npm: the card links to the host's upgrade
           // guide and shows NO npm command.
@@ -47,6 +93,11 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
           await guide.waitFor({ timeout: 5_000 });
           expect(await guide.getAttribute("href"), "links to the hosted upgrade docs").toContain(
             "/docs/hosted/",
+          );
+          const changelog = page.getByRole("link", { name: "Changelog" });
+          await changelog.waitFor({ timeout: 5_000 });
+          expect(await changelog.getAttribute("href"), "links to the release changelog").toBe(
+            `https://executor.sh/changelog#v${FORCED_LATEST}`,
           );
           expect(
             await page.getByText("npm i -g", { exact: false }).count(),

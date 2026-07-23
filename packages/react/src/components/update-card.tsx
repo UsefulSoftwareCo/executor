@@ -26,6 +26,8 @@ import { type DesktopUpdate, useDesktopUpdate } from "../hooks/desktop-update";
 
 const EXECUTOR_DIST_TAGS_PATH = "/v1/app/npm/dist-tags";
 const DOCS_BASE_URL = "https://executor.sh/docs";
+const CHANGELOG_URL = "https://executor.sh/changelog";
+const CHANGELOG_JSON_URL = "https://executor.sh/changelog.json";
 
 type UpgradeHint = "npm" | "selfhost" | "cloudflare" | "managed";
 
@@ -44,6 +46,73 @@ const UPGRADE_DOCS_URL: Partial<Record<UpgradeHint, string>> = {
   selfhost: `${DOCS_BASE_URL}/hosted/docker`,
   cloudflare: `${DOCS_BASE_URL}/hosted/cloudflare`,
 };
+
+type ChangelogEntry = {
+  body: string;
+  prNumber?: number;
+  prUrl?: string;
+};
+
+type ChangelogRelease = {
+  version: string;
+  entries: ChangelogEntry[];
+};
+
+type ChangelogPayload = {
+  releases: ChangelogRelease[];
+};
+
+const isChangelogPayload = (value: unknown): value is ChangelogPayload => {
+  if (typeof value !== "object" || value === null || !("releases" in value)) return false;
+  const releases = (value as { releases?: unknown }).releases;
+  if (!Array.isArray(releases)) return false;
+  return releases.every((release) => {
+    if (typeof release !== "object" || release === null) return false;
+    const version = (release as { version?: unknown }).version;
+    const entries = (release as { entries?: unknown }).entries;
+    return (
+      typeof version === "string" &&
+      Array.isArray(entries) &&
+      entries.every((entry) => {
+        if (typeof entry !== "object" || entry === null) return false;
+        const candidate = entry as { body?: unknown; prNumber?: unknown; prUrl?: unknown };
+        return (
+          typeof candidate.body === "string" &&
+          (candidate.prNumber === undefined || typeof candidate.prNumber === "number") &&
+          (candidate.prUrl === undefined || typeof candidate.prUrl === "string")
+        );
+      })
+    );
+  });
+};
+
+const sentenceEnd = /(?<=[.!?])\s+/;
+
+export function changelogEntryToHighlight(body: string): string {
+  const firstLine = body
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) return "";
+  return (firstLine.split(sentenceEnd)[0] ?? firstLine)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function updateHighlights(
+  releases: readonly ChangelogRelease[],
+  currentVersion: string | undefined,
+): string[] {
+  if (!currentVersion) return [];
+  return releases
+    .filter((release) => compareVersions(currentVersion, release.version) === -1)
+    .flatMap((release) => release.entries.map((entry) => changelogEntryToHighlight(entry.body)))
+    .filter((highlight) => highlight.length > 0)
+    .slice(0, 3);
+}
 
 // ── useLatestVersion ────────────────────────────────────────────────────
 
@@ -81,6 +150,42 @@ function useLatestVersion(currentVersion: string | undefined) {
   return { latestVersion, updateAvailable, channel };
 }
 
+function useChangelogHighlights(fetchWhenVersionKnown: string | null) {
+  const [highlights, setHighlights] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!fetchWhenVersionKnown) {
+      setHighlights([]);
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    void Effect.runPromiseExit(
+      Effect.tryPromise({
+        try: async () => {
+          const res = await fetch(CHANGELOG_JSON_URL, { signal: controller.signal });
+          if (!res.ok) return null;
+          const payload = (await res.json()) as unknown;
+          if (!isChangelogPayload(payload)) return null;
+          return updateHighlights(payload.releases, APP_VERSION);
+        },
+        catch: (cause) => cause,
+      }),
+    ).then((exit) => {
+      if (!cancelled && Exit.isSuccess(exit)) {
+        setHighlights(exit.value ?? []);
+      }
+    });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [fetchWhenVersionKnown]);
+
+  return highlights;
+}
+
 // ── Card chrome ──────────────────────────────────────────────────────────
 
 /** The bordered card with the download glyph + title + version.
@@ -88,10 +193,13 @@ function useLatestVersion(currentVersion: string | undefined) {
 function UpdateCardShell(props: {
   title?: string;
   version: string | null;
+  highlights?: readonly string[];
   children?: React.ReactNode;
 }) {
+  const changelogHref = props.version ? `${CHANGELOG_URL}#v${props.version}` : CHANGELOG_URL;
+
   return (
-    <div className="mx-2 mb-2 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
+    <div className="mb-2.5 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
       <div className="flex items-center gap-2">
         <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15">
           <svg viewBox="0 0 16 16" fill="none" className="size-3 text-primary">
@@ -112,7 +220,37 @@ function UpdateCardShell(props: {
           {props.version && <p className="text-sm text-muted-foreground">v{props.version}</p>}
         </div>
       </div>
+      {props.highlights && props.highlights.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1">
+          {props.highlights.map((highlight, index) => (
+            <p
+              key={`${index}:${highlight}`}
+              data-testid="update-card-highlight"
+              className="truncate text-xs text-muted-foreground"
+            >
+              {highlight}
+            </p>
+          ))}
+        </div>
+      )}
       {props.children}
+      <a
+        href={changelogHref}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-2.5 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <span>Changelog</span>
+        <svg viewBox="0 0 16 16" fill="none" className="size-3 shrink-0">
+          <path
+            d="M4 12L12 4M6 4h6v6"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </a>
     </div>
   );
 }
@@ -122,6 +260,7 @@ function UpdateCardShell(props: {
 function NpmUpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
   const command = `npm i -g executor@${props.channel}`;
   const [copied, setCopied] = useState(false);
+  const highlights = useChangelogHighlights(props.latestVersion);
 
   const handleCopy = useCallback(() => {
     void copyToClipboard(command).then((ok) => {
@@ -135,7 +274,7 @@ function NpmUpdateCard(props: { latestVersion: string; channel: UpdateChannel })
   }, [command]);
 
   return (
-    <UpdateCardShell version={props.latestVersion}>
+    <UpdateCardShell version={props.latestVersion} highlights={highlights}>
       <Button
         type="button"
         variant="outline"
@@ -182,8 +321,10 @@ function NpmUpdateCard(props: { latestVersion: string; channel: UpdateChannel })
 // ── LinkUpdateCard (self-host / Cloudflare: link to the upgrade guide) ────
 
 function LinkUpdateCard(props: { latestVersion: string; href: string }) {
+  const highlights = useChangelogHighlights(props.latestVersion);
+
   return (
-    <UpdateCardShell version={props.latestVersion}>
+    <UpdateCardShell version={props.latestVersion} highlights={highlights}>
       <a
         href={props.href}
         target="_blank"
@@ -210,6 +351,7 @@ function LinkUpdateCard(props: { latestVersion: string; href: string }) {
 function DesktopUpdateCard(props: { update: DesktopUpdate }) {
   const { status, install } = props.update;
   const version = "version" in status ? status.version : null;
+  const highlights = useChangelogHighlights(version);
 
   const action = (() => {
     if (status.state === "downloaded") {
@@ -247,6 +389,7 @@ function DesktopUpdateCard(props: { update: DesktopUpdate }) {
     <UpdateCardShell
       title={status.state === "error" ? "Update failed" : undefined}
       version={version}
+      highlights={highlights}
     >
       {action}
     </UpdateCardShell>

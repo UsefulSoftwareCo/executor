@@ -8,6 +8,7 @@
     "dev:vite": "portless --name executor-marketing astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "test": "vitest run",
     "deploy": "astro build && npx wrangler deploy --config dist/server/wrangler.json",
     "astro": "astro",
     "typecheck": "tsgo --noEmit",
@@ -20,6 +21,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "astro": "^6.1.3",
     "clsx": "^2.1.1",
+    "marked": "^17.0.1",
     "motion": "^12.38.0",
     "posthog-js": "^1.372.5",
     "react": "^19.2.5",
@@ -32,6 +34,7 @@
     "@rhyssul/portless": "^0.13.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "executor": "workspace:*",
     "wrangler": "^4.0.0"
   },
   "engines": {
