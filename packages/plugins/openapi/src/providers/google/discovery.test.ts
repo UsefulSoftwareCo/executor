@@ -491,6 +491,42 @@ it.effect("marks Google Discovery media-download methods as binary responses", (
   }),
 );
 
+it.effect("uses the versioned Google Photos raw upload endpoint", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryToOpenApi({
+      discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/photoslibrary/v1/rest",
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      documentText: JSON.stringify({
+        name: "photoslibrary",
+        version: "v1",
+        title: "Google Photos Library API",
+        rootUrl: "https://photoslibrary.googleapis.com/",
+        servicePath: "",
+        auth: {
+          oauth2: {
+            scopes: {
+              "https://www.googleapis.com/auth/photoslibrary.appendonly": {
+                description: "Upload to Google Photos",
+              },
+            },
+          },
+        },
+        resources: {},
+        schemas: {},
+      }),
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const upload = spec.paths["/v1/uploads"]?.post;
+    expect(upload).toMatchObject({
+      operationId: "photoslibrary.mediaItems.upload",
+      "x-executor-toolPath": "photoslibrary.mediaItems.upload",
+      "x-executor-pathTemplate": "/v1/uploads",
+      servers: [{ url: "https://photoslibrary.googleapis.com/" }],
+    });
+  }),
+);
+
 it.effect("supplies documented scopes when Picker Discovery omits auth metadata", () =>
   Effect.gen(function* () {
     const result = yield* convertGoogleDiscoveryToOpenApi({
