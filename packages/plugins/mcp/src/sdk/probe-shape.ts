@@ -375,6 +375,10 @@ export const probeMcpEndpointShape = (
       let postRequest = HttpClientRequest.post(url.toString()).pipe(
         HttpClientRequest.setHeader("content-type", "application/json"),
         HttpClientRequest.setHeader("accept", "application/json, text/event-stream"),
+        // Uncompressed responses, matching the connection layer: servers that
+        // miscompute Content-Length on gzipped bodies truncate the stream and
+        // the probe would misread a live MCP server as unreachable.
+        HttpClientRequest.setHeader("accept-encoding", "identity"),
         HttpClientRequest.bodyText(INITIALIZE_BODY, "application/json"),
       );
       for (const [name, value] of Object.entries(options.headers ?? {})) {
@@ -391,6 +395,7 @@ export const probeMcpEndpointShape = (
       if ([404, 405, 406, 415].includes(postResponse.status)) {
         let getRequest = HttpClientRequest.get(url.toString()).pipe(
           HttpClientRequest.setHeader("accept", "text/event-stream"),
+          HttpClientRequest.setHeader("accept-encoding", "identity"),
         );
         for (const [name, value] of Object.entries(options.headers ?? {})) {
           getRequest = HttpClientRequest.setHeader(getRequest, name, value);

@@ -338,6 +338,90 @@ describe("mcpPlugin", () => {
     }),
   );
 
+  it.effect("remote connector requests uncompressed responses by default", () =>
+    Effect.gen(function* () {
+      const seen: Record<string, string | undefined>[] = [];
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          seen.push(Object.fromEntries(Object.entries(request.headers)));
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response("blocked", { status: 500 })),
+          );
+        }),
+      );
+
+      yield* createMcpConnector({
+        transport: "remote",
+        endpoint: "https://internal.example/mcp",
+        remoteTransport: "streamable-http",
+        headers: { "x-api-key": "k" },
+        httpClientLayer,
+      }).pipe(Effect.flip);
+
+      expect(seen.length).toBeGreaterThan(0);
+      for (const headers of seen) {
+        expect(headers["accept-encoding"]).toBe("identity");
+        expect(headers["x-api-key"]).toBe("k");
+      }
+    }),
+  );
+
+  it.effect("caller-supplied Accept-Encoding overrides the identity default", () =>
+    Effect.gen(function* () {
+      const seen: Record<string, string | undefined>[] = [];
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          seen.push(Object.fromEntries(Object.entries(request.headers)));
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response("blocked", { status: 500 })),
+          );
+        }),
+      );
+
+      yield* createMcpConnector({
+        transport: "remote",
+        endpoint: "https://internal.example/mcp",
+        remoteTransport: "streamable-http",
+        headers: { "Accept-Encoding": "gzip" },
+        httpClientLayer,
+      }).pipe(Effect.flip);
+
+      expect(seen.length).toBeGreaterThan(0);
+      for (const headers of seen) {
+        expect(headers["accept-encoding"]).toBe("gzip");
+      }
+    }),
+  );
+
+  it.effect(
+    "auto transport keeps the streamable-http failure visible when the SSE fallback also fails",
+    () =>
+      Effect.gen(function* () {
+        // Non-auth failure (500) on every request: streamable-http fails and
+        // triggers the SSE fallback, which fails too. The surfaced error must
+        // name the primary transport's failure, not only the fallback's.
+        const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+          HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
+            Effect.succeed(
+              HttpClientResponse.fromWeb(request, new Response("boom", { status: 500 })),
+            ),
+          ),
+        );
+
+        const failure = yield* createMcpConnector({
+          transport: "remote",
+          endpoint: "https://internal.example/mcp",
+          httpClientLayer,
+        }).pipe(Effect.flip);
+
+        expect(Predicate.isTagged(failure, "McpConnectionError")).toBe(true);
+        if (!Predicate.isTagged(failure, "McpConnectionError")) return;
+        expect(failure.message).toContain("streamable-http");
+        expect(failure.message).toContain("SSE fallback also failed");
+        expect(failure.httpStatus).toBe(500);
+      }),
+  );
+
   it.effect("integration catalog has no configured MCP integrations initially", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));

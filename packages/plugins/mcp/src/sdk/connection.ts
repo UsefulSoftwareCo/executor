@@ -61,6 +61,22 @@ export type ConnectorInput = RemoteConnectorInput | StdioConnectorInput;
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Ask remote MCP servers for uncompressed responses (matching Claude Code's
+// MCP client). Without this, runtimes send their default Accept-Encoding
+// (e.g. Bun: "gzip, deflate, br, zstd") and servers that miscompute
+// Content-Length on compressed bodies (Dune's MCP server sets it to the
+// UNCOMPRESSED size) produce a truncated stream that fetch rejects
+// (ZlibError) with no HTTP status — which the auto-transport fallback then
+// masks behind an unrelated SSE failure. MCP payloads are small JSON/SSE, so
+// compression buys nothing here. A caller-supplied Accept-Encoding still
+// wins.
+const withDefaultAcceptEncoding = (headers: Record<string, string>): Record<string, string> => {
+  const hasAcceptEncoding = Object.keys(headers).some(
+    (key) => key.toLowerCase() === "accept-encoding",
+  );
+  return hasAcceptEncoding ? headers : { ...headers, "accept-encoding": "identity" };
+};
+
 const buildEndpointUrl = (endpoint: string, queryParams: Record<string, string>): URL => {
   const url = new URL(endpoint);
   for (const [key, value] of Object.entries(queryParams)) {
@@ -298,9 +314,9 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   }
 
   // Remote transport
-  const headers = input.headers ?? {};
+  const headers = withDefaultAcceptEncoding(input.headers ?? {});
   const remoteTransport = input.remoteTransport ?? "auto";
-  const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
+  const requestInit = { headers };
   const fetch = input.httpClientLayer ? fetchFromHttpClientLayer(input.httpClientLayer) : undefined;
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
@@ -335,10 +351,34 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) => {
-      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
-      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
-      return connectSse;
+    Effect.catch((failure) => {
+      if (Predicate.isTagged(failure, "McpOAuthReauthorizationRequired")) {
+        return Effect.fail(failure);
+      }
+      if (failure.httpStatus === 401 || failure.httpStatus === 403) return Effect.fail(failure);
+      // When the fallback ALSO fails, the streamable-http failure is the
+      // interesting one: most modern servers don't serve legacy SSE at all
+      // (GET → 405), so reporting only "Failed connecting via sse" points
+      // the user at a transport the server never supported and hides the
+      // real cause (e.g. a corrupt gzip stream). Keep both, primary first.
+      return connectSse.pipe(
+        Effect.catch(
+          (
+            sseFailure,
+          ): Effect.Effect<never, McpConnectionError | McpOAuthReauthorizationRequired> => {
+            if (Predicate.isTagged(sseFailure, "McpOAuthReauthorizationRequired")) {
+              return Effect.fail(sseFailure);
+            }
+            return Effect.fail(
+              new McpConnectionError({
+                transport: "streamable-http",
+                message: `${failure.message}; SSE fallback also failed: ${sseFailure.message}`,
+                ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }),
+              }),
+            );
+          },
+        ),
+      );
     }),
   );
 };
