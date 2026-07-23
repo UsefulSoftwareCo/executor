@@ -33,7 +33,7 @@
       },
       {
         "group": "Hosted",
-        "pages": ["hosted/cloud", "hosted/docker", "hosted/cloudflare"]
+        "pages": ["hosted/cloud", "hosted/docker", "hosted/vercel", "hosted/cloudflare"]
       },
       {
         "group": "Concepts",

@@ -48,6 +48,12 @@ Back it up by snapshotting that volume (or copying `/data`, primarily `data.db`)
 `EXECUTOR_DATA_DIR` (default `/data`) sets the directory, and `EXECUTOR_DB_PATH`
 (default `<data dir>/data.db`) sets the database file.
 
+For a host without a persistent filesystem, set `EXECUTOR_DB_URL` and optionally
+`EXECUTOR_DB_AUTH_TOKEN` to use remote libSQL. The aliases
+`TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are also recognized. Remote storage
+requires explicit `BETTER_AUTH_SECRET` and `EXECUTOR_SECRET_KEY` values because
+generated keys cannot be recovered from an ephemeral data directory.
+
 ## Environment variables
 
 Everything is optional: a bare run boots a working instance. The defaults below are
@@ -59,6 +65,11 @@ the container defaults.
 | `EXECUTOR_HOST`                     | `0.0.0.0`                       | Bind address. The image binds all interfaces.                                                   |
 | `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                              |
 | `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                           |
+| `EXECUTOR_DB_URL`                   | unset                           | Remote libSQL URL. Takes precedence over `EXECUTOR_DB_PATH`.                                    |
+| `EXECUTOR_DB_AUTH_TOKEN`            | unset                           | Optional remote libSQL authentication token.                                                    |
+| `TURSO_DATABASE_URL`                | unset                           | Alias for `EXECUTOR_DB_URL`, used by the Vercel Turso integration.                              |
+| `TURSO_AUTH_TOKEN`                  | unset                           | Alias for `EXECUTOR_DB_AUTH_TOKEN`, used by the Vercel Turso integration.                       |
+| `EXECUTOR_MCP_MODE`                 | `stateful`                      | Set `stateless` only on request-isolated hosts; disables resume and browser approval.           |
 | `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                           |
 | `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                     |
 | `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                             |

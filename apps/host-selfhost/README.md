@@ -2,8 +2,9 @@
 
 The single-container, self-hostable Executor server: the typed API, the MCP
 server, Better Auth (cookie / bearer / API-key + MCP OAuth), QuickJS code
-execution, and the web UI — all in one process over a libSQL (SQLite) file. No
-external database, worker, or proxy.
+execution, and the web UI, all in one process. It uses a local libSQL (SQLite)
+file by default and can use a remote libSQL database on request-isolated
+platforms.
 
 ## Run it
 
@@ -34,6 +35,10 @@ See [`.env.example`](./.env.example) for optional settings (most importantly
 `EXECUTOR_WEB_BASE_URL` behind a domain / TLS) and the full
 [Self-Hosting guide](../../docs/self-hosting/guide.mdx) for first-run, inviting
 people, backups, reverse-proxy setup, and upgrades.
+
+For Vercel, deploy the repository-root `Dockerfile` and connect a Turso
+database. See the [Vercel guide](../docs/hosted/vercel.mdx) for required secrets
+and the stateless MCP limitations.
 
 ## Develop
 

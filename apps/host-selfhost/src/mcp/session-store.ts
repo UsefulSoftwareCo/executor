@@ -2,12 +2,17 @@ import { Layer } from "effect";
 
 import { makeConsoleMcpErrorReporter, makeMcpBuildServer } from "@executor-js/api/server";
 import type { McpErrorReporter } from "@executor-js/host-mcp";
+import { McpSessionStore } from "@executor-js/host-mcp";
 import {
-  inMemoryMcpSessionsLayer,
   makeInMemoryMcpSessionStore,
   type InMemoryMcpSessionStore,
 } from "@executor-js/host-mcp/in-memory-session-store";
+import {
+  makeStatelessMcpSessionStore,
+  type StatelessMcpSessionStore,
+} from "@executor-js/host-mcp/stateless-session-store";
 
+import type { SelfHostMcpMode } from "../config";
 import { ErrorCaptureLive } from "../observability";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
 import { SelfHostExecutionStackLayer } from "../execution";
@@ -24,6 +29,13 @@ import { SelfHostExecutionStackLayer } from "../execution";
 
 export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-store";
 
+export type SelfHostMcpSessionStore =
+  | InMemoryMcpSessionStore
+  | (StatelessMcpSessionStore & {
+      readonly handlePausedRequest: () => Promise<null>;
+      readonly handleApprovalRequest: () => Promise<null>;
+    });
+
 /**
  * Build the in-process session store (plus its `close()` hook) over the DB
  * handle. `webBaseUrl` is the pinned public origin so browser-approval URLs use
@@ -32,16 +44,24 @@ export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-sto
 export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
-): InMemoryMcpSessionStore =>
-  makeInMemoryMcpSessionStore(
-    makeMcpBuildServer(
-      SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
-    ),
-    { webBaseUrl },
+  mode: SelfHostMcpMode = "stateful",
+): SelfHostMcpSessionStore => {
+  const buildServer = makeMcpBuildServer(
+    SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
   );
+  if (mode === "stateless") {
+    return {
+      ...makeStatelessMcpSessionStore(buildServer),
+      handlePausedRequest: () => Promise.resolve(null),
+      handleApprovalRequest: () => Promise.resolve(null),
+    };
+  }
+  return makeInMemoryMcpSessionStore(buildServer, { webBaseUrl });
+};
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */
-export const selfHostMcpSessions = inMemoryMcpSessionsLayer;
+export const selfHostMcpSessions = (built: SelfHostMcpSessionStore): Layer.Layer<McpSessionStore> =>
+  Layer.succeed(McpSessionStore)(built.store);
 
 /** Route 500-defects through the host's console `ErrorCapture`. */
 export const selfHostMcpReporter: Layer.Layer<McpErrorReporter> =

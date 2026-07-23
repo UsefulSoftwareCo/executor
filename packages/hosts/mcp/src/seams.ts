@@ -248,6 +248,8 @@ export type McpDispatchResult = Response | "not-found" | "forbidden";
 export class McpSessionStore extends Context.Service<
   McpSessionStore,
   {
+    /** Whether bare GET requests may open an SSE stream for a stateful session. */
+    readonly supportsServerSentEvents?: boolean;
     /**
      * Serve one `/mcp` request end to end. Owns create (no session id + POST
      * initialize), forward (session id present), and ownership (cross-bearer ->

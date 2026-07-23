@@ -16,6 +16,10 @@
       "types": "./src/in-memory-session-store.ts",
       "default": "./src/in-memory-session-store.ts"
     },
+    "./stateless-session-store": {
+      "types": "./src/stateless-session-store.ts",
+      "default": "./src/stateless-session-store.ts"
+    },
     "./browser-approval": {
       "types": "./src/browser-approval.ts",
       "default": "./src/browser-approval.ts"

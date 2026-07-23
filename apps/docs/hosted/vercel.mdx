@@ -1,0 +1,70 @@
+---
+title: Self Hosted Vercel
+description: "Deploy Executor as a stateless Vercel container with remote libSQL storage."
+---
+
+Executor can run on Vercel from the repository-root `Dockerfile`. The
+repository's `vercel.json` defines the container service and routes all public traffic to it.
+Vercel Functions do not preserve a local filesystem or route later requests to
+the same process, so this deployment uses remote libSQL for durable data and a
+stateless MCP transport.
+
+## Prerequisites
+
+- A Vercel account with Docker deployments available.
+- A remote libSQL database. The Turso integration from the Vercel Marketplace
+  provides one and injects its connection variables automatically.
+- The [Executor repo](https://github.com/UsefulSoftwareCo/executor) in your Git
+  provider account.
+
+## Create the project
+
+Import the repository into Vercel. Keep the repository root as the project root
+and select the **Services** framework preset. The checked-in `vercel.json`
+selects the container runtime, points it at `Dockerfile`, and routes
+requests to it.
+
+Add the Turso integration to the project from the Vercel Marketplace. Executor
+reads the injected `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` variables. A
+different libSQL provider can use `EXECUTOR_DB_URL` and
+`EXECUTOR_DB_AUTH_TOKEN` instead.
+
+Add two stable random secrets to every environment:
+
+```bash
+BETTER_AUTH_SECRET=<at-least-32-random-characters>
+EXECUTOR_SECRET_KEY=<random-encryption-key>
+```
+
+The production URL is detected from Vercel's system environment variables. Set
+`EXECUTOR_WEB_BASE_URL` explicitly if you use a custom domain or disable those
+system variables.
+
+Deploy the project. Open its URL and create the first owner account, or set
+`EXECUTOR_BOOTSTRAP_ADMIN_EMAIL` and `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` before
+the first deploy for a headless setup.
+
+## Stateless MCP behavior
+
+The Vercel image sets `EXECUTOR_MCP_MODE=stateless`. Every MCP POST creates a
+fresh server and does not issue an `mcp-session-id`, which makes ordinary tool
+listing and execution safe across cold starts and scale-out.
+
+<Warning>
+  Paused executions, the `resume` tool, browser approval, and server-initiated SSE require a live
+  session and are unavailable in stateless mode. An execution that reaches an approval or
+  authentication interaction returns a clear error. Change that tool's policy to allow, complete
+  integration authentication in the web console first, or use the Docker or Cloudflare host when
+  resumable MCP sessions are required.
+</Warning>
+
+The web console and HTTP API persist through remote libSQL and remain available
+normally.
+
+## Connect an agent
+
+Point any streamable-HTTP MCP client at the deployed `/mcp` URL:
+
+```bash
+npx add-mcp https://your-project.vercel.app/mcp --transport http --name executor
+```

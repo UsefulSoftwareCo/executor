@@ -6,7 +6,7 @@ import { type Client } from "@libsql/client";
 import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
-import { loadConfig } from "../config";
+import type { SelfHostConfig } from "../config";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
 
@@ -61,8 +61,12 @@ const SIGNUP_PATH = "/sign-up/email";
 // session/user shapes (activeOrganizationId, role, createUser, ...).
 // ---------------------------------------------------------------------------
 
-const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?: SignupGate) => {
-  const config = loadConfig();
+const makeAuthOptions = (
+  client: Client,
+  getOrganizationId: () => string,
+  config: SelfHostConfig,
+  gate?: SignupGate,
+) => {
   // Always resolved (generated + persisted when no env is set); this guards only
   // an explicitly-set env secret that is too weak.
   const secret = config.authSecret;
@@ -180,7 +184,11 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
                   // First user into an empty org becomes its owner (no code).
                   if (await orgHasNoMembers(gate)) {
                     await auth.api.addMember({
-                      body: { userId: user.id, role: "owner", organizationId: gate.organizationId },
+                      body: {
+                        userId: user.id,
+                        role: "owner",
+                        organizationId: gate.organizationId,
+                      },
                     });
                     return;
                   }
@@ -228,7 +236,10 @@ const inviteCodeFrom = (context: { body?: unknown }): string | undefined => {
 // gate logic next to the writes.
 export const countOrgMembers = (auth: Auth, organizationId: string): Promise<number> =>
   auth.$context.then(({ adapter }) =>
-    adapter.count({ model: "member", where: [{ field: "organizationId", value: organizationId }] }),
+    adapter.count({
+      model: "member",
+      where: [{ field: "organizationId", value: organizationId }],
+    }),
   );
 
 // True when the single org has no members yet — the unclaimed first-run state.
@@ -238,8 +249,12 @@ const orgHasNoMembers = async (gate: SignupGate): Promise<boolean> => {
   return (await countOrgMembers(auth, gate.organizationId)) === 0;
 };
 
-const createAuthInstance = (client: Client, getOrganizationId: () => string, gate?: SignupGate) =>
-  betterAuth(makeAuthOptions(client, getOrganizationId, gate));
+const createAuthInstance = (
+  client: Client,
+  getOrganizationId: () => string,
+  config: SelfHostConfig,
+  gate?: SignupGate,
+) => betterAuth(makeAuthOptions(client, getOrganizationId, config, gate));
 
 export type Auth = ReturnType<typeof createAuthInstance>;
 
@@ -277,9 +292,10 @@ export class BetterAuth extends Context.Service<BetterAuth, BetterAuthHandle>()(
  * connection and one WAL. The seed also uses it directly for its two
  * idempotency reads against the auth tables Better Auth just migrated.
  */
-export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle> => {
-  const config = loadConfig();
-
+export const buildBetterAuth = async (
+  client: Client,
+  config: SelfHostConfig,
+): Promise<BetterAuthHandle> => {
   // The org id is resolved by the seed below, AFTER this instance is built; the
   // session-pin hook and the gate read it through these late-bound accessors
   // (no session is created during the seed, so the empty initial id is never
@@ -295,7 +311,7 @@ export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle>
     getAuth: () => auth,
   };
 
-  auth = createAuthInstance(client, () => orgRef.id, gate);
+  auth = createAuthInstance(client, () => orgRef.id, config, gate);
   // `runMigrations()` flows through the LibsqlDialect and is idempotent.
   await (await auth.$context).runMigrations();
   await ensureInviteCodeTable(client);

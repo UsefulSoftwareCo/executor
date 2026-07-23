@@ -37,7 +37,7 @@ let dbHandle: Awaited<ReturnType<typeof createSelfHostDb>> | undefined;
 
 beforeAll(async () => {
   dbHandle = await createSelfHostDb({
-    path: dbPath,
+    database: { kind: "file", path: dbPath },
     namespace: "executor_selfhost",
     version: "1.0.0",
   });

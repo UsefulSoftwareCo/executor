@@ -235,6 +235,17 @@ const mcpDispatch = (resource: McpResource) =>
     // an engine for a bare GET/DELETE.
     if (!sessionId) {
       if (request.method === "GET") {
+        if (store.supportsServerSentEvents === false) {
+          return HttpServerResponse.raw(
+            new Response(null, {
+              status: 405,
+              headers: {
+                allow: "POST, DELETE, OPTIONS",
+                "access-control-allow-origin": "*",
+              },
+            }),
+          );
+        }
         return HttpServerResponse.raw(
           jsonRpcResponse(400, -32000, "mcp-session-id header required for SSE"),
         );

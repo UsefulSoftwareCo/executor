@@ -12,7 +12,7 @@ import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 import executorConfig from "../executor.config";
 import { SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
-import { loadConfig } from "./config";
+import { loadHostConfig } from "./config";
 
 // ---------------------------------------------------------------------------
 // Self-host execution-stack seams.
@@ -49,7 +49,7 @@ export const SelfHostPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succe
 );
 
 export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, () => {
-  const config = loadConfig();
+  const config = loadHostConfig();
   return {
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,

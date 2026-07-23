@@ -1,6 +1,7 @@
 import { HttpApiSwagger } from "effect/unstable/httpapi";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
+import { createClient } from "@libsql/client";
 
 import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
 
@@ -13,6 +14,7 @@ import { makeSelfHostSystemApiLayer } from "./system/handlers";
 import { selfHostAccountMiddleware } from "./account";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "./config";
 import { createSelfHostDb, SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
+import { withSelfHostBootLock } from "./db/boot-lock";
 import {
   SelfHostCodeExecutorProvider,
   SelfHostHostConfig,
@@ -49,29 +51,59 @@ export interface MakeSelfHostAppOptions {
 }
 
 export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
-  const config = loadConfig();
-
-  // ---- eager async boot: the shared libSQL handle -----------------------
-  const dbHandle = await createSelfHostDb({
-    path: options.dbPath ?? config.dbPath,
-    namespace: SELF_HOST_NAMESPACE,
-    version: SELF_HOST_SCHEMA_VERSION,
+  const databaseOverride = options.dbPath
+    ? ({ kind: "file", path: options.dbPath } as const)
+    : undefined;
+  // An explicit test database is an isolation boundary: do not parse ambient
+  // remote/stateless settings before replacing them with the throwaway file.
+  const config = loadConfig({
+    ...(databaseOverride ? { database: databaseOverride, mcpMode: "stateful" } : {}),
   });
+  const database = config.database;
 
-  // Boot-time data migrations: each registry entry runs once and is stamped
-  // in the `data_migration` ledger; stamped entries are skipped without
-  // touching the data.
-  await Effect.runPromise(runSqliteDataMigrations(dbHandle.client, selfHostDataMigrations));
+  const bootDatabase = async () => {
+    // ---- eager async boot: the shared libSQL handle ---------------------
+    const dbHandle = await createSelfHostDb({
+      database,
+      namespace: SELF_HOST_NAMESPACE,
+      version: SELF_HOST_SCHEMA_VERSION,
+    });
 
-  // ---- auth providers ---------------------------------------------------
-  // Better Auth: cookie/bearer/api-key identity + /api/auth handler + account
-  // API + MCP OAuth seam, all over the shared libSQL handle.
-  const { identityLayer, authHandler, betterAuth } = await resolveAuthProviders(dbHandle);
+    // Boot-time data migrations: each registry entry runs once and is stamped
+    // in the `data_migration` ledger; stamped entries are skipped without
+    // touching the data.
+    await Effect.runPromise(runSqliteDataMigrations(dbHandle.client, selfHostDataMigrations));
+
+    // ---- auth providers -------------------------------------------------
+    // Better Auth: cookie/bearer/api-key identity + /api/auth handler + account
+    // API + MCP OAuth seam, all over the shared libSQL handle.
+    return { dbHandle, ...(await resolveAuthProviders(dbHandle, config)) };
+  };
+
+  // Vercel and similar hosts can cold-start multiple containers against one
+  // remote database. Serialize executor schema creation, data migrations, and
+  // first-run auth seeding with a renewable DB lease. The dedicated lock client
+  // keeps heartbeats outside any migration transaction on the app's client.
+  const remoteDatabase = database.kind === "remote" ? database : null;
+  const { dbHandle, identityLayer, authHandler, betterAuth } = remoteDatabase
+    ? await (async () => {
+        const lockClient = createClient({
+          url: remoteDatabase.url,
+          ...(remoteDatabase.authToken ? { authToken: remoteDatabase.authToken } : {}),
+        });
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the dedicated boot-lock connection must close on success and failure
+        try {
+          return await withSelfHostBootLock(lockClient, bootDatabase);
+        } finally {
+          lockClient.close();
+        }
+      })()
+    : await bootDatabase();
 
   // ---- the in-process MCP serving seams (+ shutdown hook) ----------------
   // Pass the pinned public origin so browser-approval URLs are reachable behind
   // a reverse proxy (not the internal 127.0.0.1 bind from the request URL).
-  const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl);
+  const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl, config.mcpMode);
 
   // CLI device-login discovery (`executor login`). Points the CLI at Better
   // Auth's device endpoints; `requestFormat: "json"` because those endpoints
@@ -99,7 +131,10 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
       db: SelfHostDbProvider,
       engine: { codeExecutor: SelfHostCodeExecutorProvider }, // decorator defaults to no-op (no metering)
       mcp: { auth: mcp.auth, sessions: mcp.sessions, reporter: mcp.reporter },
-      plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
+      plugins: {
+        provider: SelfHostPluginsProvider,
+        config: SelfHostHostConfig,
+      },
       errorCapture: ErrorCaptureLive,
     },
     extensions: {
@@ -116,11 +151,21 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // session-cookie-gated, delegating to the in-process MCP store.
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(mcp.approvalHandler)),
         // App-local admin (invite-code) API, served under /api/admin/*.
-        makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        makeSelfHostAdminApiLayer({
+          betterAuth,
+          db: dbHandle,
+          mountPrefix: "/api",
+        }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
-        makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        makeSelfHostSystemApiLayer({
+          betterAuth,
+          db: dbHandle,
+          mountPrefix: "/api",
+        }),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
-        HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
+        HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), {
+          path: "/docs",
+        }),
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },

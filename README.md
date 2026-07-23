@@ -29,7 +29,7 @@ client.
 - **Governed by policy.** Each tool is allowed, gated behind approval, or
   blocked, with sensible defaults derived from the spec.
 - **Run it your way.** Local CLI, a desktop app, hosted Executor Cloud, or
-  self-hosted on Docker or Cloudflare. Same functionality, different packaging.
+  self-hosted on Docker, Vercel, or Cloudflare. Same core, different packaging.
 
 ## How it works
 
@@ -77,6 +77,7 @@ Every form exposes the same functionality, just packaged differently.
 | **CLI**                    | A headless or server environment. Runs a local background service.                                                        | [CLI](https://executor.sh/docs/local/cli)                |
 | **Desktop app**            | A regular desktop (Mac, Windows, Linux). The same runtime, as a native app.                                               | [Desktop](https://executor.sh/docs/local/desktop)        |
 | **Self-host (Docker)**     | Your own infrastructure, full control.                                                                                    | [Docker](https://executor.sh/docs/hosted/docker)         |
+| **Self-host (Vercel)**     | A stateless container deployment backed by remote libSQL.                                                                 | [Vercel](https://executor.sh/docs/hosted/vercel)         |
 | **Self-host (Cloudflare)** | Deploy as a Cloudflare Worker.                                                                                            | [Cloudflare](https://executor.sh/docs/hosted/cloudflare) |
 
 ## Connect an agent over MCP

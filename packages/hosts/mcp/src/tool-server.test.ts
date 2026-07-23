@@ -66,6 +66,7 @@ const withClient = async <E extends Cause.YieldableError>(
     | "pausedExecutionHooks"
     | "pausedExecutionLeaseMs"
     | "resumeFallback"
+    | "stateless"
   >,
 ) => {
   const mcpServer = await Effect.runPromise(createExecutorMcpServer({ engine, ...config }));
@@ -958,6 +959,46 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
       expect(names).toContain("execute");
       expect(names).toContain("resume");
     });
+  });
+
+  it("stateless mode hides resume and fails a paused execution clearly", async () => {
+    const resumeCalls: Array<{ executionId: string; action: string }> = [];
+    const engine = makeStubEngine({
+      executeWithPause: () =>
+        Effect.succeed(
+          makePausedResult(
+            "exec_stateless",
+            FormElicitation.make({ message: "Need approval", requestedSchema: {} }),
+          ),
+        ),
+      resume: (executionId, response) =>
+        Effect.sync(() => {
+          resumeCalls.push({ executionId, action: response.action });
+          return { status: "completed", result: { result: null } };
+        }),
+    });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        expect(tools.map((tool) => tool.name)).not.toContain("resume");
+
+        const result = await client.callTool({
+          name: "execute",
+          arguments: { code: "pause-me" },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("stateless");
+        expect(result.structuredContent).toMatchObject({
+          status: "interaction_unavailable",
+          reason: "stateless_mcp",
+        });
+        expect(resumeCalls).toEqual([{ executionId: "exec_stateless", action: "cancel" }]);
+      },
+      { stateless: true },
+    );
   });
 
   it("browser approval mode requires user approval before resume", async () => {
