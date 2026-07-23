@@ -112,6 +112,10 @@ export const runSqliteDataMigrations = (
     for (const migration of migrations) {
       if (completed.has(migration.name)) continue;
       yield* migration.run(client);
+      // Multiple hosts can boot against the same database and observe the same
+      // migration as pending. Their idempotent bodies may both finish, but only
+      // one ledger insert can win. Treat the losing insert as success only after
+      // verifying that another runner committed this exact stamp.
       yield* execute(
         client,
         {
@@ -119,6 +123,23 @@ export const runSqliteDataMigrations = (
           args: [migration.name, Date.now()],
         },
         migration.name,
+      ).pipe(
+        Effect.catch((stampError) =>
+          execute(
+            client,
+            {
+              sql: `SELECT name FROM ${LEDGER_TABLE} WHERE name = ?`,
+              args: [migration.name],
+            },
+            migration.name,
+          ).pipe(
+            Effect.flatMap((result) =>
+              result.rows.some((row) => row.name === migration.name)
+                ? Effect.void
+                : Effect.fail(stampError),
+            ),
+          ),
+        ),
       );
       applied.push(migration.name);
     }

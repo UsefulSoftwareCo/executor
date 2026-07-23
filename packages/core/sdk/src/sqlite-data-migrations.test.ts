@@ -76,6 +76,81 @@ describe("runSqliteDataMigrations", () => {
     }),
   );
 
+  it.effect("converges when concurrent runners stamp the same migration", () =>
+    Effect.gen(function* () {
+      const stamps = new Set<string>();
+      let initialReads = 0;
+      let releaseInitialReads: (() => void) | undefined;
+      const initialReadsComplete = new Promise<void>((resolve) => {
+        releaseInitialReads = resolve;
+      });
+      const client: SqliteDataMigrationClient = {
+        execute: (stmt) => {
+          const sql = typeof stmt === "string" ? stmt : stmt.sql;
+          if (sql === "SELECT name FROM data_migration") {
+            const rows = [...stamps].map((name) => ({ name }));
+            initialReads++;
+            if (initialReads === 2) releaseInitialReads?.();
+            return initialReadsComplete.then(() => ({ rows }));
+          }
+          if (typeof stmt === "object" && sql.startsWith("INSERT INTO data_migration")) {
+            const name = String(stmt.args[0]);
+            if (stamps.has(name)) {
+              // oxlint-disable-next-line executor/no-promise-reject -- simulates a storage-driver rejection at the adapter boundary under test
+              return Promise.reject("UNIQUE constraint failed: data_migration.name");
+            }
+            stamps.add(name);
+            return Promise.resolve({ rows: [] });
+          }
+          if (
+            typeof stmt === "object" &&
+            sql === "SELECT name FROM data_migration WHERE name = ?"
+          ) {
+            const name = String(stmt.args[0]);
+            return Promise.resolve({ rows: stamps.has(name) ? [{ name }] : [] });
+          }
+          return Promise.resolve({ rows: [] });
+        },
+      };
+      const migration = migrationSpy("2026-06-05-concurrent");
+
+      const results = yield* Effect.all(
+        [
+          runSqliteDataMigrations(client, [migration.migration]),
+          runSqliteDataMigrations(client, [migration.migration]),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(results).toEqual([["2026-06-05-concurrent"], ["2026-06-05-concurrent"]]);
+      expect(migration.calls.length).toBe(2);
+      expect(stamps).toEqual(new Set(["2026-06-05-concurrent"]));
+    }),
+  );
+
+  it.effect("surfaces a stamp failure when no concurrent runner committed it", () =>
+    Effect.gen(function* () {
+      const client: SqliteDataMigrationClient = {
+        execute: (stmt) => {
+          const sql = typeof stmt === "string" ? stmt : stmt.sql;
+          if (typeof stmt === "object" && sql.startsWith("INSERT INTO data_migration")) {
+            // oxlint-disable-next-line executor/no-promise-reject -- simulates a storage-driver rejection at the adapter boundary under test
+            return Promise.reject("disk full");
+          }
+          return Promise.resolve({ rows: [] });
+        },
+      };
+      const migration = migrationSpy("2026-06-05-unstamped");
+
+      const failure = yield* runSqliteDataMigrations(client, [migration.migration]).pipe(
+        Effect.flip,
+      );
+
+      expect(Predicate.isTagged(failure, "DataMigrationError")).toBe(true);
+      expect((failure as DataMigrationError).cause).toBe("disk full");
+    }),
+  );
+
   it.effect("a failing migration leaves no stamp and surfaces the failure", () =>
     Effect.gen(function* () {
       const { client, stamps } = makeFakeClient([]);
