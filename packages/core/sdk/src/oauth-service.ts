@@ -899,11 +899,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         );
       const information = yield* registerWithName(input.clientName).pipe(
         // Some authorization servers vet `client_name` (Mercury rejects any
-        // name containing its own brand — which the auto-generated
+        // name containing its own brand, which the auto-generated
         // "Executor for <integration>" always trips). The name is cosmetic,
         // so on `invalid_client_metadata` retry ONCE with the bare product
         // name before surfacing the failure. Other metadata rejections reuse
-        // the same RFC error code, so the retry may be a wasted request — but
+        // the same RFC error code, so the retry may be a wasted request, but
         // never masks the original failure: if the retry also fails, ITS
         // error surfaces (same code, server-authored description).
         Effect.catchIf(

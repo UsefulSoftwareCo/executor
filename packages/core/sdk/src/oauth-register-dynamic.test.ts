@@ -623,7 +623,7 @@ describe("oauth.registerDynamicClient", () => {
   );
 
   // Regression: Mercury's authorization server vets `client_name` and rejects
-  // any value containing its own brand with `invalid_client_metadata` — which
+  // any value containing its own brand with `invalid_client_metadata`, which
   // the auto-generated "Executor for Mercury MCP" always trips. The name is
   // cosmetic, so registration must retry once with the bare product name
   // instead of failing the connect.
