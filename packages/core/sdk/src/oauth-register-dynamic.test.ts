@@ -622,6 +622,91 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  // Regression: Mercury's authorization server vets `client_name` and rejects
+  // any value containing its own brand with `invalid_client_metadata` — which
+  // the auto-generated "Executor for Mercury MCP" always trips. The name is
+  // cosmetic, so registration must retry once with the bare product name
+  // instead of failing the connect.
+  it.effect("retries DCR with the bare product name when the server vets client_name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          // Mirror Mercury: reject any client_name containing the brand.
+          approveClientName: (name) => !name.includes("Acme"),
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Executor for Acme MCP",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(slug).length).toBeGreaterThan(0);
+
+        // Two registration attempts: the branded name (rejected), then the
+        // bare product name (accepted).
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(2);
+        expect(registers[0]!.body).toContain("Executor for Acme MCP");
+        expect(registers[1]!.body).toContain('"client_name":"Executor"');
+      }),
+    ),
+  );
+
+  // The retry is a one-shot on the cosmetic name only: when the server rejects
+  // even the bare product name, the invalid_client_metadata failure surfaces.
+  it.effect("surfaces invalid_client_metadata when the server rejects every client_name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          approveClientName: () => false,
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const error = yield* Effect.flip(
+          executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: CLIENT,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Executor for Acme MCP",
+            redirectUri: FLOW_REDIRECT_URI,
+            originIntegration: INTEG,
+          }),
+        );
+        expect(Predicate.isTagged("OAuthRegisterDynamicError")(error)).toBe(true);
+        const registerError = error as OAuthRegisterDynamicError;
+        expect(registerError.message).toContain(
+          "Dynamic Client Registration failed: invalid_client_metadata",
+        );
+
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(2);
+      }),
+    ),
+  );
+
   // Regression: issue #770. Vercel (and other RFC 8252-strict servers) only
   // approve loopback redirect URIs for anonymous DCR, so a hosted/tailnet/LAN
   // origin trips `invalid_redirect_uri`. The failure must explain the loopback
