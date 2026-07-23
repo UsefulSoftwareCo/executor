@@ -85,6 +85,7 @@ import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import { Skeleton } from "./skeleton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import {
   DropdownMenu,
@@ -892,6 +893,10 @@ interface AddAccountModalProps {
   readonly integration: IntegrationSlug;
   readonly integrationName: string;
   readonly methods: readonly AuthMethod[];
+  /** True while the caller's methods source is still resolving, so the modal can
+   *  show a loading shell instead of treating "not loaded yet" as "no
+   *  authentication". */
+  readonly methodsLoading?: boolean;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly initialState?: IntegrationAccountHandoff | null;
@@ -911,7 +916,59 @@ interface AddAccountModalProps {
  *  OAuth popup can't wedge a later open: the stuck flow died with its instance.
  *  The parent owns only open/route intent (deep links, the reconnect handoff). */
 export function AddAccountModal(props: AddAccountModalProps) {
-  return props.open ? <AddAccountModalView {...props} /> : null;
+  if (!props.open) return null;
+  if (props.methodsLoading) {
+    return (
+      <AddAccountModalLoadingShell
+        integrationName={props.integrationName}
+        onOpenChange={props.onOpenChange}
+      />
+    );
+  }
+  return <AddAccountModalView {...props} />;
+}
+
+function AddAccountModalLoadingShell(props: {
+  readonly integrationName: string;
+  readonly onOpenChange: (open: boolean) => void;
+}) {
+  const ownerDisplay = useOwnerDisplay();
+
+  return (
+    // Non-modal for the same reason as the full add-account dialog below: a
+    // modal dialog's react-remove-scroll locks the wheel to the dialog subtree,
+    // so portaled popups opened from the dialog cannot scroll.
+    <Dialog open onOpenChange={props.onOpenChange} modal={false}>
+      <DialogContent
+        forceOverlay
+        data-testid="add-account-loading-shell"
+        className="max-h-[85vh] overflow-x-hidden overflow-y-auto sm:max-w-xl"
+      >
+        <DialogHeader>
+          <DialogTitle>Add connection · {props.integrationName}</DialogTitle>
+          <DialogDescription>
+            {ownerDisplay.showOwnerLabels
+              ? "A connection is a saved way to use this integration, owned by you or the workspace."
+              : "A connection is a saved way to use this integration."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex w-full min-w-0 flex-col gap-5" aria-busy="true">
+          <Skeleton className="h-10 w-full rounded-md" />
+          <div className="rounded-md border border-border/60 bg-background">
+            <div className="space-y-4 border-b border-border/60 p-4">
+              <Skeleton className="h-3.5 w-28" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+            <div className="space-y-3 p-4">
+              <Skeleton className="h-3.5 w-24" />
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-3.5 w-40" />
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 // ---------------------------------------------------------------------------

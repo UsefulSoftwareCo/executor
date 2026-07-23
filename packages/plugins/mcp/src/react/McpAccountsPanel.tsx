@@ -7,6 +7,7 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
+import { isAsyncResultLoading } from "@executor-js/react/lib/async-result";
 import {
   useCustomMethodActions,
   type AuthMethodsCodec,
@@ -104,6 +105,7 @@ export default function McpAccountsPanel(props: {
         integration={slug}
         integrationName={integrationName}
         methods={methods}
+        methodsLoading={isAsyncResultLoading(serverResult)}
         accountHandoff={accountHandoff}
         createCustomMethod={canConfigureAuth ? createCustomMethod : undefined}
         removeCustomMethod={canConfigureAuth ? removeCustomMethod : undefined}
