@@ -1743,28 +1743,37 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
-  // live clock: the sandbox timeout is a real timer, so the test must
-  // actually wait for it rather than suspend on the virtual TestClock.
+  // Live clock: the failing executor delays long enough for its detached tool
+  // invocation to publish the pause before the executor settles on its own.
   it.live(
     "a pause abandoned by a failing sandbox is dropped and its resume replays the failure outcome",
     () =>
       Effect.gen(function* () {
         const executor = yield* makeElicitingExecutor();
-        // Sandbox times out while suspended on the elicitation, so the fiber
-        // settles without a resume ever arriving.
+        const failingCodeExecutor = {
+          execute: (_code, toolInvoker) =>
+            Effect.gen(function* () {
+              yield* Effect.forkChild(
+                toolInvoker
+                  .invoke({ path: "api.org.main.singleApproval", args: {} })
+                  .pipe(Effect.ignore),
+              );
+              yield* Effect.sleep("100 millis");
+              return { result: null, error: "sandbox failed after pausing" };
+            }),
+        } satisfies typeof codeExecutor;
         const engine = createExecutionEngine({
           executor,
-          codeExecutor: makeQuickJsExecutor({ timeoutMs: 250 }),
+          codeExecutor: failingCodeExecutor,
         });
-        const code = "return await tools.api.org.main.singleApproval({});";
 
-        const outcome1 = yield* engine.executeWithPause(code);
+        const outcome1 = yield* engine.executeWithPause("ignored");
         expect(outcome1.status).toBe("paused");
         if (outcome1.status !== "paused") return;
         const executionId = outcome1.execution.id;
 
-        // Wait for the sandbox timeout to settle the detached fiber.
-        yield* Effect.sleep("600 millis");
+        // Wait for the sandbox failure to settle the detached fiber.
+        yield* Effect.sleep("300 millis");
 
         // The dead pause must no longer be reported as live...
         const stillPaused = yield* engine.getPausedExecution(executionId);
@@ -1774,7 +1783,7 @@ describe("pause/resume with multiple elicitations", () => {
         const late = yield* engine.resume(executionId, { action: "accept" });
         expect(late?.status).toBe("completed");
         const completed = late as Extract<NonNullable<typeof late>, { status: "completed" }>;
-        expect(completed.result.error).toContain("timed out");
+        expect(completed.result.error).toBe("sandbox failed after pausing");
       }),
     { timeout: 10000 },
   );

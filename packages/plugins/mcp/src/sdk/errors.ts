@@ -38,6 +38,10 @@ export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
   readonly toolName: string;
   readonly message: string;
   readonly status?: number;
+  /** The SDK failure came from the HTTP/SSE transport rather than a JSON-RPC
+   *  protocol response. Used only to decide whether a leased session is safe
+   *  to return to the idle pool. */
+  readonly transportFailure?: boolean;
   /** The server rejected the call as an unknown tool (protocol error), which
    *  means the persisted catalog has drifted from the server's live tool set. */
   readonly unknownTool?: boolean;

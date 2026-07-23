@@ -132,7 +132,7 @@ scenario(
 );
 
 scenario(
-  "Auth · logout sends the user home and tells the browser to drop the session",
+  "Auth · logout ends the AuthKit session upstream and tells the browser to drop the cookie",
   {},
   Effect.gen(function* () {
     // Gate: the REST API plane is mounted on this target.
@@ -148,10 +148,28 @@ scenario(
         headers: identity.headers ?? {},
       }),
     );
-    expect(response.status, "logout redirects back to the landing page").toBe(302);
-    expect(response.headers.get("location"), "the destination is home").toBe("/");
+    expect(response.status, "logout hands the browser to WorkOS").toBe(302);
     const cleared = setCookieFor(response, "wos-session");
     expect(cleared, "the session cookie is expired immediately").toContain("Max-Age=0");
     expect(cleared, "the cookie value is wiped").toContain("wos-session=;");
+
+    // The destination is WorkOS's session-end endpoint carrying this
+    // session's id — without this hop the hosted AuthKit session survives
+    // and the next sign-in silently re-authenticates.
+    const logoutUrl = new URL(response.headers.get("location") ?? "");
+    expect(logoutUrl.pathname, "the destination ends the WorkOS session").toBe(
+      "/user_management/sessions/logout",
+    );
+    expect(
+      logoutUrl.searchParams.get("session_id"),
+      "the WorkOS session being ended is this identity's",
+    ).toMatch(/^session_/);
+
+    const upstream = yield* Effect.promise(() => fetch(logoutUrl, { redirect: "manual" }));
+    expect(upstream.status, "WorkOS ends the session and sends the user onward").toBe(302);
+    expect(
+      upstream.headers.get("location"),
+      "the sign-out return URL lands back on this deployment",
+    ).toBe(new URL("/", target.baseUrl).toString());
   }),
 );

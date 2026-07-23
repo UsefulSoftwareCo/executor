@@ -231,6 +231,15 @@ export const coreTables = defineTables({
       // `registrableOriginOfUrl`, since no discovered issuer was ever recorded).
       // Null for manual clients and legacy rows not yet backfilled.
       origin_issuer: nullableTextColumn("origin_issuer"),
+      // The redirect URI a DCR client registered with the authorization server
+      // (RFC 7591 `redirect_uris`, always the single flow callback here).
+      // Strict servers reject an authorize request whose redirect_uri differs
+      // from the registration, so DCR reuse compares this against the current
+      // flow callback and re-registers on mismatch. Null for manual clients and
+      // for DCR rows written before this column existed — treated as matching,
+      // since re-registering every legacy client on upgrade would churn
+      // providers for the majority whose callback never changed.
+      origin_redirect_uri: nullableTextColumn("origin_redirect_uri"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "slug"],

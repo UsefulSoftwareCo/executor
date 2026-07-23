@@ -1,5 +1,15 @@
 # executor
 
+## 1.5.35
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df), [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/runtime-quickjs@1.5.35
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.55
+
 ## 1.5.34
 
 ### Patch Changes

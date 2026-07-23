@@ -14,7 +14,6 @@ import {
   connectionLabel,
   connectionLabelForHost,
   createCredentialPayloadOrigin,
-  dcrClientNameForIntegration,
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
   oauthIdentityLabelFromHealth,
@@ -356,11 +355,6 @@ describe("runCimdConnect", () => {
 });
 
 describe("runDcrConnect", () => {
-  it("names dynamically registered OAuth apps as Executor clients", () => {
-    expect(dcrClientNameForIntegration("PostHog MCP")).toBe("Executor for PostHog MCP");
-    expect(dcrClientNameForIntegration("   ")).toBe("Executor");
-  });
-
   it("auto-registers (no picker) then starts: probe → register → start in order", async () => {
     const calls: string[] = [];
     let registerArgs: RegisterArgs | null = null;
@@ -393,7 +387,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "Linear MCP",
         redirectUri: "https://localhost:5394/api/oauth/callback",
         integration: TEST_INTEGRATION,
       },
@@ -412,7 +405,9 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
-    expect(registerArgs!.clientName).toBe("Executor for Linear MCP");
+    // Always the bare product name: brand-vetting servers (e.g. Mercury)
+    // reject client_names containing their own brand.
+    expect(registerArgs!.clientName).toBe("Executor");
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
     expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);
@@ -443,7 +438,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         declaredScopes: ["declared.scope"],
         integration: TEST_INTEGRATION,
       },
@@ -479,7 +473,6 @@ describe("runDcrConnect", () => {
         // discoveryUrl collapsed to the token endpoint (no real discovery URL).
         discoveryUrl: "https://auth.example.com/token",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -510,7 +503,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -544,7 +536,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -573,7 +564,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -611,7 +601,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -653,7 +642,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );

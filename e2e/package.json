@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/e2e",
-  "version": "0.0.31",
+  "version": "0.0.32",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",
-    "@executor-js/emulate": "^0.13.3",
+    "@executor-js/emulate": "^0.13.6",
     "@executor-js/mcporter": "^0.11.4",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",

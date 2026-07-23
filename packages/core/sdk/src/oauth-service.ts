@@ -643,6 +643,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             input.origin?.kind === "dynamic_client_registration"
               ? (canonicalIssuerUrl(input.originIssuer) ?? null)
               : null,
+          origin_redirect_uri:
+            input.origin?.kind === "dynamic_client_registration"
+              ? (input.originRedirectUri ?? null)
+              : null,
           created_at: now,
         }),
       );
@@ -706,6 +710,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   type DcrReuseCandidate = {
     readonly slug: OAuthClientSlug;
     readonly resource: string | null;
+    /** Redirect URI the candidate registered with the AS; null for rows
+     *  predating the column (treated as matching any flow callback). */
+    readonly redirectUri: string | null;
   };
 
   // `oauth_client.created_at` is a date column that surfaces as a Date, an ISO
@@ -754,6 +761,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 {
                   slug: OAuthClientSlug.make(String(row.slug)),
                   resource: row.resource == null ? null : String(row.resource),
+                  redirectUri:
+                    row.origin_redirect_uri == null ? null : String(row.origin_redirect_uri),
                   createdAt: candidateCreatedAt(row.created_at),
                 },
               ];
@@ -769,13 +778,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               (a, b) =>
                 a.createdAt - b.createdAt || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0),
             )
-            .map(({ slug, resource }): DcrReuseCandidate => ({ slug, resource }));
+            .map(
+              ({ slug, resource, redirectUri }): DcrReuseCandidate => ({
+                slug,
+                resource,
+                redirectUri,
+              }),
+            );
         }),
       );
 
   const decideDcrClientReuse = (
     input: RegisterDynamicClientInput,
     issuer: string | null,
+    flowRedirectUri: string | null,
   ): Effect.Effect<
     {
       readonly existingSlug: OAuthClientSlug | null;
@@ -786,12 +802,35 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     Effect.gen(function* () {
       const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
       const resource = input.resource ?? null;
+      // A candidate is reusable only when the callback it registered with the
+      // AS still matches the current flow's callback — strict servers reject an
+      // authorize request whose redirect_uri differs from the registration
+      // (e.g. the callback origin changed after a sandbox was recreated while
+      // the persisted client survived). A null stored redirect is a legacy row
+      // predating the column: treated as matching so an upgrade doesn't
+      // re-register every client whose callback never changed. A null FLOW
+      // redirect has nothing to compare against, so it also reuses — the only
+      // alternative is a fresh registration, which the missing-redirectUri
+      // guard would fail.
+      const redirectMatches = (candidate: DcrReuseCandidate): boolean =>
+        candidate.redirectUri === null ||
+        flowRedirectUri === null ||
+        candidate.redirectUri === flowRedirectUri;
+      // A fresh registration must never take a slug an existing candidate
+      // holds: `createClient` deletes any colliding (owner, slug) row first,
+      // which would clobber a client that live connections still refresh
+      // through (a redirect-mismatched client stays valid for refresh — the
+      // token grant doesn't involve the redirect URI).
+      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
       if (resource !== null) {
         const matchingResource = candidates.find((client) => client.resource === resource);
-        if (matchingResource) {
+        if (matchingResource && redirectMatches(matchingResource)) {
           return { existingSlug: matchingResource.slug, registrationSlug: matchingResource.slug };
         }
-        const slug = dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug);
+        const slug = uniqueDcrSlug(
+          dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug),
+          takenSlugs,
+        );
         return {
           existingSlug: null,
           registrationSlug: slug,
@@ -803,15 +842,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // resource-less flow (its tokens are bound to that resource), so when only
       // resource-scoped candidates exist we register a fresh resource-less client
       // rather than silently borrowing one (the old `?? candidates[0]` bug).
-      const reusable = candidates.find((client) => client.resource === null);
+      const reusable = candidates.find(
+        (client) => client.resource === null && redirectMatches(client),
+      );
       if (reusable) return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
       // Fresh resource-less client. Its slug is the bare `dcr-<host>` base, but
       // the FIRST resource-scoped registration for an issuer also takes that base
-      // (dcrClientSlug only suffixes once candidates exist). `createClient`
-      // deletes any row with a colliding (owner, slug) first, so reusing the base
-      // here would silently clobber that resource-scoped client. Dedupe against
-      // the existing candidate slugs so the resource-less client keeps its own row.
-      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
+      // (dcrClientSlug only suffixes once candidates exist) — the takenSlugs
+      // dedupe keeps the resource-less client on its own row.
       const slug = uniqueDcrSlug(dcrClientSlug(issuer, null, input.slug), takenSlugs);
       return { existingSlug: null, registrationSlug: slug };
     });
@@ -821,11 +859,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
     Effect.gen(function* () {
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
-      const reuse = yield* decideDcrClientReuse(input, issuer);
+      // Resolved before the reuse decision: a persisted client registered with
+      // a DIFFERENT callback must not be reused (strict servers 400 the
+      // authorize request), so the reuse lookup compares against this value.
+      const flowRedirectUri = input.redirectUri ?? redirectUri ?? null;
+      const reuse = yield* decideDcrClientReuse(input, issuer, flowRedirectUri);
       if (reuse.existingSlug !== null) return reuse.existingSlug;
 
       const slug = reuse.registrationSlug;
-      const flowRedirectUri = input.redirectUri ?? redirectUri;
       // DCR registers our callback as the client's redirect_uri — fail loudly
       // if the executor has none rather than registering a localhost URL.
       if (flowRedirectUri == null) {
@@ -888,6 +929,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           integration: input.originIntegration ?? null,
         },
         originIssuer: issuer,
+        originRedirectUri: flowRedirectUri,
       });
       return slug;
     });

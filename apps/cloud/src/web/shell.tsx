@@ -9,7 +9,7 @@ import { SupportSlot } from "./components/support-slot";
 // ---------------------------------------------------------------------------
 // Cloud shell — the SHARED multiplayer shell, identical to self-host, with
 // cloud-only bits injected through its slots:
-//   - sign-out          POST cloud's WorkOS logout, then redirect home
+//   - sign-out          navigate through cloud's WorkOS logout, land home
 //   - nav items         defaults + Organization + Billing (cloud-only sections)
 //   - org menu slot     multi-org switcher + create-org dialog (cloud-only)
 //   - support slot      the "Get support" dialog button (cloud-only)
@@ -25,10 +25,17 @@ const navItems = [
   { to: "/billing", label: "Billing" },
 ];
 
-const signOut = async () => {
-  await fetch(AUTH_PATHS.logout, { method: "POST" });
+// A top-level form POST, not fetch: the logout response 302s through the
+// WorkOS logout endpoint (ending the hosted AuthKit session) before landing
+// back home. A fetch would follow that chain invisibly inside the XHR and
+// leave the page where it was; the browser navigation is the logout.
+const signOut = () => {
   trackEvent("signed_out");
-  window.location.href = "/";
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = AUTH_PATHS.logout;
+  document.body.appendChild(form);
+  form.submit();
 };
 
 export function Shell(props: { readonly content?: React.ReactNode }) {

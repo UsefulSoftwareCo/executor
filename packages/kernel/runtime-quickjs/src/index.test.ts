@@ -150,6 +150,54 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it("suspends the execution deadline while a tool dispatch is in flight", async () => {
+    const timeoutMs = 100;
+    const slowInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("slow result")),
+    };
+    const slowExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      slowExecutor.execute("return await tools.slow.wait({});", slowInvoker),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("slow result");
+  });
+
+  it("still times out continuous autonomous compute", async () => {
+    const timeoutMs = 100;
+    const timedExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      timedExecutor.execute("while (true) {}", makeTestInvoker({})),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`QuickJS execution timed out after ${timeoutMs}ms`);
+  });
+
+  it("resets the execution deadline after a tool dispatch returns", async () => {
+    const timeoutMs = 100;
+    const slowInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("done")),
+    };
+    const timedExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      timedExecutor.execute(
+        `
+        await tools.slow.wait({});
+        while (true) {}
+        `,
+        slowInvoker,
+      ),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`QuickJS execution timed out after ${timeoutMs}ms`);
+  });
+
   it.effect("invokes multiple tools in sequence", () =>
     Effect.gen(function* () {
       const invoker = makeTestInvoker({

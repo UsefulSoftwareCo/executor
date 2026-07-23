@@ -31,7 +31,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "bin": {
         "executor": "./bin/executor.ts",
       },
@@ -58,7 +58,7 @@
     },
     "apps/cloud": {
       "name": "@executor-js/cloud",
-      "version": "1.4.52",
+      "version": "1.4.53",
       "dependencies": {
         "@cloudflare/vite-plugin": "^1.31.1",
         "@effect/atom-react": "catalog:",
@@ -129,7 +129,7 @@
     },
     "apps/desktop": {
       "name": "@executor-js/desktop",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@sentry/bun": "^10.57.0",
         "@sentry/electron": "^7.13.0",
@@ -213,7 +213,7 @@
     },
     "apps/host-selfhost": {
       "name": "@executor-js/host-selfhost",
-      "version": "0.0.33",
+      "version": "0.0.34",
       "dependencies": {
         "@better-auth/api-key": "^1.6.11",
         "@effect/atom-react": "catalog:",
@@ -340,10 +340,10 @@
     },
     "e2e": {
       "name": "@executor-js/e2e",
-      "version": "0.0.31",
+      "version": "0.0.32",
       "dependencies": {
         "@executor-js/api": "workspace:*",
-        "@executor-js/emulate": "^0.13.3",
+        "@executor-js/emulate": "^0.13.6",
         "@executor-js/mcporter": "^0.11.4",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
@@ -375,7 +375,7 @@
     },
     "examples/all-plugins": {
       "name": "@executor-js/example-all-plugins",
-      "version": "0.0.52",
+      "version": "0.0.53",
       "dependencies": {
         "@executor-js/plugin-file-secrets": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -394,7 +394,7 @@
     },
     "examples/docs-sdk-quickstart": {
       "name": "@executor-js/example-docs-sdk-quickstart",
-      "version": "0.0.37",
+      "version": "0.0.38",
       "dependencies": {
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -448,7 +448,7 @@
     },
     "packages/core/api": {
       "name": "@executor-js/api",
-      "version": "1.4.54",
+      "version": "1.4.55",
       "dependencies": {
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
@@ -465,7 +465,7 @@
     },
     "packages/core/cli": {
       "name": "@executor-js/cli",
-      "version": "0.2.41",
+      "version": "0.2.42",
       "bin": {
         "executor-sdk": "./dist/index.js",
       },
@@ -486,7 +486,7 @@
     },
     "packages/core/config": {
       "name": "@executor-js/config",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "jiti": "^2.6.1",
@@ -507,7 +507,7 @@
     },
     "packages/core/execution": {
       "name": "@executor-js/execution",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -573,7 +573,7 @@
     },
     "packages/core/sdk": {
       "name": "@executor-js/sdk",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/fumadb": "workspace:*",
         "@standard-schema/spec": "^1.1.0",
@@ -626,7 +626,7 @@
     },
     "packages/core/vite-plugin": {
       "name": "@executor-js/vite-plugin",
-      "version": "0.0.51",
+      "version": "0.0.52",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "jiti": "^2.6.1",
@@ -646,7 +646,7 @@
     },
     "packages/hosts/cloudflare": {
       "name": "@executor-js/cloudflare",
-      "version": "0.0.33",
+      "version": "0.0.34",
       "dependencies": {
         "@executor-js/api": "workspace:*",
         "@executor-js/execution": "workspace:*",
@@ -686,7 +686,7 @@
     },
     "packages/kernel/core": {
       "name": "@executor-js/codemode-core",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@babel/parser": "^7.29.2",
         "@standard-schema/spec": "^1.0.0",
@@ -759,7 +759,7 @@
     },
     "packages/kernel/runtime-quickjs": {
       "name": "@executor-js/runtime-quickjs",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "quickjs-emscripten": "catalog:",
@@ -779,7 +779,7 @@
     },
     "packages/kernel/runtime-workerd-subprocess": {
       "name": "@executor-js/runtime-workerd-subprocess",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "effect": "catalog:",
@@ -794,7 +794,7 @@
     },
     "packages/plugins/apps": {
       "name": "@executor-js/plugin-apps",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "dependencies": {
         "@cloudflare/worker-bundler": "0.2.1",
         "@executor-js/api": "workspace:*",
@@ -833,7 +833,7 @@
     },
     "packages/plugins/desktop-settings": {
       "name": "@executor-js/plugin-desktop-settings",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "react": "catalog:",
@@ -846,7 +846,7 @@
     },
     "packages/plugins/encrypted-secrets": {
       "name": "@executor-js/plugin-encrypted-secrets",
-      "version": "0.0.33",
+      "version": "0.0.34",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
@@ -861,7 +861,7 @@
     },
     "packages/plugins/example": {
       "name": "@executor-js/plugin-example",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -884,7 +884,7 @@
     },
     "packages/plugins/file-secrets": {
       "name": "@executor-js/plugin-file-secrets",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -901,7 +901,7 @@
     },
     "packages/plugins/graphql": {
       "name": "@executor-js/plugin-graphql",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
@@ -940,7 +940,7 @@
     },
     "packages/plugins/keychain": {
       "name": "@executor-js/plugin-keychain",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "@napi-rs/keyring": "^1.2.0",
@@ -959,7 +959,7 @@
     },
     "packages/plugins/mcp": {
       "name": "@executor-js/plugin-mcp",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@cfworker/json-schema": "^4.1.1",
         "@effect/platform-node": "catalog:",
@@ -999,7 +999,7 @@
     },
     "packages/plugins/onepassword": {
       "name": "@executor-js/plugin-onepassword",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@1password/op-js": "^0.1.13",
         "@1password/sdk": "^0.4.1-beta.1",
@@ -1033,7 +1033,7 @@
     },
     "packages/plugins/openapi": {
       "name": "@executor-js/plugin-openapi",
-      "version": "1.5.34",
+      "version": "1.5.35",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
@@ -1074,7 +1074,7 @@
     },
     "packages/plugins/provider-service-split": {
       "name": "@executor-js/plugin-provider-service-split",
-      "version": "0.0.5",
+      "version": "0.0.6",
       "dependencies": {
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -1091,7 +1091,7 @@
     },
     "packages/plugins/toolkits": {
       "name": "@executor-js/plugin-toolkits",
-      "version": "1.5.26",
+      "version": "1.5.27",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -1160,7 +1160,7 @@
     },
     "packages/react": {
       "name": "@executor-js/react",
-      "version": "1.4.54",
+      "version": "1.4.55",
       "dependencies": {
         "@base-ui/react": "^1.3.0",
         "@effect/atom-react": "catalog:",
@@ -1741,7 +1741,7 @@
 
     "@executor-js/e2e": ["@executor-js/e2e@workspace:e2e"],
 
-    "@executor-js/emulate": ["@executor-js/emulate@0.13.3", "", { "dependencies": { "@aws-sdk/client-s3": "^3.1031.0", "@aws-sdk/client-sqs": "^3.1075.0", "@azure/msal-node": "^5.3.0", "@clerk/backend": "^3.8.4", "@octokit/rest": "^22.0.1", "@okta/okta-auth-js": "^8.0.1", "@slack/web-api": "^7.16.0", "@vercel/sdk": "^1.28.4", "@workos-inc/node": "^8.13.0", "atlas-api-client": "^0.3.0", "autumn-js": "^1.2.8", "commander": "^14", "googleapis": "^173.0.0", "graphql": "^16.9.0", "graphql-request": "^7.4.0", "openid-client": "^6.8.4", "picocolors": "^1.1.1", "resend": "^6.16.0", "spotify-web-api-node": "^5.0.2", "stripe": "^22.3.0", "twitter-api-v2": "^1.29.0", "yaml": "^2" }, "bin": { "emulate": "dist/index.js" } }, "sha512-2d2Ww1FVLY4q66ZHxzanKVVOA9oJSjk+pzUJqrw6AWa/34P+HxODXor1hqWmxEER2WNs3fcrJT2c0JGDyM9kaQ=="],
+    "@executor-js/emulate": ["@executor-js/emulate@0.13.6", "", { "dependencies": { "@aws-sdk/client-s3": "^3.1031.0", "@aws-sdk/client-sqs": "^3.1075.0", "@azure/msal-node": "^5.3.0", "@clerk/backend": "^3.8.4", "@octokit/rest": "^22.0.1", "@okta/okta-auth-js": "^8.0.1", "@slack/web-api": "^7.16.0", "@vercel/sdk": "^1.28.4", "@workos-inc/node": "^8.13.0", "atlas-api-client": "^0.3.0", "autumn-js": "^1.2.8", "commander": "^14", "googleapis": "^173.0.0", "graphql": "^16.9.0", "graphql-request": "^7.4.0", "openid-client": "^6.8.4", "picocolors": "^1.1.1", "resend": "^6.16.0", "spotify-web-api-node": "^5.0.2", "stripe": "^22.3.0", "twitter-api-v2": "^1.29.0", "yaml": "^2" }, "bin": { "emulate": "dist/index.js" } }, "sha512-FwR2RvO5DnwYgGO2w3JKPCpUx8o+AzSPJeei/oYMIrb4PYg2bQceucxiw52698t9SDEDwAOHkdC/Vv1Tv1+MJQ=="],
 
     "@executor-js/example-all-plugins": ["@executor-js/example-all-plugins@workspace:examples/all-plugins"],
 

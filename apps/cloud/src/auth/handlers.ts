@@ -305,15 +305,33 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         }),
       )
       .handleRaw("logout", () =>
-        Effect.succeed(
+        Effect.gen(function* () {
+          const workos = yield* WorkOSClient;
+          const session = yield* SessionContext;
+
+          // WorkOS's documented sign-out: send the browser through the WorkOS
+          // logout endpoint, which ends the AuthKit session upstream and then
+          // redirects to the registered sign-out URL. Without this hop, the
+          // hosted session survives and the next "Sign in" silently
+          // re-authenticates (issue #1445). Fail-open when the cookie won't
+          // unseal: local sign-out must still complete, so fall back to "/".
+          const origin = env.VITE_PUBLIC_SITE_URL ?? "";
+          const logoutUrl = yield* workos.logoutUrl(
+            session.sealedSession,
+            origin ? `${origin}/` : undefined,
+          );
+
           // The auth-hint travels with the session: leaving it behind would
           // make the next page load optimistically paint the app shell for a
           // signed-out browser.
-          deleteResponseCookie(
-            deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+          return deleteResponseCookie(
+            deleteResponseCookie(
+              HttpServerResponse.redirect(logoutUrl ?? "/", { status: 302 }),
+              "wos-session",
+            ),
             AUTH_HINT_COOKIE,
-          ),
-        ),
+          );
+        }),
       )
       .handle("organizations", () =>
         Effect.gen(function* () {

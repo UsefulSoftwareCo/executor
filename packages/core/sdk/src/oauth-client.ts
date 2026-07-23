@@ -82,6 +82,11 @@ export type OAuthClientOrigin =
 export type CreateOAuthClientInput = OAuthClient & {
   readonly origin?: OAuthClientOrigin;
   readonly originIssuer?: string | null;
+  /** The redirect URI a DCR registration sent as the client's `redirect_uris`
+   *  entry. Persisted so reuse can detect a changed callback (strict servers
+   *  reject an authorize request whose redirect_uri differs from the
+   *  registration). Ignored for manual clients. */
+  readonly originRedirectUri?: string | null;
 };
 
 /** Metadata-only projection of a registered client for listing in the UI.

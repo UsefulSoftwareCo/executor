@@ -66,6 +66,11 @@ export interface OAuthTestServerOptions {
    *  `redirect_uris` entry is approved. Mirrors authorization servers (e.g.
    *  Vercel) that only accept loopback redirect URIs for anonymous DCR. */
   readonly approveRedirectUri?: (uri: string) => boolean;
+  /** Gate Dynamic Client Registration on the requested `client_name`. When set,
+   *  `/register` returns `400 invalid_client_metadata` unless the requested
+   *  name is approved. Mirrors authorization servers (e.g. Mercury) that
+   *  reject third-party client names containing their own brand. */
+  readonly approveClientName?: (name: string) => boolean;
 }
 
 export interface OAuthTestServerShape {
@@ -516,6 +521,14 @@ export const serveOAuthTestServer = (
           const json = parseJsonObject(body);
           if (!json) {
             return oauthError(400, "invalid_client_metadata", "Expected JSON body");
+          }
+          const requestedClientName = typeof json.client_name === "string" ? json.client_name : "";
+          if (options.approveClientName && !options.approveClientName(requestedClientName)) {
+            return oauthError(
+              400,
+              "invalid_client_metadata",
+              "The requested client_name is not allowed by this authorization server.",
+            );
           }
           const requestedMethod =
             typeof json.token_endpoint_auth_method === "string"

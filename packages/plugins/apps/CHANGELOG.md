@@ -1,5 +1,15 @@
 # @executor-js/plugin-apps
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/react@1.4.55
+  - @executor-js/runtime-workerd-subprocess@0.0.7
+
 ## 0.1.5
 
 ### Patch Changes
