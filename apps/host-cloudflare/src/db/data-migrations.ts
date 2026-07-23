@@ -108,7 +108,8 @@ const rebuildLegacyConnectionTable = async (db: D1Database): Promise<void> => {
   }
 };
 
-export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Promise<void> => {
+export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Promise<boolean> => {
+  let schemaChanged = false;
   const integrationColumns = await tableColumns(db, "integration");
   if (integrationColumns.has("config")) {
     await db
@@ -122,14 +123,17 @@ export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Pro
   }
 
   const connectionColumns = await tableColumns(db, "connection");
-  if (connectionColumns.size === 0) return;
+  if (connectionColumns.size === 0) return schemaChanged;
   if (!connectionColumns.has("item_ids")) {
     await db.prepare(`ALTER TABLE connection ADD COLUMN item_ids json NOT NULL DEFAULT '{}'`).run();
+    schemaChanged = true;
   }
   const updatedConnectionColumns = await tableColumns(db, "connection");
   if (updatedConnectionColumns.has("item_id")) {
     await rebuildLegacyConnectionTable(db);
+    schemaChanged = true;
   }
+  return schemaChanged;
 };
 
 const r2ObjectName = (tenant: string, pluginId: string, key: string): string =>
@@ -248,14 +252,24 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
   openApiNdjsonOutputDataMigration,
 ];
 
-export const runCloudflareDataMigrations = (
+export const prepareCloudflareD1Data = (
   db: D1Database,
   bucket: R2Bucket | undefined,
-): Promise<readonly string[]> =>
+): Promise<{
+  readonly appliedMigrations: readonly string[];
+  readonly schemaChanged: boolean;
+}> =>
   Effect.runPromise(
     Effect.promise(() => ensureCloudflareD1SchemaCompatibility(db)).pipe(
-      Effect.flatMap(() =>
-        runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)),
+      Effect.flatMap((schemaChanged) =>
+        runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)).pipe(
+          Effect.map((appliedMigrations) => ({ appliedMigrations, schemaChanged })),
+        ),
       ),
     ),
   );
+
+export const runCloudflareDataMigrations = async (
+  db: D1Database,
+  bucket: R2Bucket | undefined,
+): Promise<readonly string[]> => (await prepareCloudflareD1Data(db, bucket)).appliedMigrations;
