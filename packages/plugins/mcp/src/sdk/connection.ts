@@ -123,6 +123,17 @@ const abortError = (signal: AbortSignal): unknown => {
   return error;
 };
 
+const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    if (signal.aborted) {
+      resume(Effect.void);
+      return;
+    }
+    const onAbort = () => resume(Effect.void);
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): FetchLike => {
@@ -142,7 +153,11 @@ const fetchFromHttpClientLayer = (
       const body =
         response.status === 204 || response.status === 205 || response.status === 304
           ? null
-          : Stream.toReadableStream(response.stream);
+          : Stream.toReadableStream(
+              init?.signal
+                ? Stream.interruptWhen(response.stream, awaitAbort(init.signal))
+                : response.stream,
+            );
       return new Response(body, {
         status: response.status,
         headers: responseHeaders,
@@ -156,7 +171,10 @@ const fetchFromHttpClientLayer = (
     // tagged error from the fetch adapter (a true runtime edge: the SDK
     // consumes promise rejections) so it reaches the invoke/connect catch
     // sites verbatim.
-    const promise = Effect.runPromise(effect).then((response) => {
+    const signal = init?.signal;
+    // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
+    if (signal?.aborted) return Promise.reject(abortError(signal));
+    const promise = Effect.runPromise(effect, { signal: signal ?? undefined }).then((response) => {
       if (response.status === 403) {
         const challenge = response.headers.get("www-authenticate");
         if (
@@ -172,14 +190,10 @@ const fetchFromHttpClientLayer = (
       }
       return response;
     });
-    if (!init?.signal) return promise;
-    // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
-    if (init.signal.aborted) return Promise.reject(abortError(init.signal));
+    if (!signal) return promise;
     const aborted = new Promise<never>((_, reject) => {
       // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter races the Effect request against AbortSignal
-      init.signal?.addEventListener("abort", () => reject(abortError(init.signal!)), {
-        once: true,
-      });
+      signal.addEventListener("abort", () => reject(abortError(signal)), { once: true });
     });
     return Promise.race([promise, aborted]);
   };
