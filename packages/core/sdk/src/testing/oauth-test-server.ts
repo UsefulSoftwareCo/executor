@@ -61,6 +61,10 @@ export interface OAuthTestServerOptions {
   readonly invalidRefreshTokenErrorCode?: string;
   readonly idTokenClaims?: Readonly<Record<string, unknown>>;
   readonly refreshIdTokenClaims?: Readonly<Record<string, unknown>>;
+  /** Override the RFC 8414 `issuer` advertised by authorization-server metadata. */
+  readonly advertisedIssuer?: string;
+  /** Override the RFC 9728 `resource` advertised by protected-resource metadata. */
+  readonly advertisedResource?: string;
   /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
    *  `/register` returns `400 invalid_redirect_uri` unless every requested
    *  `redirect_uris` entry is approved. Mirrors authorization servers (e.g.
@@ -487,7 +491,7 @@ export const serveOAuthTestServer = (
 
         if (requestUrl.pathname.startsWith("/.well-known/oauth-protected-resource")) {
           const suffix = requestUrl.pathname.slice("/.well-known/oauth-protected-resource".length);
-          const resource = `${currentIssuerUrl}${suffix}`;
+          const resource = options.advertisedResource ?? `${currentIssuerUrl}${suffix}`;
           return jsonResponse(200, {
             resource,
             authorization_servers: [currentIssuerUrl],
@@ -501,7 +505,7 @@ export const serveOAuthTestServer = (
           requestUrl.pathname === "/.well-known/openid-configuration"
         ) {
           return jsonResponse(200, {
-            issuer: currentIssuerUrl,
+            issuer: options.advertisedIssuer ?? currentIssuerUrl,
             authorization_endpoint: `${currentIssuerUrl}/authorize`,
             token_endpoint: `${currentIssuerUrl}/token`,
             registration_endpoint: `${currentIssuerUrl}/register`,

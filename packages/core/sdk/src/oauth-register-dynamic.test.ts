@@ -8,7 +8,7 @@ import {
   OAuthClientSlug,
   ToolName,
 } from "./ids";
-import { OAuthRegisterDynamicError } from "./oauth-client";
+import { OAuthProbeError, OAuthRegisterDynamicError } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
@@ -58,6 +58,73 @@ const oauthPlugin = definePlugin(() => ({
 const plugins = [memoryCredentialsPlugin(), oauthPlugin] as const;
 
 describe("oauth.registerDynamicClient", () => {
+  it.effect("probe rejects authorization-server metadata with a mismatched issuer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const advertisedIssuer = "https://issuer.example/mismatched";
+        const server = yield* serveOAuthTestServer({ advertisedIssuer });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+
+        const error = yield* Effect.flip(executor.oauth.probe({ url: server.mcpResourceUrl }));
+        expect(error).toBeInstanceOf(OAuthProbeError);
+        if (!Predicate.isTagged(error, "OAuthProbeError")) return;
+        // oxlint-disable-next-line executor/no-unknown-error-message -- test: the tag guard narrows to the public OAuthProbeError contract
+        const message = error.message;
+        expect(message).toContain(server.issuerUrl);
+        expect(message).toContain(advertisedIssuer);
+      }),
+    ),
+  );
+
+  it.effect("probe rejects protected-resource metadata for a different resource", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const advertisedResource = "https://resource.example/mismatched";
+        const server = yield* serveOAuthTestServer({ advertisedResource });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+
+        const error = yield* Effect.flip(executor.oauth.probe({ url: server.mcpResourceUrl }));
+        expect(error).toBeInstanceOf(OAuthProbeError);
+        if (!Predicate.isTagged(error, "OAuthProbeError")) return;
+        // oxlint-disable-next-line executor/no-unknown-error-message -- test: the tag guard narrows to the public OAuthProbeError contract
+        const message = error.message;
+        expect(message).toContain(server.mcpResourceUrl);
+        expect(message).toContain(advertisedResource);
+      }),
+    ),
+  );
+
+  it.effect("canonicalizes the RFC 8707 resource before persisting a DCR client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const rawResource = `${server.issuerUrl.replace("http://", "HTTP://")}/mcp/?tenant=Acme#fragment`;
+        const expectedResource = `${server.issuerUrl}/mcp/?tenant=Acme`;
+
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: server.issuerUrl,
+          registrationEndpoint: server.registrationEndpoint,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          resource: rawResource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: ["none"],
+          clientName: "Executor",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+
+        const clients = yield* executor.oauth.listClients();
+        const minted = clients.find((client) => String(client.slug) === String(slug));
+        expect(minted?.resource).toBe(expectedResource);
+      }),
+    ),
+  );
+
   it.effect("DCR mints + persists a public (no-secret) client that lists + connects", () =>
     Effect.scoped(
       Effect.gen(function* () {
