@@ -34,6 +34,15 @@
       "bucket_name": "executor-blobs",
     },
   ],
+  // Dynamic Worker Loader binding: when present, sandboxed code runs in real
+  // workerd isolates with `globalOutbound: null` (platform-enforced zero egress)
+  // via @executor-js/runtime-dynamic-worker; without it the host falls back to
+  // the QuickJS-wasm substrate. Remove this block to stay on QuickJS.
+  "worker_loaders": [
+    {
+      "binding": "LOADER",
+    },
+  ],
   // The MCP session Durable Object: one addressable isolate per MCP session (the
   // DO id IS the session id) so a session survives across the Worker's stateless
   // isolates — without it, `tools/list` after `initialize` can land on a fresh
