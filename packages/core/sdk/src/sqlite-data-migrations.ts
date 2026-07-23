@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// Stamped data-migration ledger for the libSQL-backed apps (local boot,
-// selfhost boot). Cloud runs schema + data migrations through its drizzle
-// chain out-of-band; the local apps have no operator, so their migrations
-// run at boot — and before this ledger existed, each one re-scanned its
-// tables on every startup to decide "did I already run?" by data shape.
+// Stamped data-migration ledger for the SQLite-backed hosts (local,
+// selfhost, Cloudflare D1). PostgreSQL cloud runs schema + data migrations
+// through its drizzle chain out-of-band; the SQLite hosts run them at boot —
+// and before this ledger existed, each one re-scanned its tables on every
+// startup to decide "did I already run?" by data shape.
 // That accumulates (N migrations = N full-table scans per boot, forever)
 // and makes idempotence a per-migration proof obligation.
 //
@@ -114,32 +114,17 @@ export const runSqliteDataMigrations = (
       yield* migration.run(client);
       // Multiple hosts can boot against the same database and observe the same
       // migration as pending. Their idempotent bodies may both finish, but only
-      // one ledger insert can win. Treat the losing insert as success only after
-      // verifying that another runner committed this exact stamp.
+      // one ledger insert can win. Ignore only a conflict on this exact stamp;
+      // every other ledger failure still fails the boot.
       yield* execute(
         client,
         {
-          sql: `INSERT INTO ${LEDGER_TABLE} (name, time_completed) VALUES (?, ?)`,
+          sql: `INSERT INTO ${LEDGER_TABLE} (name, time_completed)
+            VALUES (?, ?)
+            ON CONFLICT(name) DO NOTHING`,
           args: [migration.name, Date.now()],
         },
         migration.name,
-      ).pipe(
-        Effect.catch((stampError) =>
-          execute(
-            client,
-            {
-              sql: `SELECT name FROM ${LEDGER_TABLE} WHERE name = ?`,
-              args: [migration.name],
-            },
-            migration.name,
-          ).pipe(
-            Effect.flatMap((result) =>
-              result.rows.some((row) => row.name === migration.name)
-                ? Effect.void
-                : Effect.fail(stampError),
-            ),
-          ),
-        ),
       );
       applied.push(migration.name);
     }

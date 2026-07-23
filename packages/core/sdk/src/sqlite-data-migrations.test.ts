@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { createClient } from "@libsql/client";
 import { Effect, Predicate } from "effect";
 
 import {
@@ -78,57 +79,42 @@ describe("runSqliteDataMigrations", () => {
 
   it.effect("converges when concurrent runners stamp the same migration", () =>
     Effect.gen(function* () {
-      const stamps = new Set<string>();
-      let initialReads = 0;
-      let releaseInitialReads: (() => void) | undefined;
-      const initialReadsComplete = new Promise<void>((resolve) => {
-        releaseInitialReads = resolve;
+      const client = createClient({ url: ":memory:" });
+      let bodiesStarted = 0;
+      let releaseBodies: (() => void) | undefined;
+      // Hold both bodies until both runners have read the ledger as empty.
+      const bothBodiesStarted = new Promise<void>((resolve) => {
+        releaseBodies = resolve;
       });
-      const client: SqliteDataMigrationClient = {
-        execute: (stmt) => {
-          const sql = typeof stmt === "string" ? stmt : stmt.sql;
-          if (sql === "SELECT name FROM data_migration") {
-            const rows = [...stamps].map((name) => ({ name }));
-            initialReads++;
-            if (initialReads === 2) releaseInitialReads?.();
-            return initialReadsComplete.then(() => ({ rows }));
-          }
-          if (typeof stmt === "object" && sql.startsWith("INSERT INTO data_migration")) {
-            const name = String(stmt.args[0]);
-            if (stamps.has(name)) {
-              // oxlint-disable-next-line executor/no-promise-reject -- simulates a storage-driver rejection at the adapter boundary under test
-              return Promise.reject("UNIQUE constraint failed: data_migration.name");
-            }
-            stamps.add(name);
-            return Promise.resolve({ rows: [] });
-          }
-          if (
-            typeof stmt === "object" &&
-            sql === "SELECT name FROM data_migration WHERE name = ?"
-          ) {
-            const name = String(stmt.args[0]);
-            return Promise.resolve({ rows: stamps.has(name) ? [{ name }] : [] });
-          }
-          return Promise.resolve({ rows: [] });
-        },
+      const migration: SqliteDataMigration = {
+        name: "2026-06-05-concurrent",
+        run: () =>
+          Effect.promise(() => {
+            bodiesStarted++;
+            if (bodiesStarted === 2) releaseBodies?.();
+            return bothBodiesStarted;
+          }),
       };
-      const migration = migrationSpy("2026-06-05-concurrent");
 
       const results = yield* Effect.all(
         [
-          runSqliteDataMigrations(client, [migration.migration]),
-          runSqliteDataMigrations(client, [migration.migration]),
+          runSqliteDataMigrations(client, [migration]),
+          runSqliteDataMigrations(client, [migration]),
         ],
         { concurrency: "unbounded" },
       );
 
       expect(results).toEqual([["2026-06-05-concurrent"], ["2026-06-05-concurrent"]]);
-      expect(migration.calls.length).toBe(2);
-      expect(stamps).toEqual(new Set(["2026-06-05-concurrent"]));
+      expect(bodiesStarted).toBe(2);
+      const stamps = yield* Effect.promise(() =>
+        client.execute("SELECT name FROM data_migration ORDER BY name"),
+      );
+      expect(stamps.rows.map((row) => row.name)).toEqual(["2026-06-05-concurrent"]);
+      client.close();
     }),
   );
 
-  it.effect("surfaces a stamp failure when no concurrent runner committed it", () =>
+  it.effect("surfaces non-conflict stamp failures", () =>
     Effect.gen(function* () {
       const client: SqliteDataMigrationClient = {
         execute: (stmt) => {

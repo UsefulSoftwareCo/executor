@@ -1,5 +1,5 @@
 ---
-"@executor-js/sdk": patch
+"executor": patch
 ---
 
-Allow concurrent data-migration runners to converge when another runner commits the same ledger stamp first.
+Prevent concurrent SQLite data-migration runners from failing when another runner commits the same ledger stamp first.
