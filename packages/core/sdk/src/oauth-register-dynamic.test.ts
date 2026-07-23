@@ -622,6 +622,88 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  // Regression: Mercury's authorization server vets `client_name` and rejects
+  // any value containing its own brand with `invalid_client_metadata`, which
+  // the old auto-generated "Executor for Mercury MCP" always tripped. The UI
+  // flow now always registers under the bare product name, which brand-vetting
+  // servers accept.
+  it.effect("registers under the bare product name against a brand-vetting server", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          // Mirror Mercury: reject any client_name containing the brand.
+          approveClientName: (name) => !name.includes("Acme"),
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Executor",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(slug).length).toBeGreaterThan(0);
+
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(1);
+        expect(registers[0]!.body).toContain('"client_name":"Executor"');
+      }),
+    ),
+  );
+
+  // A server that rejects even the bare product name surfaces the RFC error
+  // untouched: no retry loop, no masking of the server-authored description.
+  it.effect("surfaces invalid_client_metadata when the server rejects the client_name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          approveClientName: () => false,
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const error = yield* Effect.flip(
+          executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: CLIENT,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Executor",
+            redirectUri: FLOW_REDIRECT_URI,
+            originIntegration: INTEG,
+          }),
+        );
+        expect(Predicate.isTagged("OAuthRegisterDynamicError")(error)).toBe(true);
+        const registerError = error as OAuthRegisterDynamicError;
+        expect(registerError.message).toContain(
+          "Dynamic Client Registration failed: invalid_client_metadata",
+        );
+
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(1);
+      }),
+    ),
+  );
+
   // Regression: issue #770. Vercel (and other RFC 8252-strict servers) only
   // approve loopback redirect URIs for anonymous DCR, so a hosted/tailnet/LAN
   // origin trips `invalid_redirect_uri`. The failure must explain the loopback
