@@ -16,6 +16,7 @@ test("originOf prefers Origin, then x-forwarded-host, then host", () => {
 test("the help message names the URL to set", () => {
   const msg = invalidOriginHelp("https://app.example.com", "http://localhost:4788");
   expect(msg).toContain("EXECUTOR_WEB_BASE_URL");
+  expect(msg).toContain("EXECUTOR_TRUSTED_ORIGINS");
   expect(msg).toContain("https://app.example.com");
   expect(msg).toContain("http://localhost:4788");
 });
@@ -38,6 +39,7 @@ test("rewriteInvalidOrigin replaces a 403 'Invalid origin' with the setup messag
   const body = (await rewritten!.json()) as { code: string; message: string };
   expect(body.code).toBe("INVALID_ORIGIN");
   expect(body.message).toContain("EXECUTOR_WEB_BASE_URL");
+  expect(body.message).toContain("EXECUTOR_TRUSTED_ORIGINS");
   expect(body.message).toContain("https://app.example.com");
 });
 

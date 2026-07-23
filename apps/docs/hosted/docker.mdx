@@ -60,6 +60,7 @@ the container defaults.
 | `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                              |
 | `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                           |
 | `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                           |
+| `EXECUTOR_TRUSTED_ORIGINS`          | unset                           | Comma-separated browser aliases allowed to authenticate without changing the public URL.        |
 | `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                     |
 | `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                             |
 | `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`    | unset                           | Pre-create the admin headlessly (with the password below); skips browser first-run.             |
@@ -87,6 +88,22 @@ docker run -d \
 For a headless deploy (CI or infra-as-code), set `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`
 and `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` to create the admin without the browser
 setup screen.
+
+### Additional browser aliases
+
+Keep `EXECUTOR_WEB_BASE_URL` pinned to the canonical public HTTPS origin used for
+OAuth callbacks and generated links. If the same instance is intentionally
+available through additional browser addresses, allow those exact origins
+separately:
+
+```bash
+-e EXECUTOR_WEB_BASE_URL=https://executor.example.com \
+-e EXECUTOR_TRUSTED_ORIGINS=http://executor.home.arpa:4788,http://192.0.2.10:4788
+```
+
+Only cookie-authenticated browser requests use this allowlist. OAuth callbacks,
+MCP metadata, approval links, and other absolute URLs remain pinned to
+`EXECUTOR_WEB_BASE_URL`. Origins are never inferred from request headers.
 
 ## Connect an agent
 

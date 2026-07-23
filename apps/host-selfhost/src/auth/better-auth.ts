@@ -25,6 +25,8 @@ interface SignupGate {
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
 
+let warnedInsecureTrustedOrigin = false;
+
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
 // tables ("one connection, two schema regions").
@@ -63,6 +65,15 @@ const SIGNUP_PATH = "/sign-up/email";
 
 const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?: SignupGate) => {
   const config = loadConfig();
+  const hasInsecureTrustedOrigin = config.trustedOrigins.some(
+    (origin) => new URL(origin).protocol === "http:",
+  );
+  if (hasInsecureTrustedOrigin && !warnedInsecureTrustedOrigin) {
+    warnedInsecureTrustedOrigin = true;
+    console.warn(
+      "[executor] HTTP trusted origins require session cookies without the Secure attribute. Use HTTPS-only origins to keep session cookies transport-secure.",
+    );
+  }
   // Always resolved (generated + persisted when no env is set); this guards only
   // an explicitly-set env secret that is too weak.
   const secret = config.authSecret;
@@ -88,16 +99,17 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       type: "sqlite" as const,
     },
     secret,
-    // The browser Origin must match this exactly; CLI/MCP bearer requests carry
-    // no Origin and are unaffected. `config.webBaseUrl` resolves from an explicit
-    // EXECUTOR_WEB_BASE_URL, else a platform-injected origin (Railway/Render/Fly/
-    // …), else localhost — so a PaaS deploy is zero-config and any other host
-    // sets the one variable (a loud warning fires on the localhost fallback).
-    // See config.ts. We deliberately do NOT derive this from the request `Host`:
-    // matching the ecosystem (Windmill `BASE_URL`, n8n `WEBHOOK_URL`), a pinned
-    // origin keeps host-header injection out of OAuth redirects and links.
+    // The canonical browser Origin is config.webBaseUrl; explicitly configured
+    // aliases may also send cookie-authenticated requests. CLI/MCP bearer
+    // requests carry no Origin and are unaffected. We deliberately do NOT derive
+    // either value from the request `Host`: matching the ecosystem (Windmill
+    // `BASE_URL`, n8n `WEBHOOK_URL`), a pinned origin keeps host-header injection
+    // out of OAuth redirects and links. Additional trusted origins affect only
+    // Better Auth's request validation; generated links and OAuth callbacks stay
+    // pinned to config.webBaseUrl.
     baseURL: config.webBaseUrl,
-    trustedOrigins: [config.webBaseUrl],
+    trustedOrigins: [...config.trustedOrigins],
+    advanced: { useSecureCookies: !hasInsecureTrustedOrigin },
     emailAndPassword: { enabled: true },
     // `apiKey` issues long-lived personal keys (the API-keys page). With
     // `enableSessionForAPIKeys`, presenting a key resolves to its owner's
