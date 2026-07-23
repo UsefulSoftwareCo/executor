@@ -118,6 +118,7 @@ export {
   HealthCheckCandidate,
   HealthCheckCandidateParameter,
   classifyHttpStatus,
+  classifyProbeResponse,
   extractIdentity,
   compareHealthCheckCandidates,
   candidateIdentityTier,

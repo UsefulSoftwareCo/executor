@@ -60,6 +60,35 @@ import {
 
 const OWNERS: readonly Owner[] = ["org", "user"];
 
+/** Render a health-check detail with any bare https URL as a clickable link.
+ *  Exists for the misconfigured verdict, whose detail is the provider's own
+ *  remediation text (Google's includes the console URL that enables the
+ *  disabled API); the rest of the string stays plain text. */
+function DetailWithLinks(props: { readonly text: string }) {
+  const parts = props.text.split(/(https:\/\/[^\s,;)]+)/g);
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.startsWith("https://") ? (
+          <a
+            // Stable for a given detail string: parts are positional.
+            // oxlint-disable-next-line react/no-array-index-key
+            key={index}
+            href={part}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            {part}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 function AccountRow(props: {
   readonly connection: Connection;
   /** The integration declares scopes this connection was not granted — it must
@@ -95,6 +124,7 @@ function AccountRow(props: {
   const displayLabel = identity ?? String(connection.name);
 
   const expired = status === "expired";
+  const misconfigured = status === "misconfigured";
   const missingOAuthScopes = connection.missingOAuthScopes ?? [];
 
   const handleCheck = async () => {
@@ -113,6 +143,13 @@ function AccountRow(props: {
       );
     } else if (exit.value.status === "expired") {
       toast.error("Connection expired, reconnect to restore access");
+    } else if (exit.value.status === "misconfigured") {
+      // NOT a reconnect prompt: the credential is fine; the upstream API is
+      // disabled where the OAuth client lives. The detail carries the
+      // provider's own instruction (with a console link for Google).
+      toast.warning(
+        exit.value.detail ?? "An upstream API is disabled for this connection's OAuth client",
+      );
     } else if (exit.value.status === "degraded") {
       toast.warning(exit.value.detail ?? "Connection check returned an error");
     } else {
@@ -135,6 +172,14 @@ function AccountRow(props: {
               Expired
             </Badge>
           ) : null}
+          {misconfigured ? (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-amber-600/40 text-amber-600 dark:text-amber-500"
+            >
+              API disabled
+            </Badge>
+          ) : null}
           {needsReconsent ? (
             <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
               Reconnect to grant access
@@ -145,6 +190,15 @@ function AccountRow(props: {
           <CardStackEntryDescription className="mt-1 text-xs">
             {connection.description}
           </CardStackEntryDescription>
+        ) : null}
+        {misconfigured && probe?.detail ? (
+          // Not CardStackEntryDescription: that truncates to one line, and this
+          // text IS the remediation (the enable-API console link must stay
+          // visible in full). Wrap instead; break anywhere so the long URL
+          // cannot overflow the row.
+          <p className="mt-1 whitespace-normal text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            <DetailWithLinks text={probe.detail} />
+          </p>
         ) : null}
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">

@@ -6,19 +6,26 @@
 
 import type { HealthStatus } from "@executor-js/sdk/shared";
 
-/** State form: badge text, indicator tooltips, "what is the current state". */
+/** State form: badge text, indicator tooltips, "what is the current state".
+ *  `misconfigured` reads "API disabled": the one concrete cause it detects
+ *  today (an upstream API not enabled in the OAuth client's project), named
+ *  plainly so the user looks at the provider console, not the credential. */
 export const HEALTH_STATUS_LABEL: Record<HealthStatus, string> = {
   healthy: "Healthy",
   expired: "Expired",
+  misconfigured: "API disabled",
   degraded: "Degraded",
   unknown: "Unchecked",
 };
 
 /** Text tone per status, for verdict lines and previews. Same per-status color
- *  decision as the indicator dots below; change them together. */
+ *  decision as the indicator dots below; change them together. `misconfigured`
+ *  shares degraded's amber: it needs attention, but the credential is fine, so
+ *  it must not carry expired's destructive red. */
 export const HEALTH_TEXT_CLASS: Record<HealthStatus, string> = {
   healthy: "text-emerald-600 dark:text-emerald-400",
   expired: "text-destructive",
+  misconfigured: "text-amber-600 dark:text-amber-500",
   degraded: "text-amber-600 dark:text-amber-500",
   unknown: "text-muted-foreground",
 };
@@ -32,22 +39,27 @@ export const HEALTH_INDICATOR_COLOR: Record<
 > = {
   healthy: { dot: "bg-emerald-500", ring: "ring-emerald-500/70" },
   expired: { dot: "bg-destructive", ring: "ring-destructive/70" },
+  misconfigured: { dot: "bg-amber-500", ring: "ring-amber-500/70" },
   degraded: { dot: "bg-amber-500", ring: "ring-amber-500/70" },
   unknown: { dot: "bg-muted-foreground/40", ring: "ring-muted-foreground/40" },
 };
 
 /** Severity for worst-of aggregation. `unknown` is excluded on purpose: a
  *  never-probed connection carries no signal, so it must not drag a group
- *  verdict in either direction. */
+ *  verdict in either direction. `misconfigured` outranks `degraded` (a named
+ *  configuration break beats a generic error) but not `expired` (a dead
+ *  credential blocks everything). */
 const HEALTH_SEVERITY: Record<Exclude<HealthStatus, "unknown">, number> = {
   healthy: 1,
   degraded: 2,
-  expired: 3,
+  misconfigured: 3,
+  expired: 4,
 };
 
-/** Collapse many connection statuses to the group's worst: expired > degraded
- *  > healthy. `unknown` entries are ignored; when nothing else remains (empty
- *  input or all unknown) there is no verdict and the caller renders nothing. */
+/** Collapse many connection statuses to the group's worst: expired >
+ *  misconfigured > degraded > healthy. `unknown` entries are ignored; when
+ *  nothing else remains (empty input or all unknown) there is no verdict and
+ *  the caller renders nothing. */
 export const worstHealthStatus = (statuses: readonly HealthStatus[]): HealthStatus | null => {
   let worst: Exclude<HealthStatus, "unknown"> | null = null;
   for (const status of statuses) {
@@ -64,6 +76,7 @@ export const HEALTH_BADGE_VARIANT: Record<
 > = {
   healthy: "secondary",
   expired: "destructive",
+  misconfigured: "outline",
   degraded: "outline",
   unknown: "outline",
 };

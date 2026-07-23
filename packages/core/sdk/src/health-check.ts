@@ -18,14 +18,24 @@
 import { Schema } from "effect";
 
 // ---------------------------------------------------------------------------
-// Status: the four states a connection can be in. `expired` is the one this
+// Status: the five states a connection can be in. `expired` is the one this
 // whole feature exists for (Google's 7-day dev-token revocation): the credential
-// authenticated fine yesterday and now returns 401/403. `degraded` covers any
-// other non-2xx (upstream 5xx, a 404 on a mis-picked operation); `unknown` is
-// "never checked / no health check configured".
+// authenticated fine yesterday and now returns 401/403. `misconfigured` is the
+// 403 that is NOT a credential problem: the token authenticated, but the
+// upstream rejects on configuration (a Google API not enabled in the OAuth
+// client's GCP project): the fix is in the provider console, so telling the
+// user to reconnect would mislead. `degraded` covers any other non-2xx
+// (upstream 5xx, a 404 on a mis-picked operation); `unknown` is "never checked
+// / no health check configured".
 // ---------------------------------------------------------------------------
 
-export const HealthStatus = Schema.Literals(["healthy", "expired", "degraded", "unknown"]);
+export const HealthStatus = Schema.Literals([
+  "healthy",
+  "expired",
+  "misconfigured",
+  "degraded",
+  "unknown",
+]);
 export type HealthStatus = typeof HealthStatus.Type;
 
 // ---------------------------------------------------------------------------
@@ -139,11 +149,57 @@ export type HealthCheckCandidate = typeof HealthCheckCandidate.Type;
 // ---------------------------------------------------------------------------
 
 /** Map an HTTP status to a health state: 2xx healthy, 401/403 expired (the auth
- *  wall), everything else degraded. */
+ *  wall), everything else degraded. Status-only fallback: when the response
+ *  BODY is available, use `classifyProbeResponse` instead, which tells a
+ *  credential 403 apart from a configuration 403. */
 export const classifyHttpStatus = (status: number): HealthStatus => {
   if (status >= 200 && status < 300) return "healthy";
   if (status === 401 || status === 403) return "expired";
   return "degraded";
+};
+
+// Error `reason` / `status` markers that make a 403 a CONFIGURATION rejection
+// rather than a credential one. Deliberately narrow and provider-shaped:
+// Google's error envelope carries `errors[].reason: "accessNotConfigured"`
+// (message "<API> has not been used in project N before or it is disabled")
+// and newer surfaces use `status: "PERMISSION_DENIED"` with
+// `details[].reason: "SERVICE_DISABLED"`. Unrecognized 403s keep the expired
+// classification: a false "expired" prompts a harmless reconnect, but a false
+// "misconfigured" would hide a genuinely dead credential.
+const CONFIGURATION_403_REASONS = new Set(["accessnotconfigured", "service_disabled"]);
+
+/** Collect candidate `reason` markers from a Google-shaped error envelope:
+ *  `error.errors[].reason` (classic) and `error.details[].reason` (newer
+ *  google.rpc.ErrorInfo). Tolerant of partial shapes; returns []. */
+const errorReasonMarkers = (body: unknown): string[] => {
+  if (body == null || typeof body !== "object") return [];
+  const error = (body as Record<string, unknown>)["error"];
+  if (error == null || typeof error !== "object") return [];
+  const markers: string[] = [];
+  for (const key of ["errors", "details"] as const) {
+    const entries = (error as Record<string, unknown>)[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (entry == null || typeof entry !== "object") continue;
+      const reason = (entry as Record<string, unknown>)["reason"];
+      if (typeof reason === "string") markers.push(reason.toLowerCase());
+    }
+  }
+  return markers;
+};
+
+/** Classify a probe response from its status AND body. Everything is
+ *  `classifyHttpStatus` except one carve-out: a 403 whose error body carries a
+ *  known configuration reason (Google `accessNotConfigured` /
+ *  `SERVICE_DISABLED`) is `misconfigured`, not `expired`: the credential
+ *  authenticated; the upstream API is disabled in the OAuth client's project,
+ *  and only enabling it there (not reconnecting) fixes it. */
+export const classifyProbeResponse = (status: number, body: unknown): HealthStatus => {
+  const byStatus = classifyHttpStatus(status);
+  if (status !== 403 || byStatus !== "expired") return byStatus;
+  return errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))
+    ? "misconfigured"
+    : "expired";
 };
 
 /** Resolve a dot-path (`a.b.0.c`) against a JSON value and coerce the leaf to a

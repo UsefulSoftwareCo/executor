@@ -5,6 +5,8 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   candidateIdentityTier,
+  classifyHttpStatus,
+  classifyProbeResponse,
   rankResponseSample,
   sortHealthCheckCandidatesByIdentity,
 } from "./health-check";
@@ -64,5 +66,75 @@ describe("candidateIdentityTier", () => {
       sortHealthCheckCandidatesByIdentity([listAliases, getAuthUser])[0]?.operation,
       "the whoami call ranks ahead of the list",
     ).toBe("user.getAuthUser");
+  });
+});
+
+// Probe classification: 401/403 mean "credential dead" EXCEPT the
+// configuration 403 (Google accessNotConfigured / SERVICE_DISABLED), which
+// must read misconfigured: the token authenticated, the API is disabled in
+// the OAuth client's project, and reconnecting cannot fix it. This is the
+// production case behind the "Expired when it is not" report (2026-07-10).
+describe("classifyProbeResponse", () => {
+  const disabledMessage =
+    "Gmail API has not been used in project 000000000000 before or it is disabled. " +
+    "Enable it by visiting https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=000000000000 then retry.";
+
+  it("classifies Google's classic accessNotConfigured 403 as misconfigured", () => {
+    const body = {
+      error: {
+        code: 403,
+        message: disabledMessage,
+        errors: [
+          { message: disabledMessage, domain: "usageLimits", reason: "accessNotConfigured" },
+        ],
+        status: "PERMISSION_DENIED",
+      },
+    };
+    expect(classifyProbeResponse(403, body)).toBe("misconfigured");
+  });
+
+  it("classifies the newer SERVICE_DISABLED ErrorInfo detail as misconfigured", () => {
+    const body = {
+      error: {
+        code: 403,
+        message: disabledMessage,
+        status: "PERMISSION_DENIED",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "SERVICE_DISABLED",
+            domain: "googleapis.com",
+          },
+        ],
+      },
+    };
+    expect(classifyProbeResponse(403, body)).toBe("misconfigured");
+  });
+
+  it("keeps a plain 403 (no recognized reason) as expired: false-expired is the safe default", () => {
+    expect(classifyProbeResponse(403, { error: { code: 403, message: "Forbidden" } })).toBe(
+      "expired",
+    );
+    expect(classifyProbeResponse(403, undefined)).toBe("expired");
+    expect(classifyProbeResponse(403, "Forbidden")).toBe("expired");
+    // A permission reason that is NOT a configuration marker stays expired.
+    expect(
+      classifyProbeResponse(403, {
+        error: { errors: [{ reason: "insufficientPermissions" }] },
+      }),
+    ).toBe("expired");
+  });
+
+  it("never rewrites a 401: an authentication failure is a credential problem regardless of body", () => {
+    const body = { error: { errors: [{ reason: "accessNotConfigured" }] } };
+    expect(classifyProbeResponse(401, body)).toBe("expired");
+  });
+
+  it("matches the status-only classifier everywhere else", () => {
+    for (const status of [200, 204, 404, 429, 500, 503]) {
+      expect(classifyProbeResponse(status, { error: {} }), `status ${status}`).toBe(
+        classifyHttpStatus(status),
+      );
+    }
   });
 });

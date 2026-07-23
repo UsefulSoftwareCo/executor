@@ -930,7 +930,13 @@ function HealthStatusLine(props: {
 }) {
   const { status, identity, detail, httpStatus } = props.result;
   const healthy = status === "healthy";
-  const tone = healthy ? "text-muted-foreground" : "text-destructive";
+  // Misconfigured is amber everywhere (see health-display.ts): the credential
+  // being validated is fine, so the verdict must not read as a key failure.
+  const tone = healthy
+    ? "text-muted-foreground"
+    : status === "misconfigured"
+      ? "text-amber-600 dark:text-amber-500"
+      : "text-destructive";
   const font = props.variant === "response" ? "font-mono" : "";
   return (
     <div className={`flex min-w-0 items-center gap-2 text-xs ${tone} ${font}`}>
