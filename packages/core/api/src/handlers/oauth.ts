@@ -105,6 +105,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             clientSecret: payload.clientSecret,
             resource: payload.resource ?? null,
             origin: { kind: "manual", integration: payload.originIntegration ?? null },
+            tokenEndpointAuthMethod: payload.tokenEndpointAuthMethod,
           });
           return { client };
         }),

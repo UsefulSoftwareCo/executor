@@ -121,6 +121,11 @@ export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Pro
       .run();
   }
 
+  const oauthClientColumns = await tableColumns(db, "oauth_client");
+  if (oauthClientColumns.size > 0 && !oauthClientColumns.has("token_endpoint_auth_method")) {
+    await db.prepare(`ALTER TABLE oauth_client ADD COLUMN token_endpoint_auth_method text`).run();
+  }
+
   const connectionColumns = await tableColumns(db, "connection");
   if (connectionColumns.size === 0) return;
   if (!connectionColumns.has("item_ids")) {

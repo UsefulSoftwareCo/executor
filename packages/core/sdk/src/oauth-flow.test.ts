@@ -519,6 +519,137 @@ describe("oauth.start / oauth.complete", () => {
     ),
   );
 
+  it.effect(
+    "client_credentials with tokenEndpointAuthMethod=basic sends HTTP Basic to the token endpoint",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The AS is configured to REJECT body (client_secret_post) auth, so a
+          // successful inline mint proves the executor actually sent HTTP Basic.
+          const server = yield* serveOAuthTestServer({
+            scopes: ["read"],
+            requireClientAuthMethod: "basic",
+          });
+          const { executor } = yield* makeTestWorkspaceHarness({ plugins, redirectUri: null });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "client_credentials",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            tokenEndpointAuthMethod: "basic",
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("cc"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("connected");
+          // The single token request used HTTP Basic, not body params.
+          expect(yield* server.tokenRequestAuthMethods).toEqual(["basic"]);
+        }),
+      ),
+  );
+
+  it.effect("client_credentials without Basic is rejected by a Basic-only token endpoint", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          requireClientAuthMethod: "basic",
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins, redirectUri: null });
+        yield* executor.acme.seed();
+
+        // No tokenEndpointAuthMethod => the "body" (client_secret_post) default,
+        // which the Basic-only AS rejects. Proves the field actually changes the
+        // wire behavior rather than being inert.
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const error = yield* Effect.flip(
+          executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("cc"),
+            integration: INTEG,
+            template: TEMPLATE,
+          }),
+        );
+        expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
+        expect(yield* server.tokenRequestAuthMethods).toEqual(["body"]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "authorization_code with tokenEndpointAuthMethod=basic sends HTTP Basic on the code exchange",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The Basic-only AS rejects body, so a successful code exchange proves
+          // clientAuth is threaded into the authorization_code complete path too.
+          const server = yield* serveOAuthTestServer({
+            scopes: ["read"],
+            requireClientAuthMethod: "basic",
+          });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            redirectUri: "https://app.test/oauth/callback",
+          });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            tokenEndpointAuthMethod: "basic",
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          const connection = yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+          expect(connection.name).toBe("main");
+          // Only the code exchange hit /token, and it used HTTP Basic.
+          expect(yield* server.tokenRequestAuthMethods).toEqual(["basic"]);
+        }),
+      ),
+  );
+
   it.effect("complete with an unknown state fails OAuthSessionNotFoundError", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -638,6 +769,67 @@ describe("oauth.start / oauth.complete", () => {
 });
 
 describe("oauth token refresh in resolveConnectionValue", () => {
+  it.effect("an expired client_credentials connection re-mints via HTTP Basic", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Basic-only AS: every token request (initial mint AND the expiry
+        // re-mint) must carry HTTP Basic or it 401s.
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          requireClientAuthMethod: "basic",
+        });
+        const harness = yield* makeTestWorkspaceHarness({ plugins, redirectUri: null });
+        const { executor, config } = harness;
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          tokenEndpointAuthMethod: "basic",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("cc"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("connected");
+
+        const firstToken = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.cc.whoami"),
+          {},
+        )) as { token: string };
+        expect(firstToken.token).toMatch(/^at_/);
+
+        // client_credentials has no refresh token; expiring forces a fresh mint.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "cc"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+
+        const refreshedToken = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.cc.whoami"),
+          {},
+        )) as { token: string };
+        expect(refreshedToken.token).toMatch(/^at_/);
+        expect(refreshedToken.token).not.toBe(firstToken.token);
+        expect(yield* server.acceptsAccessToken(refreshedToken.token)).toBe(true);
+        // Both the initial mint and the re-mint authenticated via HTTP Basic.
+        expect(yield* server.tokenRequestAuthMethods).toEqual(["basic", "basic"]);
+      }),
+    ),
+  );
+
   it.effect("an expired access token is refreshed before resolving", () =>
     Effect.scoped(
       Effect.gen(function* () {

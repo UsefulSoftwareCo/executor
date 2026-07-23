@@ -502,6 +502,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly clientId: string;
           readonly resource?: string | null;
           readonly originIntegration?: IntegrationSlug | null;
+          readonly tokenEndpointAuthMethod?: "body" | "basic";
         };
       },
     ) =>
@@ -514,6 +515,9 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           tokenUrl: arg.payload.tokenUrl,
           resource: arg.payload.resource ?? null,
           clientId: arg.payload.clientId,
+          ...(arg.payload.tokenEndpointAuthMethod === "basic"
+            ? { tokenEndpointAuthMethod: "basic" as const }
+            : {}),
           // Mirror the server's stamp so the just-registered app matches its
           // integration in the picker immediately (before the refetch lands).
           origin: { kind: "manual", integration: arg.payload.originIntegration ?? null },

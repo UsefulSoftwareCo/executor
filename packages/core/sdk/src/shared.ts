@@ -129,6 +129,7 @@ export {
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {
   type OAuthGrant,
+  type ClientAuthMethod,
   type OAuthAuthentication,
   type OAuthClient,
   type OAuthClientOrigin,

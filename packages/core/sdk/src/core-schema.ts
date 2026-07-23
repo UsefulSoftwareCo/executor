@@ -219,6 +219,9 @@ export const coreTables = defineTables({
       // re-minted access token stays bound to the same resource. Null when the
       // provider doesn't use resource indicators.
       resource: nullableTextColumn("resource"),
+      // Token-endpoint client authentication. Null preserves the historical
+      // client_secret_post default; "basic" selects client_secret_basic.
+      token_endpoint_auth_method: nullableTextColumn("token_endpoint_auth_method"),
       // Where this oauth_client came from. Null in old databases is treated as
       // "manual" by the service layer.
       origin_kind: nullableTextColumn("origin_kind"),

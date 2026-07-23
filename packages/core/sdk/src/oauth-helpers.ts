@@ -384,6 +384,14 @@ export type ClientAuthMethod = "body" | "basic";
  */
 export const DEFAULT_CLIENT_AUTH_METHOD: ClientAuthMethod = "body";
 
+/** Resolve a stored/raw token-endpoint client-auth value to a {@link
+ *  ClientAuthMethod}. Only `"basic"` is distinguished; everything else,
+ *  including null (old `oauth_client` rows) and unknown strings, falls through
+ *  to {@link DEFAULT_CLIENT_AUTH_METHOD} (`"body"`). Unlike the OAuth grant,
+ *  an unrecognised value here is a benign default, not a corrupt-row error. */
+export const parseClientAuthMethod = (value: unknown): ClientAuthMethod =>
+  value === "basic" ? "basic" : DEFAULT_CLIENT_AUTH_METHOD;
+
 const asFromTokenUrl = (
   tokenUrl: string,
   endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
@@ -450,9 +458,25 @@ const pickClientAuth = (
 ): oauth.ClientAuth => {
   if (!clientSecret) return oauth.None();
   return method === "basic"
-    ? oauth.ClientSecretBasic(clientSecret)
+    ? clientSecretBasicInterop(clientSecret)
     : oauth.ClientSecretPost(clientSecret);
 };
+
+// oauth4webapi's ClientSecretBasic follows RFC 6749 strictly by form-encoding
+// both credentials before base64 encoding them. A number of token endpoints
+// instead implement HTTP Basic per RFC 7617 and compare the decoded username
+// and password literally. Characters such as `_` therefore become `%5F` and
+// otherwise-valid credentials are rejected. Use the broadly interoperable
+// wire representation expected by those endpoints: base64 of the literal
+// UTF-8 `client_id:client_secret` pair.
+const clientSecretBasicInterop =
+  (clientSecret: string): oauth.ClientAuth =>
+  (_as, client, _body, headers) => {
+    const bytes = new TextEncoder().encode(`${client.client_id}:${clientSecret}`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    headers.set("authorization", `Basic ${globalThis.btoa(binary)}`);
+  };
 
 const tokenResponseFrom = (r: oauth.TokenEndpointResponse): OAuth2TokenResponse => ({
   access_token: r.access_token,
