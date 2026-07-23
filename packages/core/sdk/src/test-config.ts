@@ -122,6 +122,9 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
    *  no OAuth callback (exercises the fail-loud redirect path). */
   readonly redirectUri?: string | null;
   readonly oauthCallbackStateOrgSlug?: string;
+  /** Prefer a named provider as the default writable secret store, ahead of
+   *  registration order (mirrors `ExecutorConfig.defaultCredentialProvider`). */
+  readonly defaultCredentialProvider?: ExecutorConfig<TPlugins>["defaultCredentialProvider"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -160,6 +163,9 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",
     ...(redirectUri != null ? { redirectUri } : {}),
+    ...(options?.defaultCredentialProvider != null
+      ? { defaultCredentialProvider: options.defaultCredentialProvider }
+      : {}),
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
   };
 };

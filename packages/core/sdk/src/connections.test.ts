@@ -718,3 +718,72 @@ describe("execute over a connection", () => {
     }),
   );
 });
+
+describe("defaultCredentialProvider preference", () => {
+  const namedMemoryProvider = (key: string): CredentialProvider => {
+    const store = new Map<string, string>();
+    return {
+      key: ProviderKey.make(key),
+      writable: true,
+      get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+      set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+      has: (id) => Effect.sync(() => store.has(String(id))),
+      list: () =>
+        Effect.sync(() =>
+          Array.from(store.keys()).map((k) => ({ id: ProviderItemId.make(k), name: k })),
+        ),
+    };
+  };
+
+  // Two writable providers; "first" registers ahead of "durable" in order.
+  const twoProviderPlugin = definePlugin(() => ({
+    id: "two-providers" as const,
+    credentialProviders: [namedMemoryProvider("first"), namedMemoryProvider("durable")],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("noop"), description: "noop" }] }),
+    invokeTool: () => Effect.succeed({}),
+    extension: (ctx) => ({
+      seed: () =>
+        ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+    }),
+  }))();
+
+  it.effect("selects the preferred writable store ahead of registration order", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [twoProviderPlugin] as const,
+        defaultCredentialProvider: ProviderKey.make("durable"),
+      }).pipe(Effect.tap((e) => e["two-providers"].seed()));
+
+      const connection = yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "secret-token",
+      });
+
+      expect(connection.provider).toBe(ProviderKey.make("durable"));
+    }),
+  );
+
+  it.effect("falls back to registration order when the preferred key is not registered", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [twoProviderPlugin] as const,
+        defaultCredentialProvider: ProviderKey.make("nonexistent"),
+      }).pipe(Effect.tap((e) => e["two-providers"].seed()));
+
+      const connection = yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "secret-token",
+      });
+
+      expect(connection.provider).toBe(ProviderKey.make("first"));
+    }),
+  );
+});

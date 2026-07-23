@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 
 import {
+  ProviderKey,
   Subject,
   Tenant,
   createExecutor,
@@ -186,12 +187,22 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
       const webBaseUrl =
         process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`;
 
+      // A host on ephemeral infrastructure (e.g. a disposable cloud sandbox)
+      // can force the default writable secret store to a durable on-disk
+      // provider, so OAuth tokens survive a fresh machine. The system keychain
+      // (kernel keyutils on Linux) is in-memory and does not. Unset keeps the
+      // registration-order default (system keychain when reachable).
+      const defaultSecretProvider = process.env.EXECUTOR_DEFAULT_SECRET_PROVIDER?.trim();
+
       const executor = yield* createExecutor({
         tenant: Tenant.make(tenantId),
         subject: Subject.make(LOCAL_SUBJECT),
         db: sqlite.db,
         plugins,
         onElicitation: "accept-all",
+        ...(defaultSecretProvider
+          ? { defaultCredentialProvider: ProviderKey.make(defaultSecretProvider) }
+          : {}),
         oauthEndpointUrlPolicy: { allowHttp: true },
         // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
         // route on the same origin as the web UI. Derived from `webBaseUrl`
