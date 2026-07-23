@@ -18,7 +18,7 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+import { defaultMcpResource, type McpResource, type Principal } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import type {
@@ -33,6 +33,7 @@ import {
   pausedLeaseExtensionLog,
   runningLeaseExtensionLog,
 } from "./session-alarm-policy";
+import { carrySessionInit } from "./session-meta";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
@@ -44,6 +45,11 @@ export interface McpSessionInit {
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** The verified caller, carried whole so the DO can rebuild its runtime with
+   *  the same identity the in-memory session store already passes to
+   *  `buildServer`. Optional and additive: unset changes no behavior, and
+   *  ownership validation stays keyed on userId + organizationId. */
+  readonly principal?: Principal;
 }
 
 export interface McpSessionProps extends Record<string, unknown> {
@@ -102,6 +108,12 @@ export interface SessionMeta {
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** The verified caller (carried from {@link McpSessionInit}), persisted with
+   *  the meta so a cold isolate rebuilds the runtime with the same identity.
+   *  A snapshot at session mint, same lifetime semantics as userId and
+   *  organizationId (a session does not re-authenticate). Optional; ownership
+   *  validation still keys on userId + organizationId only. */
+  readonly principal?: Principal;
 }
 
 export interface BuiltMcpServer {
@@ -459,10 +471,7 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.gen(function* () {
       const resolved = yield* self.resolveSessionMeta(token);
-      const sessionMeta: SessionMeta = {
-        ...resolved,
-        ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
-      };
+      const sessionMeta = carrySessionInit(resolved, token);
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
         Effect.withSpan("mcp.session.save_meta"),
       );
