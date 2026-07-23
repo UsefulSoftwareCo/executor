@@ -48,7 +48,7 @@ import {
   GraphqlIntrospectionError,
   GraphqlInvocationError,
 } from "./errors";
-import { effectiveOperationString, invokeWithLayer } from "./invoke";
+import { effectiveOperationString, invokeWithLayer, type GraphqlInvokeOptions } from "./invoke";
 import { validateOperationString } from "./validate-selection";
 import { graphqlPresets } from "./presets";
 import { makeDefaultGraphqlStore, type GraphqlStore, type StoredOperation } from "./store";
@@ -871,6 +871,7 @@ export type GraphqlPluginExtension = ReturnType<typeof makeGraphqlExtension>;
 
 export interface GraphqlPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+  readonly invokeOptions?: GraphqlInvokeOptions;
 }
 
 export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
@@ -1133,6 +1134,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           headers,
           queryParams,
           httpClientLayer,
+          options?.invokeOptions,
         );
 
         // An HTTP auth wall is classified BEFORE the GraphQL-errors branch: a
@@ -1198,9 +1200,19 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         }
         return ToolResult.ok(result.data);
       }).pipe(
-        Effect.catchTag("GraphqlAuthRequiredError", (error) =>
-          Effect.succeed(graphqlAuthToolFailure(error)),
-        ),
+        Effect.catchTags({
+          GraphqlAuthRequiredError: (error) => Effect.succeed(graphqlAuthToolFailure(error)),
+          GraphqlInvocationError: (error) =>
+            error.reason === "invocation_timeout"
+              ? Effect.succeed(
+                  graphqlToolFailure(
+                    "graphql_request_timeout",
+                    error.message,
+                    error.timeoutMs === undefined ? undefined : { timeoutMs: error.timeoutMs },
+                  ),
+                )
+              : Effect.fail(error),
+        }),
       ),
 
     // Per-connection cleanup. Operation bindings are catalog-level (shared

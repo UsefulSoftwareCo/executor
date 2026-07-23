@@ -21,6 +21,20 @@ export const endpointForTelemetry = (endpoint: string): string => {
   return url.toString();
 };
 
+// Below Cloudflare's approximate 125-second subrequest limit while preserving
+// slow upstream requests that Executor's HTTP transports support.
+export const GRAPHQL_INVOCATION_TIMEOUT_MS = 110_000;
+
+export interface GraphqlInvokeOptions {
+  readonly timeoutMs?: number;
+}
+
+const formatTimeout = (timeoutMs: number): string =>
+  timeoutMs % 1_000 === 0 ? `${timeoutMs / 1_000}s` : `${timeoutMs}ms`;
+
+const invocationTimeoutMessage = (timeoutMs: number): string =>
+  `GraphQL upstream did not complete within ${formatTimeout(timeoutMs)}. The request was aborted. Retry the operation or verify that the endpoint is responsive.`;
+
 /** The operation string to send for a call. A caller-supplied `select` overrides
  *  the default scalar-leaf selection: it is spliced into the field's selection
  *  set (`field { <select> }`) so nested/list data can be requested per call. Falls
@@ -62,8 +76,10 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
   endpoint: string,
   resolvedHeaders: Record<string, string>,
   resolvedQueryParams: Record<string, string> = {},
+  options: GraphqlInvokeOptions = {},
 ) {
   const client = yield* HttpClient.HttpClient;
+  const timeoutMs = options.timeoutMs ?? GRAPHQL_INVOCATION_TIMEOUT_MS;
   const requestEndpoint = endpointWithQueryParams(endpoint, resolvedQueryParams);
   const telemetryEndpoint = endpointForTelemetry(endpoint);
 
@@ -107,41 +123,56 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     request = HttpClientRequest.setHeader(request, name, value);
   }
 
-  const response = yield* client.execute(request).pipe(
-    Effect.mapError(
-      (err) =>
-        new GraphqlInvocationError({
-          message: "GraphQL request failed",
-          statusCode: Option.none(),
-          cause: err,
-        }),
-    ),
+  return yield* Effect.gen(function* () {
+    const response = yield* client.execute(request).pipe(
+      Effect.mapError(
+        (err) =>
+          new GraphqlInvocationError({
+            message: "GraphQL request failed",
+            statusCode: Option.none(),
+            cause: err,
+          }),
+      ),
+    );
+
+    const status = response.status;
+    const contentType = response.headers["content-type"] ?? null;
+
+    const body: unknown = isJsonContentType(contentType)
+      ? yield* response.json.pipe(Effect.catch(() => response.text))
+      : yield* response.text;
+
+    // GraphQL responses are always 200 with { data, errors }
+    const gqlBody = body as { data?: unknown; errors?: unknown[] } | null;
+    const hasErrors = Array.isArray(gqlBody?.errors) && gqlBody.errors.length > 0;
+
+    yield* Effect.annotateCurrentSpan({
+      "http.status_code": status,
+      "plugin.graphql.has_errors": hasErrors,
+      "plugin.graphql.error_count": hasErrors ? gqlBody!.errors!.length : 0,
+    });
+
+    return InvocationResult.make({
+      status,
+      data: gqlBody?.data ?? null,
+      errors: hasErrors ? gqlBody!.errors : null,
+      body,
+      headers: { ...response.headers },
+    });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () =>
+        Effect.fail(
+          new GraphqlInvocationError({
+            message: invocationTimeoutMessage(timeoutMs),
+            statusCode: Option.none(),
+            reason: "invocation_timeout",
+            timeoutMs,
+          }),
+        ),
+    }),
   );
-
-  const status = response.status;
-  const contentType = response.headers["content-type"] ?? null;
-
-  const body: unknown = isJsonContentType(contentType)
-    ? yield* response.json.pipe(Effect.catch(() => response.text))
-    : yield* response.text;
-
-  // GraphQL responses are always 200 with { data, errors }
-  const gqlBody = body as { data?: unknown; errors?: unknown[] } | null;
-  const hasErrors = Array.isArray(gqlBody?.errors) && gqlBody.errors.length > 0;
-
-  yield* Effect.annotateCurrentSpan({
-    "http.status_code": status,
-    "plugin.graphql.has_errors": hasErrors,
-    "plugin.graphql.error_count": hasErrors ? gqlBody!.errors!.length : 0,
-  });
-
-  return InvocationResult.make({
-    status,
-    data: gqlBody?.data ?? null,
-    errors: hasErrors ? gqlBody!.errors : null,
-    body,
-    headers: { ...response.headers },
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -155,8 +186,9 @@ export const invokeWithLayer = (
   resolvedHeaders: Record<string, string>,
   resolvedQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+  options: GraphqlInvokeOptions = {},
 ) =>
-  invoke(operation, args, endpoint, resolvedHeaders, resolvedQueryParams).pipe(
+  invoke(operation, args, endpoint, resolvedHeaders, resolvedQueryParams, options).pipe(
     Effect.provide(httpClientLayer),
     Effect.withSpan("plugin.graphql.invoke", {
       attributes: {
