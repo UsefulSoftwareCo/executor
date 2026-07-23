@@ -761,7 +761,6 @@ type RunDcrConnectInput = {
    *  discovery URL (non-MCP DCR), collapsing the resource to null as before. */
   readonly resourceFallback?: string;
   readonly owner: Owner;
-  readonly integrationName: string;
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
@@ -770,10 +769,14 @@ type RunDcrConnectInput = {
   readonly integration: IntegrationSlug;
 };
 
-export const dcrClientNameForIntegration = (integrationName: string): string => {
-  const trimmed = integrationName.trim();
-  return trimmed.length > 0 ? `Executor for ${trimmed}` : "Executor";
-};
+/** RFC 7591 `client_name` sent for every dynamic registration. Deliberately
+ *  the bare product name, never "Executor for <integration>": some servers
+ *  (e.g. Mercury) vet the name and reject any value containing their own
+ *  brand with `invalid_client_metadata`, killing the automatic connect. The
+ *  name is cosmetic (it only labels the provider's consent screen and app
+ *  list, where the provider is already evident), so the suffix bought
+ *  nothing worth that failure class. */
+const DCR_CLIENT_NAME = "Executor";
 
 /**
  * Run the transparent DCR connect sequence: probe → register → start.
@@ -806,7 +809,7 @@ export async function runDcrConnect(
     resource: probe.resource ?? input.resourceFallback ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-    clientName: dcrClientNameForIntegration(input.integrationName),
+    clientName: DCR_CLIENT_NAME,
     redirectUri: input.redirectUri,
     originIntegration: input.integration,
   });
@@ -2099,7 +2102,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
         // not, so pass the un-collapsed method value here.
         resourceFallback: method.oauth?.discoveryUrl,
         owner: dcrOwner,
-        integrationName,
         // DCR slugs are server-keyed (Part A): the connect path no longer depends
         // on the picker's app list, so it need not be threaded here.
         declaredScopes: method.oauth?.scopes,

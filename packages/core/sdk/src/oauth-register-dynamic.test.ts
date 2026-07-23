@@ -624,10 +624,10 @@ describe("oauth.registerDynamicClient", () => {
 
   // Regression: Mercury's authorization server vets `client_name` and rejects
   // any value containing its own brand with `invalid_client_metadata`, which
-  // the auto-generated "Executor for Mercury MCP" always trips. The name is
-  // cosmetic, so registration must retry once with the bare product name
-  // instead of failing the connect.
-  it.effect("retries DCR with the bare product name when the server vets client_name", () =>
+  // the old auto-generated "Executor for Mercury MCP" always tripped. The UI
+  // flow now always registers under the bare product name, which brand-vetting
+  // servers accept.
+  it.effect("registers under the bare product name against a brand-vetting server", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({
@@ -649,26 +649,23 @@ describe("oauth.registerDynamicClient", () => {
           resource: probe.resource,
           scopes: ["read"],
           tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-          clientName: "Executor for Acme MCP",
+          clientName: "Executor",
           redirectUri: FLOW_REDIRECT_URI,
           originIntegration: INTEG,
         });
         expect(String(slug).length).toBeGreaterThan(0);
 
-        // Two registration attempts: the branded name (rejected), then the
-        // bare product name (accepted).
         const requests = yield* server.requests;
         const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
-        expect(registers).toHaveLength(2);
-        expect(registers[0]!.body).toContain("Executor for Acme MCP");
-        expect(registers[1]!.body).toContain('"client_name":"Executor"');
+        expect(registers).toHaveLength(1);
+        expect(registers[0]!.body).toContain('"client_name":"Executor"');
       }),
     ),
   );
 
-  // The retry is a one-shot on the cosmetic name only: when the server rejects
-  // even the bare product name, the invalid_client_metadata failure surfaces.
-  it.effect("surfaces invalid_client_metadata when the server rejects every client_name", () =>
+  // A server that rejects even the bare product name surfaces the RFC error
+  // untouched: no retry loop, no masking of the server-authored description.
+  it.effect("surfaces invalid_client_metadata when the server rejects the client_name", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({
@@ -689,7 +686,7 @@ describe("oauth.registerDynamicClient", () => {
             resource: probe.resource,
             scopes: ["read"],
             tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-            clientName: "Executor for Acme MCP",
+            clientName: "Executor",
             redirectUri: FLOW_REDIRECT_URI,
             originIntegration: INTEG,
           }),
@@ -702,7 +699,7 @@ describe("oauth.registerDynamicClient", () => {
 
         const requests = yield* server.requests;
         const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
-        expect(registers).toHaveLength(2);
+        expect(registers).toHaveLength(1);
       }),
     ),
   );

@@ -409,13 +409,6 @@ const REDIRECT_URI_REQUIRED_MESSAGE =
   "to the executor. Pass `redirectUri` to createExecutor (hosts derive it from " +
   "the web base URL / request origin as `${webBaseUrl}${mountPrefix}/oauth/callback`).";
 
-/** Fallback RFC 7591 `client_name` for the one-shot retry after the server
- *  rejects the integration-branded name (`invalid_client_metadata`): some
- *  servers (e.g. Mercury) refuse third-party names containing their own
- *  brand, and the auto-generated "Executor for <integration>" always trips
- *  that vetting. */
-const DCR_FALLBACK_CLIENT_NAME = "Executor";
-
 const canonicalUrlString = (value: string): string => {
   const url = new URL(value.trim());
   url.hash = "";
@@ -882,37 +875,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       const authMethod = pickDcrAuthMethod(input.tokenEndpointAuthMethodsSupported);
-      const registerWithName = (clientName: string | undefined) =>
-        registerDynamicClientDcr(
-          {
-            registrationEndpoint: input.registrationEndpoint,
-            metadata: {
-              client_name: clientName,
-              redirect_uris: [flowRedirectUri],
-              grant_types: ["authorization_code", "refresh_token"],
-              response_types: ["code"],
-              token_endpoint_auth_method: authMethod,
-              scope: input.scopes.length > 0 ? input.scopes.join(" ") : undefined,
-            },
+      const information = yield* registerDynamicClientDcr(
+        {
+          registrationEndpoint: input.registrationEndpoint,
+          metadata: {
+            client_name: input.clientName,
+            redirect_uris: [flowRedirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: authMethod,
+            scope: input.scopes.length > 0 ? input.scopes.join(" ") : undefined,
           },
-          { httpClientLayer, endpointUrlPolicy: deps.endpointUrlPolicy },
-        );
-      const information = yield* registerWithName(input.clientName).pipe(
-        // Some authorization servers vet `client_name` (Mercury rejects any
-        // name containing its own brand, which the auto-generated
-        // "Executor for <integration>" always trips). The name is cosmetic,
-        // so on `invalid_client_metadata` retry ONCE with the bare product
-        // name before surfacing the failure. Other metadata rejections reuse
-        // the same RFC error code, so the retry may be a wasted request, but
-        // never masks the original failure: if the retry also fails, ITS
-        // error surfaces (same code, server-authored description).
-        Effect.catchIf(
-          (cause) =>
-            cause.error === "invalid_client_metadata" &&
-            input.clientName !== undefined &&
-            input.clientName !== DCR_FALLBACK_CLIENT_NAME,
-          () => registerWithName(DCR_FALLBACK_CLIENT_NAME),
-        ),
+        },
+        { httpClientLayer, endpointUrlPolicy: deps.endpointUrlPolicy },
+      ).pipe(
         Effect.mapError((cause) => {
           // Some authorization servers (Vercel, and others that follow RFC 8252
           // strictly) reject anonymous Dynamic Client Registration unless the
