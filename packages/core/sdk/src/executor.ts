@@ -1580,6 +1580,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (!refreshToken) {
                   return yield* reauth("Stored refresh token could not be resolved.");
                 }
+                // Prove the credential store is WRITABLE before consuming the
+                // single-use refresh token: the grant rotates it at the AS, so
+                // a persist failure after the grant loses the only copy of the
+                // rotated token and permanently invalidates the connection
+                // (the next refresh replays the revoked token → invalid_grant
+                // → forced re-auth). A no-op rewrite of the value just read
+                // fails fast during a store outage, leaving the stored token
+                // valid so the connection recovers when the store does.
+                if (provider.set) {
+                  yield* provider.set(ProviderItemId.make(row.refresh_item_id), refreshToken);
+                }
                 return yield* refreshAccessToken({
                   tokenUrl,
                   clientId: String(clientRow.client_id),
