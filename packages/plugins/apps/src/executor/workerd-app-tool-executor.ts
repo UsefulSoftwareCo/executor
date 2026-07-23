@@ -230,11 +230,18 @@ export default {
           const output = await tool.handler(decoded, split.integrations);
           return { output: await validateStandard(tool.output, output, "output") };
         };
-        const value = await Promise.race([
-          invoke(),
-          new Promise((_, reject) => setTimeout(() => reject(fail("timeout", "app tool timed out after " + input.timeoutMs + "ms")), input.timeoutMs)),
-        ]);
-        return Response.json({ ok: true, value });
+        let timer;
+        try {
+          const value = await Promise.race([
+            invoke(),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(fail("timeout", "app tool timed out after " + input.timeoutMs + "ms")), input.timeoutMs);
+            }),
+          ]);
+          return Response.json({ ok: true, value });
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
       }
       return Response.json({ ok: false, kind: "invoke", message: "unknown operation" });
     } catch (error) {

@@ -363,22 +363,30 @@ const selectTool = (exported: unknown, entry: string): unknown => {
   return exported[entry.slice(index + marker.length)];
 };
 
-const timeout = <A>(promise: Promise<A>, timeoutMs: number): Promise<A> =>
-  Promise.race([
-    promise,
-    new Promise<A>((_, reject) => {
-      setTimeout(
-        () =>
-          reject(
-            new AppExecutorError({
-              kind: "timeout",
-              message: `app tool timed out after ${timeoutMs}ms`,
-            }),
-          ),
-        timeoutMs,
-      );
-    }),
-  ]);
+const timeout = async <A>(promise: Promise<A>, timeoutMs: number): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<A>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new AppExecutorError({
+                kind: "timeout",
+                message: `app tool timed out after ${timeoutMs}ms`,
+              }),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+};
 
 const makeClient = (root: string, prefix: readonly string[], bridge: AppToolBridge): unknown =>
   new Proxy(() => undefined, {

@@ -79,7 +79,7 @@ const mapCause = (cause: unknown, kind: AppExecutorError["kind"], message: strin
 
 // Bump this when appWorkerModule() changes so stable Worker Loader IDs do not
 // reuse an isolate running an older driver around byte-identical app bundles.
-export const DRIVER_VERSION = "1";
+export const DRIVER_VERSION = "2";
 
 const appWorkerModule = (): string => `
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -247,11 +247,18 @@ export default class AppExecutor extends WorkerEntrypoint {
         const output = await tool.handler(decoded, split.integrations);
         return { output: await validateStandard(tool.output, output, "output") };
       };
-      const value = await Promise.race([
-        invoke(),
-        new Promise((_, reject) => setTimeout(() => reject(fail("timeout", "app tool timed out after " + input.timeoutMs + "ms")), input.timeoutMs)),
-      ]);
-      return { ok: true, value };
+      let timer;
+      try {
+        const value = await Promise.race([
+          invoke(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(fail("timeout", "app tool timed out after " + input.timeoutMs + "ms")), input.timeoutMs);
+          }),
+        ]);
+        return { ok: true, value };
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     } catch (error) {
       return serializeFailure(error, "invoke");
     }
