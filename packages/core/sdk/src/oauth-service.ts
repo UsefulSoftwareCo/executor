@@ -50,6 +50,7 @@ import {
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import {
+  canonicalResourceUrl,
   discoverAuthorizationServerMetadata,
   discoverProtectedResourceMetadata,
   OAuthDiscoveryError,
@@ -792,6 +793,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: RegisterDynamicClientInput,
     issuer: string | null,
     flowRedirectUri: string | null,
+    resource: string | null,
   ): Effect.Effect<
     {
       readonly existingSlug: OAuthClientSlug | null;
@@ -801,7 +803,6 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   > =>
     Effect.gen(function* () {
       const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
-      const resource = input.resource ?? null;
       // A candidate is reusable only when the callback it registered with the
       // AS still matches the current flow's callback — strict servers reject an
       // authorize request whose redirect_uri differs from the registration
@@ -859,11 +860,27 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
     Effect.gen(function* () {
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
+      const requestedResource = input.resource ?? null;
+      // Canonicalized ONCE here; reuse-matching, persistence, and every later
+      // authorize/token request all see this exact value. Rows persisted
+      // before canonicalization may hold a raw string that no longer matches
+      // (case, trailing slash) — those clients simply re-register, which is
+      // safe and self-healing, so no backfill migration is warranted.
+      const resource =
+        requestedResource === null
+          ? null
+          : yield* Effect.try({
+              try: () => canonicalResourceUrl(requestedResource),
+              catch: () =>
+                new OAuthRegisterDynamicError({
+                  message: `OAuth resource must be an absolute URL: ${requestedResource}`,
+                }),
+            });
       // Resolved before the reuse decision: a persisted client registered with
       // a DIFFERENT callback must not be reused (strict servers 400 the
       // authorize request), so the reuse lookup compares against this value.
       const flowRedirectUri = input.redirectUri ?? redirectUri ?? null;
-      const reuse = yield* decideDcrClientReuse(input, issuer, flowRedirectUri);
+      const reuse = yield* decideDcrClientReuse(input, issuer, flowRedirectUri, resource);
       if (reuse.existingSlug !== null) return reuse.existingSlug;
 
       const slug = reuse.registrationSlug;
@@ -920,7 +937,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         slug,
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
-        resource: input.resource ?? null,
+        resource,
         grant: "authorization_code",
         clientId: information.client_id,
         clientSecret: information.client_secret ?? "",
@@ -1427,7 +1444,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const options = { endpointUrlPolicy: deps.endpointUrlPolicy };
       // Try protected-resource metadata first (RFC 9728), then the AS issuer.
       const resource = yield* discoverProtectedResourceMetadata(input.url, options).pipe(
-        Effect.catch(() => Effect.succeed(null)),
+        Effect.mapError(
+          (cause) =>
+            new OAuthProbeError({
+              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+              message: `OAuth discovery failed: ${cause.message}`,
+            }),
+        ),
       );
       // EXPLICIT discovery order: when the protected-resource metadata advertises
       // an authorization server, probe that; otherwise probe the input endpoint
