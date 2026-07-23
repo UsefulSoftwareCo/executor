@@ -129,6 +129,33 @@ scenario(
             await actions.waitFor();
           });
 
+          await step("A rejected removal reports the failure and keeps the app", async () => {
+            await page.route("**/api/oauth/clients/**", async (route) => {
+              if (route.request().method() !== "DELETE") {
+                await route.continue();
+                return;
+              }
+              await route.fulfill({
+                status: 500,
+                contentType: "application/json",
+                body: JSON.stringify({ _tag: "InternalError", traceId: "oauth-client-remove" }),
+              });
+            });
+            await actions.click();
+            await page.getByRole("menuitem", { name: "Remove" }).click();
+            await page.getByRole("button", { name: "Remove app" }).click();
+            await page.getByText(`Failed to remove ${appName}`, { exact: true }).waitFor();
+            await page.getByRole("heading", { name: `Remove ${appName}?` }).waitFor();
+            const clients = await Effect.runPromise(client.oauth.listClients());
+            expect(
+              clients.map((candidate) => String(candidate.slug)),
+              "a rejected removal leaves the registered app in the catalog",
+            ).toContain(appName);
+            await page.getByRole("button", { name: "Cancel" }).click();
+            await actions.waitFor();
+            await page.unroute("**/api/oauth/clients/**");
+          });
+
           await step("Remove the app and confirm", async () => {
             await actions.click();
             await page.getByRole("menuitem", { name: "Remove" }).click();

@@ -158,6 +158,7 @@ scenario(
             .getByRole("button")
             .filter({ hasText: leaf })
             .getByLabel(label, { exact: true });
+        const internalError = JSON.stringify({ _tag: "InternalError", traceId: "policy-write" });
 
         await step("Open the integration's Tools tab", async () => {
           await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
@@ -172,12 +173,60 @@ scenario(
           await policyMenuFor(alpha, `${integration}.records.create`).waitFor();
         });
 
+        await step("A rejected policy create reports the failure and writes nothing", async () => {
+          await page.route("**/api/policies", async (route) => {
+            if (route.request().method() !== "POST") {
+              await route.continue();
+              return;
+            }
+            await route.fulfill({
+              status: 500,
+              contentType: "application/json",
+              body: internalError,
+            });
+          });
+          await policyMenuFor(alpha, `${integration}.records.create`).click();
+          await page.getByText(leafPattern, { exact: true }).waitFor();
+          await page.getByRole("menuitem", { name: "Block" }).click();
+          await page.getByText("Failed to create policy", { exact: true }).waitFor();
+          const afterFailure = await Effect.runPromise(client.policies.list());
+          expect(
+            afterFailure.map((policy) => policy.pattern),
+            "a rejected create does not persist the optimistic policy",
+          ).not.toContain(leafPattern);
+          await page.unroute("**/api/policies");
+        });
+
         await step("Block records.create from the per-tool menu", async () => {
           await policyMenuFor(alpha, `${integration}.records.create`).click();
           // The menu is headed by the exact pattern it will store.
           await page.getByText(leafPattern, { exact: true }).waitFor();
           await page.getByRole("menuitem", { name: "Block" }).click();
           await leafIndicator(alpha, "create", `Blocked (matched ${leafPattern})`).waitFor();
+        });
+
+        await step("A rejected clear reports the failure and keeps the policy active", async () => {
+          await page.route("**/api/policies/*", async (route) => {
+            if (route.request().method() !== "DELETE") {
+              await route.continue();
+              return;
+            }
+            await route.fulfill({
+              status: 500,
+              contentType: "application/json",
+              body: internalError,
+            });
+          });
+          await policyMenuFor(alpha, `${integration}.records.create`).click();
+          await page.getByRole("menuitem", { name: "Clear" }).click();
+          await page.getByText("Failed to clear policy", { exact: true }).waitFor();
+          await leafIndicator(alpha, "create", `Blocked (matched ${leafPattern})`).waitFor();
+          const afterFailure = await Effect.runPromise(client.policies.list());
+          expect(
+            afterFailure.map((policy) => policy.pattern),
+            "a rejected clear leaves the stored policy intact",
+          ).toContain(leafPattern);
+          await page.unroute("**/api/policies/*");
         });
 
         await step("Require approval for the whole records category", async () => {

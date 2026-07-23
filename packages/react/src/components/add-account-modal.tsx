@@ -1204,7 +1204,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, {
     mode: "promiseExit",
   });
-  const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promise" });
+  const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promiseExit" });
   const doValidate = useAtomSet(validateConnection, { mode: "promiseExit" });
   const doCheckConnectionHealth = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const doUpdateConnection = useAtomSet(updateConnection, { mode: "promiseExit" });
@@ -1544,12 +1544,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // reconnect at their next refresh); clear the picked app if it was the one
   // removed so the connect button doesn't point at a gone slug.
   const handleRemoveApp = async (client: OAuthClientSummary): Promise<void> => {
-    setRemovingClient(null);
-    await doRemoveOAuthClient({
+    const exit = await doRemoveOAuthClient({
       params: { slug: client.slug },
       payload: { owner: client.owner },
       reactivityKeys: oauthClientWriteKeys,
     });
+    if (Exit.isFailure(exit)) {
+      toast.error(messageFromExit(exit, `Failed to remove ${String(client.slug)}`));
+      return;
+    }
+    setRemovingClient(null);
     trackEvent("oauth_client_removed", { owner: client.owner });
     toast.success(`Removed ${String(client.slug)}`);
     if (pickedApp === String(client.slug)) setPickedApp(null);
