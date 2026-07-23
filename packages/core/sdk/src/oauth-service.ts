@@ -861,6 +861,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     Effect.gen(function* () {
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
       const requestedResource = input.resource ?? null;
+      // Canonicalized ONCE here; reuse-matching, persistence, and every later
+      // authorize/token request all see this exact value. Rows persisted
+      // before canonicalization may hold a raw string that no longer matches
+      // (case, trailing slash) — those clients simply re-register, which is
+      // safe and self-healing, so no backfill migration is warranted.
       const resource =
         requestedResource === null
           ? null

@@ -162,6 +162,17 @@ const validateEndpointUrl = (
       }),
   });
 
+/** RFC 8414 issuer identity: scheme, host, port, and path after URL
+ *  normalization; a trailing slash alone does not create a different issuer.
+ *  Deliberately NOT `canonicalResourceUrl`: an issuer never carries a query,
+ *  and its trailing slash is insignificant (RFC 8414 §2), whereas a resource
+ *  identifier's query and trailing slash are part of the identity (RFC 8707). */
+const canonicalIssuer = (value: string): string => {
+  const url = new URL(value);
+  const path = url.pathname.replace(/\/+$/, "");
+  return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${path}`;
+};
+
 const validateAuthorizationServerMetadata = (
   metadata: OAuthAuthorizationServerMetadata,
   expectedIssuer: string,
@@ -169,13 +180,6 @@ const validateAuthorizationServerMetadata = (
 ): Effect.Effect<void, OAuthDiscoveryError> =>
   Effect.gen(function* () {
     yield* validateEndpointUrl(metadata.issuer, "issuer", policy);
-    const canonicalIssuer = (value: string): string => {
-      const url = new URL(value);
-      const path = url.pathname.replace(/\/+$/, "");
-      return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${path}`;
-    };
-    // RFC 8414 issuer identity compares scheme, host, port, and path after URL
-    // normalization; a trailing slash alone does not create a different issuer.
     if (canonicalIssuer(metadata.issuer) !== canonicalIssuer(expectedIssuer)) {
       return yield* new OAuthDiscoveryError({
         message:

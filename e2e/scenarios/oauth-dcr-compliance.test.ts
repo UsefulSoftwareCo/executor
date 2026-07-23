@@ -20,10 +20,11 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { createEmulator, type Emulator } from "@executor-js/emulate";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
+import type { OAuthProbeError } from "@executor-js/sdk";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -121,9 +122,10 @@ scenario(
       const failure = yield* Effect.flip(
         client.oauth.probe({ payload: { url: `${emulator.url}/mcp` } }),
       );
-      expect(String((failure as { readonly _tag?: string })._tag ?? failure)).toContain(
-        "OAuthProbeError",
-      );
+      expect(Predicate.isTagged("OAuthProbeError")(failure)).toBe(true);
+      const probeError = failure as OAuthProbeError;
+      expect(probeError.message).toContain("issuer");
+      expect(probeError.message).toContain("https://evil.example.com");
     }),
   ),
 );
@@ -150,9 +152,10 @@ scenario(
       const failure = yield* Effect.flip(
         client.oauth.probe({ payload: { url: `${emulator.url}/mcp` } }),
       );
-      expect(String((failure as { readonly _tag?: string })._tag ?? failure)).toContain(
-        "OAuthProbeError",
-      );
+      expect(Predicate.isTagged("OAuthProbeError")(failure)).toBe(true);
+      const probeError = failure as OAuthProbeError;
+      expect(probeError.message).toContain("resource");
+      expect(probeError.message).toContain("https://other.example.com/mcp");
     }),
   ),
 );
