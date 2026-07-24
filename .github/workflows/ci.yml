@@ -262,7 +262,7 @@ jobs:
           retention-days: 7
 
   e2e-local:
-    name: E2E (stdio MCP)
+    name: E2E (local MCP)
     # Skipped on pull_request: the local scenario boots a real `executor web`
     # plus a browser and is currently flaky on PRs. Still runs on push to main.
     if: github.event_name != 'pull_request'
@@ -309,14 +309,16 @@ jobs:
         working-directory: e2e
 
       # The `local` project is excluded from the default `test` chain (each
-      # scenario boots its own `executor web`). Run just the stdio MCP scenario
-      # here: it is the auto-connect / env-as-secret regression guard, and
-      # running it alone avoids the boot-resource accumulation and the
-      # pre-existing browser flakiness of the rest of the local suite. Expanding
-      # to the full `local` project (bun run test:local) is a follow-up once
-      # those are stabilized.
-      - name: Run the stdio MCP scenario
-        run: bunx vitest run --project local local/stdio-mcp.test.ts
+      # scenario boots its own `executor web`). Run the two headless MCP
+      # scenarios here: stdio is the auto-connect / env-as-secret regression
+      # guard, and toolkits covers `/mcp/toolkits/<slug>` (which regressed to a
+      # blanket 500 unnoticed precisely because nothing ran it). Neither drives
+      # a browser, so running just these avoids the boot-resource accumulation
+      # and the pre-existing browser flakiness of the rest of the local suite.
+      # Expanding to the full `local` project (bun run test:local) is a
+      # follow-up once those are stabilized.
+      - name: Run the headless MCP scenarios
+        run: bunx vitest run --project local local/stdio-mcp.test.ts local/toolkits-mcp.test.ts
         working-directory: e2e
 
   desktop-smoke:
