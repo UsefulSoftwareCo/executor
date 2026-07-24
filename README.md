@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/usefulsoftwareco-executor-badge.png)](https://mseep.ai/app/usefulsoftwareco-executor)
+
 # Executor
 
 **Connect any agent to everything.**
