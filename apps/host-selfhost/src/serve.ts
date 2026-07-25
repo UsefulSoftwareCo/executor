@@ -25,6 +25,7 @@ import {
 } from "effect/unstable/http";
 import { BunFileSystem, BunHttpServer, BunPath, BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
+import { jsonRpcErrorBody } from "@executor-js/host-mcp";
 
 import { makeSelfHostApp } from "./app";
 import { loadConfig } from "./config";
@@ -33,7 +34,7 @@ import {
   OAUTH_CALLBACK_PATH,
   oauthCallbackSignInRedirectLocation,
 } from "./auth/oauth-callback-login";
-import { MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./mcp/org-path";
+import { isMcpServingPath, MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./mcp/org-path";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const assetsDir = fileURLToPath(new URL("../dist/assets/", import.meta.url));
@@ -52,6 +53,19 @@ const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.url, "http://host.internal");
+      // Streamable HTTP does not define HEAD. Reject it before the SPA's
+      // GET/HEAD fallback can claim `/mcp` and return a misleading empty
+      // `200 application/octet-stream` response. The shared MCP envelope
+      // rejects unsupported methods the same way, but the static route wins
+      // HEAD routing at the composed production-server boundary.
+      if (request.method === "HEAD" && isMcpServingPath(url.pathname)) {
+        const response = jsonRpcErrorBody(405, -32001, "Method not allowed");
+        return HttpServerResponse.raw(response, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
       if (
         url.pathname === OAUTH_CALLBACK_PATH &&
         (request.method === "GET" || request.method === "HEAD")
