@@ -218,7 +218,8 @@ export const makeInMemoryMcpSessionStore = (
     request: Request,
     sessionId: () => string | null,
   ): McpBuildServerOptions => {
-    if (readElicitationMode(request) !== "browser") return { elicitationMode: { mode: "model" } };
+    const mode = readElicitationMode(request);
+    if (mode !== "browser") return { elicitationMode: { mode } };
     return {
       elicitationMode: {
         mode: "browser",
