@@ -33,6 +33,22 @@ export const integration = pgTable(
   (table) => [uniqueIndex("integration_uidx").on(table.tenant, table.slug)],
 );
 
+export const subject = pgTable(
+  "subject",
+  {
+    external_id: varchar("external_id", { length: 255 }).notNull(),
+    created_at: timestamp("created_at").notNull(),
+    last_seen_at: bigint("last_seen_at", { mode: "bigint" }),
+    status: text("status"),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("subject_uidx").on(table.tenant, table.external_id)],
+);
+
 export const connection = pgTable(
   "connection",
   {

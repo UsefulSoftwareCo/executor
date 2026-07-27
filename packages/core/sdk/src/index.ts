@@ -142,6 +142,7 @@ export {
   TOOL_POLICY_ACTIONS,
   type CoreSchema,
   type IntegrationRow,
+  type SubjectRow,
   type ConnectionRow,
   type OAuthClientRow,
   type OAuthSessionRow,

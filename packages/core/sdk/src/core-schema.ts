@@ -151,6 +151,35 @@ export const coreTables = defineTables({
     ["tenant", "slug"],
   ),
 
+  // The join between a host's identity system (WorkOS accounts, Better Auth
+  // members, the local single-user sentinel) and the `subject` partition key
+  // smeared across the owned tables. NOT an identity system of its own: the
+  // hosts stay authoritative for names, emails, and membership. This table
+  // only records that a principal has been seen under this tenant, so a user
+  // who has no connection row is still answerable.
+  //
+  // Tenant-scoped, not owner-scoped, on purpose: any executor bound to the
+  // tenant may read it, which is what an operator-level (cross-subject) view
+  // needs, and it costs zero policy changes.
+  subject: tenantExecutorTable(
+    "subject",
+    {
+      // The host-auth principal id (cloud: the WorkOS accountId). Opaque here
+      // — it also carries host sentinels like "local", so nothing may parse it.
+      external_id: keyColumn("external_id"),
+      created_at: dateColumn("created_at"),
+      // Epoch ms of the last sighting on the request path. Nullable so a row
+      // can be created (e.g. at connection-create) before any sighting is
+      // recorded; bigint rather than a timestamp to match the other
+      // "last X happened at" columns here (`tools_synced_at`, `expires_at`).
+      last_seen_at: nullableBigintColumn("last_seen_at"),
+      // Subject lifecycle. Left as an unconstrained nullable string until the
+      // lifecycle values are actually defined; null means "no state recorded".
+      status: nullableTextColumn("status"),
+    },
+    ["tenant", "external_id"],
+  ),
+
   // THE saved credential, one per (owner, integration, name). Resolves each named
   // input via `provider` + the `item_ids` map (variable → provider item id). A
   // single-secret connection is `{ "token": <id> }`; an apiKey method with two
@@ -338,6 +367,7 @@ export const coreSchema = coreTables;
 export type CoreSchema = typeof coreTables;
 
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
+export type SubjectRow = FumaRow<CoreSchema["subject"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
