@@ -28,6 +28,7 @@ import {
   oauth_client,
   oauth_session,
   plugin_storage,
+  subject,
   tool,
   tool_policy,
 } from "./executor-schema";
@@ -131,6 +132,13 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     subject: "s",
   });
 
+  await db.insert(subject).values({
+    external_id: `acct-${tag}`,
+    created_at: now,
+    last_seen_at: BigInt(now.getTime()),
+    tenant,
+  });
+
   const orgNs = `o:${tenant}/plugin`;
   const userNs = `u:${tenant}:subject/plugin`;
   await db.insert(blob).values({
@@ -156,6 +164,7 @@ const TENANT_TABLES = [
   definition,
   tool_policy,
   plugin_storage,
+  subject,
 ] as const;
 
 const countTenantRows = async (db: DrizzleDb, tenant: string): Promise<number> => {

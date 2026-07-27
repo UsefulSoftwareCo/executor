@@ -42,7 +42,11 @@ import {
   type Executor,
   type StorageFailure,
 } from "@executor-js/sdk";
-import { makeHostedFetch, makeHostedHttpClientLayer } from "@executor-js/sdk/host-internal";
+import {
+  makeHostedFetch,
+  makeHostedHttpClientLayer,
+  touchSubject,
+} from "@executor-js/sdk/host-internal";
 
 import { DbProvider } from "./executor-fuma-db";
 
@@ -281,6 +285,16 @@ export const makeScopedExecutor = <
         includeProviders: config.exposeCredentialProviders ?? true,
       },
     }).pipe(Effect.withSpan("executor.stack.create_executor"));
+    // Record the sighting. THIS is the seam every HTTP request and MCP session
+    // on every host passes through, so it is where the `subject` table gets
+    // populated: a principal earns a row the first time it authenticates,
+    // whether or not it ever connects anything. Throttled (`touchSubject` only
+    // rewrites `last_seen_at` past a coarse interval) and non-fatal by
+    // construction — it returns `Effect<void>`, so a lost sighting logs and the
+    // request proceeds. `accountId` is passed verbatim, sentinels ("local")
+    // included.
+    yield* touchSubject(db, { tenant: organizationId, externalId: accountId });
+
     // The seam erases the plugin tuple type; the caller re-narrows via the
     // `TPlugins` phantom. Runtime shape is identical to a typed
     // `createExecutor({ plugins })` call.

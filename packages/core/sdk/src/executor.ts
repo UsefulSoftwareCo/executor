@@ -107,6 +107,7 @@ import {
   type UpdateToolPolicyInput,
 } from "./policies";
 import type { CredentialProvider, ProviderEntry } from "./provider";
+import { touchSubject } from "./subject-registry";
 import type {
   AnyPlugin,
   Elicit,
@@ -2427,6 +2428,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             }
           }),
         );
+
+        // Record the sighting. The request seam (`makeScopedExecutor`) already
+        // does this for every hosted call, so this is the belt for direct
+        // SDK/CLI callers that never pass through it — a connecting principal
+        // must always have a subject row. Outside
+        // the transaction above: bookkeeping must not roll back the
+        // connection, and `touchSubject` cannot fail. No-ops on a pure-org
+        // executor (no principal to record), including for `owner: "org"`
+        // connections created by a bound member.
+        yield* touchSubject(rootDbUntyped, { tenant, externalId: subject });
 
         const ref: ConnectionRef = {
           owner: input.owner,

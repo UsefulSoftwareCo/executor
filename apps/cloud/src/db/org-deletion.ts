@@ -23,6 +23,7 @@ import {
   oauth_client,
   oauth_session,
   plugin_storage,
+  subject,
   tool,
   tool_policy,
 } from "./executor-schema";
@@ -48,6 +49,7 @@ export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Pr
     await tx.delete(oauth_session).where(eq(oauth_session.tenant, organizationId));
     await tx.delete(tool_policy).where(eq(tool_policy.tenant, organizationId));
     await tx.delete(plugin_storage).where(eq(plugin_storage.tenant, organizationId));
+    await tx.delete(subject).where(eq(subject.tenant, organizationId));
 
     // Secrets, OAuth tokens, and cached specs live in `blob`, namespaced by
     // owner: `o:<org>/<plugin>` (org scope) and `u:<org>:<subject>/<plugin>`
