@@ -1443,6 +1443,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               'Call `skills({ name: "render-ui" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope.',
               "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<namespace>.<tool>.queryOptions(args))`.",
               "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
+              "To read every page of a paginated tool, call `useInfiniteQuery(tools.<namespace>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
               "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
             ].join("\n"),
             inputSchema: {
