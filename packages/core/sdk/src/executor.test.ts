@@ -15,7 +15,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
-import { makeTestExecutor } from "./testing";
+import { makeTestExecutor, memoryCredentialsPlugin } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
@@ -109,6 +109,25 @@ const demoPlugin = definePlugin(() => ({
           return yield* new TestPluginError({ message: "rollback" });
         }),
       ),
+  }),
+}))();
+
+const diagnosticsPlugin = definePlugin(() => ({
+  id: "diagnostics" as const,
+  storage: () => ({}),
+  resolveTools: () =>
+    Effect.succeed({
+      tools: [],
+      incomplete: true,
+      incompleteReason: "Schema introspection was rejected",
+    }),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make("diagnostics"),
+        description: "Diagnostics",
+        config: {},
+      }),
   }),
 }))();
 
@@ -266,6 +285,59 @@ describe("createExecutor", () => {
 
       const out = yield* executor.execute(addr("run"), {});
       expect(out).toEqual({ ran: "run" });
+    }),
+  );
+
+  it.effect("surfaces failed tool sync diagnostics through connection tools", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.diagnostics.seed();
+
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics",
+          template: "none",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const listed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.list"),
+        { integration: "diagnostics" },
+      );
+      expect(listed).toMatchObject({
+        connections: [
+          {
+            lastHealth: {
+              status: "degraded",
+              detail: "Tool sync failing: Schema introspection was rejected",
+            },
+          },
+        ],
+      });
+
+      const refreshed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.refresh"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics",
+        },
+        { onElicitation: "accept-all" },
+      );
+      expect(refreshed).toMatchObject({
+        tools: [],
+        lastHealth: {
+          status: "degraded",
+          detail: "Tool sync failing: Schema introspection was rejected",
+        },
+      });
     }),
   );
 

@@ -309,6 +309,8 @@ export function ToolTree(props: {
    *  beneath each section. The same tool name can appear under two accounts (NOT
    *  deduped). When false/unset, render one flat tree (unchanged). */
   groupByConnection?: boolean;
+  /** Label shown when this tree has no tools and no active filter. */
+  emptyLabel?: string;
 }) {
   const {
     tools,
@@ -410,7 +412,9 @@ export function ToolTree(props: {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {filteredTools.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground">
-            {terms.length > 0 ? "No tools match your filter" : "No tools available"}
+            {terms.length > 0
+              ? "No tools match your filter"
+              : (props.emptyLabel ?? "No tools available")}
           </div>
         ) : groupByConnection ? (
           accountGroups.map((group) => (

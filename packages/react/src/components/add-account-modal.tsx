@@ -1767,13 +1767,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (continueError !== null) setContinueError(null);
   };
 
-  // Check the key works: probe the pasted credential WITHOUT saving the
-  // connection. When the integration has a configured health check we run it;
-  // otherwise we run the inline-picked candidate and, if it comes back healthy,
-  // save it as the integration's health check (so it's configured "then").
-  // Probe the pasted credential WITHOUT saving the connection. With a
-  // configured check the panel's Check runs this directly; with none it runs
-  // via handleCandidateProbe, which drafts a spec from the picked candidate.
+  // Probe the pasted credential without saving the connection. A configured
+  // health check runs directly; otherwise the picked candidate supplies a
+  // draft spec and becomes the integration's health check when it succeeds.
   const handleValidate = async (draftSpec?: HealthCheckSpec) => {
     const payloadOrigin = createCredentialPayloadOrigin({
       origin: credentialOrigin,
@@ -1782,7 +1778,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       onePasswordItemId,
       singleInput,
     });
-    if (!method || payloadOrigin === null || validating) return;
+    if (!method || payloadOrigin === null || validating) return null;
     setValidating(true);
     const exit = await doValidate({
       payload: {
@@ -1799,7 +1795,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (Exit.isFailure(exit)) {
       setValidationResult(null);
       toast.error(messageFromExit(exit, "Couldn't check the key"));
-      return;
+      return null;
     }
     const result = exit.value;
     setValidationResult(result);
@@ -1833,19 +1829,50 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return probedIdentity;
       });
     }
+    return result;
+  };
+
+  const candidateHealthSpec = (): HealthCheckSpec | null => {
+    if (!hcCandidateReady) return null;
+    const argEntries = Object.entries(hcArgs)
+      .map(([key, value]) => [key, value.trim()] as const)
+      .filter(([, value]) => value.length > 0);
+    return {
+      operation: hcOperation,
+      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+    };
   };
 
   // No configured check: build a draft spec from the picked candidate and
   // probe with it.
   const handleCandidateProbe = async () => {
-    if (!hcCandidateReady) return;
-    const argEntries = Object.entries(hcArgs)
-      .map(([key, value]) => [key, value.trim()] as const)
-      .filter(([, value]) => value.length > 0);
-    await handleValidate({
-      operation: hcOperation,
-      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
-    });
+    const spec = candidateHealthSpec();
+    if (spec) await handleValidate(spec);
+  };
+
+  const handleContinue = async () => {
+    if (credentialPayloadOrigin === null) {
+      setContinueError(singleInput ? "Enter the key first" : "Fill in every credential field");
+      return;
+    }
+
+    if (canCheckKey) {
+      const result =
+        validationResult?.status === "healthy"
+          ? validationResult
+          : hasHealthCheck
+            ? await handleValidate()
+            : await handleValidate(candidateHealthSpec() ?? undefined);
+      if (result?.status !== "healthy") {
+        setContinueError(
+          result?.detail ?? "Check the credential and resolve the connection error to continue.",
+        );
+        return;
+      }
+    }
+
+    setContinueError(null);
+    setWizardStep("place");
   };
 
   // The user clicked a field in the probe's response: that field IS the
@@ -2821,20 +2848,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       : "Connect with OAuth"}
                 </Button>
               ) : wizardActive && wizardStep === "validate" ? (
-                <Button
-                  type="button"
-                  onClick={() => {
-                    if (credentialPayloadOrigin === null) {
-                      setContinueError(
-                        singleInput ? "Enter the key first" : "Fill in every credential field",
-                      );
-                      return;
-                    }
-                    setContinueError(null);
-                    setWizardStep("place");
-                  }}
-                  loading={validating}
-                >
+                <Button type="button" onClick={() => void handleContinue()} loading={validating}>
                   Continue
                 </Button>
               ) : (

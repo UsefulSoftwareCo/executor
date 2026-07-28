@@ -13,6 +13,7 @@ import {
   type Owner,
 } from "@executor-js/sdk/shared";
 import {
+  checkConnectionHealth,
   connectionsAllAtom,
   integrationToolsAllAtom,
   integrationsOptimisticAtom,
@@ -21,7 +22,11 @@ import {
   refreshConnection,
   removeIntegrationOptimistic,
 } from "../api/atoms";
-import { connectionWriteKeys, integrationWriteKeys } from "../api/reactivity-keys";
+import {
+  connectionCheckKeys,
+  connectionWriteKeys,
+  integrationWriteKeys,
+} from "../api/reactivity-keys";
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
@@ -36,6 +41,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { useConnectionsHealth } from "../lib/use-connection-health";
 import {
   integrationDetailInternalTabFromSearch,
   type IntegrationDetailInternalTab,
@@ -74,6 +80,7 @@ export function IntegrationDetailPage(props: {
   const refreshTools = useAtomRefresh(integrationToolsAllAtom(slug));
   const doRemove = useAtomSet(removeIntegrationOptimistic, { mode: "promiseExit" });
   const doRefresh = useAtomSet(refreshConnection, { mode: "promiseExit" });
+  const doCheckHealth = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   // Policies are owner-partitioned on write; the integration policy menu writes
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
@@ -96,6 +103,7 @@ export function IntegrationDetailPage(props: {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [retryingTools, setRetryingTools] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<IntegrationDetailInternalTab>(() =>
     integrationDetailInternalTabFromSearch(props.tab),
@@ -236,6 +244,25 @@ export function IntegrationDetailPage(props: {
     );
   }, [connectionsResult, slug]);
 
+  const healthProbeFor = useConnectionsHealth(integrationConnections);
+  const toolsHealthIssue = useMemo(() => {
+    const issues = integrationConnections
+      .map((connection) => ({ connection, probe: healthProbeFor(connection) }))
+      .filter(
+        (
+          entry,
+        ): entry is {
+          connection: Connection;
+          probe: NonNullable<ReturnType<typeof healthProbeFor>>;
+        } => entry.probe?.status === "expired" || entry.probe?.status === "degraded",
+      )
+      .sort((a, b) => {
+        const rank = (status: string): number => (status === "expired" ? 0 : 1);
+        return rank(a.probe.status) - rank(b.probe.status);
+      });
+    return issues[0] ?? null;
+  }, [healthProbeFor, integrationConnections]);
+
   // Account-grouped tool rows for the Tools tab. NOT deduped across
   // connections: one row per (owner, connection, tool). The leaf's `name` is the
   // policy id `<integration>.<tool>` so leaf policy patterns stay correct, while
@@ -275,6 +302,17 @@ export function IntegrationDetailPage(props: {
   const selection = selectedToolId ? (selectionById.get(selectedToolId) ?? null) : null;
   const selectedAddress = selection?.address ?? null;
   const selectedBareName = selection?.bareName ?? null;
+  const connectedEmptyTools =
+    !isBuiltInIntegration && integrationConnections.length > 0 && integrationTools.length === 0;
+  const hasToolSyncIssue = connectedEmptyTools && toolsHealthIssue !== null;
+  const emptyToolsTitle = toolsHealthIssue
+    ? toolsHealthIssue.probe.status === "expired"
+      ? "Connection rejected"
+      : "Tool sync failed"
+    : "Checking connection";
+  const emptyToolsDescription =
+    toolsHealthIssue?.probe.detail ??
+    "Checking whether this connection can load the GraphQL schema.";
 
   // Declared auth methods — derived server-side from the owning plugin's config
   // and carried on the integration catalog response. This is authoritative even
@@ -354,6 +392,32 @@ export function IntegrationDetailPage(props: {
       success: connectionCount > 0 && refreshExits.every(Boolean),
     });
     setRefreshing(false);
+  };
+
+  const handleRetryTools = async () => {
+    if (retryingTools) return;
+    setRetryingTools(true);
+    let refreshedAny = false;
+    for (const connection of integrationConnections) {
+      const ref = {
+        owner: connection.owner,
+        integration: slug,
+        name: connection.name,
+      };
+      const health = await doCheckHealth({
+        params: ref,
+        query: {},
+        reactivityKeys: connectionCheckKeys,
+      });
+      if (Exit.isFailure(health) || health.value.status !== "healthy") continue;
+      const refreshed = await doRefresh({
+        params: ref,
+        reactivityKeys: connectionWriteKeys,
+      });
+      refreshedAny = refreshedAny || Exit.isSuccess(refreshed);
+    }
+    if (refreshedAny) refreshTools();
+    setRetryingTools(false);
   };
 
   const handleOpenAddConnection = () => {
@@ -504,6 +568,7 @@ export function IntegrationDetailPage(props: {
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
                       policies={sortedPolicies}
                       groupByConnection={!isBuiltInIntegration}
+                      emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
                     />
                   </div>
 
@@ -532,6 +597,23 @@ export function IntegrationDetailPage(props: {
                       <NoConnectionToolsEmptyState
                         onAddConnection={handleOpenAddConnection}
                         canAddConnection={accountsMethods.length > 0}
+                      />
+                    ) : hasToolSyncIssue ? (
+                      <ToolDetailEmpty
+                        hasTools={false}
+                        title={emptyToolsTitle}
+                        description={emptyToolsDescription}
+                        action={
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleRetryTools()}
+                            disabled={retryingTools}
+                          >
+                            {retryingTools ? "Checking…" : "Check and sync tools"}
+                          </Button>
+                        }
                       />
                     ) : (
                       <ToolDetailEmpty hasTools={integrationTools.length > 0} />
