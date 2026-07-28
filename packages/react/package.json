@@ -10,6 +10,7 @@
       "default": "./dist/console-routes.js"
     },
     "./api/oauth-popup": "./src/api/oauth-popup.ts",
+    "./api/shell-host": "./src/api/shell-host.ts",
     "./api/*": "./src/api/*.tsx",
     "./plugins/*": "./src/plugins/*.tsx",
     "./pages/*": "./src/pages/*.tsx",

@@ -3,6 +3,7 @@ import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { LocalAuthGate } from "@executor-js/react/api/local-auth";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { Toaster } from "@executor-js/react/components/sonner";
+import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { Shell } from "../web/shell";
 
@@ -35,9 +36,11 @@ function RootComponent() {
   return (
     <ExecutorProvider>
       <ExecutorPluginsProvider plugins={clientPlugins}>
-        <LocalAuthGate>
-          <Shell />
-        </LocalAuthGate>
+        <ArtifactShellProvider>
+          <LocalAuthGate>
+            <Shell />
+          </LocalAuthGate>
+        </ArtifactShellProvider>
         <Toaster />
       </ExecutorPluginsProvider>
     </ExecutorProvider>

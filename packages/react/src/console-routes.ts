@@ -43,6 +43,8 @@ export const CONSOLE_ROUTE_PATHS = [
   "/users",
   "/toolkits",
   "/toolkits/$toolkitSlug",
+  "/artifacts",
+  "/artifacts/$artifactId",
   "/resume/$executionId",
   "/plugins/$pluginId/$",
 ] as const;
@@ -85,6 +87,8 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     ["/users", route("/users", file("users.tsx"))],
     ["/toolkits", route("/toolkits", file("toolkits.tsx"))],
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],
+    ["/artifacts", route("/artifacts", file("artifacts.tsx"))],
+    ["/artifacts/$artifactId", route("/artifacts/$artifactId", file("artifacts.$artifactId.tsx"))],
     ["/resume/$executionId", route("/resume/$executionId", file("resume.$executionId.tsx"))],
     ["/plugins/$pluginId/$", route("/plugins/$pluginId/$", file("plugins.$pluginId.$.tsx"))],
   ];

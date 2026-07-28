@@ -6,6 +6,11 @@
 @source "../../../../apps/local/src/**/*.{ts,tsx}";
 @source "../../../../apps/cloud/src/**/*.{ts,tsx}";
 @source "../../../plugins/*/src/**/*.{ts,tsx}";
+/* The artifact page embeds the MCP-Apps shell, so the shell's own chrome
+   (loading state, trusted-approval modal) must compile into the app stylesheet.
+   Classes the MODEL invents at runtime are not scannable at build time — the
+   shell compiles those in-browser inside its sandboxed frame. */
+@source "../../../hosts/mcp-apps-shell/src/shell/**/*.{ts,tsx}";
 
 @theme inline {
   /* Geist sets UI and prose; Geist Mono sets code, slugs, IDs, counts, and labels.

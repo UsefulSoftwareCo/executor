@@ -1,3 +1,9 @@
+// `virtual:executor-inner-renderer` is supplied by `innerRendererPlugin`
+// (`@executor-js/mcp-apps-shell/vite`). Referenced explicitly — and first, as
+// triple-slash directives are only honored above the imports — so the ambient
+// declaration travels with this file into consumers that bundle the shell;
+// a consumer's tsconfig `include` covers only its own sources.
+/// <reference path="./inner-renderer-source.d.ts" />
 import "./globals.css";
 import "@tailwindcss/browser";
 

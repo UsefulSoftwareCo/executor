@@ -120,6 +120,11 @@ export interface AnalyticsEvents {
     success: boolean;
   };
 
+  // ── Artifacts page ───────────────────────────────────────────────────────
+  artifact_opened: { surface: "list" | "deep_link" };
+  artifact_renamed: { success: boolean };
+  artifact_removed: { success: boolean };
+
   // ── API keys ─────────────────────────────────────────────────────────────
   api_key_created: { success: boolean };
   api_key_revoked: { success: boolean };

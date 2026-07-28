@@ -12,6 +12,10 @@
       "types": "./src/shell-html.ts",
       "default": "./src/shell-html.ts"
     },
+    "./vite": {
+      "types": "./src/vite.ts",
+      "default": "./src/vite.ts"
+    },
     "./shell/components": {
       "types": "./src/shell/components.ts",
       "default": "./src/shell/components.ts"
@@ -19,6 +23,10 @@
     "./shell/shell-app": {
       "types": "./src/shell/shell-app.tsx",
       "default": "./src/shell/shell-app.tsx"
+    },
+    "./shell/artifact-renderer": {
+      "types": "./src/shell/artifact-renderer.tsx",
+      "default": "./src/shell/artifact-renderer.tsx"
     },
     "./shell/proxy": {
       "types": "./src/shell/proxy.ts",

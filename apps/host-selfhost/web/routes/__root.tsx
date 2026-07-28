@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
+import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
@@ -176,7 +177,13 @@ function AuthenticatedApp() {
             a slug-pinned URL would 404, and a single-org instance has nothing
             to select anyway. */}
         <OrganizationProvider organizationId={organization?.id ?? null}>
-          {organization ? <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate> : gated}
+          <ArtifactShellProvider>
+            {organization ? (
+              <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate>
+            ) : (
+              gated
+            )}
+          </ArtifactShellProvider>
         </OrganizationProvider>
       </ExecutorPluginsProvider>
     </ExecutorProvider>

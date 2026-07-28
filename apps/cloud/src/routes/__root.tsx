@@ -21,6 +21,7 @@ import { EXECUTOR_ORG_HEADER } from "@executor-js/react/api/server-connection";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
+import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
@@ -327,7 +328,9 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
                     a bare URL gets rewritten — onto the auth org, the one
                     thing it can mean. */}
                 <OrgSlugGate activeSlug={scopeSlug}>
-                  <Shell />
+                  <ArtifactShellProvider>
+                    <Shell />
+                  </ArtifactShellProvider>
                   <Toaster />
                 </OrgSlugGate>
               </OrganizationProvider>

@@ -26,6 +26,8 @@ export const ReactivityKey = {
   /** Credential-provider discovery. */
   providers: "providers",
   policies: "policies",
+  /** Saved generative-UI artifacts. */
+  artifacts: "artifacts",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
   /** An integration's declared health check (the operation/identity-field spec). */
@@ -70,6 +72,10 @@ export const healthCheckWriteKeys = [
  *  `tools.list` filters blocked tools — adding/removing a `block`
  *  policy changes what the tools page shows. */
 export const policyWriteKeys = [ReactivityKey.policies, ReactivityKey.tools] as const;
+
+/** Mutations that rename or delete a saved artifact. Artifacts are a leaf
+ *  resource — nothing else reads them — so they invalidate only themselves. */
+export const artifactWriteKeys = [ReactivityKey.artifacts] as const;
 
 /** Cloud-only: org membership mutations. */
 export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
