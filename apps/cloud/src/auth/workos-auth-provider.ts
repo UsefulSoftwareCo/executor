@@ -16,6 +16,7 @@
 //   - invalid api key            -> Unauthorized  401 invalid_api_key
 //   - api-key org not authorized -> NoOrganization 403 no_organization
 //   - no/invalid session         -> NoOrganization 403 no_organization
+//   - session without org header -> NoOrganization 403 no_organization (fail closed)
 //   - session org not authorized -> NoOrganization 403 no_organization
 //   - no auth header             -> falls through to the sealed-session path
 // The org-resolution infra errors (`UserStoreError` / `WorkOSError`) are
@@ -85,6 +86,10 @@ const NO_ORGANIZATION_IN_API_KEY = {
 const NO_ORGANIZATION_IN_SESSION = {
   code: "no_organization",
   message: "No organization in session",
+};
+const NO_ORGANIZATION_SELECTOR = {
+  code: "no_organization",
+  message: "No organization selector in request",
 };
 const INVALID_ACCESS_TOKEN = {
   code: "invalid_access_token",
@@ -199,13 +204,22 @@ export const resolveSessionPrincipal = (request: Request) =>
     if (!session) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }
-    // The console URL's org is the scope authority (sent as a header); the
-    // session's own org is the fallback for non-console callers. Membership is
-    // re-checked live either way — the header is a selector, not a trust
-    // boundary (see organization.ts).
-    const selector = orgSelectorFromRequest(request) ?? session.organizationId;
+    // The console URL's org is the scope authority, sent as a header on every
+    // request. FAIL CLOSED when it's missing: the sealed cookie's org is
+    // browser-global and pinned to whichever org WorkOS last touched, so
+    // falling back to it silently serves ANOTHER org's data to a multi-org
+    // user (the wrong-tenant connection-list bug, 2026-07). A header-less
+    // session call gets a clear 403 instead. Membership is re-checked live —
+    // the header is a selector, not a trust boundary (see organization.ts).
+    // A bare-URL first paint (no org in the path yet) may 403 here; that's
+    // the safe outcome — OrgSlugGate immediately canonicalizes the URL onto
+    // an org slug, the org-keyed atom registry remounts, and everything
+    // refetches with the header. `/account/me` — which deliberately DOES fall
+    // back to the session org to pick that landing org — lives on the account
+    // plane, not here.
+    const selector = orgSelectorFromRequest(request);
     if (!selector) {
-      return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
+      return yield* new NoOrganization(NO_ORGANIZATION_SELECTOR);
     }
     const org = yield* authorizeOrganizationSelector(session.userId, selector);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);

@@ -76,6 +76,7 @@ export const cloudTarget = (): Target => ({
       const label = `user-${randomUUID().slice(0, 8)}`;
       const email = `${label}@e2e.test`;
       let session = await signIn(email);
+      let orgSlug: string | null = null;
       if (org) {
         // The real create-organization flow; the refreshed sealed session in
         // the response carries the new org.
@@ -92,11 +93,18 @@ export const cloudTarget = (): Target => ({
           throw new Error(`cloud newIdentity: create-organization failed (${response.status})`);
         }
         session = cookiePair(response, "wos-session") ?? session;
+        orgSlug = ((await response.json()) as { slug?: string }).slug ?? null;
       }
       const [name, value] = session.split(/=(.*)/s);
       return {
         label: email,
-        headers: { cookie: session },
+        // The org selector header rides along exactly as the web client sends
+        // it from the console URL's slug: org-scoped API reads fail closed
+        // without it (no session-org fallback).
+        headers: {
+          cookie: session,
+          ...(orgSlug ? { "x-executor-organization": orgSlug } : {}),
+        },
         cookies: [{ name: name!, value: value! }],
         credentials: { email, password: "emulated" },
       };

@@ -10,6 +10,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { AutumnProvider } from "autumn-js/react";
+import { isValidOrgSlug } from "@executor-js/api";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
@@ -214,6 +215,14 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // is scoped to it, so `auth.organization` IS this org when the caller is a
   // member — and `null` when the URL names an org they can't access.
   const urlOrgSlug = (useParams({ strict: false }) as { orgSlug?: string }).orgSlug;
+  // The same slug derived from the PATHNAME instead of the route params: the
+  // params resolve asynchronously (a fresh load renders once with no orgSlug,
+  // then again with it), and anything keyed on them remounts on that flap.
+  // The pathname is synchronously correct on the very first render, and it is
+  // exactly what the request header derives from (getActiveOrgSlug), so the
+  // registry scope below can never disagree with the header scope.
+  const firstSegment = location.pathname.split("/")[1] ?? "";
+  const pathnameOrgSlug = isValidOrgSlug(firstSegment) ? firstSegment : null;
 
   // The SSR gate already bounced fresh org-less document requests to
   // /create-org; this catches the MID-SESSION transitions (org deleted,
@@ -282,26 +291,42 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // /<orgB> while their cookie still points at orgA would briefly render orgA's
   // slug in the copyable URL before /account/me (URL-scoped) corrects it. The
   // URL slug is the actual request scope and is correct on the very first paint,
-  // so sourcing it from there removes that flash. Falls back to the session slug
-  // on a bare URL (which OrgSlugGate is about to canonicalize onto it anyway).
-  const scopeSlug = urlOrgSlug ?? activeSlug;
+  // so sourcing it from there removes that flash. VALIDATED (pathnameOrgSlug,
+  // not the raw route param): the `{-$orgSlug}` param also captures reserved
+  // console roots ("/integrations" → orgSlug "integrations"), which are not
+  // org scopes. Falls back to the auth org on a bare/reserved URL (which
+  // OrgSlugGate canonicalizes onto it below).
+  const scopeSlug = pathnameOrgSlug ?? activeSlug;
   const billingHeaders = scopeSlug ? { [EXECUTOR_ORG_HEADER]: scopeSlug } : undefined;
 
   return (
     <AutumnProvider pathPrefix="/api/billing" headers={billingHeaders}>
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
-        <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
+        {/* scopeKey ties the atom registry to the URL's org: cached query
+            results can never survive an org change, and the bare → slugged
+            canonicalization remounts the registry so anything fetched
+            header-less on first paint (rejected server-side) is refetched
+            with the org header. */}
+        <ExecutorProvider
+          connection={connection}
+          scopeKey={pathnameOrgSlug}
+          onHandledError={captureFrontendError}
+        >
           <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider
                 organizationId={auth.organization.id}
                 organizationSlug={scopeSlug}
               >
-                {/* The org header scopes every request to the URL's org, so
-                    reaching here means the caller is a member of `activeSlug`
-                    (a foreign slug already 404'd above). The gate only keeps
-                    the URL canonical — bare → /<slug>. */}
-                <OrgSlugGate activeSlug={activeSlug}>
+                {/* Canonicalize onto the URL's org, not the auth org: on first
+                    paint `auth.organization` is the SSR hint (the COOKIE's
+                    org), and canonicalizing onto that would rewrite a
+                    multi-org user's /<orgB> URL to /<orgA> during the hint
+                    window. `scopeSlug` prefers the URL slug, so a slugged URL
+                    is already canonical (a foreign slug 404'd above) and only
+                    a bare URL gets rewritten — onto the auth org, the one
+                    thing it can mean. */}
+                <OrgSlugGate activeSlug={scopeSlug}>
                   <Shell />
                   <Toaster />
                 </OrgSlugGate>
