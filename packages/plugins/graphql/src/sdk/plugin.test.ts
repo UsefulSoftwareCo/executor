@@ -798,6 +798,67 @@ describe("graphqlPlugin real protocol server", () => {
     }),
   );
 
+  it.effect("classifies a bare auth GraphQL error without auth keywords near a boundary", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            errors: [{ message: "Not authenticated" }],
+          }),
+        ),
+      );
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: server.url("/graphql"),
+        slug: "health_bare_auth",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_bare_auth"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result.status).toBe("expired");
+      expect(result.detail).toContain("Upstream said: Not authenticated");
+    }),
+  );
+
+  it.effect("scrubs the probed credential value out of the health detail", () =>
+    Effect.gen(function* () {
+      const secret = "sk_live_scrub_me";
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({ message: `Invalid API key ${secret}` }, { status: 401 }),
+        ),
+      );
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: server.url("/graphql"),
+        slug: "health_scrub",
+        authenticationTemplate: [
+          {
+            slug: "header",
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
+          },
+        ],
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_scrub"),
+        template: AuthTemplateSlug.make("header"),
+        value: secret,
+      });
+
+      expect(result.status).toBe("expired");
+      expect(result.detail).not.toContain(secret);
+      expect(result.detail).toContain("[redacted]");
+    }),
+  );
+
   it.effect("reports an invalid introspection response as degraded", () =>
     Effect.gen(function* () {
       const server = yield* serveTestHttpApp(() =>
@@ -851,7 +912,9 @@ describe("graphqlPlugin real protocol server", () => {
       });
       expect(connection?.lastHealth).toMatchObject({
         status: "degraded",
-        detail: "Tool sync failing: Introspection failed with status 401: Bad credentials",
+        detail:
+          "Tool sync failing: The endpoint rejected the credential with HTTP 401. " +
+          "Check the credential and selected authentication method. Upstream said: Bad credentials",
       });
       expect(
         (yield* executor.tools.list()).filter(

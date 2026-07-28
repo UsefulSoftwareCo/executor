@@ -113,9 +113,17 @@ const appendUpstreamMessage = (detail: string, message?: string): string =>
 
 const isAuthMessage = (message: string | undefined): boolean =>
   message !== undefined &&
-  /\b(auth|authoriz|unauthoriz|forbidden|permission|credential|token|api key|access denied)\b/i.test(
+  /authoriz|authenticat|forbidden|permission|credential|api.?key|access denied|access token|invalid token|token expired|logged in|sign in/i.test(
     message,
   );
+
+/** Upstream error text can echo the request back (URLs with query params,
+ *  auth headers), so scrub every credential value out of anything that leaves
+ *  as `detail` so a probe can never leak the secret it authenticated with. */
+const scrubCredentialValues = (text: string, values: Record<string, string | null>): string =>
+  Object.values(values)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .reduce((out, secret) => out.split(secret).join("[redacted]"), text);
 
 const missingCredentialVariables = (
   method: GraphqlAuthMethod | undefined,
@@ -708,15 +716,24 @@ const checkGraphqlHealth = (input: {
       ),
     );
 
-    if (!result.ok) return healthFromIntrospectionError(result.error, checkedAt);
+    if (!result.ok) {
+      const verdict = healthFromIntrospectionError(result.error, checkedAt);
+      return verdict.detail === undefined
+        ? verdict
+        : { ...verdict, detail: scrubCredentialValues(verdict.detail, input.credential.values) };
+    }
 
-    const queryType = result.introspection.__schema.queryType?.name ?? "Query";
+    const queryType = result.introspection.__schema.queryType?.name;
     return {
       status: "healthy",
       httpStatus: 200,
-      identity: `GraphQL schema: ${queryType}`,
       checkedAt,
-      responseSample: [{ path: "__schema.queryType.name", value: queryType }],
+      ...(queryType != null
+        ? {
+            identity: `GraphQL schema: ${queryType}`,
+            responseSample: [{ path: "__schema.queryType.name", value: queryType }],
+          }
+        : {}),
     } satisfies HealthCheckResult;
   });
 
@@ -1228,7 +1245,13 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           ),
         );
         if (!introspectionResult.ok) {
-          return incomplete(introspectionResult.error.message);
+          // One classifier for introspection failures: the persisted sync
+          // verdict carries the same actionable text as a live health probe,
+          // scrubbed of the credential it authenticated with.
+          const verdict = healthFromIntrospectionError(introspectionResult.error, Date.now());
+          return incomplete(
+            scrubCredentialValues(verdict.detail ?? introspectionResult.error.message, values),
+          );
         }
         const introspection = introspectionResult.introspection;
         const extracted = yield* extract(introspection).pipe(Effect.option);

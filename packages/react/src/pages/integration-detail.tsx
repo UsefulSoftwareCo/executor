@@ -2,7 +2,9 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet, useAtomRefresh } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { toast } from "sonner";
 import { trackEvent } from "../api/analytics";
+import { messageFromExit } from "../api/error-reporting";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   AuthTemplateSlug,
@@ -398,6 +400,9 @@ export function IntegrationDetailPage(props: {
     if (retryingTools) return;
     setRetryingTools(true);
     let refreshedAny = false;
+    // The first still-unhealthy verdict (or failed call) explains why nothing
+    // synced; without it the button spins and stops with no visible change.
+    let firstProblem: string | null = null;
     for (const connection of integrationConnections) {
       const ref = {
         owner: connection.owner,
@@ -409,14 +414,35 @@ export function IntegrationDetailPage(props: {
         query: {},
         reactivityKeys: connectionCheckKeys,
       });
-      if (Exit.isFailure(health) || health.value.status !== "healthy") continue;
+      if (Exit.isFailure(health)) {
+        firstProblem ??= messageFromExit(health, "Health check failed");
+        continue;
+      }
+      if (health.value.status !== "healthy") {
+        firstProblem ??= health.value.detail ?? "The connection is still unhealthy.";
+        continue;
+      }
       const refreshed = await doRefresh({
         params: ref,
         reactivityKeys: connectionWriteKeys,
       });
-      refreshedAny = refreshedAny || Exit.isSuccess(refreshed);
+      if (Exit.isFailure(refreshed)) {
+        firstProblem ??= messageFromExit(refreshed, "Tool sync failed");
+        continue;
+      }
+      refreshedAny = true;
     }
-    if (refreshedAny) refreshTools();
+    trackEvent("integration_refreshed", {
+      integration_slug: String(slug),
+      connection_count: integrationConnections.length,
+      success: refreshedAny,
+    });
+    if (refreshedAny) {
+      refreshTools();
+      toast.success("Tools synced");
+    } else {
+      toast.error(firstProblem ?? "No connections to sync");
+    }
     setRetryingTools(false);
   };
 
