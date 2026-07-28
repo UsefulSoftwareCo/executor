@@ -16,6 +16,10 @@
       "types": "./src/render-ui.ts",
       "default": "./src/render-ui.ts"
     },
+    "./tool-call-code": {
+      "types": "./src/tool-call-code.ts",
+      "default": "./src/tool-call-code.ts"
+    },
     "./in-memory-session-store": {
       "types": "./src/in-memory-session-store.ts",
       "default": "./src/in-memory-session-store.ts"

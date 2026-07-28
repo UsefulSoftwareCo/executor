@@ -15,8 +15,26 @@ describe("provided globals", () => {
   });
 
   it("covers the names the shell is built around", () => {
-    for (const name of ["React", "useState", "useQuery", "tools", "run", "Card", "cn"]) {
+    for (const name of [
+      "React",
+      "useState",
+      "useQuery",
+      "useInfiniteQuery",
+      "infiniteQueryOptions",
+      "tools",
+      "Card",
+      "cn",
+    ]) {
       expect(PROVIDED_SCOPE_NAMES).toContain(name);
     }
+  });
+
+  // The decision this branch encodes: artifact code is purely declarative
+  // `tools.*`. `run` was the escape hatch for arbitrary code and is gone from
+  // the model-facing surface entirely — re-adding it to the scope must fail
+  // here, not quietly reopen the hole.
+  it("binds no arbitrary-code escape hatch", () => {
+    expect(PROVIDED_SCOPE_NAMES).not.toContain("run");
+    expect(PROVIDED_SCOPE_NAMES).not.toContain("eval");
   });
 });

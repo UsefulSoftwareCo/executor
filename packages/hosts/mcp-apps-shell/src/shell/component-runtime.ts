@@ -11,9 +11,11 @@ import React, {
 import { transform } from "sucrase";
 
 import {
+  infiniteQueryOptions,
   mutationOptions,
   queryOptions,
   skipToken,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -60,12 +62,11 @@ export function compileJsx(code: string): string {
 export function evaluateComponent(
   compiled: string,
   tools: Record<string, unknown>,
-  run: (code: string) => Promise<unknown>,
 ): EvaluatedComponent {
   const module = { exports: {} as Record<string, unknown> | React.ComponentType };
   const exports = module.exports;
 
-  const scope: Record<string, unknown> = buildGeneratedCodeScope({ module, exports, tools, run });
+  const scope: Record<string, unknown> = buildGeneratedCodeScope({ module, exports, tools });
 
   const scopeKeys = Object.keys(scope);
   const scopeValues = scopeKeys.map((k) => scope[k]);
@@ -123,9 +124,8 @@ function buildGeneratedCodeScope(bindings: {
   module: unknown;
   exports: unknown;
   tools: Record<string, unknown>;
-  run: (code: string) => Promise<unknown>;
 }): Record<string, unknown> {
-  const { module, exports, tools, run } = bindings;
+  const { module, exports, tools } = bindings;
   return {
     // React core
     React,
@@ -154,15 +154,21 @@ function buildGeneratedCodeScope(bindings: {
 
     // Data fetching
     useQuery,
+    useInfiniteQuery,
     useMutation,
     useQueryClient,
     queryOptions,
+    infiniteQueryOptions,
     mutationOptions,
     skipToken,
 
-    // Tools proxy + escape hatch
+    // The tools proxy is the ONLY way generated code reaches an integration.
+    // There is deliberately no `run(code)` escape hatch: arbitrary code is
+    // opaque to the invalidation helpers (a hand-rolled `queryKey` defeats
+    // `queryFilter`) and to artifact analysis, which reads `tools.<path>`
+    // references out of the source. Pagination, the one thing `run` was
+    // reached for, is declarative through `.infiniteQueryOptions(...)`.
     tools,
-    run,
 
     // All UI components, icons, chart primitives
     ...Components,
@@ -180,6 +186,5 @@ export const PROVIDED_SCOPE_NAMES: readonly string[] = Object.keys(
     module: { exports: {} },
     exports: {},
     tools: {},
-    run: () => Promise.resolve(undefined),
   }),
 );

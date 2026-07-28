@@ -13,8 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { useElicitationApproval } from "@executor-js/react/components/elicitation-approval";
 
 import {
-  createToolsProxy,
-  createRunFn,
+  createToolCaller,
   type ToolCallHost,
   type TrustedInteraction,
   type TrustedInteractionResponse,
@@ -51,7 +50,6 @@ type RendererRequest =
       path: unknown;
       args: unknown;
     }
-  | { type: "executor.run"; requestId: number; token: string; code: unknown }
   | { type: "executor.renderer.ready"; token: string }
   | { type: "executor.renderer.config"; token: string; config: unknown }
   | { type: "executor.renderer.size"; token: string; height: unknown }
@@ -152,23 +150,6 @@ const buildRendererSrcDoc = (token: string): string => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$]*$/;
-
-const toolPathToCode = (path: unknown, args: unknown): string => {
-  if (!Array.isArray(path) || path.length === 0) {
-    throw new Error("Invalid tool path.");
-  }
-  const parts = path.map((part) => {
-    if (typeof part !== "string" || !TOOL_PATH_SEGMENT.test(part)) {
-      throw new Error("Invalid tool path.");
-    }
-    return part;
-  });
-  const argList = Array.isArray(args) ? args : [];
-  const serializedArgs = JSON.stringify(argList[0] ?? {});
-  return `return await tools.${parts.join(".")}(${serializedArgs})`;
-};
-
 // ---------------------------------------------------------------------------
 // Shell App — connects to MCP host, receives code, renders components
 // ---------------------------------------------------------------------------
@@ -185,8 +166,9 @@ export function McpAppsShell({
   const [error, setError] = useState<string | null>(null);
   const [hostContext, setHostContext] = useState<McpUiHostContext | undefined>();
   const [pendingInteraction, setPendingInteraction] = useState<PendingInteraction | null>(null);
-  const toolsRef = useRef<Record<string, unknown>>({});
-  const runRef = useRef<(code: string) => Promise<unknown>>(() => Promise.resolve(null));
+  const callToolRef = useRef<
+    (path: readonly string[], args: readonly unknown[]) => Promise<unknown>
+  >(() => Promise.resolve(null));
   const pendingInteractionRef = useRef<PendingInteraction | null>(null);
   const rendererFrameRef = useRef<HTMLIFrameElement | null>(null);
   const rendererRef = useRef<RendererState | null>(null);
@@ -281,40 +263,16 @@ export function McpAppsShell({
         return;
       }
 
-      if (data.type === "executor.run") {
-        if (typeof data.code !== "string") {
-          respond(data.requestId, false, undefined, "Invalid run payload.");
-          return;
-        }
-        runRef
-          .current(data.code)
-          .then((value) => respond(data.requestId, true, value))
-          .catch((err: unknown) =>
-            respond(
-              data.requestId,
-              false,
-              undefined,
-              err instanceof Error ? err.message : String(err),
-            ),
-          );
-        return;
-      }
-
+      // The ONLY request the generated iframe may make. There is no code
+      // channel: the inner renderer sends a tool path plus args, and the outer
+      // frame is what turns that into the one `execute-action` grammar.
       if (data.type === "executor.toolCall") {
-        let code: string;
-        try {
-          code = toolPathToCode(data.path, data.args);
-        } catch (err) {
-          respond(
-            data.requestId,
-            false,
-            undefined,
-            err instanceof Error ? err.message : String(err),
-          );
+        if (!Array.isArray(data.path)) {
+          respond(data.requestId, false, undefined, "Invalid tool path.");
           return;
         }
-        runRef
-          .current(code)
+        callToolRef
+          .current(data.path as readonly string[], Array.isArray(data.args) ? data.args : [])
           .then((value) => respond(data.requestId, true, value))
           .catch((err: unknown) =>
             respond(
@@ -362,8 +320,7 @@ export function McpAppsShell({
   }, []);
 
   useEffect(() => {
-    toolsRef.current = createToolsProxy(app, requestTrustedInteraction);
-    runRef.current = createRunFn(app, requestTrustedInteraction);
+    callToolRef.current = createToolCaller(app, requestTrustedInteraction);
 
     // Handle tool input — fires on init (including page reload) with
     // the tool arguments. For generative UI the arguments contain { code }.

@@ -29,10 +29,18 @@ export const artifactUrlFor =
 //
 // Generated code is evaluated inside the shell with ~280 names already bound as
 // function parameters (React hooks, TanStack Query, every shadcn/Recharts/Lucide
-// export, `tools`, `run`). A `const Card = ...` in the model's source shadows
-// the real binding and the component renders as a blank frame with a confusing
-// runtime error — so we reject redeclarations before the code ever reaches the
-// iframe, with a message that tells the model what to do instead.
+// export, `tools`). A `const Card = ...` in the model's source shadows the real
+// binding and the component renders as a blank frame with a confusing runtime
+// error — so we reject redeclarations before the code ever reaches the iframe,
+// with a message that tells the model what to do instead.
+//
+// The other rejection is `run(...)`. It was once the escape hatch for multi-step
+// composition and is now gone from the scope entirely: arbitrary code is opaque
+// to the invalidation helpers (a hand-rolled `queryKey` defeats
+// `queryFilter`-based refresh) and to artifact analysis, which reads
+// `tools.<integration>...` paths out of the source. Code that calls it would
+// fail at render time with a bare ReferenceError, so it is caught here where the
+// message can point at the declarative replacement.
 //
 // This is deliberately NOT a general "is this good code" check. The donor branch
 // also rejected array literals whose variable name looked data-ish
@@ -41,6 +49,11 @@ export const artifactUrlFor =
 // dropped; the "fetch live data with useQuery" guidance lives in the skill.
 
 const REACT_DESTRUCTURING_DECLARATION = /\b(?:const|let|var)\s*\{[^{}]*\}\s*=\s*React\b/s;
+
+/** A call to the removed `run` global. Not preceded by `.` or an identifier
+ *  character, so `foo.run(...)` and `rerun(...)` — a component's own helpers —
+ *  stay legal. */
+const REMOVED_RUN_CALL = /(?<![.\w$])run\s*\(/;
 
 const OBJECT_DESTRUCTURING_DECLARATION = /\b(?:const|let|var)\s*\{([^{}]*)\}\s*=/gs;
 
@@ -59,8 +72,20 @@ const localDestructuredName = (part: string): string | undefined => {
   return alias ?? binding?.match(/^([A-Za-z_$][\w$]*)\b/)?.[1];
 };
 
+/** A component's own local `run` — legal, since it shadows nothing anymore. */
+const LOCAL_RUN_DECLARATION = /\b(?:const|let|var|function)\s+run\b/;
+
 /** `null` when the code may be rendered, otherwise the reason to hand back. */
 export const validateRenderUiCode = (code: string): string | null => {
+  if (REMOVED_RUN_CALL.test(code) && !LOCAL_RUN_DECLARATION.test(code)) {
+    return [
+      "`run(code)` no longer exists — artifact code is purely declarative `tools.*`.",
+      "Read data with useQuery(tools.<ns>.<tool>.queryOptions(args)),",
+      "page through a cursor with useInfiniteQuery(tools.<ns>.<tool>.infiniteQueryOptions(args, { getNextPageParam })),",
+      "and write with useMutation(tools.<ns>.<tool>.mutationOptions({ onSuccess })).",
+    ].join(" ");
+  }
+
   if (REACT_DESTRUCTURING_DECLARATION.test(code)) {
     return [
       "Do not destructure React in render-ui.",

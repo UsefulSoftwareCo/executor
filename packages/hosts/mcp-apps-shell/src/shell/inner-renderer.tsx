@@ -3,12 +3,14 @@ import { createRoot } from "react-dom/client";
 import {
   QueryClient,
   QueryClientProvider,
+  infiniteQueryOptions,
   mutationOptions,
   queryOptions,
   skipToken,
   type MutationKey,
   type QueryFilters,
   type QueryKey,
+  type UseInfiniteQueryOptions,
   type UseMutationOptions,
   type UseQueryOptions,
 } from "@tanstack/react-query";
@@ -16,9 +18,7 @@ import {
 import { compileJsx, evaluateComponent } from "./component-runtime";
 import * as Components from "./components";
 
-type ParentRequestPayload =
-  | { type: "executor.toolCall"; path: string[]; args: unknown[] }
-  | { type: "executor.run"; code: string };
+type ParentRequestPayload = { type: "executor.toolCall"; path: string[]; args: unknown[] };
 
 type ParentResponse = {
   type: "executor.response";
@@ -110,6 +110,12 @@ const toolQueryKey = (path: readonly string[], input?: unknown): QueryKey => [
   { input, type: "query" },
 ];
 
+const toolInfiniteQueryKey = (path: readonly string[], input?: unknown): QueryKey => [
+  "executor-tool",
+  path,
+  { input, type: "infinite" },
+];
+
 const toolPathKey = (path: readonly string[]): QueryKey => ["executor-tool", path];
 
 const toolMutationKey = (path: readonly string[]): MutationKey => [
@@ -135,6 +141,49 @@ const pathFilter = (
   queryKey: toolPathKey(path),
 });
 
+/**
+ * Where a page cursor lands inside a tool's input.
+ *
+ * A dotted path rather than a merge function, deliberately: it is data, so the
+ * paging contract of an artifact can be read statically out of its source the
+ * same way `tools.<integration>.<...>` paths are. Nested inputs — the common
+ * OpenAPI `{ query: { … } }` shape — are reachable as `"query.cursor"`.
+ */
+const DEFAULT_CURSOR_KEY = "cursor";
+
+/** `input` with `pageParam` written at `cursorKey`, cloning only the spine it
+ *  touches so the caller's object is never mutated. A nullish page param writes
+ *  nothing at all, which is what makes `initialPageParam: null` mean "the first
+ *  request carries no cursor". */
+const withCursor = (input: unknown, cursorKey: string, pageParam: unknown): unknown => {
+  const base = input === undefined ? {} : input;
+  if (pageParam === null || pageParam === undefined) return base;
+
+  // Recurse over the remaining segments rather than an index, so "the head
+  // exists" is a fact about the array rather than something to assert.
+  const assign = (target: unknown, [segment, ...rest]: readonly string[]): unknown => {
+    if (segment === undefined) return pageParam;
+    const record: Record<string, unknown> =
+      typeof target === "object" && target !== null && !Array.isArray(target)
+        ? { ...(target as Record<string, unknown>) }
+        : {};
+    record[segment] = rest.length === 0 ? pageParam : assign(record[segment], rest);
+    return record;
+  };
+
+  return assign(base, cursorKey.split("."));
+};
+
+/** The model-facing half of `.infiniteQueryOptions`: TanStack's own infinite
+ *  options (minus the two the proxy owns) plus the cursor placement. */
+type ToolInfiniteQueryOptions = Omit<
+  UseInfiniteQueryOptions,
+  "queryKey" | "queryFn" | "initialPageParam"
+> & {
+  readonly initialPageParam?: unknown;
+  readonly cursorKey?: string;
+};
+
 const createToolsProxy = (): Record<string, unknown> => {
   const nest = (path: string[]): unknown =>
     new Proxy(function () {}, {
@@ -151,6 +200,39 @@ const createToolsProxy = (): Record<string, unknown> => {
                   ? skipToken
                   : () => requestParent({ type: "executor.toolCall", path, args: [input ?? {}] }),
             });
+        }
+        if (key === "infiniteQueryOptions") {
+          return (input?: unknown, options?: ToolInfiniteQueryOptions) => {
+            const {
+              cursorKey = DEFAULT_CURSOR_KEY,
+              initialPageParam = null,
+              ...rest
+            } = options ?? {};
+            return infiniteQueryOptions({
+              ...rest,
+              initialPageParam,
+              queryKey: toolInfiniteQueryKey(path, input === skipToken ? undefined : input),
+              queryFn:
+                input === skipToken
+                  ? skipToken
+                  : ({ pageParam }: { pageParam: unknown }) =>
+                      requestParent({
+                        type: "executor.toolCall",
+                        path,
+                        args: [withCursor(input, cursorKey, pageParam)],
+                      }),
+              // oxlint-disable-next-line executor/no-double-cast -- boundary: TanStack's option types are generic over the page-param type the model supplies at runtime
+            } as unknown as UseInfiniteQueryOptions);
+          };
+        }
+        if (key === "infiniteQueryKey") {
+          return (input?: unknown) => toolInfiniteQueryKey(path, input);
+        }
+        if (key === "infiniteQueryFilter") {
+          return (input?: unknown, filters?: Omit<QueryFilters, "queryKey">) => ({
+            ...filters,
+            queryKey: toolInfiniteQueryKey(path, input),
+          });
         }
         if (key === "queryKey") {
           return (input?: unknown) => toolQueryKey(path, input);
@@ -186,8 +268,6 @@ const createToolsProxy = (): Record<string, unknown> => {
 
   return nest([]) as Record<string, unknown>;
 };
-
-const run = (code: string): Promise<unknown> => requestParent({ type: "executor.run", code });
 
 const applyTheme = (theme: unknown) => {
   if (theme === "dark" || theme === "light") {
@@ -249,7 +329,7 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Er
 const renderGeneratedCode = (code: string) => {
   try {
     const compiled = compileJsx(code);
-    const evalResult = evaluateComponent(compiled, createToolsProxy(), run);
+    const evalResult = evaluateComponent(compiled, createToolsProxy());
 
     if ("error" in evalResult) {
       renderError("Error", evalResult.error);

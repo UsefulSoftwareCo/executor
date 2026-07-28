@@ -2,20 +2,33 @@ import { useRef } from "react";
 import {
   QueryClient,
   QueryClientProvider,
+  infiniteQueryOptions,
   mutationOptions,
   queryOptions,
   skipToken,
+  useInfiniteQuery as useTanStackInfiniteQuery,
   useMutation as useTanStackMutation,
   useQuery as useTanStackQuery,
   useQueryClient as useTanStackQueryClient,
+  type InfiniteData,
   type QueryClient as QueryClientType,
+  type QueryKey,
+  type UseInfiniteQueryOptions,
+  type UseInfiniteQueryResult,
   type UseMutationOptions,
   type UseMutationResult,
   type UseQueryOptions,
   type UseQueryResult,
 } from "@tanstack/react-query";
 
-export { QueryClient, QueryClientProvider, mutationOptions, queryOptions, skipToken };
+export {
+  QueryClient,
+  QueryClientProvider,
+  infiniteQueryOptions,
+  mutationOptions,
+  queryOptions,
+  skipToken,
+};
 
 const invalidationScopes: Array<Array<Promise<unknown>>> = [];
 
@@ -100,6 +113,37 @@ export function useQuery<
   queryClient?: QueryClientType,
 ): UseQueryResult<TData, TError> {
   return useTanStackQuery(options, queryClient);
+}
+
+/**
+ * `useInfiniteQuery` for cursor pagination, fed by
+ * `tools.<path>.infiniteQueryOptions(...)`.
+ *
+ * Pass-through like `useQuery`: the invalidation tracking lives in
+ * `useQueryClient` and the mutation callbacks, and infinite queries participate
+ * in it through the same proxy-minted query keys, so no wrapping is needed here.
+ */
+export function useInfiniteQuery<
+  TQueryFnData,
+  TError = Error,
+  TData = InfiniteData<TQueryFnData>,
+  TQueryKey extends QueryKey = QueryKey,
+  TPageParam = unknown,
+>(
+  options: UseInfiniteQueryOptions<TQueryFnData, TError, TData, TQueryKey, TPageParam>,
+  queryClient?: QueryClientType,
+): UseInfiniteQueryResult<TData, TError>;
+export function useInfiniteQuery<
+  TQueryFnData,
+  TError = Error,
+  TData = InfiniteData<TQueryFnData>,
+  TQueryKey extends QueryKey = QueryKey,
+  TPageParam = unknown,
+>(
+  options: UseInfiniteQueryOptions<TQueryFnData, TError, TData, TQueryKey, TPageParam>,
+  queryClient?: QueryClientType,
+): UseInfiniteQueryResult<TData, TError> {
+  return useTanStackInfiniteQuery(options, queryClient);
 }
 
 export function useMutation<TData = unknown, TError = Error, TVariables = void, TContext = unknown>(

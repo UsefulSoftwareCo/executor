@@ -12,7 +12,7 @@ describe("generated UI component runtime", () => {
       }
     `);
 
-    const result = evaluateComponent(compiled, {}, () => Promise.resolve(null));
+    const result = evaluateComponent(compiled, {});
 
     expect(compiled).not.toContain("export default");
     expect(result).not.toHaveProperty("error");
@@ -28,7 +28,7 @@ describe("generated UI component runtime", () => {
       }
     `);
 
-    const result = evaluateComponent(compiled, {}, () => Promise.resolve(null));
+    const result = evaluateComponent(compiled, {});
 
     expect(result).not.toHaveProperty("error");
     if ("error" in result) return;
@@ -43,7 +43,7 @@ describe("generated UI component runtime", () => {
       }
     `);
 
-    const result = evaluateComponent(compiled, {}, () => Promise.resolve(null));
+    const result = evaluateComponent(compiled, {});
 
     expect(result).toEqual({
       error:

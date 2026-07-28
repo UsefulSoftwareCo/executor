@@ -26,60 +26,50 @@ export type RequestTrustedInteraction = (
   interaction: TrustedInteraction,
 ) => Promise<TrustedInteractionResponse>;
 
+const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$]*$/;
+
 /**
- * Creates a tRPC-style recursive proxy that maps dotted tool paths
- * to execute-action calls through the MCP Apps bridge.
+ * The ONE grammar the shell ever puts on the `execute-action` wire:
  *
- * Usage: tools.github.issues.create({ title: "Bug" })
- * becomes: app.callServerTool("execute-action", { code: "return await tools.github.issues.create({\"title\":\"Bug\"})" })
+ *     return await tools.<ident>(.<ident>)*(<JSON>)
+ *
+ * A single proxy-shaped tool call, nothing else — no statements, no loops, no
+ * composition. The server parses `execute-action` against exactly this shape
+ * (`parseToolCallCode` in `@executor-js/host-mcp`), so an iframe cannot smuggle
+ * arbitrary code through the app channel even though the shell UI never offers
+ * a way to write any. `tool-call-grammar.pin.test.ts` pins the two together.
+ *
+ * Args are `JSON.stringify` output, so the whole emission stays parseable.
  */
-export function createToolsProxy(
-  app: ToolCallHost,
-  requestTrustedInteraction: RequestTrustedInteraction,
-): Record<string, unknown> {
-  function nest(path: string[]): unknown {
-    return new Proxy(function () {}, {
-      get(_target, key: string) {
-        if (key === "then" || key === "toJSON" || key === (Symbol.toPrimitive as unknown)) {
-          return undefined;
-        }
-        return nest([...path, key]);
-      },
-      apply(_target, _thisArg, args: unknown[]) {
-        const toolPath = path.join(".");
-        const serializedArgs = args.length > 0 ? JSON.stringify(args[0]) : "{}";
-        const code = `return await tools.${toolPath}(${serializedArgs})`;
-
-        return app
-          .callServerTool({
-            name: "execute-action",
-            arguments: { code },
-          })
-          .then((r) => resolveToolResult(app, r, requestTrustedInteraction));
-      },
-    });
-  }
-
-  return nest([]) as Record<string, unknown>;
+export function toolCallCode(path: readonly string[], args: readonly unknown[]): string {
+  if (path.length === 0) throw new Error("Invalid tool path.");
+  const parts = path.map((part) => {
+    if (typeof part !== "string" || !TOOL_PATH_SEGMENT.test(part)) {
+      throw new Error("Invalid tool path.");
+    }
+    return part;
+  });
+  return `return await tools.${parts.join(".")}(${JSON.stringify(args[0] ?? {})})`;
 }
 
 /**
- * Creates the `run()` escape hatch for multi-step tool composition.
+ * Calls one tool through the MCP Apps bridge, resolving any shell-owned
+ * approval the execution pauses for.
  *
- * Usage: const result = await run(`
- *   const me = await tools.github.users.me()
- *   return await tools.github.issues.create({ assignee: me.login, ... })
- * `)
+ * `tools.github.issues.create({ title: "Bug" })` in the generated iframe arrives
+ * here as `(["github","issues","create"], [{ title: "Bug" }])` and becomes
+ * `execute-action` with
+ * `code: "return await tools.github.issues.create({\"title\":\"Bug\"})"`.
  */
-export function createRunFn(
+export function createToolCaller(
   app: ToolCallHost,
   requestTrustedInteraction: RequestTrustedInteraction,
-): (code: string) => Promise<unknown> {
-  return (code: string) =>
+): (path: readonly string[], args: readonly unknown[]) => Promise<unknown> {
+  return (path, args) =>
     app
       .callServerTool({
         name: "execute-action",
-        arguments: { code },
+        arguments: { code: toolCallCode(path, args) },
       })
       .then((r) => resolveToolResult(app, r, requestTrustedInteraction));
 }

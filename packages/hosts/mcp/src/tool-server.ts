@@ -49,6 +49,7 @@ import {
   type PausedExecutionDeadline,
 } from "@executor-js/execution";
 import { MCP_APPS_SHELL_RESOURCE_URI, validateRenderUiCode } from "./render-ui";
+import { TOOL_CALL_CONTRACT_MESSAGE, parseToolCallCode } from "./tool-call-code";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -746,6 +747,15 @@ const renderRejectedResult = (reason: string): McpToolResult => ({
   isError: true,
 });
 
+/** `execute-action` was handed something other than a single proxy-shaped tool
+ *  call. Names the contract rather than just refusing, since the reader is
+ *  either a confused iframe or someone probing the app channel by hand. */
+const actionRejectedResult = (): McpToolResult => ({
+  content: [{ type: "text", text: TOOL_CALL_CONTRACT_MESSAGE }],
+  structuredContent: { status: "error", error: "invalid_action_code" },
+  isError: true,
+});
+
 const renderedInAppResult = (input: {
   readonly code: string;
   readonly artifactId: string;
@@ -1027,13 +1037,24 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // way to act on from inside a widget. That holds even when the session's
     // elicitation mode is `browser`, which is why this doesn't just call
     // `executeCode`.
+    //
+    // The other difference is WIDTH. `execute` takes arbitrary code because the
+    // model writes it; this channel takes exactly one proxy-shaped tool call,
+    // because that is all a declarative artifact can produce. See
+    // `tool-call-code.ts`.
     const executeCodeFromApp = (code: string): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
+        const call = parseToolCallCode(code);
         debugLog("execute_action.call", {
           elicitationMode: elicitationMode.mode,
           elicitationSupport: getElicitationSupport(server),
           codeLength: code.length,
+          toolPath: call?.path.join(".") ?? null,
         });
+        if (!call) {
+          yield* Effect.annotateCurrentSpan({ "mcp.execute_action.rejected": true });
+          return actionRejectedResult();
+        }
         if (elicitationMode.mode === "native") {
           const result = yield* engine.execute(code, {
             onElicitation: makeMcpElicitationHandler(server, debugLog),
@@ -1421,6 +1442,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               "Render an interactive React UI component as an MCP app, and save it as a reusable artifact.",
               'Call `skills({ name: "render-ui" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope.',
               "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<namespace>.<tool>.queryOptions(args))`.",
+              "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
               "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
             ].join("\n"),
             inputSchema: {

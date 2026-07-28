@@ -35,6 +35,12 @@ const api = composePluginApi([] as const);
  * its rendered text must be distinctive enough to assert on inside the shell's
  * nested sandbox iframe.
  *
+ * It is purely declarative, which is now the whole contract rather than a
+ * stylistic choice: there is no `run()` in scope, and code that calls one is
+ * rejected before it is saved. Rows come from `Array.from`, a display constant —
+ * an artifact that needed live data would reach for
+ * `useQuery(tools.<ns>.<tool>.queryOptions(...))`.
+ *
  * It is also deliberately TALL — 40 rows, well past the frame's initial height.
  * The shell reports its content height over the MCP-Apps resize protocol and the
  * artifact page, as host, grows the iframe to match. When the shell was mounted
@@ -170,6 +176,21 @@ scenario(
       const tools = yield* session.listTools();
       expect(tools, "render-ui is advertised regardless of MCP-Apps support").toContain(
         "render-ui",
+      );
+
+      // Artifact code is purely declarative `tools.*`. The `run()` escape hatch
+      // is gone from the shell scope, so a model reaching for it — which is
+      // exactly what one did to hand-roll a pagination loop — is turned around
+      // here, with the declarative replacement named, rather than saving an
+      // artifact that would die with a ReferenceError inside the iframe.
+      const refused = yield* session.call("render-ui", {
+        code: `function App(){ const q = useQuery({ queryKey: ["x"], queryFn: () => run("return await tools.a.b({})") }); return null; }`,
+        title: `Rejected ${suffix}`,
+        description: "Should never be saved",
+      });
+      expect(refused.ok, "render-ui refuses code that calls run()").toBe(false);
+      expect(refused.text, "the model is told what to use instead").toContain(
+        "infiniteQueryOptions",
       );
 
       const rendered = yield* session.call("render-ui", {

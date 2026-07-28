@@ -343,6 +343,65 @@ describe("MCP host — render-ui", () => {
     );
   });
 
+  // `run(code)` is gone from the shell scope entirely, so code calling it would
+  // die inside the iframe with a bare ReferenceError. Rejecting it here is how
+  // the model learns the declarative replacement instead.
+  it("rejects code that reaches for the removed run() escape hatch", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const rejected = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "function App(){",
+              "  const q = useQuery({",
+              "    queryKey: ['domains'],",
+              "    queryFn: () => run('let all = []; for (let i=0;i<40;i++){ all.push(await tools.a.b({})) } return all'),",
+              "  });",
+              "  return null;",
+              "}",
+            ].join("\n"),
+            title: "Paginated",
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        expect(textOf(rejected)).toContain("`run(code)` no longer exists");
+        expect(textOf(rejected)).toContain("infiniteQueryOptions");
+        expect(store.calls).toHaveLength(0);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("allows a component's own helper named run, and property access on run", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const accepted = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "function App(){",
+              "  const run = (id) => id;",
+              "  const label = workflow.run({ id: 1 });",
+              "  return <div>{run(label)}</div>;",
+              "}",
+            ].join("\n"),
+            title: "Local run",
+          },
+        });
+        expect(accepted.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
   it("allows display constants that the dropped data heuristic used to reject", async () => {
     const store = makeArtifactStore();
     await withClient(
@@ -509,6 +568,62 @@ describe("MCP host — execute-action", () => {
           approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,
         },
       },
+    );
+  });
+
+  // The app channel is as narrow as the surface above it. The shell can only
+  // ever emit `return await tools.<path>(<json>)`, so that is all the server
+  // accepts — an iframe posting anything wider is refused before it reaches the
+  // engine, even though no affordance in the shell writes arbitrary code.
+  it("refuses anything that is not a single proxy-shaped tool call", async () => {
+    const store = makeArtifactStore();
+    const executed: string[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: (code: string) =>
+        Effect.sync(() => {
+          executed.push(code);
+          return { status: "completed", result: { result: "ok" } };
+        }),
+    });
+
+    await withClient(
+      engine,
+      APPS_CAPS,
+      async (client) => {
+        const smuggled = [
+          "let all = []; for (let i = 0; i < 40; i++) { all.push(await tools.a.b({ page: i })) } return all",
+          "const me = await tools.github.users.me(); return await tools.github.issues.create({ assignee: me.login })",
+          "return await fetch('https://evil.example')",
+          "return await tools.a.b({}) ; return await tools.c.d({})",
+          "return 42",
+        ];
+
+        for (const code of smuggled) {
+          const rejected = await client.callTool({
+            name: "execute-action",
+            arguments: { code },
+          });
+          expect(rejected.isError, code).toBe(true);
+          expect(textOf(rejected)).toContain("execute-action accepts a single tool call");
+          expect(structuredOf(rejected)).toMatchObject({ error: "invalid_action_code" });
+        }
+
+        // Nothing rejected ever reached the engine.
+        expect(executed).toEqual([]);
+
+        // …and the shape the proxy actually emits still runs.
+        const allowed = await client.callTool({
+          name: "execute-action",
+          arguments: {
+            code: 'return await tools.inventory.org.main.createItem({"body":{"name":"Widget"}})',
+          },
+        });
+        expect(allowed.isError).toBeFalsy();
+        expect(executed).toEqual([
+          'return await tools.inventory.org.main.createItem({"body":{"name":"Widget"}})',
+        ]);
+      },
+      { artifacts: store.port },
     );
   });
 });

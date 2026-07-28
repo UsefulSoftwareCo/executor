@@ -107,6 +107,50 @@ const CreateItemSchema = Schema.toStandardSchemaV1(
 const DomainSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(Schema.Struct({ domain: Schema.String })),
 );
+// Two cursor shapes, because the proxy's `cursorKey` has to place a page param
+// at a top-level field AND down a dotted path into a nested input object (the
+// common `{ query: { … } }` OpenAPI shape).
+const ListPageSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(
+    Schema.Struct({
+      limit: Schema.optional(Schema.Number),
+      cursor: Schema.optional(Schema.String),
+    }),
+  ),
+);
+const ListNestedPageSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(
+    Schema.Struct({
+      query: Schema.optional(
+        Schema.Struct({
+          limit: Schema.optional(Schema.Number),
+          since: Schema.optional(Schema.String),
+        }),
+      ),
+    }),
+  ),
+);
+
+/**
+ * A three-page cursor-paginated upstream.
+ *
+ * `cursor === undefined` is page 1 — which is what makes the proxy's
+ * "`initialPageParam: null` sends no cursor at all" convention observable: a
+ * first request carrying `{"cursor":null}` would land here as a page-not-found
+ * rather than page 1.
+ */
+const PAGE_SIZE = 2;
+const PAGED_ITEMS = ["alpha", "beta", "gamma", "delta", "epsilon"] as const;
+
+const pageOf = (cursor: string | undefined) => {
+  const offset = cursor === undefined ? 0 : Number(cursor);
+  if (!Number.isInteger(offset) || offset < 0 || offset >= PAGED_ITEMS.length) {
+    return { items: [], nextCursor: null };
+  }
+  const items = PAGED_ITEMS.slice(offset, offset + PAGE_SIZE);
+  const next = offset + PAGE_SIZE;
+  return { items, nextCursor: next < PAGED_ITEMS.length ? String(next) : null };
+};
 const UpdateAutoRenewSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(
     Schema.Struct({
@@ -206,6 +250,32 @@ const inventoryPlugin = (postRequests: string[]) => {
       },
       validator: DomainSchema,
       handler: (args: { readonly domain: string }) => ({ domain: args.domain, renew: autoRenew }),
+    },
+    {
+      name: "listPaged",
+      description: "List items one page at a time, top-level cursor",
+      inputJsonSchema: {
+        type: "object",
+        properties: { limit: { type: "integer" }, cursor: { type: "string" } },
+      },
+      validator: ListPageSchema,
+      handler: (args: { readonly cursor?: string }) => pageOf(args.cursor),
+    },
+    {
+      name: "listPagedNested",
+      description: "List items one page at a time, cursor nested under query",
+      inputJsonSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "object",
+            properties: { limit: { type: "integer" }, since: { type: "string" } },
+          },
+        },
+      },
+      validator: ListNestedPageSchema,
+      handler: (args: { readonly query?: { readonly since?: string } }) =>
+        pageOf(args.query?.since),
     },
     {
       name: "updateDomainAutoRenew",
@@ -484,6 +554,63 @@ function App() {
         >
           Toggle
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
+// The declarative answer to "fetch every page" — the thing a model used to
+// reach `run()` for. No queryKey, no queryFn, no loop: the proxy mints the key
+// and merges each page param into the tool input at `cursorKey`.
+const generatedInfiniteQueryCode = `
+function App() {
+  const paged = useInfiniteQuery(
+    tools.inventory.org.main.listPaged.infiniteQueryOptions(
+      { limit: 2 },
+      { getNextPageParam: (lastPage) => (lastPage?.ok ? lastPage.data : lastPage)?.nextCursor ?? undefined }
+    )
+  );
+
+  const items = (paged.data?.pages ?? []).flatMap(
+    (page) => ((page?.ok ? page.data : page)?.items ?? [])
+  );
+
+  return (
+    <Card>
+      <CardContent>
+        <div id="paged-items">{items.join(",")}</div>
+        <div id="paged-count">{String(paged.data?.pages?.length ?? 0)}</div>
+        <div id="paged-has-next">{String(paged.hasNextPage)}</div>
+        <Button id="paged-more" onClick={() => paged.fetchNextPage()}>More</Button>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
+// Same contract, cursor written down a dotted path into a nested input.
+const generatedNestedInfiniteQueryCode = `
+function App() {
+  const paged = useInfiniteQuery(
+    tools.inventory.org.main.listPagedNested.infiniteQueryOptions(
+      { query: { limit: 2 } },
+      {
+        cursorKey: "query.since",
+        getNextPageParam: (lastPage) => (lastPage?.ok ? lastPage.data : lastPage)?.nextCursor ?? undefined,
+      }
+    )
+  );
+
+  const items = (paged.data?.pages ?? []).flatMap(
+    (page) => ((page?.ok ? page.data : page)?.items ?? [])
+  );
+
+  return (
+    <Card>
+      <CardContent>
+        <div id="nested-items">{items.join(",")}</div>
+        <Button id="nested-more" onClick={() => paged.fetchNextPage()}>More</Button>
       </CardContent>
     </Card>
   );
@@ -1284,6 +1411,8 @@ describe("MCP app generated UI browser isolation", () => {
       const innerFrame = await renderGeneratedUi(page, shellFrame, generatedStaticCode);
       await innerFrame.locator("#ready").waitFor({ timeout: 10_000 });
 
+      // A tool-call request from the wrong window, and one from the right
+      // window with the wrong token. Neither may reach the bridge.
       await shellFrame.evaluate(() => {
         const iframe = document.querySelector<HTMLIFrameElement>('iframe[title="Generated UI"]');
         const srcDoc = iframe?.getAttribute("srcdoc") ?? "";
@@ -1292,16 +1421,21 @@ describe("MCP app generated UI browser isolation", () => {
           throw new Error("Generated UI iframe is missing a token.");
         }
 
+        const payload = {
+          type: "executor.toolCall",
+          path: ["inventory", "org", "main", "listItems"],
+          args: [{}],
+        };
         window.dispatchEvent(
           new MessageEvent("message", {
             source: window,
-            data: { type: "executor.run", requestId: 1, token, code: "return 42" },
+            data: { ...payload, requestId: 1, token },
           }),
         );
         window.dispatchEvent(
           new MessageEvent("message", {
             source: iframe.contentWindow,
-            data: { type: "executor.run", requestId: 2, token: "wrong", code: "return 42" },
+            data: { ...payload, requestId: 2, token: "wrong" },
           }),
         );
       });
@@ -1320,7 +1454,13 @@ describe("MCP app generated UI browser isolation", () => {
         window.dispatchEvent(
           new MessageEvent("message", {
             source: iframe.contentWindow,
-            data: { type: "executor.run", requestId: 3, token, code: "return 42" },
+            data: {
+              type: "executor.toolCall",
+              requestId: 3,
+              token,
+              path: ["inventory", "org", "main", "listItems"],
+              args: [{}],
+            },
           }),
         );
       });
@@ -1328,10 +1468,12 @@ describe("MCP app generated UI browser isolation", () => {
       await page.waitForFunction(
         () => (window as unknown as BrowserHostWindow).__mcpHostState.toolCalls.length === 1,
       );
+      // Even the accepted message becomes the one proxy grammar, never raw code
+      // — the outer frame builds the source, the inner frame only names a tool.
       expect((await getHostState(page)).toolCalls[0]).toEqual(
         expect.objectContaining({
           name: "execute-action",
-          arguments: { code: "return 42" },
+          arguments: { code: "return await tools.inventory.org.main.listItems({})" },
         }),
       );
     } finally {
@@ -1513,6 +1655,136 @@ describe("MCP app generated UI browser isolation", () => {
           }),
         ]),
       );
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("pages through a multi-page upstream declaratively with useInfiniteQuery", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedInfiniteQueryCode);
+
+      // Page 1 only — an infinite query fetches exactly one page up front. The
+      // whole point is that "get everything" is the user's/component's choice,
+      // not an opaque 40-iteration loop hidden inside a queryFn.
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#paged-items")?.textContent === "alpha,beta",
+        undefined,
+        { timeout: 10_000 },
+      );
+      expect(await innerFrame.locator("#paged-has-next").textContent()).toBe("true");
+
+      await innerFrame.locator("#paged-more").click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#paged-items")?.textContent === "alpha,beta,gamma,delta",
+        undefined,
+        { timeout: 10_000 },
+      );
+
+      await innerFrame.locator("#paged-more").click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () =>
+          document.querySelector("#paged-items")?.textContent === "alpha,beta,gamma,delta,epsilon",
+        undefined,
+        { timeout: 10_000 },
+      );
+      // `getNextPageParam` returned undefined for the last page, so paging stops.
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#paged-has-next")?.textContent === "false",
+        undefined,
+        { timeout: 10_000 },
+      );
+      expect(await innerFrame.locator("#paged-count").textContent()).toBe("3");
+
+      // Every page went over the wire as an ordinary single tool call — the
+      // cursor merged into the tool INPUT, not spliced into code. The first
+      // request carries no cursor at all (`initialPageParam: null`).
+      const hostState = await getHostState(page);
+      const pagedCalls = hostState.toolCalls
+        .map((call) => (call.arguments as { code?: string } | undefined)?.code)
+        .filter((code): code is string => Boolean(code?.includes("listPaged(")));
+      expect(pagedCalls).toEqual([
+        'return await tools.inventory.org.main.listPaged({"limit":2})',
+        'return await tools.inventory.org.main.listPaged({"limit":2,"cursor":"2"})',
+        'return await tools.inventory.org.main.listPaged({"limit":2,"cursor":"4"})',
+      ]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("places an infinite-query cursor down a dotted path into a nested input", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(
+        page,
+        shellFrame,
+        generatedNestedInfiniteQueryCode,
+      );
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#nested-items")?.textContent === "alpha,beta",
+        undefined,
+        { timeout: 10_000 },
+      );
+
+      await innerFrame.locator("#nested-more").click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#nested-items")?.textContent === "alpha,beta,gamma,delta",
+        undefined,
+        { timeout: 10_000 },
+      );
+
+      const hostState = await getHostState(page);
+      const nestedCalls = hostState.toolCalls
+        .map((call) => (call.arguments as { code?: string } | undefined)?.code)
+        .filter((code): code is string => Boolean(code?.includes("listPagedNested(")));
+      // The merge is a deep write that preserves the sibling `limit`, rather
+      // than replacing the nested object.
+      expect(nestedCalls).toEqual([
+        'return await tools.inventory.org.main.listPagedNested({"query":{"limit":2}})',
+        'return await tools.inventory.org.main.listPagedNested({"query":{"limit":2,"since":"2"}})',
+      ]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("refuses arbitrary code posted straight at execute-action", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      // The shell offers no way to write this — but the app channel is reachable
+      // from anything that can speak the bridge, so the SERVER is what has to
+      // refuse it. Posted through the host's own tools/call path, exactly as a
+      // hostile frame would.
+      await renderGeneratedUi(page, shellFrame, generatedStaticCode);
+
+      const rejected = await page.evaluate(async () => {
+        const response = await fetch("/tools/call", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "execute-action",
+            arguments: {
+              code: "let all = []; for (let i = 0; i < 40; i++) { all.push(await tools.inventory.org.main.listItems({})) } return all",
+            },
+          }),
+        });
+        return (await response.json()) as {
+          isError?: boolean;
+          content?: Array<{ text?: string }>;
+        };
+      });
+
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content?.[0]?.text).toContain("single tool call");
+      expect(rejected.content?.[0]?.text).toContain("infiniteQueryOptions");
     } finally {
       await page.close();
     }
