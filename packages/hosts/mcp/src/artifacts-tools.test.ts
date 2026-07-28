@@ -9,7 +9,7 @@ import type * as Cause from "effect/Cause";
 import { ArtifactId, FormElicitation, type Artifact, type ArtifactSummary } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
-import { MCP_APPS_SHELL_RESOURCE_URI, artifactUrlFor } from "./render-ui";
+import { MCP_APPS_SHELL_RESOURCE_URI, artifactUrlFor } from "./create-artifact";
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ describe("MCP host — artifact tool visibility", () => {
         const names = await toolNames(client);
         // The model-facing three are always advertised — they degrade to a
         // deep link rather than disappearing.
-        expect(names).toContain("render-ui");
+        expect(names).toContain("create-artifact");
         expect(names).toContain("list-artifacts");
         expect(names).toContain("show-artifact");
         // `execute-action` is only callable from inside a rendered app.
@@ -186,7 +186,7 @@ describe("MCP host — artifact tool visibility", () => {
       APPS_CAPS,
       async (client) => {
         const names = await toolNames(client);
-        expect(names).toContain("render-ui");
+        expect(names).toContain("create-artifact");
         expect(names).toContain("execute-action");
         expect(names).toContain("execute-action-resume");
       },
@@ -205,7 +205,7 @@ describe("MCP host — artifact tool visibility", () => {
     await client.connect(clientTransport);
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("execute");
-    expect(names).not.toContain("render-ui");
+    expect(names).not.toContain("create-artifact");
     expect(names).not.toContain("list-artifacts");
     await clientTransport.close();
     await serverTransport.close();
@@ -235,10 +235,10 @@ describe("MCP host — artifact tool visibility", () => {
 });
 
 // ---------------------------------------------------------------------------
-// render-ui delivery
+// create-artifact delivery
 // ---------------------------------------------------------------------------
 
-describe("MCP host — render-ui", () => {
+describe("MCP host — create-artifact", () => {
   it("returns the code inline and persists it when the client renders apps", async () => {
     const store = makeArtifactStore();
     await withClient(
@@ -246,7 +246,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const result = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: COUNTER_CODE,
             title: "Active users dashboard",
@@ -274,7 +274,7 @@ describe("MCP host — render-ui", () => {
       NO_APPS_CAPS,
       async (client) => {
         const result = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: { code: COUNTER_CODE, title: "Active users dashboard" },
         });
         expect(structuredOf(result)).toEqual({
@@ -299,7 +299,7 @@ describe("MCP host — render-ui", () => {
       NO_APPS_CAPS,
       async (client) => {
         const result = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: { code: COUNTER_CODE, title: "Active users dashboard" },
         });
         expect(structuredOf(result)).toEqual({
@@ -320,7 +320,7 @@ describe("MCP host — render-ui", () => {
       NO_APPS_CAPS,
       async (client) => {
         const result = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: { code: COUNTER_CODE, title: "Orphan dashboard" },
         });
         expect(structuredOf(result)).toEqual({
@@ -341,7 +341,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const destructured = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: "const { useState } = React; function App(){ return null; }",
             title: "Bad",
@@ -351,7 +351,7 @@ describe("MCP host — render-ui", () => {
         expect(textOf(destructured)).toContain("Do not destructure React");
 
         const shadowed = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: { code: "const Card = 1; function App(){ return null; }", title: "Bad" },
         });
         expect(shadowed.isError).toBe(true);
@@ -374,7 +374,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const rejected = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "function App(){",
@@ -404,7 +404,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const accepted = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "function App(){",
@@ -432,7 +432,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const rejected = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "const MAX_PAGES = 8;",
@@ -469,7 +469,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const rejected = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "function App(){",
@@ -504,7 +504,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const accepted = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "function App(){",
@@ -539,7 +539,7 @@ describe("MCP host — render-ui", () => {
       APPS_CAPS,
       async (client) => {
         const accepted = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: [
               "function App(){",
@@ -572,7 +572,7 @@ describe("MCP host — render-ui", () => {
         // The donor branch rejected this on the variable name alone. Legit
         // chart configuration is not a hardcoded live-data snapshot.
         const result = await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: "const series = [{ key: 'a', color: '#111' }, { key: 'b', color: '#222' }]; function App(){ return null; }",
             title: "Chart",
@@ -591,14 +591,14 @@ describe("MCP host — render-ui", () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP host — artifact retrieval", () => {
-  it("round-trips: render-ui saves, list-artifacts finds it, show-artifact returns the code", async () => {
+  it("round-trips: create-artifact saves, list-artifacts finds it, show-artifact returns the code", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),
       APPS_CAPS,
       async (client) => {
         await client.callTool({
-          name: "render-ui",
+          name: "create-artifact",
           arguments: {
             code: COUNTER_CODE,
             title: "Active users dashboard",

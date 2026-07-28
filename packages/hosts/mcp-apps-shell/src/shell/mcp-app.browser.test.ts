@@ -1006,7 +1006,7 @@ const makePausedResult = (
 
 /**
  * These tests drive the shell directly over postMessage rather than through
- * `render-ui`, so persistence is out of scope here — but the ui tools only
+ * `create-artifact`, so persistence is out of scope here — but the ui tools only
  * register when an artifacts port is present, and `execute-action` is what the
  * shell actually calls. A trivial in-memory port is enough to bring them up.
  */

@@ -48,7 +48,7 @@ import {
   type PausedExecution,
   type PausedExecutionDeadline,
 } from "@executor-js/execution";
-import { MCP_APPS_SHELL_RESOURCE_URI, validateRenderUiCode } from "./render-ui";
+import { MCP_APPS_SHELL_RESOURCE_URI, validateArtifactCode } from "./create-artifact";
 import { TOOL_CALL_CONTRACT_MESSAGE, parseToolCallCode } from "./tool-call-code";
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ type SharedMcpServerConfig = {
    */
   readonly loadAppShellHtml?: () => Promise<string>;
   /**
-   * The scoped executor's artifact operations, so `render-ui` can persist what
+   * The scoped executor's artifact operations, so `create-artifact` can persist what
    * it renders and `list-artifacts` / `show-artifact` can read it back. Only
    * the three operations the MCP surface needs, so hosts don't have to hand the
    * whole `Executor` across this boundary.
@@ -151,7 +151,7 @@ type SharedMcpServerConfig = {
   /**
    * Builds the web-app deep link for a saved artifact. Clients that can't
    * render MCP Apps get this URL instead of an inline widget. Absent (stdio has
-   * no origin at all) means `render-ui` still persists and reports the id, but
+   * no origin at all) means `create-artifact` still persists and reports the id, but
    * has no URL to offer.
    */
   readonly artifactUrl?: (artifactId: string) => string;
@@ -742,7 +742,7 @@ const startMarker = (name: string, attributes: Record<string, unknown>): Effect.
 // artifact was saved and can be reopened later.
 
 const renderRejectedResult = (reason: string): McpToolResult => ({
-  content: [{ type: "text", text: `Render UI rejected: ${reason}` }],
+  content: [{ type: "text", text: `create-artifact rejected: ${reason}` }],
   structuredContent: { status: "error", error: reason },
   isError: true,
 });
@@ -833,7 +833,7 @@ const artifactListResult = (artifacts: readonly ArtifactSummary[]): McpToolResul
   }));
   const text =
     items.length === 0
-      ? "No saved artifacts yet. Use render-ui to create one."
+      ? "No saved artifacts yet. Use create-artifact to make one."
       : [
           "Saved artifacts:",
           ...items.map(
@@ -1356,19 +1356,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         : renderedWithoutSurfaceResult({ artifactId: input.artifactId, title: input.title });
     };
 
-    const renderUi = (input: {
+    const createArtifact = (input: {
       readonly code: string;
       readonly title: string;
       readonly description?: string;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
-        const rejection = validateRenderUiCode(input.code);
+        const rejection = validateArtifactCode(input.code);
         if (rejection) return renderRejectedResult(rejection);
         return yield* saveAndDeliverArtifact(input);
       }).pipe(
-        Effect.withSpan("mcp.host.tool.render_ui", {
+        Effect.withSpan("mcp.host.tool.create_artifact", {
           attributes: {
-            "mcp.tool.name": "render-ui",
+            "mcp.tool.name": "create-artifact",
             "mcp.execute.code_length": input.code.length,
           },
         }),
@@ -1436,11 +1436,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       yield* Effect.sync(() =>
         registerAppTool(
           server,
-          "render-ui",
+          "create-artifact",
           {
             description: [
               "Render an interactive React UI component as an MCP app, and save it as a reusable artifact.",
-              'Call `skills({ name: "render-ui" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope.',
+              'Call `skills({ name: "create-artifact" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope.',
               "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<namespace>.<tool>.queryOptions(args))`.",
               "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
               "To read every page of a paginated tool, call `useInfiniteQuery(tools.<namespace>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
@@ -1466,11 +1466,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
             },
           },
-          ({ code, title, description }) => runToolEffect(renderUi({ code, title, description })),
+          ({ code, title, description }) =>
+            runToolEffect(createArtifact({ code, title, description })),
         ),
       ).pipe(
         Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "render-ui" },
+          attributes: { "mcp.tool.name": "create-artifact" },
         }),
       );
 
@@ -1577,7 +1578,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       appsEnabled = Boolean(uiCapability?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
 
       // `execute-action` is only callable from inside a rendered app, so a
-      // client that can't render one should never see it. `render-ui`,
+      // client that can't render one should never see it. `create-artifact`,
       // `list-artifacts` and `show-artifact` stay visible regardless: they
       // still persist, and still return something useful (a deep link).
       if (appsEnabled) {

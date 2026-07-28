@@ -117,7 +117,7 @@ export function evaluateComponent(
  * The single source of truth for what generated code may reference without
  * declaring it. `evaluateComponent` passes these as the `new Function`
  * parameter list, so a name here IS in scope in the iframe and a name missing
- * here is NOT — which is why `render-ui`'s redeclaration validator is pinned
+ * here is NOT — which is why `create-artifact`'s redeclaration validator is pinned
  * against `PROVIDED_SCOPE_NAMES` by test rather than hand-maintained twice.
  */
 function buildGeneratedCodeScope(bindings: {
@@ -177,7 +177,7 @@ function buildGeneratedCodeScope(bindings: {
 
 /**
  * Every name generated code may use without declaring it, derived from the
- * real evaluation scope rather than re-listed by hand. `render-ui`'s
+ * real evaluation scope rather than re-listed by hand. `create-artifact`'s
  * redeclaration guard consumes this, so adding a component to `components.ts`
  * automatically protects it from being shadowed.
  */

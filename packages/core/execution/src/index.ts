@@ -14,7 +14,7 @@ export {
 export { buildExecuteDescription, INTEGRATION_INVENTORY_HEADER } from "./description";
 export {
   EXECUTE_SKILL,
-  RENDER_UI_SKILL,
+  CREATE_ARTIFACT_SKILL,
   SKILLS,
   findSkill,
   renderSkillsIndex,

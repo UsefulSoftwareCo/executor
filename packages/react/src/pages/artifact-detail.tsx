@@ -30,7 +30,7 @@ import { formatRelativeTime } from "../lib/relative-time";
 import { RenameArtifactDialog } from "./artifact-rename-dialog";
 
 /**
- * The artifact detail page — also the deep-link target `render-ui` hands to MCP
+ * The artifact detail page — also the deep-link target `create-artifact` hands to MCP
  * clients that cannot display MCP Apps, so it must work as a first landing URL.
  * Auth is handled by the surrounding console gate, exactly like /policies.
  */

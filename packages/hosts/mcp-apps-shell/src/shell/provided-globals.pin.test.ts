@@ -3,7 +3,7 @@ import { PROVIDED_GLOBAL_NAMES } from "@executor-js/execution";
 
 import { PROVIDED_SCOPE_NAMES } from "./component-runtime";
 
-// The `render-ui` tool rejects code that redeclares a name the shell already
+// The `create-artifact` tool rejects code that redeclares a name the shell already
 // binds. That guard lives in the MCP host (which must not import React), so the
 // name list is generated into the execution package by
 // `scripts/gen-provided-globals.ts`. This test is the pin: add a component to

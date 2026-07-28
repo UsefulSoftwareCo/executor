@@ -1,6 +1,6 @@
 # MCP Apps tests (sunpeak)
 
-Render and test executor's generative-UI MCP Apps (the `render-ui` tool from the
+Render and test executor's generative-UI MCP Apps (the `create-artifact` tool from the
 `mcp-apps-shell` plugin) in a **real MCP-Apps host**, headlessly, in CI, with **no
 VM and no Claude/ChatGPT account**.
 
@@ -28,7 +28,7 @@ A spec is tiny:
 ```ts
 import { test, expect } from "sunpeak/test";
 test("widget mounts", async ({ inspector }) => {
-  const result = await inspector.renderTool("render-ui", { code: APP_SRC });
+  const result = await inspector.renderTool("create-artifact", { code: APP_SRC });
   const app = result.app().frameLocator("iframe"); // see "extra iframe" below
   await expect(app.locator('button:has-text("Increment")')).toBeVisible();
 });
@@ -39,7 +39,7 @@ test("widget mounts", async ({ inspector }) => {
 1. **sunpeak doesn't advertise the MCP-Apps UI _client_ capability.** Its
    inspector connects with `new Client({ name, version })` and never declares
    `capabilities.extensions["io.modelcontextprotocol/ui"]`. executor's
-   `render-ui` (correctly, per the MCP-Apps spec) only mounts the widget inline
+   `create-artifact` (correctly, per the MCP-Apps spec) only mounts the widget inline
    when the host advertises it can render `text/html;profile=mcp-app`; otherwise
    it returns its browser **fallback URL** and nothing renders. `scripts/patch-sunpeak.mjs`
    (a postinstall) adds that capability to sunpeak's client. This is
@@ -52,7 +52,7 @@ test("widget mounts", async ({ inspector }) => {
 
 ## Why stdio + from source
 
-`render-ui`'s shell resource (`ui://executor/shell-tanstack-query.html`) is
+`create-artifact`'s shell resource (`ui://executor/shell-tanstack-query.html`) is
 `packages/hosts/mcp-apps-shell/dist/mcp-app.html`. `pretest` builds it. Running
 `executor mcp` from source serves it directly. (The compiled binary now ships
 the shell too — see `apps/cli/src/build.ts` — but source is the cheaper path

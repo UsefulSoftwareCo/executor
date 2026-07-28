@@ -1,5 +1,5 @@
 /**
- * Every name model-generated `render-ui` code may reference without declaring
+ * Every name model-generated `create-artifact` code may reference without declaring
  * it — React hooks, TanStack Query, the `tools` proxy, and every shadcn,
  * Recharts and Lucide export the shell binds into scope.
  *

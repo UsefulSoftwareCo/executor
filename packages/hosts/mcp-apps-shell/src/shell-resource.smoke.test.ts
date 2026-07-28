@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
-import { MCP_APPS_SHELL_RESOURCE_URI } from "@executor-js/host-mcp/render-ui";
+import { MCP_APPS_SHELL_RESOURCE_URI } from "@executor-js/host-mcp/create-artifact";
 import type { ExecutionEngine } from "@executor-js/execution";
 
 import { loadMcpAppsShellHtml, MCP_APPS_SHELL_NOT_BUILT_HTML } from "./shell-html";

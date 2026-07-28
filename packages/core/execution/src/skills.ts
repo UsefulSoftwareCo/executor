@@ -70,7 +70,7 @@ export const EXECUTE_SKILL: Skill = {
   body: EXECUTE_SKILL_BODY,
 };
 
-// The `render-ui` how-to. Same reasoning as `execute`: the discovery-vs-render
+// The `create-artifact` how-to. Same reasoning as `execute`: the discovery-vs-render
 // protocol, the TanStack rules and the component inventory are a page of prose
 // that only matters once a model decides to build a UI, so the tool description
 // stays short and points here.
@@ -83,8 +83,8 @@ const RECHARTS_COMPONENTS =
 const LUCIDE_ICONS =
   "Plus, Minus, Check, X, Search, Loader2, AlertCircle, ExternalLink, Copy, Trash2, Edit, Settings, User, Globe, Star, TrendingUp, Activity, Database, Shield, Package, and more";
 
-const RENDER_UI_SKILL_BODY = [
-  "# render-ui",
+const CREATE_ARTIFACT_SKILL_BODY = [
+  "# create-artifact",
   "",
   "Render an interactive React UI component as an MCP app, and save it as an artifact.",
   "",
@@ -97,7 +97,7 @@ const RENDER_UI_SKILL_BODY = [
   "## Workflow",
   "",
   "1. If you need to understand tool names, query syntax, required arguments, response shapes, IDs, mutation inputs, or a list tool's cursor field, first use the regular `execute` tool to inspect them.",
-  "2. Then call `render-ui` with a component named `App` in the `code` parameter.",
+  "2. Then call `create-artifact` with a component named `App` in the `code` parameter.",
   "3. Recreate every read from the discovery step inside `App` with `useQuery(tools.<namespace>.<tool>.queryOptions(args))` so the UI stays live.",
   "4. Use `useMutation(tools.<namespace>.<tool>.mutationOptions({ onSuccess }))` for user-triggered writes or actions.",
   "5. Return only the component code.",
@@ -114,9 +114,9 @@ const RENDER_UI_SKILL_BODY = [
   "## Using Execute For Discovery",
   "",
   "- `execute` is for exploration: list datasets, inspect schemas, test a query, fetch one small sample row, or learn the exact mutation input shape.",
-  "- `render-ui` is for the final interactive surface. Do not paste discovery results into JSX as literal rows, cards, summaries, metrics, or chart series.",
+  "- `create-artifact` is for the final interactive surface. Do not paste discovery results into JSX as literal rows, cards, summaries, metrics, or chart series.",
   "- After discovering an API call with `execute`, put the same call in TanStack Query options inside the generated component.",
-  "- Example discovery: call `execute` with `return await tools.axiom_mcp.querydataset({ ... })` to confirm columns, then call `render-ui` with `useQuery(tools.axiom_mcp.querydataset.queryOptions({ ... }))`.",
+  "- Example discovery: call `execute` with `return await tools.axiom_mcp.querydataset({ ... })` to confirm columns, then call `create-artifact` with `useQuery(tools.axiom_mcp.querydataset.queryOptions({ ... }))`.",
   "- Use discovered result shapes exactly. If a sample or schema returns `{ renew, expiresAt }`, read `data?.renew`, not `data?.domain?.renew`.",
   "- Keep discovery small. Use limits, narrow time ranges, or schema/list tools when possible.",
   "",
@@ -239,15 +239,15 @@ const RENDER_UI_SKILL_BODY = [
   "- Clients that cannot display MCP apps get a link to the artifact in the web app instead; pass that URL on to the user verbatim.",
 ].join("\n");
 
-export const RENDER_UI_SKILL: Skill = {
-  name: "render-ui",
+export const CREATE_ARTIFACT_SKILL: Skill = {
+  name: "create-artifact",
   summary:
-    "How to write a React component for the render-ui tool: discover data with execute, keep it live with TanStack Query (including cursor pagination), and what is already in scope.",
-  body: RENDER_UI_SKILL_BODY,
+    "How to write a React component for the create-artifact tool: discover data with execute, keep it live with TanStack Query (including cursor pagination), and what is already in scope.",
+  body: CREATE_ARTIFACT_SKILL_BODY,
 };
 
 /** The full skill catalog. Hand-curated; keep it small. */
-export const SKILLS: readonly Skill[] = [EXECUTE_SKILL, RENDER_UI_SKILL];
+export const SKILLS: readonly Skill[] = [EXECUTE_SKILL, CREATE_ARTIFACT_SKILL];
 
 /** Look up a skill by its exact name. */
 export const findSkill = (name: string): Skill | undefined =>

@@ -1,6 +1,6 @@
 import { test, expect } from "sunpeak/test";
 
-// executor's render-ui shell mounts the generated component in a *nested* srcdoc
+// executor's create-artifact shell mounts the generated component in a *nested* srcdoc
 // iframe (shell-app -> inner-renderer, the MCP-Apps double-iframe sandbox), one
 // level below sunpeak's own `result.app()`. Descend that extra level.
 const appBody = (result: { app: () => ReturnType<ReturnType<typeof test>["app"]> } | any) =>
@@ -19,8 +19,8 @@ const COUNTER = `function App() {
 
 // sunpeak runs every test against both the Claude and ChatGPT host simulations.
 
-test("render-ui mounts an interactive React widget", async ({ inspector }) => {
-  const result = await inspector.renderTool("render-ui", {
+test("create-artifact mounts an interactive React widget", async ({ inspector }) => {
+  const result = await inspector.renderTool("create-artifact", {
     code: COUNTER,
     title: "MCP App counter",
   });
@@ -35,9 +35,9 @@ test("render-ui mounts an interactive React widget", async ({ inspector }) => {
   await expect(app.locator("text=1")).toBeVisible();
 });
 
-test("render-ui renders in dark theme", async ({ inspector }) => {
+test("create-artifact renders in dark theme", async ({ inspector }) => {
   const result = await inspector.renderTool(
-    "render-ui",
+    "create-artifact",
     { code: COUNTER, title: "MCP App counter" },
     { theme: "dark" },
   );
@@ -53,8 +53,8 @@ test("render-ui renders in dark theme", async ({ inspector }) => {
 const structuredOf = (result: { structuredContent?: unknown }): Record<string, unknown> =>
   (result.structuredContent ?? {}) as Record<string, unknown>;
 
-test("render-ui returns an inline widget, not the deep-link fallback", async ({ mcp }) => {
-  const result = await mcp.callTool("render-ui", {
+test("create-artifact returns an inline widget, not the deep-link fallback", async ({ mcp }) => {
+  const result = await mcp.callTool("create-artifact", {
     code: COUNTER,
     title: "MCP App counter",
     description: "A counter used by the MCP Apps e2e harness",
@@ -69,7 +69,7 @@ test("render-ui returns an inline widget, not the deep-link fallback", async ({ 
 });
 
 test("a rendered artifact is listed and can be shown again", async ({ inspector, mcp }) => {
-  const rendered = await mcp.callTool("render-ui", {
+  const rendered = await mcp.callTool("create-artifact", {
     code: COUNTER,
     title: "Retrievable counter",
     description: "Saved so list-artifacts can find it",

@@ -25,7 +25,7 @@ import {
   createExecutorMcpServer,
 } from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
-import { artifactUrlFor } from "@executor-js/host-mcp/render-ui";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
 import {
   McpAgentSessionDOBase,

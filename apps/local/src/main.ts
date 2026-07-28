@@ -1,7 +1,7 @@
 import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 
 import { createExecutionEngine } from "@executor-js/execution";
-import { artifactUrlFor } from "@executor-js/host-mcp/render-ui";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { makeLocalApiHandler } from "./app";

@@ -1,6 +1,6 @@
 // Cross-target: the artifacts journey, end to end.
 //
-// An agent on a client that cannot display MCP Apps calls `render-ui`. The
+// An agent on a client that cannot display MCP Apps calls `create-artifact`. The
 // product promise under test is vision.md's delivery negotiation: the model
 // behaves identically either way, and only DELIVERY changes — a client without
 // MCP Apps gets a deep link into the web app instead of an embedded widget.
@@ -9,7 +9,7 @@
 // by title.
 //
 // Two scenarios, split by what they prove:
-//   1. render-ui saves + delivers a working deep link, and the page renders
+//   1. create-artifact saves + delivers a working deep link, and the page renders
 //      the component live (the fallback path a non-Apps client actually walks).
 //   2. Rename and delete in the console are what MCP reads back afterwards
 //      (the console and the agent share one store, not two caches).
@@ -28,7 +28,7 @@ import { Api, Browser, Mcp, Target } from "../src/services";
 const api = composePluginApi([] as const);
 
 /**
- * The component `render-ui` persists.
+ * The component `create-artifact` persists.
  *
  * It must declare none of the ~280 globals the shell puts in scope (`Card`,
  * `useState`, …) or the server's guard rejects it before it is ever saved, and
@@ -151,7 +151,7 @@ const readConsoleStyle = (
   });
 
 scenario(
-  "Artifacts · render-ui hands a non-Apps client a deep link that renders the live component",
+  "Artifacts · create-artifact hands a non-Apps client a deep link that renders the live component",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -174,8 +174,8 @@ scenario(
       // `mcp.session` advertises no MCP-Apps capability — which is exactly the
       // client under test here, so no capability juggling is needed.
       const tools = yield* session.listTools();
-      expect(tools, "render-ui is advertised regardless of MCP-Apps support").toContain(
-        "render-ui",
+      expect(tools, "create-artifact is advertised regardless of MCP-Apps support").toContain(
+        "create-artifact",
       );
 
       // Artifact code is purely declarative `tools.*`. The `run()` escape hatch
@@ -183,23 +183,23 @@ scenario(
       // exactly what one did to hand-roll a pagination loop — is turned around
       // here, with the declarative replacement named, rather than saving an
       // artifact that would die with a ReferenceError inside the iframe.
-      const refused = yield* session.call("render-ui", {
+      const refused = yield* session.call("create-artifact", {
         code: `function App(){ const q = useQuery({ queryKey: ["x"], queryFn: () => run("return await tools.a.b({})") }); return null; }`,
         title: `Rejected ${suffix}`,
         description: "Should never be saved",
       });
-      expect(refused.ok, "render-ui refuses code that calls run()").toBe(false);
+      expect(refused.ok, "create-artifact refuses code that calls run()").toBe(false);
       expect(refused.text, "the model is told what to use instead").toContain(
         "infiniteQueryOptions",
       );
 
-      const rendered = yield* session.call("render-ui", {
+      const rendered = yield* session.call("create-artifact", {
         code: artifactSource(marker),
         title,
         description: "Whether the current release is ready to ship",
       });
 
-      expect(rendered.ok, `render-ui succeeded: ${rendered.text}`).toBe(true);
+      expect(rendered.ok, `create-artifact succeeded: ${rendered.text}`).toBe(true);
 
       const structured = structuredOf(rendered);
       // `fallback_unavailable` here would mean the host has no webBaseUrl
@@ -433,12 +433,12 @@ scenario(
     let artifactId: ArtifactId | undefined;
 
     yield* Effect.gen(function* () {
-      const rendered = yield* session.call("render-ui", {
+      const rendered = yield* session.call("create-artifact", {
         code: artifactSource(`rename-${suffix}`),
         title: originalTitle,
         description: "A dashboard the user will rename",
       });
-      expect(rendered.ok, `render-ui succeeded: ${rendered.text}`).toBe(true);
+      expect(rendered.ok, `create-artifact succeeded: ${rendered.text}`).toBe(true);
       artifactId = structuredOf(rendered).artifactId as ArtifactId;
       expect(artifactId, "the artifact was persisted").toBeTruthy();
 

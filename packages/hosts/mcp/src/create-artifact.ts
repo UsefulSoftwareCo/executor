@@ -1,5 +1,5 @@
 /**
- * The `render-ui` tool's pure half: what the model is told, and what the server
+ * The `create-artifact` tool's pure half: what the model is told, and what the server
  * refuses to render.
  *
  * The tool itself lives in `tool-server.ts` beside `execute` and `skills` —
@@ -197,7 +197,7 @@ const hookCalledInLoop = (code: string): string | undefined => {
 const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQuery"]);
 
 /** `null` when the code may be rendered, otherwise the reason to hand back. */
-export const validateRenderUiCode = (code: string): string | null => {
+export const validateArtifactCode = (code: string): string | null => {
   if (REMOVED_RUN_CALL.test(code) && !LOCAL_RUN_DECLARATION.test(code)) {
     return [
       "`run(code)` no longer exists — artifact code is purely declarative `tools.*`.",
@@ -220,7 +220,7 @@ export const validateRenderUiCode = (code: string): string | null => {
 
   if (REACT_DESTRUCTURING_DECLARATION.test(code)) {
     return [
-      "Do not destructure React in render-ui.",
+      "Do not destructure React in create-artifact.",
       "Hooks such as useState are already in scope; use useState(...) directly or React.useState(...).",
     ].join(" ");
   }

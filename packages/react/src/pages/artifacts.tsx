@@ -57,7 +57,7 @@ const LoadingState = () => (
 );
 
 /**
- * Artifacts are never created here — a model makes them by calling `render-ui`
+ * Artifacts are never created here — a model makes them by calling `create-artifact`
  * over MCP — so the empty state teaches that path rather than offering a button
  * that cannot exist.
  */

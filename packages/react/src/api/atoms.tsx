@@ -480,7 +480,7 @@ export const removePolicyOptimistic = policiesOptimisticAtom.pipe(
 
 // ---------------------------------------------------------------------------
 // Artifacts — optimistic surface. Rename and delete are the only writes the
-// console makes (artifacts are created by the model through `render-ui`), so
+// console makes (artifacts are created by the model through `create-artifact`), so
 // the list is the single optimistic surface both mutations reduce over.
 // ---------------------------------------------------------------------------
 

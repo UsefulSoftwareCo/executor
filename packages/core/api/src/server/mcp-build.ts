@@ -7,7 +7,7 @@ import {
   type McpBuildServerOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
-import { artifactUrlFor } from "@executor-js/host-mcp/render-ui";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 
 import { ErrorCapture } from "../observability";
 import { CodeExecutorProvider, EngineDecorator, makeExecutionStack } from "./execution-stack";

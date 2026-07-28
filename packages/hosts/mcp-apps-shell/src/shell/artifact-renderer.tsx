@@ -171,7 +171,7 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       { hostContext: hostContextFor(readDocumentTheme()) },
     );
 
-    // Deliver the stored source the way a real host does after `render-ui`: the
+    // Deliver the stored source the way a real host does after `create-artifact`: the
     // tool input, then the tool result carrying `structuredContent.code` — the
     // exact shape `renderedInAppResult` builds in the MCP host. The shell
     // already handles both, so it takes the same path here as it does under any
