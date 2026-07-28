@@ -1,5 +1,28 @@
 # executor
 
+## 1.5.36
+
+### Patch Changes
+
+- [#1478](https://github.com/UsefulSoftwareCo/executor/pull/1478) [`8ecbfd6`](https://github.com/UsefulSoftwareCo/executor/commit/8ecbfd65f2c1393c75661c792723961877866cc5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Store minted OAuth tokens in the durable file secret store (`auth.json` under `EXECUTOR_DATA_DIR`) instead of the system keychain. On sandbox/headless hosts the keychain can be an in-memory keyring that a stop/recreate wipes, leaving OAuth connections expired with "Stored refresh token could not be resolved." Existing keychain-backed connections migrate with one clean reconnect.
+
+- [#1462](https://github.com/UsefulSoftwareCo/executor/pull/1462) [`5a70675`](https://github.com/UsefulSoftwareCo/executor/commit/5a706756c66e53c9a929e9a8c30e57166b8d121b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: org OAuth connections on self-host worked only for whoever ran the consent**
+
+  The encrypted-secrets credential provider (the writable provider on the self-hosted and Cloudflare hosts) filed token rows under the _acting user's_ private partition instead of the credential's own owner. An org-owned OAuth connection whose consent completed in one member's browser session therefore resolved only for that member — every other principal failed with `oauth_connection_missing`, while the UI showed the connection healthy. The provider now partitions by the owner embedded in the item id (`oauth:org:…` → org-shared), matching the WorkOS Vault provider, and a boot-time data migration re-files rows already written wrong. The encrypted value itself was never affected.
+
+- [#1459](https://github.com/UsefulSoftwareCo/executor/pull/1459) [`fc1e589`](https://github.com/UsefulSoftwareCo/executor/commit/fc1e589613a14750c2ca8c34838a71c758544c8d) Thanks [@wan0net](https://github.com/wan0net)! - Preserve `elicitation_mode=native` when creating self-hosted MCP sessions.
+
+- [#1475](https://github.com/UsefulSoftwareCo/executor/pull/1475) [`77b0821`](https://github.com/UsefulSoftwareCo/executor/commit/77b0821ff9bddd6fb419d81a18b9e1af804fdb55) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Refresh OAuth tokens when the upstream rejects them with HTTP 401, not only when the stored expiry says they are due. Connections whose authorization server omits `expires_in` can now recover without a manual reconnect, and the refresh path is traced.
+
+- [#1476](https://github.com/UsefulSoftwareCo/executor/pull/1476) [`167d899`](https://github.com/UsefulSoftwareCo/executor/commit/167d899162794064eeac0a755697c2c943f1b9ac) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Remove the custom apps plugin. Git and local-directory app sources are no
+  longer supported. The packed binary still ships the workerd and worker-bundler
+  sidecars.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/runtime-quickjs@1.5.36
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.56
+
 ## 1.5.35
 
 ### Patch Changes
