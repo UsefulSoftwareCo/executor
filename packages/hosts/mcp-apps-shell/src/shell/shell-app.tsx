@@ -20,6 +20,13 @@ import {
 } from "./proxy";
 import * as Components from "./components";
 import innerRendererScript from "virtual:executor-inner-renderer";
+// Raw source, not a compiled stylesheet: the inner frame compiles utilities on
+// demand against these tokens. See `buildRendererSrcDoc`.
+import themeSource from "./theme.css?raw";
+// The in-frame Tailwind compiler, as text to inline under a CSP that forbids
+// fetching anything. Supplied by `tailwindBrowserSourcePlugin` — the package
+// exports only its module entry, and this needs the bytes.
+import tailwindBrowserScript from "virtual:executor-tailwind-browser";
 
 type PendingInteraction = TrustedInteraction & {
   resolve: (response: TrustedInteractionResponse) => void;
@@ -130,6 +137,32 @@ const collectShellCss = (): string =>
     .filter((css) => css.length > 0)
     .join("\n");
 
+/**
+ * The srcDoc the model's component renders into.
+ *
+ * It carries TWO stylesheets, and the difference between them is the whole
+ * reason artifacts used to look half-styled:
+ *
+ *  - `collectShellCss()` is the shell's own COMPILED stylesheet, scraped out of
+ *    the live document. It has the `@font-face` rules with their `data:` URLs
+ *    already resolved (the build did that), plus every utility executor's own
+ *    components happen to use. It cannot contain anything else, because
+ *    Tailwind only emits utilities it saw in a source file at build time — and
+ *    the model's code did not exist then.
+ *
+ *  - `themeSource` + the in-frame compiler is what makes the model's OWN
+ *    classes real. `text-2xl`, `md:grid-cols-4`, `tracking-[0.08em]` — none of
+ *    those appear in executor's components, so none of them were in the
+ *    compiled sheet, and they silently did nothing: `text-2xl` computed to
+ *    16px, a responsive grid stayed one column. The frame therefore gets the
+ *    theme as SOURCE, in the `text/tailwindcss` style tag `@tailwindcss/browser`
+ *    looks for, and compiles utilities on demand against executor's tokens.
+ *
+ * The compiler is inlined rather than fetched because the CSP here is
+ * `default-src 'none'` with no `connect-src` — deliberately, since artifact code
+ * is untrusted. Nothing in this frame may open a connection, so everything it
+ * needs travels with it.
+ */
 const buildRendererSrcDoc = (token: string): string => {
   const css = collectShellCss();
   return `<!doctype html>
@@ -139,6 +172,8 @@ const buildRendererSrcDoc = (token: string): string => {
     <meta name="executor-render-token" content="${escapeInlineHtml(token)}">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
     <style>${escapeStyleContent(css)}</style>
+    <style type="text/tailwindcss">@import "tailwindcss";${escapeStyleContent(themeSource)}</style>
+    <script>${escapeScriptContent(tailwindBrowserScript)}</script>
   </head>
   <body>
     <div id="root"></div>
@@ -401,14 +436,8 @@ export function McpAppsShell({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full p-4">
-        <Components.Alert variant="destructive">
-          <Components.AlertCircle className="h-4 w-4" />
-          <Components.AlertTitle>Error</Components.AlertTitle>
-          <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
-            {error}
-          </Components.AlertDescription>
-        </Components.Alert>
+      <div className="p-4">
+        <Components.ArtifactError title="Couldn't render this artifact" error={error} />
       </div>
     );
   }
@@ -436,7 +465,11 @@ export function McpAppsShell({
   return (
     <Components.TooltipProvider>
       <div
-        className="p-4 overflow-y-auto"
+        // No padding of its own when an artifact is rendering: the inner frame's
+        // `.artifact-root` owns the artifact's outer padding, and padding on
+        // both sides of the frame boundary reads as an unexplained double
+        // margin. The non-artifact path (a raw tool result) still gets it.
+        className={renderer ? "overflow-y-auto" : "p-4 overflow-y-auto"}
         style={{
           maxHeight,
           paddingTop: hostContext?.safeAreaInsets?.top,
@@ -610,16 +643,11 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Er
   override render() {
     if (this.state.error) {
       return (
-        <Components.Alert variant="destructive">
-          <Components.AlertCircle className="h-4 w-4" />
-          <Components.AlertTitle>Runtime Error</Components.AlertTitle>
-          <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
-            {this.state.error.message}
-            {this.state.error.stack && (
-              <pre className="mt-2 text-xs opacity-60">{this.state.error.stack}</pre>
-            )}
-          </Components.AlertDescription>
-        </Components.Alert>
+        <Components.ArtifactError
+          title="This view stopped rendering"
+          error={this.state.error}
+          hint="Reopen the artifact, or ask the agent to rebuild it."
+        />
       );
     }
     return this.props.children;

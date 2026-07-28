@@ -40,6 +40,8 @@
   },
   "scripts": {
     "build:shell": "vite build --config vite.config.shell.ts",
+    "gen:provided-globals": "bun scripts/gen-provided-globals.ts",
+    "fonts:subset": "bun scripts/subset-fonts.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

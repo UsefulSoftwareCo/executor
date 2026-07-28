@@ -85,6 +85,40 @@ export const innerRendererPlugin = (): InnerRendererVitePlugin => ({
 });
 
 // ---------------------------------------------------------------------------
+// The in-frame Tailwind compiler, as source text
+// ---------------------------------------------------------------------------
+
+const TAILWIND_VIRTUAL_ID = "virtual:executor-tailwind-browser";
+const TAILWIND_RESOLVED_ID = `\0${TAILWIND_VIRTUAL_ID}`;
+
+/**
+ * Supply `@tailwindcss/browser`'s bundle as a STRING.
+ *
+ * The shell inlines it into the sandboxed renderer frame, which compiles the
+ * utilities the model's code uses — the build-time stylesheet can only contain
+ * classes that existed at build time, and the model's did not. That frame runs
+ * under `default-src 'none'` with no `connect-src`, so the compiler cannot be
+ * fetched and has to travel as bytes.
+ *
+ * A plugin rather than an `?raw` import because the package's `exports` map
+ * publishes only its module entry, so a deep path into `dist/` fails to
+ * resolve. Reading the resolved entry's file is the supported way to its bytes.
+ */
+export const tailwindBrowserSourcePlugin = (): InnerRendererVitePlugin => ({
+  name: "executor-tailwind-browser-source",
+  enforce: "pre",
+  resolveId: (id) => (id === TAILWIND_VIRTUAL_ID ? TAILWIND_RESOLVED_ID : undefined),
+  load: async (id) => {
+    if (id !== TAILWIND_RESOLVED_ID) return undefined;
+    const fs = await import("node:fs/promises");
+    const { createRequire } = await import("node:module");
+    const require = createRequire(path.join(packageRoot, "package.json"));
+    const entry = require.resolve("@tailwindcss/browser");
+    return `export default ${JSON.stringify(await fs.readFile(entry, "utf-8"))};`;
+  },
+});
+
+// ---------------------------------------------------------------------------
 // The built shell document, as an app asset
 // ---------------------------------------------------------------------------
 

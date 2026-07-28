@@ -1,0 +1,265 @@
+/*
+ * Executor's design tokens, as Tailwind theme SOURCE.
+ *
+ * Split out of `globals.css` because this file has two consumers:
+ *
+ *  1. The shell's own build, which `@import`s it and compiles it ahead of time.
+ *  2. The sandboxed inner frame, which embeds it VERBATIM in a
+ *     `<style type="text/tailwindcss">` so the in-frame Tailwind compiler can
+ *     generate whatever utilities the model's code actually uses, against these
+ *     tokens. Without the theme source there, `text-muted-foreground` compiles
+ *     to nothing and `md:grid-cols-4` never exists — see `buildRendererSrcDoc`.
+ *
+ * It therefore contains ONLY tokens and variants: no `@font-face` (whose
+ * `url()` must be build-resolved into a `data:` URL), no `@source`, and no
+ * component CSS. Anything with a build-time dependency stays in `globals.css`.
+ *
+ * The semantic values are copied from `packages/react/src/styles/globals.css`
+ * and pinned against it by `theme-tokens.pin.test.ts`.
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* Geist sets UI and prose; Geist Mono sets code, slugs, IDs, counts and
+     section labels. The faces themselves are declared in `globals.css`, which
+     is where the build can inline them. */
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+
+  --color-positive: var(--positive);
+  --color-caution: var(--caution);
+  --color-negative: var(--negative);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* Light theme.
+   Grayscale, registry-grade minimal: white surfaces, a near-neutral gray ramp,
+   hairline borders, and color held back to one role (destructive). Hierarchy
+   comes from tone and borders, not hue. */
+:root {
+  color-scheme: light dark;
+  --radius: 0.5rem;
+
+  --background: #ffffff;
+  --foreground: #111111;
+  --card: #ffffff;
+  --card-foreground: #111111;
+  --popover: #ffffff;
+  --popover-foreground: #111111;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #fafafa;
+  --secondary-foreground: #0a0a0a;
+  --muted: #fafafa;
+  --muted-foreground: #666666;
+  --accent: #f5f5f5;
+  --accent-foreground: #0a0a0a;
+  --destructive: #b4261a;
+  --border: #eaeaea;
+  --input: #d4d4d4;
+  --ring: #888888;
+
+  /* Data-visualization palette.
+
+     The one place the system admits hue, because a chart with four grayscale
+     series is unreadable. It is held to the same restraint as everything else:
+     desaturated, mid-tone, no neon, and NOT a rainbow. Every entry is muted
+     enough to sit under `foreground` text on a white card without pulling the
+     eye off the numbers.
+
+     Ordered. Slot 1 is the near-neutral slate a single-series chart gets, so
+     the common case stays grayscale; hue only appears once a second series
+     needs distinguishing. Color follows the entity, never its rank — slot 3 is
+     "the third series in this chart", not "the third-biggest value". */
+  --chart-1: #545454; /* slate — the default single series */
+  --chart-2: #3d6ea8; /* muted blue */
+  --chart-3: #9a6b3f; /* clay */
+  --chart-4: #4a7f70; /* muted teal */
+  --chart-5: #7b6099; /* muted violet */
+  --chart-6: #a8654f; /* terracotta */
+  --chart-7: #5b7a4a; /* moss */
+  --chart-8: #8e5f78; /* mauve */
+
+  /* Status. Reserved, never used as series colors: a chart that spends its
+     palette on these loses the ability to say "this one is bad". Always paired
+     with a word or an icon — never color alone. `negative` is `destructive`. */
+  --positive: #2f7d52;
+  --caution: #9a6b1f;
+  --negative: #b4261a;
+}
+
+/* Dark theme.
+   The gray ramp inverts: near-black surfaces, a white primary, hairlines at low
+   contrast. Depth comes from a one-step-lighter surface, not a heavier shadow.
+   The chart palette lightens rather than saturating — the same hues, raised to
+   clear a near-black background. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    --card: #0f0f0f;
+    --card-foreground: #ededed;
+    --popover: #141414;
+    --popover-foreground: #ededed;
+    --primary: #ffffff;
+    --primary-foreground: #0a0a0a;
+    --secondary: #141414;
+    --secondary-foreground: #ededed;
+    --muted: #141414;
+    --muted-foreground: #9a9a9a;
+    --accent: #1a1a1a;
+    --accent-foreground: #ededed;
+    --destructive: #e0726a;
+    --border: #1f1f1f;
+    --input: #333333;
+    --ring: #777777;
+
+    --chart-1: #a1a1a1;
+    --chart-2: #7a9cc9;
+    --chart-3: #c99a6b;
+    --chart-4: #6fb0a0;
+    --chart-5: #a892c6;
+    --chart-6: #d1917b;
+    --chart-7: #8dab78;
+    --chart-8: #bd8fa8;
+
+    --positive: #5cb185;
+    --caution: #c9a04a;
+    --negative: #e0726a;
+  }
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --card: #0f0f0f;
+  --card-foreground: #ededed;
+  --popover: #141414;
+  --popover-foreground: #ededed;
+  --primary: #ffffff;
+  --primary-foreground: #0a0a0a;
+  --secondary: #141414;
+  --secondary-foreground: #ededed;
+  --muted: #141414;
+  --muted-foreground: #9a9a9a;
+  --accent: #1a1a1a;
+  --accent-foreground: #ededed;
+  --destructive: #e0726a;
+  --border: #1f1f1f;
+  --input: #333333;
+  --ring: #777777;
+
+  --chart-1: #a1a1a1;
+  --chart-2: #7a9cc9;
+  --chart-3: #c99a6b;
+  --chart-4: #6fb0a0;
+  --chart-5: #a892c6;
+  --chart-6: #d1917b;
+  --chart-7: #8dab78;
+  --chart-8: #bd8fa8;
+
+  --positive: #5cb185;
+  --caution: #c9a04a;
+  --negative: #e0726a;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+
+  /* Numbers do not jitter. Every count, metric, axis tick and table figure in
+     an artifact is a number in a column that updates, so tabular figures are
+     the default rather than something the model has to remember to ask for. */
+  body {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .proportional-nums {
+    font-variant-numeric: normal;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--input);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ring);
+  }
+}
+
+/* The artifact container.
+
+   The shell owns the artifact's outer padding and measure. Model-written code
+   that also sets a page-level `p-6` doubles it; code that sets none renders
+   flush to the frame edge. Neither is the model's problem to solve, so the
+   answer is not a prompt rule but a container that is always right — the skill
+   documents it so the model knows not to add its own.
+
+   `max-width` keeps a table or a metric row from stretching to a 2000px
+   viewport, where rows become unreadable ribbons. Content that genuinely wants
+   the full width opts out with `w-full` on a child. */
+.artifact-root {
+  padding: 24px;
+  max-width: 1100px;
+  margin-inline: auto;
+}
+
+@media (max-width: 640px) {
+  .artifact-root {
+    padding: 16px;
+  }
+}

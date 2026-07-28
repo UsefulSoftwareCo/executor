@@ -117,6 +117,12 @@ export { Skeleton } from "@executor-js/react/components/skeleton";
 // Feedback
 export { Alert, AlertTitle, AlertDescription } from "@executor-js/react/components/alert";
 
+// The three states every artifact has, drawn once in the house style so a model
+// never has to invent a spinner, an empty state or an error layout. The shell's
+// own error boundary renders `ArtifactError` too, so a thrown component and a
+// failed query look the same.
+export { ArtifactLoading, ArtifactEmpty, ArtifactError } from "./artifact-states";
+
 // Charts (shadcn wrappers around Recharts)
 export {
   ChartContainer,

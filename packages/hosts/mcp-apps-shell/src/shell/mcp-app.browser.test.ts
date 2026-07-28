@@ -1380,6 +1380,67 @@ describe("MCP app generated UI browser isolation", () => {
     }
   }, 30_000);
 
+  // The design system only exists for the model if the classes it writes turn
+  // into CSS. They did not: the frame received the shell's COMPILED stylesheet,
+  // which by construction contains only utilities executor's own components use,
+  // so anything else silently no-opped — `text-2xl` computed to 16px and
+  // `md:grid-cols-4` stayed one column. The frame now carries the theme as
+  // source plus a compiler. This renders classes that appear nowhere in the
+  // shell's own sources and asserts the COMPUTED result, because "the class is
+  // in the DOM" was always true even when it did nothing.
+  it("compiles utility classes the model invents, against executor's tokens", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(
+        page,
+        shellFrame,
+        `function App() {
+           return (
+             <div id="probe">
+               <div id="size" className="text-2xl">24</div>
+               <div id="grid" className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                 <span>a</span><span>b</span><span>c</span><span>d</span>
+               </div>
+               <div id="arbitrary" className="tracking-[0.08em] text-[11px]">label</div>
+               <div id="token" className="text-muted-foreground">muted</div>
+             </div>
+           );
+         }`,
+      );
+      await innerFrame.locator("#probe").waitFor({ timeout: 10_000 });
+
+      const computed = await innerFrame.evaluate(() => {
+        const styleOf = (id: string) => getComputedStyle(document.getElementById(id)!);
+        return {
+          fontSize: styleOf("size").fontSize,
+          gridColumns: styleOf("grid").gridTemplateColumns.split(" ").length,
+          letterSpacing: styleOf("arbitrary").letterSpacing,
+          labelSize: styleOf("arbitrary").fontSize,
+          mutedColor: styleOf("token").color,
+          bodyFont: getComputedStyle(document.body).fontFamily,
+          bodyNumeric: getComputedStyle(document.body).fontVariantNumeric,
+        };
+      });
+
+      // A built-in scale step, a responsive variant, and an arbitrary value —
+      // three different paths through the compiler, none of them in the shell.
+      expect(computed.fontSize, "text-2xl resolves to its real size").toBe("24px");
+      expect(computed.gridColumns, "md:grid-cols-4 produces four columns").toBe(4);
+      expect(computed.labelSize, "an arbitrary text size compiles").toBe("11px");
+      expect(computed.letterSpacing, "an arbitrary tracking compiles").not.toBe("normal");
+
+      // Compiled against EXECUTOR's theme, not Tailwind's defaults: the muted
+      // token is the design system's gray, and the type is Geist.
+      expect(computed.mutedColor, "muted-foreground is executor's gray").toBe("rgb(102, 102, 102)");
+      expect(computed.bodyFont, "the frame is set in Geist").toContain("Geist");
+      expect(computed.bodyNumeric, "numbers are tabular by default").toContain("tabular-nums");
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
   it("blocks popup, form, and nested-frame escape attempts from generated UI", async () => {
     if (!browser || !hostServer) throw new Error("Browser harness did not start.");
     const { page, shellFrame } = await openHarness(browser, hostServer.url);

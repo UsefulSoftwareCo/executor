@@ -275,25 +275,25 @@ const applyTheme = (theme: unknown) => {
   }
 };
 
+/**
+ * Mount into the shell-owned container.
+ *
+ * `.artifact-root` carries the artifact's outer padding and max width, so every
+ * artifact is framed identically whether or not its author thought about it —
+ * and the skill can tell the model NOT to add a page-level `p-6`, because
+ * doubling it is the visible failure. Applied here rather than in the srcDoc's
+ * markup so the class travels with whatever renders, including the error paths.
+ */
 const renderNode = (node: ReactNode) => {
   const mount = document.getElementById("root");
   if (!mount) return;
+  mount.classList.add("artifact-root");
   root ??= createRoot(mount);
   root.render(<Components.TooltipProvider>{node}</Components.TooltipProvider>);
 };
 
 const renderError = (title: string, message: string) => {
-  renderNode(
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Components.Alert variant="destructive">
-        <Components.AlertCircle className="h-4 w-4" />
-        <Components.AlertTitle>{title}</Components.AlertTitle>
-        <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
-          {message}
-        </Components.AlertDescription>
-      </Components.Alert>
-    </div>,
-  );
+  renderNode(<Components.ArtifactError title={title} error={message} />);
   sendParent({ type: "executor.renderer.error", message });
 };
 
@@ -309,17 +309,15 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Er
 
   override render() {
     if (this.state.error) {
+      // The stack is deliberately dropped. Whoever is looking at an artifact
+      // did not write it, so a trace is noise to them and the real audience —
+      // the model — gets the message back over `executor.renderer.error`.
       return (
-        <Components.Alert variant="destructive">
-          <Components.AlertCircle className="h-4 w-4" />
-          <Components.AlertTitle>Runtime Error</Components.AlertTitle>
-          <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
-            {this.state.error.message}
-            {this.state.error.stack && (
-              <pre className="mt-2 text-xs opacity-60">{this.state.error.stack}</pre>
-            )}
-          </Components.AlertDescription>
-        </Components.Alert>
+        <Components.ArtifactError
+          title="This artifact stopped rendering"
+          error={this.state.error}
+          hint="The component threw while rendering. Ask the agent to fix it, or reopen the artifact."
+        />
       );
     }
     return this.props.children;
