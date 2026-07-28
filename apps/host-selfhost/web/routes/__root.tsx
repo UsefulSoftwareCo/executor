@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
-import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
@@ -33,6 +33,13 @@ import { fetchNeedsSetup } from "../setup-status";
 // self-host specifics are the login form (email/password) and sign-out (Better
 // Auth), injected here. No billing, Sentry, or PostHog.
 // ---------------------------------------------------------------------------
+
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. It is registered as a dynamic import the
+// artifact page resolves in the browser, never a static one, so it stays out of
+// any server graph. Module scope keeps the loader identity stable, so the lazy
+// component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
@@ -177,13 +184,13 @@ function AuthenticatedApp() {
             a slug-pinned URL would 404, and a single-org instance has nothing
             to select anyway. */}
         <OrganizationProvider organizationId={organization?.id ?? null}>
-          <ArtifactShellProvider>
+          <ArtifactRendererProvider loader={artifactRendererLoader}>
             {organization ? (
               <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate>
             ) : (
               gated
             )}
-          </ArtifactShellProvider>
+          </ArtifactRendererProvider>
         </OrganizationProvider>
       </ExecutorPluginsProvider>
     </ExecutorProvider>

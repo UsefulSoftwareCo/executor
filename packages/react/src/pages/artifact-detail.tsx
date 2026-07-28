@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
+import { ClientOnly, useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { toast } from "sonner";
@@ -162,13 +162,29 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
   );
 }
 
+/** The frame the stage occupies before the shell module has arrived. */
+function ArtifactStagePlaceholder() {
+  return (
+    <div className="flex items-center gap-2 p-6">
+      <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+      <p className="text-sm text-muted-foreground">Preparing the renderer…</p>
+    </div>
+  );
+}
+
 /**
  * Mounts the registered MCP-Apps shell around the artifact's stored source.
  *
- * The shell itself is supplied by the app composition root (see
+ * The shell is supplied by the app composition root (see
  * `ArtifactRendererProvider`) because it depends on this package and cannot be
- * imported back into it. A host that registers none still renders a page that
- * explains itself instead of crashing.
+ * imported back into it. It arrives as a lazy loader rather than a component:
+ * the shell is browser-only, so on an SSR host (cloud) this page must render a
+ * placeholder frame server-side and hydrate the shell client-side. `ClientOnly`
+ * holds the placeholder through the server pass and the first client render, so
+ * the loader is only ever invoked in the browser and hydration never mismatches.
+ *
+ * A host that registers no renderer still gets a page that explains itself
+ * instead of crashing.
  */
 function ArtifactStage(props: { readonly code: string }) {
   const Renderer = useArtifactRenderer();
@@ -186,5 +202,11 @@ function ArtifactStage(props: { readonly code: string }) {
     );
   }
 
-  return <Renderer code={props.code} host={host} />;
+  return (
+    <ClientOnly fallback={<ArtifactStagePlaceholder />}>
+      <Suspense fallback={<ArtifactStagePlaceholder />}>
+        <Renderer code={props.code} host={host} />
+      </Suspense>
+    </ClientOnly>
+  );
 }

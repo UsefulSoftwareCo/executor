@@ -3,7 +3,7 @@ import { useEffect, type ReactNode } from "react";
 
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
-import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
@@ -24,6 +24,13 @@ import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 // API keys + members are managed in Cloudflare Access, not in-app, so this host
 // omits the API-keys nav item and just uses the default set.
 // ---------------------------------------------------------------------------
+
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. It is registered as a dynamic import the
+// artifact page resolves in the browser, never a static one, so it stays out of
+// any server graph. Module scope keeps the loader identity stable, so the lazy
+// component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -79,13 +86,13 @@ function AuthenticatedApp() {
             wrangler.jsonc run_worker_first), so a slug-pinned URL would fall
             through to the SPA. */}
         <OrganizationProvider organizationId={organization?.id ?? null}>
-          <ArtifactShellProvider>
+          <ArtifactRendererProvider loader={artifactRendererLoader}>
             {organization ? (
               <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate>
             ) : (
               gated
             )}
-          </ArtifactShellProvider>
+          </ArtifactRendererProvider>
         </OrganizationProvider>
       </ExecutorPluginsProvider>
     </ExecutorProvider>

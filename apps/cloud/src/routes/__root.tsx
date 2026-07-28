@@ -21,7 +21,7 @@ import { EXECUTOR_ORG_HEADER } from "@executor-js/react/api/server-connection";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
-import { ArtifactShellProvider } from "@executor-js/mcp-apps-shell/shell/artifact-renderer";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
@@ -61,6 +61,13 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
     },
   });
 }
+
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. A static import here would put it in this
+// SSR app's server graph and 500 every document request, so it is registered as
+// a dynamic import the artifact page resolves in the browser. Module scope keeps
+// the loader identity stable, so the lazy component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
 
 const analyticsClient: AnalyticsClient | undefined =
   typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY
@@ -328,9 +335,9 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
                     a bare URL gets rewritten — onto the auth org, the one
                     thing it can mean. */}
                 <OrgSlugGate activeSlug={scopeSlug}>
-                  <ArtifactShellProvider>
+                  <ArtifactRendererProvider loader={artifactRendererLoader}>
                     <Shell />
-                  </ArtifactShellProvider>
+                  </ArtifactRendererProvider>
                   <Toaster />
                 </OrgSlugGate>
               </OrganizationProvider>
