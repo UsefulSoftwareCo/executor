@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import type { Page } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
 import { AccountHttpApi } from "@executor-js/api";
 import type { ArtifactId } from "@executor-js/sdk/shared";
@@ -33,13 +34,26 @@ const api = composePluginApi([] as const);
  * `useState`, …) or the server's guard rejects it before it is ever saved, and
  * its rendered text must be distinctive enough to assert on inside the shell's
  * nested sandbox iframe.
+ *
+ * It is also deliberately TALL — 40 rows, well past the frame's initial height.
+ * The shell reports its content height over the MCP-Apps resize protocol and the
+ * artifact page, as host, grows the iframe to match. When the shell was mounted
+ * inline there was no host to consume those notifications and tall artifacts
+ * clipped mid-viewport, so the last row is what proves the frame grew.
  */
+const ARTIFACT_ROW_COUNT = 40;
+
 const artifactSource = (marker: string) => `
 function App() {
   return (
     <div>
       <h2>Release Readiness</h2>
       <p data-testid="artifact-marker">${marker}</p>
+      {Array.from({ length: ${ARTIFACT_ROW_COUNT} }, (_, i) => (
+        <p key={i} data-testid={"artifact-row-" + i} style={{ height: 28 }}>
+          Check {i + 1}: ${marker}
+        </p>
+      ))}
     </div>
   );
 }
@@ -52,6 +66,37 @@ const uniqueSuffix = () => randomBytes(4).toString("hex");
 const structuredOf = (result: { readonly raw: unknown }): Record<string, unknown> =>
   ((result.raw as { structuredContent?: Record<string, unknown> }).structuredContent ??
     {}) as Record<string, unknown>;
+
+/**
+ * The generated component, two frames down.
+ *
+ * The artifact page hosts the shell DOCUMENT in a sandboxed iframe and speaks
+ * the MCP-Apps protocol to it — the same way any MCP-Apps client loads
+ * `ui://executor/shell.html`. The shell then compiles the stored JSX into its
+ * own nested sandbox. Both hops are load-bearing, so tests descend through both.
+ */
+const artifactContent = (page: Page) =>
+  page.frameLocator('[data-testid="artifact-shell-frame"]').frameLocator("iframe");
+
+/**
+ * A fingerprint of the CONSOLE document's styling.
+ *
+ * The shell ships its own Tailwind build and its own palette; the console's is
+ * strictly grayscale. Sampling a token, a real rendered control, and the
+ * stylesheet count catches the leak whether it arrives as a `<style>` element,
+ * a variable override, or the runtime Tailwind JIT mutating the page.
+ */
+const readConsoleStyle = (
+  page: Page,
+): Promise<{ primary: string; buttonBg: string; styleSheets: number }> =>
+  page.evaluate(() => {
+    const button = document.querySelector("button");
+    return {
+      primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
+      buttonBg: button ? getComputedStyle(button).backgroundColor : "",
+      styleSheets: document.styleSheets.length,
+    };
+  });
 
 scenario(
   "Artifacts · render-ui hands a non-Apps client a deep link that renders the live component",
@@ -121,8 +166,15 @@ scenario(
       const orgSlug = me.organization?.slug;
 
       yield* browser.session(identity, async ({ page, step }) => {
+        // The console's own styling, sampled BEFORE any artifact is opened.
+        // The shell ships its own Tailwind build and its own palette (a teal
+        // `--primary` against the console's near-black), so if its stylesheet
+        // ever reaches the top-level document again these values move.
+        let consoleStyleBefore: { primary: string; buttonBg: string; styleSheets: number };
+
         await step("Open the artifact link the agent handed over", async () => {
           await page.goto(url, { waitUntil: "networkidle" });
+          consoleStyleBefore = await readConsoleStyle(page);
         });
 
         await step("The artifact page is titled with the artifact's name", async () => {
@@ -140,14 +192,83 @@ scenario(
         });
 
         await step("The saved component renders live inside the shell", async () => {
-          // Deliberately scoped THROUGH the iframe rather than the page: the
-          // generated code runs in the shell's sandboxed `srcDoc` frame, so
-          // finding the marker there proves the stored JSX was compiled and
-          // executed inside the sandbox — not echoed as text by the page. An
-          // unscoped lookup would still pass if the sandbox broke.
-          const rendered = page.frameLocator("iframe").getByTestId("artifact-marker");
+          // TWO frames deep, deliberately. The page hosts the shell DOCUMENT in
+          // a sandboxed iframe and speaks the MCP-Apps protocol to it; the shell
+          // in turn compiles the stored JSX into its own nested sandbox. Finding
+          // the marker at the bottom of that chain proves the whole path — the
+          // host bridge delivered the code, and the sandbox compiled and ran it.
+          // An unscoped lookup would still pass if either frame collapsed.
+          const rendered = artifactContent(page).getByTestId("artifact-marker");
           await rendered.waitFor({ timeout: 30_000 });
           expect(await rendered.textContent()).toContain(marker);
+        });
+
+        // ------------------------------------------------------------------
+        // Regression guards for the two symptoms of mounting the shell inline.
+        // ------------------------------------------------------------------
+
+        await step("The shell's styles stay inside its own document", async () => {
+          const after = await readConsoleStyle(page);
+
+          // The console's design system is strictly grayscale. When the shell
+          // was mounted inline, its stylesheet redefined `--primary` to a teal
+          // and every button and avatar in the console picked it up — for the
+          // rest of the session, on every page.
+          expect(after.primary, "the console's --primary is untouched by the shell").toBe(
+            consoleStyleBefore.primary,
+          );
+          expect(after.buttonBg, "a console button keeps its own background").toBe(
+            consoleStyleBefore.buttonBg,
+          );
+          expect(
+            after.styleSheets,
+            "the shell injected no stylesheet into the console document",
+          ).toBe(consoleStyleBefore.styleSheets);
+
+          // And positively: the shell's stylesheet IS present, one document
+          // down. Without this the assertions above would also pass if the
+          // shell had simply failed to load.
+          const shellHasOwnStyles = await page
+            .frameLocator('[data-testid="artifact-shell-frame"]')
+            .locator("html")
+            .evaluate((html) => {
+              const primary = getComputedStyle(html).getPropertyValue("--primary").trim();
+              return { primary, sheets: html.ownerDocument.styleSheets.length };
+            });
+          expect(
+            shellHasOwnStyles.sheets,
+            "the shell document carries its own stylesheets",
+          ).toBeGreaterThan(0);
+          expect(
+            shellHasOwnStyles.primary,
+            "the shell keeps its own palette inside its own document",
+          ).not.toBe("");
+        });
+
+        await step("A tall artifact is fully visible, not clipped", async () => {
+          // The shell reports content height; the page, as host, grows the
+          // iframe. Inline there was no host to consume those notifications, so
+          // the frame stayed at its initial height and tall artifacts were cut
+          // off. The LAST row is the one that only exists if the frame grew.
+          const lastRow = artifactContent(page).getByTestId(
+            `artifact-row-${ARTIFACT_ROW_COUNT - 1}`,
+          );
+          await lastRow.waitFor({ timeout: 30_000 });
+
+          const frame = page.locator('[data-testid="artifact-shell-frame"]');
+          const frameBox = await frame.boundingBox();
+          expect(frameBox, "the artifact frame is laid out").not.toBeNull();
+          // 40 rows at 28px plus the shell's own chrome cannot fit in the
+          // 320px the frame starts at; anything near that means no resize.
+          expect(
+            frameBox?.height ?? 0,
+            "the host grew the iframe past its initial height",
+          ).toBeGreaterThan(600);
+
+          // And the row itself is rendered with real extent inside it, rather
+          // than laid out beyond a clipped frame.
+          const rowBox = await lastRow.boundingBox();
+          expect(rowBox?.height ?? 0, "the last row has real layout extent").toBeGreaterThan(0);
         });
 
         await step("The artifact is listed on the Artifacts tab", async () => {

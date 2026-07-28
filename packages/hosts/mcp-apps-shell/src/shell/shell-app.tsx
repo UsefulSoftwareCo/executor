@@ -67,6 +67,43 @@ function applyTheme(ctx: McpUiHostContext) {
   }
 }
 
+/**
+ * How tall the shell may grow before it scrolls internally, or `undefined` for
+ * "as tall as the content is".
+ *
+ * Precedence, tightest first:
+ *
+ *  1. The generated component's own `config.maxHeight` — the author asked for a
+ *     scroll box, so give them one.
+ *  2. The host's `containerDimensions`, the MCP-Apps way of saying "this is the
+ *     room you have".
+ *  3. Otherwise NO cap. An app cannot know how much room its host has; the
+ *     protocol's answer is for the app to report its true content height via
+ *     `size-changed` and let the host size the frame. Capping here would also be
+ *     circular for a host that does exactly that — the shell's own viewport IS
+ *     the frame the host is trying to size, so measuring it would pin the frame
+ *     to whatever height it already had.
+ *
+ * The old unconditional 800px default was case 3 done wrong: it silently clipped
+ * anything taller, in every host, including ones with room to spare.
+ */
+const resolveMaxHeight = (
+  config: Record<string, unknown>,
+  hostContext: McpUiHostContext | undefined,
+): number | undefined => {
+  if (typeof config.maxHeight === "number") return config.maxHeight;
+
+  const container = hostContext?.containerDimensions;
+  if (container) {
+    if ("height" in container && typeof container.height === "number") return container.height;
+    if ("maxHeight" in container && typeof container.maxHeight === "number") {
+      return container.maxHeight;
+    }
+  }
+
+  return undefined;
+};
+
 const createRendererToken = (): string => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -432,8 +469,12 @@ export function McpAppsShell({
 
   const Component = component;
   const config = renderer?.config ?? {};
-  const maxHeight = typeof config.maxHeight === "number" ? config.maxHeight : 800;
-  const rendererHeight = renderer ? Math.min(renderer.height, maxHeight) : undefined;
+  const maxHeight = resolveMaxHeight(config, hostContext);
+  const rendererHeight = renderer
+    ? maxHeight === undefined
+      ? renderer.height
+      : Math.min(renderer.height, maxHeight)
+    : undefined;
 
   return (
     <Components.TooltipProvider>
