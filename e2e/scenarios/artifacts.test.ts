@@ -215,22 +215,23 @@ scenario(
       const url = String(structured.url);
       expect(rendered.text, "the model is handed the URL to relay to the user").toContain(url);
 
-      // The link must point at THIS deployment and at the artifact's own page —
-      // a bare `/artifacts/:id`, which the console canonicalizes onto the
-      // active org slug after landing.
+      // The org this identity is bound to. Org-scoped hosts (cloud, self-host)
+      // advertise a slug; local is unscoped and advertises none.
+      const accountClient = yield* apiClient(AccountHttpApi, identity);
+      const me = yield* accountClient.account.me();
+      const orgSlug = me.organization?.slug;
+
+      // The link must point at THIS deployment, at the artifact's own page, and
+      // — this is the part that bit us — inside the right org. A bare
+      // `/artifacts/:id` on an org-scoped host is resolved against whatever org
+      // the browser was last in, so the emitted URL names the org itself.
       const parsed = new URL(url);
       expect(parsed.origin, `the deep link targets this deployment (${url})`).toBe(
         new URL(target.baseUrl).origin,
       );
       expect(parsed.pathname, `the deep link addresses the artifact (${url})`).toBe(
-        `/artifacts/${artifactId}`,
+        orgSlug ? `/${orgSlug}/artifacts/${artifactId}` : `/artifacts/${artifactId}`,
       );
-
-      // The org the console will canonicalize to, so the landing URL can be
-      // asserted rather than guessed.
-      const accountClient = yield* apiClient(AccountHttpApi, identity);
-      const me = yield* accountClient.account.me();
-      const orgSlug = me.organization?.slug;
 
       yield* browser.session(identity, async ({ page, step }) => {
         // The console's own styling, sampled BEFORE any artifact is opened.
@@ -248,8 +249,9 @@ scenario(
         await step("The artifact page is titled with the artifact's name", async () => {
           await page.getByRole("heading", { name: title }).waitFor({ timeout: 20_000 });
           if (orgSlug) {
-            // A bare deep link canonicalizes onto the active org in place,
-            // keeping the path — the artifact must not be lost in the rewrite.
+            // The link arrives already org-scoped and must LAND in that scope:
+            // the console neither strips the segment nor rewrites it onto some
+            // other org, and the artifact survives the trip through auth.
             await page.waitForURL(`**/${orgSlug}/artifacts/${artifactId}`, { timeout: 20_000 });
           }
           // Landing straight on the deep link (no list visit first) must still

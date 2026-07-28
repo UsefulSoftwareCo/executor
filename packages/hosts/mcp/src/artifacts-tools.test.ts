@@ -292,6 +292,27 @@ describe("MCP host — render-ui", () => {
     );
   });
 
+  it("carries the org slug into the deep link on an org-scoped host", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      NO_APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "render-ui",
+          arguments: { code: COUNTER_CODE, title: "Active users dashboard" },
+        });
+        expect(structuredOf(result)).toEqual({
+          status: "fallback_url",
+          url: "https://executor.test/acme/artifacts/art_1",
+          artifactId: "art_1",
+        });
+        expect(textOf(result)).toContain("https://executor.test/acme/artifacts/art_1");
+      },
+      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test", "acme") },
+    );
+  });
+
   it("still persists and reports the id when no web UI is configured", async () => {
     const store = makeArtifactStore();
     await withClient(
@@ -393,6 +414,146 @@ describe("MCP host — render-ui", () => {
               "}",
             ].join("\n"),
             title: "Local run",
+          },
+        });
+        expect(accepted.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  // The shape a model reaches for when it never fetched the skill: cursor
+  // pagination hand-rolled as a hook per page, capped by a constant.
+  it("rejects the chained-useQuery pagination loop and names infiniteQueryOptions", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const rejected = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "const MAX_PAGES = 8;",
+              "function App(){",
+              "  const pages = [];",
+              "  let cursor = null;",
+              "  for (let i = 0; i < MAX_PAGES; i++) {",
+              "    const page = useQuery(",
+              "      tools.vercel.getDomains.queryOptions({ limit: 100, since: cursor }),",
+              "      { enabled: i === 0 || cursor != null },",
+              "    );",
+              "    cursor = page.data?.pagination?.next ?? null;",
+              "    pages.push(page);",
+              "  }",
+              "  return <div>{pages.length}</div>;",
+              "}",
+            ].join("\n"),
+            title: "Domains",
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        expect(textOf(rejected)).toContain("`useQuery` is called inside a loop body");
+        expect(textOf(rejected)).toContain("infiniteQueryOptions");
+        expect(store.calls).toHaveLength(0);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("rejects a hook in a loop even when the loop body nests further blocks", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const rejected = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "function App(){",
+              "  const flags = [];",
+              "  while (flags.length < 3) {",
+              "    if (flags.length % 2 === 0) {",
+              "      const [on, setOn] = useState(false);",
+              "      flags.push(on);",
+              "    }",
+              "  }",
+              "  return null;",
+              "}",
+            ].join("\n"),
+            title: "Flags",
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        expect(textOf(rejected)).toContain("`useState` is called inside a loop body");
+        // Not a pagination problem — no point pointing at infiniteQueryOptions.
+        expect(textOf(rejected)).toContain("Move the hook out of the loop");
+        expect(store.calls).toHaveLength(0);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  // The check must never punish a loop that merely precedes a hook.
+  it("allows hooks that follow a closed loop, and loops that call no hooks", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const accepted = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "function App(){",
+              "  const buckets = [];",
+              "  for (let i = 0; i < 12; i++) {",
+              "    buckets.push({ month: i, label: `M${i}` });",
+              "  }",
+              "  const rows = useQuery(tools.vercel.getDomains.queryOptions({ limit: 100 }));",
+              "  const [selected, setSelected] = useState(null);",
+              "  const totals = useMemo(() => {",
+              "    let sum = 0;",
+              "    for (const row of rows.data ?? []) sum += row.count;",
+              "    return sum;",
+              "  }, [rows.data]);",
+              "  return <div>{totals}{buckets.length}{selected}</div>;",
+              "}",
+            ].join("\n"),
+            title: "Buckets",
+          },
+        });
+        expect(accepted.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("does not mistake loop keywords or hook names inside strings and JSX text", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const accepted = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: [
+              "function App(){",
+              "  const rows = useQuery(tools.vercel.getDomains.queryOptions({ limit: 50 }));",
+              '  const hint = "for (const x of xs) { useQuery(x) }";',
+              "  return (",
+              "    <div>",
+              "      <p>Nothing to do while we wait for {rows.data?.length} domains</p>",
+              "      <code>{hint}</code>",
+              "    </div>",
+              "  );",
+              "}",
+            ].join("\n"),
+            title: "Hints",
           },
         });
         expect(accepted.isError).toBeFalsy();
@@ -643,5 +804,25 @@ describe("artifactUrlFor", () => {
     expect(artifactUrlFor("http://localhost:4788/")("art/../x")).toBe(
       "http://localhost:4788/artifacts/art%2F..%2Fx",
     );
+  });
+
+  // An org-scoped host must name the org in the link. A bare path resolves
+  // against whatever org the browser was last in, which is the wrong artifact
+  // page — or none — as soon as the user belongs to two.
+  it("pins the link to the org slug when the host knows one", () => {
+    expect(artifactUrlFor("https://executor.sh", "acme")("art_123")).toBe(
+      "https://executor.sh/acme/artifacts/art_123",
+    );
+  });
+
+  it("escapes the slug, and stays bare for hosts with no org scope", () => {
+    expect(artifactUrlFor("https://executor.sh", "a/b")("art_1")).toBe(
+      "https://executor.sh/a%2Fb/artifacts/art_1",
+    );
+    for (const slug of [undefined, null, ""]) {
+      expect(artifactUrlFor("https://executor.sh", slug)("art_1")).toBe(
+        "https://executor.sh/artifacts/art_1",
+      );
+    }
   });
 });

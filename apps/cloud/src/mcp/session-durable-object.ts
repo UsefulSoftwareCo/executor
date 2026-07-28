@@ -254,7 +254,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         description,
         artifacts: executor.artifacts,
         loadAppShellHtml: loadMcpAppsShellHtml,
-        artifactUrl: artifactUrlFor(env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh"),
+        artifactUrl: artifactUrlFor(
+          env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+          sessionMeta.organizationSlug,
+        ),
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,

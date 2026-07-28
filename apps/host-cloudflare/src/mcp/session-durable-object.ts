@@ -134,7 +134,9 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         engine,
         artifacts: executor.artifacts,
         loadAppShellHtml: loadMcpAppsShellHtml,
-        ...(artifactOrigin ? { artifactUrl: artifactUrlFor(artifactOrigin) } : {}),
+        ...(artifactOrigin
+          ? { artifactUrl: artifactUrlFor(artifactOrigin, sessionMeta.organizationSlug) }
+          : {}),
         browserApprovalStore: self.browserApprovalStore,
         pausedExecutionHooks: self.pausedExecutionHooks,
         pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,

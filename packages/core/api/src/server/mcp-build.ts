@@ -67,7 +67,13 @@ export const makeMcpBuildServer =
           ...(hostOptions?.loadAppShellHtml
             ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
             : {}),
-          ...(webBaseUrl ? { artifactUrl: artifactUrlFor(webBaseUrl) } : {}),
+          // Same org pinning as `RequestOrgSlug` above: self-host serves its
+          // console under `/<org-slug>` (`default` when unconfigured), so the
+          // deep link carries the principal's slug rather than relying on the
+          // browser's active org to canonicalize a bare path after landing.
+          ...(webBaseUrl
+            ? { artifactUrl: artifactUrlFor(webBaseUrl, principal.organizationSlug) }
+            : {}),
           ...(options ?? {}),
         }).pipe(
           Effect.withSpan("mcp.server.create"),
