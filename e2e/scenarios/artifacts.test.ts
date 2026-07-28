@@ -86,6 +86,52 @@ const artifactContent = (page: Page) =>
  * stylesheet count catches the leak whether it arrives as a `<style>` element,
  * a variable override, or the runtime Tailwind JIT mutating the page.
  */
+/**
+ * Record, for every `window.addEventListener("message", …)` the CONSOLE document
+ * makes, what the shell frame's document was at that instant.
+ *
+ * This is the handshake's ordering invariant made observable. `ui/initialize` is
+ * posted once by the app with no retry, ext-apps buffers nothing, and the host
+ * only starts listening inside `AppBridge.connect()` — so if the host registers
+ * after the shell's scripts have run, the message is lost and both sides wait
+ * forever on "Connecting".
+ *
+ * The host must therefore be listening while the frame is still its initial
+ * `about:blank` document, before the shell document exists to run anything. That
+ * is a property of WHERE the host connects, not of how fast the machine is:
+ * connecting on the frame's `load` event cannot satisfy it (load fires only once
+ * the document is complete), while connecting on the element's ref always does.
+ *
+ * Must be installed before any navigation.
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __handshakeOrder: Array<string> | undefined;
+}
+
+const recordHandshakeOrdering = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
+    globalThis.__handshakeOrder = [];
+    const original = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (type, listener, options) {
+      if (type === "message" && this === window) {
+        const frame = document.querySelector<HTMLIFrameElement>(
+          '[data-testid="artifact-shell-frame"]',
+        );
+        // No frame yet is even earlier than about:blank, so it satisfies the
+        // invariant too; "(none)" keeps that case distinguishable in a failure.
+        globalThis.__handshakeOrder?.push(
+          frame ? (frame.contentDocument?.URL ?? "(no document)") : "(none)",
+        );
+      }
+      return original.call(this, type, listener, options as never);
+    };
+  });
+};
+
+const readHandshakeOrdering = (page: Page): Promise<ReadonlyArray<string>> =>
+  page.evaluate(() => globalThis.__handshakeOrder ?? []);
+
 const readConsoleStyle = (
   page: Page,
 ): Promise<{ primary: string; buttonBg: string; styleSheets: number }> =>
@@ -173,6 +219,7 @@ scenario(
         let consoleStyleBefore: { primary: string; buttonBg: string; styleSheets: number };
 
         await step("Open the artifact link the agent handed over", async () => {
+          await recordHandshakeOrdering(page);
           await page.goto(url, { waitUntil: "networkidle" });
           consoleStyleBefore = await readConsoleStyle(page);
         });
@@ -201,6 +248,47 @@ scenario(
           const rendered = artifactContent(page).getByTestId("artifact-marker");
           await rendered.waitFor({ timeout: 30_000 });
           expect(await rendered.textContent()).toContain(marker);
+
+          // Stuck on "Connecting" must fail loudly rather than time out at some
+          // later, more confusing assertion. The shell shows that word only
+          // while `ui/initialize` is unanswered.
+          const shellBody = page
+            .frameLocator('[data-testid="artifact-shell-frame"]')
+            .locator("body");
+          await expect
+            .poll(async () => await shellBody.innerText(), {
+              timeout: 10_000,
+              message: "the shell completed the handshake rather than sitting on Connecting",
+            })
+            .not.toContain("Connecting");
+        });
+
+        await step("The host was listening before the shell could speak", async () => {
+          // The regression guard for the handshake race. Asserting only that the
+          // artifact rendered is not enough: the previous implementation
+          // connected on the frame's `load` event and still rendered on a warm,
+          // fast machine, winning by ~5ms — while the user's browser lost the
+          // same race and sat on "Connecting" forever.
+          //
+          // So assert the ORDERING rather than the outcome. Every listener the
+          // console registers must be registered while the shell frame is still
+          // `about:blank` (or before the frame exists at all) — never once the
+          // shell document has been navigated to, which is precisely what
+          // connecting on `load` would show here.
+          // `about:blank` specifically, rather than "every listener was early":
+          // it is the only value that pins the BRIDGE's registration. A listener
+          // recorded before the frame exists at all could belong to any unrelated
+          // console code, and one recorded afterwards may legitimately be some
+          // later feature's — but a registration made while the shell frame is
+          // mounted and still unnavigated can only be the host attaching to it.
+          //
+          // Mutation-tested against the previous implementation, which connected
+          // on `load` and recorded the shell document's URL here instead.
+          const order = await readHandshakeOrdering(page);
+          expect(
+            order,
+            `the host attached to the shell frame before it was navigated (saw ${JSON.stringify(order)})`,
+          ).toContain("about:blank");
         });
 
         // ------------------------------------------------------------------

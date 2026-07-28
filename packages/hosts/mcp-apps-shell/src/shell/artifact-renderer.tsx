@@ -116,17 +116,50 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   }, [theme]);
 
   /**
-   * Connect the bridge once the iframe document has loaded.
+   * Build and connect the bridge the moment the iframe ELEMENT mounts — as the
+   * frame's `ref`, not its `onLoad`.
    *
-   * The app opens the handshake (`ui/initialize`) as soon as its script runs, so
-   * the transport must already be listening. `onLoad` is the earliest point at
-   * which `contentWindow` is the frame's own document rather than the
-   * `about:blank` placeholder, and the app's `connect()` retries nothing — hence
-   * connecting here rather than on mount.
+   * This ordering is the whole correctness argument, so it is worth stating
+   * exactly. `ui/initialize` is a fire-and-forget `postMessage`: the app's
+   * `connect()` sends it once, ext-apps has no retry, no backoff and no
+   * readiness handshake, and `AppBridge` buffers nothing. The host's transport
+   * only begins listening inside `bridge.connect()`, whose last synchronous step
+   * is `window.addEventListener("message", …)`. So a `ui/initialize` posted
+   * while the host has no listener is delivered to a window that ignores it and
+   * is gone for good — both sides then wait forever, which is the shell stuck on
+   * "Connecting" (the app's request does eventually time out after the SDK's 60s
+   * default, but the host has long since stopped being able to answer).
+   *
+   * Connecting in `onLoad` lost that race. The frame's `load` event fires AFTER
+   * its document has been parsed and its module scripts have run, so the app
+   * could — and on a cold, dev-served, 4.5MB document did — post `ui/initialize`
+   * before the host was listening. It "worked" locally only because the two
+   * landed within a few milliseconds of each other.
+   *
+   * A ref callback runs during the commit phase, synchronously after React has
+   * inserted the element into the document and therefore before the browser has
+   * fetched a single byte of `src`. `contentWindow` is already non-null there
+   * (it is the initial `about:blank` window), and a same-origin navigation keeps
+   * the browsing context's WindowProxy identity — so both the transport's
+   * `postMessage` target and its `event.source` filter still refer to the shell
+   * document once it replaces the placeholder. The listener is thus provably up
+   * before any script in the frame can run, whatever the machine, cache state or
+   * document size. This is also how sunpeak's host does it, which is why real
+   * MCP-Apps hosts never saw this bug.
+   *
+   * The returned cleanup makes this callback the SOLE owner of the bridge's
+   * lifecycle. Previously an effect keyed on `props.code` closed
+   * `bridgeRef.current`, which is a second, unsynchronized owner: under a
+   * StrictMode double-invoke or any re-render that reorders effects against
+   * refs, that cleanup could close a bridge a later mount had just connected,
+   * stranding the shell on "Connecting" for an entirely different reason. Now
+   * each bridge is created and closed by the same attach/detach pair and can
+   * only ever close itself.
    */
-  const connect = useCallback(() => {
-    const contentWindow = frameRef.current?.contentWindow;
-    if (!contentWindow) return;
+  const attachFrame = useCallback((frame: HTMLIFrameElement | null): (() => void) | undefined => {
+    frameRef.current = frame;
+    const contentWindow = frame?.contentWindow;
+    if (!contentWindow) return undefined;
 
     const bridge = new AppBridge(
       // No MCP client: the artifact page reaches the server over the ordinary
@@ -184,27 +217,28 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       });
 
     bridgeRef.current = bridge;
-  }, []);
 
-  // One bridge per artifact. The iframe is keyed on the source below, so opening
-  // a different artifact reloads the document rather than reusing a shell that
-  // has already rendered something else.
-  useEffect(
-    () => () => {
-      void bridgeRef.current?.close();
-      bridgeRef.current = null;
-    },
-    [props.code],
-  );
+    // Detach: close THIS bridge, and only clear the shared ref if it is still
+    // the current one, so a bridge that has already been replaced can never
+    // null out its successor.
+    return () => {
+      void bridge.close();
+      if (bridgeRef.current === bridge) bridgeRef.current = null;
+      if (frameRef.current === frame) frameRef.current = null;
+    };
+  }, []);
 
   return (
     <iframe
+      // Keyed on the source: opening a different artifact remounts the element,
+      // which detaches the old bridge and attaches a fresh one to a fresh
+      // document rather than reusing a shell that has already rendered
+      // something else.
       key={props.code}
-      ref={frameRef}
+      ref={attachFrame}
       data-testid="artifact-shell-frame"
       title="Artifact"
       src={shellHtmlUrl}
-      onLoad={connect}
       // The shell document is our own build, but it runs model-written JSX in a
       // further nested frame of its own. Scripts and same-origin are what it
       // needs to boot React and reach that inner frame; popups let `openLink`
