@@ -27,9 +27,9 @@ export interface CloudflareEnv {
   readonly MCP_SESSION: DurableObjectNamespace;
   readonly MCP_EXECUTION_OWNER?: DurableObjectNamespace;
   /** Zero Trust team domain, e.g. `your-team.cloudflareaccess.com`. */
-  readonly ACCESS_TEAM_DOMAIN: string;
+  readonly ACCESS_TEAM_DOMAIN?: string;
   /** The Access application's AUD tag (the JWT audience to verify). */
-  readonly ACCESS_AUD: string;
+  readonly ACCESS_AUD?: string;
   /** Claim holding the display name (default `name`). */
   readonly ACCESS_NAME_CLAIM?: string;
   /** Claim holding the user's groups (default `groups`). */
@@ -72,11 +72,43 @@ export interface CloudflareConfig {
   readonly enableDevAuth: boolean;
 }
 
+type CloudflareConfigEnv = Omit<
+  CloudflareEnv,
+  "DB" | "BLOBS" | "MCP_SESSION" | "MCP_EXECUTION_OWNER"
+>;
+
+type CloudflareAccessEnv = Pick<
+  CloudflareConfigEnv,
+  "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "ENABLE_DEV_AUTH"
+>;
+
 const splitLower = (value: string | undefined): readonly string[] =>
   (value ?? "")
     .split(",")
     .map((part) => part.trim().toLowerCase())
     .filter((part) => part.length > 0);
+
+const normalizeAccessTeamDomain = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+
+export const missingCloudflareAccessVars = (env: CloudflareAccessEnv): readonly string[] => {
+  if (env.ENABLE_DEV_AUTH === "true") return [];
+  const accessTeamDomain = normalizeAccessTeamDomain(env.ACCESS_TEAM_DOMAIN);
+  const accessAud = (env.ACCESS_AUD ?? "").trim();
+  return [
+    ...(accessTeamDomain.length === 0 ||
+    accessTeamDomain.toLowerCase() === "your-team.cloudflareaccess.com"
+      ? ["ACCESS_TEAM_DOMAIN"]
+      : []),
+    ...(accessAud.length === 0 ? ["ACCESS_AUD"] : []),
+  ];
+};
+
+export const cloudflareAccessConfigErrorMessage = (missingVars: readonly string[]): string =>
+  `Cloudflare Access is not configured. Set ${missingVars.join(" and ")} before serving requests.`;
 
 // The org slug doubles as a URL segment (`/<slug>/policies`), so an
 // operator-set value must fit the shared grammar and avoid reserved root
@@ -93,7 +125,7 @@ const resolveOrgSlug = (value: string | undefined): string => {
   return value;
 };
 
-export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
+export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
   const secretKey = env.EXECUTOR_SECRET_KEY?.trim();
   if (!secretKey || secretKey.length < 16) {
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the Worker must not boot without the at-rest secret key
@@ -102,6 +134,13 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     );
   }
   const enableDevAuth = env.ENABLE_DEV_AUTH === "true";
+  const accessTeamDomain = normalizeAccessTeamDomain(env.ACCESS_TEAM_DOMAIN);
+  const accessAud = (env.ACCESS_AUD ?? "").trim();
+  const missingAccessVars = missingCloudflareAccessVars(env);
+  if (missingAccessVars.length > 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: production must fail closed without a valid Access verifier
+    throw new Error(cloudflareAccessConfigErrorMessage(missingAccessVars));
+  }
   const webBaseUrl = resolvePublicOrigin({ explicit: env.VITE_PUBLIC_SITE_URL, env: {} });
   if (!webBaseUrl && !enableDevAuth && !warnedNoCloudflareOrigin) {
     warnedNoCloudflareOrigin = true;
@@ -113,8 +152,8 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     );
   }
   return {
-    accessTeamDomain: env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, ""),
-    accessAud: env.ACCESS_AUD,
+    accessTeamDomain,
+    accessAud,
     accessNameClaim: env.ACCESS_NAME_CLAIM ?? "name",
     accessGroupsClaim: env.ACCESS_GROUPS_CLAIM ?? "groups",
     adminEmails: splitLower(env.ADMIN_EMAILS),

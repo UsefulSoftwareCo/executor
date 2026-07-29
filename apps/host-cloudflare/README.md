@@ -36,14 +36,14 @@ bunx wrangler login
 bun run deploy:setup    # apps/host-cloudflare — provisions D1 + secret + deploys
 ```
 
-`deploy:setup` (scripts/deploy.sh) is idempotent: it creates/reuses the
-`executor` D1 database, writes its id into `wrangler.jsonc`, generates +
-uploads `EXECUTOR_SECRET_KEY`, and deploys. It then prints the one manual step.
+`deploy:setup` (scripts/deploy.sh) is idempotent. It creates or reuses the
+`executor` D1 database, writes its id into `wrangler.jsonc`, generates and
+uploads `EXECUTOR_SECRET_KEY`, then deploys. It then prints the one manual step.
 
 ### The one manual step — Cloudflare Access
 
-The Worker returns 401 until it's behind a Cloudflare Access application. In the
-Zero Trust dashboard:
+After the first deploy, API and MCP requests return 503 and name the missing
+Access variables until configuration is complete. In the Zero Trust dashboard:
 
 1. **Access → Applications → Add an application → Self-hosted**
 2. Application domain: `executor-cloudflare.<your-subdomain>.workers.dev`
@@ -52,13 +52,17 @@ Zero Trust dashboard:
    ```bash
    bunx wrangler deploy \
      --var ACCESS_AUD:<aud> \
-     --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com
+     --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com \
+     --var ADMIN_EMAILS:<admin@example.com>
    ```
-   (or set them in `wrangler.jsonc` and redeploy)
 
 Now visiting the Worker prompts an Access login; the Worker validates the issued
-JWT on every request. MCP clients present an Access JWT or
-`Cf-Access-Client-Id`/`-Secret` service-token headers.
+JWT on every request. Unauthenticated requests return 401. MCP clients present
+an Access JWT or `Cf-Access-Client-Id`/`-Secret` service-token headers.
+
+The Access values are live Worker variables, not values in `wrangler.jsonc`.
+Wrangler's `keep_vars` option preserves them during later code deploys. Run the
+command above again whenever you need to change them.
 
 ## Local development
 

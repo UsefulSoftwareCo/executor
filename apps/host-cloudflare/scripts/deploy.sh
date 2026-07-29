@@ -7,7 +7,7 @@
 #      wrangler.jsonc
 #   3. generates + uploads EXECUTOR_SECRET_KEY (the at-rest secret key) if unset
 #   4. deploys the Worker
-#   5. prints the single manual step: the Cloudflare Access application
+#   5. prints the single manual step: configure the Cloudflare Access application
 #
 # Idempotent — safe to re-run. Run from anywhere:
 #   bash apps/host-cloudflare/scripts/deploy.sh
@@ -71,18 +71,22 @@ cat <<'NEXT'
 
 ==> One manual step left: turn on Cloudflare Access (the auth layer)
 
-  The Worker is deployed but every request returns 401 until you put it behind
-  a Cloudflare Access application. In the Zero Trust dashboard:
+  The Worker is deployed but is not ready to serve requests until you configure
+  a Cloudflare Access application. API and MCP requests return 503 and name the
+  missing variables until configuration is complete. In the Zero Trust
+  dashboard:
 
     1. Access -> Applications -> Add an application -> Self-hosted
     2. Application domain: executor-cloudflare.<your-subdomain>.workers.dev
     3. Add an Access policy (e.g. "Emails ending in @yourcompany.com")
     4. After saving, copy the Application Audience (AUD) tag, then set:
-         bunx wrangler deploy --var ACCESS_AUD:<aud> \
-           --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com
-       (or edit the vars in wrangler.jsonc and redeploy)
+       bunx wrangler deploy --var ACCESS_AUD:<aud> \
+         --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com \
+         --var ADMIN_EMAILS:<admin@example.com>
 
-  That's it — visiting the Worker URL now prompts a Cloudflare Access login,
+  Wrangler preserves these live variables during later code deploys.
+
+  That's it. Visiting the Worker URL now prompts a Cloudflare Access login,
   and the Worker validates the issued JWT on every request.
 
 NEXT

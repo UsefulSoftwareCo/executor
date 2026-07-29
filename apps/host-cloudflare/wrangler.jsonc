@@ -4,6 +4,9 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/worker.ts",
+  // Access configuration is set per installation after the first deploy.
+  // Preserve those live bindings when this source config does not declare them.
+  "keep_vars": true,
   "observability": { "enabled": true },
   // The web UI (Workers Static Assets) — the shared multiplayer SPA built by
   // `vite build` into ./dist. `single-page-application` serves index.html for
@@ -49,17 +52,16 @@
     { "tag": "v1", "new_sqlite_classes": ["McpSessionDO"] },
     { "tag": "v2", "new_sqlite_classes": ["McpExecutionOwnerDirectoryDO"] },
   ],
-  // Cloudflare Access is the entire auth layer: the Worker validates the
-  // Cf-Access-Jwt-Assertion JWT against the team JWKS. Set these to your Zero
-  // Trust team domain + the Access application's AUD tag. EXECUTOR_SECRET_KEY
-  // (the at-rest secret-encryption key) is a SECRET — set it with
+  // Cloudflare Access is the entire auth layer. ACCESS_TEAM_DOMAIN, ACCESS_AUD,
+  // and ADMIN_EMAILS are installation-specific live vars, set after the first
+  // deploy and preserved by keep_vars. EXECUTOR_SECRET_KEY (the at-rest
+  // secret-encryption key) is a SECRET, set it with
   // `wrangler secret put EXECUTOR_SECRET_KEY`, never in vars.
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
-    "ACCESS_AUD": "",
     "ACCESS_NAME_CLAIM": "name",
     "ACCESS_GROUPS_CLAIM": "groups",
-    "ADMIN_EMAILS": "",
+    // Never preserve a production dev-auth override through keep_vars.
+    "ENABLE_DEV_AUTH": "false",
     "SELF_HOSTED_ORG_ID": "default",
     "SELF_HOSTED_ORG_NAME": "Default",
     // VITE_PUBLIC_SITE_URL is intentionally unset: with no static URL the worker
