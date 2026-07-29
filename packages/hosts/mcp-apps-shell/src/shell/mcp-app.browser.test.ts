@@ -394,6 +394,20 @@ function App() {
 }
 `;
 
+/** A different artifact, for asserting what a SECOND delivery does and does not
+ *  do — its own marker so the test waits on the new render, not the old one. */
+const generatedSecondRenderCode = `
+function App() {
+  return (
+    <Card>
+      <CardContent>
+        <div id="second">second render</div>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
 /** Two accounts of one integration, told apart by role. Both roles are bound to
  *  the harness's single connection, so both reads succeed — what is under test
  *  is that the role survives the whole path (proxy -> cache key -> wire ->
@@ -2409,6 +2423,114 @@ describe("MCP app generated UI browser isolation", () => {
       }));
       expect(metrics.bodyScrollHeight).toBeGreaterThan(1000);
       expect(metrics.rootHeight).toBeGreaterThan(1000);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  /**
+   * The render signal, and who is allowed to be affected by it.
+   *
+   * The console holds ONE loading surface across the whole open — data fetch,
+   * renderer chunk, shell boot, compile — and it can only take that surface down
+   * when the artifact has actually painted. Nothing on the console side can see
+   * that: the artifact is two sandboxed documents down. So the shell reports it,
+   * over the `callServerTool` seam, to a host that asked (`executorRenderSignal`
+   * on the host context).
+   *
+   * Two properties, and they matter in opposite directions:
+   *
+   *   1. A host that ASKS is told — after the artifact is on screen, not before.
+   *      Firing early would reveal a blank frame, which is the exact defect the
+   *      single surface exists to prevent.
+   *   2. A host that does NOT ask is completely unaffected: no call it has never
+   *      heard of, and it keeps the shell's own loading card. That is every real
+   *      MCP client, and this is the guard for them — asserted here because the
+   *      default harness context omits the key, exactly like Claude's.
+   */
+  it("tells a host that asked when the artifact painted, and no other host", async () => {
+    if (!browser || !hostServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      // `openHarness` already waited on it: a host that did not ask still gets
+      // the shell's own loading card, unchanged.
+      const before = await getHostState(page);
+      expect(
+        before.toolCalls.some((call) => call.name === "executor-artifact-rendered"),
+        "a host that never asked is not sent the signal",
+      ).toBe(false);
+
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedStaticCode);
+      await innerFrame.locator("#ready").waitFor({ timeout: 10_000 });
+
+      // Still silent: the artifact has painted, but this host did not ask.
+      const afterRender = await getHostState(page);
+      expect(
+        afterRender.toolCalls.some((call) => call.name === "executor-artifact-rendered"),
+        "rendering alone does not make the call",
+      ).toBe(false);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it("signals a console-style host once the artifact is on screen", async () => {
+    if (!browser || !hostServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      // Become the console: ask for the signal the way `ArtifactShell` does.
+      await page.evaluate(() => {
+        (window as unknown as BrowserHostWindow).__setHostContext({
+          executorRenderSignal: true,
+        });
+      });
+
+      // The shell drops its own loading card for a host that holds one, so
+      // there is no second placeholder under the console's skeleton.
+      await shellFrame
+        .locator('[data-testid="shell-loading-state"]')
+        .waitFor({ state: "detached", timeout: 10_000 });
+
+      const beforeRender = await getHostState(page);
+      expect(
+        beforeRender.toolCalls.some((call) => call.name === "executor-artifact-rendered"),
+        "nothing is signalled before there is an artifact to look at",
+      ).toBe(false);
+
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedStaticCode);
+      await innerFrame.locator("#ready").waitFor({ timeout: 10_000 });
+
+      await page.waitForFunction(() =>
+        (window as unknown as BrowserHostWindow).__mcpHostState.toolCalls.some(
+          (call: { name?: string }) => call.name === "executor-artifact-rendered",
+        ),
+      );
+
+      // Exactly once — including across a SECOND delivery, which is what the
+      // latch actually guards. A host replaces the artifact's code (the console
+      // does exactly this when the tab regains focus and the row has changed),
+      // the inner frame remounts and paints again, and the signal must not fire
+      // a second time: the host has long since taken its skeleton down, and a
+      // repeat would restart a transition that already finished.
+      const secondFrame = await renderGeneratedUi(page, shellFrame, generatedSecondRenderCode);
+      await secondFrame.locator("#second").waitFor({ timeout: 10_000 });
+
+      const after = await getHostState(page);
+      const signals = after.toolCalls.filter((call) => call.name === "executor-artifact-rendered");
+      expect(signals.length, "the signal is latched, not repeated per render").toBe(1);
+
+      // And it never reached the execution transport: a "you may stop waiting"
+      // is not an execution and must not be metered, approved or logged as one.
+      expect(
+        after.toolCalls.some((call) => call.name === "execute-action"),
+        "the signal is answered by the host, not proxied to execute-action",
+      ).toBe(false);
     } finally {
       await page.close();
     }
