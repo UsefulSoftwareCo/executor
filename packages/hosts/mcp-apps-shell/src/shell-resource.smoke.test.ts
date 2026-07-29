@@ -36,7 +36,13 @@ const APPS_CAPS = {
 describe("MCP-Apps shell resource", () => {
   it("serves the built shell to an MCP client, not the 'Shell not built' placeholder", async () => {
     const mcpServer = await Effect.runPromise(
-      createExecutorMcpServer({ engine: stubEngine, loadAppShellHtml: loadMcpAppsShellHtml }),
+      // Artifacts are opt-in per connection; the shell resource only exists on
+      // a session that asked for them.
+      createExecutorMcpServer({
+        engine: stubEngine,
+        loadAppShellHtml: loadMcpAppsShellHtml,
+        artifactsEnabled: true,
+      }),
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client(

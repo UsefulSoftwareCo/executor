@@ -268,9 +268,10 @@ of surfacing a raw MCP error.
   viewer's connections needs the trust story in "Trust note" settled first, and
   don't-ask-again grants must not survive a change of artifact owner.
 
-## Opt-out
+## Opt-in
 
-A connection can decline the whole feature: `?artifacts=false` on the MCP
-endpoint (`--no-artifacts` on the stdio CLI) serves no artifact tools, no
-`ui://` shell resource, and no artifact skills for that session. On by default;
-the install card's Advanced section carries the toggle.
+Artifacts are opt-in per MCP connection: `?artifacts=true` on the MCP endpoint
+(`--artifacts` on the stdio CLI) serves the artifact tools, the `ui://` shell
+resource, and the artifact skills for that session; without it a connection
+gets none of them. Off by default; the install card's Advanced section carries
+the toggle. The console's Artifacts pages are always on regardless.

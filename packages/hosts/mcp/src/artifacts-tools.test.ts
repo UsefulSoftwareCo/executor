@@ -140,6 +140,12 @@ const withClient = async <E extends Cause.YieldableError>(
     createExecutorMcpServer({
       engine,
       loadAppShellHtml: () => Promise.resolve(SHELL_HTML),
+      // Artifacts are opt-in per connection, and nearly every test in this file
+      // exercises the artifact surface — so the helper connects the way a real
+      // `?artifacts=true` client does. The cases that assert the OFF surface
+      // pass `artifactsEnabled: false`, and the default (no flag at all) is
+      // proved by building the server directly below.
+      artifactsEnabled: true,
       ...config,
     } as ExecutorMcpServerConfig<E>),
   );
@@ -236,6 +242,9 @@ describe("MCP host — artifact tool visibility", () => {
       createExecutorMcpServer({
         engine: makeStubEngine({}),
         artifacts: store.port,
+        // Opted in, so the only thing withholding the surface is the missing
+        // shell loader — otherwise this would pass on the connection default.
+        artifactsEnabled: true,
       }),
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -250,11 +259,11 @@ describe("MCP host — artifact tool visibility", () => {
     await serverTransport.close();
   });
 
-  // A session that connected with `?artifacts=false` gets no artifact surface
+  // A session that did not opt in (`?artifacts=true`) gets no artifact surface
   // at all. The host here is fully artifact-capable — shell loader, store, the
-  // apps client capability — so what these assert is the opt-out itself, not a
-  // host that never had artifacts.
-  it("registers no artifact tools when the connection opted out", async () => {
+  // apps client capability — so what these assert is the connection default
+  // itself, not a host that never had artifacts.
+  it("registers no artifact tools on a default connection", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),
@@ -271,7 +280,9 @@ describe("MCP host — artifact tool visibility", () => {
         expect(names).toContain("skills");
         expect(names).toContain("resume");
       },
-      { artifacts: store.port, artifactsEnabled: false },
+      // No `artifactsEnabled` at all: the real shape of a client that connected
+      // to a bare `/mcp` endpoint.
+      { artifacts: store.port, artifactsEnabled: undefined },
     );
   });
 
@@ -279,7 +290,7 @@ describe("MCP host — artifact tool visibility", () => {
   // The read is what proves it: with no resource registered at all, the SDK
   // does not install a resources handler either, so `resources/list` itself is
   // unavailable — the same shape a host without a shell loader has always had.
-  it("serves no shell resource when the connection opted out", async () => {
+  it("serves no shell resource on a default connection", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),
@@ -287,11 +298,11 @@ describe("MCP host — artifact tool visibility", () => {
       async (client) => {
         await expect(client.readResource({ uri: MCP_APPS_SHELL_RESOURCE_URI })).rejects.toThrow();
       },
-      { artifacts: store.port, artifactsEnabled: false },
+      { artifacts: store.port, artifactsEnabled: undefined },
     );
   });
 
-  it("drops the artifact skills from an opted-out session's inventory", async () => {
+  it("drops the artifact skills from a default session's inventory", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),
@@ -311,11 +322,11 @@ describe("MCP host — artifact tool visibility", () => {
         expect(fetched.isError).toBe(true);
         expect(textOf(fetched)).toContain('No skill named "create-artifact"');
       },
-      { artifacts: store.port, artifactsEnabled: false },
+      { artifacts: store.port, artifactsEnabled: undefined },
     );
   });
 
-  it("keeps the full artifact surface on a default session", async () => {
+  it("serves the full artifact surface to a session that opted in", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),
@@ -1917,26 +1928,26 @@ describe("artifactUrlFor", () => {
 // The `?artifacts=` endpoint query
 // ---------------------------------------------------------------------------
 
-describe("artifacts opt-out query", () => {
+describe("artifacts opt-in query", () => {
   const read = (query: string) =>
     readArtifactsEnabled(new Request(`https://executor.example/mcp${query}`));
 
-  it("keeps artifacts on for a clean endpoint", () => {
-    expect(read("")).toBe(true);
-    expect(read("?elicitation_mode=browser")).toBe(true);
+  it("keeps artifacts off for a clean endpoint", () => {
+    expect(read("")).toBe(false);
+    expect(read("?elicitation_mode=browser")).toBe(false);
   });
 
-  it("turns artifacts off for the documented false values", () => {
-    for (const value of ["false", "FALSE", "0", "no", "off"]) {
-      expect(read(`?artifacts=${value}`)).toBe(false);
+  it("turns artifacts on for the documented true values", () => {
+    for (const value of ["true", "TRUE", "1", "yes", "on"]) {
+      expect(read(`?artifacts=${value}`)).toBe(true);
     }
   });
 
-  // Anything else reads as "present and not a disable", so a typo cannot
-  // silently strip a surface the user never asked to lose.
-  it("keeps artifacts on for any other value", () => {
-    for (const value of ["true", "1", "yes", "flase", ""]) {
-      expect(read(`?artifacts=${value}`)).toBe(true);
+  // Anything else reads as "not an opt-in", so a typo cannot silently hand a
+  // connection a surface the user never asked for.
+  it("keeps artifacts off for any other value", () => {
+    for (const value of ["false", "0", "no", "ture", ""]) {
+      expect(read(`?artifacts=${value}`)).toBe(false);
     }
   });
 });

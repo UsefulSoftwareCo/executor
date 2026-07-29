@@ -164,8 +164,8 @@ export interface McpSurface {
     identity: Identity,
     options?: {
       readonly elicitationMode?: McpElicitationMode;
-      /** Opt this session out of artifacts (`?artifacts=false`). Omitted means
-       *  the product default: the full artifact surface. */
+      /** Opt this session in to artifacts (`?artifacts=true`). Omitted means
+       *  the product default: no artifact surface at all. */
       readonly artifacts?: boolean;
       readonly url?: string;
     },
@@ -302,12 +302,12 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
     // Per-connection settings ride the MCP endpoint query, the ecosystem
     // convention: `elicitation_mode` so a paused execution yields an approvalUrl
-    // instead of letting the model resume inline, and `artifacts=false` to opt
-    // the session out of the artifact surface. Both are non-defaults, so a
+    // instead of letting the model resume inline, and `artifacts=true` to opt
+    // the session in to the artifact surface. Both are non-defaults, so a
     // plain session's URL carries no query at all.
     const sessionQuery = [
       ...(options?.elicitationMode ? [`elicitation_mode=${options.elicitationMode}`] : []),
-      ...(options?.artifacts === false ? ["artifacts=false"] : []),
+      ...(options?.artifacts === true ? ["artifacts=true"] : []),
     ].join("&");
     const sessionUrl = sessionQuery ? `${mcpUrl}?${sessionQuery}` : mcpUrl;
 

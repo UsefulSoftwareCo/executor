@@ -1245,6 +1245,9 @@ const startMcpHarnessForEngine = async <E extends Cause.YieldableError>(
       engine,
       loadAppShellHtml: loadMcpAppsShellHtml,
       artifacts: makeInMemoryArtifacts(),
+      // Artifacts are opt-in per connection; this harness drives the artifact
+      // tools, so it connects the way a `?artifacts=true` client does.
+      artifactsEnabled: true,
     }),
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

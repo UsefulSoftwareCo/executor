@@ -1346,9 +1346,9 @@ const mcpUrlForActiveLocalServer = (input: {
   if (input.elicitationMode === "browser") {
     url.searchParams.set("elicitation_mode", "browser");
   }
-  // Only the opt-out is spelled out; the default endpoint stays clean.
-  if (!input.artifacts) {
-    url.searchParams.set("artifacts", "false");
+  // Only the opt-in is spelled out; the default endpoint stays clean.
+  if (input.artifacts) {
+    url.searchParams.set("artifacts", "true");
   }
   return url;
 };
@@ -2802,18 +2802,18 @@ const mcpCommand = Command.make(
           "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",
         ),
       ),
-    noArtifacts: Options.boolean("no-artifacts")
+    artifacts: Options.boolean("artifacts")
       .pipe(Options.withDefault(false))
       .pipe(
         Options.withDescription(
-          "Serve no artifact surface on this connection: the artifact tools, the app shell resource, and the artifact skills are all withheld.",
+          "Serve the artifact surface on this connection: the artifact tools, the app shell resource, and the artifact skills. Withheld by default.",
         ),
       ),
   },
-  ({ scope, elicitationMode, noArtifacts }) =>
+  ({ scope, elicitationMode, artifacts }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runStdioMcpSession({ elicitationMode, artifacts: !noArtifacts });
+      yield* runStdioMcpSession({ elicitationMode, artifacts });
     }),
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 

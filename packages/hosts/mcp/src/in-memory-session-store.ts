@@ -71,8 +71,8 @@ export interface McpBuildServerOptions {
     | { readonly mode: "model" }
     | { readonly mode: "native" };
   readonly browserApprovalStore?: BrowserApprovalStore;
-  /** Whether this session serves artifacts. False when the client connected
-   *  with `?artifacts=false`; the built server then registers none of the
+  /** Whether this session serves artifacts. True only when the client connected
+   *  with `?artifacts=true`; otherwise the built server registers none of the
    *  artifact tools, resource, or skills. */
   readonly artifactsEnabled?: boolean;
 }

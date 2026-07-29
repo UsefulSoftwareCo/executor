@@ -98,7 +98,7 @@ export const withMcpResponseHeaders = (response: Response): Response => {
 };
 
 // The endpoint query contract — `?elicitation_mode=` (plus the legacy
-// `?allow_model_resume` alias) and the `?artifacts=` opt-out — is shared with
+// `?allow_model_resume` alias) and the `?artifacts=` opt-in — is shared with
 // every host that serves these connections. Re-exported here so the worker
 // dispatcher's existing import site (`./do-headers`) is unchanged.
 export {

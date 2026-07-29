@@ -29,9 +29,9 @@ describe("skills registry", () => {
     }
   });
 
-  // A connection that opted out of artifacts has no tool the artifact skills
-  // apply to, so they leave its catalog entirely rather than documenting a
-  // surface it cannot reach.
+  // A connection that did not opt in to artifacts — the default — has no tool
+  // the artifact skills apply to, so they leave its catalog entirely rather
+  // than documenting a surface it cannot reach.
   it("drops the artifact skills from a catalog without artifacts", () => {
     const catalog = skillCatalogFor({ artifacts: false });
     expect(catalog).toContain(EXECUTE_SKILL);
@@ -42,7 +42,7 @@ describe("skills registry", () => {
     expect(renderSkillsIndex(catalog)).not.toContain("`create-artifact`");
   });
 
-  it("serves the full catalog when artifacts are on", () => {
+  it("serves the full catalog to a session that opted in to artifacts", () => {
     expect(skillCatalogFor({ artifacts: true })).toEqual(SKILLS);
   });
 });

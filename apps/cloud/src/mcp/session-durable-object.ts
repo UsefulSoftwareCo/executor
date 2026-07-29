@@ -264,8 +264,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         description,
         artifacts: executor.artifacts,
         connections: executor.connections,
-        // Absent on sessions minted before the opt-out existed, which means on.
-        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Artifacts are opt-in per connection. Sessions persisted before the
+        // flag existed carry no value; absent now means off, same as a fresh
+        // connection that did not ask for `?artifacts=true`.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? false,
         loadAppShellHtml: loadMcpAppsShellHtml,
         smokeRenderArtifact,
         artifactUrl: artifactUrlFor(

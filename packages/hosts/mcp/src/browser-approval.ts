@@ -51,19 +51,18 @@ export const readElicitationMode = (request: Request): McpElicitationMode => {
   return "model";
 };
 
-const FALSE_QUERY_VALUES = new Set(["0", "false", "no", "off"]);
-
 /**
- * Read the artifacts opt-out off an MCP request's `?artifacts=` query.
- * Artifacts are on by default, so a clean endpoint URL keeps the full surface;
- * only an explicit false value (`?artifacts=false`) turns it off. A session
- * that opts out gets no artifact tools, no `ui://` shell resource, and no
+ * Read the artifacts opt-in off an MCP request's `?artifacts=` query.
+ * Artifacts are OFF by default, so a clean endpoint URL serves no artifact
+ * surface; only an explicit true value (`?artifacts=true`, and the same truthy
+ * spellings the rest of the query vocabulary accepts) turns them on. A session
+ * without the opt-in gets no artifact tools, no `ui://` shell resource, and no
  * artifact skills — as if the host had never been configured for them.
  */
 export const readArtifactsEnabled = (request: Request): boolean => {
   const value = new URL(request.url).searchParams.get("artifacts");
-  if (value === null) return true;
-  return !FALSE_QUERY_VALUES.has(value.toLowerCase());
+  if (value === null) return false;
+  return TRUE_QUERY_VALUES.has(value.toLowerCase());
 };
 
 /**

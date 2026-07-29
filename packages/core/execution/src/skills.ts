@@ -609,15 +609,15 @@ export const SKILLS: readonly Skill[] = [
 ];
 
 /** The skills that only make sense when the session serves artifacts. A
- *  connection that opted out of artifacts (`?artifacts=false`) has no tool to
- *  apply them to, so they are dropped from its catalog rather than served as
+ *  connection that did not opt in to artifacts (`?artifacts=true`) has no tool
+ *  to apply them to, so they are dropped from its catalog rather than served as
  *  guidance for a surface it cannot reach. */
 const ARTIFACT_SKILLS: ReadonlySet<Skill> = new Set([CREATE_ARTIFACT_SKILL, ARTIFACT_STYLE_SKILL]);
 
 /**
- * The catalog a single session sees. Artifacts on (the default) is the full
- * {@link SKILLS} list; artifacts off drops the artifact skills so the index
- * never advertises a doc for tools this connection does not have.
+ * The catalog a single session sees. Artifacts off (the default) drops the
+ * artifact skills so the index never advertises a doc for tools this connection
+ * does not have; a session that opted in gets the full {@link SKILLS} list.
  */
 export const skillCatalogFor = (options: { readonly artifacts: boolean }): readonly Skill[] =>
   options.artifacts ? SKILLS : SKILLS.filter((skill) => !ARTIFACT_SKILLS.has(skill));
