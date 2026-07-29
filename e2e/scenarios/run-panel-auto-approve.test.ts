@@ -45,6 +45,7 @@ return await tools.executor.coreTools.policies.create({
 // options argument that carries `autoApprove` before it ever reached the engine.
 scenario(
   "Run panel · autoApprove runs an approval-gated tool that otherwise pauses",
+  {},
   Effect.gen(function* () {
     const target = yield* Target;
     const apiSurface = yield* Api;
