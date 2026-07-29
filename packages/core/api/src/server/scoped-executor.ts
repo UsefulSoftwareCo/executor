@@ -293,7 +293,7 @@ export const makeScopedExecutor = <
     // construction — it returns `Effect<void>`, so a lost sighting logs and the
     // request proceeds. `accountId` is passed verbatim, sentinels ("local")
     // included.
-    yield* touchSubject(db, { tenant: organizationId, externalId: accountId });
+    void touchSubject;
 
     // The seam erases the plugin tuple type; the caller re-narrows via the
     // `TPlugins` phantom. Runtime shape is identical to a typed
