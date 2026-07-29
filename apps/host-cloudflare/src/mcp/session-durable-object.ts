@@ -7,6 +7,7 @@ import {
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import type { ExecutorDbHandle } from "@executor-js/api/server";
 import {
   McpAgentSessionDOBase,
@@ -135,6 +136,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         artifacts: executor.artifacts,
         connections: executor.connections,
         loadAppShellHtml: loadMcpAppsShellHtml,
+        smokeRenderArtifact,
         ...(artifactOrigin
           ? { artifactUrl: artifactUrlFor(artifactOrigin, sessionMeta.organizationSlug) }
           : {}),

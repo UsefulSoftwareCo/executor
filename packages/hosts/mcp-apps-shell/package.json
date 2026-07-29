@@ -12,6 +12,10 @@
       "types": "./src/shell-html.ts",
       "default": "./src/shell-html.ts"
     },
+    "./smoke-render": {
+      "types": "./src/smoke-render-entry.ts",
+      "default": "./src/smoke-render-entry.ts"
+    },
     "./vite": {
       "types": "./src/vite.ts",
       "default": "./src/vite.ts"
@@ -35,6 +39,14 @@
     "./shell/component-runtime": {
       "types": "./src/shell/component-runtime.ts",
       "default": "./src/shell/component-runtime.ts"
+    },
+    "./shell/tools-proxy": {
+      "types": "./src/shell/tools-proxy.ts",
+      "default": "./src/shell/tools-proxy.ts"
+    },
+    "./shell/smoke-render": {
+      "types": "./src/shell/smoke-render.ts",
+      "default": "./src/shell/smoke-render.ts"
     },
     "./globals.css": "./src/shell/globals.css"
   },

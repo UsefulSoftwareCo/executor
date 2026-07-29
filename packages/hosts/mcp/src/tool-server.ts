@@ -49,7 +49,12 @@ import {
   type PausedExecution,
   type PausedExecutionDeadline,
 } from "@executor-js/execution";
-import { MCP_APPS_SHELL_RESOURCE_URI, validateArtifactCode } from "./create-artifact";
+import {
+  MCP_APPS_SHELL_RESOURCE_URI,
+  smokeRenderRejection,
+  validateArtifactCode,
+  type ArtifactSmokeRenderResult,
+} from "./create-artifact";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "./tool-call-code";
 import { resolveArtifactAction } from "./artifact-action";
 import {
@@ -148,6 +153,22 @@ type SharedMcpServerConfig = {
    * that leave it unset simply don't register the resource or the ui tools.
    */
   readonly loadAppShellHtml?: () => Promise<string>;
+  /**
+   * Renders an artifact once, server-side, before it is saved — so a component
+   * that throws on its first render is refused at create time with the real
+   * error instead of saving cleanly and dying on the user's page.
+   *
+   * Injected for the same reason `loadAppShellHtml` is: it needs React,
+   * react-dom/server and the whole component barrel, and this package must not
+   * drag any of that into the graph of a host that only ever calls `execute`.
+   * Hosts that can afford it pass `smokeRenderArtifact` from
+   * `@executor-js/mcp-apps-shell`, which loads it behind a dynamic import.
+   *
+   * Unset means no smoke check: creates are validated statically and saved, as
+   * they were before. That is also what happens when the check itself fails —
+   * see the fail-open path in `createArtifact`.
+   */
+  readonly smokeRenderArtifact?: (code: string) => Promise<ArtifactSmokeRenderResult>;
   /**
    * The scoped executor's artifact operations, so `create-artifact` can persist what
    * it renders and `list-artifacts` / `show-artifact` can read it back. Only
@@ -1539,6 +1560,30 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
         const rejection = validateArtifactCode(input.code);
         if (rejection) return renderRejectedResult(rejection);
+
+        // Static checks first, then the real one: render it. See
+        // `smokeRenderRejection` for what the model is told.
+        //
+        // FAIL OPEN. The renderer is injected, runs on three different hosts,
+        // and is the newest thing in this path — if IT breaks (a missing
+        // module, an environment gap on some host), the right outcome is a
+        // saved artifact and a logged warning, never a refused create of code
+        // that is perfectly good. Only a definite `failed` blocks a save.
+        const smoke = config.smokeRenderArtifact;
+        if (smoke) {
+          const smokeResult = yield* Effect.tryPromise(() => smoke(input.code)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.as(Effect.logWarning("create-artifact smoke render was unavailable", cause), {
+                status: "ok",
+              } as const),
+            ),
+          );
+          const renderRejection = smokeRenderRejection(smokeResult);
+          if (renderRejection) {
+            yield* Effect.annotateCurrentSpan({ "mcp.artifact.smoke_render": "failed" });
+            return renderRejectedResult(renderRejection);
+          }
+        }
 
         const saveInput = {
           code: input.code,

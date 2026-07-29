@@ -7,7 +7,10 @@ import {
   type McpBuildServerOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
-import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import {
+  artifactUrlFor,
+  type ArtifactSmokeRenderResult,
+} from "@executor-js/host-mcp/create-artifact";
 
 import { ErrorCapture } from "../observability";
 import { CodeExecutorProvider, EngineDecorator, makeExecutionStack } from "./execution-stack";
@@ -68,6 +71,9 @@ export const makeMcpBuildServer =
           ...(hostOptions?.loadAppShellHtml
             ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
             : {}),
+          ...(hostOptions?.smokeRenderArtifact
+            ? { smokeRenderArtifact: hostOptions.smokeRenderArtifact }
+            : {}),
           // Same org pinning as `RequestOrgSlug` above: self-host serves its
           // console under `/<org-slug>` (`default` when unconfigured), so the
           // deep link carries the principal's slug rather than relying on the
@@ -90,6 +96,11 @@ export interface McpBuildHostOptions {
    *  pass `loadMcpAppsShellHtml` from `@executor-js/mcp-apps-shell`; omitting it
    *  leaves the ui-bearing tools unregistered. */
   readonly loadAppShellHtml?: () => Promise<string>;
+  /** Trial-renders an artifact before it is saved, so a component that throws
+   *  on first render is refused at create time. Hosts that can afford React on
+   *  the server pass `smokeRenderArtifact` from `@executor-js/mcp-apps-shell`,
+   *  which loads it behind a dynamic import; omitting it skips the check. */
+  readonly smokeRenderArtifact?: (code: string) => Promise<ArtifactSmokeRenderResult>;
 }
 
 /**

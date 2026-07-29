@@ -27,6 +27,7 @@ import {
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
@@ -255,6 +256,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         artifacts: executor.artifacts,
         connections: executor.connections,
         loadAppShellHtml: loadMcpAppsShellHtml,
+        smokeRenderArtifact,
         artifactUrl: artifactUrlFor(
           env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
           sessionMeta.organizationSlug,

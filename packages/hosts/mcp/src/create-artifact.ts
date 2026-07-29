@@ -199,6 +199,54 @@ const hookCalledInLoop = (code: string): string | undefined => {
 const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQuery"]);
 
 // ---------------------------------------------------------------------------
+// Create-time smoke render
+// ---------------------------------------------------------------------------
+
+/**
+ * What a server-side trial render concluded, as this package sees it.
+ *
+ * Declared here rather than imported so the MCP host keeps no type dependency
+ * on the shell package — `@executor-js/mcp-apps-shell`'s renderer satisfies this
+ * structurally, and a host that has no renderer to inject does not have to
+ * resolve the module at all.
+ */
+export type ArtifactSmokeRenderResult =
+  | { readonly status: "ok" }
+  | { readonly status: "failed"; readonly message: string; readonly componentStack?: string };
+
+/** The leading frames of a component stack: enough to locate the component that
+ *  threw, not so much that the message is a wall. */
+const COMPONENT_STACK_FRAMES = 6;
+
+const trimmedComponentStack = (stack: string): string =>
+  stack
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, COMPONENT_STACK_FRAMES)
+    .join("\n");
+
+/**
+ * Turn a failed smoke render into the message the model is refused with.
+ *
+ * The real error, verbatim, plus where it happened and what class of problem it
+ * is. The last part matters: saying the render happened with every query still
+ * pending tells the model that guarding the loading state is a valid fix, which
+ * is not obvious from `Cannot read properties of undefined` alone.
+ */
+export const smokeRenderRejection = (result: ArtifactSmokeRenderResult): string | null => {
+  if (result.status === "ok") return null;
+  return [
+    `This component threw on its first render, so the artifact would show an error instead of a UI: ${result.message}`,
+    result.componentStack ? `\n${trimmedComponentStack(result.componentStack)}\n` : "",
+    "The render happened with every query still pending and no data returned — exactly the state the user sees first — so guard the loading state (`if (query.isLoading) return <ArtifactLoading />`) and read possibly-absent data with `?.`.",
+    "Fix the component and call create-artifact again.",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
+};
+
+// ---------------------------------------------------------------------------
 // Provider pairing
 // ---------------------------------------------------------------------------
 //

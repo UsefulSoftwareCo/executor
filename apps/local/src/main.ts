@@ -91,6 +91,17 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // The generative-UI surface, shared by every resource this daemon serves.
     // Each toolkit gets its own executor, so `artifacts` is bound per resource
     // below rather than hoisted with the rest.
+    //
+    // Deliberately WITHOUT the create-time smoke render that the HTTP hosts
+    // (cloud, self-host, Cloudflare) enable. This daemon is a dependency of
+    // `apps/cli`, whose build does not configure `jsx` — and TypeScript
+    // resolves the renderer entry's dynamic `import()` of the `.tsx` component
+    // barrel just as eagerly as a static one, so opting in here makes the CLI
+    // typecheck the whole React graph. Turning that on surfaces a duplicate
+    // `@types/react` in the CLI and desktop trees, which is a real problem but
+    // a separate one. Self-host covers the Node/Bun smoke-render path
+    // meanwhile; artifacts created against the local daemon are still
+    // statically validated, just not trial-rendered.
     const appsConfig = {
       loadAppShellHtml: loadMcpAppsShellHtml,
       artifactUrl: artifactUrlFor(webBaseUrl),

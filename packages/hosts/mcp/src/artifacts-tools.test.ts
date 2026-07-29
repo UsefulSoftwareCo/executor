@@ -170,6 +170,7 @@ const toolNames = async (client: Client): Promise<string[]> =>
   (await client.listTools()).tools.map((tool) => tool.name);
 
 const COUNTER_CODE = "function App() { return <div>hi</div>; }";
+const UPDATED_CODE = "function App() { return <div>hi again</div>; }";
 
 const makePausedResult = (id: string, message: string): ExecutionResult => ({
   status: "paused",
@@ -727,6 +728,134 @@ describe("MCP host — create-artifact", () => {
     );
   });
 
+  // The smoke render: the host renders the component once before saving it, and
+  // a first-render throw is refused with the real error. The renderer is
+  // injected (see the `smokeRenderArtifact` config seam), so these tests supply
+  // a stub and assert the WIRING — the real renderer's own behavior is covered
+  // by `smoke-render.test.tsx` in `@executor-js/mcp-apps-shell`.
+
+  it("refuses a create whose component throws on first render, quoting the error", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Broken" },
+        });
+        expect(result.isError).toBe(true);
+        const text = textOf(result);
+        expect(text).toContain("useChart must be used within a <ChartContainer />");
+        // The component stack is what turns the message into a fix.
+        expect(text).toContain("ChartTooltipContent");
+        // And the hint that names the state it rendered in.
+        expect(text).toContain("pending");
+        expect(store.calls).toEqual([]);
+      },
+      {
+        artifacts: store.port,
+        smokeRenderArtifact: () =>
+          Promise.resolve({
+            status: "failed" as const,
+            message: "useChart must be used within a <ChartContainer />",
+            componentStack: "\n    at ChartTooltipContent\n    at BarChart\n    at App",
+          }),
+      },
+    );
+  });
+
+  it("saves when the smoke render succeeds", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Fine" },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      {
+        artifacts: store.port,
+        smokeRenderArtifact: () => Promise.resolve({ status: "ok" as const }),
+      },
+    );
+  });
+
+  it("smoke-renders an update too, so a tweak cannot break a working artifact", async () => {
+    const store = makeArtifactStore();
+    let failing = false;
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Working" },
+        });
+        failing = true;
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: UPDATED_CODE, artifactId: "art_1" },
+        });
+        expect(updated.isError).toBe(true);
+        // The stored row still holds the version that rendered.
+        expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
+      },
+      {
+        artifacts: store.port,
+        smokeRenderArtifact: () =>
+          Promise.resolve(
+            failing ? { status: "failed" as const, message: "boom" } : { status: "ok" as const },
+          ),
+      },
+    );
+  });
+
+  it("FAILS OPEN: a broken smoke renderer never blocks a valid create", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Saved anyway" },
+        });
+        // The renderer itself is broken — a missing module, an environment gap
+        // on some host. That is our defect, not the model's, and refusing a
+        // perfectly good artifact over it would be the worse failure.
+        expect(result.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      {
+        artifacts: store.port,
+        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: the seam is a plain Promise API, and this must fail the way a real failed dynamic import does
+        smokeRenderArtifact: () => Promise.reject(new Error("Cannot find module ./smoke-render")),
+      },
+    );
+  });
+
+  it("saves without a smoke render at all when no renderer is configured", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "No renderer here" },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
   it("does not require a TooltipProvider, which the shell already supplies", async () => {
     const store = makeArtifactStore();
     await withClient(
@@ -874,8 +1003,6 @@ describe("MCP host — artifact retrieval", () => {
 // The contract: a model tweaking an artifact calls the SAME tool with the
 // artifact's id, and the stored row is replaced rather than a second artifact
 // minted. The catalog stays three tools wide and the user's link keeps working.
-
-const UPDATED_CODE = "function App() { return <div>hi again</div>; }";
 
 describe("MCP host — create-artifact update in place", () => {
   it("replaces the code and title of an existing artifact instead of minting a copy", async () => {

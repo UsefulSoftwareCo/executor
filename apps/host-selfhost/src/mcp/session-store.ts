@@ -23,6 +23,7 @@ import { SelfHostExecutionStackLayer } from "../execution";
 // ---------------------------------------------------------------------------
 
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 
 export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-store";
 
@@ -38,7 +39,7 @@ export const makeSelfHostMcpSessionStore = (
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
-      { loadAppShellHtml: loadMcpAppsShellHtml },
+      { loadAppShellHtml: loadMcpAppsShellHtml, smokeRenderArtifact },
     ),
     { webBaseUrl },
   );
