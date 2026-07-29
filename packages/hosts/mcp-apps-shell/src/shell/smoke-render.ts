@@ -132,8 +132,21 @@ const parseResult = (json: string): SmokeRenderResult => {
   try {
     const parsed: unknown = JSON.parse(json);
     if (typeof parsed !== "object" || parsed === null) return OK;
-    const record = parsed as { status?: unknown; message?: unknown; componentStack?: unknown };
-    if (record.status !== "failed" || typeof record.message !== "string") return OK;
+    const record = parsed as {
+      status?: unknown;
+      message?: unknown;
+      componentStack?: unknown;
+      markup?: unknown;
+    };
+    if (record.status !== "failed" || typeof record.message !== "string") {
+      // An `ok` verdict may carry the render's markup. It is still only a
+      // preview: a value of the wrong type is dropped rather than propagated,
+      // because "no preview" is always a safe answer and a malformed one is
+      // not.
+      return typeof record.markup === "string" && record.markup !== ""
+        ? { status: "ok", markup: record.markup }
+        : OK;
+    }
     return {
       status: "failed",
       message: record.message,

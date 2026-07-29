@@ -11,9 +11,9 @@ import type { SmokeRenderResult } from "./smoke-render-result";
 
 describe("smokeRenderArtifact", () => {
   it("passes a plain component", async () => {
-    expect(await smokeRenderArtifact("function App(){ return <div>hello</div>; }")).toEqual({
-      status: "ok",
-    });
+    expect((await smokeRenderArtifact("function App(){ return <div>hello</div>; }")).status).toBe(
+      "ok",
+    );
   });
 
   it("catches the chart primitive rendered outside its ChartContainer", async () => {
@@ -44,7 +44,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("renders the loading branch: every query is pending, nothing is fetched", async () => {
@@ -57,7 +57,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("catches a component that dereferences pending query data without a guard", async () => {
@@ -85,7 +85,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("passes an infinite query's loading state", async () => {
@@ -103,7 +103,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("passes a mutation, which is inert until something calls it", async () => {
@@ -115,7 +115,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("passes rather than blocks when the sandbox cannot answer", async () => {
@@ -130,9 +130,9 @@ describe("smokeRenderArtifact", () => {
 
     // Code that certainly would NOT render, so a pass can only come from the
     // fail-open path and not from the artifact being fine.
-    expect(await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }")).toEqual({
-      status: "ok",
-    });
+    expect(
+      (await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }")).status,
+    ).toBe("ok");
   });
 
   // ------------------------------------------------------------------
@@ -158,7 +158,7 @@ describe("smokeRenderArtifact", () => {
       // `typeof` cannot throw, so this reads back what the sandbox actually
       // has: "undefined". If a host process leaked in, it would say "object".
       const result = await renderExpression("typeof process");
-      expect(result).toEqual({ status: "ok" });
+      expect(result.status).toBe("ok");
     });
 
     it("denies globalThis.process", async () => {
@@ -241,13 +241,83 @@ describe("smokeRenderArtifact", () => {
       // timeout. The sandbox's interrupt handler preempts the interpreter.
       // Inconclusive, so `ok` by the fail-open contract, but BOUNDED.
       const result = await smokeRenderArtifact("function App(){ while (true) {} return <div/>; }");
-      expect(result).toEqual({ status: "ok" });
+      expect(result.status).toBe("ok");
     }, 60_000);
   });
 
   it("reports a syntax error as a failure rather than throwing", async () => {
     const result = await smokeRenderArtifact("function App(){ return <div>; }");
     expect(result.status).toBe("failed");
+  });
+
+  // The same render that validates the artifact also produces the gallery's
+  // layout preview. These pin the markup half of the contract.
+  describe("layout markup", () => {
+    it("returns the markup the component rendered", async () => {
+      const result = await smokeRenderArtifact(
+        'function App(){ return <div className="p-4"><h2>Revenue</h2></div>; }',
+      );
+      expect(result.status).toBe("ok");
+      const markup = result.status === "ok" ? (result.markup ?? "") : "";
+      // The classes are the whole visual layer, so they have to survive.
+      expect(markup).toContain('class="p-4"');
+      expect(markup).toContain("Revenue");
+    });
+
+    it("returns the LOADING composition for a component that queries", async () => {
+      // Every tool call hangs by design, so this is the state the user sees
+      // first — and the state that is safe to store, since nothing was fetched.
+      const result = await smokeRenderArtifact(
+        [
+          "function App(){",
+          "  const q = useQuery(tools.github.issues.list.queryOptions({}));",
+          "  if (q.isPending) return <ArtifactLoading />;",
+          "  return <div>{String(q.data)}</div>;",
+          "}",
+        ].join("\n"),
+      );
+      expect(result.status).toBe("ok");
+      const markup = result.status === "ok" ? (result.markup ?? "") : "";
+      expect(markup).toContain("artifact-loading");
+      expect(markup).not.toContain("undefined");
+    });
+
+    it("omits markup when the render fails", async () => {
+      // A failed verdict has no preview to offer, and the type says so.
+      const result = await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }");
+      expect(result.status).toBe("failed");
+      expect("markup" in result).toBe(false);
+    });
+
+    it("omits markup for a component that renders nothing", async () => {
+      // Empty is not a preview, and the caller must not read "" as one.
+      const result = await smokeRenderArtifact("function App(){ return null; }");
+      expect(result.status).toBe("ok");
+      expect(result.status === "ok" ? result.markup : "unused").toBeUndefined();
+    });
+
+    it("drops the markup rather than returning a partial tree when it is huge", async () => {
+      // Past the harness's cap the render is still driven to completion — that
+      // is how a late throw is observed — but nothing is kept, because half a
+      // DOM tree is not a picture of anything.
+      const result = await smokeRenderArtifact(
+        [
+          "function App(){",
+          "  return (",
+          "    <div>",
+          "      {Array.from({ length: 4000 }, (_, i) => (",
+          '        <div key={i} className="flex items-center gap-4 rounded-lg border p-4">',
+          "          <span>Row number {i} with enough text to add up quickly</span>",
+          "        </div>",
+          "      ))}",
+          "    </div>",
+          "  );",
+          "}",
+        ].join("\n"),
+      );
+      expect(result.status).toBe("ok");
+      expect(result.status === "ok" ? result.markup : "unused").toBeUndefined();
+    }, 60_000);
   });
 
   it("reports code with no App component", async () => {
@@ -283,7 +353,7 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 
   it("renders a representative dashboard: cards, table, badges, icons", async () => {
@@ -313,6 +383,6 @@ describe("smokeRenderArtifact", () => {
         "}",
       ].join("\n"),
     );
-    expect(result).toEqual({ status: "ok" });
+    expect(result.status).toBe("ok");
   });
 });

@@ -67,6 +67,18 @@ const neverSettles = (): Promise<never> => new Promise<never>(() => {});
 /** React 19 passes `{ componentStack }` as the second argument to `onError`. */
 type RenderErrorInfo = { readonly componentStack?: string };
 
+/**
+ * How much markup may come back out of the sandbox.
+ *
+ * The stream is drained regardless — that is how a late child's throw is
+ * observed — so this caps only what is KEPT and carried across the boundary.
+ * A loading-state render of an ordinary artifact is a few kilobytes; anything
+ * past this is a component that inlined something enormous, and the honest
+ * answer there is no preview rather than a row nobody can load. Collection
+ * stops at the cap, so a pathological render costs bounded memory too.
+ */
+const MARKUP_LIMIT_BYTES = 128 * 1024;
+
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -96,6 +108,13 @@ const render = async (code: string): Promise<SmokeRenderResult> => {
       ),
     );
 
+    // The drained chunks, kept up to the cap. Draining is still what drives the
+    // render to completion so a throw in a late child is observed; keeping the
+    // bytes is what turns that same pass into the gallery's preview.
+    const decoder = new TextDecoder();
+    let markup = "";
+    let truncated = false;
+
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: same reason, for the render itself
     try {
       const stream = await renderToReadableStream(tree, {
@@ -106,12 +125,19 @@ const render = async (code: string): Promise<SmokeRenderResult> => {
           };
         },
       });
-      // The markup is discarded; draining it is only how the render is driven
-      // to completion so a throw in a late child is still observed.
       const reader = (stream as unknown as ReadableStream).getReader();
       for (;;) {
-        const { done } = await reader.read();
+        const { done, value } = await reader.read();
         if (done) break;
+        if (truncated) continue;
+        markup +=
+          typeof value === "string" ? value : decoder.decode(value as unknown as Uint8Array);
+        // Past the cap the markup is unusable as a whole — a partial DOM tree
+        // is not a preview — so stop keeping it and let the drain finish.
+        if (markup.length > MARKUP_LIMIT_BYTES) {
+          truncated = true;
+          markup = "";
+        }
       }
     } catch {
       // The stream's own rejection carries no component stack, so `onError`'s
@@ -120,7 +146,10 @@ const render = async (code: string): Promise<SmokeRenderResult> => {
       return { status: "ok" };
     }
 
-    return failure ? { status: "failed", ...failure } : { status: "ok" };
+    if (failure) return { status: "failed", ...failure };
+    // An empty render is `ok` with no markup: nothing to preview, and the
+    // caller must not read "" as "this artifact renders blank on purpose".
+    return markup === "" ? { status: "ok" } : { status: "ok", markup };
   } catch (error) {
     // A throw from `compileJsx` or `evaluateComponent` — a syntax error, or
     // generated code that blew up at module scope. Same class, same answer.
