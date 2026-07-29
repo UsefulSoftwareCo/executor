@@ -1,59 +1,61 @@
 import { describe, expect, it } from "@effect/vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
-import { artifactStageSkeletonKind } from "./artifact-stage-skeleton";
-import { artifactPreviewKind } from "./artifact-preview";
-
-/**
- * Which skeleton the stage draws.
- *
- * The stage's whole promise is that ONE surface covers the open, and the best
- * version of that surface is the artifact's own stored render. This decides
- * whether it gets one, and it is the part that would degrade silently: falling
- * back to the generic blocks for an artifact that HAS a preview breaks nothing
- * and throws nothing, it just quietly makes every open worse.
- */
-describe("artifactStageSkeletonKind", () => {
-  it("waits against the artifact's own stored render when there is one", () => {
-    expect(artifactStageSkeletonKind({ kind: "layout", markup: "<div>x</div>" })).toBe("layout");
-  });
-
-  it("falls back to the generic skeleton when nothing is stored", () => {
-    expect(artifactStageSkeletonKind(null)).toBe("generic");
-    expect(artifactStageSkeletonKind(undefined)).toBe("generic");
-  });
-
-  it("treats an empty preview as nothing stored", () => {
-    expect(artifactStageSkeletonKind({ kind: "layout", markup: "" })).toBe("generic");
-  });
-});
+import { ArtifactStageSkeleton } from "./artifact-stage-skeleton";
 
 /**
- * The card and the stage must never disagree about whether an artifact has a
- * picture.
+ * The stage's loading surface is ONE blank block, and that is the whole
+ * contract.
  *
- * They are two separate functions over the same column, in two files, and they
- * are what a user sees a fraction of a second apart — the gallery card, then the
- * loading stage it opens into. If one said "layout" and the other "generic", a
- * click would replace the artifact's own thumbnail with grey blocks, which is
- * precisely the jarring swap this work exists to remove.
+ * It reads like a test of nothing, and that is the point: every previous
+ * version of this surface composed something — three captioned states, then
+ * hairline header-and-rows geometry, then the artifact's own stored preview
+ * scaled up to fill the stage. Each was an attempt to predict a layout that is
+ * arbitrary user code, and each one resolved into something else, so the eye
+ * tracked the pieces that moved.
  *
- * Pinned as a shared property rather than duplicated expectations, so a change
- * to either side's threshold fails here rather than being discovered by eye.
+ * A plain block cannot be wrong about a layout it makes no claim about. These
+ * assertions are what stops the next well-meaning improvement from putting the
+ * guessing back, since composing more into the skeleton breaks no type and
+ * throws nothing — it just quietly makes the handoff worse again.
  */
-describe("the card and the stage agree", () => {
-  const cases = [
-    { kind: "layout", markup: "<div>rendered</div>" },
-    { kind: "layout", markup: "" },
-    null,
-    undefined,
-  ] as const;
+describe("ArtifactStageSkeleton", () => {
+  const markup = renderToStaticMarkup(<ArtifactStageSkeleton />);
 
-  it.each(cases)("draws the same class of picture for %j", (preview) => {
-    const card = artifactPreviewKind(preview);
-    const stage = artifactStageSkeletonKind(preview);
-    // The two vocabularies differ by one word — the card's fallback is a
-    // deliberate figure ("schematic"), the stage's is anonymous blocks
-    // ("generic") — but the DECISION they encode is the same one.
-    expect(stage === "layout").toBe(card === "layout");
+  it("is a single element with nothing inside it", () => {
+    // No children of any kind: no preview markup, no header bar, no rows.
+    expect(markup).toMatch(/^<div [^>]*><\/div>$/);
+  });
+
+  it("says nothing", () => {
+    // The captions this replaced, and anything else: a skeleton IS the message.
+    expect(markup.replace(/<[^>]*>/g, "")).toBe("");
+  });
+
+  it("fills the stage rather than sizing to content of its own", () => {
+    // The frame it hands over to occupies the same box. Sizing to anything else
+    // is the layout jump at the moment of the swap.
+    expect(markup).toContain("h-full");
+    expect(markup).toContain("w-full");
+  });
+
+  it("pulses, so it reads as waiting rather than as an empty page", () => {
+    expect(markup).toContain("animate-pulse");
+  });
+
+  it("is inert and unannounced", () => {
+    // It takes no hit-tests over the frame booting behind it, and a screen
+    // reader gets `aria-busy` instead of a description of a grey rectangle.
+    expect(markup).toContain("pointer-events-none");
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('aria-hidden="true"');
+  });
+
+  it("takes no artifact data at all", () => {
+    // The stored-preview path is gone, not merely unused: the component has no
+    // way to be handed a picture to wait against, so it cannot drift back into
+    // rendering one.
+    expect(ArtifactStageSkeleton.length).toBeLessThanOrEqual(1);
+    expect(renderToStaticMarkup(<ArtifactStageSkeleton />)).toBe(markup);
   });
 });

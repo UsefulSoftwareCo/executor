@@ -4,10 +4,9 @@ import { ClientOnly, useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { toast } from "sonner";
-import type { ArtifactId, ArtifactPreview } from "@executor-js/sdk/shared";
+import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { trackEvent } from "../api/analytics";
-import { useCachedArtifactPreview } from "../api/artifact-cached-preview";
 import { useArtifactRenderer, usePreloadArtifactRenderer } from "../api/artifact-renderer";
 import { artifactAtom, removeArtifactOptimistic, renameArtifactOptimistic } from "../api/atoms";
 import { artifactWriteKeys } from "../api/reactivity-keys";
@@ -29,17 +28,7 @@ import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { formatRelativeTime } from "../lib/relative-time";
-import { cn } from "../lib/utils";
 import { RenameArtifactDialog } from "./artifact-rename-dialog";
-
-/**
- * How long the skeleton takes to leave once the artifact is on screen.
- *
- * design.md's state-change duration. It is also how long the cover stays in the
- * tree, so it must not be shortened below the CSS transition or the skeleton
- * would be removed mid-fade.
- */
-const STAGE_HANDOFF_MS = 150;
 
 /**
  * The artifact detail page — also the deep-link target `create-artifact` hands to MCP
@@ -61,12 +50,6 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
 
   const title = AsyncResult.isSuccess(artifact) ? artifact.value.title : "Artifact";
   useExecutorDocumentTitle(title);
-
-  // The picture to wait against. The row is authoritative once it lands; until
-  // then the gallery's cached summary usually has the same preview, which is
-  // what makes the skeleton correct on the very first frame after a click.
-  const cachedPreview = useCachedArtifactPreview(props.artifactId);
-  const preview = AsyncResult.isSuccess(artifact) ? artifact.value.preview : cachedPreview;
 
   /**
    * Re-read the row when the tab comes back to the foreground.
@@ -209,10 +192,10 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
       */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {isAsyncResultLoading(artifact) ? (
-          <ArtifactStageSkeleton preview={preview} />
+          <ArtifactStageSkeleton />
         ) : (
           AsyncResult.match(artifact, {
-            onInitial: () => <ArtifactStageSkeleton preview={preview} />,
+            onInitial: () => <ArtifactStageSkeleton />,
             // A deleted or foreign id lands here. The message says which of the
             // two it is as far as this viewer can tell, and offers the way back.
             // An error REPLACES the skeleton rather than stacking on it: the
@@ -225,9 +208,7 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
                 />
               </div>
             ),
-            onSuccess: ({ value }) => (
-              <ArtifactStage code={value.code} artifactId={value.id} preview={value.preview} />
-            ),
+            onSuccess: ({ value }) => <ArtifactStage code={value.code} artifactId={value.id} />,
           })
         )}
       </div>
@@ -249,34 +230,23 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
  * A host that registers no renderer still gets a page that explains itself
  * instead of crashing.
  */
-function ArtifactStage(props: {
-  readonly code: string;
-  readonly artifactId: string;
-  readonly preview: ArtifactPreview | null;
-}) {
+function ArtifactStage(props: { readonly code: string; readonly artifactId: string }) {
   const Renderer = useArtifactRenderer();
   // One host per mount: it holds no state, but a new identity each render would
   // retrigger the shell's host effects.
   const host = useMemo(() => createHttpShellHost(), []);
 
   /**
-   * How far the handoff has got.
+   * Whether the artifact has painted, and therefore whether the skeleton is
+   * still up.
    *
-   *   `waiting`  — the skeleton is opaque and the frame is booting behind it
-   *   `fading`   — the artifact has painted; the skeleton is on its way out
-   *   `done`     — the skeleton is gone
-   *
-   * Three states rather than a boolean because a cross-fade needs the outgoing
-   * element to still be in the tree while it animates. Unmounting it the instant
-   * the artifact arrives would skip the transition entirely — the element is
-   * removed before a style change can be interpolated — and produce exactly the
-   * hard cut this is meant to smooth.
-   *
-   * The transition is driven by state rather than by `transitionend`: a browser
-   * that skips the transition (reduced motion, a backgrounded tab) never fires
-   * that event, and the skeleton would then never be removed.
+   * A plain boolean, because the handoff is a HARD SWAP. There is no fade: the
+   * skeleton is a blank block and the artifact is a full render, so
+   * interpolating between them animates nothing anyone can read — it just
+   * delays the content by the length of the transition and leaves an invisible
+   * cover over the artifact for that whole time. One frame, one change.
    */
-  const [handoff, setHandoff] = useState<"waiting" | "fading" | "done">("waiting");
+  const [rendered, setRendered] = useState(false);
 
   /**
    * The artifact has painted inside the frame.
@@ -287,19 +257,11 @@ function ArtifactStage(props: {
    * the shell is still booting and would reveal a blank frame. See `onRendered`
    * on `ArtifactRendererProps`.
    *
-   * Idempotent: the shell latches the signal, but a second delivery must not
-   * restart a fade that has already finished.
+   * Idempotent: the shell latches the signal, and a second delivery is a no-op.
    */
   const handleRendered = useCallback(() => {
-    setHandoff((current) => (current === "waiting" ? "fading" : current));
+    setRendered(true);
   }, []);
-
-  /** Retire the skeleton once its fade has had time to run. */
-  useEffect(() => {
-    if (handoff !== "fading") return;
-    const timer = setTimeout(() => setHandoff("done"), STAGE_HANDOFF_MS);
-    return () => clearTimeout(timer);
-  }, [handoff]);
 
   if (!Renderer) {
     return (
@@ -317,21 +279,22 @@ function ArtifactStage(props: {
     The frame is mounted immediately and at full size — it is not gated on the
     skeleton going away — so the shell boots, the bridge connects and the source
     compiles while the skeleton is still up. The skeleton lies over it until the
-    artifact paints, then fades out and stops taking hit-tests.
+    artifact paints, and is then removed in one step.
 
-    That ordering is what makes the handoff seamless AND what preserves fill
-    mode: the renderer measures its container to decide the frame's height, and
-    that container has the page's full content area from the first commit. A
-    skeleton that unmounted to "make room" would hand the renderer a container
-    that changed size at the exact moment of the swap, which is the layout jump
-    this is meant to avoid.
+    That ordering is what preserves fill mode: the renderer measures its
+    container to decide the frame's height, and that container has the page's
+    full content area from the first commit. A skeleton that unmounted to "make
+    room" would hand the renderer a container that changed size at the exact
+    moment of the swap, which is the layout jump this is meant to avoid. The
+    cover is absolutely positioned over that container for the same reason —
+    it never participates in the layout the frame is measuring.
 
     `ClientOnly` and `Suspense` keep their fallbacks, but both are now the same
     skeleton the page was already showing — so a cold SSR pass, a hydration
     boundary and a chunk still in flight are all indistinguishable from the
     wait that preceded them.
   */
-  const skeleton = <ArtifactStageSkeleton preview={props.preview} />;
+  const skeleton = <ArtifactStageSkeleton />;
 
   return (
     <div className="relative h-full">
@@ -348,22 +311,13 @@ function ArtifactStage(props: {
         </ClientOnly>
       </div>
 
-      {handoff === "done" ? null : (
+      {rendered ? null : (
         <div
           data-testid="artifact-stage-cover"
-          data-handoff={handoff}
-          // The fade is on the COVER, not on the frame. Fading the artifact in
-          // would start it at zero opacity, so an artifact that animates its own
-          // entrance would play that entrance through a second, unrelated fade.
-          // `pointer-events-none` once it is on its way out, so the artifact is
-          // interactive the moment it is visible rather than 150ms later.
-          //
-          // 150ms is design.md's state-change duration; `motion-reduce` drops
-          // the interpolation and the cover simply leaves on the same schedule.
-          className={cn(
-            "pointer-events-none absolute inset-0 z-10 bg-background transition-opacity duration-150 ease-out motion-reduce:transition-none",
-            handoff === "fading" ? "opacity-0" : "opacity-100",
-          )}
+          // Opaque for its whole life and gone the frame after the paint
+          // signal: no transition, so there is never a moment where a
+          // half-transparent cover sits between the user and a live artifact.
+          className="pointer-events-none absolute inset-0 z-10 bg-background"
         >
           {skeleton}
         </div>

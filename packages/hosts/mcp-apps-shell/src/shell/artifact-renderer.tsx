@@ -358,8 +358,8 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
 
       // "The artifact is on screen." Answered here for the same reason the
       // preview is: it is this host's own call, not a server tool, and it must
-      // never reach `/executions`. The page uses it to cross-fade its skeleton
-      // out — see `ArtifactStage`.
+      // never reach `/executions`. The page uses it to take its skeleton down
+      // — see `ArtifactStage`.
       if (params.name === ARTIFACT_RENDERED_TOOL) {
         onRenderedRef.current?.();
         return Promise.resolve({ content: [] } satisfies CallToolResult);
