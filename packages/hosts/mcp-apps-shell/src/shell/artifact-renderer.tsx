@@ -247,7 +247,11 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       // `allow-forms` (nothing posts one).
       sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
       style={{ height }}
-      className="block w-full border-0 bg-background"
+      // `min-h-full` against the page's scroll container: an artifact shorter
+      // than the viewport still fills it (the shell's background matches the
+      // console tokens, so the fill is seamless); a taller one grows to its
+      // reported height and the page scrolls.
+      className="block min-h-full w-full border-0 bg-background"
     />
   );
 }
