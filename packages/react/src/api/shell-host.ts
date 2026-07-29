@@ -159,7 +159,13 @@ export const createHttpShellHost = (options?: {
       void doFetch(
         `${getExecutorApiBaseUrl()}/artifacts/${encodeURIComponent(artifactId)}/preview`,
         { method: "PUT", headers, body: JSON.stringify({ preview }) },
-      ).catch(() => undefined);
+      ).then(
+        () => undefined,
+        // Deliberately silent, and not an Effect: there is no caller to report
+        // to and nothing downstream to recover. A failed upload leaves the card
+        // on its layout preview, which is already a good picture.
+        () => undefined,
+      );
     },
 
     openLink: async ({ url }) => {

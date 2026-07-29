@@ -347,6 +347,21 @@ export function McpAppsShell({
   // when the context changes.
   const capturePreviewRef = useRef(false);
   capturePreviewRef.current = hostContextAllowsPreviewCapture(hostContext);
+  // Hand a captured snapshot to the host. Swallows every failure: a preview is
+  // a picture for a list, and the artifact the user is looking at does not
+  // depend on it in any way.
+  const savePreviewRef = useRef<(artifactId: string, preview: string) => void>(() => {});
+  savePreviewRef.current = (artifactId, preview) => {
+    void Promise.resolve(
+      app.callServerTool({
+        name: SAVE_ARTIFACT_PREVIEW_TOOL,
+        arguments: { artifactId, preview },
+      }),
+    ).then(
+      () => undefined,
+      () => undefined,
+    );
+  };
 
   useEffect(() => {
     rendererRef.current = renderer;
@@ -460,9 +475,13 @@ export function McpAppsShell({
 
       if (data.type === "executor.renderer.preview") {
         // Relay outward and forget. The picture is a nicety: nothing here waits
-        // on it, retries it, or reports its failure to the user. It travels over
-        // the same `callServerTool` seam as every other host call rather than a
-        // bespoke channel, and only to a host that asked for it.
+        // on it, retries it, or reports its failure to the user. It travels
+        // over the same `callServerTool` seam as every other host call rather
+        // than a bespoke channel, and only to a host that asked for it.
+        //
+        // Through a ref for the same reason the tool caller is: this handler is
+        // built once, and reading `app` from the closure would pin whichever
+        // host object existed when it was created.
         const artifactId = artifactIdRef.current;
         if (
           capturePreviewRef.current &&
@@ -470,12 +489,7 @@ export function McpAppsShell({
           typeof data.preview === "string" &&
           data.preview.startsWith("data:image/")
         ) {
-          void app
-            .callServerTool({
-              name: SAVE_ARTIFACT_PREVIEW_TOOL,
-              arguments: { artifactId, preview: data.preview },
-            })
-            .catch(() => undefined);
+          savePreviewRef.current(artifactId, data.preview);
         }
         return;
       }
