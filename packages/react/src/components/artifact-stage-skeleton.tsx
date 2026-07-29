@@ -62,20 +62,24 @@
 // `[contain:strict]`, `overflow-hidden`.
 // ---------------------------------------------------------------------------
 
-import { useLayoutEffect, useRef, useState } from "react";
 import type { ArtifactPreview as ArtifactPreviewValue } from "@executor-js/sdk/shared";
 
 import { cn } from "../lib/utils";
 
 /**
- * The width the stored markup was laid out at.
+ * The artifact's own framing, mirrored exactly.
  *
- * Must match `LAYOUT_WIDTH` in `./artifact-preview` — it is a property of the
- * markup, not of either surface that draws it: the smoke render produced it at
- * the width `.artifact-root` frames an artifact at (1100px max, less padding).
- * Scaling from any other number would letterbox or crop it.
+ * These are `.artifact-root` from the shell's `theme.css` — `max-width: 1100px`,
+ * `margin-inline: auto`, `padding: 24px` (16px under 640px) — and they are
+ * duplicated here deliberately rather than shared, because the two live in
+ * different documents: the real one is inside a sandboxed iframe two hops down
+ * and its stylesheet cannot reach the console.
+ *
+ * They must stay in step. The whole value of a preview-backed skeleton is that
+ * the artifact resolves into the SAME PIXELS the skeleton was holding, and a
+ * disagreement here is exactly a horizontal jump at the moment of handoff.
  */
-const LAYOUT_WIDTH = 880;
+const ARTIFACT_ROOT_FRAMING = "mx-auto w-full max-w-[1100px] p-4 sm:p-6";
 
 /**
  * What the stage shows while an artifact is on its way.
@@ -132,64 +136,36 @@ export const artifactStageSkeletonKind = (
 ): "layout" | "generic" => (preview && preview.markup !== "" ? "layout" : "generic");
 
 /**
- * The artifact's own stored render, scaled up to fill the stage.
+ * The artifact's own stored render, at the size the artifact itself will be.
  *
- * The scale is MEASURED rather than written as a constant, for the same reason
- * the card measures it: the stage is whatever room the window has left after
- * the sidebar and the title bar, which no fixed divisor can predict. Container
- * query units cannot express it either — `scale()` takes a unitless number and
- * `calc(100cqw / 880)` is a length, so the browser drops the whole transform and
- * renders the markup at 1:1.
+ * NOT scaled — and that is the difference between this and the gallery card,
+ * which is the same markup under the opposite constraint. The card has to
+ * squeeze a desktop layout into a 300px tile, so it lays the markup out at a
+ * fixed width and transforms it down. The stage has the artifact's real room,
+ * so there is nothing to squeeze: the markup is a server render with no
+ * intrinsic width, and given `.artifact-root`'s own framing it simply lays
+ * itself out at exactly the width the real artifact is about to occupy.
  *
- * Scaled from the TOP-CENTER, not the top-left as the card does: the stage is
- * wide enough that a left-anchored artifact would sit against one edge with a
- * band of empty background beside it, whereas the artifact itself is centered
- * by `.artifact-root`'s `margin-inline: auto`. Centering here is what makes the
- * cross-fade land on the same pixels.
+ * That is what makes the handoff invisible rather than merely quick. A scaled
+ * skeleton would be the right picture at the wrong size, and the swap would
+ * show every element sliding a few pixels into place — which reads as a jump
+ * even when it is fast.
  */
 function LayoutSkeleton(props: { readonly markup: string }) {
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState<number | null>(null);
-
-  useLayoutEffect(() => {
-    const frame = frameRef.current;
-    if (!frame) return;
-    const measure = () => {
-      const width = frame.clientWidth;
-      // Never scale UP past 1: the markup was laid out at a desktop width, and
-      // a wider stage should show it at its true size centered, exactly as the
-      // real artifact will be, rather than a magnified version of it.
-      if (width > 0) setScale(Math.min(1, width / LAYOUT_WIDTH));
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(frame);
-    return () => observer.disconnect();
-  }, []);
-
   return (
     <div
-      ref={frameRef}
       data-slot="artifact-stage-skeleton-layout"
-      className="absolute inset-0 overflow-hidden [contain:strict]"
+      className="absolute inset-0 overflow-hidden [contain:content]"
     >
       <div
-        className="mx-auto motion-safe:animate-pulse"
+        className={cn(ARTIFACT_ROOT_FRAMING, "motion-safe:animate-pulse")}
         style={{
-          width: LAYOUT_WIDTH,
-          transform: `scale(${scale ?? 0})`,
-          transformOrigin: "top center",
-          // The framing the shell gives an artifact, so the skeleton sits where
-          // the artifact will and the swap moves nothing.
-          padding: 24,
-          // Hidden until measured: a frame at 1:1 would flash the markup at full
-          // size for one paint before the first measurement lands.
-          visibility: scale === null ? "hidden" : "visible",
           // The stored markup is the artifact's LOADING composition — its own
-          // skeletons and empty frames. Holding it just under full contrast
-          // keeps it reading as a placeholder rather than as content that failed
-          // to fill in.
-          opacity: 0.55,
+          // skeletons and empty frames, captured before data arrived, or its
+          // settled render from a previous visit. Held under full contrast so it
+          // reads as a placeholder rather than as content that failed to fill
+          // in, and so the artifact arriving is a step UP in presence.
+          opacity: 0.4,
         }}
         // eslint-disable-next-line react/no-danger -- allowlist-sanitized SSR output; see the module header and `./artifact-preview`
         dangerouslySetInnerHTML={{ __html: props.markup }}
@@ -212,7 +188,7 @@ function GenericSkeleton() {
   return (
     <div
       data-slot="artifact-stage-skeleton-generic"
-      className="mx-auto flex h-full w-full max-w-[1100px] flex-col gap-4 p-6 motion-safe:animate-pulse"
+      className={cn(ARTIFACT_ROOT_FRAMING, "flex h-full flex-col gap-4 motion-safe:animate-pulse")}
     >
       {/* The header every artifact has: a title, and a control or two. */}
       <div className="flex shrink-0 items-center justify-between gap-4">
@@ -224,18 +200,24 @@ function GenericSkeleton() {
       </div>
 
       {/* The body: one bounded region, hairline-framed, the shape almost every
-          artifact resolves into whether it fills with rows, tiles or a plot. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-border p-4">
+          artifact resolves into whether it fills with rows, tiles or a plot.
+
+          Its rows are DISTRIBUTED down the region rather than stacked at the
+          top. An artifact given the whole viewport fills it, so a placeholder
+          that bunched six bars under the header and left the rest empty would
+          be promising the wrong shape — and the empty band below them is the
+          most visible thing on the screen while it waits. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 rounded-lg border border-border p-4">
         <div className="h-3 w-32 shrink-0 rounded bg-muted-foreground/12" />
-        <div className="flex min-h-0 flex-1 flex-col gap-2.5">
-          {[92, 78, 85, 64, 71, 58].map((width, index) => (
+        <div className="flex min-h-0 flex-1 flex-col justify-between gap-3 pb-1">
+          {[92, 78, 85, 64, 71, 58, 80, 67].map((width, index) => (
             <div
               key={width}
               className="h-3 shrink-0 rounded bg-muted-foreground/10"
               style={{
                 width: `${width}%`,
                 // A gentle stagger so the pulse reads as one surface breathing
-                // rather than six independent blinks.
+                // rather than eight independent blinks.
                 animationDelay: `${index * 90}ms`,
               }}
             />
