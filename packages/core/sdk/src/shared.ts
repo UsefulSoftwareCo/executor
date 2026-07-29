@@ -105,14 +105,17 @@ export type { ToolPolicyAction } from "./core-schema";
 
 // Artifact projections (the row mappers are server-side; the binding schemas
 // are shared, because the HTTP contract carries them).
-export { ArtifactBinding, ArtifactBindings } from "./artifact";
+export { ArtifactBinding, ArtifactBindings, isImagePreviewValue } from "./artifact";
 export type {
   Artifact,
+  ArtifactPreview,
   ArtifactSummary,
   SaveArtifactInput,
   RenameArtifactInput,
   RemoveArtifactInput,
+  SetArtifactPreviewInput,
 } from "./artifact";
+export { ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
 
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";

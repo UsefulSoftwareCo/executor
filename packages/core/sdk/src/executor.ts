@@ -60,6 +60,7 @@ import {
   type RemoveArtifactInput,
   type RenameArtifactInput,
   type SaveArtifactInput,
+  type SetArtifactPreviewInput,
 } from "./artifact";
 import {
   ArtifactNotFoundError,
@@ -403,6 +404,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       input: RenameArtifactInput,
     ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
     readonly remove: (input: RemoveArtifactInput) => Effect.Effect<void, StorageFailure>;
+    /** Upgrade the stored preview to a snapshot of a settled render. Touches
+     *  only `preview`, and never `updated_at`. */
+    readonly setPreview: (
+      input: SetArtifactPreviewInput,
+    ) => Effect.Effect<void, ArtifactNotFoundError | StorageFailure>;
   };
 
   /**
@@ -3945,12 +3951,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
           // `bindings` is written on every overwrite, including back to null:
           // it interprets `code`, so carrying the previous value forward under
-          // new source would bind roles the new code never declares.
+          // new source would bind roles the new code never declares. `preview`
+          // is written for exactly the same reason, and the case it prevents is
+          // visible: an image preview captured from the OLD render would
+          // otherwise keep advertising a version of the artifact that no longer
+          // exists.
           const set = {
             title: input.title,
             description,
             code: input.code,
             bindings: input.bindings ?? null,
+            preview: input.preview ?? null,
             updated_at: now,
           };
           yield* core.updateMany("artifact", { where, set });
@@ -3970,10 +3981,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           description,
           code: input.code,
           bindings: input.bindings ?? null,
+          preview: input.preview ?? null,
           created_at: now,
           updated_at: now,
         });
         return rowToArtifact(created);
+      });
+
+    /**
+     * Replace an artifact's preview with a snapshot of a settled render.
+     *
+     * Only `preview` moves. `updated_at` deliberately does not: the gallery
+     * sorts by it, and opening an artifact must not reorder the grid — being
+     * looked at is not an edit.
+     */
+    const artifactsSetPreview = (
+      input: SetArtifactPreviewInput,
+    ): Effect.Effect<void, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const where = artifactById(input.id);
+        const existing = yield* core.findFirst("artifact", { where });
+        if (!existing) {
+          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+        }
+        yield* core.updateMany("artifact", { where, set: { preview: input.preview } });
       });
 
     const artifactsRename = (
@@ -4771,6 +4802,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         save: artifactsSave,
         rename: artifactsRename,
         remove: artifactsRemove,
+        setPreview: artifactsSetPreview,
       },
       pendingApprovals,
       execute,

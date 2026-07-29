@@ -382,6 +382,16 @@ export const coreTables = defineTables({
       // code carries full five-segment paths and runs as written. See
       // `resolveCallAddress` in `@executor-js/host-mcp`.
       bindings: nullableJsonColumn("bindings"),
+      // What the gallery shows instead of a schematic: sanitized markup from
+      // the create-time smoke render, or a raster snapshot captured once the
+      // artifact has been opened and settled. Discriminated by shape — a data
+      // URL is the image, anything else is markup. See `artifact-preview.ts`
+      // for the sanitizer and for why the markup carries no live data.
+      //
+      // Nullable, and every reader falls back: artifacts saved before this
+      // column existed have none, and so does one whose render was too large,
+      // failed open, or has never been opened.
+      preview: nullableTextColumn("preview"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -442,13 +452,23 @@ export const TOOL_INVOCATION_COLUMNS = [
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
 export type ArtifactRow = FumaRow<CoreSchema["artifact"]>;
-/** The columns a list projects — everything except the JSX source, which only
- *  a full read needs. */
+/**
+ * The columns a list projects — everything except the JSX source, which only a
+ * full read needs.
+ *
+ * `preview` is here on purpose, and it is the one heavy-ish column that earns
+ * its place: the gallery IS the list, so a preview fetched anywhere else would
+ * be a second round trip per card to render the thing the card is made of.
+ * It is bounded at
+ * {@link ARTIFACT_PREVIEW_MARKUP_LIMIT} precisely so this projection stays
+ * affordable — `code` has no such bound, which is why it stays out.
+ */
 export const ARTIFACT_SUMMARY_COLUMNS = [
   "owner",
   "id",
   "title",
   "description",
+  "preview",
   "created_at",
   "updated_at",
 ] as const satisfies readonly (keyof ArtifactRow)[];

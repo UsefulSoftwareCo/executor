@@ -195,14 +195,19 @@ export {
 export {
   rowToArtifact,
   rowToArtifactSummary,
+  previewFromColumn,
+  isImagePreviewValue,
   ArtifactBinding,
   ArtifactBindings,
   type Artifact,
+  type ArtifactPreview,
   type ArtifactSummary,
   type SaveArtifactInput,
   type RenameArtifactInput,
   type RemoveArtifactInput,
+  type SetArtifactPreviewInput,
 } from "./artifact";
+export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
 
 // Elicitation.
 export {

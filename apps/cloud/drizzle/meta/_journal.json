@@ -106,6 +106,13 @@
       "when": 1785355312973,
       "tag": "0014_new_karma",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785355354955,
+      "tag": "0015_equal_the_leader",
+      "breakpoints": true
     }
   ]
 }

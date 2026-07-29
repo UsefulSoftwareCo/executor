@@ -117,13 +117,16 @@ describe("executor.artifacts", () => {
 
       const listed = yield* executor.artifacts.list();
       // The list projection is deliberately code-free: a saved component can be
-      // large and a picker only needs title/description to match on.
+      // large and a picker only needs title/description to match on. The
+      // preview is the one exception — the gallery is the surface that draws
+      // it — and it is null here because this save supplied none.
       expect(listed).toEqual([
         {
           id: saved.id,
           owner: "user",
           title: "Active users",
           description: "described",
+          preview: null,
           createdAt: saved.createdAt,
           updatedAt: saved.updatedAt,
         },
@@ -256,4 +259,95 @@ describe("executor.artifacts", () => {
       expect(Result.isFailure(result)).toBe(true);
     }),
   );
+
+  describe("previews", () => {
+    const MARKUP = '<div class="p-4"><h2>Revenue</h2></div>';
+    const IMAGE = "data:image/png;base64,iVBORw0KGgo=";
+
+    it.effect("round-trips layout markup, and reads it back as a layout preview", () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({
+          title: "Revenue",
+          code: CODE,
+          preview: MARKUP,
+        });
+        expect(saved.preview).toEqual({ kind: "layout", markup: MARKUP });
+        // The gallery reads it from the LIST, so that is the projection that
+        // has to carry it.
+        expect((yield* executor.artifacts.list())[0]?.preview).toEqual({
+          kind: "layout",
+          markup: MARKUP,
+        });
+      }),
+    );
+
+    it.effect("leaves the preview null when a save omits one", () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({ title: "Plain", code: CODE });
+        expect(saved.preview).toBe(null);
+      }),
+    );
+
+    it.effect("overwrites the preview along with the source", () =>
+      Effect.gen(function* () {
+        // The preview interprets `code`, so a save that replaces the source
+        // must replace the picture — including back to null. Carrying it
+        // forward would advertise a version of the artifact that is gone.
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({
+          title: "Revenue",
+          code: CODE,
+          preview: MARKUP,
+        });
+        const updated = yield* executor.artifacts.save({
+          id: saved.id,
+          title: "Revenue",
+          code: CODE,
+        });
+        expect(updated.preview).toBe(null);
+        expect((yield* executor.artifacts.get(saved.id)).preview).toBe(null);
+      }),
+    );
+
+    it.effect("setPreview upgrades a layout preview to an image", () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({
+          title: "Revenue",
+          code: CODE,
+          preview: MARKUP,
+        });
+        yield* executor.artifacts.setPreview({ id: saved.id, preview: IMAGE });
+        expect((yield* executor.artifacts.get(saved.id)).preview).toEqual({
+          kind: "image",
+          src: IMAGE,
+        });
+      }),
+    );
+
+    it.effect("setPreview does not reorder the gallery", () =>
+      Effect.gen(function* () {
+        // `updated_at` is the gallery's sort key. Opening an artifact must not
+        // move it to the front — being looked at is not an edit.
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({ title: "Revenue", code: CODE });
+        yield* executor.artifacts.setPreview({ id: saved.id, preview: IMAGE });
+        expect((yield* executor.artifacts.get(saved.id)).updatedAt).toEqual(saved.updatedAt);
+      }),
+    );
+
+    it.effect("setPreview fails for an artifact that is not visible", () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor();
+        const result = yield* Effect.result(
+          executor.artifacts.setPreview({ id: "art_missing", preview: IMAGE }),
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (!Result.isFailure(result)) return;
+        expect(Predicate.isTagged("ArtifactNotFoundError")(result.failure)).toBe(true);
+      }),
+    );
+  });
 });
