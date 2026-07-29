@@ -15,6 +15,25 @@ describe("sanitizeArtifactPreviewMarkup", () => {
       );
     });
 
+    /**
+     * The app-layout pattern the `artifact-style` skill teaches — a bounded flex
+     * column with one scrolling region under a sticky header — is expressed
+     * ENTIRELY in class names. A sanitizer that dropped or rewrote them would
+     * leave the gallery card showing a layout the artifact does not have, so the
+     * classes that carry the structure are pinned here.
+     */
+    it("keeps the app-layout classes a bounded artifact is built from", () => {
+      const result = sanitizeArtifactPreviewMarkup(
+        '<div class="flex h-full flex-col gap-4"><div class="shrink-0">Projects</div>' +
+          '<div class="min-h-0 flex-1 overflow-auto"><table class="w-full table-fixed">' +
+          '<thead class="sticky top-0 z-10 bg-background"><tr><th>Name</th></tr></thead>' +
+          "</table></div></div>",
+      );
+      expect(result).toContain('class="flex h-full flex-col gap-4"');
+      expect(result).toContain('class="min-h-0 flex-1 overflow-auto"');
+      expect(result).toContain('class="sticky top-0 z-10 bg-background"');
+    });
+
     it("keeps a chart's svg geometry", () => {
       const result = sanitizeArtifactPreviewMarkup(
         '<svg viewBox="0 0 100 40"><g><path d="M0,10 L20,5 L40,18" stroke="currentColor" ' +
