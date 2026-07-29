@@ -170,6 +170,7 @@ export const tailwindBrowserSourcePlugin = (): InnerRendererVitePlugin => ({
 
 const SHELL_VIRTUAL_ID = "virtual:executor-mcp-apps-shell-html";
 const SHELL_RESOLVED_ID = `\0${SHELL_VIRTUAL_ID}`;
+const DEV_SHELL_URL = "/assets/executor-mcp-apps-shell-dev.html";
 
 /** Where `build:shell` writes the self-contained shell document. */
 export const mcpAppsShellHtmlPath = (): string => path.resolve(packageRoot, "dist/mcp-app.html");
@@ -301,6 +302,14 @@ export const mcpAppsShellAsset = (): McpAppsShellAssetVitePlugin => {
     resolveId: (id) => (id === SHELL_VIRTUAL_ID ? SHELL_RESOLVED_ID : undefined),
     load: async (id) => {
       if (id !== SHELL_RESOLVED_ID) return undefined;
+      // Resolving the virtual module is part of Vite's startup graph. Building
+      // the multi-megabyte shell here makes every dev server pay that cost
+      // before it can answer even an unrelated route. In serve mode the
+      // middleware below owns the shell's lifetime, so hand the client a
+      // stable URL now and build only if that URL is actually requested.
+      if (command === "serve") {
+        return `export const shellHtmlUrl = ${JSON.stringify(DEV_SHELL_URL)};\nexport default shellHtmlUrl;\n`;
+      }
       const { url } = await load();
       return `export const shellHtmlUrl = ${JSON.stringify(url)};\nexport default shellHtmlUrl;\n`;
     },
