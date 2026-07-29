@@ -24,7 +24,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 
 /** The structural shape of the Vite plugin object, declared locally so this
  *  module imports no Vite types (apps pin their own Vite version). */
@@ -50,6 +49,7 @@ export const innerRendererEntry = (): string =>
  * plugin serves without standing up Vite.
  */
 export const bundleInnerRenderer = async (): Promise<string> => {
+  const { build } = await import("esbuild");
   const result = await build({
     entryPoints: [innerRendererEntry()],
     absWorkingDir: packageRoot,
@@ -92,6 +92,7 @@ export const smokeHarnessEntry = (): string =>
  * render's answer must not depend on how the host was started.
  */
 export const bundleSmokeHarness = async (): Promise<string> => {
+  const { build } = await import("esbuild");
   const result = await build({
     entryPoints: [smokeHarnessEntry()],
     absWorkingDir: packageRoot,
