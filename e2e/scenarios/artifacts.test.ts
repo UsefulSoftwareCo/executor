@@ -41,25 +41,30 @@ const api = composePluginApi([] as const);
  * an artifact that needed live data would reach for
  * `useQuery(tools.<integration>.<tool>.queryOptions(...))`.
  *
- * It is also deliberately TALL — 40 rows, well past the frame's initial height.
- * The shell reports its content height over the MCP-Apps resize protocol and the
- * artifact page, as host, grows the iframe to match. When the shell was mounted
- * inline there was no host to consume those notifications and tall artifacts
- * clipped mid-viewport, so the last row is what proves the frame grew.
+ * It is also deliberately TALL — 40 rows at 28px, far more than fits on the
+ * detail page — and laid out the way the `artifact-style` skill teaches: a
+ * bounded flex column whose header stays put while one region scrolls. That is
+ * what the detail page's fill mode exists to support, and what the steps below
+ * assert: the frame is the viewport, the page itself does not scroll, and the
+ * heading is still on screen after the rows have been scrolled.
  */
 const ARTIFACT_ROW_COUNT = 40;
 
 const artifactSource = (marker: string) => `
 function App() {
   return (
-    <div>
-      <h2>Release Readiness</h2>
-      <p data-testid="artifact-marker">${marker}</p>
-      {Array.from({ length: ${ARTIFACT_ROW_COUNT} }, (_, i) => (
-        <p key={i} data-testid={"artifact-row-" + i} style={{ height: 28 }}>
-          Check {i + 1}: ${marker}
-        </p>
-      ))}
+    <div className="flex h-full flex-col gap-4">
+      <div data-testid="artifact-header" className="shrink-0">
+        <h2>Release Readiness</h2>
+        <p data-testid="artifact-marker">${marker}</p>
+      </div>
+      <div data-testid="artifact-scroll" className="min-h-0 flex-1 overflow-auto">
+        {Array.from({ length: ${ARTIFACT_ROW_COUNT} }, (_, i) => (
+          <p key={i} data-testid={"artifact-row-" + i} style={{ height: 28 }}>
+            Check {i + 1}: ${marker}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -356,11 +361,14 @@ scenario(
           ).not.toBe("");
         });
 
-        await step("A tall artifact is fully visible, not clipped", async () => {
-          // The shell reports content height; the page, as host, grows the
-          // iframe. Inline there was no host to consume those notifications, so
-          // the frame stayed at its initial height and tall artifacts were cut
-          // off. The LAST row is the one that only exists if the frame grew.
+        await step("The artifact fills the page and scrolls inside itself", async () => {
+          // A tall artifact on its own page is an APP, not a document: the page
+          // hands it the viewport below the title bar and holds it there, and
+          // the artifact scrolls its own rows under its own header.
+          //
+          // Before fill mode the shell only ever grew to content, so this page
+          // scrolled instead — and a user filtering a long table watched its
+          // heading and search box disappear off the top of the screen.
           const lastRow = artifactContent(page).getByTestId(
             `artifact-row-${ARTIFACT_ROW_COUNT - 1}`,
           );
@@ -369,17 +377,48 @@ scenario(
           const frame = page.locator('[data-testid="artifact-shell-frame"]');
           const frameBox = await frame.boundingBox();
           expect(frameBox, "the artifact frame is laid out").not.toBeNull();
-          // 40 rows at 28px plus the shell's own chrome cannot fit in the
-          // 320px the frame starts at; anything near that means no resize.
+
+          // The frame is the viewport below the title bar, not the content's
+          // height. 40 rows at 28px is over 1100px of content, so a frame that
+          // still matched its content would be far taller than the window.
+          const viewport = page.viewportSize();
+          expect(viewport, "the browser reports a viewport").not.toBeNull();
           expect(
             frameBox?.height ?? 0,
-            "the host grew the iframe past its initial height",
-          ).toBeGreaterThan(600);
+            "the frame is bounded by the window, not by its content",
+          ).toBeLessThanOrEqual(viewport?.height ?? 0);
+          expect(frameBox?.height ?? 0, "the frame fills the space it was given").toBeGreaterThan(
+            200,
+          );
 
-          // And the row itself is rendered with real extent inside it, rather
-          // than laid out beyond a clipped frame.
-          const rowBox = await lastRow.boundingBox();
-          expect(rowBox?.height ?? 0, "the last row has real layout extent").toBeGreaterThan(0);
+          // The CONSOLE page does not scroll — that is the whole difference.
+          const pageScrolls = await page.evaluate(
+            () => document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+          );
+          expect(pageScrolls, "the console page itself does not scroll").toBe(false);
+
+          // The artifact's own region does, and its header stays put while it
+          // happens. This is the user-visible symptom, asserted directly.
+          const headerTopBefore = await artifactContent(page)
+            .getByTestId("artifact-header")
+            .evaluate((el) => el.getBoundingClientRect().top);
+
+          const scrolled = await artifactContent(page)
+            .getByTestId("artifact-scroll")
+            .evaluate((el) => {
+              el.scrollTop = 300;
+              return { scrollTop: el.scrollTop, overflowing: el.scrollHeight > el.clientHeight };
+            });
+          expect(scrolled.overflowing, "the artifact's row region is a real scroll box").toBe(true);
+          expect(scrolled.scrollTop, "the row region actually scrolled").toBeGreaterThan(0);
+
+          const headerTopAfter = await artifactContent(page)
+            .getByTestId("artifact-header")
+            .evaluate((el) => el.getBoundingClientRect().top);
+          expect(
+            Math.abs(headerTopAfter - headerTopBefore),
+            "the artifact's header stayed put while its rows scrolled",
+          ).toBeLessThanOrEqual(1);
         });
 
         await step("The artifact is listed on the Artifacts tab", async () => {
