@@ -39,7 +39,7 @@ const api = composePluginApi([] as const);
  * stylistic choice: there is no `run()` in scope, and code that calls one is
  * rejected before it is saved. Rows come from `Array.from`, a display constant —
  * an artifact that needed live data would reach for
- * `useQuery(tools.<ns>.<tool>.queryOptions(...))`.
+ * `useQuery(tools.<integration>.<tool>.queryOptions(...))`.
  *
  * It is also deliberately TALL — 40 rows, well past the frame's initial height.
  * The shell reports its content height over the MCP-Apps resize protocol and the
