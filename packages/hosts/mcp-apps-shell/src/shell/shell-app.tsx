@@ -417,13 +417,29 @@ export function McpAppsShell({
    * not a second answer. The latch lives here rather than in the inner frame so
    * it survives that frame remounting.
    *
+   * ## The fact outlives the capability to report it
+   *
+   * "The artifact painted" and "the host wants to know" arrive over two
+   * INDEPENDENT channels, and their order is not guaranteed: the paint comes up
+   * from the inner frame, while the capability comes down on the host context —
+   * which on a fast host lands before the first render and on a slow one arrives
+   * after it. Dropping the signal because the context had not arrived yet leaves
+   * the host holding its loading surface over a fully rendered artifact,
+   * forever, since the paint never happens twice.
+   *
+   * So the paint is REMEMBERED rather than tested against the capability at the
+   * moment it occurs. Whichever of the two arrives second sends the call.
+   *
    * Swallows every failure, like the preview relay: a host that does not
    * implement the name rejects the call, and the correct response to that is
    * nothing at all.
    */
   const renderSignalSentRef = useRef(false);
+  /** The artifact has painted, whether or not anyone could be told yet. */
+  const renderedRef = useRef(false);
   const signalRenderedRef = useRef<() => void>(() => {});
   signalRenderedRef.current = () => {
+    renderedRef.current = true;
     if (renderSignalSentRef.current || !wantsRenderSignalRef.current) return;
     renderSignalSentRef.current = true;
     void Promise.resolve(
@@ -438,6 +454,13 @@ export function McpAppsShell({
       () => undefined,
     );
   };
+
+  // The other order: the artifact painted before the host said it wanted to
+  // know. Runs on every host-context change, and the latch inside makes all but
+  // the first a no-op.
+  useEffect(() => {
+    if (renderedRef.current) signalRenderedRef.current();
+  }, [hostContext]);
 
   useEffect(() => {
     rendererRef.current = renderer;

@@ -2536,6 +2536,62 @@ describe("MCP app generated UI browser isolation", () => {
     }
   }, 60_000);
 
+  /**
+   * The artifact can paint BEFORE the host says it wants to be told.
+   *
+   * "The artifact painted" travels up from the inner frame; "tell me when it
+   * does" travels down on the host context. They are independent channels and
+   * their order is not guaranteed — a host that advertises the capability in a
+   * later `host-context-changed` (rather than in its `ui/initialize` reply)
+   * arrives second.
+   *
+   * The paint never happens twice, so a shell that merely tested the capability
+   * at the moment of the paint would drop the only notification there was ever
+   * going to be, and the host would hold its loading surface over a fully
+   * rendered artifact forever. That is a stuck screen, not a cosmetic glitch,
+   * which is why the fact is remembered and re-checked rather than tested once.
+   */
+  it("still signals a host that asks only after the artifact has painted", async () => {
+    if (!browser || !hostServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      // Render FIRST, with the harness's default context, which does not ask.
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedStaticCode);
+      await innerFrame.locator("#ready").waitFor({ timeout: 10_000 });
+
+      const beforeAsking = await getHostState(page);
+      expect(
+        beforeAsking.toolCalls.some((call) => call.name === "executor-artifact-rendered"),
+        "nothing is sent to a host that has not asked",
+      ).toBe(false);
+
+      // Only now does the host ask. The paint it is asking about is already in
+      // the past.
+      await page.evaluate(() => {
+        (window as unknown as BrowserHostWindow).__setHostContext({
+          executorRenderSignal: true,
+        });
+      });
+
+      await page.waitForFunction(() =>
+        (window as unknown as BrowserHostWindow).__mcpHostState.toolCalls.some(
+          (call: { name?: string }) => call.name === "executor-artifact-rendered",
+        ),
+      );
+
+      const after = await getHostState(page);
+      expect(
+        after.toolCalls.filter((call) => call.name === "executor-artifact-rendered").length,
+        "the remembered paint is reported exactly once",
+      ).toBe(1);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
   it("keeps trusted approval controls visible in a short host iframe", async () => {
     if (!browser || !hostServer) {
       throw new Error("Browser harness did not start.");
