@@ -523,3 +523,116 @@ scenario(
     );
   }),
 );
+
+// The iteration loop: a user asks for a tweak, and the agent updates the
+// artifact it already made rather than minting a second one. What makes this a
+// product promise rather than an implementation detail is the LINK — whoever
+// holds the artifact's URL sees the new version, because it is the same row.
+//
+// The same scenario also covers the create-time render check, because the two
+// meet in the same place: a tweak that would not render must not be able to
+// replace a version that does.
+scenario(
+  "Artifacts · a tweak updates the artifact in place, and a tweak that cannot render is refused",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const browser = yield* Browser;
+    const { client: apiClient } = yield* Api;
+
+    const identity = yield* target.newIdentity();
+    const client = yield* apiClient(api, identity);
+    const session = mcp.session(identity);
+
+    const suffix = uniqueSuffix();
+    const title = `Iterated Dashboard ${suffix}`;
+    const firstMarker = `first-${suffix}`;
+    const secondMarker = `second-${suffix}`;
+
+    let artifactId: ArtifactId | undefined;
+
+    yield* Effect.gen(function* () {
+      const created = yield* session.call("create-artifact", {
+        code: artifactSource(firstMarker),
+        title,
+        description: "A dashboard the agent will tweak",
+      });
+      expect(created.ok, `create-artifact succeeded: ${created.text}`).toBe(true);
+      artifactId = structuredOf(created).artifactId as ArtifactId;
+      expect(artifactId, "the artifact was persisted").toBeTruthy();
+
+      // The tweak the model would actually write: fetch the current source,
+      // edit it, send the whole component back under the same id.
+      const shown = yield* session.call("show-artifact", { id: artifactId });
+      expect(shown.ok, "the current source came back").toBe(true);
+
+      const updated = yield* session.call("create-artifact", {
+        code: artifactSource(secondMarker),
+        artifactId,
+      });
+      expect(updated.ok, `the update succeeded: ${updated.text}`).toBe(true);
+      expect(
+        structuredOf(updated).artifactId,
+        "an update keeps the artifact's id, so the user's link still resolves",
+      ).toBe(artifactId);
+
+      // One artifact, not two — the failure this feature exists to prevent.
+      const listed = yield* session.call("list-artifacts", {});
+      const occurrences = listed.text.split(title).length - 1;
+      expect(occurrences, "the tweak did not mint a second artifact").toBe(1);
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("The artifact's own URL shows the updated component", async () => {
+          await page.goto(`/artifacts/${artifactId}`, { waitUntil: "networkidle" });
+          const content = artifactContent(page);
+          await content
+            .locator('[data-testid="artifact-marker"]')
+            .filter({ hasText: secondMarker })
+            .waitFor({ timeout: 30_000 });
+          // And the version it replaced is gone, rather than both being present.
+          const stale = await content
+            .locator('[data-testid="artifact-marker"]')
+            .filter({ hasText: firstMarker })
+            .count();
+          expect(stale, "the replaced version is not still on the page").toBe(0);
+        });
+      });
+
+      // A tweak that would throw on its first render is refused, and — the part
+      // that matters — the artifact the user is looking at is left alone.
+      const broken = yield* session.call("create-artifact", {
+        code: `
+function App() {
+  return (
+    <BarChart data={[{ day: "Mon", n: 1 }]}>
+      <ChartTooltip content={<ChartTooltipContent />} />
+      <Bar dataKey="n" />
+    </BarChart>
+  );
+}
+`,
+        artifactId,
+      });
+      expect(broken.ok, "a chart with no ChartContainer is refused").toBe(false);
+      expect(broken.text, "the refusal names the wrapper the model must add").toContain(
+        "ChartContainer",
+      );
+
+      // Read the row itself rather than `show-artifact`: this client cannot
+      // display MCP Apps, so the tool hands back a deep link rather than source.
+      const afterRefusal = yield* client.artifacts.get({ params: { artifactId } });
+      expect(afterRefusal.code, "the stored source is still the version that rendered").toContain(
+        secondMarker,
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.suspend(() =>
+          artifactId === undefined
+            ? Effect.void
+            : client.artifacts.remove({ params: { artifactId } }),
+        ).pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
