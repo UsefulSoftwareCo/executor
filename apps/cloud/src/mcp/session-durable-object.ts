@@ -67,6 +67,7 @@ import {
   type DbServiceShape,
 } from "../db/db";
 import { makeExecutionStack } from "../engine/execution-stack";
+import { preloadQuickJs } from "../quickjs";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
@@ -228,6 +229,13 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
+      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
+      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
+      // user `execute` code on the dynamic-worker runtime, but the artifact
+      // smoke render is a QuickJS sandbox on every host — without this it fails
+      // open on each create and the check silently does nothing.
+      // Idempotent per isolate.
+      yield* Effect.promise(() => preloadQuickJs());
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
