@@ -52,6 +52,14 @@ export interface HttpShellHost {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** `ApprovalExpiredError`'s status: the paused execution existed and
+ *  deliberately no longer does. See `packages/core/api/src/executions/api.ts`. */
+const APPROVAL_EXPIRED_STATUS = 410;
+
+/** What the user reads when their approval arrived too late. Phrased as the next
+ *  action, because nothing ran and retrying is safe. */
+export const APPROVAL_EXPIRED_MESSAGE = "This approval expired. Trigger the action again.";
+
 /**
  * The kernel's envelope travels in `structured`; the shell unwraps it itself.
  * A completed-and-failed execution maps to `isError` so the shell's proxy
@@ -115,6 +123,14 @@ export const createHttpShellHost = (options?: {
     });
     if (!response.ok) {
       const text = await response.text();
+      // An approval that outlived its window is an ordinary outcome, not a
+      // fault: nothing ran, and the fix is to trigger the action again. Say that
+      // instead of surfacing the transport's error body, which reached the user
+      // as a raw `ExecutionNotFoundError` inside a JSON-RPC envelope.
+      if (response.status === APPROVAL_EXPIRED_STATUS) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the shell's tool proxy is Promise-based and surfaces rejections as component errors
+        throw new Error(APPROVAL_EXPIRED_MESSAGE);
+      }
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the shell's tool proxy is Promise-based and surfaces rejections as component errors
       throw new Error(text || `Executor API request failed with ${response.status}`);
     }
