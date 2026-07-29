@@ -92,6 +92,7 @@ const makeArtifactStore = () => {
         readonly description?: string | null;
         readonly code: string;
         readonly bindings?: ArtifactBindings | null;
+        readonly preview?: string | null;
       }): Effect.Effect<Artifact, TestArtifactError> =>
         Effect.suspend(() => {
           calls.push({
@@ -110,6 +111,12 @@ const makeArtifactStore = () => {
             owner: "user",
             title: input.title,
             description: input.description ?? null,
+            // Mirrors the real save: the preview is written on every overwrite,
+            // including back to null, because it interprets `code`.
+            preview:
+              input.preview === undefined || input.preview === null
+                ? null
+                : { kind: "layout", markup: input.preview },
             code: input.code,
             bindings: input.bindings ?? null,
             createdAt: existing?.createdAt ?? new Date(seq * 1000),
@@ -1626,6 +1633,7 @@ describe("MCP host — execute-action binding resolution", () => {
           owner: "user",
           title: "Legacy",
           description: null,
+          preview: null,
           code: "function App(){ useQuery(tools.inventory.org.main.listItems.queryOptions({})); return <div/>; }",
           bindings: null,
           createdAt: new Date(0),

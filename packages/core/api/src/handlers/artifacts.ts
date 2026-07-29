@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import type { Artifact, ArtifactSummary } from "@executor-js/sdk";
+import { isImagePreviewValue, type Artifact, type ArtifactSummary } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -11,6 +11,7 @@ const summaryToResponse = (a: ArtifactSummary) => ({
   owner: a.owner,
   title: a.title,
   description: a.description,
+  preview: a.preview,
   createdAt: a.createdAt.getTime(),
   updatedAt: a.updatedAt.getTime(),
 });
@@ -74,6 +75,23 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
           const executor = yield* ExecutorService;
           yield* executor.artifacts.remove({ id: path.artifactId });
           return { removed: true };
+        }),
+      ),
+    )
+    .handle("setPreview", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          // Only an image may come in here. The layout preview is written by
+          // the save path from a sandboxed render this server drove itself;
+          // accepting markup on an open endpoint would mean accepting markup
+          // from the browser, which is a different trust story entirely.
+          if (!isImagePreviewValue(payload.preview)) return { stored: false };
+          const executor = yield* ExecutorService;
+          yield* executor.artifacts.setPreview({
+            id: path.artifactId,
+            preview: payload.preview,
+          });
+          return { stored: true };
         }),
       ),
     ),

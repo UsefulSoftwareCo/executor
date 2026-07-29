@@ -20,7 +20,7 @@ import type {
 import { Validator } from "@cfworker/json-schema";
 import * as z from "zod/v4";
 
-import { isToolFile } from "@executor-js/sdk";
+import { isToolFile, sanitizeArtifactPreviewMarkup } from "@executor-js/sdk";
 import type {
   Artifact,
   ArtifactBinding,
@@ -1481,6 +1481,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       readonly description?: string;
       readonly existingId?: string;
       readonly bindings?: Readonly<Record<string, ArtifactBinding>>;
+      /** Sanitized layout markup from the smoke render, when it produced any. */
+      readonly preview?: string | null;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
         if (!artifacts) return artifactsUnavailableResult();
@@ -1490,6 +1492,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           description: input.description ?? null,
           code: input.code,
           ...(input.bindings === undefined ? {} : { bindings: input.bindings }),
+          preview: input.preview ?? null,
         });
         yield* Effect.annotateCurrentSpan({
           "mcp.artifact.id": saved.id,
@@ -1570,12 +1573,18 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         // saved artifact and a logged warning, never a refused create of code
         // that is perfectly good. Only a definite `failed` blocks a save.
         const smoke = config.smokeRenderArtifact;
+        // The render that validates the artifact is also the render that
+        // previews it: the same pass produces the loading-state markup the
+        // gallery draws, so a preview costs nothing beyond sanitizing it.
+        let preview: string | null = null;
         if (smoke) {
-          const smokeResult = yield* Effect.tryPromise(() => smoke(input.code)).pipe(
+          const smokeResult: ArtifactSmokeRenderResult = yield* Effect.tryPromise(() =>
+            smoke(input.code),
+          ).pipe(
             Effect.catchCause((cause) =>
               Effect.as(Effect.logWarning("create-artifact smoke render was unavailable", cause), {
                 status: "ok",
-              } as const),
+              } satisfies ArtifactSmokeRenderResult),
             ),
           );
           const renderRejection = smokeRenderRejection(smokeResult);
@@ -1583,11 +1592,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             yield* Effect.annotateCurrentSpan({ "mcp.artifact.smoke_render": "failed" });
             return renderRejectedResult(renderRejection);
           }
+          // Fail open, exactly as the verdict does: a preview that cannot be
+          // produced or cannot be sanitized is a card that falls back to its
+          // schematic, never a create that is refused.
+          preview =
+            smokeResult.status === "ok" && smokeResult.markup !== undefined
+              ? sanitizeArtifactPreviewMarkup(smokeResult.markup)
+              : null;
         }
 
         const saveInput = {
           code: input.code,
           title,
+          preview,
           ...(description === undefined ? {} : { description }),
           ...(existing === null ? {} : { existingId: existing.id }),
         };

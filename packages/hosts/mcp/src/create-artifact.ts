@@ -211,7 +211,19 @@ const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQu
  * resolve the module at all.
  */
 export type ArtifactSmokeRenderResult =
-  | { readonly status: "ok" }
+  | {
+      readonly status: "ok";
+      /**
+       * The markup the render produced, when it produced any within its cap.
+       *
+       * The smoke render is driven with a transport that never settles, so this
+       * is the artifact's LOADING state — its real composition with no data in
+       * it — which is what makes it storable as the gallery's layout preview.
+       * Absent whenever nothing could be concluded, and every reader treats
+       * absent as "fall back", never as "empty".
+       */
+      readonly markup?: string;
+    }
   | { readonly status: "failed"; readonly message: string; readonly componentStack?: string };
 
 /** The leading frames of a component stack: enough to locate the component that
