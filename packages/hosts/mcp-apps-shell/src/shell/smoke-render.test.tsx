@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { smokeRenderArtifact } from "./smoke-render";
+import { resetRuntimeEvaluationProbe, smokeRenderArtifact } from "./smoke-render";
 
 // The create-time render check. Each case is a shape a model actually writes;
 // the assertion is what the model would be told back.
@@ -112,6 +112,29 @@ describe("smokeRenderArtifact", () => {
       ].join("\n"),
     );
     expect(result).toEqual({ status: "ok" });
+  });
+
+  it("reports nothing on a runtime that forbids code generation", async () => {
+    // workerd (Cloudflare) refuses `new Function` outright. That says nothing
+    // about the artifact, so every create there must pass rather than be
+    // refused with an error about code the model did not write.
+    const realFunction = globalThis.Function;
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: reproducing workerd's own thrown message
+    const blocked = (() => {
+      throw new Error("Code generation from strings disallowed for this context");
+    }) as unknown as FunctionConstructor;
+    globalThis.Function = blocked;
+    resetRuntimeEvaluationProbe();
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the global must be restored whatever the assertion does
+    try {
+      // Anything at all, including code that certainly would not render.
+      expect(
+        await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }"),
+      ).toEqual({ status: "ok" });
+    } finally {
+      globalThis.Function = realFunction;
+      resetRuntimeEvaluationProbe();
+    }
   });
 
   it("reports a syntax error as a failure rather than throwing", async () => {

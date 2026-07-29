@@ -47,6 +47,17 @@
  * ChartTooltipContent, at BarChart, at App" is a fix; the message alone is a
  * search. The bytes are read and discarded; only the error matters.
  *
+ * ## Hosts that cannot evaluate at all
+ *
+ * The evaluator builds the component with `new Function`, which workerd refuses
+ * outright ("Code generation from strings disallowed for this context"). That is
+ * a property of the HOST, not of the artifact — every create on Cloudflare would
+ * otherwise be refused with an error about code the model did not write. So the
+ * environment is probed once, and where it cannot evaluate, the smoke render
+ * reports `ok` for everything: unavailable, not failed. (Executor already runs
+ * model code on workerd through QuickJS for the same reason; putting React
+ * inside that sandbox is a much larger change than this check is worth.)
+ *
  * ## Boundedness
  *
  * A render that throws is bounded by definition. A render that LOOPS is not,
@@ -76,6 +87,34 @@ export type SmokeRenderResult =
       readonly message: string;
       readonly componentStack?: string;
     };
+
+/**
+ * Whether this runtime can evaluate generated code at all.
+ *
+ * `new Function` is how `evaluateComponent` binds the ~280 provided globals, and
+ * workerd disallows runtime code generation. Probed with the smallest possible
+ * function rather than assumed from a runtime sniff, so a host is judged by what
+ * it actually permits. Computed once: the answer cannot change within a process.
+ */
+let canEvaluate: boolean | undefined;
+
+/** Clears the memoized probe. Exported for the test that simulates workerd's
+ *  refusal — a process only ever has one answer, so nothing else needs it. */
+export const resetRuntimeEvaluationProbe = (): void => {
+  canEvaluate = undefined;
+};
+
+const runtimeCanEvaluate = (): boolean => {
+  if (canEvaluate !== undefined) return canEvaluate;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing a runtime capability whose absence is thrown, not returned
+  try {
+    // oxlint-disable-next-line no-new-func -- boundary: this IS the capability probe for the evaluator's own `new Function`
+    canEvaluate = new Function("return 1")() === 1;
+  } catch {
+    canEvaluate = false;
+  }
+  return canEvaluate;
+};
 
 /** The QueryClient the inner renderer builds, to the same defaults. Retries and
  *  focus refetching are off there because an artifact's queries are proxied
@@ -120,6 +159,10 @@ const RENDER_DEADLINE_MS = 5_000;
  * still act on it.
  */
 export const smokeRenderArtifact = async (code: string): Promise<SmokeRenderResult> => {
+  // Nothing can be concluded on a host that refuses to evaluate at all, and
+  // "inconclusive" must never read as "broken". See the header.
+  if (!runtimeCanEvaluate()) return { status: "ok" };
+
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the whole purpose of this function is to convert a render throw into a value
   try {
     const compiled = compileJsx(code);
