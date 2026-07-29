@@ -198,6 +198,89 @@ const hookCalledInLoop = (code: string): string | undefined => {
 /** Hooks whose in-loop use is almost always hand-rolled cursor pagination. */
 const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQuery"]);
 
+// ---------------------------------------------------------------------------
+// Provider pairing
+// ---------------------------------------------------------------------------
+//
+// A handful of the components in scope read a React context that only their own
+// wrapper supplies, and throw outright when it is missing. `<ChartTooltipContent
+// />` outside a `<ChartContainer>` is the case this was written for: the
+// artifact saves, the row is fine, and then the page dies on first render with
+// `useChart must be used within a <ChartContainer />` — a failure the user sees
+// and the model never does.
+//
+// The check is a table, not an analysis. If a name that requires a wrapper
+// appears anywhere in the code and the wrapper's name appears nowhere, the code
+// cannot possibly be correct, so it is refused with the pairing spelled out.
+// That is deliberately weaker than the smoke render below (which catches the
+// same class properly, and much more): this pass is free, runs first, and gives
+// a message that names the fix rather than quoting a stack.
+//
+// Scope: `packages/react`'s components that `throw` on a missing context are
+// `useChart` (chart.tsx), `useCarousel` (carousel.tsx), `useFormField`
+// (form.tsx) and `useSidebar` (sidebar.tsx). Only the chart family is exported
+// from the shell's component barrel, so only it is listed. `Tooltip` needs a
+// `TooltipProvider` too, but the shell's inner renderer already wraps every
+// artifact in one, so requiring it here would refuse working code.
+
+/** Names whose presence obliges a wrapper, and the wrapper each one needs. */
+const PROVIDER_PAIRINGS: readonly {
+  readonly required: string;
+  readonly dependents: readonly string[];
+  readonly hint: string;
+}[] = [
+  {
+    required: "ChartContainer",
+    dependents: [
+      "useChart",
+      "ChartTooltip",
+      "ChartTooltipContent",
+      "ChartLegend",
+      "ChartLegendContent",
+    ],
+    hint: 'Wrap the chart in `<ChartContainer config={{ series: { label: "Series", color: "var(--chart-1)" } }} className="h-[240px] w-full">…</ChartContainer>`.',
+  },
+];
+
+/**
+ * Whether `name` is INVOKED — rendered as `<Name`, or called as `name(`.
+ *
+ * Deliberately narrower than "the word appears". JSX text is ordinary prose
+ * inside the source (`<CardContent>No ChartTooltipContent here</CardContent>`)
+ * and is not blanked by `withLiteralsBlanked`, because it is not a literal — so
+ * a bare-word match would refuse a component that merely names another one in
+ * its copy. Requiring a `<` or a `(` costs only the alias case
+ * (`const T = ChartTooltip`), which is a false negative, and false negatives are
+ * the side to err on: the smoke render below catches it anyway.
+ */
+const invokesName = (scannable: string, name: string): boolean =>
+  new RegExp(String.raw`<\s*${name}(?![\w$])|(?<![.\w$])${name}\s*\(`).test(scannable);
+
+/** Whether `name` appears at all as an identifier. Used for the WRAPPER side,
+ *  where a loose match is the safe direction: over-crediting a wrapper lets a
+ *  broken artifact through to the smoke render, while under-crediting one would
+ *  refuse working code. */
+const mentionsName = (scannable: string, name: string): boolean =>
+  new RegExp(String.raw`(?<![.\w$])${name}(?![\w$])`).test(scannable);
+
+/** The first pairing the code breaks, or `null`. Comments and string literals
+ *  are blanked first, so a name that only appears in a commented-out line
+ *  neither triggers a rejection nor satisfies one. */
+const providerPairingRejection = (code: string): string | null => {
+  const scannable = withLiteralsBlanked(code);
+  for (const pairing of PROVIDER_PAIRINGS) {
+    if (mentionsName(scannable, pairing.required)) continue;
+    const dependent = pairing.dependents.find((name) => invokesName(scannable, name));
+    if (!dependent) continue;
+    return [
+      `\`${dependent}\` only works inside a \`<${pairing.required}>\`, which this code never renders.`,
+      `It reads a React context that \`${pairing.required}\` provides, so it throws on the first render and the artifact shows an error instead of a UI.`,
+      pairing.hint,
+    ].join(" ");
+  }
+  return null;
+};
+
 /** `null` when the code may be rendered, otherwise the reason to hand back. */
 export const validateArtifactCode = (code: string): string | null => {
   // Checked first: a five-segment address is the mistake a model that only read
@@ -225,6 +308,9 @@ export const validateArtifactCode = (code: string): string | null => {
         : "Move the hook out of the loop, and derive per-item values from its result instead.",
     ].join(" ");
   }
+
+  const missingProvider = providerPairingRejection(code);
+  if (missingProvider) return missingProvider;
 
   if (REACT_DESTRUCTURING_DECLARATION.test(code)) {
     return [

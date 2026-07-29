@@ -224,7 +224,10 @@ describe("MCP host — artifact tool visibility", () => {
   it("registers no ui tools at all when no shell loader is configured", async () => {
     const store = makeArtifactStore();
     const mcpServer = await Effect.runPromise(
-      createExecutorMcpServer({ engine: makeStubEngine({}), artifacts: store.port }),
+      createExecutorMcpServer({
+        engine: makeStubEngine({}),
+        artifacts: store.port,
+      }),
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
@@ -244,7 +247,9 @@ describe("MCP host — artifact tool visibility", () => {
       makeStubEngine({}),
       APPS_CAPS,
       async (client) => {
-        const read = await client.readResource({ uri: MCP_APPS_SHELL_RESOURCE_URI });
+        const read = await client.readResource({
+          uri: MCP_APPS_SHELL_RESOURCE_URI,
+        });
         const [content] = read.contents;
         expect(content.mimeType).toBe(RESOURCE_MIME_TYPE);
         // Served as text, never as a blob.
@@ -280,7 +285,10 @@ describe("MCP host — create-artifact", () => {
             description: "Daily active users over time",
           },
         });
-        expect(structuredOf(result)).toEqual({ code: COUNTER_CODE, artifactId: "art_1" });
+        expect(structuredOf(result)).toEqual({
+          code: COUNTER_CODE,
+          artifactId: "art_1",
+        });
         expect(result.isError).toBeFalsy();
         expect(store.calls).toEqual([
           {
@@ -292,7 +300,10 @@ describe("MCP host — create-artifact", () => {
           },
         ]);
       },
-      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test") },
+      {
+        artifacts: store.port,
+        artifactUrl: artifactUrlFor("https://executor.test"),
+      },
     );
   });
 
@@ -317,7 +328,10 @@ describe("MCP host — create-artifact", () => {
         expect(store.calls).toHaveLength(1);
         expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
       },
-      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test") },
+      {
+        artifacts: store.port,
+        artifactUrl: artifactUrlFor("https://executor.test"),
+      },
     );
   });
 
@@ -338,7 +352,10 @@ describe("MCP host — create-artifact", () => {
         });
         expect(textOf(result)).toContain("https://executor.test/acme/artifacts/art_1");
       },
-      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test", "acme") },
+      {
+        artifacts: store.port,
+        artifactUrl: artifactUrlFor("https://executor.test", "acme"),
+      },
     );
   });
 
@@ -381,7 +398,10 @@ describe("MCP host — create-artifact", () => {
 
         const shadowed = await client.callTool({
           name: "create-artifact",
-          arguments: { code: "const Card = 1; function App(){ return null; }", title: "Bad" },
+          arguments: {
+            code: "const Card = 1; function App(){ return null; }",
+            title: "Bad",
+          },
         });
         expect(shadowed.isError).toBe(true);
         expect(textOf(shadowed)).toContain('Provided global "Card"');
@@ -619,6 +639,112 @@ describe("MCP host — create-artifact", () => {
       { artifacts: store.port },
     );
   });
+
+  // A chart primitive outside its provider is the create that used to succeed
+  // and then die on the page with `useChart must be used within a
+  // <ChartContainer />`. See `PROVIDER_PAIRINGS` in `create-artifact.ts`.
+
+  it("rejects a chart tooltip that is never wrapped in a ChartContainer", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ return <BarChart data={[]}><ChartTooltip content={<ChartTooltipContent />} /><Bar dataKey='n' /></BarChart>; }",
+            title: "Broken chart",
+          },
+        });
+        expect(result.isError).toBe(true);
+        const text = textOf(result);
+        expect(text).toContain("ChartTooltip");
+        expect(text).toContain("ChartContainer");
+        expect(store.calls).toEqual([]);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("accepts the same chart once a ChartContainer wraps it", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ return <ChartContainer config={{ n: { label: 'N' } }} className='h-[240px] w-full'><BarChart data={[]}><ChartTooltip content={<ChartTooltipContent />} /><Bar dataKey='n' /></BarChart></ChartContainer>; }",
+            title: "Working chart",
+          },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("does not count a ChartContainer that only appears in a comment or a string", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "// TODO: add a ChartContainer\nfunction App(){ return <ChartLegend content={<ChartLegendContent />} />; }",
+            title: "Still broken",
+          },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("ChartContainer");
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("leaves a chart-free artifact alone, including one that merely mentions charts in prose", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ return <Card><CardContent>No ChartTooltipContent here, just prose.</CardContent></Card>; }",
+            title: "Prose only",
+          },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls).toHaveLength(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("does not require a TooltipProvider, which the shell already supplies", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ return <Tooltip><TooltipTrigger>?</TooltipTrigger><TooltipContent>Help</TooltipContent></Tooltip>; }",
+            title: "Tooltip",
+          },
+        });
+        expect(result.isError).toBeFalsy();
+      },
+      { artifacts: store.port },
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -641,10 +767,17 @@ describe("MCP host — artifact retrieval", () => {
           },
         });
 
-        const listed = await client.callTool({ name: "list-artifacts", arguments: {} });
+        const listed = await client.callTool({
+          name: "list-artifacts",
+          arguments: {},
+        });
         expect(structuredOf(listed)).toMatchObject({
           artifacts: [
-            { id: "art_1", title: "Active users dashboard", description: "DAU over time" },
+            {
+              id: "art_1",
+              title: "Active users dashboard",
+              description: "DAU over time",
+            },
           ],
         });
         // The text form is what a model without structured-output support reads.
@@ -654,7 +787,10 @@ describe("MCP host — artifact retrieval", () => {
           name: "show-artifact",
           arguments: { id: "art_1" },
         });
-        expect(structuredOf(shown)).toEqual({ code: COUNTER_CODE, artifactId: "art_1" });
+        expect(structuredOf(shown)).toEqual({
+          code: COUNTER_CODE,
+          artifactId: "art_1",
+        });
       },
       { artifacts: store.port },
     );
@@ -663,20 +799,30 @@ describe("MCP host — artifact retrieval", () => {
   it("delivers a saved artifact as a deep link to clients without apps support", async () => {
     const store = makeArtifactStore();
     await Effect.runPromise(
-      store.port.save({ title: "Saved earlier", description: null, code: COUNTER_CODE }),
+      store.port.save({
+        title: "Saved earlier",
+        description: null,
+        code: COUNTER_CODE,
+      }),
     );
     await withClient(
       makeStubEngine({}),
       NO_APPS_CAPS,
       async (client) => {
-        const shown = await client.callTool({ name: "show-artifact", arguments: { id: "art_1" } });
+        const shown = await client.callTool({
+          name: "show-artifact",
+          arguments: { id: "art_1" },
+        });
         expect(structuredOf(shown)).toEqual({
           status: "fallback_url",
           url: "https://executor.test/artifacts/art_1",
           artifactId: "art_1",
         });
       },
-      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test") },
+      {
+        artifacts: store.port,
+        artifactUrl: artifactUrlFor("https://executor.test"),
+      },
     );
   });
 
@@ -691,7 +837,10 @@ describe("MCP host — artifact retrieval", () => {
           arguments: { id: "art_nope" },
         });
         expect(shown.isError).toBe(true);
-        expect(structuredOf(shown)).toMatchObject({ error: "artifact_not_found", id: "art_nope" });
+        expect(structuredOf(shown)).toMatchObject({
+          error: "artifact_not_found",
+          id: "art_nope",
+        });
         // The model is told how to recover.
         expect(textOf(shown)).toContain("list-artifacts");
       },
@@ -705,7 +854,10 @@ describe("MCP host — artifact retrieval", () => {
       makeStubEngine({}),
       APPS_CAPS,
       async (client) => {
-        const listed = await client.callTool({ name: "list-artifacts", arguments: {} });
+        const listed = await client.callTool({
+          name: "list-artifacts",
+          arguments: {},
+        });
         expect(listed.isError).toBeFalsy();
         expect(structuredOf(listed)).toEqual({ artifacts: [] });
         expect(textOf(listed)).toContain("No saved artifacts");
@@ -734,21 +886,35 @@ describe("MCP host — create-artifact update in place", () => {
       async (client) => {
         const created = await client.callTool({
           name: "create-artifact",
-          arguments: { code: COUNTER_CODE, title: "Draft", description: "First pass" },
+          arguments: {
+            code: COUNTER_CODE,
+            title: "Draft",
+            description: "First pass",
+          },
         });
         const artifactId = structuredOf(created).artifactId;
         expect(artifactId).toBe("art_1");
 
         const updated = await client.callTool({
           name: "create-artifact",
-          arguments: { code: UPDATED_CODE, title: "Active users dashboard", artifactId },
+          arguments: {
+            code: UPDATED_CODE,
+            title: "Active users dashboard",
+            artifactId,
+          },
         });
         expect(updated.isError).toBeFalsy();
         // Same id back, so the model (and the user's link) keeps addressing one
         // artifact.
-        expect(structuredOf(updated)).toEqual({ code: UPDATED_CODE, artifactId: "art_1" });
+        expect(structuredOf(updated)).toEqual({
+          code: UPDATED_CODE,
+          artifactId: "art_1",
+        });
 
-        const listed = await client.callTool({ name: "list-artifacts", arguments: {} });
+        const listed = await client.callTool({
+          name: "list-artifacts",
+          arguments: {},
+        });
         expect(structuredOf(listed)).toMatchObject({
           artifacts: [
             {
@@ -762,8 +928,14 @@ describe("MCP host — create-artifact update in place", () => {
         // One artifact, not two.
         expect((structuredOf(listed).artifacts as readonly unknown[]).length).toBe(1);
 
-        const shown = await client.callTool({ name: "show-artifact", arguments: { id: "art_1" } });
-        expect(structuredOf(shown)).toEqual({ code: UPDATED_CODE, artifactId: "art_1" });
+        const shown = await client.callTool({
+          name: "show-artifact",
+          arguments: { id: "art_1" },
+        });
+        expect(structuredOf(shown)).toEqual({
+          code: UPDATED_CODE,
+          artifactId: "art_1",
+        });
       },
       { artifacts: store.port },
     );
@@ -777,7 +949,11 @@ describe("MCP host — create-artifact update in place", () => {
       async (client) => {
         await client.callTool({
           name: "create-artifact",
-          arguments: { code: COUNTER_CODE, title: "Domains", description: "Every domain" },
+          arguments: {
+            code: COUNTER_CODE,
+            title: "Domains",
+            description: "Every domain",
+          },
         });
         const updated = await client.callTool({
           name: "create-artifact",
@@ -846,12 +1022,18 @@ describe("MCP host — create-artifact update in place", () => {
       async (client) => {
         const result = await client.callTool({
           name: "create-artifact",
-          arguments: { code: UPDATED_CODE, title: "Mine now", artifactId: "art_someone_else" },
+          arguments: {
+            code: UPDATED_CODE,
+            title: "Mine now",
+            artifactId: "art_someone_else",
+          },
         });
         expect(result.isError).toBe(true);
         // The same answer `execute-action` gives, so create-artifact cannot be
         // used to probe which ids exist.
-        expect(structuredOf(result)).toMatchObject({ error: "artifact_unavailable" });
+        expect(structuredOf(result)).toMatchObject({
+          error: "artifact_unavailable",
+        });
         expect(store.calls).toEqual([]);
       },
       { artifacts: store.port },
@@ -878,7 +1060,11 @@ describe("MCP host — create-artifact update in place", () => {
         // The role the NEW code introduces is inferred and persisted; the old
         // (empty) binding set is not carried forward.
         expect(store.calls[1]?.bindings).toEqual({
-          vercel: { integration: "vercel", owner: "user", connection: "personalVercel" },
+          vercel: {
+            integration: "vercel",
+            owner: "user",
+            connection: "personalVercel",
+          },
         });
       },
       {
@@ -908,7 +1094,11 @@ describe("MCP host — create-artifact update in place", () => {
         });
         expect(updated.isError).toBeFalsy();
         expect(store.calls[1]?.bindings).toEqual({
-          vercel: { integration: "vercel", owner: "org", connection: "teamVercel" },
+          vercel: {
+            integration: "vercel",
+            owner: "org",
+            connection: "teamVercel",
+          },
         });
       },
       {
@@ -941,7 +1131,10 @@ describe("MCP host — create-artifact update in place", () => {
           artifactId: "art_1",
         });
       },
-      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test") },
+      {
+        artifacts: store.port,
+        artifactUrl: artifactUrlFor("https://executor.test"),
+      },
     );
   });
 });
@@ -970,7 +1163,11 @@ describe("MCP host — create-artifact binding", () => {
         });
         expect(result.isError).toBeFalsy();
         expect(store.calls[0]?.bindings).toEqual({
-          vercel: { integration: "vercel", owner: "user", connection: "personalVercel" },
+          vercel: {
+            integration: "vercel",
+            owner: "user",
+            connection: "personalVercel",
+          },
         });
       },
       {
@@ -1022,7 +1219,11 @@ describe("MCP host — create-artifact binding", () => {
         });
         expect(result.isError).toBeFalsy();
         expect(store.calls[0]?.bindings).toEqual({
-          vercel: { integration: "vercel", owner: "org", connection: "workspaceVercel" },
+          vercel: {
+            integration: "vercel",
+            owner: "org",
+            connection: "workspaceVercel",
+          },
         });
       },
       {
@@ -1050,13 +1251,24 @@ describe("MCP host — create-artifact binding", () => {
               return <div/>;
             }`,
             title: "Issues",
-            connections: { prod: "linear.org.linearProd", staging: "linear.user.myLinear" },
+            connections: {
+              prod: "linear.org.linearProd",
+              staging: "linear.user.myLinear",
+            },
           },
         });
         expect(result.isError).toBeFalsy();
         expect(store.calls[0]?.bindings).toEqual({
-          prod: { integration: "linear", owner: "org", connection: "linearProd" },
-          staging: { integration: "linear", owner: "user", connection: "myLinear" },
+          prod: {
+            integration: "linear",
+            owner: "org",
+            connection: "linearProd",
+          },
+          staging: {
+            integration: "linear",
+            owner: "user",
+            connection: "myLinear",
+          },
         });
       },
       {
@@ -1176,7 +1388,9 @@ describe("MCP host — execute-action binding resolution", () => {
     const { result, executed } = await runBoundAction({
       code: VERCEL_ARTIFACT,
       available: [conn("vercel", "user", "personalVercel")],
-      action: { code: 'return await tools.vercel.domains.getDomains({"limit":100})' },
+      action: {
+        code: 'return await tools.vercel.domains.getDomains({"limit":100})',
+      },
     });
     expect(result.isError).toBeFalsy();
     expect(executed).toEqual([
@@ -1191,7 +1405,10 @@ describe("MCP host — execute-action binding resolution", () => {
       return <div/>;
     }`;
     const available = [conn("linear", "org", "linearProd"), conn("linear", "user", "myLinear")];
-    const connections = { prod: "linear.org.linearProd", staging: "linear.user.myLinear" };
+    const connections = {
+      prod: "linear.org.linearProd",
+      staging: "linear.user.myLinear",
+    };
 
     const prod = await runBoundAction({
       code: roleCode,
@@ -1232,11 +1449,15 @@ describe("MCP host — execute-action binding resolution", () => {
     const { result, executed } = await runBoundAction({
       code: VERCEL_ARTIFACT,
       available: [conn("vercel", "user", "personalVercel")],
-      action: { code: 'return await tools.vercel.domains.getDomains({"limit":100})' },
+      action: {
+        code: 'return await tools.vercel.domains.getDomains({"limit":100})',
+      },
       artifactIdOverride: "art_someone_else",
     });
     expect(result.isError).toBe(true);
-    expect(structuredOf(result)).toMatchObject({ error: "artifact_unavailable" });
+    expect(structuredOf(result)).toMatchObject({
+      error: "artifact_unavailable",
+    });
     expect(executed).toEqual([]);
   });
 
@@ -1316,7 +1537,10 @@ describe("MCP host — execute-action", () => {
       resume: (executionId, response) =>
         Effect.succeed(
           executionId === "exec_app"
-            ? { status: "completed", result: { result: `action:${response.action}` } }
+            ? {
+                status: "completed",
+                result: { result: `action:${response.action}` },
+              }
             : null,
         ),
     });
@@ -1348,7 +1572,11 @@ describe("MCP host — execute-action", () => {
 
         const resumed = await client.callTool({
           name: "execute-action-resume",
-          arguments: { executionId: "exec_app", action: "accept", content: "{}" },
+          arguments: {
+            executionId: "exec_app",
+            action: "accept",
+            content: "{}",
+          },
         });
         expect(resumed.content).toEqual([{ type: "text", text: "action:accept" }]);
       },
@@ -1397,7 +1625,9 @@ describe("MCP host — execute-action", () => {
           });
           expect(rejected.isError, code).toBe(true);
           expect(textOf(rejected)).toContain("execute-action accepts a single tool call");
-          expect(structuredOf(rejected)).toMatchObject({ error: "invalid_action_code" });
+          expect(structuredOf(rejected)).toMatchObject({
+            error: "invalid_action_code",
+          });
         }
 
         // Nothing rejected ever reached the engine.
