@@ -51,6 +51,21 @@ export const readElicitationMode = (request: Request): McpElicitationMode => {
   return "model";
 };
 
+const FALSE_QUERY_VALUES = new Set(["0", "false", "no", "off"]);
+
+/**
+ * Read the artifacts opt-out off an MCP request's `?artifacts=` query.
+ * Artifacts are on by default, so a clean endpoint URL keeps the full surface;
+ * only an explicit false value (`?artifacts=false`) turns it off. A session
+ * that opts out gets no artifact tools, no `ui://` shell resource, and no
+ * artifact skills — as if the host had never been configured for them.
+ */
+export const readArtifactsEnabled = (request: Request): boolean => {
+  const value = new URL(request.url).searchParams.get("artifacts");
+  if (value === null) return true;
+  return !FALSE_QUERY_VALUES.has(value.toLowerCase());
+};
+
 /**
  * Build the console approval URL for a paused execution:
  * `<origin>/<organizationSlug>/resume/<executionId>?mcp_session_id=<sessionId>`

@@ -213,6 +213,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         userId: token.userId,
         resource: token.resource,
         elicitationMode: token.elicitationMode,
+        artifactsEnabled: token.artifactsEnabled,
       } satisfies SessionMeta;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
@@ -263,6 +264,8 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         description,
         artifacts: executor.artifacts,
         connections: executor.connections,
+        // Absent on sessions minted before the opt-out existed, which means on.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
         loadAppShellHtml: loadMcpAppsShellHtml,
         smokeRenderArtifact,
         artifactUrl: artifactUrlFor(

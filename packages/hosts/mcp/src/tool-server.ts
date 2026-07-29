@@ -40,8 +40,10 @@ import {
   formatTtlDuration,
   findSkill,
   renderSkillsIndex,
+  skillCatalogFor,
   EXECUTE_SKILL,
   INTEGRATION_INVENTORY_HEADER,
+  type Skill,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ResumeResponse,
@@ -153,6 +155,14 @@ type SharedMcpServerConfig = {
    * that leave it unset simply don't register the resource or the ui tools.
    */
   readonly loadAppShellHtml?: () => Promise<string>;
+  /**
+   * Per-connection artifacts opt-out. Defaults to true. A client that connects
+   * with `?artifacts=false` gets NO artifact surface at all: none of the five
+   * artifact tools, no `ui://` shell resource, and no artifact entries in the
+   * `skills` inventory — the same shape a host without `loadAppShellHtml`
+   * serves. `execute`, `skills` and `resume` are untouched.
+   */
+  readonly artifactsEnabled?: boolean;
   /**
    * Renders an artifact once, server-side, before it is saved — so a component
    * that throws on its first render is refused at create time with the real
@@ -714,15 +724,25 @@ const fallbackOutcomeResult = (
 // The `execute` skill also gets the live integration inventory appended, the
 // same block the execute tool description carries, so a model reading the guide
 // sees what is connected without a second round trip.
-const skillsResult = (name: string | undefined, executeInventory: string): McpToolResult => {
+//
+// The catalog is per-session: a connection that opted out of artifacts never
+// sees the artifact skills, so the index cannot advertise a how-to for tools it
+// does not have, and fetching one by name misses like any unknown skill.
+const skillsResult = (
+  name: string | undefined,
+  executeInventory: string,
+  catalog: readonly Skill[],
+): McpToolResult => {
   const trimmed = name?.trim();
   if (!trimmed) {
-    return { content: [{ type: "text", text: renderSkillsIndex() }] };
+    return { content: [{ type: "text", text: renderSkillsIndex(catalog) }] };
   }
-  const skill = findSkill(trimmed);
+  const skill = findSkill(trimmed, catalog);
   if (!skill) {
     return {
-      content: [{ type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex()}` }],
+      content: [
+        { type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex(catalog)}` },
+      ],
       isError: true,
     };
   }
@@ -976,6 +996,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // The same live integration inventory the description carries, re-used by
     // the `skills` tool so the `execute` guide lists what is connected too.
     const executeInventory = extractInventory(description);
+    // Artifacts are on unless this connection opted out (`?artifacts=false`).
+    // One flag decides the whole surface: the tools, the shell resource, and
+    // the skills catalog below.
+    const artifactsEnabled = config.artifactsEnabled ?? true;
+    const skillCatalog: readonly Skill[] = skillCatalogFor({ artifacts: artifactsEnabled });
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -1401,7 +1426,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               .describe('The skill to fetch, e.g. "execute". Omit to list available skills.'),
           },
         },
-        ({ name }) => runToolEffect(Effect.succeed(skillsResult(name, executeInventory))),
+        ({ name }) =>
+          runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog))),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -1674,7 +1700,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
 
-    const loadAppShellHtml = config.loadAppShellHtml;
+    // Two independent reasons to serve no artifact surface: the host cannot
+    // (no shell loader), or this connection asked not to (`?artifacts=false`).
+    // Either way nothing below registers, so a disabled session is byte-for-byte
+    // a session on a host that never had artifacts.
+    const loadAppShellHtml = artifactsEnabled ? config.loadAppShellHtml : undefined;
 
     if (loadAppShellHtml) {
       yield* Effect.sync(() => {

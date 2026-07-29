@@ -40,6 +40,9 @@ export interface McpSessionInit {
   readonly organizationId: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
+  /** Whether this session serves artifacts, read off `?artifacts=` at connect
+   *  time. Absent means the default (enabled). */
+  readonly artifactsEnabled?: boolean;
   /** The MCP resource the session was minted against (`/mcp` default vs a
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
@@ -97,7 +100,11 @@ export interface SessionMeta {
    * Pins browser-handoff URLs to the right org's console. */
   readonly organizationSlug?: string;
   readonly userId: string;
-  readonly elicitationMode?: "browser" | "model" | "native";
+  readonly elicitationMode?: McpElicitationMode;
+  /** Whether the session serves artifacts (carried from {@link McpSessionInit}).
+   *  Absent — including for sessions persisted before the opt-out existed —
+   *  means enabled. */
+  readonly artifactsEnabled?: boolean;
   /** The MCP resource the session serves (carried from {@link McpSessionInit});
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;

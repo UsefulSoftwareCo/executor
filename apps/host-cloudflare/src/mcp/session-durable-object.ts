@@ -103,6 +103,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       userId: token.userId,
       resource: token.resource,
       elicitationMode: token.elicitationMode,
+      artifactsEnabled: token.artifactsEnabled,
     } satisfies SessionMeta);
   }
 
@@ -135,6 +136,8 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         engine,
         artifacts: executor.artifacts,
         connections: executor.connections,
+        // Absent on sessions minted before the opt-out existed, which means on.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
         loadAppShellHtml: loadMcpAppsShellHtml,
         smokeRenderArtifact,
         ...(artifactOrigin

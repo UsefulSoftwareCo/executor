@@ -608,16 +608,30 @@ export const SKILLS: readonly Skill[] = [
   ARTIFACT_STYLE_SKILL,
 ];
 
-/** Look up a skill by its exact name. */
-export const findSkill = (name: string): Skill | undefined =>
-  SKILLS.find((skill) => skill.name === name);
+/** The skills that only make sense when the session serves artifacts. A
+ *  connection that opted out of artifacts (`?artifacts=false`) has no tool to
+ *  apply them to, so they are dropped from its catalog rather than served as
+ *  guidance for a surface it cannot reach. */
+const ARTIFACT_SKILLS: ReadonlySet<Skill> = new Set([CREATE_ARTIFACT_SKILL, ARTIFACT_STYLE_SKILL]);
+
+/**
+ * The catalog a single session sees. Artifacts on (the default) is the full
+ * {@link SKILLS} list; artifacts off drops the artifact skills so the index
+ * never advertises a doc for tools this connection does not have.
+ */
+export const skillCatalogFor = (options: { readonly artifacts: boolean }): readonly Skill[] =>
+  options.artifacts ? SKILLS : SKILLS.filter((skill) => !ARTIFACT_SKILLS.has(skill));
+
+/** Look up a skill by its exact name within a session's catalog. */
+export const findSkill = (name: string, catalog: readonly Skill[] = SKILLS): Skill | undefined =>
+  catalog.find((skill) => skill.name === name);
 
 /** The index the `skills` tool returns when called without a name (or with an
  *  unknown one): every skill's name and one-line summary, plus how to fetch
  *  the body. */
-export const renderSkillsIndex = (): string =>
+export const renderSkillsIndex = (catalog: readonly Skill[] = SKILLS): string =>
   [
     'Available skills. Fetch one with `skills({ name: "<name>" })`.',
     "",
-    ...SKILLS.map((skill) => `- \`${skill.name}\` — ${skill.summary}`),
+    ...catalog.map((skill) => `- \`${skill.name}\` — ${skill.summary}`),
   ].join("\n");

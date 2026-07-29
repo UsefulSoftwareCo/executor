@@ -766,3 +766,59 @@ function App() {
     );
   }),
 );
+
+// The opt-out. Artifacts are on by default, but a user who does not want
+// generated UI can say so on the endpoint URL — `?artifacts=false` — and that
+// connection gets no artifact surface at all: no artifact tools, and no
+// artifact entries in the `skills` inventory to point a model at tools it does
+// not have. The proof is comparative: two sessions, same identity, same server,
+// differing only in that query.
+scenario(
+  "Artifacts · a session connected with artifacts=false sees no artifact surface",
+  { timeout: 120_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+
+    const identity = yield* target.newIdentity();
+    const optedOut = mcp.session(identity, { artifacts: false });
+    const defaultSession = mcp.session(identity);
+
+    const ARTIFACT_TOOLS = [
+      "create-artifact",
+      "list-artifacts",
+      "show-artifact",
+      "execute-action",
+      "execute-action-resume",
+    ] as const;
+
+    const optedOutTools = yield* optedOut.listTools();
+    for (const tool of ARTIFACT_TOOLS) {
+      expect(optedOutTools, `${tool} is withheld from an opted-out session`).not.toContain(tool);
+    }
+    // Only artifacts are withheld — the connection is otherwise a normal one.
+    expect(optedOutTools, "execute still works on an opted-out session").toContain("execute");
+    expect(optedOutTools, "skills still works on an opted-out session").toContain("skills");
+
+    const optedOutSkills = yield* optedOut.call("skills", {});
+    expect(optedOutSkills.ok, `the skills index came back: ${optedOutSkills.text}`).toBe(true);
+    expect(optedOutSkills.text, "the index still offers the execute skill").toContain("`execute`");
+    expect(
+      optedOutSkills.text,
+      "the index does not advertise a how-to for a tool this session lacks",
+    ).not.toContain("`create-artifact`");
+    expect(optedOutSkills.text, "nor the artifact style guide").not.toContain("`artifact-style`");
+
+    // The control: the same identity against the same server, without the
+    // query, still gets everything. Without this the assertions above would
+    // also pass on a server that had simply lost artifacts.
+    const defaultTools = yield* defaultSession.listTools();
+    for (const tool of ["create-artifact", "list-artifacts", "show-artifact"] as const) {
+      expect(defaultTools, `${tool} is present by default`).toContain(tool);
+    }
+    const defaultSkills = yield* defaultSession.call("skills", {});
+    expect(defaultSkills.text, "the default index offers the create-artifact skill").toContain(
+      "`create-artifact`",
+    );
+  }),
+);

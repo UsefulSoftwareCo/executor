@@ -1337,13 +1337,18 @@ const runBackgroundDaemonStart = (input: {
 // Stdio MCP session: a pure stdio <-> HTTP bridge to the owning local daemon.
 // ---------------------------------------------------------------------------
 
-const mcpUrlForActiveLocalServer = (
-  connection: ExecutorServerConnection,
-  elicitationMode: "browser" | "model",
-): URL => {
-  const url = new URL("/mcp", connection.origin);
-  if (elicitationMode === "browser") {
+const mcpUrlForActiveLocalServer = (input: {
+  readonly connection: ExecutorServerConnection;
+  readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
+}): URL => {
+  const url = new URL("/mcp", input.connection.origin);
+  if (input.elicitationMode === "browser") {
     url.searchParams.set("elicitation_mode", "browser");
+  }
+  // Only the opt-out is spelled out; the default endpoint stays clean.
+  if (!input.artifacts) {
+    url.searchParams.set("artifacts", "false");
   }
   return url;
 };
@@ -1359,11 +1364,16 @@ const mcpUrlForActiveLocalServer = (
 const runMcpHttpBridge = async (input: {
   readonly manifest: ExecutorLocalServerManifest;
   readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
 }): Promise<void> => {
   const stdio = new StdioServerTransport();
   const authorization = getExecutorServerAuthorizationHeader(input.manifest.connection);
   const http = new StreamableHTTPClientTransport(
-    mcpUrlForActiveLocalServer(input.manifest.connection, input.elicitationMode),
+    mcpUrlForActiveLocalServer({
+      connection: input.manifest.connection,
+      elicitationMode: input.elicitationMode,
+      artifacts: input.artifacts,
+    }),
     authorization ? { requestInit: { headers: { Authorization: authorization } } } : undefined,
   );
 
@@ -1438,7 +1448,10 @@ const runMcpHttpBridge = async (input: {
   }
 };
 
-const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
+const runStdioMcpSession = (input: {
+  readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
+}) =>
   Effect.gen(function* () {
     // `executor mcp` never owns the local database. If a local server is already
     // running, bridge this stdio client to it; otherwise ensure a durable
@@ -1450,7 +1463,11 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
     const active = yield* readActiveLocalServerManifest();
     if (active) {
       yield* Effect.promise(() =>
-        runMcpHttpBridge({ manifest: active, elicitationMode: input.elicitationMode }),
+        runMcpHttpBridge({
+          manifest: active,
+          elicitationMode: input.elicitationMode,
+          artifacts: input.artifacts,
+        }),
       );
       return;
     }
@@ -1472,7 +1489,11 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
       );
     }
     yield* Effect.promise(() =>
-      runMcpHttpBridge({ manifest: elected, elicitationMode: input.elicitationMode }),
+      runMcpHttpBridge({
+        manifest: elected,
+        elicitationMode: input.elicitationMode,
+        artifacts: input.artifacts,
+      }),
     );
   });
 
@@ -2781,11 +2802,18 @@ const mcpCommand = Command.make(
           "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",
         ),
       ),
+    noArtifacts: Options.boolean("no-artifacts")
+      .pipe(Options.withDefault(false))
+      .pipe(
+        Options.withDescription(
+          "Serve no artifact surface on this connection: the artifact tools, the app shell resource, and the artifact skills are all withheld.",
+        ),
+      ),
   },
-  ({ scope, elicitationMode }) =>
+  ({ scope, elicitationMode, noArtifacts }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runStdioMcpSession({ elicitationMode });
+      yield* runStdioMcpSession({ elicitationMode, artifacts: !noArtifacts });
     }),
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 

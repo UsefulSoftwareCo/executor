@@ -267,3 +267,10 @@ of surfacing a raw MCP error.
 - Sharing will revisit both halves: a shared artifact executing tools with the
   viewer's connections needs the trust story in "Trust note" settled first, and
   don't-ask-again grants must not survive a change of artifact owner.
+
+## Opt-out
+
+A connection can decline the whole feature: `?artifacts=false` on the MCP
+endpoint (`--no-artifacts` on the stdio CLI) serves no artifact tools, no
+`ui://` shell resource, and no artifact skills for that session. On by default;
+the install card's Advanced section carries the toggle.

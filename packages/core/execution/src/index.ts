@@ -18,6 +18,7 @@ export {
   SKILLS,
   findSkill,
   renderSkillsIndex,
+  skillCatalogFor,
   type Skill,
 } from "./skills";
 export { PROVIDED_GLOBAL_NAMES } from "./provided-globals";

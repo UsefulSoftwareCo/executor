@@ -16,6 +16,7 @@ import {
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 import type { BindableConnection } from "./artifact-bindings";
+import { readArtifactsEnabled } from "./browser-approval";
 import { MCP_APPS_SHELL_RESOURCE_URI, artifactUrlFor } from "./create-artifact";
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
 
@@ -247,6 +248,95 @@ describe("MCP host — artifact tool visibility", () => {
     expect(names).not.toContain("list-artifacts");
     await clientTransport.close();
     await serverTransport.close();
+  });
+
+  // A session that connected with `?artifacts=false` gets no artifact surface
+  // at all. The host here is fully artifact-capable — shell loader, store, the
+  // apps client capability — so what these assert is the opt-out itself, not a
+  // host that never had artifacts.
+  it("registers no artifact tools when the connection opted out", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const names = await toolNames(client);
+        expect(names).not.toContain("create-artifact");
+        expect(names).not.toContain("list-artifacts");
+        expect(names).not.toContain("show-artifact");
+        expect(names).not.toContain("execute-action");
+        expect(names).not.toContain("execute-action-resume");
+        // The rest of the surface is untouched.
+        expect(names).toContain("execute");
+        expect(names).toContain("skills");
+        expect(names).toContain("resume");
+      },
+      { artifacts: store.port, artifactsEnabled: false },
+    );
+  });
+
+  // Nothing serves the shell, so there is nothing for a rendered app to load.
+  // The read is what proves it: with no resource registered at all, the SDK
+  // does not install a resources handler either, so `resources/list` itself is
+  // unavailable — the same shape a host without a shell loader has always had.
+  it("serves no shell resource when the connection opted out", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await expect(client.readResource({ uri: MCP_APPS_SHELL_RESOURCE_URI })).rejects.toThrow();
+      },
+      { artifacts: store.port, artifactsEnabled: false },
+    );
+  });
+
+  it("drops the artifact skills from an opted-out session's inventory", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const index = textOf(await client.callTool({ name: "skills", arguments: {} }));
+        expect(index).toContain("`execute`");
+        expect(index).not.toContain("`create-artifact`");
+        expect(index).not.toContain("`artifact-style`");
+
+        // Asking for one by name misses like any unknown skill rather than
+        // erroring differently — the model just sees it is not on offer.
+        const fetched = await client.callTool({
+          name: "skills",
+          arguments: { name: "create-artifact" },
+        });
+        expect(fetched.isError).toBe(true);
+        expect(textOf(fetched)).toContain('No skill named "create-artifact"');
+      },
+      { artifacts: store.port, artifactsEnabled: false },
+    );
+  });
+
+  it("keeps the full artifact surface on a default session", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const names = await toolNames(client);
+        expect(names).toContain("create-artifact");
+        expect(names).toContain("list-artifacts");
+        expect(names).toContain("show-artifact");
+        expect(names).toContain("execute-action");
+        expect(names).toContain("execute-action-resume");
+
+        const uris = (await client.listResources()).resources.map((resource) => resource.uri);
+        expect(uris).toContain(MCP_APPS_SHELL_RESOURCE_URI);
+
+        const index = textOf(await client.callTool({ name: "skills", arguments: {} }));
+        expect(index).toContain("`create-artifact`");
+        expect(index).toContain("`artifact-style`");
+      },
+      { artifacts: store.port },
+    );
   });
 
   it("serves the shell as an MCP-Apps resource with a zero-domain CSP", async () => {
@@ -1819,6 +1909,34 @@ describe("artifactUrlFor", () => {
       expect(artifactUrlFor("https://executor.sh", slug)("art_1")).toBe(
         "https://executor.sh/artifacts/art_1",
       );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The `?artifacts=` endpoint query
+// ---------------------------------------------------------------------------
+
+describe("artifacts opt-out query", () => {
+  const read = (query: string) =>
+    readArtifactsEnabled(new Request(`https://executor.example/mcp${query}`));
+
+  it("keeps artifacts on for a clean endpoint", () => {
+    expect(read("")).toBe(true);
+    expect(read("?elicitation_mode=browser")).toBe(true);
+  });
+
+  it("turns artifacts off for the documented false values", () => {
+    for (const value of ["false", "FALSE", "0", "no", "off"]) {
+      expect(read(`?artifacts=${value}`)).toBe(false);
+    }
+  });
+
+  // Anything else reads as "present and not a disable", so a typo cannot
+  // silently strip a surface the user never asked to lose.
+  it("keeps artifacts on for any other value", () => {
+    for (const value of ["true", "1", "yes", "flase", ""]) {
+      expect(read(`?artifacts=${value}`)).toBe(true);
     }
   });
 });

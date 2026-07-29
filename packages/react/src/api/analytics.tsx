@@ -153,6 +153,7 @@ export interface AnalyticsEvents {
   };
   mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
+  mcp_install_artifacts_toggled: { artifacts: boolean };
 
   // ── Command palette ──────────────────────────────────────────────────────
   command_palette_navigated: {
