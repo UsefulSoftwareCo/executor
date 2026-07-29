@@ -41,13 +41,6 @@ class ArtifactActionError extends Schema.TaggedErrorClass<ArtifactActionError>()
 }
 
 /**
- * Parse and bind one artifact-originated call, or fail with something the shell
- * can render inside the component that made it.
- *
- * The artifact is read through the request's own scoped executor, so an id that
- * isn't this caller's simply doesn't resolve.
- */
-/**
  * An approval that expired before the human answered.
  *
  * Distinct from `ExecutionNotFoundError` (an id that was never ours) so the
@@ -67,6 +60,13 @@ class ApprovalExpiredError extends Schema.TaggedErrorClass<ApprovalExpiredError>
   }
 }
 
+/**
+ * Parse and bind one artifact-originated call, or fail with something the shell
+ * can render inside the component that made it.
+ *
+ * The artifact is read through the request's own scoped executor, so an id that
+ * isn't this caller's simply doesn't resolve.
+ */
 const resolveArtifactCode = (
   code: string,
   artifactId: string,
