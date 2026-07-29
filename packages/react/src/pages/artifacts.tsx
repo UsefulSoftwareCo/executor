@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { toast } from "sonner";
-import type { ArtifactId } from "@executor-js/sdk/shared";
+import type { ArtifactId, ArtifactPreview as ArtifactPreviewValue } from "@executor-js/sdk/shared";
 
 import { trackEvent } from "../api/analytics";
 import {
@@ -32,11 +32,13 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 import { formatRelativeTime } from "../lib/relative-time";
 import { RenameArtifactDialog } from "./artifact-rename-dialog";
 
-/** The wire row `artifacts.list` returns — no `code`, so the list stays cheap. */
+/** The wire row `artifacts.list` returns — no `code`, so the list stays cheap.
+ *  The preview is the exception: the gallery is what draws it. */
 interface ArtifactSummary {
   readonly id: ArtifactId;
   readonly title: string;
   readonly description: string | null;
+  readonly preview: ArtifactPreviewValue | null;
   readonly updatedAt: number;
 }
 
@@ -87,7 +89,7 @@ function ArtifactCard(props: {
       {/* 16:10 preview, on its own plane, separated by the same hairline the
           rest of the console uses. */}
       <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-muted/40">
-        <ArtifactPreview artifactId={artifact.id} />
+        <ArtifactPreview artifactId={artifact.id} preview={artifact.preview} />
       </div>
 
       <div className="flex min-w-0 flex-col gap-1 px-4 py-3">
