@@ -47,6 +47,9 @@ export interface HttpShellHost {
   }) => Promise<ShellToolResult>;
   readonly getHostContext: () => { readonly theme: "light" | "dark" } | undefined;
   readonly openLink: (params: { url: string }) => Promise<unknown>;
+  /** Store a settled-render snapshot as the artifact's gallery preview.
+   *  Best-effort: failures are swallowed, since the layout preview remains. */
+  readonly savePreview: (artifactId: string, preview: string) => void;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -139,6 +142,25 @@ export const createHttpShellHost = (options?: {
 
   return {
     getHostContext: () => ({ theme: prefersDark() ? "dark" : "light" }),
+
+    /**
+     * Store a snapshot of the settled render as the artifact's gallery preview.
+     *
+     * Best-effort in every direction: a failure is swallowed, because the card
+     * already has a layout preview to fall back on and a viewer who merely
+     * opened an artifact has done nothing that deserves an error. Supplying
+     * this at all is what tells the shell it may capture — see `savePreview` on
+     * `McpAppsShellHost`.
+     */
+    savePreview: (artifactId: string, preview: string): void => {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      const authorization = getExecutorServerAuthorizationHeader();
+      if (authorization) headers.authorization = authorization;
+      void doFetch(
+        `${getExecutorApiBaseUrl()}/artifacts/${encodeURIComponent(artifactId)}/preview`,
+        { method: "PUT", headers, body: JSON.stringify({ preview }) },
+      ).catch(() => undefined);
+    },
 
     openLink: async ({ url }) => {
       globalThis.window?.open(url, "_blank", "noopener,noreferrer");

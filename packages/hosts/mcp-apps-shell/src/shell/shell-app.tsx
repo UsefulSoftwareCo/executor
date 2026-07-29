@@ -57,6 +57,17 @@ type RendererState = {
   height: number;
 };
 
+/**
+ * The host call that stores a settled-render snapshot.
+ *
+ * Not an MCP tool the server advertises — it is answered by the CONSOLE's host
+ * implementation, which turns it into `PUT /artifacts/:id/preview`. It rides the
+ * `callServerTool` seam because that seam already exists in every host, and a
+ * host that does not implement this name simply rejects the call, which is
+ * exactly the fail-quiet behaviour a preview upgrade should have.
+ */
+export const SAVE_ARTIFACT_PREVIEW_TOOL = "executor-save-artifact-preview";
+
 type RendererRequest =
   | {
       type: "executor.toolCall";
@@ -69,7 +80,20 @@ type RendererRequest =
   | { type: "executor.renderer.ready"; token: string }
   | { type: "executor.renderer.config"; token: string; config: unknown }
   | { type: "executor.renderer.size"; token: string; height: unknown }
-  | { type: "executor.renderer.error"; token: string; message: unknown };
+  | { type: "executor.renderer.error"; token: string; message: unknown }
+  | { type: "executor.renderer.preview"; token: string; preview: unknown };
+
+/**
+ * Whether this host wants a preview snapshot captured.
+ *
+ * Advertised by the console through `McpUiHostContext`'s open index signature,
+ * which is the spec's own forward-compatibility seam. Absent everywhere else —
+ * a real MCP client has nowhere to put a preview — and absent means the inner
+ * frame never rasterizes anything, so the cost is not paid where it cannot pay
+ * off.
+ */
+const hostContextAllowsPreviewCapture = (ctx: McpUiHostContext | undefined): boolean =>
+  ctx?.["executorPreviewCapture"] === true;
 
 // ---------------------------------------------------------------------------
 // Theme application from MCP Apps host context
@@ -318,6 +342,11 @@ export function McpAppsShell({
   const pendingInteractionRef = useRef<PendingInteraction | null>(null);
   const rendererFrameRef = useRef<HTMLIFrameElement | null>(null);
   const rendererRef = useRef<RendererState | null>(null);
+  // Whether the embedding host can store a preview snapshot. Held in a ref
+  // because the renderer message handler is built once and must not be rebuilt
+  // when the context changes.
+  const capturePreviewRef = useRef(false);
+  capturePreviewRef.current = hostContextAllowsPreviewCapture(hostContext);
 
   useEffect(() => {
     rendererRef.current = renderer;
@@ -394,6 +423,11 @@ export function McpAppsShell({
           type: "executor.render",
           code: current.code,
           theme: hostContext?.theme,
+          // Only the console advertises somewhere to put a preview. Passing the
+          // capability down rather than letting the frame guess keeps the inner
+          // renderer host-agnostic: under a real MCP client this is absent and
+          // no capture work happens at all.
+          capturePreview: capturePreviewRef.current,
         });
         return;
       }
@@ -420,6 +454,28 @@ export function McpAppsShell({
       if (data.type === "executor.renderer.error") {
         if (typeof data.message === "string") {
           console.error("[executor-shell] Renderer error:", data.message);
+        }
+        return;
+      }
+
+      if (data.type === "executor.renderer.preview") {
+        // Relay outward and forget. The picture is a nicety: nothing here waits
+        // on it, retries it, or reports its failure to the user. It travels over
+        // the same `callServerTool` seam as every other host call rather than a
+        // bespoke channel, and only to a host that asked for it.
+        const artifactId = artifactIdRef.current;
+        if (
+          capturePreviewRef.current &&
+          artifactId !== undefined &&
+          typeof data.preview === "string" &&
+          data.preview.startsWith("data:image/")
+        ) {
+          void app
+            .callServerTool({
+              name: SAVE_ARTIFACT_PREVIEW_TOOL,
+              arguments: { artifactId, preview: data.preview },
+            })
+            .catch(() => undefined);
         }
         return;
       }

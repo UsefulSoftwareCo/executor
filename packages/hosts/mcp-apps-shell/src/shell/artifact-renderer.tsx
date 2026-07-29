@@ -11,6 +11,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ArtifactRendererProps } from "@executor-js/react/api/artifact-renderer";
 
 import shellHtmlUrl from "virtual:executor-mcp-apps-shell-html";
+import { SAVE_ARTIFACT_PREVIEW_TOOL } from "./shell-app";
 
 /**
  * Hosts the MCP-Apps shell on the console's artifact page.
@@ -55,6 +56,8 @@ type HttpShellHost = {
   }) => Promise<CallToolResult>;
   readonly getHostContext: () => { readonly theme: "light" | "dark" } | undefined;
   readonly openLink: (params: { url: string }) => Promise<unknown>;
+  /** Store a settled-render snapshot as this artifact's gallery preview. */
+  readonly savePreview: (artifactId: string, preview: string) => void;
 };
 
 /** The frame height before the app has reported its content size. Tall enough
@@ -79,6 +82,11 @@ const hostContextFor = (theme: "light" | "dark"): McpUiHostContext => ({
   displayMode: "inline",
   availableDisplayModes: ["inline"],
   platform: "web",
+  // The console is the one host with somewhere to put a preview, so it is the
+  // one host that asks for one. Carried on the spec's open index signature,
+  // which is what it exists for; every other host omits it and the shell
+  // skips the capture entirely.
+  executorPreviewCapture: true,
 });
 
 export default function ArtifactShell(props: ArtifactRendererProps) {
@@ -202,11 +210,24 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       setHeight(Math.max(MIN_FRAME_HEIGHT, Math.ceil(params.height)));
     };
 
-    bridge.oncalltool = (params) =>
-      hostRef.current.callServerTool({
+    bridge.oncalltool = (params) => {
+      // The shell's preview upgrade is not a server tool; it is this host's own
+      // call, answered here. Intercepted before the tool transport so it never
+      // reaches `/executions` — a snapshot is not an execution and must not be
+      // metered, approved or logged as one.
+      if (params.name === SAVE_ARTIFACT_PREVIEW_TOOL) {
+        const artifactId = params.arguments?.["artifactId"];
+        const preview = params.arguments?.["preview"];
+        if (typeof artifactId === "string" && typeof preview === "string") {
+          hostRef.current.savePreview(artifactId, preview);
+        }
+        return Promise.resolve({ content: [] } satisfies CallToolResult);
+      }
+      return hostRef.current.callServerTool({
         name: params.name,
         ...(params.arguments ? { arguments: params.arguments } : {}),
       });
+    };
 
     bridge.onopenlink = async (params) => {
       await hostRef.current.openLink({ url: params.url });

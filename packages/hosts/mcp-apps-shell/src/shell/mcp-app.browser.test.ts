@@ -1133,6 +1133,7 @@ const makeInMemoryArtifacts = () => {
     description: null,
     code: "",
     bindings: HARNESS_BINDINGS,
+    preview: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   });
@@ -1148,6 +1149,7 @@ const makeInMemoryArtifacts = () => {
       readonly description?: string | null;
       readonly code: string;
       readonly bindings?: ArtifactBindings | null;
+      readonly preview?: string | null;
     }): Effect.Effect<Artifact> =>
       Effect.sync(() => {
         seq += 1;
@@ -1158,6 +1160,10 @@ const makeInMemoryArtifacts = () => {
           description: input.description ?? null,
           code: input.code,
           bindings: input.bindings ?? HARNESS_BINDINGS,
+          preview:
+            input.preview === undefined || input.preview === null
+              ? null
+              : ({ kind: "layout", markup: input.preview } as const),
           createdAt: new Date(seq * 1000),
           updatedAt: new Date(seq * 1000),
         };

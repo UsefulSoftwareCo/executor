@@ -268,6 +268,15 @@ export const renameArtifact = ExecutorApiClient.mutation("artifacts", "rename");
 
 export const removeArtifact = ExecutorApiClient.mutation("artifacts", "remove");
 
+/**
+ * Upgrade an artifact's gallery preview to a snapshot of a settled render.
+ *
+ * Fired by the artifact page after the shell reports that its render has
+ * settled with real data. Best-effort by design: a failure here means the card
+ * keeps showing its layout preview, which is a perfectly good picture.
+ */
+export const setArtifactPreview = ExecutorApiClient.mutation("artifacts", "setPreview");
+
 export const resumeExecution = ExecutorApiClient.mutation("executions", "resume");
 
 /** Run codemode source (`POST /executions`). Used by the per-tool Run/Test panel
