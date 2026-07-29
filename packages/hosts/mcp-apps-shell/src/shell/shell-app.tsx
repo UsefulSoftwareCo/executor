@@ -56,6 +56,7 @@ type RendererRequest =
       token: string;
       path: unknown;
       args: unknown;
+      role?: unknown;
     }
   | { type: "executor.renderer.ready"; token: string }
   | { type: "executor.renderer.config"; token: string; config: unknown }
@@ -202,8 +203,14 @@ export function McpAppsShell({
   const [hostContext, setHostContext] = useState<McpUiHostContext | undefined>();
   const [pendingInteraction, setPendingInteraction] = useState<PendingInteraction | null>(null);
   const callToolRef = useRef<
-    (path: readonly string[], args: readonly unknown[]) => Promise<unknown>
+    (path: readonly string[], args: readonly unknown[], role?: string) => Promise<unknown>
   >(() => Promise.resolve(null));
+  // Which artifact is rendering. Set from the tool input the host delivers
+  // alongside the code, so the server can look up this artifact's connection
+  // bindings when the component calls a tool. Held in a ref rather than state
+  // because only the tool caller reads it, and rebuilding the caller on every
+  // delivery would race the first call.
+  const artifactIdRef = useRef<string | undefined>(undefined);
   const pendingInteractionRef = useRef<PendingInteraction | null>(null);
   const rendererFrameRef = useRef<HTMLIFrameElement | null>(null);
   const rendererRef = useRef<RendererState | null>(null);
@@ -307,7 +314,11 @@ export function McpAppsShell({
           return;
         }
         callToolRef
-          .current(data.path as readonly string[], Array.isArray(data.args) ? data.args : [])
+          .current(
+            data.path as readonly string[],
+            Array.isArray(data.args) ? data.args : [],
+            typeof data.role === "string" && data.role.length > 0 ? data.role : undefined,
+          )
           .then((value) => respond(data.requestId, true, value))
           .catch((err: unknown) =>
             respond(
@@ -355,11 +366,17 @@ export function McpAppsShell({
   }, []);
 
   useEffect(() => {
-    callToolRef.current = createToolCaller(app, requestTrustedInteraction);
+    callToolRef.current = createToolCaller(
+      app,
+      requestTrustedInteraction,
+      () => artifactIdRef.current,
+    );
 
     // Handle tool input — fires on init (including page reload) with
     // the tool arguments. For generative UI the arguments contain { code }.
     app.ontoolinput = (params: { arguments?: Record<string, unknown> }) => {
+      const artifactId = params.arguments?.artifactId;
+      if (typeof artifactId === "string") artifactIdRef.current = artifactId;
       const code = params.arguments?.code;
       if (code && typeof code === "string") {
         renderCode(code);
@@ -369,6 +386,10 @@ export function McpAppsShell({
     app.ontoolresult = (result: CallToolResult) => {
       const structured = result.structuredContent as Record<string, unknown> | undefined;
       const code = structured?.code;
+      // The result is where `create-artifact` / `show-artifact` report the id
+      // they saved under; the input only carries one on a reload replay.
+      const artifactId = structured?.artifactId;
+      if (typeof artifactId === "string") artifactIdRef.current = artifactId;
 
       if (code && typeof code === "string") {
         renderCode(code);

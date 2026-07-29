@@ -138,7 +138,15 @@ export const createHttpShellHost = (options?: {
           // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
           throw new Error("Missing execute-action code.");
         }
-        return toShellToolResult((await post("/executions", { code })) as ExecutionResponse);
+        // The artifact id travels with the call: the code addresses integrations
+        // by role, and the bindings that resolve a role live on the artifact row.
+        const artifactId = input.artifactId;
+        return toShellToolResult(
+          (await post("/executions", {
+            code,
+            ...(typeof artifactId === "string" ? { artifactId } : {}),
+          })) as ExecutionResponse,
+        );
       }
 
       if (name === "execute-action-resume") {

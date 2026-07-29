@@ -43,6 +43,42 @@ describe("execute-action tool-call grammar", () => {
       expect(parsed).not.toBeNull();
       expect(parsed?.path).toEqual([...path]);
       expect(parsed?.args).toEqual(args[0] ?? {});
+      expect(parsed?.role).toBeUndefined();
+    });
+  }
+
+  // The role form: `tools.linear("prod").issues.list(args)`, an artifact using
+  // two accounts of one integration. The role is a JSON string literal for the
+  // same reason the args are, so a role containing a quote cannot break out.
+  const roleCases: ReadonlyArray<{
+    readonly label: string;
+    readonly path: readonly string[];
+    readonly role: string;
+    readonly args: readonly unknown[];
+  }> = [
+    { label: "a role-tagged read", path: ["linear", "issues", "list"], role: "prod", args: [{}] },
+    {
+      label: "a role-tagged write with arguments",
+      path: ["linear", "issues", "create"],
+      role: "staging",
+      args: [{ title: "Bug" }],
+    },
+    { label: "a role on a one-segment path", path: ["stripe"], role: "live", args: [] },
+    {
+      label: "a role needing escapes",
+      path: ["linear", "issues", "list"],
+      role: 'the "main" one',
+      args: [{}],
+    },
+  ];
+
+  for (const { label, path, role, args } of roleCases) {
+    it(`round-trips ${label}`, () => {
+      const parsed = parseToolCallCode(toolCallCode(path, args, role));
+      expect(parsed).not.toBeNull();
+      expect(parsed?.path).toEqual([...path]);
+      expect(parsed?.role).toBe(role);
+      expect(parsed?.args).toEqual(args[0] ?? {});
     });
   }
 
@@ -50,6 +86,7 @@ describe("execute-action tool-call grammar", () => {
     expect(() => toolCallCode([], [])).toThrow("Invalid tool path.");
     expect(() => toolCallCode(["github", "issues; drop"], [])).toThrow("Invalid tool path.");
     expect(() => toolCallCode(["github", "1bad"], [])).toThrow("Invalid tool path.");
+    expect(() => toolCallCode(["github", "issues"], [], "")).toThrow("Invalid tool role.");
   });
 
   // The point of constraining the wire: an iframe posting straight at

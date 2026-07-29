@@ -23,6 +23,7 @@ import {
   createExecutor,
   definePlugin,
   type Artifact,
+  type ArtifactBindings,
   type CredentialProvider,
   type ToolDef,
 } from "@executor-js/sdk";
@@ -72,7 +73,7 @@ type HostState = {
 
 type BrowserHostWindow = Window & {
   __mcpHostState: HostState;
-  __sendGeneratedUi: (code: string) => void;
+  __sendGeneratedUi: (code: string, artifactId: string) => void;
 };
 
 type AppsClientCapabilities = ClientCapabilities & {
@@ -164,7 +165,7 @@ const UpdateAutoRenewSchema = Schema.toStandardSchemaV1(
 // UI calls through the shell's proxy. v2 addresses tools per connection
 // (`tools.<integration>.<owner>.<connection>.<tool>`), so the harness seeds the
 // integration and one org `main` connection below and the generated components
-// call `tools.inventory.org.main.<tool>`.
+// call `tools.inventory.<tool>`.
 const INVENTORY_SLUG = IntegrationSlug.make("inventory");
 const INVENTORY_CONNECTION = ConnectionName.make("main");
 const INVENTORY_TEMPLATE = AuthTemplateSlug.make("apiKey");
@@ -366,7 +367,7 @@ const blockedMessages = primitiveNames.map((name) => {
 
 function App() {
   const { data, error, isLoading } = useQuery(
-    tools.inventory.org.main.listItems.queryOptions({})
+    tools.inventory.listItems.queryOptions({})
   );
   const items = data?.ok ? data.data : data;
   return (
@@ -392,11 +393,34 @@ function App() {
 }
 `;
 
+/** Two accounts of one integration, told apart by role. Both roles are bound to
+ *  the harness's single connection, so both reads succeed — what is under test
+ *  is that the role survives the whole path (proxy -> cache key -> wire ->
+ *  server) rather than which upstream answers. */
+const generatedRoleTaggedCode = `
+function App() {
+  const primary = useQuery(tools.inventory("inventory").listItems.queryOptions({}));
+  const secondary = useQuery(tools.inventory("alt").listItems.queryOptions({}));
+  const nameOf = (q) => {
+    const rows = q.data?.ok ? q.data.data : q.data;
+    return rows?.[0]?.name ?? "";
+  };
+  return (
+    <Card>
+      <CardContent>
+        <div id="primary">{primary.isLoading ? "loading" : nameOf(primary)}</div>
+        <div id="secondary">{secondary.isLoading ? "loading" : nameOf(secondary)}</div>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
 const generatedApprovalCode = `
 function App() {
   const [status, setStatus] = useState("idle");
   const createItem = useMutation(
-    tools.inventory.org.main.createItem.mutationOptions({
+    tools.inventory.createItem.mutationOptions({
       onSuccess: (result) => {
         const created = result?.ok ? result.data : result;
         setStatus(created.name + ":" + created.created);
@@ -425,7 +449,7 @@ const generatedAutoMutationCode = `
 function App() {
   const [status, setStatus] = useState("idle");
   const createItem = useMutation(
-    tools.inventory.org.main.createItem.mutationOptions({
+    tools.inventory.createItem.mutationOptions({
       onSuccess: (result) => {
         const created = result?.ok ? result.data : result;
         setStatus(created.name + ":" + created.created);
@@ -516,12 +540,12 @@ const generatedTanstackQueryCode = `
 function App() {
   const queryClient = useQueryClient();
   const domainArgs = { domain: "openexecutor.com" };
-  const domainQuery = useQuery(tools.inventory.org.main.getDomain.queryOptions(domainArgs));
+  const domainQuery = useQuery(tools.inventory.getDomain.queryOptions(domainArgs));
   const updateAutoRenew = useMutation(
-    tools.inventory.org.main.updateDomainAutoRenew.mutationOptions({
+    tools.inventory.updateDomainAutoRenew.mutationOptions({
       onSuccess: () => {
         queryClient.invalidateQueries({
-          queryKey: tools.inventory.org.main.getDomain.queryKey(domainArgs),
+          queryKey: tools.inventory.getDomain.queryKey(domainArgs),
         });
       },
     })
@@ -566,7 +590,7 @@ function App() {
 const generatedInfiniteQueryCode = `
 function App() {
   const paged = useInfiniteQuery(
-    tools.inventory.org.main.listPaged.infiniteQueryOptions(
+    tools.inventory.listPaged.infiniteQueryOptions(
       { limit: 2 },
       { getNextPageParam: (lastPage) => (lastPage?.ok ? lastPage.data : lastPage)?.nextCursor ?? undefined }
     )
@@ -593,7 +617,7 @@ function App() {
 const generatedNestedInfiniteQueryCode = `
 function App() {
   const paged = useInfiniteQuery(
-    tools.inventory.org.main.listPagedNested.infiniteQueryOptions(
+    tools.inventory.listPagedNested.infiniteQueryOptions(
       { query: { limit: 2 } },
       {
         cursorKey: "query.since",
@@ -646,13 +670,16 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
         source.postMessage({ jsonrpc: "2.0", id, result }, "*");
       };
 
-      window.__sendGeneratedUi = (code) => {
+      // Carries the artifact id beside the code, exactly as the MCP host's
+      // create-artifact / show-artifact results do — that is how the shell
+      // learns which artifact's bindings resolve its tool calls.
+      window.__sendGeneratedUi = (code, artifactId) => {
         sendToApp({
           jsonrpc: "2.0",
           method: "ui/notifications/tool-result",
           params: {
             content: [{ type: "text", text: "" }],
-            structuredContent: { code },
+            structuredContent: { code, artifactId },
           },
         });
       };
@@ -1009,10 +1036,54 @@ const makePausedResult = (
  * `create-artifact`, so persistence is out of scope here — but the ui tools only
  * register when an artifacts port is present, and `execute-action` is what the
  * shell actually calls. A trivial in-memory port is enough to bring them up.
+ *
+ * Every artifact this port mints is pre-bound to the harness's one `inventory`
+ * connection, under both the implicit role (`inventory`) and an explicit `alt`
+ * role. That is what lets a generated component here address the short form
+ * `tools.inventory.listItems` and the role form `tools.inventory("alt").…`, and
+ * still reach `tools.inventory.*` on the executor — the same rewrite a
+ * real artifact gets from its stored bindings.
  */
+/** The artifact every harness component renders as. Pre-seeded so a test can
+ *  hand its id to `execute-action` exactly as the host does. */
+const HARNESS_ARTIFACT_ID = "art_1";
+
+const HARNESS_BINDINGS: ArtifactBindings = {
+  inventory: {
+    integration: IntegrationSlug.make(INVENTORY_SLUG),
+    owner: "org",
+    connection: ConnectionName.make(INVENTORY_CONNECTION),
+  },
+  alt: {
+    integration: IntegrationSlug.make(INVENTORY_SLUG),
+    owner: "org",
+    connection: ConnectionName.make(INVENTORY_CONNECTION),
+  },
+  // Used by the elicitation fixtures, which run against a stub engine that
+  // answers any address rather than the real inventory executor.
+  profile: {
+    integration: IntegrationSlug.make("profile"),
+    owner: "org",
+    connection: ConnectionName.make("main"),
+  },
+};
+
 const makeInMemoryArtifacts = () => {
   const rows = new Map<string, Artifact>();
   let seq = 0;
+  // Pre-seeded, because these tests push code into the shell directly rather
+  // than through `create-artifact`. The row exists so `execute-action` has
+  // bindings to resolve against, the way it would for any real artifact.
+  rows.set(HARNESS_ARTIFACT_ID, {
+    id: ArtifactId.make(HARNESS_ARTIFACT_ID),
+    owner: "user",
+    title: "Harness",
+    description: null,
+    code: "",
+    bindings: HARNESS_BINDINGS,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  });
   return {
     list: (): Effect.Effect<readonly Artifact[]> => Effect.sync(() => [...rows.values()]),
     get: (id: string): Effect.Effect<Artifact, Error> =>
@@ -1024,6 +1095,7 @@ const makeInMemoryArtifacts = () => {
       readonly title: string;
       readonly description?: string | null;
       readonly code: string;
+      readonly bindings?: ArtifactBindings | null;
     }): Effect.Effect<Artifact> =>
       Effect.sync(() => {
         seq += 1;
@@ -1033,6 +1105,7 @@ const makeInMemoryArtifacts = () => {
           title: input.title,
           description: input.description ?? null,
           code: input.code,
+          bindings: input.bindings ?? HARNESS_BINDINGS,
           createdAt: new Date(seq * 1000),
           updatedAt: new Date(seq * 1000),
         };
@@ -1086,7 +1159,7 @@ const startMcpHarness = async (openApi: OpenApiServer): Promise<McpHarness> => {
       );
       // Tools only exist per connection, so register the integration and open
       // one org `main` connection — that is what makes
-      // `tools.inventory.org.main.*` resolvable from generated code.
+      // `tools.inventory.*` resolvable from generated code.
       yield* built["inventory-test"].seed();
       yield* built.connections.create({
         owner: "org",
@@ -1285,8 +1358,9 @@ const openHarness = async (browser: Browser, hostUrl: string) => {
 
 const renderGeneratedUi = async (page: Page, shellFrame: Frame, code: string): Promise<Frame> => {
   await page.evaluate(
-    (value) => (window as unknown as BrowserHostWindow).__sendGeneratedUi(value),
-    code,
+    ([value, artifactId]) =>
+      (window as unknown as BrowserHostWindow).__sendGeneratedUi(value!, artifactId!),
+    [code, HARNESS_ARTIFACT_ID] as const,
   );
   await shellFrame.locator('iframe[title="Generated UI"]').waitFor({ timeout: 10_000 });
   return waitForInnerFrame(page, shellFrame);
@@ -1370,9 +1444,50 @@ describe("MCP app generated UI browser isolation", () => {
           expect.objectContaining({
             name: "execute-action",
             arguments: {
-              code: "return await tools.inventory.org.main.listItems({})",
+              code: "return await tools.inventory.listItems({})",
+              artifactId: HARNESS_ARTIFACT_ID,
             },
           }),
+        ]),
+      );
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  // An artifact that uses two accounts of one integration tags each call site
+  // with a role. The role has to survive four hops — the inner proxy's `apply`
+  // trap, the TanStack cache key, the postMessage bridge, and the
+  // `execute-action` grammar — and be what the server resolves the connection
+  // from. If any hop dropped it, both reads would collapse onto one binding and
+  // the two calls would be indistinguishable on the wire.
+  it("carries an integration role from the proxy through to execute-action", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedRoleTaggedCode);
+
+      // Both roles resolved to a real connection and returned real rows.
+      await innerFrame.waitForFunction(
+        () =>
+          document.querySelector("#primary")?.textContent !== "loading" &&
+          document.querySelector("#secondary")?.textContent !== "loading",
+        undefined,
+        { timeout: 10_000 },
+      );
+      const primary = await innerFrame.locator("#primary").textContent();
+      expect(primary).not.toBe("");
+      expect(await innerFrame.locator("#secondary").textContent()).toBe(primary);
+
+      // Two separate calls, each naming its own role — not one shared query.
+      const roleCalls = (await getHostState(page)).toolCalls
+        .map((call) => (call.arguments as { code?: string } | undefined)?.code)
+        .filter((code): code is string => Boolean(code?.includes("listItems")));
+      expect(roleCalls).toEqual(
+        expect.arrayContaining([
+          'return await tools.inventory("inventory").listItems({})',
+          'return await tools.inventory("alt").listItems({})',
         ]),
       );
     } finally {
@@ -1484,7 +1599,7 @@ describe("MCP app generated UI browser isolation", () => {
 
         const payload = {
           type: "executor.toolCall",
-          path: ["inventory", "org", "main", "listItems"],
+          path: ["inventory", "listItems"],
           args: [{}],
         };
         window.dispatchEvent(
@@ -1519,7 +1634,7 @@ describe("MCP app generated UI browser isolation", () => {
               type: "executor.toolCall",
               requestId: 3,
               token,
-              path: ["inventory", "org", "main", "listItems"],
+              path: ["inventory", "listItems"],
               args: [{}],
             },
           }),
@@ -1534,7 +1649,10 @@ describe("MCP app generated UI browser isolation", () => {
       expect((await getHostState(page)).toolCalls[0]).toEqual(
         expect.objectContaining({
           name: "execute-action",
-          arguments: { code: "return await tools.inventory.org.main.listItems({})" },
+          arguments: {
+            code: "return await tools.inventory.listItems({})",
+            artifactId: HARNESS_ARTIFACT_ID,
+          },
         }),
       );
     } finally {
@@ -1643,7 +1761,8 @@ describe("MCP app generated UI browser isolation", () => {
           expect.objectContaining({
             name: "execute-action",
             arguments: {
-              code: 'return await tools.inventory.org.main.createItem({"body":{"name":"Mount Widget"}})',
+              code: 'return await tools.inventory.createItem({"body":{"name":"Mount Widget"}})',
+              artifactId: HARNESS_ARTIFACT_ID,
             },
           }),
         ]),
@@ -1705,13 +1824,15 @@ describe("MCP app generated UI browser isolation", () => {
           expect.objectContaining({
             name: "execute-action",
             arguments: {
-              code: 'return await tools.inventory.org.main.getDomain({"domain":"openexecutor.com"})',
+              code: 'return await tools.inventory.getDomain({"domain":"openexecutor.com"})',
+              artifactId: HARNESS_ARTIFACT_ID,
             },
           }),
           expect.objectContaining({
             name: "execute-action",
             arguments: {
-              code: 'return await tools.inventory.org.main.updateDomainAutoRenew({"domain":"openexecutor.com","body":{"autoRenew":true}})',
+              code: 'return await tools.inventory.updateDomainAutoRenew({"domain":"openexecutor.com","body":{"autoRenew":true}})',
+              artifactId: HARNESS_ARTIFACT_ID,
             },
           }),
         ]),
@@ -1768,9 +1889,9 @@ describe("MCP app generated UI browser isolation", () => {
         .map((call) => (call.arguments as { code?: string } | undefined)?.code)
         .filter((code): code is string => Boolean(code?.includes("listPaged(")));
       expect(pagedCalls).toEqual([
-        'return await tools.inventory.org.main.listPaged({"limit":2})',
-        'return await tools.inventory.org.main.listPaged({"limit":2,"cursor":"2"})',
-        'return await tools.inventory.org.main.listPaged({"limit":2,"cursor":"4"})',
+        'return await tools.inventory.listPaged({"limit":2})',
+        'return await tools.inventory.listPaged({"limit":2,"cursor":"2"})',
+        'return await tools.inventory.listPaged({"limit":2,"cursor":"4"})',
       ]);
     } finally {
       await page.close();
@@ -1807,8 +1928,8 @@ describe("MCP app generated UI browser isolation", () => {
       // The merge is a deep write that preserves the sibling `limit`, rather
       // than replacing the nested object.
       expect(nestedCalls).toEqual([
-        'return await tools.inventory.org.main.listPagedNested({"query":{"limit":2}})',
-        'return await tools.inventory.org.main.listPagedNested({"query":{"limit":2,"since":"2"}})',
+        'return await tools.inventory.listPagedNested({"query":{"limit":2}})',
+        'return await tools.inventory.listPagedNested({"query":{"limit":2,"since":"2"}})',
       ]);
     } finally {
       await page.close();
@@ -1833,7 +1954,7 @@ describe("MCP app generated UI browser isolation", () => {
           body: JSON.stringify({
             name: "execute-action",
             arguments: {
-              code: "let all = []; for (let i = 0; i < 40; i++) { all.push(await tools.inventory.org.main.listItems({})) } return all",
+              code: "let all = []; for (let i = 0; i < 40; i++) { all.push(await tools.inventory.listItems({})) } return all",
             },
           }),
         });

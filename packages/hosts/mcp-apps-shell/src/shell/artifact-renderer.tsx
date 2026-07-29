@@ -93,6 +93,8 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   hostRef.current = props.host as HttpShellHost;
   const codeRef = useRef(props.code);
   codeRef.current = props.code;
+  const artifactIdRef = useRef(props.artifactId);
+  artifactIdRef.current = props.artifactId;
 
   const bridgeRef = useRef<AppBridge | null>(null);
 
@@ -178,12 +180,13 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
     // other MCP-Apps client, with no artifact-page-only branch.
     bridge.oninitialized = () => {
       const code = codeRef.current;
+      const artifactId = artifactIdRef.current;
       void bridge
-        .sendToolInput({ arguments: { code } })
+        .sendToolInput({ arguments: { code, artifactId } })
         .then(() =>
           bridge.sendToolResult({
             content: [{ type: "text", text: "Rendered saved artifact." }],
-            structuredContent: { code },
+            structuredContent: { code, artifactId },
           }),
         )
         .catch((error: unknown) => {

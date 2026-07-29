@@ -18,7 +18,12 @@ import {
 import { compileJsx, evaluateComponent } from "./component-runtime";
 import * as Components from "./components";
 
-type ParentRequestPayload = { type: "executor.toolCall"; path: string[]; args: unknown[] };
+type ParentRequestPayload = {
+  type: "executor.toolCall";
+  path: string[];
+  args: unknown[];
+  role?: string;
+};
 
 type ParentResponse = {
   type: "executor.response";
@@ -104,41 +109,55 @@ function makeQueryClient(): QueryClient {
 
 let queryClient: QueryClient = makeQueryClient();
 
-const toolQueryKey = (path: readonly string[], input?: unknown): QueryKey => [
-  "executor-tool",
-  path,
-  { input, type: "query" },
-];
+/**
+ * The role is part of every cache key, not just the wire call.
+ *
+ * `tools.linear("prod").issues.list` and `tools.linear("staging").issues.list`
+ * share a path but not an account, so a key built from the path alone would
+ * serve one role's rows to the other and make a mutation on one invalidate the
+ * other. Undefined for the untagged single-account form, which keeps every key
+ * an artifact wrote before roles existed byte-identical.
+ */
+const toolScope = (path: readonly string[], role: string | undefined): QueryKey =>
+  role === undefined ? ["executor-tool", path] : ["executor-tool", path, { role }];
 
-const toolInfiniteQueryKey = (path: readonly string[], input?: unknown): QueryKey => [
-  "executor-tool",
-  path,
-  { input, type: "infinite" },
-];
+const toolQueryKey = (
+  path: readonly string[],
+  role: string | undefined,
+  input?: unknown,
+): QueryKey => [...toolScope(path, role), { input, type: "query" }];
 
-const toolPathKey = (path: readonly string[]): QueryKey => ["executor-tool", path];
+const toolInfiniteQueryKey = (
+  path: readonly string[],
+  role: string | undefined,
+  input?: unknown,
+): QueryKey => [...toolScope(path, role), { input, type: "infinite" }];
 
-const toolMutationKey = (path: readonly string[]): MutationKey => [
-  "executor-tool",
-  path,
+const toolPathKey = (path: readonly string[], role: string | undefined): QueryKey =>
+  toolScope(path, role);
+
+const toolMutationKey = (path: readonly string[], role: string | undefined): MutationKey => [
+  ...toolScope(path, role),
   { type: "mutation" },
 ];
 
 const queryFilter = (
   path: readonly string[],
+  role: string | undefined,
   input?: unknown,
   filters?: Omit<QueryFilters, "queryKey">,
 ): QueryFilters => ({
   ...filters,
-  queryKey: toolQueryKey(path, input),
+  queryKey: toolQueryKey(path, role, input),
 });
 
 const pathFilter = (
   path: readonly string[],
+  role: string | undefined,
   filters?: Omit<QueryFilters, "queryKey">,
 ): QueryFilters => ({
   ...filters,
-  queryKey: toolPathKey(path),
+  queryKey: toolPathKey(path, role),
 });
 
 /**
@@ -184,8 +203,23 @@ type ToolInfiniteQueryOptions = Omit<
   readonly cursorKey?: string;
 };
 
+/**
+ * The `tools` proxy.
+ *
+ * A path under `tools` is an INTEGRATION followed by a tool path —
+ * `tools.vercel.domains.getDomains` — with no tier and no connection name. The
+ * account is chosen by the artifact's stored bindings, server-side.
+ *
+ * At integration depth the proxy is also callable with a string: that is the
+ * ROLE form, `tools.linear("prod").issues.list`, for an artifact that uses two
+ * accounts of one integration. The role rides with every request and every
+ * cache key from that point down. Calling with anything else at that depth is
+ * an ordinary tool invocation of a one-segment path, which is how the system
+ * tools (`tools.search({...})`) are reached — so the two are told apart by the
+ * argument, not by position: exactly one string argument tags a role.
+ */
 const createToolsProxy = (): Record<string, unknown> => {
-  const nest = (path: string[]): unknown =>
+  const nest = (path: string[], role: string | undefined): unknown =>
     new Proxy(function () {}, {
       get(_target, key: string | symbol) {
         if (key === "then" || key === "toJSON" || key === Symbol.toPrimitive) return undefined;
@@ -194,11 +228,17 @@ const createToolsProxy = (): Record<string, unknown> => {
           return (input?: unknown, options?: Omit<UseQueryOptions, "queryKey" | "queryFn">) =>
             queryOptions({
               ...options,
-              queryKey: toolQueryKey(path, input === skipToken ? undefined : input),
+              queryKey: toolQueryKey(path, role, input === skipToken ? undefined : input),
               queryFn:
                 input === skipToken
                   ? skipToken
-                  : () => requestParent({ type: "executor.toolCall", path, args: [input ?? {}] }),
+                  : () =>
+                      requestParent({
+                        type: "executor.toolCall",
+                        path,
+                        args: [input ?? {}],
+                        ...(role === undefined ? {} : { role }),
+                      }),
             });
         }
         if (key === "infiniteQueryOptions") {
@@ -211,7 +251,7 @@ const createToolsProxy = (): Record<string, unknown> => {
             return infiniteQueryOptions({
               ...rest,
               initialPageParam,
-              queryKey: toolInfiniteQueryKey(path, input === skipToken ? undefined : input),
+              queryKey: toolInfiniteQueryKey(path, role, input === skipToken ? undefined : input),
               queryFn:
                 input === skipToken
                   ? skipToken
@@ -220,53 +260,73 @@ const createToolsProxy = (): Record<string, unknown> => {
                         type: "executor.toolCall",
                         path,
                         args: [withCursor(input, cursorKey, pageParam)],
+                        ...(role === undefined ? {} : { role }),
                       }),
               // oxlint-disable-next-line executor/no-double-cast -- boundary: TanStack's option types are generic over the page-param type the model supplies at runtime
             } as unknown as UseInfiniteQueryOptions);
           };
         }
         if (key === "infiniteQueryKey") {
-          return (input?: unknown) => toolInfiniteQueryKey(path, input);
+          return (input?: unknown) => toolInfiniteQueryKey(path, role, input);
         }
         if (key === "infiniteQueryFilter") {
           return (input?: unknown, filters?: Omit<QueryFilters, "queryKey">) => ({
             ...filters,
-            queryKey: toolInfiniteQueryKey(path, input),
+            queryKey: toolInfiniteQueryKey(path, role, input),
           });
         }
         if (key === "queryKey") {
-          return (input?: unknown) => toolQueryKey(path, input);
+          return (input?: unknown) => toolQueryKey(path, role, input);
         }
         if (key === "queryFilter") {
           return (input?: unknown, filters?: Omit<QueryFilters, "queryKey">) =>
-            queryFilter(path, input, filters);
+            queryFilter(path, role, input, filters);
         }
         if (key === "pathKey") {
-          return () => toolPathKey(path);
+          return () => toolPathKey(path, role);
         }
         if (key === "pathFilter") {
-          return (filters?: Omit<QueryFilters, "queryKey">) => pathFilter(path, filters);
+          return (filters?: Omit<QueryFilters, "queryKey">) => pathFilter(path, role, filters);
         }
         if (key === "mutationOptions") {
           return (options?: Omit<UseMutationOptions, "mutationKey" | "mutationFn">) =>
             mutationOptions({
               ...options,
-              mutationKey: toolMutationKey(path),
+              mutationKey: toolMutationKey(path, role),
               mutationFn: (input?: unknown) =>
-                requestParent({ type: "executor.toolCall", path, args: [input ?? {}] }),
+                requestParent({
+                  type: "executor.toolCall",
+                  path,
+                  args: [input ?? {}],
+                  ...(role === undefined ? {} : { role }),
+                }),
             });
         }
         if (key === "mutationKey") {
-          return () => toolMutationKey(path);
+          return () => toolMutationKey(path, role);
         }
-        return nest([...path, key]);
+        return nest([...path, key], role);
       },
       apply(_target, _thisArg, args: unknown[]) {
-        return requestParent({ type: "executor.toolCall", path, args });
+        const [only] = args;
+        if (
+          path.length === 1 &&
+          role === undefined &&
+          args.length === 1 &&
+          typeof only === "string"
+        ) {
+          return nest(path, only);
+        }
+        return requestParent({
+          type: "executor.toolCall",
+          path,
+          args,
+          ...(role === undefined ? {} : { role }),
+        });
       },
     });
 
-  return nest([]) as Record<string, unknown>;
+  return nest([], undefined) as Record<string, unknown>;
 };
 
 const applyTheme = (theme: unknown) => {

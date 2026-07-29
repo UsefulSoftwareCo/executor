@@ -99,6 +99,13 @@
       "when": 1785354087138,
       "tag": "0013_curly_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785355312973,
+      "tag": "0014_new_karma",
+      "breakpoints": true
     }
   ]
 }

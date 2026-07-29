@@ -18,6 +18,7 @@ const summaryToResponse = (a: ArtifactSummary) => ({
 const artifactToResponse = (a: Artifact) => ({
   ...summaryToResponse(a),
   code: a.code,
+  bindings: a.bindings,
 });
 
 export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", (handlers) =>
@@ -49,6 +50,7 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
             title: payload.title,
             description: payload.description,
             code: payload.code,
+            bindings: payload.bindings,
           });
           return artifactToResponse(saved);
         }),

@@ -195,6 +195,8 @@ export {
 export {
   rowToArtifact,
   rowToArtifactSummary,
+  ArtifactBinding,
+  ArtifactBindings,
   type Artifact,
   type ArtifactSummary,
   type SaveArtifactInput,

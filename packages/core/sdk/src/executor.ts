@@ -3932,10 +3932,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!existing) {
             return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
           }
+          // `bindings` is written on every overwrite, including back to null:
+          // it interprets `code`, so carrying the previous value forward under
+          // new source would bind roles the new code never declares.
           const set = {
             title: input.title,
             description,
             code: input.code,
+            bindings: input.bindings ?? null,
             updated_at: now,
           };
           yield* core.updateMany("artifact", { where, set });
@@ -3954,6 +3958,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           title: input.title,
           description,
           code: input.code,
+          bindings: input.bindings ?? null,
           created_at: now,
           updated_at: now,
         });

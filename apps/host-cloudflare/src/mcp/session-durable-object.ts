@@ -133,6 +133,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         artifacts: executor.artifacts,
+        connections: executor.connections,
         loadAppShellHtml: loadMcpAppsShellHtml,
         ...(artifactOrigin
           ? { artifactUrl: artifactUrlFor(artifactOrigin, sessionMeta.organizationSlug) }

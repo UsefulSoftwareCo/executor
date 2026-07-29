@@ -68,6 +68,7 @@ describe("artifact table", () => {
             "title",
             "description",
             "code",
+            "bindings",
             "created_at",
             "updated_at",
           ]),

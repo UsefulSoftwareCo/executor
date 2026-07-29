@@ -31,7 +31,7 @@ const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$]*$/;
 /**
  * The ONE grammar the shell ever puts on the `execute-action` wire:
  *
- *     return await tools.<ident>(.<ident>)*(<JSON>)
+ *     return await tools.<ident>("<role>")?(.<ident>)*(<JSON>)
  *
  * A single proxy-shaped tool call, nothing else — no statements, no loops, no
  * composition. The server parses `execute-action` against exactly this shape
@@ -39,9 +39,21 @@ const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$]*$/;
  * arbitrary code through the app channel even though the shell UI never offers
  * a way to write any. `tool-call-grammar.pin.test.ts` pins the two together.
  *
- * Args are `JSON.stringify` output, so the whole emission stays parseable.
+ * The path's head is an INTEGRATION, and the optional role tags which of the
+ * artifact's connections for that integration to use. Neither the tier nor the
+ * connection name is ever on this wire: the server resolves them from the
+ * bindings stored on the artifact row. That is the whole point of the short
+ * form — an iframe that fabricated an address would be naming something the
+ * artifact was never bound to, and the server would refuse it.
+ *
+ * Role and args are both `JSON.stringify` output, so the emission stays
+ * parseable and a role containing a quote cannot break out of the call.
  */
-export function toolCallCode(path: readonly string[], args: readonly unknown[]): string {
+export function toolCallCode(
+  path: readonly string[],
+  args: readonly unknown[],
+  role?: string,
+): string {
   if (path.length === 0) throw new Error("Invalid tool path.");
   const parts = path.map((part) => {
     if (typeof part !== "string" || !TOOL_PATH_SEGMENT.test(part)) {
@@ -49,7 +61,13 @@ export function toolCallCode(path: readonly string[], args: readonly unknown[]):
     }
     return part;
   });
-  return `return await tools.${parts.join(".")}(${JSON.stringify(args[0] ?? {})})`;
+  if (role !== undefined && (typeof role !== "string" || role.length === 0)) {
+    throw new Error("Invalid tool role.");
+  }
+  const [head, ...rest] = parts;
+  const tag = role === undefined ? "" : `(${JSON.stringify(role)})`;
+  const trailer = rest.length > 0 ? `.${rest.join(".")}` : "";
+  return `return await tools.${head}${tag}${trailer}(${JSON.stringify(args[0] ?? {})})`;
 }
 
 /**
@@ -60,18 +78,30 @@ export function toolCallCode(path: readonly string[], args: readonly unknown[]):
  * here as `(["github","issues","create"], [{ title: "Bug" }])` and becomes
  * `execute-action` with
  * `code: "return await tools.github.issues.create({\"title\":\"Bug\"})"`.
+ *
+ * `artifactId` rides alongside the code because the server cannot resolve the
+ * call without it: the path names an integration role, and the bindings that
+ * turn a role into a connection live on the artifact row. It is supplied by the
+ * host (from the tool input the artifact was delivered with), never by the
+ * generated component — and the server checks the caller owns it.
  */
 export function createToolCaller(
   app: ToolCallHost,
   requestTrustedInteraction: RequestTrustedInteraction,
-): (path: readonly string[], args: readonly unknown[]) => Promise<unknown> {
-  return (path, args) =>
-    app
+  getArtifactId?: () => string | undefined,
+): (path: readonly string[], args: readonly unknown[], role?: string) => Promise<unknown> {
+  return (path, args, role) => {
+    const artifactId = getArtifactId?.();
+    return app
       .callServerTool({
         name: "execute-action",
-        arguments: { code: toolCallCode(path, args) },
+        arguments: {
+          code: toolCallCode(path, args, role),
+          ...(artifactId === undefined ? {} : { artifactId }),
+        },
       })
       .then((r) => resolveToolResult(app, r, requestTrustedInteraction));
+  };
 }
 
 async function resolveToolResult(

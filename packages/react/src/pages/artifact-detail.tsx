@@ -154,7 +154,7 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
                 />
               </div>
             ),
-            onSuccess: ({ value }) => <ArtifactStage code={value.code} />,
+            onSuccess: ({ value }) => <ArtifactStage code={value.code} artifactId={value.id} />,
           })
         )}
       </div>
@@ -186,7 +186,7 @@ function ArtifactStagePlaceholder() {
  * A host that registers no renderer still gets a page that explains itself
  * instead of crashing.
  */
-function ArtifactStage(props: { readonly code: string }) {
+function ArtifactStage(props: { readonly code: string; readonly artifactId: string }) {
   const Renderer = useArtifactRenderer();
   // One host per mount: it holds no state, but a new identity each render would
   // retrigger the shell's host effects.
@@ -205,7 +205,7 @@ function ArtifactStage(props: { readonly code: string }) {
   return (
     <ClientOnly fallback={<ArtifactStagePlaceholder />}>
       <Suspense fallback={<ArtifactStagePlaceholder />}>
-        <Renderer code={props.code} host={host} />
+        <Renderer code={props.code} artifactId={props.artifactId} host={host} />
       </Suspense>
     </ClientOnly>
   );

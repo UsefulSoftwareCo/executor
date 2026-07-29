@@ -8,7 +8,13 @@
 
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ArtifactId, ArtifactNotFoundError, InternalError, Owner } from "@executor-js/sdk/shared";
+import {
+  ArtifactBindings,
+  ArtifactId,
+  ArtifactNotFoundError,
+  InternalError,
+  Owner,
+} from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Params
@@ -33,6 +39,9 @@ const ArtifactSummaryResponse = Schema.Struct({
 const ArtifactResponse = Schema.Struct({
   ...ArtifactSummaryResponse.fields,
   code: Schema.String,
+  /** Null for artifacts saved before the binding contract, whose code still
+   *  carries full connection addresses. */
+  bindings: Schema.NullOr(ArtifactBindings),
 });
 
 /** Omit `id` to create; pass one to overwrite that artifact in place. */
@@ -41,6 +50,7 @@ const SaveArtifactPayload = Schema.Struct({
   title: Schema.String,
   description: Schema.optional(Schema.NullOr(Schema.String)),
   code: Schema.String,
+  bindings: Schema.optional(Schema.NullOr(ArtifactBindings)),
 });
 
 const RenameArtifactPayload = Schema.Struct({

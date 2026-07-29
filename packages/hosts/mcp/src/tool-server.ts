@@ -23,6 +23,7 @@ import * as z from "zod/v4";
 import { isToolFile } from "@executor-js/sdk";
 import type {
   Artifact,
+  ArtifactBinding,
   ArtifactSummary,
   ElicitationResponse,
   ElicitationHandler,
@@ -49,7 +50,13 @@ import {
   type PausedExecutionDeadline,
 } from "@executor-js/execution";
 import { MCP_APPS_SHELL_RESOURCE_URI, validateArtifactCode } from "./create-artifact";
-import { TOOL_CALL_CONTRACT_MESSAGE, parseToolCallCode } from "./tool-call-code";
+import { TOOL_CALL_CONTRACT_MESSAGE } from "./tool-call-code";
+import { resolveArtifactAction } from "./artifact-action";
+import {
+  extractArtifactRoles,
+  resolveArtifactBindings,
+  type BindableConnection,
+} from "./artifact-bindings";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -149,6 +156,15 @@ type SharedMcpServerConfig = {
    */
   readonly artifacts?: McpArtifactsPort;
   /**
+   * The caller's saved connections, for binding an artifact's integration roles
+   * at create time. Structurally satisfied by `executor.connections`; hosts pass
+   * the same scoped executor they pass `artifacts`.
+   *
+   * Absent means `create-artifact` cannot bind, so it refuses code that calls an
+   * integration rather than saving an artifact that could never run.
+   */
+  readonly connections?: McpConnectionsPort;
+  /**
    * Builds the web-app deep link for a saved artifact. Clients that can't
    * render MCP Apps get this URL instead of an inline widget. Absent (stdio has
    * no origin at all) means `create-artifact` still persists and reports the id, but
@@ -166,6 +182,15 @@ export type McpArtifactsPort = {
   readonly list: () => Effect.Effect<readonly ArtifactSummary[], unknown>;
   readonly get: (id: string) => Effect.Effect<Artifact, unknown>;
   readonly save: (input: SaveArtifactInput) => Effect.Effect<Artifact, unknown>;
+};
+
+/**
+ * The connection surface binding needs: list what this caller can reach. The
+ * scoped executor has already narrowed it, so an inferred binding can never
+ * name a connection the caller couldn't call themselves.
+ */
+export type McpConnectionsPort = {
+  readonly list: () => Effect.Effect<readonly BindableConnection[], unknown>;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -756,6 +781,57 @@ const actionRejectedResult = (): McpToolResult => ({
   isError: true,
 });
 
+/**
+ * The artifact whose bindings a call must be resolved through is missing or
+ * isn't this caller's.
+ *
+ * One result for both, deliberately: distinguishing "no such artifact" from
+ * "not yours" would let the app channel probe for ids that exist.
+ */
+const actionArtifactUnavailableResult = (): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: "This action refers to an artifact that isn't available on this account.",
+    },
+  ],
+  structuredContent: { status: "error", error: "artifact_unavailable" },
+  isError: true,
+});
+
+/**
+ * A role in the artifact's code has no connection behind it.
+ *
+ * Structured rather than prose-only because the binding UI that ships with
+ * sharing renders exactly this: which role failed, for which integration, and
+ * what the viewer could bind it to instead. The apps plugin's `BindingError`
+ * carries the same three facts for the same reason.
+ */
+const bindingUnresolvedResult = (input: {
+  readonly role: string;
+  readonly integration: string;
+  readonly message: string;
+  readonly candidates: readonly string[];
+}): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text:
+        input.candidates.length > 0
+          ? `${input.message} Choose one of ${input.candidates.join(", ")}.`
+          : input.message,
+    },
+  ],
+  structuredContent: {
+    status: "error",
+    error: "binding_unresolved",
+    role: input.role,
+    integration: input.integration,
+    candidates: input.candidates,
+  },
+  isError: true,
+});
+
 const renderedInAppResult = (input: {
   readonly code: string;
   readonly artifactId: string;
@@ -1029,6 +1105,31 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         Effect.annotateSpans(joinKeyAttributes(extra)),
       );
 
+    /** What the caller could bind an unresolved role to. Best effort: the
+     *  connections port is optional, and a failure to enumerate must not
+     *  replace the real error with a different one. */
+    const bindingCandidates = (integration: string): Effect.Effect<readonly string[]> =>
+      config.connections
+        ? config.connections.list().pipe(
+            Effect.map((all) =>
+              all
+                .filter((connection) => connection.integration === integration)
+                .map(
+                  (connection) =>
+                    `${connection.integration}.${connection.owner}.${connection.name}`,
+                ),
+            ),
+            Effect.catchCause(() => Effect.succeed([] as readonly string[])),
+          )
+        : Effect.succeed([]);
+
+    /** The artifact as THIS caller can read it. A miss and a row owned by
+     *  someone else are the same answer, because they are the same query. */
+    const loadArtifact = (id: string): Effect.Effect<Artifact | null> =>
+      config.artifacts
+        ? config.artifacts.get(id).pipe(Effect.catchCause(() => Effect.succeed(null)))
+        : Effect.succeed(null);
+
     // `execute-action` is `execute` as called by the shell rather than by the
     // model, and the difference is who owns approval. The shell renders the
     // approval modal itself in its trusted outer frame, so a pause here must
@@ -1042,26 +1143,56 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // model writes it; this channel takes exactly one proxy-shaped tool call,
     // because that is all a declarative artifact can produce. See
     // `tool-call-code.ts`.
-    const executeCodeFromApp = (code: string): Effect.Effect<McpToolResult, E> =>
+    //
+    // The third difference is that the incoming path is not yet an ADDRESS.
+    // Artifact code names an integration and, optionally, a role; the tier and
+    // connection are held on the artifact row. So this channel re-writes the
+    // call against those bindings before executing, and the executed code is
+    // built HERE, from a parsed path and a stored binding, never taken from the
+    // iframe verbatim. That is what makes the short form safe: an iframe that
+    // invented a five-segment address would only be naming a role the artifact
+    // has no binding for, and would be refused.
+    const executeCodeFromApp = (
+      code: string,
+      artifactId: string | undefined,
+    ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
-        const call = parseToolCallCode(code);
+        const resolution = yield* resolveArtifactAction({ code, artifactId, loadArtifact });
         debugLog("execute_action.call", {
           elicitationMode: elicitationMode.mode,
           elicitationSupport: getElicitationSupport(server),
           codeLength: code.length,
-          toolPath: call?.path.join(".") ?? null,
+          status: resolution.status,
+          artifactId: artifactId ?? null,
         });
-        if (!call) {
+        if (resolution.status === "invalid_action_code") {
           yield* Effect.annotateCurrentSpan({ "mcp.execute_action.rejected": true });
           return actionRejectedResult();
         }
+        if (resolution.status === "artifact_unavailable") {
+          return actionArtifactUnavailableResult();
+        }
+        if (resolution.status === "binding_unresolved") {
+          yield* Effect.annotateCurrentSpan({
+            "mcp.execute_action.binding_unresolved": true,
+            "mcp.execute_action.role": resolution.role,
+          });
+          return bindingUnresolvedResult({
+            role: resolution.role,
+            integration: resolution.integration,
+            message: resolution.message,
+            candidates: yield* bindingCandidates(resolution.integration),
+          });
+        }
+        const boundCode = resolution.code;
+
         if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(code, {
+          const result = yield* engine.execute(boundCode, {
             onElicitation: makeMcpElicitationHandler(server, debugLog),
           });
           return toMcpResult(result);
         }
-        const outcome = yield* engine.executeWithPause(code);
+        const outcome = yield* engine.executeWithPause(boundCode);
         debugLog("execute_action.paused_flow_result", {
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
@@ -1328,6 +1459,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       readonly title: string;
       readonly description?: string;
       readonly existingId?: string;
+      readonly bindings?: Readonly<Record<string, ArtifactBinding>>;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
         if (!artifacts) return artifactsUnavailableResult();
@@ -1336,6 +1468,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           title: input.title,
           description: input.description ?? null,
           code: input.code,
+          ...(input.bindings === undefined ? {} : { bindings: input.bindings }),
         });
         yield* Effect.annotateCurrentSpan({
           "mcp.artifact.id": saved.id,
@@ -1356,15 +1489,50 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         : renderedWithoutSurfaceResult({ artifactId: input.artifactId, title: input.title });
     };
 
+    /**
+     * Bind the integration roles an artifact's code uses, at create time.
+     *
+     * Binding happens HERE rather than at render time because this is the only
+     * moment the author, the code and their connections are all in hand — and
+     * because a create that can't bind is a create that would have saved a
+     * broken artifact. The model finds out now, with the candidate list, rather
+     * than the user finding out later through a query error inside the UI.
+     */
     const createArtifact = (input: {
       readonly code: string;
       readonly title: string;
       readonly description?: string;
+      readonly connections?: Readonly<Record<string, string>>;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
         const rejection = validateArtifactCode(input.code);
         if (rejection) return renderRejectedResult(rejection);
-        return yield* saveAndDeliverArtifact(input);
+
+        const roles = extractArtifactRoles(input.code);
+        if (roles.length === 0 && input.connections === undefined) {
+          return yield* saveAndDeliverArtifact({ ...input, bindings: {} });
+        }
+
+        if (!config.connections) {
+          return renderRejectedResult(
+            "This connection cannot bind integrations, so an artifact that calls one cannot be saved here.",
+          );
+        }
+
+        const available = yield* config.connections
+          .list()
+          .pipe(Effect.catchCause(() => Effect.succeed([] as readonly BindableConnection[])));
+        const resolved = resolveArtifactBindings({
+          roles,
+          connections: input.connections,
+          available,
+        });
+        if (!resolved.ok) return renderRejectedResult(resolved.message);
+
+        yield* Effect.annotateCurrentSpan({
+          "mcp.artifact.role_count": roles.length,
+        });
+        return yield* saveAndDeliverArtifact({ ...input, bindings: resolved.bindings });
       }).pipe(
         Effect.withSpan("mcp.host.tool.create_artifact", {
           attributes: {
@@ -1441,13 +1609,21 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             description: [
               "Render an interactive React UI component as an MCP app, and save it as a reusable artifact.",
               'Call `skills({ name: "create-artifact" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope. Call `skills({ name: "artifact-style" })` for how it must look — artifacts render inside the Executor console and must match its design system.',
-              "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<namespace>.<tool>.queryOptions(args))`.",
+              "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<integration>.<tool>.queryOptions(args))`.",
+              "Artifact code addresses an INTEGRATION, never a connection: write `tools.vercel.domains.getDomains`, not the full `tools.vercel.user.personalVercel.domains.getDomains` address `execute` uses for discovery. The connection is bound when the artifact is saved, so it stays portable. Code containing a `.user.` or `.org.` segment is rejected.",
+              'To use two accounts of the same integration, tag each call site with a role — `tools.linear("prod").issues.list` and `tools.linear("staging").issues.list` — and map every role in `connections`.',
               "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
-              "To read every page of a paginated tool, call `useInfiniteQuery(tools.<namespace>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
+              "To read every page of a paginated tool, call `useInfiniteQuery(tools.<integration>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
               "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
             ].join("\n"),
             inputSchema: {
               code: z.string().trim().min(1).describe("The React component source. Export `App`."),
+              connections: z
+                .record(z.string(), z.string())
+                .optional()
+                .describe(
+                  'Which connection each integration role in `code` uses, as `<integration>.<user|org>.<connection>` (the address `connections.list` reports, minus the leading `tools.`). Keys are roles: the integration slug for an untagged `tools.linear.…`, or the tag for `tools.linear("prod").…`. Optional when you have exactly one connection per integration used — that one binds automatically. Required when you have several, and the error lists them.',
+                ),
               title: z
                 .string()
                 .trim()
@@ -1466,8 +1642,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
             },
           },
-          ({ code, title, description }) =>
-            runToolEffect(createArtifact({ code, title, description })),
+          ({ code, title, description, connections }) =>
+            runToolEffect(createArtifact({ code, title, description, connections })),
         ),
       ).pipe(
         Effect.withSpan("mcp.host.register_tool", {
@@ -1525,12 +1701,22 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           {
             description:
               "Execute code from the UI shell. Used by interactive components to call tools and run mutations.",
-            inputSchema: { code: z.string().trim().min(1) },
+            inputSchema: {
+              code: z.string().trim().min(1),
+              artifactId: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                  "The artifact making the call. Its stored bindings resolve the integration role in `code` to a connection.",
+                ),
+            },
             _meta: {
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["app"] },
             },
           },
-          ({ code }) => runToolEffect(executeCodeFromApp(code)),
+          ({ code, artifactId }) => runToolEffect(executeCodeFromApp(code, artifactId)),
         );
 
         executeActionResumeTool = registerAppTool(

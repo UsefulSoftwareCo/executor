@@ -64,6 +64,7 @@ export const makeMcpBuildServer =
         createExecutorMcpServer({
           engine,
           artifacts: executor.artifacts,
+          connections: executor.connections,
           ...(hostOptions?.loadAppShellHtml
             ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
             : {}),

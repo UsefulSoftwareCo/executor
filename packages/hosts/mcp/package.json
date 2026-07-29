@@ -20,6 +20,10 @@
       "types": "./src/tool-call-code.ts",
       "default": "./src/tool-call-code.ts"
     },
+    "./artifact-action": {
+      "types": "./src/artifact-action.ts",
+      "default": "./src/artifact-action.ts"
+    },
     "./in-memory-session-store": {
       "types": "./src/in-memory-session-store.ts",
       "default": "./src/in-memory-session-store.ts"

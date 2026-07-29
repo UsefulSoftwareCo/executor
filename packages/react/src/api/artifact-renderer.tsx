@@ -31,6 +31,10 @@ import * as React from "react";
 export interface ArtifactRendererProps {
   /** The artifact's stored JSX source. */
   readonly code: string;
+  /** Which artifact this is. The source addresses integrations by role, so the
+   *  server needs the row to resolve a role to a connection; this is how the id
+   *  reaches `execute-action`. */
+  readonly artifactId: string;
   /** HTTP-backed MCP host — see `createHttpShellHost` in `./shell-host`. */
   readonly host: unknown;
 }

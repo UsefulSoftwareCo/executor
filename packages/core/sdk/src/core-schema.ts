@@ -372,6 +372,16 @@ export const coreTables = defineTables({
       description: nullableTextColumn("description"),
       // The JSX source. Free-form TEXT, never indexed.
       code: textColumn("code"),
+      // `role -> { integration, owner, connection }`: which connection each
+      // integration role in `code` resolves to. Artifact source addresses
+      // integrations, not connections (`tools.vercel.domains.getDomains`), so
+      // the account identity lives HERE, out of the source, where rebinding a
+      // shared artifact is a row update rather than a rewrite.
+      //
+      // Nullable for the artifacts saved before this contract existed: their
+      // code carries full five-segment paths and runs as written. See
+      // `resolveCallAddress` in `@executor-js/host-mcp`.
+      bindings: nullableJsonColumn("bindings"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },

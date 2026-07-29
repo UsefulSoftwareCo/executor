@@ -6,11 +6,30 @@ import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type * as Cause from "effect/Cause";
 
-import { ArtifactId, FormElicitation, type Artifact, type ArtifactSummary } from "@executor-js/sdk";
+import {
+  ArtifactId,
+  FormElicitation,
+  type Artifact,
+  type ArtifactBindings,
+  type ArtifactSummary,
+} from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
+import type { BindableConnection } from "./artifact-bindings";
 import { MCP_APPS_SHELL_RESOURCE_URI, artifactUrlFor } from "./create-artifact";
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
+
+/** The caller's connection inventory, as `create-artifact` sees it when it
+ *  binds an artifact's integration roles. */
+const connectionsPort = (available: readonly BindableConnection[]) => ({
+  list: (): Effect.Effect<readonly BindableConnection[]> => Effect.succeed(available),
+});
+
+const conn = (integration: string, owner: "user" | "org", name: string): BindableConnection => ({
+  integration,
+  owner,
+  name,
+});
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -44,7 +63,12 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
 const makeArtifactStore = () => {
   const rows = new Map<string, Artifact>();
   let seq = 0;
-  const calls: Array<{ title: string; description: string | null; code: string }> = [];
+  const calls: Array<{
+    title: string;
+    description: string | null;
+    code: string;
+    bindings: ArtifactBindings | null;
+  }> = [];
   return {
     calls,
     rows,
@@ -53,7 +77,7 @@ const makeArtifactStore = () => {
         Effect.sync(() =>
           [...rows.values()]
             .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-            .map(({ code: _code, ...summary }) => summary),
+            .map(({ code: _code, bindings: _bindings, ...summary }) => summary),
         ),
       get: (id: string): Effect.Effect<Artifact, TestArtifactError> =>
         Effect.suspend(() => {
@@ -67,12 +91,14 @@ const makeArtifactStore = () => {
         readonly title: string;
         readonly description?: string | null;
         readonly code: string;
+        readonly bindings?: ArtifactBindings | null;
       }): Effect.Effect<Artifact, TestArtifactError> =>
         Effect.suspend(() => {
           calls.push({
             title: input.title,
             description: input.description ?? null,
             code: input.code,
+            bindings: input.bindings ?? null,
           });
           const existing = input.id === undefined ? undefined : rows.get(input.id);
           if (input.id !== undefined && !existing) {
@@ -85,6 +111,7 @@ const makeArtifactStore = () => {
             title: input.title,
             description: input.description ?? null,
             code: input.code,
+            bindings: input.bindings ?? null,
             createdAt: existing?.createdAt ?? new Date(seq * 1000),
             updatedAt: new Date(seq * 1000),
           };
@@ -260,6 +287,8 @@ describe("MCP host — create-artifact", () => {
             title: "Active users dashboard",
             description: "Daily active users over time",
             code: COUNTER_CODE,
+            // Code that calls no integration is still BOUND, to nothing.
+            bindings: {},
           },
         ]);
       },
@@ -528,7 +557,10 @@ describe("MCP host — create-artifact", () => {
         expect(accepted.isError).toBeFalsy();
         expect(store.calls).toHaveLength(1);
       },
-      { artifacts: store.port },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
     );
   });
 
@@ -559,7 +591,10 @@ describe("MCP host — create-artifact", () => {
         expect(accepted.isError).toBeFalsy();
         expect(store.calls).toHaveLength(1);
       },
-      { artifacts: store.port },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
     );
   });
 
@@ -681,6 +716,360 @@ describe("MCP host — artifact retrieval", () => {
 });
 
 // ---------------------------------------------------------------------------
+// create-artifact — connection binding
+// ---------------------------------------------------------------------------
+//
+// The contract: artifact code names an integration, the server binds it to one
+// of the author's connections at save time, and the resolved binding is what
+// the artifact runs as later.
+
+const VERCEL_ARTIFACT =
+  "function App(){ const q = useQuery(tools.vercel.domains.getDomains.queryOptions({ limit: 100 })); return <div/>; }";
+
+describe("MCP host — create-artifact binding", () => {
+  it("binds an integration silently when the author has exactly one connection", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: VERCEL_ARTIFACT, title: "Domains" },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls[0]?.bindings).toEqual({
+          vercel: { integration: "vercel", owner: "user", connection: "personalVercel" },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
+    );
+  });
+
+  it("refuses an ambiguous integration and names the candidates", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: VERCEL_ARTIFACT, title: "Domains" },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("vercel.user.personalVercel");
+        expect(textOf(result)).toContain("vercel.org.workspaceVercel");
+        // Nothing was saved: an artifact that cannot bind cannot run.
+        expect(store.calls).toEqual([]);
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([
+          conn("vercel", "user", "personalVercel"),
+          conn("vercel", "org", "workspaceVercel"),
+        ]),
+      },
+    );
+  });
+
+  it("takes the supplied connections map over inference", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: VERCEL_ARTIFACT,
+            title: "Domains",
+            connections: { vercel: "vercel.org.workspaceVercel" },
+          },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls[0]?.bindings).toEqual({
+          vercel: { integration: "vercel", owner: "org", connection: "workspaceVercel" },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([
+          conn("vercel", "user", "personalVercel"),
+          conn("vercel", "org", "workspaceVercel"),
+        ]),
+      },
+    );
+  });
+
+  it("binds two roles of one integration to different connections", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: `function App(){
+              useQuery(tools.linear("prod").issues.list.queryOptions({}));
+              useQuery(tools.linear("staging").issues.list.queryOptions({}));
+              return <div/>;
+            }`,
+            title: "Issues",
+            connections: { prod: "linear.org.linearProd", staging: "linear.user.myLinear" },
+          },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(store.calls[0]?.bindings).toEqual({
+          prod: { integration: "linear", owner: "org", connection: "linearProd" },
+          staging: { integration: "linear", owner: "user", connection: "myLinear" },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([
+          conn("linear", "org", "linearProd"),
+          conn("linear", "user", "myLinear"),
+        ]),
+      },
+    );
+  });
+
+  it("refuses a connections key naming a role the code never uses", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: VERCEL_ARTIFACT,
+            title: "Domains",
+            connections: { linear: "linear.org.linearProd" },
+          },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain('role "linear"');
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([
+          conn("vercel", "user", "personalVercel"),
+          conn("linear", "org", "linearProd"),
+        ]),
+      },
+    );
+  });
+
+  // The mistake a model that only read the `execute` skill will make: writing
+  // discovery's five-segment address into artifact source.
+  it("refuses artifact code that pins a connection into the path", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ useQuery(tools.vercel.user.personalVercel.domains.getDomains.queryOptions({})); return <div/>; }",
+            title: "Domains",
+          },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("tools.vercel.<tool>(args)");
+        expect(store.calls).toEqual([]);
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// execute-action — binding resolution
+// ---------------------------------------------------------------------------
+
+describe("MCP host — execute-action binding resolution", () => {
+  /** Saves a bound artifact, then runs one call from it and reports both the
+   *  tool result and whatever code actually reached the engine. */
+  const runBoundAction = async (input: {
+    readonly code: string;
+    readonly available: readonly BindableConnection[];
+    readonly connections?: Record<string, string>;
+    readonly action: Record<string, unknown>;
+    readonly artifactIdOverride?: string;
+  }) => {
+    const store = makeArtifactStore();
+    const executed: string[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: (code: string) =>
+        Effect.sync(() => {
+          executed.push(code);
+          return { status: "completed", result: { result: "ok" } };
+        }),
+    });
+
+    let result: Awaited<ReturnType<Client["callTool"]>> | undefined;
+    await withClient(
+      engine,
+      APPS_CAPS,
+      async (client) => {
+        const created = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: input.code,
+            title: "Bound",
+            ...(input.connections === undefined ? {} : { connections: input.connections }),
+          },
+        });
+        expect(created.isError, textOf(created)).toBeFalsy();
+        const artifactId = input.artifactIdOverride ?? String(structuredOf(created).artifactId);
+        result = await client.callTool({
+          name: "execute-action",
+          arguments: { ...input.action, artifactId },
+        });
+      },
+      { artifacts: store.port, connections: connectionsPort(input.available) },
+    );
+    return { result: result!, executed };
+  };
+
+  it("expands a short path through the artifact's binding", async () => {
+    const { result, executed } = await runBoundAction({
+      code: VERCEL_ARTIFACT,
+      available: [conn("vercel", "user", "personalVercel")],
+      action: { code: 'return await tools.vercel.domains.getDomains({"limit":100})' },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(executed).toEqual([
+      'return await tools.vercel.user.personalVercel.domains.getDomains({"limit":100})',
+    ]);
+  });
+
+  it("routes each role to its own connection", async () => {
+    const roleCode = `function App(){
+      useQuery(tools.linear("prod").issues.list.queryOptions({}));
+      useQuery(tools.linear("staging").issues.list.queryOptions({}));
+      return <div/>;
+    }`;
+    const available = [conn("linear", "org", "linearProd"), conn("linear", "user", "myLinear")];
+    const connections = { prod: "linear.org.linearProd", staging: "linear.user.myLinear" };
+
+    const prod = await runBoundAction({
+      code: roleCode,
+      available,
+      connections,
+      action: { code: 'return await tools.linear("prod").issues.list({})' },
+    });
+    expect(prod.executed).toEqual(["return await tools.linear.org.linearProd.issues.list({})"]);
+
+    const staging = await runBoundAction({
+      code: roleCode,
+      available,
+      connections,
+      action: { code: 'return await tools.linear("staging").issues.list({})' },
+    });
+    expect(staging.executed).toEqual(["return await tools.linear.user.myLinear.issues.list({})"]);
+  });
+
+  it("fails with binding_unresolved and candidates when a role is not bound", async () => {
+    const { result, executed } = await runBoundAction({
+      code: VERCEL_ARTIFACT,
+      available: [conn("vercel", "user", "personalVercel"), conn("linear", "org", "linearProd")],
+      action: { code: "return await tools.linear.issues.list({})" },
+    });
+    expect(result.isError).toBe(true);
+    expect(structuredOf(result)).toMatchObject({
+      error: "binding_unresolved",
+      role: "linear",
+      integration: "linear",
+      candidates: ["linear.org.linearProd"],
+    });
+    expect(textOf(result)).toContain("linear.org.linearProd");
+    // Nothing unresolvable ever reaches the engine.
+    expect(executed).toEqual([]);
+  });
+
+  it("refuses an artifact id that is not the caller's", async () => {
+    const { result, executed } = await runBoundAction({
+      code: VERCEL_ARTIFACT,
+      available: [conn("vercel", "user", "personalVercel")],
+      action: { code: 'return await tools.vercel.domains.getDomains({"limit":100})' },
+      artifactIdOverride: "art_someone_else",
+    });
+    expect(result.isError).toBe(true);
+    expect(structuredOf(result)).toMatchObject({ error: "artifact_unavailable" });
+    expect(executed).toEqual([]);
+  });
+
+  // An iframe cannot recover the old freedom by writing a full address itself:
+  // a bound artifact resolves every call through its bindings, and a
+  // five-segment path names a role it has none for.
+  it("refuses a full address smuggled from a bound artifact", async () => {
+    const { result, executed } = await runBoundAction({
+      code: VERCEL_ARTIFACT,
+      available: [conn("vercel", "user", "personalVercel"), conn("stripe", "org", "acme")],
+      action: { code: "return await tools.stripe.org.acme.charges.list({})" },
+    });
+    expect(result.isError).toBe(true);
+    expect(structuredOf(result)).toMatchObject({ error: "binding_unresolved" });
+    expect(executed).toEqual([]);
+  });
+
+  // Grandfathering: artifacts saved before this contract have `bindings: null`
+  // and full addresses in their stored source. They keep working.
+  it("executes a pre-binding artifact's full address as written", async () => {
+    const store = makeArtifactStore();
+    const executed: string[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: (code: string) =>
+        Effect.sync(() => {
+          executed.push(code);
+          return { status: "completed", result: { result: "ok" } };
+        }),
+    });
+
+    await withClient(
+      engine,
+      APPS_CAPS,
+      async (client) => {
+        // Written straight into the store, the way a row saved before the
+        // bindings column existed looks after the migration.
+        const legacy: Artifact = {
+          id: ArtifactId.make("art_legacy"),
+          owner: "user",
+          title: "Legacy",
+          description: null,
+          code: "function App(){ useQuery(tools.inventory.org.main.listItems.queryOptions({})); return <div/>; }",
+          bindings: null,
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        };
+        store.rows.set(legacy.id, legacy);
+
+        const result = await client.callTool({
+          name: "execute-action",
+          arguments: {
+            code: "return await tools.inventory.org.main.listItems({})",
+            artifactId: "art_legacy",
+          },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(executed).toEqual(["return await tools.inventory.org.main.listItems({})"]);
+      },
+      { artifacts: store.port, connections: connectionsPort([]) },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // execute-action — shell-owned approval
 // ---------------------------------------------------------------------------
 
@@ -705,9 +1094,19 @@ describe("MCP host — execute-action", () => {
       engine,
       APPS_CAPS,
       async (client) => {
+        const created = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ useMutation(tools.github.issues.create.mutationOptions({})); return <div/>; }",
+            title: "Issues",
+          },
+        });
         const paused = await client.callTool({
           name: "execute-action",
-          arguments: { code: "return await tools.github.issues.create({})" },
+          arguments: {
+            code: "return await tools.github.issues.create({})",
+            artifactId: String(structuredOf(created).artifactId),
+          },
         });
         expect(paused.structuredContent).toMatchObject({
           status: "waiting_for_interaction",
@@ -724,6 +1123,7 @@ describe("MCP host — execute-action", () => {
       },
       {
         artifacts: store.port,
+        connections: connectionsPort([conn("github", "user", "personalGithub")]),
         elicitationMode: {
           mode: "browser",
           approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,

@@ -96,10 +96,22 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       artifactUrl: artifactUrlFor(webBaseUrl),
     };
     mcp = createMcpRequestHandler({
-      defaultConfig: { engine, artifacts: executor.artifacts, ...appsConfig },
+      defaultConfig: {
+        engine,
+        artifacts: executor.artifacts,
+        connections: executor.connections,
+        ...appsConfig,
+      },
       createConfigForResource: async (resource) => {
         if (resource.kind === "default") {
-          return { config: { engine, artifacts: executor.artifacts, ...appsConfig } };
+          return {
+            config: {
+              engine,
+              artifacts: executor.artifacts,
+              connections: executor.connections,
+              ...appsConfig,
+            },
+          };
         }
         const handle = await createExecutorHandle({
           activeToolkitSlug: resource.slug,
@@ -112,6 +124,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
           config: {
             engine: toolkitEngine,
             artifacts: handle.executor.artifacts,
+            connections: handle.executor.connections,
             ...appsConfig,
           },
           close: handle.dispose,

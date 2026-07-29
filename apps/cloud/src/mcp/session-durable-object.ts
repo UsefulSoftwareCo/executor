@@ -253,6 +253,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         engine,
         description,
         artifacts: executor.artifacts,
+        connections: executor.connections,
         loadAppShellHtml: loadMcpAppsShellHtml,
         artifactUrl: artifactUrlFor(
           env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",

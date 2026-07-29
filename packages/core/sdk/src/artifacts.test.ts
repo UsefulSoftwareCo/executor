@@ -2,6 +2,14 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
 
 import { makeTestExecutor } from "./testing";
+import type { ArtifactBinding } from "./artifact";
+import { ConnectionName, IntegrationSlug } from "./ids";
+
+const binding = (integration: string, owner: "user" | "org", name: string): ArtifactBinding => ({
+  integration: IntegrationSlug.make(integration),
+  owner,
+  connection: ConnectionName.make(name),
+});
 
 // The `executor.artifacts` surface against the real SQLite test db. Artifacts
 // are owner-scoped rows with no plugin involvement, so the default test
@@ -33,6 +41,60 @@ describe("executor.artifacts", () => {
 
       const fetched = yield* executor.artifacts.get(saved.id);
       expect(fetched).toEqual(saved);
+    }),
+  );
+
+  it.effect("round-trips connection bindings through the json column", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor();
+      const bindings = {
+        vercel: binding("vercel", "user", "personalVercel"),
+        prod: binding("linear", "org", "linearProd"),
+      };
+      const saved = yield* executor.artifacts.save({ title: "Domains", code: CODE, bindings });
+      expect(saved.bindings).toEqual(bindings);
+      expect((yield* executor.artifacts.get(saved.id)).bindings).toEqual(bindings);
+    }),
+  );
+
+  it.effect("saves an artifact that binds nothing as bound-but-empty, not unbound", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor();
+      const saved = yield* executor.artifacts.save({ title: "Static", code: CODE, bindings: {} });
+      // `{}` and `null` are different facts: `{}` is an artifact that calls no
+      // integration, `null` is one written before bindings existed and whose
+      // code still carries full addresses.
+      expect(saved.bindings).toEqual({});
+      expect((yield* executor.artifacts.get(saved.id)).bindings).toEqual({});
+    }),
+  );
+
+  it.effect("leaves bindings null when a save omits them", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor();
+      const saved = yield* executor.artifacts.save({ title: "Legacy", code: CODE });
+      expect(saved.bindings).toBe(null);
+    }),
+  );
+
+  it.effect("overwrites bindings along with the source", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor();
+      const saved = yield* executor.artifacts.save({
+        title: "Domains",
+        code: CODE,
+        bindings: { vercel: binding("vercel", "user", "old") },
+      });
+      const updated = yield* executor.artifacts.save({
+        id: saved.id,
+        title: "Domains",
+        code: CODE,
+        bindings: { vercel: binding("vercel", "user", "new") },
+      });
+      expect(updated.bindings).toEqual({ vercel: binding("vercel", "user", "new") });
+      expect((yield* executor.artifacts.get(saved.id)).bindings).toEqual({
+        vercel: binding("vercel", "user", "new"),
+      });
     }),
   );
 

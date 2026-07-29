@@ -233,6 +233,7 @@ export const artifact = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     code: text("code").notNull(),
+    bindings: json("bindings"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })

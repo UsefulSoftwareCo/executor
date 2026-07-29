@@ -9,6 +9,8 @@
 
 import { PROVIDED_GLOBAL_NAMES } from "@executor-js/execution";
 
+import { oldStyleAddressRejection } from "./artifact-bindings";
+
 /** The MCP-Apps resource the ui-bearing tools render into. */
 export const MCP_APPS_SHELL_RESOURCE_URI = "ui://executor/shell.html";
 
@@ -198,6 +200,12 @@ const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQu
 
 /** `null` when the code may be rendered, otherwise the reason to hand back. */
 export const validateArtifactCode = (code: string): string | null => {
+  // Checked first: a five-segment address is the mistake a model that only read
+  // the `execute` skill will make, and every other rejection below would be a
+  // confusing thing to hear about code whose real problem is its addressing.
+  const oldStyleAddress = oldStyleAddressRejection(code);
+  if (oldStyleAddress) return oldStyleAddress;
+
   if (REMOVED_RUN_CALL.test(code) && !LOCAL_RUN_DECLARATION.test(code)) {
     return [
       "`run(code)` no longer exists — artifact code is purely declarative `tools.*`.",
