@@ -402,6 +402,35 @@ scenario(
             80,
           );
 
+          // And it is the artifact's REAL layout, not the id-seeded schematic.
+          // The smoke render that validated this code at create time also
+          // produced its loading-state markup, which is what the card draws —
+          // so the artifact's own heading is present in the card itself.
+          expect(
+            await preview.getAttribute("data-preview-kind"),
+            "the card shows the captured layout rather than the fallback schematic",
+          ).toBe("layout");
+          await expect
+            .poll(async () => await preview.innerText(), {
+              timeout: 10_000,
+              message: "the preview carries the artifact's own rendered content",
+            })
+            .toContain("Release Readiness");
+
+          // The preview is inert by construction: nothing in it may be clicked,
+          // focused or read out, because it is a picture of a UI and not the UI.
+          const inert = await preview.evaluate((node) => ({
+            pointerEvents: globalThis.getComputedStyle(node).pointerEvents,
+            hidden: node.getAttribute("aria-hidden"),
+            scripts: node.querySelectorAll("script, iframe, img, form, button, a").length,
+          }));
+          expect(inert.pointerEvents, "the preview cannot be interacted with").toBe("none");
+          expect(inert.hidden, "the preview is hidden from assistive technology").toBe("true");
+          expect(
+            inert.scripts,
+            "the sanitizer left no script, frame, image, form or interactive element",
+          ).toBe(0);
+
           const columns = await page.locator('[data-slot="artifact-grid"]').evaluate(
             (grid) =>
               globalThis
@@ -410,6 +439,46 @@ scenario(
                 .filter((track) => track.length > 0).length,
           );
           expect(columns, "the gallery lays out three cards per row when wide").toBe(3);
+        });
+
+        await step("Opening the artifact upgrades its card to the settled render", async () => {
+          // The second layer. The create-time preview is the artifact's LOADING
+          // state — it is captured with a transport that never settles, so it
+          // has no data in it. Opening the artifact renders it for real, and
+          // once that render goes quiet the shell hands the settled markup back
+          // and the console stores it in place of the loading one.
+          //
+          // The observable difference is the DATA: this artifact's rows only
+          // exist in a settled render, so finding one on the card proves the
+          // upgrade landed rather than just that some preview exists.
+          await page.getByRole("link", { name: `Open artifact ${title}` }).click();
+          await artifactContent(page).getByTestId("artifact-marker").waitFor({ timeout: 30_000 });
+
+          const card = page.locator('[data-slot="artifact-card"]').filter({ hasText: title });
+          const preview = card.locator('[data-slot="artifact-preview"]');
+          // Polled rather than slept on: the capture is debounced behind a
+          // settle window, so the honest assertion is that it arrives, not when.
+          await expect
+            .poll(
+              async () => {
+                await page.getByRole("link", { name: "Artifacts" }).first().click();
+                await card.waitFor({ timeout: 20_000 });
+                return await preview.innerText();
+              },
+              {
+                timeout: 90_000,
+                interval: 3_000,
+                message: "the settled render replaced the loading-state preview",
+              },
+            )
+            .toContain(marker);
+
+          expect(
+            await preview.getAttribute("data-preview-kind"),
+            "the upgraded preview is still rendered as a captured layout",
+          ).toBe("layout");
+          const box = await preview.boundingBox();
+          expect(box?.height ?? 0, "the upgraded preview has layout extent").toBeGreaterThan(80);
         });
       });
 

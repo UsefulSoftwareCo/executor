@@ -105,7 +105,7 @@ export type { ToolPolicyAction } from "./core-schema";
 
 // Artifact projections (the row mappers are server-side; the binding schemas
 // are shared, because the HTTP contract carries them).
-export { ArtifactBinding, ArtifactBindings, isImagePreviewValue } from "./artifact";
+export { ArtifactBinding, ArtifactBindings } from "./artifact";
 export type {
   Artifact,
   ArtifactPreview,

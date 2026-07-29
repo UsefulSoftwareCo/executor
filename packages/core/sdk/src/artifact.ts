@@ -67,45 +67,39 @@ const bindingsFromColumn = (value: unknown): ArtifactBindings | null => {
 /**
  * What the gallery draws for an artifact, when it has anything to draw.
  *
- * Two kinds, in quality order:
+ * Always sanitized markup, produced at one of two moments:
  *
- *   - `layout` — sanitized markup from the create-time smoke render. The
- *     artifact's real composition in its LOADING state, so it contains no live
- *     data and is derived purely from the source. Written on every save.
- *   - `image` — a raster snapshot captured after a viewer opened the artifact
- *     and it settled with real data. Strictly better to look at, and strictly
- *     more sensitive: see the sharing note on `ArtifactPreview`.
+ *   - at CREATE, from the smoke render — the artifact's real composition in its
+ *     LOADING state (frames, tables, skeletons), containing no data at all
+ *     because nothing was fetched;
+ *   - at OPEN, from the settled render in a viewer's browser — the same
+ *     composition with real numbers, rows and labels in it.
  *
- * Stored in one column and discriminated by shape rather than by a second
- * column: an image is always a `data:image/` URL and markup never can be, so
- * the shape is already a total discriminator and a `preview_kind` column could
- * only ever disagree with it.
+ * Pixels were the intent for the second one and are not achievable: the render
+ * frame is sandboxed into an opaque origin, so every image it can build taints
+ * a canvas and `toDataURL` throws. See `captureSettledHtml` in the shell's
+ * inner renderer for the measurement. Markup keeps what the upgrade was FOR —
+ * a card that shows the artifact's real content — and gives up only the
+ * typeface and pixel-exact fidelity.
+ *
+ * The two are one type because the console renders them identically. They are
+ * NOT interchangeable for sharing, which is why the source is recorded: see the
+ * data-safety note on `Artifact.preview`.
  */
-export type ArtifactPreview =
-  | { readonly kind: "layout"; readonly markup: string }
-  | { readonly kind: "image"; readonly src: string };
-
-/** The prefix an image preview always has, and markup never does. */
-const IMAGE_PREVIEW_PREFIX = "data:image/";
+export type ArtifactPreview = {
+  readonly kind: "layout";
+  readonly markup: string;
+};
 
 /**
  * Read the stored column as a preview.
  *
- * Absent, empty, or anything that is not a string is `null` — the caller falls
- * back to the schematic. A `data:image/` value is an image; everything else is
- * markup, which is safe to assume because only this host writes the column and
- * only ever after sanitizing.
+ * Absent, empty, or anything that is not a string is `null`, and the caller
+ * falls back to the schematic. Anything else is markup this host sanitized
+ * before storing — nothing else writes the column.
  */
-export const previewFromColumn = (value: unknown): ArtifactPreview | null => {
-  if (typeof value !== "string" || value === "") return null;
-  return value.startsWith(IMAGE_PREVIEW_PREFIX)
-    ? { kind: "image", src: value }
-    : { kind: "layout", markup: value };
-};
-
-/** Whether a stored preview value is a raster snapshot rather than markup. */
-export const isImagePreviewValue = (value: string): boolean =>
-  value.startsWith(IMAGE_PREVIEW_PREFIX);
+export const previewFromColumn = (value: unknown): ArtifactPreview | null =>
+  typeof value === "string" && value !== "" ? { kind: "layout", markup: value } : null;
 
 export interface Artifact {
   readonly id: ArtifactId;

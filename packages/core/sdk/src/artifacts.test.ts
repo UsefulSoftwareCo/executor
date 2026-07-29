@@ -262,7 +262,7 @@ describe("executor.artifacts", () => {
 
   describe("previews", () => {
     const MARKUP = '<div class="p-4"><h2>Revenue</h2></div>';
-    const IMAGE = "data:image/png;base64,iVBORw0KGgo=";
+    const SETTLED = '<div class="p-4"><h2>Revenue</h2><p>12,480 active</p></div>';
 
     it.effect("round-trips layout markup, and reads it back as a layout preview", () =>
       Effect.gen(function* () {
@@ -311,7 +311,7 @@ describe("executor.artifacts", () => {
       }),
     );
 
-    it.effect("setPreview upgrades a layout preview to an image", () =>
+    it.effect("setPreview upgrades the preview to the settled render", () =>
       Effect.gen(function* () {
         const executor = yield* makeTestExecutor();
         const saved = yield* executor.artifacts.save({
@@ -319,10 +319,10 @@ describe("executor.artifacts", () => {
           code: CODE,
           preview: MARKUP,
         });
-        yield* executor.artifacts.setPreview({ id: saved.id, preview: IMAGE });
+        yield* executor.artifacts.setPreview({ id: saved.id, preview: SETTLED });
         expect((yield* executor.artifacts.get(saved.id)).preview).toEqual({
-          kind: "image",
-          src: IMAGE,
+          kind: "layout",
+          markup: SETTLED,
         });
       }),
     );
@@ -333,7 +333,7 @@ describe("executor.artifacts", () => {
         // move it to the front — being looked at is not an edit.
         const executor = yield* makeTestExecutor();
         const saved = yield* executor.artifacts.save({ title: "Revenue", code: CODE });
-        yield* executor.artifacts.setPreview({ id: saved.id, preview: IMAGE });
+        yield* executor.artifacts.setPreview({ id: saved.id, preview: SETTLED });
         expect((yield* executor.artifacts.get(saved.id)).updatedAt).toEqual(saved.updatedAt);
       }),
     );
@@ -342,7 +342,7 @@ describe("executor.artifacts", () => {
       Effect.gen(function* () {
         const executor = yield* makeTestExecutor();
         const result = yield* Effect.result(
-          executor.artifacts.setPreview({ id: "art_missing", preview: IMAGE }),
+          executor.artifacts.setPreview({ id: "art_missing", preview: SETTLED }),
         );
         expect(Result.isFailure(result)).toBe(true);
         if (!Result.isFailure(result)) return;

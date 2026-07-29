@@ -2,21 +2,20 @@
 // The artifact gallery's preview slot.
 //
 // An artifact is a live component, so the grid needs something to show for it.
-// Three things can be shown, and this component picks the best one available:
+// Two things can be shown, and this component prefers the first:
 //
-//   1. an IMAGE — a raster snapshot taken after a viewer opened the artifact
-//      and it settled with real data. The real thing, pixels and all.
-//   2. a LAYOUT — sanitized markup from the create-time smoke render, which is
-//      the artifact's true composition in its loading state (cards, tables,
-//      chart frames, skeletons) with no data in it. Every artifact has one from
-//      the moment it is saved.
-//   3. a SCHEMATIC — the deterministic figure below, derived from the id.
+//   1. a CAPTURED RENDER — sanitized markup of the artifact actually rendering.
+//      Written at create time from the smoke render, which produces its loading
+//      composition (cards, tables, chart frames, skeletons) with no data in it,
+//      and REPLACED once a viewer opens the artifact and it settles, at which
+//      point the same composition carries real numbers and rows.
+//   2. a SCHEMATIC — the deterministic figure below, derived from the id.
 //
-// The fallback chain is strict and total: image, else layout, else schematic.
-// Nothing here can fail to render something, which is what lets every producer
-// of 1 and 2 fail open.
+// The fallback is total: a real render if there is one, otherwise the
+// schematic. Nothing here can fail to draw something, which is what lets every
+// producer upstream fail open.
 //
-// ## Why the layout markup is inserted directly, and not into an iframe
+// ## Why the markup is inserted directly, and not into an iframe
 //
 // An iframe with `srcdoc` is the reflex for "render HTML I did not write", and
 // it is the wrong tool here on both axes:
@@ -399,21 +398,6 @@ function LayoutPreview(props: { readonly markup: string }) {
   );
 }
 
-/** A raster snapshot of a settled render — the artifact as it really looked. */
-function ImagePreview(props: { readonly src: string }) {
-  return (
-    <img
-      data-slot="artifact-preview"
-      data-preview-kind="image"
-      src={props.src}
-      alt=""
-      aria-hidden="true"
-      draggable={false}
-      className="pointer-events-none absolute inset-0 size-full select-none object-cover object-top"
-    />
-  );
-}
-
 /**
  * What the gallery draws for an artifact.
  *
@@ -429,31 +413,24 @@ export function ArtifactPreview(props: {
   readonly preview?: ArtifactPreviewValue | null;
   readonly className?: string;
 }) {
-  const kind = artifactPreviewKind(props.preview);
-  if (kind === "image" && props.preview?.kind === "image") {
-    return <ImagePreview src={props.preview.src} />;
-  }
-  if (kind === "layout" && props.preview?.kind === "layout") {
+  if (artifactPreviewKind(props.preview) === "layout" && props.preview) {
     return <LayoutPreview markup={props.preview.markup} />;
   }
   return <ArtifactSchematic artifactId={props.artifactId} className={props.className} />;
 }
 
 /**
- * Which of the three previews an artifact gets.
+ * Which preview an artifact gets.
  *
- * Exported so the fallback chain is testable as a pure function rather than
- * only through a rendered tree: "image beats layout beats schematic, and an
- * empty one of either is not a preview" is the contract, and it is the part
- * that would silently regress.
+ * Exported so the fallback is testable as a pure function rather than only
+ * through a rendered tree: "a real render beats the schematic, and an empty one
+ * is not a real render" is the contract, and it is the part that would silently
+ * regress — every producer upstream fails open, so this is what guarantees
+ * there is always something to draw.
  */
 export const artifactPreviewKind = (
   preview: ArtifactPreviewValue | null | undefined,
-): "image" | "layout" | "schematic" => {
-  if (preview?.kind === "image" && preview.src !== "") return "image";
-  if (preview?.kind === "layout" && preview.markup !== "") return "layout";
-  return "schematic";
-};
+): "layout" | "schematic" => (preview && preview.markup !== "" ? "layout" : "schematic");
 
 /**
  * The fallback figure, for an artifact with no captured preview.

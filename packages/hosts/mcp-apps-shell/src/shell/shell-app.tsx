@@ -79,7 +79,7 @@ type RendererRequest =
  * Advertised by the console through `McpUiHostContext`'s open index signature,
  * which is the spec's own forward-compatibility seam. Absent everywhere else —
  * a real MCP client has nowhere to put a preview — and absent means the inner
- * frame never rasterizes anything, so the cost is not paid where it cannot pay
+ * frame never captures anything, so the cost is not paid where it cannot pay
  * off.
  */
 const hostContextAllowsPreviewCapture = (ctx: McpUiHostContext | undefined): boolean =>
@@ -477,7 +477,7 @@ export function McpAppsShell({
           capturePreviewRef.current &&
           artifactId !== undefined &&
           typeof data.preview === "string" &&
-          data.preview.startsWith("data:image/")
+          data.preview !== ""
         ) {
           savePreviewRef.current(artifactId, data.preview);
         }

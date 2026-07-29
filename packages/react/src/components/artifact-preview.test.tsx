@@ -7,18 +7,14 @@ import {
 } from "./artifact-preview";
 
 /**
- * The fallback chain: a real snapshot beats a layout beats the schematic.
+ * The fallback: a real render beats the schematic.
  *
  * Every producer upstream fails open — the smoke render, the sanitizer, the
- * capture — so "there is always something to draw" is the property that makes
- * all of that safe, and it is pinned here.
+ * settled capture — so "there is always something to draw" is the property that
+ * makes all of that safe, and it is pinned here.
  */
 describe("artifactPreviewKind", () => {
-  it("prefers a real snapshot over everything else", () => {
-    expect(artifactPreviewKind({ kind: "image", src: "data:image/png;base64,AAA" })).toBe("image");
-  });
-
-  it("falls back to the layout when there is no snapshot", () => {
+  it("draws a captured render when there is one", () => {
     expect(artifactPreviewKind({ kind: "layout", markup: "<div>x</div>" })).toBe("layout");
   });
 
@@ -27,8 +23,7 @@ describe("artifactPreviewKind", () => {
     expect(artifactPreviewKind(undefined)).toBe("schematic");
   });
 
-  it("treats an empty preview of either kind as no preview", () => {
-    expect(artifactPreviewKind({ kind: "image", src: "" })).toBe("schematic");
+  it("treats an empty preview as no preview", () => {
     expect(artifactPreviewKind({ kind: "layout", markup: "" })).toBe("schematic");
   });
 });

@@ -196,7 +196,6 @@ export {
   rowToArtifact,
   rowToArtifactSummary,
   previewFromColumn,
-  isImagePreviewValue,
   ArtifactBinding,
   ArtifactBindings,
   type Artifact,

@@ -27,16 +27,13 @@ const ArtifactParams = { artifactId: ArtifactId };
 // ---------------------------------------------------------------------------
 
 /**
- * What the gallery draws for an artifact.
- *
- * `layout` is sanitized markup from the create-time smoke render — the
- * artifact's real composition with no data in it. `image` is a raster snapshot
- * of a settled render, which DOES contain whatever the viewer could see.
+ * What the gallery draws for an artifact: sanitized markup of a real render,
+ * either its create-time loading state or a settled one captured on open.
  */
-const ArtifactPreviewResponse = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("layout"), markup: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("image"), src: Schema.String }),
-]);
+const ArtifactPreviewResponse = Schema.Struct({
+  kind: Schema.Literal("layout"),
+  markup: Schema.String,
+});
 
 /** What a list returns — no `code`, so a long list stays cheap. The preview is
  *  the exception, because the list is the surface that draws it. */
@@ -81,28 +78,31 @@ const RenameArtifactPayload = Schema.Struct({
 export const ARTIFACT_PREVIEW_IMAGE_LIMIT = 512 * 1024;
 
 /**
- * A raster snapshot of the artifact as the viewer just saw it.
+ * A snapshot of the artifact as the viewer just saw it, WITH its data.
  *
  * ## Data safety — read before widening who may call this
  *
- * Unlike the layout preview, this image is rendered WITH DATA. It is pixels of
- * whatever the capturing viewer was allowed to see, which makes it per-viewer
- * state that happens to be stored on a shared-shaped row.
+ * Unlike the layout preview, this is captured after the artifact's queries
+ * resolved, so it contains whatever the capturing viewer was allowed to see.
+ * That makes it per-viewer state that happens to be stored on a shared-shaped
+ * row.
  *
- * That is correct only because of a property that holds TODAY and not by
- * construction: artifacts are viewer-owned, so the only person who can read the
- * row is the person whose data is in the picture. When org-tier sharing lands —
- * the `owner` column already anticipates it — this stops being true, and an
- * image preview would leak one member's numbers into another member's gallery.
+ * It is correct today only because of a property that holds by circumstance and
+ * not by construction: artifacts are viewer-owned, so the only person who can
+ * read the row is the person whose data is in the snapshot. When org-tier
+ * sharing lands — the `owner` column already anticipates it — that stops being
+ * true, and this preview would leak one member's numbers into another member's
+ * gallery.
  *
- * At that point this preview must either move to per-viewer storage keyed by
- * (artifact, viewer), or be excluded from any view the owner did not capture.
- * The layout preview is the one that stays shareable, which is why the column
- * carries both kinds rather than being replaced by this one.
+ * At that point it must either move to per-viewer storage keyed by (artifact,
+ * viewer), or be excluded from any view its capturer does not own. The LAYOUT
+ * preview, written at create time from a render with no data in it, is the one
+ * that stays shareable — which is why the column carries both kinds rather than
+ * being replaced by this one.
  */
 const SetArtifactPreviewPayload = Schema.Struct({
-  /** A `data:image/...` URL. Anything else is rejected: the endpoint stores
-   *  images, and the layout half is written by the save path only. */
+  /** Markup from the settled render. Sanitized by the handler through the same
+   *  allowlist as the create-time preview before it is ever stored. */
   preview: Schema.String.check(Schema.isMaxLength(ARTIFACT_PREVIEW_IMAGE_LIMIT)),
 });
 

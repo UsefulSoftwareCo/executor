@@ -182,93 +182,46 @@ const SETTLE_QUIET_MS = 2000;
 /** A ceiling on waiting for quiet, for an artifact that polls forever. */
 const SETTLE_DEADLINE_MS = 15_000;
 
-/** The capture's pixel size. 16:10, matching the gallery card's box. */
-const CAPTURE_WIDTH = 640;
-const CAPTURE_HEIGHT = 400;
-
-/** Cap on the encoded data URL, mirroring the endpoint's own limit. */
+/** Cap on the captured markup, mirroring the endpoint's own limit. */
 const CAPTURE_LIMIT = 512 * 1024;
 
 /** At most one capture per render: the first settled picture is the artifact. */
 let capturedThisRender = false;
 
 /**
- * Rasterize the rendered DOM to a PNG data URL.
+ * Serialize the settled render as sanitizable HTML.
  *
- * SVG `foreignObject` is the only way to get pixels without an external
- * service: the live DOM is serialized into an SVG, the SVG is loaded as an
- * image, and the image is drawn to a canvas. Two properties make it work here
- * and would not hold in general:
+ * ## Why this is not a raster
  *
- *   - The frame's CSP allows `img-src data: blob:`, so the SVG can be loaded.
- *   - Every font is already a `data:` URL in this document (the shell inlines
- *     Geist), so serialized styles carry their own fonts rather than
- *     referencing files the SVG image load cannot fetch.
+ * The intent was pixels: SVG `foreignObject` -> `<img>` -> canvas -> PNG. That
+ * cannot work here, and the reason is structural rather than incidental.
  *
- * It can still fail — a tainted canvas, a font that did not serialize, a
- * browser that refuses the load — and every failure path returns `null` rather
- * than throwing. The caller then keeps the layout preview, which is a good
- * picture already; a missing upgrade is never worth an error in front of a user.
+ * The inner frame is a `srcdoc` iframe sandboxed WITHOUT `allow-same-origin`,
+ * so it runs in an opaque origin. Every image is therefore cross-origin to it,
+ * including one built from its own bytes — a 203-byte inline SVG through a blob
+ * URL taints the canvas exactly as a remote JPEG would, and `toDataURL` then
+ * throws `SecurityError: Tainted canvases may not be exported`. Measured, not
+ * assumed: the trivial case fails identically to the real one. Nothing short of
+ * granting the frame a real origin fixes it, and that origin is the entire
+ * sandbox — the frame runs model-written code, so it is not negotiable.
+ *
+ * So the upgrade captures the settled DOM instead. That keeps what actually
+ * makes the second layer worth having: the layout preview is the artifact
+ * before its data arrives, and this is the artifact WITH its data — real
+ * numbers, real rows, real labels — which is the difference a viewer sees on
+ * the card. It gives up only the exact typeface and pixel-level fidelity.
+ *
+ * The markup goes through the same sanitizer as the create-time preview, so
+ * nothing about how the console renders it changes.
  */
-const rasterize = async (target: HTMLElement): Promise<string | null> => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort rasterization, every failure degrades to "no upgrade"
+const captureSettledHtml = (target: HTMLElement): string | null => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort capture, every failure degrades to "no upgrade"
   try {
-    const width = Math.max(1, target.scrollWidth || target.clientWidth);
-    const height = Math.max(1, target.scrollHeight || target.clientHeight);
-
-    // The document's compiled CSS, inlined into the SVG. Without it the clone
-    // is unstyled markup; `collectShellCss`'s equivalent here reads the same
-    // rules the frame is actually painting with, fonts included.
-    let css = "";
-    for (const sheet of Array.from(document.styleSheets)) {
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: cross-origin sheets throw on access and are simply skipped
-      try {
-        for (const rule of Array.from(sheet.cssRules)) css += rule.cssText;
-      } catch {
-        continue;
-      }
-    }
-
-    const clone = target.cloneNode(true) as HTMLElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-    // The capture must look like the theme the viewer is in, and the `.dark`
-    // class lives on the documentElement, which is not inside the clone.
-    const dark = document.documentElement.classList.contains("dark");
-    const background = globalThis.getComputedStyle(document.body).backgroundColor;
-
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" ` +
-      `viewBox="0 0 ${width} ${height}"><foreignObject width="100%" height="100%">` +
-      `<div xmlns="http://www.w3.org/1999/xhtml" class="${dark ? "dark" : ""}" ` +
-      `style="width:${width}px;height:${height}px;background:${background}">` +
-      `<style>${css}</style>${new XMLSerializer().serializeToString(clone)}` +
-      `</div></foreignObject></svg>`;
-
-    const source = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    const image = new Image();
-    const loaded = new Promise<boolean>((resolve) => {
-      image.onload = () => resolve(true);
-      image.onerror = () => resolve(false);
-    });
-    image.src = source;
-    if (!(await loaded)) return null;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = CAPTURE_WIDTH;
-    canvas.height = CAPTURE_HEIGHT;
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-    context.fillStyle = background || (dark ? "#000" : "#fff");
-    context.fillRect(0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
-    // Fit to WIDTH and anchor at the top, cropping any overflow rather than
-    // squashing: the artifact's header is what identifies it, and a tall
-    // artifact's tail is not worth distorting the part that is recognisable.
-    // The source rect is the top slice that fills the 16:10 box at that scale.
-    const scale = CAPTURE_WIDTH / width;
-    const sourceHeight = Math.min(height, CAPTURE_HEIGHT / scale);
-    context.drawImage(image, 0, 0, width, sourceHeight, 0, 0, CAPTURE_WIDTH, sourceHeight * scale);
-    const url = canvas.toDataURL("image/png");
-    return url.length > CAPTURE_LIMIT || !url.startsWith("data:image/") ? null : url;
+    const html = target.innerHTML;
+    // Bounded here as well as at the endpoint: a settled render can be far
+    // larger than its loading state (every row is present now), and the whole
+    // point of the cap is that the gallery stays cheap to list.
+    return html.length === 0 || html.length > CAPTURE_LIMIT ? null : html;
   } catch {
     return null;
   }
@@ -302,9 +255,8 @@ const captureWhenSettled = () => {
     if (quietTimer !== undefined) clearTimeout(quietTimer);
     if (capturedThisRender) return;
     capturedThisRender = true;
-    void rasterize(mount).then((preview) => {
-      if (preview) sendParent({ type: "executor.renderer.preview", preview });
-    });
+    const preview = captureSettledHtml(mount);
+    if (preview !== null) sendParent({ type: "executor.renderer.preview", preview });
   };
 
   const arm = () => {

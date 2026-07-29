@@ -1,6 +1,10 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import { isImagePreviewValue, type Artifact, type ArtifactSummary } from "@executor-js/sdk";
+import {
+  sanitizeArtifactPreviewMarkup,
+  type Artifact,
+  type ArtifactSummary,
+} from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -81,15 +85,20 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
     .handle("setPreview", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
-          // Only an image may come in here. The layout preview is written by
-          // the save path from a sandboxed render this server drove itself;
-          // accepting markup on an open endpoint would mean accepting markup
-          // from the browser, which is a different trust story entirely.
-          if (!isImagePreviewValue(payload.preview)) return { stored: false };
+          // This markup came from a BROWSER, not from this server's own
+          // sandbox, so it is sanitized here before it is stored — through the
+          // same allowlist the create-time preview goes through, which is what
+          // makes the console safe to render either kind identically.
+          //
+          // A payload that sanitizes to nothing is reported as not stored
+          // rather than as an error: the caller is a viewer who merely opened
+          // an artifact, and the card simply keeps its layout preview.
+          const sanitized = sanitizeArtifactPreviewMarkup(payload.preview);
+          if (sanitized === null) return { stored: false };
           const executor = yield* ExecutorService;
           yield* executor.artifacts.setPreview({
             id: path.artifactId,
-            preview: payload.preview,
+            preview: sanitized,
           });
           return { stored: true };
         }),
