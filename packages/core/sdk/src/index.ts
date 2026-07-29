@@ -232,6 +232,15 @@ export {
   type OwnerPartitions,
 } from "./blob";
 
+// Durable pending approvals — how an artifact action that paused on a human
+// survives a host whose HTTP API builds a fresh engine per request.
+export {
+  makePendingApprovalStore,
+  PendingApproval,
+  PENDING_APPROVAL_TTL_MS,
+  type PendingApprovalStore,
+} from "./pending-approval";
+
 // Plugin storage.
 export {
   definePluginStorageCollection,

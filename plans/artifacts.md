@@ -205,3 +205,65 @@ Two constraints shaped the implementation:
   putting React inside that sandbox is a much larger change than this is worth.)
   `apps/local` is also left out, because its consumer `apps/cli` cannot resolve
   the renderer's `.tsx` graph without `jsx` configured.
+
+## Approving an artifact action (fixed)
+
+Clicking a destructive action inside an artifact on cloud failed the approval
+with `ExecutionNotFoundError`. The reported symptom pointed at an expiring
+approval window, but the trigger was not time: a resume issued **7ms** after the
+pause fails exactly the same way.
+
+### Why it failed
+
+The console's artifact page has no MCP client, so the shell's host adapter
+(`packages/react/src/api/shell-host.ts`) reaches the server over the ordinary
+executions HTTP API — `POST /executions`, then `POST /executions/:id/resume`.
+On cloud those paths are served by the **stateless worker**, not by a Durable
+Object: `makeExecutionStackMiddleware` builds a fresh executor + engine for every
+request, and a paused execution lives only in that engine instance's in-memory
+`pausedExecutions` map. The pause is therefore discarded with the request that
+created it, and the resume lands on a new engine whose map is empty. `null` from
+`engine.resume` became `ExecutionNotFoundError`, surfaced through the shell's
+postMessage bridge as a JSON-RPC `-32603`.
+
+The MCP plane never had this problem because its engine lives for the lifetime of
+the session Durable Object, which is also why the #1300 cross-session work
+(`McpExecutionOwnerDirectoryDO`, `resumeFallback`) is wired only into the MCP
+`resume` path. That machinery routes a resume to the DO holding the pause; the
+HTTP route carries no session id, so there was never a DO for it to find.
+
+### The fix
+
+An artifact action is not arbitrary code. The shell's grammar is exactly one
+tool call, and the approval gate (`enforceApproval`) runs strictly *before* the
+tool is invoked — so a paused artifact action holds no partial work, only a
+resolved intent that has not happened yet. That makes the pause reconstructible
+rather than something that must be kept alive.
+
+`POST /executions` with an `artifactId` now records the resolved call as a
+durable **pending approval** (owner-scoped, in the existing `blob` table, so no
+migration and no new table), keyed by execution id. On resume, the handler first
+tries the in-memory engine (unchanged, and still the path on local/desktop and
+for any same-instance resume), and falls back to the durable record: it verifies
+the record belongs to this caller, then runs the already-resolved call with the
+approval applied. Records carry an expiry and are consumed on use, so an approval
+is single-use and a decline drops it without running anything.
+
+This is deliberately scoped to artifact-originated executions. General codemode
+`execute` can pause anywhere inside arbitrary code, so its pause genuinely is a
+suspended fiber and cannot be reconstructed this way; that path keeps its
+existing behavior.
+
+When resume finds neither a live pause nor a durable record, the shell now
+renders an explicit expired-approval state ("trigger the action again") instead
+of surfacing a raw MCP error.
+
+### Follow-ups
+
+- **Preference management UI.** "Approve and don't ask again" grants are stored
+  client-side, per browser profile, keyed by artifact + tool address. There is no
+  UI yet to review or revoke them; clearing site data is the reset. A grants
+  list (view/clear) is the follow-up.
+- Sharing will revisit both halves: a shared artifact executing tools with the
+  viewer's connections needs the trust story in "Trust note" settled first, and
+  don't-ask-again grants must not survive a change of artifact owner.

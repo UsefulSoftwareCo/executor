@@ -58,6 +58,24 @@ const ExecutionNotFoundError = Schema.TaggedStruct("ExecutionNotFoundError", {
 }).annotate({ httpApiStatus: 404 });
 
 /**
+ * The approval window closed before the human answered.
+ *
+ * Separate from `ExecutionNotFoundError` because the two mean different things
+ * to the person clicking Approve: an unknown id is a client bug, while an
+ * expired approval is an ordinary outcome with a clear next step — nothing ran,
+ * so triggering the action again is safe. The shell renders this as its
+ * expired-approval state rather than an error.
+ */
+const ApprovalExpiredError = Schema.TaggedStruct("ApprovalExpiredError", {
+  executionId: Schema.String,
+})
+  .annotate({ httpApiStatus: 410 })
+  .annotate({
+    description:
+      "The approval window closed before the action was approved. Nothing ran; trigger the action again.",
+  });
+
+/**
  * An artifact-originated execution that could not be turned into a call: the
  * code was not the shell proxy's emission, the artifact is not this caller's,
  * or a role in it has no connection bound.
@@ -107,6 +125,6 @@ export const ExecutionsApi = HttpApiGroup.make("executions")
       params: ExecutionParams,
       payload: ResumeRequest,
       success: ResumeResponse,
-      error: [InternalError, ExecutionNotFoundError],
+      error: [InternalError, ExecutionNotFoundError, ApprovalExpiredError],
     }),
   );

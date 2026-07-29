@@ -15,6 +15,7 @@ import {
   type StorageFailure,
 } from "./fuma-runtime";
 import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartitions } from "./blob";
+import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
 import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
@@ -403,6 +404,16 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
     readonly remove: (input: RemoveArtifactInput) => Effect.Effect<void, StorageFailure>;
   };
+
+  /**
+   * Approvals recorded for artifact-originated calls that paused on a human.
+   *
+   * Scoped to this executor's owner, so a record is only readable by the caller
+   * who created it — the ownership check on resume is the same read that fetches
+   * it. See `pending-approval.ts` for why an artifact pause is reconstructible
+   * when a general codemode pause is not.
+   */
+  readonly pendingApprovals: PendingApprovalStore;
 
   readonly execute: (
     address: ToolAddress,
@@ -4389,6 +4400,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       user: subject != null ? `u:${tenant}:${subject}` : null,
     };
 
+    // Pending approvals file under the narrowest partition this executor has:
+    // a subject-bound executor keeps them private to that member, and a pure-org
+    // executor (no subject) files them at the org. Either way the partition IS
+    // the ownership check — another caller's executor reads a different
+    // namespace and simply does not see the record.
+    const pendingApprovals = makePendingApprovalStore(
+      blobs,
+      blobPartitions.user ?? blobPartitions.org,
+    );
+
     for (const plugin of plugins) {
       if (runtimes.has(plugin.id)) {
         return yield* new StorageError({
@@ -4751,6 +4772,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         rename: artifactsRename,
         remove: artifactsRemove,
       },
+      pendingApprovals,
       execute,
       close,
     };
