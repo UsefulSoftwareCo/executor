@@ -72,6 +72,52 @@ export const bundleInnerRenderer = async (): Promise<string> => {
   return js.text;
 };
 
+export const smokeHarnessEntry = (): string =>
+  path.resolve(packageRoot, "src/shell/smoke-harness.tsx");
+
+/**
+ * Bundle the artifact smoke-render harness to a self-contained IIFE string.
+ *
+ * The same trick as the inner renderer, for the same reason: this program has
+ * to exist as SOURCE TEXT, because its destination is a QuickJS sandbox that
+ * takes a string of code and has no module resolution of its own. React,
+ * react-dom/server, the component barrel and the tools proxy all end up inside
+ * it, which is exactly right — the whole point is that none of them are loaded
+ * in the trusted host process to render a model's artifact.
+ *
+ * Built for `browser` rather than `node` so react-dom resolves its
+ * `server.browser` build: that entry needs no `node:` builtins, which QuickJS
+ * does not have. `production` is pinned regardless of the ambient NODE_ENV —
+ * React's development build reaches for far more host surface, and the smoke
+ * render's answer must not depend on how the host was started.
+ */
+export const bundleSmokeHarness = async (): Promise<string> => {
+  const result = await build({
+    entryPoints: [smokeHarnessEntry()],
+    absWorkingDir: packageRoot,
+    bundle: true,
+    write: false,
+    format: "iife",
+    platform: "browser",
+    target: "es2022",
+    jsx: "automatic",
+    // NOT minified, deliberately. React builds the component stack from
+    // function names, and that stack is most of the value of what the model is
+    // told: "at ChartTooltipContent, at BarChart, at App" is a fix, "at cie, at
+    // Sg" is nothing. Minifying saves ~1MB of source text the sandbox parses in
+    // a few hundred milliseconds; the stack is worth more than that.
+    minify: false,
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+  });
+
+  const js = result.outputFiles[0];
+  if (!js) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build helpers report failure by throwing
+    throw new Error("Failed to bundle the artifact smoke-render harness.");
+  }
+  return js.text;
+};
+
 /** Add to an app's `plugins` array to make the shell bundleable in that app. */
 export const innerRendererPlugin = (): InnerRendererVitePlugin => ({
   name: "executor-inner-renderer-source",

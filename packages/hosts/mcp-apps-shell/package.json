@@ -51,13 +51,14 @@
     "./globals.css": "./src/shell/globals.css"
   },
   "scripts": {
-    "build:shell": "vite build --config vite.config.shell.ts",
+    "build:shell": "bun run gen:smoke-harness && vite build --config vite.config.shell.ts",
     "gen:provided-globals": "bun scripts/gen-provided-globals.ts",
     "fonts:subset": "bun scripts/subset-fonts.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
+    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json",
+    "gen:smoke-harness": "bun scripts/gen-smoke-harness.ts"
   },
   "dependencies": {
     "@executor-js/react": "workspace:*",

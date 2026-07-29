@@ -3,6 +3,7 @@ import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 import { createExecutionEngine } from "@executor-js/execution";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { makeLocalApiHandler } from "./app";
 import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
@@ -92,18 +93,17 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // Each toolkit gets its own executor, so `artifacts` is bound per resource
     // below rather than hoisted with the rest.
     //
-    // Deliberately WITHOUT the create-time smoke render that the HTTP hosts
-    // (cloud, self-host, Cloudflare) enable. This daemon is a dependency of
-    // `apps/cli`, whose build does not configure `jsx` — and TypeScript
-    // resolves the renderer entry's dynamic `import()` of the `.tsx` component
-    // barrel just as eagerly as a static one, so opting in here makes the CLI
-    // typecheck the whole React graph. Turning that on surfaces a duplicate
-    // `@types/react` in the CLI and desktop trees, which is a real problem but
-    // a separate one. Self-host covers the Node/Bun smoke-render path
-    // meanwhile; artifacts created against the local daemon are still
-    // statically validated, just not trial-rendered.
+    // Including the create-time smoke render, on the same terms as every other
+    // host. This daemon is a dependency of `apps/cli`, whose build does not
+    // configure `jsx`, and the renderer used to be unusable here for that
+    // reason — TypeScript resolved its dynamic `import()` of the `.tsx`
+    // component barrel eagerly and dragged the whole React graph (plus a
+    // duplicate `@types/react`) into the CLI and desktop trees. It renders
+    // inside a QuickJS sandbox now, so there is no `.tsx` in its graph and no
+    // React in this process; the cost is one lazily-loaded string constant.
     const appsConfig = {
       loadAppShellHtml: loadMcpAppsShellHtml,
+      smokeRenderArtifact,
       artifactUrl: artifactUrlFor(webBaseUrl),
     };
     mcp = createMcpRequestHandler({

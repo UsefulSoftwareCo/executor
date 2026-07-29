@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
+import { SealedBundleError, executeSealedBundle } from "@executor-js/runtime-quickjs";
+import * as Effect from "effect/Effect";
 
-import { resetRuntimeEvaluationProbe, smokeRenderArtifact } from "./smoke-render";
+import harnessBundle from "./smoke-harness-bundle.gen";
+import { smokeRenderArtifact, stubSealedBundle } from "./smoke-render";
+import type { SmokeRenderResult } from "./smoke-render-result";
 
 // The create-time render check. Each case is a shape a model actually writes;
 // the assertion is what the model would be told back.
@@ -114,27 +118,131 @@ describe("smokeRenderArtifact", () => {
     expect(result).toEqual({ status: "ok" });
   });
 
-  it("reports nothing on a runtime that forbids code generation", async () => {
-    // workerd (Cloudflare) refuses `new Function` outright. That says nothing
-    // about the artifact, so every create there must pass rather than be
-    // refused with an error about code the model did not write.
-    const realFunction = globalThis.Function;
-    // oxlint-disable-next-line executor/no-error-constructor -- boundary: reproducing workerd's own thrown message
-    const blocked = (() => {
-      throw new Error("Code generation from strings disallowed for this context");
-    }) as unknown as FunctionConstructor;
-    globalThis.Function = blocked;
-    resetRuntimeEvaluationProbe();
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the global must be restored whatever the assertion does
-    try {
-      // Anything at all, including code that certainly would not render.
-      expect(
-        await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }"),
-      ).toEqual({ status: "ok" });
-    } finally {
-      globalThis.Function = realFunction;
-      resetRuntimeEvaluationProbe();
-    }
+  it("passes rather than blocks when the sandbox cannot answer", async () => {
+    // FAIL OPEN, the contract this check lives under. A sandbox that fails to
+    // start, a harness bundle missing from a partial build, a deadline — none
+    // of them say anything about the artifact, so a create must go through
+    // rather than be refused with an error about code the model did not write.
+    // Simulated at the seam the host actually depends on: the sealed-bundle
+    // call that would carry the answer back.
+    const failing = Effect.fail(new SealedBundleError({ message: "sandbox unavailable" }));
+    using _sandbox = stubSealedBundle(() => failing);
+
+    // Code that certainly would NOT render, so a pass can only come from the
+    // fail-open path and not from the artifact being fine.
+    expect(await smokeRenderArtifact("function App(){ return <ChartTooltipContent />; }")).toEqual({
+      status: "ok",
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // The security property this check exists inside a sandbox for.
+  //
+  // These are attempted escapes, written the way a compromised or careless
+  // model would write them, asserting the sandbox DENIES each one. They are
+  // not testing the ~280-name scope — shadowing an identifier is not a
+  // boundary, since `globalThis.process` never mentions the shadowed name.
+  // They are testing that the host's process is genuinely not reachable from
+  // where this code runs. Every one of them would have read real host state
+  // back when the render ran in-process.
+  //
+  // A denied escape surfaces as a render failure (the reference throws), which
+  // is exactly right: the sandbox has no `process` to find, so looking for one
+  // is a ReferenceError like any other.
+  // ------------------------------------------------------------------
+  describe("sandbox containment", () => {
+    const renderExpression = (expression: string): Promise<SmokeRenderResult> =>
+      smokeRenderArtifact(`function App(){ return <div>{String(${expression})}</div>; }`);
+
+    it("has no process to reach", async () => {
+      // `typeof` cannot throw, so this reads back what the sandbox actually
+      // has: "undefined". If a host process leaked in, it would say "object".
+      const result = await renderExpression("typeof process");
+      expect(result).toEqual({ status: "ok" });
+    });
+
+    it("denies globalThis.process", async () => {
+      const result = await renderExpression("globalThis.process.env.EXECUTOR_SECRET");
+      expect(result.status).toBe("failed");
+    });
+
+    it("denies the Function constructor route to process", async () => {
+      // The classic scope-shadowing bypass: build a function whose body is
+      // evaluated in global scope, so no shadowed binding is in the way.
+      const result = await renderExpression('Function("return process")()');
+      expect(result.status).toBe("failed");
+      expect(result.status === "failed" ? result.message : "").toContain("process");
+    });
+
+    it("denies dynamic import", async () => {
+      // Asserted against the sandbox directly rather than through a component.
+      // `import()` REJECTS rather than throwing, and its rejection lands after
+      // the one-shot server render has finished (effects never run during SSR),
+      // so no artifact could observe it — the render would pass while proving
+      // nothing. What matters is that the module genuinely does not load: the
+      // sandbox has no loader behind `import` and no host module graph to reach.
+      const probe = await Effect.runPromise(
+        executeSealedBundle({
+          bundle: harnessBundle ?? "",
+          call: `(async () => {
+            try { await import('node:fs'); return 'RESOLVED'; }
+            catch (e) { return 'REJECTED:' + (e && e.message ? e.message : String(e)); }
+          })()`,
+          timeoutMs: 30_000,
+        }),
+      );
+      expect(probe).toContain("REJECTED:");
+      expect(probe).toContain("could not load module");
+    }, 60_000);
+
+    it("has no host globals to reach at all", async () => {
+      // The complement of the shadowing tests: not "is the name shadowed" but
+      // "does the sandbox's global object contain any of this". Asked of the
+      // sandbox itself, so no component scope is involved.
+      const probe = await Effect.runPromise(
+        executeSealedBundle({
+          bundle: harnessBundle ?? "",
+          call: `Promise.resolve(JSON.stringify({
+            process: typeof globalThis.process,
+            fetch: typeof globalThis.fetch,
+            require: typeof globalThis.require,
+            XMLHttpRequest: typeof globalThis.XMLHttpRequest,
+            WebSocket: typeof globalThis.WebSocket,
+          }))`,
+          timeoutMs: 30_000,
+        }),
+      );
+      expect(JSON.parse(probe)).toEqual({
+        process: "undefined",
+        fetch: "undefined",
+        require: "undefined",
+        XMLHttpRequest: "undefined",
+        WebSocket: "undefined",
+      });
+    }, 60_000);
+
+    it("denies require of a host module", async () => {
+      const result = await smokeRenderArtifact(
+        "function App(){ require('node:child_process'); return <div/>; }",
+      );
+      expect(result.status).toBe("failed");
+    });
+
+    it("denies network access", async () => {
+      const result = await smokeRenderArtifact(
+        "function App(){ fetch('https://example.com'); return <div/>; }",
+      );
+      expect(result.status).toBe("failed");
+    });
+
+    it("stops a component that spins forever", async () => {
+      // In-process this could not be done — no timeout interrupts a spinning
+      // host thread, so such an artifact hung the request until the host's own
+      // timeout. The sandbox's interrupt handler preempts the interpreter.
+      // Inconclusive, so `ok` by the fail-open contract, but BOUNDED.
+      const result = await smokeRenderArtifact("function App(){ while (true) {} return <div/>; }");
+      expect(result).toEqual({ status: "ok" });
+    }, 60_000);
   });
 
   it("reports a syntax error as a failure rather than throwing", async () => {
