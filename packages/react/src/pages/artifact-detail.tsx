@@ -1,4 +1,4 @@
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo } from "react";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ClientOnly, useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -43,6 +43,30 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
 
   const title = AsyncResult.isSuccess(artifact) ? artifact.value.title : "Artifact";
   useExecutorDocumentTitle(title);
+
+  /**
+   * Re-read the row when the tab comes back to the foreground.
+   *
+   * An artifact is written by a MODEL, in another window, while this page sits
+   * open — a user watching their dashboard asks the agent to add a column, then
+   * looks back here. Navigation refetches, but nothing navigates in that story,
+   * and the atom's 30s TTL only bounds staleness for a page that is being read
+   * again. Returning attention to the tab is the moment the user expects to see
+   * the new version, so that is when it is fetched; `refresh` re-runs the same
+   * query the page already depends on, and the shell's iframe is keyed on the
+   * source, so new code remounts it against a fresh document.
+   */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    globalThis.window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      globalThis.window.removeEventListener("focus", onVisible);
+    };
+  }, [refresh]);
 
   const handleRename = async (nextTitle: string) => {
     const exit = await doRename({

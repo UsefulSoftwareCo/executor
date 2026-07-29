@@ -716,6 +716,237 @@ describe("MCP host — artifact retrieval", () => {
 });
 
 // ---------------------------------------------------------------------------
+// create-artifact — update in place
+// ---------------------------------------------------------------------------
+//
+// The contract: a model tweaking an artifact calls the SAME tool with the
+// artifact's id, and the stored row is replaced rather than a second artifact
+// minted. The catalog stays three tools wide and the user's link keeps working.
+
+const UPDATED_CODE = "function App() { return <div>hi again</div>; }";
+
+describe("MCP host — create-artifact update in place", () => {
+  it("replaces the code and title of an existing artifact instead of minting a copy", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const created = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Draft", description: "First pass" },
+        });
+        const artifactId = structuredOf(created).artifactId;
+        expect(artifactId).toBe("art_1");
+
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: UPDATED_CODE, title: "Active users dashboard", artifactId },
+        });
+        expect(updated.isError).toBeFalsy();
+        // Same id back, so the model (and the user's link) keeps addressing one
+        // artifact.
+        expect(structuredOf(updated)).toEqual({ code: UPDATED_CODE, artifactId: "art_1" });
+
+        const listed = await client.callTool({ name: "list-artifacts", arguments: {} });
+        expect(structuredOf(listed)).toMatchObject({
+          artifacts: [
+            {
+              id: "art_1",
+              title: "Active users dashboard",
+              // An update that says nothing about the description keeps it.
+              description: "First pass",
+            },
+          ],
+        });
+        // One artifact, not two.
+        expect((structuredOf(listed).artifacts as readonly unknown[]).length).toBe(1);
+
+        const shown = await client.callTool({ name: "show-artifact", arguments: { id: "art_1" } });
+        expect(structuredOf(shown)).toEqual({ code: UPDATED_CODE, artifactId: "art_1" });
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("keeps the stored title when an update only changes the code", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Domains", description: "Every domain" },
+        });
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: UPDATED_CODE, artifactId: "art_1" },
+        });
+        expect(updated.isError).toBeFalsy();
+        expect(store.rows.get("art_1")).toMatchObject({
+          title: "Domains",
+          description: "Every domain",
+          code: UPDATED_CODE,
+        });
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("requires a title when creating, since there is nothing to inherit", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("title is required");
+        expect(store.calls).toEqual([]);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("still validates the code on an update, and leaves the stored row untouched", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Draft" },
+        });
+        const rejected = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: "function App(){ const Card = 1; return <div/>; }",
+            artifactId: "art_1",
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        expect(textOf(rejected)).toContain("cannot be redeclared");
+        expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
+        expect(store.calls.length).toBe(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("refuses an artifact id that is not the caller's, without saying whether it exists", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: UPDATED_CODE, title: "Mine now", artifactId: "art_someone_else" },
+        });
+        expect(result.isError).toBe(true);
+        // The same answer `execute-action` gives, so create-artifact cannot be
+        // used to probe which ids exist.
+        expect(structuredOf(result)).toMatchObject({ error: "artifact_unavailable" });
+        expect(store.calls).toEqual([]);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("re-resolves bindings from the new code when an update adds an integration", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Static" },
+        });
+        expect(store.calls[0]?.bindings).toEqual({});
+
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: VERCEL_ARTIFACT, artifactId: "art_1" },
+        });
+        expect(updated.isError).toBeFalsy();
+        // The role the NEW code introduces is inferred and persisted; the old
+        // (empty) binding set is not carried forward.
+        expect(store.calls[1]?.bindings).toEqual({
+          vercel: { integration: "vercel", owner: "user", connection: "personalVercel" },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
+    );
+  });
+
+  it("honours an explicit connections map on an update", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Static" },
+        });
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: {
+            code: VERCEL_ARTIFACT,
+            artifactId: "art_1",
+            connections: { vercel: "vercel.org.teamVercel" },
+          },
+        });
+        expect(updated.isError).toBeFalsy();
+        expect(store.calls[1]?.bindings).toEqual({
+          vercel: { integration: "vercel", owner: "org", connection: "teamVercel" },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([
+          conn("vercel", "user", "personalVercel"),
+          conn("vercel", "org", "teamVercel"),
+        ]),
+      },
+    );
+  });
+
+  it("hands back the same deep link on an update, since the id is unchanged", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      NO_APPS_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "create-artifact",
+          arguments: { code: COUNTER_CODE, title: "Draft" },
+        });
+        const updated = await client.callTool({
+          name: "create-artifact",
+          arguments: { code: UPDATED_CODE, artifactId: "art_1" },
+        });
+        expect(structuredOf(updated)).toEqual({
+          status: "fallback_url",
+          url: "https://executor.test/artifacts/art_1",
+          artifactId: "art_1",
+        });
+      },
+      { artifacts: store.port, artifactUrl: artifactUrlFor("https://executor.test") },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // create-artifact — connection binding
 // ---------------------------------------------------------------------------
 //

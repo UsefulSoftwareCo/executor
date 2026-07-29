@@ -1497,20 +1497,59 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
      * because a create that can't bind is a create that would have saved a
      * broken artifact. The model finds out now, with the candidate list, rather
      * than the user finding out later through a query error inside the UI.
+     *
+     * `artifactId` turns the same call into an update in place. A model tweaking
+     * a dashboard has the whole component in hand already — it fetched it with
+     * `show-artifact`, edited it, and is calling back with the result — so a
+     * separate `update-artifact` tool would take the same four arguments and
+     * differ only in whether a row is minted. One tool keeps the catalog small
+     * and makes the wrong thing (a copy per tweak) the thing the model has to
+     * ask for rather than the thing it gets by default.
+     *
+     * An update replaces the code outright — v1 keeps no version history — and
+     * re-extracts and re-resolves the bindings from the NEW source, because the
+     * roles the new code uses are not necessarily the ones the old code did.
+     * `title` and `description` are optional on an update and absent means keep
+     * what is stored, so a pure code tweak doesn't have to restate them.
      */
     const createArtifact = (input: {
       readonly code: string;
-      readonly title: string;
+      readonly title?: string;
       readonly description?: string;
       readonly connections?: Readonly<Record<string, string>>;
+      readonly artifactId?: string;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
+        // An update reads the existing row FIRST, both to carry its title and
+        // description forward and to refuse a foreign id before any work. The
+        // refusal is `artifact_unavailable` — the same answer `execute-action`
+        // gives — so create-artifact cannot be used to probe which ids exist.
+        const existing =
+          input.artifactId === undefined ? null : yield* loadArtifact(input.artifactId);
+        if (input.artifactId !== undefined && !existing) return actionArtifactUnavailableResult();
+
+        const title = input.title ?? existing?.title;
+        if (title === undefined) {
+          return renderRejectedResult(
+            "title is required when creating an artifact. Give it a short human-readable name.",
+          );
+        }
+        // Only an update inherits; a create with no description stores none.
+        const description = input.description ?? existing?.description ?? undefined;
+
         const rejection = validateArtifactCode(input.code);
         if (rejection) return renderRejectedResult(rejection);
 
+        const saveInput = {
+          code: input.code,
+          title,
+          ...(description === undefined ? {} : { description }),
+          ...(existing === null ? {} : { existingId: existing.id }),
+        };
+
         const roles = extractArtifactRoles(input.code);
         if (roles.length === 0 && input.connections === undefined) {
-          return yield* saveAndDeliverArtifact({ ...input, bindings: {} });
+          return yield* saveAndDeliverArtifact({ ...saveInput, bindings: {} });
         }
 
         if (!config.connections) {
@@ -1532,11 +1571,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         yield* Effect.annotateCurrentSpan({
           "mcp.artifact.role_count": roles.length,
         });
-        return yield* saveAndDeliverArtifact({ ...input, bindings: resolved.bindings });
+        return yield* saveAndDeliverArtifact({ ...saveInput, bindings: resolved.bindings });
       }).pipe(
         Effect.withSpan("mcp.host.tool.create_artifact", {
           attributes: {
             "mcp.tool.name": "create-artifact",
+            "mcp.artifact.update": input.artifactId !== undefined,
             "mcp.execute.code_length": input.code.length,
           },
         }),
@@ -1614,10 +1654,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               'To use two accounts of the same integration, tag each call site with a role — `tools.linear("prod").issues.list` and `tools.linear("staging").issues.list` — and map every role in `connections`.',
               "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
               "To read every page of a paginated tool, call `useInfiniteQuery(tools.<integration>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
+              "To CHANGE an artifact that already exists — a tweak, a fix, a new column — pass its `artifactId` and it is updated in place. Fetch the current source with `show-artifact` first, edit that, and send the whole component back. Never create a second artifact for a revision of an existing one.",
               "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
             ].join("\n"),
             inputSchema: {
               code: z.string().trim().min(1).describe("The React component source. Export `App`."),
+              artifactId: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                  "The artifact to update in place, from `list-artifacts` or a previous create. Omit to create a new one. `code` fully replaces the stored source and the connection bindings are re-resolved from it, so send the complete component, not a fragment.",
+                ),
               connections: z
                 .record(z.string(), z.string())
                 .optional()
@@ -1628,22 +1677,23 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 .string()
                 .trim()
                 .min(1)
+                .optional()
                 .describe(
-                  'Short human-readable name for the artifact, e.g. "Active users dashboard". The user sees this and you match against it later.',
+                  'Short human-readable name for the artifact, e.g. "Active users dashboard". The user sees this and you match against it later. Required when creating; on an update, omit it to keep the current title.',
                 ),
               description: z
                 .string()
                 .optional()
                 .describe(
-                  "What this UI shows, in a sentence. Used to find the artifact again on a later request.",
+                  "What this UI shows, in a sentence. Used to find the artifact again on a later request. On an update, omit it to keep the current description.",
                 ),
             },
             _meta: {
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
             },
           },
-          ({ code, title, description, connections }) =>
-            runToolEffect(createArtifact({ code, title, description, connections })),
+          ({ code, title, description, connections, artifactId }) =>
+            runToolEffect(createArtifact({ code, title, description, connections, artifactId })),
         ),
       ).pipe(
         Effect.withSpan("mcp.host.register_tool", {
