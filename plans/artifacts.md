@@ -235,7 +235,7 @@ HTTP route carries no session id, so there was never a DO for it to find.
 ### The fix
 
 An artifact action is not arbitrary code. The shell's grammar is exactly one
-tool call, and the approval gate (`enforceApproval`) runs strictly *before* the
+tool call, and the approval gate (`enforceApproval`) runs strictly _before_ the
 tool is invoked — so a paused artifact action holds no partial work, only a
 resolved intent that has not happened yet. That makes the pause reconstructible
 rather than something that must be kept alive.

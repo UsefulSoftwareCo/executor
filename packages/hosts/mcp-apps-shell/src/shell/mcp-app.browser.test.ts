@@ -445,6 +445,58 @@ function App() {
 }
 `;
 
+// Two approval-gated tools in one artifact, which is what makes "don't ask
+// again" observable: a grant remembered for one address must not answer the
+// other.
+const generatedTwoToolApprovalCode = `
+function App() {
+  const [createStatus, setCreateStatus] = useState("idle");
+  const [renewStatus, setRenewStatus] = useState("idle");
+  const createItem = useMutation(
+    tools.inventory.createItem.mutationOptions({
+      onSuccess: (result) => {
+        const created = result?.ok ? result.data : result;
+        setCreateStatus(created.name);
+      },
+      onError: (error) => setCreateStatus(error.message),
+    })
+  );
+  const updateAutoRenew = useMutation(
+    tools.inventory.updateDomainAutoRenew.mutationOptions({
+      onSuccess: (result) => {
+        const updated = result?.ok ? result.data : result;
+        setRenewStatus(String(updated.renew));
+      },
+      onError: (error) => setRenewStatus(error.message),
+    })
+  );
+
+  return (
+    <Card>
+      <CardContent>
+        <Button id="create-first" onClick={() => createItem.mutate({ body: { name: "First Widget" } })}>
+          Create first
+        </Button>
+        <Button id="create-second" onClick={() => createItem.mutate({ body: { name: "Second Widget" } })}>
+          Create second
+        </Button>
+        {/* Writes the value the fixture already holds, so this test proves the
+            second address still asks without disturbing the shared upstream
+            state a later test reads. */}
+        <Button
+          id="renew"
+          onClick={() => updateAutoRenew.mutate({ domain: "openexecutor.com", body: { autoRenew: false } })}
+        >
+          Renew
+        </Button>
+        <div id="create-status">{createStatus}</div>
+        <div id="renew-status">{renewStatus}</div>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
 const generatedAutoMutationCode = `
 function App() {
   const [status, setStatus] = useState("idle");
@@ -1703,44 +1755,135 @@ describe("MCP app generated UI browser isolation", () => {
     }
   }, 30_000);
 
-  it("resumes declined and canceled approvals without performing the mutation", async () => {
+  // One refusal control, not two. `buildElicit` and `enforceApproval` in
+  // `@executor-js/sdk` raise `ElicitationDeclinedError` for ANY non-accept
+  // action, so "decline" and "cancel" are the same outcome at the gate and the
+  // modal offers only Cancel.
+  it("resumes a canceled approval without performing the mutation", async () => {
     if (!browser || !hostServer || !openApiServer) {
       throw new Error("Browser harness did not start.");
     }
 
-    for (const action of ["Decline", "Cancel"] as const) {
-      const { page, shellFrame } = await openHarness(browser, hostServer.url);
-      const initialPostCount = openApiServer.postRequests.length;
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+    const initialPostCount = openApiServer.postRequests.length;
 
-      try {
-        const innerFrame = await renderGeneratedUi(page, shellFrame, generatedApprovalCode);
-        await innerFrame.locator("#ask").click({ timeout: 10_000 });
-        await shellFrame.locator("text=Approve action").waitFor({ timeout: 10_000 });
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedApprovalCode);
+      await innerFrame.locator("#ask").click({ timeout: 10_000 });
+      await shellFrame.locator("text=Approve action").waitFor({ timeout: 10_000 });
 
-        await shellFrame.getByRole("button", { name: action }).click({ timeout: 10_000 });
-        await page.waitForFunction(
-          () => (window as unknown as BrowserHostWindow).__mcpHostState.resumeCalls.length === 1,
-          undefined,
-          { timeout: 10_000 },
-        );
+      expect(await shellFrame.getByRole("button", { name: "Decline" }).count()).toBe(0);
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-cancel"]')
+        .click({ timeout: 10_000 });
+      await page.waitForFunction(
+        () => (window as unknown as BrowserHostWindow).__mcpHostState.resumeCalls.length === 1,
+        undefined,
+        { timeout: 10_000 },
+      );
 
-        expect(openApiServer.postRequests).toHaveLength(initialPostCount);
-        const hostState = await getHostState(page);
-        expect(hostState.resumeCalls).toEqual([
-          expect.objectContaining({
-            name: "execute-action-resume",
-            arguments: {
-              executionId: expect.any(String),
-              action: action === "Decline" ? "decline" : "cancel",
-              content: "{}",
-            },
-          }),
-        ]);
-      } finally {
-        await page.close();
-      }
+      expect(openApiServer.postRequests).toHaveLength(initialPostCount);
+      const hostState = await getHostState(page);
+      expect(hostState.resumeCalls).toEqual([
+        expect.objectContaining({
+          name: "execute-action-resume",
+          arguments: {
+            executionId: expect.any(String),
+            action: "cancel",
+            content: "{}",
+          },
+        }),
+      ]);
+    } finally {
+      await page.close();
     }
   }, 30_000);
+
+  it("tells the user what they are confirming rather than where the modal came from", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedApprovalCode);
+      await innerFrame.locator("#ask").click({ timeout: 10_000 });
+
+      const card = shellFrame.locator('[data-testid="trusted-interaction-card"]');
+      await card.waitFor({ timeout: 10_000 });
+      const cardText = await card.innerText();
+
+      expect(cardText).toContain("Approve action");
+      expect(cardText).toContain("You've triggered a destructive action in the UI, please confirm");
+      expect(cardText).not.toContain("This approval is handled by the Executor shell.");
+      // The concrete request preview stays — copy changed, evidence did not.
+      expect(cardText).toContain("createItem");
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("stops asking for a tool the user approved for good, and only that tool", async () => {
+    if (!browser || !hostServer || !openApiServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+    const modal = shellFrame.locator('[data-testid="trusted-interaction-modal"]');
+
+    try {
+      // Remembered grants persist per console origin, so start from a known
+      // empty state rather than inheriting one from an earlier run.
+      await shellFrame.evaluate(() => globalThis.localStorage.clear());
+
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedTwoToolApprovalCode);
+      const initialPostCount = openApiServer.postRequests.length;
+
+      await innerFrame.locator("#create-first").click({ timeout: 10_000 });
+      await modal.waitFor({ timeout: 10_000 });
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-approve-menu"]')
+        .click({ timeout: 10_000 });
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-approve-always"]')
+        .click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#create-status")?.textContent === "First Widget",
+        undefined,
+        { timeout: 10_000 },
+      );
+
+      // Same tool again: answered from the grant, so no modal ever mounts.
+      await innerFrame.locator("#create-second").click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#create-status")?.textContent === "Second Widget",
+        undefined,
+        { timeout: 10_000 },
+      );
+      expect(await modal.count()).toBe(0);
+      expect(openApiServer.postRequests.slice(initialPostCount)).toEqual([
+        JSON.stringify({ name: "First Widget" }),
+        JSON.stringify({ name: "Second Widget" }),
+      ]);
+
+      // A different address on the same artifact is a different action.
+      await innerFrame.locator("#renew").click({ timeout: 10_000 });
+      await modal.waitFor({ timeout: 10_000 });
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-approve"]')
+        .click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#renew-status")?.textContent === "false",
+        undefined,
+        { timeout: 10_000 },
+      );
+
+      const hostState = await getHostState(page);
+      expect(
+        hostState.resumeCalls.map((call) => (call.arguments as { action?: string }).action),
+      ).toEqual(["accept", "accept", "accept"]);
+    } finally {
+      await shellFrame.evaluate(() => globalThis.localStorage.clear()).catch(() => undefined);
+      await page.close();
+    }
+  }, 60_000);
 
   it("blocks generated UI mutations that run on mount until trusted approval", async () => {
     if (!browser || !hostServer || !openApiServer) {
@@ -2030,6 +2173,50 @@ describe("MCP app generated UI browser isolation", () => {
       await schemaMcpHarness.close();
     }
   }, 30_000);
+
+  // "Don't ask again" is consent to skip the prompt, not consent to invent the
+  // answer. This schema's `name`, `priority` and `tags` are required with no
+  // defaults, so there is nothing to resume with and the modal must come back.
+  it("still asks when a remembered tool needs values the user never gave", async () => {
+    if (!browser || !shellServer) {
+      throw new Error("Browser harness did not start.");
+    }
+
+    const schemaMcpHarness = await startSchemaElicitationMcpHarness();
+    const schemaHostServer = await startHostServer(shellServer.url, schemaMcpHarness);
+    const { page, shellFrame } = await openHarness(browser, schemaHostServer.url);
+    const modal = shellFrame.locator('[data-testid="trusted-interaction-modal"]');
+
+    try {
+      await shellFrame.evaluate(() => globalThis.localStorage.clear());
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedSchemaApprovalCode);
+
+      await innerFrame.locator("#ask-schema").click({ timeout: 10_000 });
+      await modal.waitFor({ timeout: 10_000 });
+      await shellFrame.getByLabel("Display name").fill("Rhea");
+      await shellFrame.getByLabel("Priority").selectOption("high");
+      await shellFrame.getByLabel("Beta").click();
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-approve-menu"]')
+        .click({ timeout: 10_000 });
+      await shellFrame
+        .locator('[data-testid="trusted-interaction-approve-always"]')
+        .click({ timeout: 10_000 });
+      await modal.waitFor({ state: "detached", timeout: 10_000 });
+
+      await innerFrame.locator("#ask-schema").click({ timeout: 10_000 });
+      await modal.waitFor({ timeout: 10_000 });
+      // The remembered grant did not answer for the user, and nothing resumed
+      // behind their back.
+      const hostState = await getHostState(page);
+      expect(hostState.resumeCalls).toHaveLength(1);
+    } finally {
+      await shellFrame.evaluate(() => globalThis.localStorage.clear()).catch(() => undefined);
+      await page.close();
+      await schemaHostServer.close();
+      await schemaMcpHarness.close();
+    }
+  }, 60_000);
 
   it("keeps trusted approval controls visible in a short host iframe", async () => {
     if (!browser || !hostServer) {

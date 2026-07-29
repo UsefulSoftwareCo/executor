@@ -14,6 +14,13 @@ export type TrustedInteraction = {
     message?: unknown;
     url?: unknown;
     requestedSchema?: unknown;
+    /**
+     * The paused call's tool address (`executor.coreTools.policies.create`),
+     * put on the wire by `formatPausedExecution`. It is the only stable
+     * identity a pause carries — the execution id is per-call — so it is what
+     * the shell keys a remembered approval by.
+     */
+    address?: unknown;
   };
 };
 

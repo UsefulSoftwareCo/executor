@@ -3,8 +3,14 @@
 // path that used to surface a raw `ExecutionNotFoundError` to the user when an
 // approval arrived after the pause was gone.
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 
 import { APPROVAL_EXPIRED_MESSAGE, createHttpShellHost } from "./shell-host";
+
+/** The adapter's request body, read back off the wire. */
+const decodeRequestBody = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -16,14 +22,14 @@ const jsonResponse = (body: unknown, status = 200): Response =>
  *  request the server actually receives rather than the adapter's internals. */
 const recordingFetch = (respond: (url: string) => Response) => {
   const calls: Array<{ url: string; body: unknown }> = [];
-  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push({
       url,
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      body: typeof init?.body === "string" ? decodeRequestBody(init.body) : undefined,
     });
     return respond(url);
-  }) as unknown as typeof globalThis.fetch;
+  };
   return { calls, fetch };
 };
 

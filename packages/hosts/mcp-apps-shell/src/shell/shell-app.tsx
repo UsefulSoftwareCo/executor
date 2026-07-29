@@ -10,7 +10,10 @@ import "@tailwindcss/browser";
 import React, { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { useElicitationApproval } from "@executor-js/react/components/elicitation-approval";
+import {
+  elicitationDefaultContent,
+  useElicitationApproval,
+} from "@executor-js/react/components/elicitation-approval";
 
 import {
   createToolCaller,
@@ -30,6 +33,11 @@ import tailwindBrowserScript from "virtual:executor-tailwind-browser";
 
 type PendingInteraction = TrustedInteraction & {
   resolve: (response: TrustedInteractionResponse) => void;
+  /** Where a "don't ask again" for this pause would be stored, or `null` when
+   *  the pause cannot be scoped to a tool and artifact — see
+   *  `approvalGrantKey`. `null` hides the option rather than storing a grant
+   *  that would match the wrong thing. */
+  grantKey: string | null;
 };
 
 export type McpAppsShellHost = ToolCallHost & {
@@ -187,6 +195,102 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 // ---------------------------------------------------------------------------
+// Remembered approvals ("Approve and don't ask again")
+// ---------------------------------------------------------------------------
+
+/**
+ * A grant is scoped to ONE tool address, on ONE artifact, for ONE viewer.
+ *
+ *  - Tool address: `interaction.address`, the only stable identity a pause
+ *    carries (the execution id is minted per call). Approving
+ *    `github.issues.create` here says nothing about `github.repos.delete`.
+ *  - Artifact: an artifact's bindings are what turn that address into a real
+ *    connection, so the same address on a different artifact is a different
+ *    action and asks again.
+ *  - Viewer: v1 scoping is the storage itself. The shell frame is same-origin
+ *    with the console (see the outer sandbox in `artifact-renderer.tsx`), so
+ *    these grants live in the console origin's `localStorage`, which is already
+ *    per browser profile and therefore per signed-in person at this machine.
+ *    There is no viewer id inside the shell frame and inventing one would be a
+ *    fiction; when grants need to follow a viewer across devices they belong on
+ *    the server, keyed by the real viewer id.
+ *
+ * Nothing here is a security boundary. The SERVER still gates every call; this
+ * only decides whether the shell shows the human a modal it would otherwise
+ * answer the same way.
+ */
+const APPROVAL_GRANTS_STORAGE_KEY = "executor.shell.approval-grants.v1";
+
+/**
+ * `localStorage`, or `null` when it is unusable.
+ *
+ * The shell document is same-origin with the console and normally has storage,
+ * but that is a property of how it is embedded, not a guarantee: an opaque
+ * origin throws on the property read itself, and a browser with site data
+ * blocked throws on write while still exposing the object. Both are probed
+ * here, once per call, so an approval can never be broken by storage — the
+ * worst case is that a grant is not remembered.
+ */
+const approvalGrantStorage = (): Storage | null => {
+  try {
+    const storage = globalThis.localStorage;
+    const probe = `${APPROVAL_GRANTS_STORAGE_KEY}.probe`;
+    storage.setItem(probe, "1");
+    storage.removeItem(probe);
+    return storage;
+  } catch {
+    return null;
+  }
+};
+
+const readApprovalGrants = (): ReadonlySet<string> => {
+  const storage = approvalGrantStorage();
+  if (!storage) return new Set();
+  try {
+    const raw = storage.getItem(APPROVAL_GRANTS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+const rememberApprovalGrant = (key: string): void => {
+  const storage = approvalGrantStorage();
+  if (!storage) return;
+  const next = new Set(readApprovalGrants());
+  next.add(key);
+  try {
+    storage.setItem(APPROVAL_GRANTS_STORAGE_KEY, JSON.stringify([...next]));
+  } catch {
+    // Quota, or storage revoked between the probe and the write. The approval
+    // the user just gave still stands; only the memory of it is lost.
+  }
+};
+
+/**
+ * `null` when this pause cannot be scoped — no artifact id, or a pause with no
+ * address on it. Such an interaction is never auto-approved and never offers to
+ * be remembered, because a grant we cannot scope is a grant we cannot honor
+ * precisely.
+ */
+const approvalGrantKey = (artifactId: string | undefined, address: unknown): string | null =>
+  artifactId !== undefined &&
+  artifactId.length > 0 &&
+  typeof address === "string" &&
+  address.length > 0
+    ? // A space separates the two halves: artifact ids are `art_`-prefixed
+      // base36 and tool addresses are dot-joined identifiers, so neither can
+      // contain one and no pair can collide.
+      `${artifactId} ${address}`
+    : null;
+
+// ---------------------------------------------------------------------------
 // Shell App — connects to MCP host, receives code, renders components
 // ---------------------------------------------------------------------------
 
@@ -222,12 +326,27 @@ export function McpAppsShell({
   const requestTrustedInteraction = useCallback(
     (interaction: TrustedInteraction): Promise<TrustedInteractionResponse> =>
       new Promise((resolve) => {
+        // Remembered approvals are answered HERE, before any state is set, so a
+        // granted tool never mounts the modal — not even for a frame.
+        const grantKey = approvalGrantKey(artifactIdRef.current, interaction.interaction.address);
+        if (grantKey !== null && readApprovalGrants().has(grantKey)) {
+          // A schema-bearing elicitation is only auto-answerable when its own
+          // defaults satisfy it. A required field with no default has no
+          // answer the user ever gave, so fall through to the modal rather
+          // than resuming with fabricated values.
+          const content = elicitationDefaultContent(interaction.interaction.requestedSchema);
+          if (content !== null) {
+            resolve({ action: "accept", content });
+            return;
+          }
+        }
+
         if (pendingInteractionRef.current) {
           resolve({ action: "cancel" });
           return;
         }
 
-        const pending = { ...interaction, resolve };
+        const pending = { ...interaction, resolve, grantKey };
         pendingInteractionRef.current = pending;
         setPendingInteraction(pending);
       }),
@@ -569,9 +688,10 @@ function TrustedInteractionModal({
   const url = typeof interaction.url === "string" ? interaction.url : null;
   const approval = useElicitationApproval(interaction.requestedSchema);
 
-  const approve = () => {
+  const approve = (remember: boolean) => {
     const content = approval.content();
     if (content === null) return;
+    if (remember && pending.grantKey !== null) rememberApprovalGrant(pending.grantKey);
     onComplete({ action: "accept", content });
   };
 
@@ -595,7 +715,7 @@ function TrustedInteractionModal({
           <div className="shrink-0 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold">Approve action</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              This approval is handled by the Executor shell.
+              You've triggered a destructive action in the UI, please confirm
             </div>
           </div>
           <div
@@ -621,25 +741,64 @@ function TrustedInteractionModal({
             data-testid="trusted-interaction-footer"
             className="flex shrink-0 justify-end gap-2 border-t border-border px-4 py-3"
           >
+            {/* One way to say no, not two. The approval gate treats "cancel"
+                and "decline" identically — `buildElicit` and `enforceApproval`
+                in `@executor-js/sdk` both raise `ElicitationDeclinedError` for
+                any non-accept action, and the engine forwards the word only so
+                the message can read "cancelled" instead of "declined". So this
+                sends "cancel", the action that also means "I closed this
+                without answering", which is what a Cancel button says. */}
             <Components.Button
               type="button"
               variant="ghost"
               size="sm"
+              data-testid="trusted-interaction-cancel"
               onClick={() => onComplete({ action: "cancel" })}
             >
               Cancel
             </Components.Button>
-            <Components.Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onComplete({ action: "decline" })}
-            >
-              Decline
-            </Components.Button>
-            <Components.Button type="button" size="sm" onClick={approve}>
-              Approve
-            </Components.Button>
+            <div className="flex items-stretch">
+              <Components.Button
+                type="button"
+                size="sm"
+                data-testid="trusted-interaction-approve"
+                className={pending.grantKey === null ? undefined : "rounded-r-none"}
+                onClick={() => approve(false)}
+              >
+                Approve
+              </Components.Button>
+              {/* Offered only when the grant can be scoped to a tool and an
+                  artifact; an unscopable pause gets the plain button rather
+                  than an option that would remember the wrong thing. */}
+              {pending.grantKey !== null && (
+                // `modal={false}`: the menu opens on top of a plain fixed
+                // overlay, not a Radix dialog. A modal menu locks
+                // `pointer-events` on the body for the duration, and selecting
+                // an item here unmounts the whole overlay in the same tick —
+                // the unlock would run against a tree that no longer exists.
+                <Components.DropdownMenu modal={false}>
+                  <Components.DropdownMenuTrigger asChild>
+                    <Components.Button
+                      type="button"
+                      size="icon-sm"
+                      aria-label="More approval options"
+                      data-testid="trusted-interaction-approve-menu"
+                      className="rounded-l-none border-l border-primary-foreground/25"
+                    >
+                      <Components.ChevronDown className="h-3.5 w-3.5" />
+                    </Components.Button>
+                  </Components.DropdownMenuTrigger>
+                  <Components.DropdownMenuContent align="end" className="z-[60]">
+                    <Components.DropdownMenuItem
+                      data-testid="trusted-interaction-approve-always"
+                      onSelect={() => approve(true)}
+                    >
+                      Approve and don't ask again
+                    </Components.DropdownMenuItem>
+                  </Components.DropdownMenuContent>
+                </Components.DropdownMenu>
+              )}
+            </div>
           </div>
         </div>
       </div>
