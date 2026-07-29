@@ -210,6 +210,33 @@
     padding: 0;
   }
 
+  /* Fill mode: the document is exactly its frame, not at least its frame.
+
+     `min-height: 100%` above is the inline contract — grow with the content and
+     let the host size the frame around it. It is also, precisely, why an
+     artifact's own `h-full` used to do nothing: a percentage height resolves
+     against a parent's DEFINITE height, and `min-height` never makes one. Every
+     link in the chain was `auto`, so `h-full` collapsed to `h-auto` and there
+     was no bounded region for `flex-1 min-h-0 overflow-auto` to scroll inside.
+
+     Switching to a definite `height: 100%` here is what turns the host's
+     measured viewport into a real constraint the whole way down: frame ->
+     document -> body -> #root -> the artifact's root element. `min-height: 0`
+     goes with it so the floor cannot re-inflate the box past its frame.
+
+     This file is loaded by BOTH documents — compiled into the shell's own
+     stylesheet and shipped as raw source to the inner srcdoc frame — so one rule
+     covers both halves of the chain. It is class-scoped rather than
+     unconditional because inline mode genuinely needs the opposite: there, body
+     must be content-height, since that is the number the inner frame's
+     ResizeObserver reports and the host sizes the frame from. */
+  html.artifact-fill,
+  html.artifact-fill body,
+  html.artifact-fill #root {
+    height: 100%;
+    min-height: 0;
+  }
+
   body {
     @apply bg-background font-sans text-foreground antialiased;
   }
@@ -262,4 +289,29 @@
   .artifact-root {
     padding: 16px;
   }
+}
+
+/* Fill mode: the artifact container is the viewport, and its child fills it.
+
+   `height: 100%` completes the chain from the host's measured container down to
+   the model's own root element. `display: flex` with a single stretched child is
+   what makes `h-full` usable INSIDE the artifact — a percentage-height child of
+   a plain block box resolves against the box's content height, which is circular,
+   whereas a flex item stretches to the line. So an artifact written as
+   `<div className="flex h-full flex-col">` gets a real bounded column, and its
+   `flex-1 min-h-0 overflow-auto` region becomes a genuine scroll box.
+
+   `box-sizing: border-box` keeps the 24px padding inside the 100%, rather than
+   pushing the container 48px past its frame and reintroducing the outer
+   scrollbar this whole mode exists to remove. */
+html.artifact-fill .artifact-root {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+html.artifact-fill .artifact-root > * {
+  min-height: 0;
+  flex: 1;
 }

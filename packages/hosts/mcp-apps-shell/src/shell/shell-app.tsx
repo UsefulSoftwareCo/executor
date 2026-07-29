@@ -23,6 +23,7 @@ import {
 } from "./proxy";
 import * as Components from "./components";
 import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
+import { isFillDisplayMode } from "./display-mode";
 import innerRendererScript from "virtual:executor-inner-renderer";
 // Raw source, not a compiled stylesheet: the inner frame compiles utilities on
 // demand against these tokens. See `buildRendererSrcDoc`.
@@ -96,6 +97,20 @@ function applyTheme(ctx: McpUiHostContext) {
 }
 
 /**
+ * The CSS hook for a bounded viewport. See the `html.artifact-fill` rule in
+ * `theme.css` for what it does and why it cannot be unconditional.
+ *
+ * Applied to the shell's own document here, and to the inner frame's document by
+ * the inner renderer when the shell tells it the mode — the chain has to hold at
+ * every link or the artifact's `h-full` still resolves against `auto`.
+ */
+const FILL_DOCUMENT_CLASS = "artifact-fill";
+
+const applyFillMode = (ctx: McpUiHostContext | undefined) => {
+  document.documentElement.classList.toggle(FILL_DOCUMENT_CLASS, isFillDisplayMode(ctx));
+};
+
+/**
  * How tall the shell may grow before it scrolls internally, or `undefined` for
  * "as tall as the content is".
  *
@@ -114,11 +129,27 @@ function applyTheme(ctx: McpUiHostContext) {
  *
  * The old unconditional 800px default was case 3 done wrong: it silently clipped
  * anything taller, in every host, including ones with room to spare.
+ *
+ * ## This function is not consulted in fill mode
+ *
+ * A max height is a ceiling on GROWTH, which is a concept that only means
+ * something when the frame grows — that is, inline. In fill mode the shell is
+ * already exactly the host's viewport, so there is nothing left to cap: the
+ * layout is `height: 100%` all the way down and the artifact scrolls inside
+ * itself.
+ *
+ * That includes `config.maxHeight`. A component asking for a 600px scroll box is
+ * describing how it wants to sit inside a taller document; on a page where it IS
+ * the document, honoring it would letterbox the artifact into the top 600px of
+ * an otherwise empty screen. So in fill mode it is deliberately ignored, and it
+ * keeps its exact inline meaning everywhere else.
  */
 const resolveMaxHeight = (
   config: Record<string, unknown>,
   hostContext: McpUiHostContext | undefined,
 ): number | undefined => {
+  if (isFillDisplayMode(hostContext)) return undefined;
+
   if (typeof config.maxHeight === "number") return config.maxHeight;
 
   const container = hostContext?.containerDimensions;
@@ -337,6 +368,11 @@ export function McpAppsShell({
   // when the context changes.
   const capturePreviewRef = useRef(false);
   capturePreviewRef.current = hostContextAllowsPreviewCapture(hostContext);
+  // Whether the host has bounded this shell. Held in a ref for the same reason
+  // as the capture flag: the renderer message handler is built once, and reading
+  // this from the closure would pin whichever mode was current when it was made.
+  const fillRef = useRef(false);
+  fillRef.current = isFillDisplayMode(hostContext);
   // Hand a captured snapshot to the host. Swallows every failure: a preview is
   // a picture for a list, and the artifact the user is looking at does not
   // depend on it in any way.
@@ -428,6 +464,10 @@ export function McpAppsShell({
           type: "executor.render",
           code: current.code,
           theme: hostContext?.theme,
+          // The inner frame is the last link in the height chain, and it cannot
+          // see the host context — so the mode is told to it, the same way the
+          // theme and the preview capability already are.
+          fill: fillRef.current,
           // Only the console advertises somewhere to put a preview. Passing the
           // capability down rather than letting the frame guess keeps the inner
           // renderer host-agnostic: under a real MCP client this is absent and
@@ -519,6 +559,27 @@ export function McpAppsShell({
       postToRenderer({ type: "executor.theme", theme: hostContext?.theme });
     }
   }, [hostContext?.theme, postToRenderer, renderer]);
+
+  /**
+   * Whether the host has given this shell a bounded viewport to fill.
+   *
+   * The shell does not decide this and measures nothing to find out — the host
+   * owns the mode and says so in its context. That is what lets the inner
+   * renderer keep reporting its size unconditionally in every mode: a fill-mode
+   * host simply does not consume the report.
+   */
+  const fill = isFillDisplayMode(hostContext);
+
+  // Relay a mode change to an already-rendered frame. `executor.render` carries
+  // the mode for a frame that has not booted yet; this covers the frame that is
+  // already up when the host changes its mind — which is not hypothetical, since
+  // the console's very first context arrives before it has measured its
+  // container and switches to fill once it has.
+  useEffect(() => {
+    if (renderer) {
+      postToRenderer({ type: "executor.fill", fill });
+    }
+  }, [fill, postToRenderer, renderer]);
 
   /** Render a JSX code string in the sandboxed inner iframe. */
   const renderCode = useCallback((code: string) => {
@@ -612,7 +673,15 @@ export function McpAppsShell({
     };
 
     app.onhostcontextchanged = (ctx: McpUiHostContext) => {
-      setHostContext((prev) => ({ ...prev, ...ctx }));
+      // A host-context change notification carries only the CHANGED fields, so
+      // the merged context — not the delta — is what the mode must be read
+      // from: a resize sends `containerDimensions` alone, with no `displayMode`
+      // beside it, and judging the delta would read that as "no longer fill".
+      setHostContext((prev) => {
+        const next = { ...prev, ...ctx };
+        applyFillMode(next);
+        return next;
+      });
       applyTheme(ctx);
     };
 
@@ -627,6 +696,7 @@ export function McpAppsShell({
     if (ctx) {
       setHostContext(ctx);
       applyTheme(ctx);
+      applyFillMode(ctx);
     }
   }, [app]);
 
@@ -669,7 +739,21 @@ export function McpAppsShell({
         // `.artifact-root` owns the artifact's outer padding, and padding on
         // both sides of the frame boundary reads as an unexplained double
         // margin. The non-artifact path (a raw tool result) still gets it.
-        className={renderer ? "overflow-y-auto" : "p-4 overflow-y-auto"}
+        //
+        // In fill mode this is a height-constrained box, not a scroll container:
+        // the artifact inside owns its own scrolling, and a scrollbar here would
+        // be a second one wrapping it. `overflow-hidden` rather than `auto` is
+        // what makes the artifact's `h-full` mean the viewport instead of "at
+        // least the viewport".
+        className={
+          fill
+            ? renderer
+              ? "h-full overflow-hidden"
+              : "h-full overflow-y-auto p-4"
+            : renderer
+              ? "overflow-y-auto"
+              : "overflow-y-auto p-4"
+        }
         style={{
           maxHeight,
           paddingTop: hostContext?.safeAreaInsets?.top,
@@ -685,8 +769,15 @@ export function McpAppsShell({
             sandbox="allow-scripts"
             srcDoc={renderer.srcDoc}
             title="Generated UI"
-            className="block w-full border-0 bg-background"
-            style={{ height: rendererHeight }}
+            data-fill={fill ? "true" : "false"}
+            className={
+              fill
+                ? "block h-full w-full border-0 bg-background"
+                : "block w-full border-0 bg-background"
+            }
+            // Fill: `h-full` from the class above, so the frame is exactly this
+            // box. Inline: the reported content height, clamped by any cap.
+            style={fill ? undefined : { height: rendererHeight }}
           />
         ) : Component ? (
           <ErrorBoundary>

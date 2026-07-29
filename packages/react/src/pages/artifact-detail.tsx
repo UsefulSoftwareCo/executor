@@ -154,7 +154,22 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/*
+        The artifact's surface, and it is EXACTLY the room below the title bar —
+        `overflow-hidden`, not `overflow-y-auto`.
+
+        That one word is the page's half of fill mode. An artifact on this page
+        is not a document embedded in a thread; it is the page, so it should
+        behave like an app: its own header stays put and its own table scrolls
+        underneath. Letting this container scroll instead would hand the artifact
+        an unbounded height, and then no amount of `h-full` inside it can resolve
+        to anything — which is exactly how a 143-row table used to push its
+        "Projects" header, search box and filters off the top of the screen.
+
+        The loading, error and empty paths still want ordinary flow, so they keep
+        their own padding and simply do not fill.
+      */}
+      <div className="min-h-0 flex-1 overflow-hidden">
         {isAsyncResultLoading(artifact) ? (
           <div className="flex items-center gap-2 p-6">
             <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
@@ -226,11 +241,17 @@ function ArtifactStage(props: { readonly code: string; readonly artifactId: stri
     );
   }
 
+  // `h-full` so the renderer's own measured container inherits the page's
+  // content area rather than collapsing to its content — the height chain from
+  // the page down to the artifact's `flex-1 min-h-0 overflow-auto` is only as
+  // strong as its weakest link, and this wrapper is one of them.
   return (
-    <ClientOnly fallback={<ArtifactStagePlaceholder />}>
-      <Suspense fallback={<ArtifactStagePlaceholder />}>
-        <Renderer code={props.code} artifactId={props.artifactId} host={host} />
-      </Suspense>
-    </ClientOnly>
+    <div className="h-full">
+      <ClientOnly fallback={<ArtifactStagePlaceholder />}>
+        <Suspense fallback={<ArtifactStagePlaceholder />}>
+          <Renderer code={props.code} artifactId={props.artifactId} host={host} />
+        </Suspense>
+      </ClientOnly>
+    </div>
   );
 }

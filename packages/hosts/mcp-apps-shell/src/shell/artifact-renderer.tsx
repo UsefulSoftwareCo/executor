@@ -16,6 +16,11 @@ import shellHtmlUrl from "virtual:executor-mcp-apps-shell-html";
 // friends), which do not exist in the console's bundle — importing a constant
 // from it drags them in and the artifact renderer fails to load entirely.
 import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
+// Same reasoning as `./preview-capture`: a module with no build-graph imports of
+// its own, so both the host half (here) and the app half (`shell-app.tsx`) can
+// agree on the vocabulary without either dragging in the other's virtual
+// modules.
+import { FILL_DISPLAY_MODE, INLINE_DISPLAY_MODE } from "./display-mode";
 
 /**
  * Hosts the MCP-Apps shell on the console's artifact page.
@@ -64,12 +69,19 @@ type HttpShellHost = {
   readonly savePreview: (artifactId: string, preview: string) => void;
 };
 
-/** The frame height before the app has reported its content size. Tall enough
- *  that the shell's own loading state is not itself clipped. */
+/** The frame height before the app has reported its content size, in the inline
+ *  fallback path. Tall enough that the shell's own loading state is not itself
+ *  clipped. */
 const INITIAL_FRAME_HEIGHT = 320;
 
-/** A floor under the app's reported height, so a transient zero-height report
- *  (mid-render, or between artifacts) never collapses the frame. */
+/**
+ * A floor under the measured viewport.
+ *
+ * The container is measured, not guessed, so this only guards the degenerate
+ * readings — a container measured while the page is still laying out, or a
+ * window dragged to a sliver. Below this there is no room for a header and a
+ * scroll region both, and a frame of a few pixels reads as a broken page.
+ */
 const MIN_FRAME_HEIGHT = 160;
 
 /**
@@ -81,11 +93,33 @@ const readDocumentTheme = (): "light" | "dark" => {
   return globalThis.window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 };
 
-const hostContextFor = (theme: "light" | "dark"): McpUiHostContext => ({
+/**
+ * What this host tells the app about the surface it has.
+ *
+ * The detail page is the one place an artifact is not embedded in a flow of
+ * other content — it IS the page — so it advertises the spec's `fullscreen`
+ * mode and hands over a FIXED `containerDimensions.height`. Together those two
+ * fields are the whole negotiation: the mode says "you own this surface", the
+ * fixed height says how much of it there is. See `./display-mode` for why
+ * `fullscreen` rather than a mode of our own, and why a fixed `height` rather
+ * than a `maxHeight`.
+ *
+ * `availableDisplayModes` lists both, truthfully: this host can render an
+ * artifact either way, and an app that asks to go back to `inline` is asking
+ * for something the page could honor.
+ *
+ * Before the container has been measured (`viewport === null`) the page has not
+ * yet laid out, and claiming a surface whose size is unknown would have the app
+ * resolve `height: 100%` against nothing. So until then this is an ordinary
+ * inline host, which is also what makes the mode switch a no-op for a viewport
+ * that never resolves.
+ */
+const hostContextFor = (theme: "light" | "dark", viewport: number | null): McpUiHostContext => ({
   theme,
-  displayMode: "inline",
-  availableDisplayModes: ["inline"],
+  displayMode: viewport === null ? INLINE_DISPLAY_MODE : FILL_DISPLAY_MODE,
+  availableDisplayModes: [INLINE_DISPLAY_MODE, FILL_DISPLAY_MODE],
   platform: "web",
+  ...(viewport === null ? {} : { containerDimensions: { height: viewport } }),
   // The console is the one host with somewhere to put a preview, so it is the
   // one host that asks for one. Carried on the spec's open index signature,
   // which is what it exists for; every other host omits it and the shell
@@ -95,7 +129,25 @@ const hostContextFor = (theme: "light" | "dark"): McpUiHostContext => ({
 
 export default function ArtifactShell(props: ArtifactRendererProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(INITIAL_FRAME_HEIGHT);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The measured height of the page's content area, or `null` before the first
+   * measurement.
+   *
+   * This — not the app's reported content height — is the frame's height. That
+   * inversion is the fix: the artifact page gives the artifact a viewport and
+   * holds it there, so the artifact's own `flex-1 min-h-0 overflow-auto` has
+   * something to resolve against and its header can stay put while its table
+   * scrolls underneath.
+   */
+  const [viewport, setViewport] = useState<number | null>(null);
+  /**
+   * The app's own reported content height — the inline story, kept for the case
+   * where the container never resolves to a usable size (a host embedding this
+   * component somewhere with no bounded height of its own). On the detail page
+   * the observer resolves immediately and this is never read.
+   */
+  const [contentHeight, setContentHeight] = useState(INITIAL_FRAME_HEIGHT);
   const [theme, setTheme] = useState<"light" | "dark">(() => readDocumentTheme());
 
   // Read through refs inside the bridge: the bridge is built once per artifact,
@@ -107,6 +159,11 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   codeRef.current = props.code;
   const artifactIdRef = useRef(props.artifactId);
   artifactIdRef.current = props.artifactId;
+  // The bridge is built once per artifact and must see the CURRENT viewport,
+  // both when it opens (so its initial host context is already the fill one)
+  // and inside `onsizechange` (so it knows to ignore the report).
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   const bridgeRef = useRef<AppBridge | null>(null);
 
@@ -125,9 +182,52 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
     };
   }, []);
 
+  /**
+   * Measure the surface the page has given this artifact, and keep measuring.
+   *
+   * A `ResizeObserver` on the container rather than a `window` resize listener:
+   * the content area is a flex child of the console's own layout, so it changes
+   * height for reasons that never touch the window — the sidebar collapsing, a
+   * banner appearing above it. Observing the box that actually holds the frame
+   * catches all of those and the window resize alike.
+   *
+   * `borderBoxSize` is read in preference to `contentRect` so a container that
+   * ever gains padding or a border still reports the space the frame occupies.
+   */
   useEffect(() => {
-    bridgeRef.current?.setHostContext(hostContextFor(theme));
-  }, [theme]);
+    const container = containerRef.current;
+    if (!container) return;
+
+    const measure = (next: number) => {
+      const bounded = Math.max(MIN_FRAME_HEIGHT, Math.floor(next));
+      // Guard the state write, not just the render: an observer that fires on
+      // every sub-pixel reflow would otherwise push a new host context — and
+      // therefore a `ui/notifications/host-context-changed` — into the frame
+      // continuously while a user drags a window edge.
+      setViewport((prev) => (prev === bounded ? prev : bounded));
+    };
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const borderBox = entry.borderBoxSize?.[0]?.blockSize;
+      measure(typeof borderBox === "number" ? borderBox : entry.contentRect.height);
+    });
+    observer.observe(container);
+    // Seed from the current layout rather than waiting for the observer's first
+    // callback, so the very first host context the bridge is built with already
+    // carries a viewport and the app never renders a frame in the wrong mode.
+    measure(container.getBoundingClientRect().height);
+
+    return () => observer.disconnect();
+  }, []);
+
+  // Both the theme and the viewport travel on the same context, and
+  // `setHostContext` diffs for us — it notifies the app only about fields that
+  // actually changed, so a resize does not re-announce the theme.
+  useEffect(() => {
+    bridgeRef.current?.setHostContext(hostContextFor(theme, viewport));
+  }, [theme, viewport]);
 
   /**
    * Build and connect the bridge the moment the iframe ELEMENT mounts — as the
@@ -182,7 +282,7 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       null,
       { name: "Executor Console", version: "1.0.0" },
       { openLinks: {}, serverTools: {} },
-      { hostContext: hostContextFor(readDocumentTheme()) },
+      { hostContext: hostContextFor(readDocumentTheme(), viewportRef.current) },
     );
 
     // Deliver the stored source the way a real host does after `create-artifact`: the
@@ -206,12 +306,25 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
         });
     };
 
-    // The app reports its content height; the host owns the frame's size. This
-    // is the half that was missing inline — the page scrolls, the frame grows,
-    // and nothing clips.
+    /**
+     * The app keeps reporting its content height. In fill mode this host
+     * deliberately does nothing with it.
+     *
+     * That is the clean division the mode buys: the HOST owns the mode, so the
+     * app does not need a branch for "am I being measured" — it reports its size
+     * truthfully in every mode, exactly as the protocol says, and a host that
+     * has already decided the frame's height simply does not consume the report.
+     * Acting on it here would undo the whole fix, since the app's content is now
+     * as tall as the viewport it was given and growing the frame to match would
+     * chase itself.
+     *
+     * Inline hosts — every chat client — are untouched: the frame grows, the
+     * page scrolls, nothing clips.
+     */
     bridge.onsizechange = (params) => {
+      if (viewportRef.current !== null) return;
       if (typeof params.height !== "number") return;
-      setHeight(Math.max(MIN_FRAME_HEIGHT, Math.ceil(params.height)));
+      setContentHeight(Math.max(MIN_FRAME_HEIGHT, Math.ceil(params.height)));
     };
 
     bridge.oncalltool = (params) => {
@@ -257,29 +370,39 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   }, []);
 
   return (
-    <iframe
-      // Keyed on the source: opening a different artifact remounts the element,
-      // which detaches the old bridge and attaches a fresh one to a fresh
-      // document rather than reusing a shell that has already rendered
-      // something else.
-      key={props.code}
-      ref={attachFrame}
-      data-testid="artifact-shell-frame"
-      title="Artifact"
-      src={shellHtmlUrl}
-      // The shell document is our own build, but it runs model-written JSX in a
-      // further nested frame of its own. Scripts and same-origin are what it
-      // needs to boot React and reach that inner frame; popups let `openLink`
-      // escape the sandbox rather than silently failing. Deliberately absent:
-      // `allow-top-navigation` (nothing in the shell navigates the console) and
-      // `allow-forms` (nothing posts one).
-      sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-      style={{ height }}
-      // `min-h-full` against the page's scroll container: an artifact shorter
-      // than the viewport still fills it (the shell's background matches the
-      // console tokens, so the fill is seamless); a taller one grows to its
-      // reported height and the page scrolls.
-      className="block min-h-full w-full border-0 bg-background"
-    />
+    // The measured box. `h-full` against the page's content area is what makes
+    // the measurement meaningful: the container is exactly the room the page has
+    // given the artifact, so the number the observer reads is the number the
+    // frame should be. `min-h-0` lets it shrink inside the page's flex column
+    // rather than being floored at its content's height.
+    <div
+      ref={containerRef}
+      data-testid="artifact-shell-container"
+      className="h-full min-h-0 w-full"
+    >
+      <iframe
+        // Keyed on the source: opening a different artifact remounts the
+        // element, which detaches the old bridge and attaches a fresh one to a
+        // fresh document rather than reusing a shell that has already rendered
+        // something else.
+        key={props.code}
+        ref={attachFrame}
+        data-testid="artifact-shell-frame"
+        title="Artifact"
+        src={shellHtmlUrl}
+        // The shell document is our own build, but it runs model-written JSX in
+        // a further nested frame of its own. Scripts and same-origin are what it
+        // needs to boot React and reach that inner frame; popups let `openLink`
+        // escape the sandbox rather than silently failing. Deliberately absent:
+        // `allow-top-navigation` (nothing in the shell navigates the console)
+        // and `allow-forms` (nothing posts one).
+        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        // Fill mode: the frame is exactly the measured viewport, and stays there
+        // however tall the artifact's content becomes. Inline fallback: the
+        // frame is the app's reported content height and the page scrolls.
+        style={{ height: viewport ?? contentHeight }}
+        className="block w-full border-0 bg-background"
+      />
+    </div>
   );
 }

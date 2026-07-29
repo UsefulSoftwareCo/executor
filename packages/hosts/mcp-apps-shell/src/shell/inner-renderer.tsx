@@ -37,6 +37,14 @@ type RenderMessage = {
    * not something this frame can know.
    */
   capturePreview?: unknown;
+  /**
+   * Whether the shell has a bounded viewport for this artifact to fill.
+   *
+   * Told to the frame rather than inferred: this document cannot see the MCP
+   * host context, and its own height is whatever the shell gave it, so there is
+   * nothing here to measure. See `./display-mode`.
+   */
+  fill?: unknown;
 };
 
 type ThemeMessage = {
@@ -45,7 +53,14 @@ type ThemeMessage = {
   theme?: unknown;
 };
 
-type InboundMessage = ParentResponse | RenderMessage | ThemeMessage;
+/** A mode change arriving after this frame has already rendered. */
+type FillMessage = {
+  type: "executor.fill";
+  token: string;
+  fill?: unknown;
+};
+
+type InboundMessage = ParentResponse | RenderMessage | ThemeMessage | FillMessage;
 
 const token = document.querySelector<HTMLMetaElement>(
   "meta[name='executor-render-token']",
@@ -121,6 +136,23 @@ const applyTheme = (theme: unknown) => {
   if (theme === "dark" || theme === "light") {
     document.documentElement.classList.toggle("dark", theme === "dark");
   }
+};
+
+/**
+ * Bind this document to its frame, so an artifact's own `h-full` means something.
+ *
+ * This is the LAST link in the height chain — page content area -> outer frame ->
+ * shell document -> this srcdoc frame -> `#root` -> the artifact's root element.
+ * The `html.artifact-fill` rule in `theme.css` gives `html`, `body` and `#root` a
+ * definite `height: 100%`; without it every one of them is `auto` and a
+ * percentage height inside the artifact has no parent height to resolve against.
+ *
+ * `.artifact-root` gets `display: flex` with it, so the artifact's own root
+ * element is a flex child that can actually be told to fill — an `h-full` child
+ * of a plain block box would still only be as tall as the box's content.
+ */
+const applyFill = (fill: unknown) => {
+  document.documentElement.classList.toggle("artifact-fill", fill === true);
 };
 
 /**
@@ -326,8 +358,14 @@ window.addEventListener("message", (event: MessageEvent<InboundMessage>) => {
     return;
   }
 
+  if (data.type === "executor.fill") {
+    applyFill(data.fill);
+    return;
+  }
+
   if (data.type === "executor.render") {
     applyTheme(data.theme);
+    applyFill(data.fill);
     // A fresh render is a fresh picture: the previous capture, if any, was of
     // different code.
     capturedThisRender = false;
