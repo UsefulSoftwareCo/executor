@@ -57,7 +57,24 @@ describe("MCP-Apps shell resource", () => {
     expect(html).toContain('id="root"');
     // `vite-plugin-singlefile` inlines every asset: a shell that still points at
     // a sibling bundle would 404 inside the host's sandboxed iframe.
-    const externalRefs = [...html.matchAll(/<(?:script|link)[^>]*(?:src|href)="([^"]+)"/g)]
+    //
+    // Scanned over the DOCUMENT only, with the inlined script bodies blanked
+    // first. The bundle is ~5 MB of JavaScript that includes React's own source
+    // strings, and several of those build markup as text
+    // (`n += ' href="' + e.href + '"'` inside its resource-hint code). Matching
+    // the raw document therefore reports tags that exist only as characters in
+    // a string literal, which no browser will ever fetch — a false positive
+    // that says nothing about the property under test. What matters is whether
+    // the served document itself references anything it would have to go and
+    // get.
+    // Only INLINE scripts are blanked. A `<script src=...>` is exactly the
+    // regression this guards, so its tag has to survive the blanking — matching
+    // it and its closing tag together would delete the evidence.
+    const documentOnly = html.replace(
+      /<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/g,
+      "<script></script>",
+    );
+    const externalRefs = [...documentOnly.matchAll(/<(?:script|link)[^>]*(?:src|href)="([^"]+)"/g)]
       .map((match) => match[1])
       .filter((url) => !url.startsWith("data:"));
     expect(externalRefs).toEqual([]);
