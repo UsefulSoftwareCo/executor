@@ -74,6 +74,7 @@ type HostState = {
 type BrowserHostWindow = Window & {
   __mcpHostState: HostState;
   __sendGeneratedUi: (code: string, artifactId: string) => void;
+  __setHostContext: (context: Record<string, unknown>) => void;
 };
 
 type AppsClientCapabilities = ClientCapabilities & {
@@ -693,6 +694,44 @@ function App() {
 }
 `;
 
+/**
+ * The layout the `artifact-style` skill teaches, written exactly as a model is
+ * told to write it: a bounded flex column, a header that stays, and one region
+ * that scrolls.
+ *
+ * 120 rows is well past any viewport this harness gives it, so "does it scroll
+ * or does it grow" is not ambiguous. The header carries an id so the test can
+ * prove it did not move while the rows did.
+ */
+const generatedAppLayoutCode = `
+function App() {
+  const rows = Array.from({ length: 120 }, (_, i) => ({ id: i, name: "project-" + i }));
+  return (
+    <div className="flex h-full flex-col gap-4">
+      <div id="layout-header" className="shrink-0">
+        <h2 className="text-lg font-semibold tracking-tight">Projects</h2>
+      </div>
+      <div id="layout-scroll" className="min-h-0 flex-1 overflow-auto rounded-lg border border-border">
+        <table className="w-full table-fixed">
+          <thead id="layout-thead" className="sticky top-0 z-10 bg-background">
+            <tr className="border-b border-border">
+              <th className="px-4 py-2 text-left text-xs font-medium">Name</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rows.map((row) => (
+              <tr key={row.id} id={"layout-row-" + row.id}>
+                <td className="truncate px-4 py-2 text-sm">{row.name}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+`;
+
 const createHostHtml = (shellUrl: string) => `<!doctype html>
 <html>
   <head>
@@ -733,6 +772,17 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
             content: [{ type: "text", text: "" }],
             structuredContent: { code, artifactId },
           },
+        });
+      };
+
+      // The host changing its mind after the handshake — how the console
+      // announces a display mode and a measured viewport once it has laid out.
+      // A real host sends only the CHANGED fields, so this does too.
+      window.__setHostContext = (context) => {
+        sendToApp({
+          jsonrpc: "2.0",
+          method: "ui/notifications/host-context-changed",
+          params: context,
         });
       };
 
@@ -2221,6 +2271,146 @@ describe("MCP app generated UI browser isolation", () => {
       await page.close();
       await schemaHostServer.close();
       await schemaMcpHarness.close();
+    }
+  }, 60_000);
+
+  /**
+   * The regression guard for the whole point of fill mode.
+   *
+   * What broke before it existed: an artifact's `h-full` resolved against an
+   * unbounded chain, so `flex-1 min-h-0 overflow-auto` was just a div that grew.
+   * The table pushed its own header off the top of the screen and the user
+   * scrolled a document when they wanted an app.
+   *
+   * So this asserts the three things that have to be true together, since any
+   * one of them alone can hold while the layout is still broken:
+   *
+   *   1. the scroll region is genuinely bounded and overflowing
+   *      (`scrollHeight > clientHeight`) — not merely tall;
+   *   2. it actually scrolls when scrolled;
+   *   3. the artifact's header does NOT move while it does.
+   */
+  it("gives a bounded viewport to an artifact laid out as an app", async () => {
+    if (!browser || !hostServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      // The console's negotiation, verbatim: the spec's `fullscreen` mode plus a
+      // FIXED container height. Both are required — a mode with no height is not
+      // a viewport, and the shell deliberately stays inline for it.
+      await page.evaluate(() => {
+        (window as unknown as BrowserHostWindow).__setHostContext({
+          displayMode: "fullscreen",
+          availableDisplayModes: ["inline", "fullscreen"],
+          containerDimensions: { height: 900 },
+        });
+      });
+      await shellFrame.waitForFunction(() =>
+        document.documentElement.classList.contains("artifact-fill"),
+      );
+
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedAppLayoutCode);
+      await innerFrame.locator("#layout-row-119").waitFor({ timeout: 10_000 });
+      // The class has to reach the INNER document too — it is the last link in
+      // the height chain, and the artifact's own `h-full` resolves there.
+      await innerFrame.waitForFunction(() =>
+        document.documentElement.classList.contains("artifact-fill"),
+      );
+
+      const before = await innerFrame.evaluate(() => {
+        const scroller = document.querySelector<HTMLElement>("#layout-scroll");
+        const header = document.querySelector<HTMLElement>("#layout-header");
+        const thead = document.querySelector<HTMLElement>("#layout-thead");
+        const firstRow = document.querySelector<HTMLElement>("#layout-row-0");
+        if (!scroller || !header || !thead || !firstRow) {
+          throw new Error("Missing layout elements.");
+        }
+        return {
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+          headerTop: header.getBoundingClientRect().top,
+          theadTop: thead.getBoundingClientRect().top,
+          firstRowTop: firstRow.getBoundingClientRect().top,
+          bodyScrollHeight: document.body.scrollHeight,
+          bodyClientHeight: document.body.clientHeight,
+        };
+      });
+
+      // Bounded: the region is shorter than its content, which is what makes it
+      // a scroll box rather than a tall div.
+      expect(before.clientHeight).toBeGreaterThan(0);
+      expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
+      // And the DOCUMENT is not the thing that overflows — the artifact absorbed
+      // its own content instead of pushing the frame out.
+      expect(before.bodyScrollHeight).toBeLessThanOrEqual(before.bodyClientHeight + 1);
+
+      const after = await innerFrame.evaluate(() => {
+        const scroller = document.querySelector<HTMLElement>("#layout-scroll");
+        const header = document.querySelector<HTMLElement>("#layout-header");
+        const thead = document.querySelector<HTMLElement>("#layout-thead");
+        const firstRow = document.querySelector<HTMLElement>("#layout-row-0");
+        if (!scroller || !header || !thead || !firstRow) {
+          throw new Error("Missing layout elements.");
+        }
+        scroller.scrollTop = 400;
+        return {
+          scrollTop: scroller.scrollTop,
+          headerTop: header.getBoundingClientRect().top,
+          theadTop: thead.getBoundingClientRect().top,
+          firstRowTop: firstRow.getBoundingClientRect().top,
+        };
+      });
+
+      // It really scrolled: the rows moved up by the amount scrolled.
+      expect(after.scrollTop).toBeGreaterThan(0);
+      expect(before.firstRowTop - after.firstRowTop).toBeCloseTo(after.scrollTop, 0);
+      // The artifact's own header stayed exactly where it was — this is the
+      // "Projects" title and its search box that used to scroll away.
+      expect(after.headerTop).toBeCloseTo(before.headerTop, 0);
+      // And the sticky table header stayed with it rather than travelling up
+      // with the rows. Compared against its own starting position rather than
+      // the container's edge, since `sticky` pins to the padding box (inside the
+      // 1px border), not the border box.
+      expect(after.theadTop).toBeCloseTo(before.theadTop, 0);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  /**
+   * The other half of the contract, and the one that protects every chat host:
+   * with no fill context the shell must behave exactly as it always has — report
+   * its content height and let the host grow the frame. A regression here would
+   * clip artifacts inside Claude, where there is no bounded viewport to fill.
+   */
+  it("still grows to content for a host that offers no viewport", async () => {
+    if (!browser || !hostServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedAppLayoutCode);
+      await innerFrame.locator("#layout-row-119").waitFor({ timeout: 10_000 });
+
+      const fillApplied = await shellFrame.evaluate(() =>
+        document.documentElement.classList.contains("artifact-fill"),
+      );
+      expect(fillApplied).toBe(false);
+
+      // The inner document grows past the frame it was given and reports that
+      // height outward; the scroll region has no bound to scroll inside, which
+      // is correct — in a thread the transcript is what scrolls.
+      const metrics = await innerFrame.evaluate(() => ({
+        bodyScrollHeight: document.body.scrollHeight,
+        rootHeight: document.getElementById("root")?.getBoundingClientRect().height ?? 0,
+      }));
+      expect(metrics.bodyScrollHeight).toBeGreaterThan(1000);
+      expect(metrics.rootHeight).toBeGreaterThan(1000);
+    } finally {
+      await page.close();
     }
   }, 60_000);
 
