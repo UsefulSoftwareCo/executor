@@ -30,6 +30,8 @@
     "typecheck:slow": "tsc --noEmit",
     "db:backfill-org-slugs:prod": "op run --env-file=.env.production -- bun run scripts/backfill-org-slugs.ts",
     "db:backfill-org-slugs:dev": "op run --env-file=.env.op -- bun run scripts/backfill-org-slugs.ts",
+    "db:backfill-subjects:prod": "op run --env-file=.env.production -- bun run scripts/backfill-subjects.ts",
+    "db:backfill-subjects:dev": "op run --env-file=.env.op -- bun run scripts/backfill-subjects.ts",
     "routes:gen": "bun scripts/gen-routes.ts"
   },
   "dependencies": {
