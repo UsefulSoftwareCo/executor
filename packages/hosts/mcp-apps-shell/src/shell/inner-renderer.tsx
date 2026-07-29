@@ -156,6 +156,42 @@ const applyFill = (fill: unknown) => {
 };
 
 /**
+ * Tell the shell, once, that this frame has actually painted something.
+ *
+ * A host holding a single loading surface across the whole open — the console
+ * does — needs to know when to take it down, and every cheaper proxy is a
+ * different fact:
+ *
+ *  - The `executor.render` message only says the code was DELIVERED. Compiling
+ *    it (Babel, then the in-frame Tailwind JIT) is the slow part, and revealing
+ *    the frame here shows a blank white box for as long as that takes.
+ *  - The first `executor.renderer.size` is not it either. The `ResizeObserver`
+ *    below fires its initial callback on `observe()`, against an empty body,
+ *    BEFORE any render message can arrive — so the earliest size report is a
+ *    height of zero for a document with nothing in it.
+ *
+ * So the signal is emitted from inside the React tree, where "committed" is not
+ * a guess: the effect runs after React has committed the tree, and the
+ * animation frame after it puts the message one paint later still. That is the
+ * first instant at which a host swapping to this frame swaps to real pixels.
+ *
+ * It fires for the ERROR surfaces too, because `renderError` renders through
+ * the same path. That is deliberate — the question a host is asking is "should
+ * the user be looking at the frame instead of my skeleton", and a failed
+ * artifact answers yes. A signal that only fired on success would hide every
+ * failure under a loading state forever.
+ */
+function RenderSignal(props: { readonly children: ReactNode }) {
+  React.useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      sendParent({ type: "executor.renderer.rendered" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return <>{props.children}</>;
+}
+
+/**
  * Mount into the shell-owned container.
  *
  * `.artifact-root` carries the artifact's outer padding and max width, so every
@@ -169,7 +205,16 @@ const renderNode = (node: ReactNode) => {
   if (!mount) return;
   mount.classList.add("artifact-root");
   root ??= createRoot(mount);
-  root.render(<Components.TooltipProvider>{node}</Components.TooltipProvider>);
+  // The signal wraps the tree rather than following `root.render(...)` as a
+  // callback: `render` is not synchronous under a concurrent root, so a message
+  // posted after the call can beat the commit it is meant to announce. A
+  // `key` per mount is not needed — the effect belongs to this root's lifetime,
+  // and a re-render into the same root is the same artifact still on screen.
+  root.render(
+    <RenderSignal>
+      <Components.TooltipProvider>{node}</Components.TooltipProvider>
+    </RenderSignal>,
+  );
 };
 
 const renderError = (title: string, message: string) => {

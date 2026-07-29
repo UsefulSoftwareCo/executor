@@ -23,6 +23,7 @@ import {
 } from "./proxy";
 import * as Components from "./components";
 import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
+import { ARTIFACT_RENDERED_TOOL, RENDER_SIGNAL_HOST_CONTEXT_KEY } from "./render-signal";
 import { isFillDisplayMode } from "./display-mode";
 import innerRendererScript from "virtual:executor-inner-renderer";
 // Raw source, not a compiled stylesheet: the inner frame compiles utilities on
@@ -72,7 +73,10 @@ type RendererRequest =
   | { type: "executor.renderer.config"; token: string; config: unknown }
   | { type: "executor.renderer.size"; token: string; height: unknown }
   | { type: "executor.renderer.error"; token: string; message: unknown }
-  | { type: "executor.renderer.preview"; token: string; preview: unknown };
+  | { type: "executor.renderer.preview"; token: string; preview: unknown }
+  /** The inner frame has committed and painted a tree — see `RenderSignal` in
+   *  `./inner-renderer`. Relayed to the host as `ARTIFACT_RENDERED_TOOL`. */
+  | { type: "executor.renderer.rendered"; token: string };
 
 /**
  * Whether this host wants a preview snapshot captured.
@@ -85,6 +89,17 @@ type RendererRequest =
  */
 const hostContextAllowsPreviewCapture = (ctx: McpUiHostContext | undefined): boolean =>
   ctx?.[PREVIEW_CAPTURE_HOST_CONTEXT_KEY] === true;
+
+/**
+ * Whether this host wants to be told when the artifact is on screen.
+ *
+ * Only a host that holds its own loading surface across the open does — the
+ * console — and it says so on the same open index signature the preview
+ * capability travels on. Absent everywhere else, and absent means the call is
+ * never made, so no MCP client is sent a tool name it has never heard of.
+ */
+const hostContextWantsRenderSignal = (ctx: McpUiHostContext | undefined): boolean =>
+  ctx?.[RENDER_SIGNAL_HOST_CONTEXT_KEY] === true;
 
 // ---------------------------------------------------------------------------
 // Theme application from MCP Apps host context
@@ -388,6 +403,41 @@ export function McpAppsShell({
       () => undefined,
     );
   };
+  // Whether the host asked to be told when the artifact paints. A ref for the
+  // same reason as the two above: the renderer message handler is built once,
+  // and reading this from the closure would pin whichever context was current
+  // when it was made.
+  const wantsRenderSignalRef = useRef(false);
+  wantsRenderSignalRef.current = hostContextWantsRenderSignal(hostContext);
+  /**
+   * Tell the host the artifact is on screen. At most once per shell.
+   *
+   * Once-only because the host's question is "may I take my loading surface
+   * down", which is answered exactly once; a re-render inside the artifact is
+   * not a second answer. The latch lives here rather than in the inner frame so
+   * it survives that frame remounting.
+   *
+   * Swallows every failure, like the preview relay: a host that does not
+   * implement the name rejects the call, and the correct response to that is
+   * nothing at all.
+   */
+  const renderSignalSentRef = useRef(false);
+  const signalRenderedRef = useRef<() => void>(() => {});
+  signalRenderedRef.current = () => {
+    if (renderSignalSentRef.current || !wantsRenderSignalRef.current) return;
+    renderSignalSentRef.current = true;
+    void Promise.resolve(
+      app.callServerTool({
+        name: ARTIFACT_RENDERED_TOOL,
+        ...(artifactIdRef.current === undefined
+          ? {}
+          : { arguments: { artifactId: artifactIdRef.current } }),
+      }),
+    ).then(
+      () => undefined,
+      () => undefined,
+    );
+  };
 
   useEffect(() => {
     rendererRef.current = renderer;
@@ -496,10 +546,18 @@ export function McpAppsShell({
         return;
       }
 
+      if (data.type === "executor.renderer.rendered") {
+        signalRenderedRef.current();
+        return;
+      }
+
       if (data.type === "executor.renderer.error") {
         if (typeof data.message === "string") {
           console.error("[executor-shell] Renderer error:", data.message);
         }
+        // The frame rendered an error surface, which is still something for the
+        // user to look at — `RenderSignal` wraps the error path too, so the
+        // `rendered` message is already on its way. Nothing extra to do here.
         return;
       }
 
@@ -704,6 +762,22 @@ export function McpAppsShell({
     if (initialCode) renderCode(initialCode);
   }, [initialCode, renderCode]);
 
+  /**
+   * The two surfaces that never reach the inner frame still end the wait.
+   *
+   * `error` is a shell-level compile failure and `component` is the data view a
+   * non-generative tool result renders — neither creates a renderer frame, so
+   * neither can emit `executor.renderer.rendered`. Without this, a host holding
+   * a loading surface would hold it forever on exactly the paths where there is
+   * nothing more coming.
+   *
+   * The signal itself is latched once, so this and the frame's own message
+   * cannot both take effect.
+   */
+  useEffect(() => {
+    if (error !== null || component !== null) signalRenderedRef.current();
+  }, [component, error]);
+
   if (error) {
     return (
       <div className="p-4">
@@ -713,6 +787,21 @@ export function McpAppsShell({
   }
 
   if (!component && !renderer) {
+    /*
+      A host that holds its own loading surface gets NOTHING here.
+
+      The console does: it shows one skeleton from navigation until the
+      `rendered` signal, and this card would be a second loading state
+      underneath the first — briefly visible at every edge the cover does not
+      reach, and drawn for a host that explicitly said it is already handling
+      the wait. Asking for the signal is exactly the statement "I am showing the
+      user something; do not show them something else."
+
+      Every other host — every real MCP client — still gets the card, because
+      there a bare empty frame while the shell boots is worse than a placeholder.
+    */
+    if (wantsRenderSignalRef.current) return null;
+
     return (
       <div
         data-testid="shell-loading-state"

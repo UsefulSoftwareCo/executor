@@ -16,6 +16,11 @@ import shellHtmlUrl from "virtual:executor-mcp-apps-shell-html";
 // friends), which do not exist in the console's bundle — importing a constant
 // from it drags them in and the artifact renderer fails to load entirely.
 import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
+// Same import-free-module reasoning as `./preview-capture`: the vocabulary for
+// "the artifact is on screen now", shared by the shell document that sends it
+// and this host, which is the one host that holds a loading surface until it
+// arrives.
+import { ARTIFACT_RENDERED_TOOL, RENDER_SIGNAL_HOST_CONTEXT_KEY } from "./render-signal";
 // Same reasoning as `./preview-capture`: a module with no build-graph imports of
 // its own, so both the host half (here) and the app half (`shell-app.tsx`) can
 // agree on the vocabulary without either dragging in the other's virtual
@@ -125,6 +130,11 @@ const hostContextFor = (theme: "light" | "dark", viewport: number | null): McpUi
   // which is what it exists for; every other host omits it and the shell
   // skips the capture entirely.
   [PREVIEW_CAPTURE_HOST_CONTEXT_KEY]: true,
+  // The console holds ONE skeleton from navigation until the artifact paints,
+  // so it is the one host that needs telling when that is. See
+  // `./render-signal` for why the shell cannot infer it and why no size report
+  // is the same fact.
+  [RENDER_SIGNAL_HOST_CONTEXT_KEY]: true,
 });
 
 export default function ArtifactShell(props: ArtifactRendererProps) {
@@ -159,6 +169,11 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   codeRef.current = props.code;
   const artifactIdRef = useRef(props.artifactId);
   artifactIdRef.current = props.artifactId;
+  // The page's "you can drop the skeleton now" callback, read through a ref for
+  // the same reason as the host: the bridge is built once per artifact, and
+  // capturing the prop would pin whichever function existed then.
+  const onRenderedRef = useRef(props.onRendered);
+  onRenderedRef.current = props.onRendered;
   // The bridge is built once per artifact and must see the CURRENT viewport,
   // both when it opens (so its initial host context is already the fill one)
   // and inside `onsizechange` (so it knows to ignore the report).
@@ -338,6 +353,15 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
         if (typeof artifactId === "string" && typeof preview === "string") {
           hostRef.current.savePreview(artifactId, preview);
         }
+        return Promise.resolve({ content: [] } satisfies CallToolResult);
+      }
+
+      // "The artifact is on screen." Answered here for the same reason the
+      // preview is: it is this host's own call, not a server tool, and it must
+      // never reach `/executions`. The page uses it to cross-fade its skeleton
+      // out — see `ArtifactStage`.
+      if (params.name === ARTIFACT_RENDERED_TOOL) {
+        onRenderedRef.current?.();
         return Promise.resolve({ content: [] } satisfies CallToolResult);
       }
       return hostRef.current.callServerTool({

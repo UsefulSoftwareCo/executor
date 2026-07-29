@@ -37,6 +37,24 @@ export interface ArtifactRendererProps {
   readonly artifactId: string;
   /** HTTP-backed MCP host — see `createHttpShellHost` in `./shell-host`. */
   readonly host: unknown;
+  /**
+   * Called once, when the artifact has actually painted inside the frame.
+   *
+   * This is what lets the page hold ONE loading surface from navigation until
+   * there is something real to look at, rather than flashing a placeholder per
+   * stage of the boot. The shell owns the fact — the console cannot see inside
+   * a sandboxed frame two documents down — so it reports it; see
+   * `ARTIFACT_RENDERED_TOOL` in the shell package.
+   *
+   * Fires for the error surfaces too. "Rendered" here means presented, not
+   * succeeded: a compile failure is still the moment the user should be looking
+   * at the frame instead of a skeleton, and a signal that fired only on success
+   * would leave every failed artifact under a loading state forever.
+   *
+   * Optional, so a host that does not care simply omits it and nothing in the
+   * chain changes.
+   */
+  readonly onRendered?: (() => void) | undefined;
 }
 
 export type ArtifactRenderer = React.ComponentType<ArtifactRendererProps>;
@@ -87,4 +105,76 @@ export function useArtifactRendererLoader(): ArtifactRendererLoader | null {
 export function useArtifactRenderer(): ArtifactRenderer | null {
   const loader = useArtifactRendererLoader();
   return React.useMemo(() => (loader ? React.lazy(loader) : null), [loader]);
+}
+
+/**
+ * Loaders whose chunk has already been asked for.
+ *
+ * The dedupe is not for the network — a bundler's own module registry already
+ * serves a second `import()` of the same specifier from memory. It is so this
+ * module does not hand React's scheduler a new promise on every render of every
+ * component that preloads, and so the cost of "preload on hover" style callers
+ * is provably zero after the first.
+ *
+ * Keyed by loader identity, matching how `useArtifactRenderer` memoizes
+ * `React.lazy`; the composition roots define their loader at module scope
+ * precisely so that identity is stable for the life of the app.
+ */
+const preloaded = new WeakSet<ArtifactRendererLoader>();
+
+/**
+ * Start fetching the renderer chunk before anything needs to render it.
+ *
+ * ## What this removes
+ *
+ * The renderer arrives through a dynamic `import()`, and until now that import
+ * was first touched when the detail page rendered — which is only after the
+ * artifact row has been fetched. So a cold open serialized two waits the user
+ * saw as two different placeholders: "loading the row", then "loading the code
+ * that draws rows". They are independent, and overlapping them makes the second
+ * free.
+ *
+ * ## Why fire-and-forget is right
+ *
+ * There is nothing to do with the result. Success populates the bundler's
+ * module cache, which is the entire point, and `React.lazy` will find it there.
+ * FAILURE is deliberately swallowed here rather than surfaced: this is a
+ * speculative fetch, the user may never open an artifact, and a chunk that
+ * genuinely cannot load must fail where a user is actually waiting on it — at
+ * the `Suspense` boundary, with the page's own error surface — not as an
+ * unhandled rejection logged from a hover. Retrying is automatic in the sense
+ * that matters: `React.lazy` calls the same loader again and gets a fresh
+ * attempt, because a rejected `import()` is not cached by any bundler.
+ */
+export function preloadArtifactRenderer(loader: ArtifactRendererLoader | null): void {
+  if (!loader || preloaded.has(loader)) return;
+  preloaded.add(loader);
+  void loader().then(
+    () => undefined,
+    () => {
+      // Let a failed speculative fetch be tried again for real. Without this a
+      // transient network blip during the preload would mark the loader done
+      // and the actual open would never re-attempt from here.
+      preloaded.delete(loader);
+    },
+  );
+}
+
+/**
+ * Kick the renderer chunk as soon as the mounting surface exists.
+ *
+ * Mounted by the artifacts LIST as well as the detail page: by the time a user
+ * has the gallery on screen, opening one of the cards is the only thing that
+ * page is for, so the chunk is fetched during the time they spend choosing.
+ * That is what turns the renderer's own placeholder into something that never
+ * appears in a warm session, and shortens it to nothing in a cold one.
+ *
+ * An effect rather than a render-phase call, so the fetch is never started
+ * during SSR or a discarded render pass.
+ */
+export function usePreloadArtifactRenderer(): void {
+  const loader = useArtifactRendererLoader();
+  React.useEffect(() => {
+    preloadArtifactRenderer(loader);
+  }, [loader]);
 }

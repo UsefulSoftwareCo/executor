@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { ArtifactId, ArtifactPreview as ArtifactPreviewValue } from "@executor-js/sdk/shared";
 
 import { trackEvent } from "../api/analytics";
+import { usePreloadArtifactRenderer } from "../api/artifact-renderer";
 import {
   artifactsOptimisticAtom,
   removeArtifactOptimistic,
@@ -164,6 +165,11 @@ function ArtifactCard(props: {
 
 export function ArtifactsPage() {
   useExecutorDocumentTitle("Artifacts");
+  // Opening a card is the only thing this page is for, and the renderer chunk is
+  // the slowest part of doing so. Fetching it while the user is still choosing
+  // means the detail page never has to wait for it — the renderer's own
+  // placeholder simply stops existing for anyone arriving from here.
+  usePreloadArtifactRenderer();
   const artifacts = useAtomValue(artifactsOptimisticAtom);
   const refreshArtifacts = useAtomRefresh(artifactsOptimisticAtom);
   const doRename = useAtomSet(renameArtifactOptimistic, { mode: "promiseExit" });
