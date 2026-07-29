@@ -11,7 +11,11 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ArtifactRendererProps } from "@executor-js/react/api/artifact-renderer";
 
 import shellHtmlUrl from "virtual:executor-mcp-apps-shell-html";
-import { SAVE_ARTIFACT_PREVIEW_TOOL } from "./shell-app";
+// From `./preview-capture`, NOT from `./shell-app`: that module imports the
+// shell build's virtual modules (`virtual:executor-tailwind-browser` and
+// friends), which do not exist in the console's bundle — importing a constant
+// from it drags them in and the artifact renderer fails to load entirely.
+import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
 
 /**
  * Hosts the MCP-Apps shell on the console's artifact page.
@@ -86,7 +90,7 @@ const hostContextFor = (theme: "light" | "dark"): McpUiHostContext => ({
   // one host that asks for one. Carried on the spec's open index signature,
   // which is what it exists for; every other host omits it and the shell
   // skips the capture entirely.
-  executorPreviewCapture: true,
+  [PREVIEW_CAPTURE_HOST_CONTEXT_KEY]: true,
 });
 
 export default function ArtifactShell(props: ArtifactRendererProps) {

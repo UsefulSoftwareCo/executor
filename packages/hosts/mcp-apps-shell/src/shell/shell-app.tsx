@@ -22,6 +22,7 @@ import {
   type TrustedInteractionResponse,
 } from "./proxy";
 import * as Components from "./components";
+import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./preview-capture";
 import innerRendererScript from "virtual:executor-inner-renderer";
 // Raw source, not a compiled stylesheet: the inner frame compiles utilities on
 // demand against these tokens. See `buildRendererSrcDoc`.
@@ -57,17 +58,6 @@ type RendererState = {
   height: number;
 };
 
-/**
- * The host call that stores a settled-render snapshot.
- *
- * Not an MCP tool the server advertises — it is answered by the CONSOLE's host
- * implementation, which turns it into `PUT /artifacts/:id/preview`. It rides the
- * `callServerTool` seam because that seam already exists in every host, and a
- * host that does not implement this name simply rejects the call, which is
- * exactly the fail-quiet behaviour a preview upgrade should have.
- */
-export const SAVE_ARTIFACT_PREVIEW_TOOL = "executor-save-artifact-preview";
-
 type RendererRequest =
   | {
       type: "executor.toolCall";
@@ -93,7 +83,7 @@ type RendererRequest =
  * off.
  */
 const hostContextAllowsPreviewCapture = (ctx: McpUiHostContext | undefined): boolean =>
-  ctx?.["executorPreviewCapture"] === true;
+  ctx?.[PREVIEW_CAPTURE_HOST_CONTEXT_KEY] === true;
 
 // ---------------------------------------------------------------------------
 // Theme application from MCP Apps host context
