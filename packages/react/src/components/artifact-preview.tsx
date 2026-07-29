@@ -52,6 +52,7 @@
 // can use the shape as a weak landmark.
 // ---------------------------------------------------------------------------
 
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ArtifactPreview as ArtifactPreviewValue } from "@executor-js/sdk/shared";
 
 import { cn } from "../lib/utils";
@@ -316,12 +317,19 @@ export const artifactPreviewFigure = (artifactId: string): ArtifactPreviewFigure
 /**
  * The width the stored markup is laid out at before being scaled to fit.
  *
- * The markup was rendered by a server renderer with no viewport, so it has no
- * intrinsic width; laying it out at a desktop-ish width and scaling down is
- * what makes a card look like a small screenshot of the artifact rather than a
- * cramped mobile rendering of it. The card is 16:10, so the height follows.
+ * The markup came from a server renderer with no viewport, so it has no
+ * intrinsic width. Laying it out at a desktop width and scaling the whole thing
+ * down is what makes the card read as a small screenshot of the artifact rather
+ * than a cramped phone rendering of it — a table stays a table, a four-column
+ * stat row stays four columns.
+ *
+ * 880 matches the width the shell actually frames an artifact at
+ * (`.artifact-root` is `max-width: 1100px` minus its padding), so the layout
+ * the card shows is the layout the artifact really has.
  */
 const LAYOUT_WIDTH = 880;
+
+/** The 16:10 slice of that width — one card's worth of the artifact. */
 const LAYOUT_HEIGHT = Math.round((LAYOUT_WIDTH * 10) / 16);
 
 /**
@@ -337,22 +345,52 @@ const LAYOUT_HEIGHT = Math.round((LAYOUT_WIDTH * 10) / 16);
  * plus `overflow-hidden` stop it painting or laying out beyond its box.
  */
 function LayoutPreview(props: { readonly markup: string }) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState<number | null>(null);
+
+  // The scale has to be MEASURED, not written as a constant.
+  //
+  // The card is fluid — one, two or three across depending on the viewport — so
+  // any fixed divisor is right at exactly one breakpoint and wrong at the rest.
+  // Container query units cannot do it either: `calc(100cqw / 880)` is a
+  // length, and `scale()` takes a unitless number, so that expression is
+  // invalid and the browser drops the whole transform — which renders the
+  // markup at 1:1 and shows nothing but its top-left corner.
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const measure = () => {
+      const width = frame.clientWidth;
+      if (width > 0) setScale(width / LAYOUT_WIDTH);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
+      ref={frameRef}
       data-slot="artifact-preview"
       data-preview-kind="layout"
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 select-none overflow-hidden [contain:strict]"
     >
       <div
-        // Scaled from the top-left so the artifact's header — the part that
-        // identifies it — is always what the card shows, rather than its
-        // middle.
+        // Scaled from the top-left, so what the card shows is the artifact's
+        // first screen — heading first — rather than a slice of its middle.
         style={{
           width: LAYOUT_WIDTH,
           height: LAYOUT_HEIGHT,
-          transform: `scale(${1 / 2.75})`,
+          transform: `scale(${scale ?? 0})`,
           transformOrigin: "top left",
+          // The framing the shell itself gives an artifact, so the preview is
+          // not flush against the card's hairline.
+          padding: 24,
+          // Hidden until measured: a frame at 1:1 would flash the corner of the
+          // markup at full size before the first measurement lands.
+          visibility: scale === null ? "hidden" : "visible",
         }}
         // eslint-disable-next-line react/no-danger -- allowlist-sanitized SSR output; see the module header
         dangerouslySetInnerHTML={{ __html: props.markup }}
