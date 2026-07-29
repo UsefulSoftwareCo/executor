@@ -388,6 +388,28 @@ scenario(
           await page.getByRole("link", { name: `Open artifact ${title}` }).waitFor({
             timeout: 20_000,
           });
+
+          // The list is a preview gallery, not a row list: the card leads with a
+          // preview that has real layout extent, and the grid lays cards out in
+          // columns rather than stacking them full-width. Asserting the computed
+          // column count (rather than a class name) is what actually proves the
+          // user-visible shape at this viewport.
+          const card = page.locator('[data-slot="artifact-card"]').filter({ hasText: title });
+          const preview = card.locator('[data-slot="artifact-preview"]');
+          await preview.waitFor({ timeout: 20_000 });
+          const previewBox = await preview.boundingBox();
+          expect(previewBox?.height ?? 0, "the card's preview has layout extent").toBeGreaterThan(
+            80,
+          );
+
+          const columns = await page.locator('[data-slot="artifact-grid"]').evaluate(
+            (grid) =>
+              globalThis
+                .getComputedStyle(grid)
+                .gridTemplateColumns.split(" ")
+                .filter((track) => track.length > 0).length,
+          );
+          expect(columns, "the gallery lays out three cards per row when wide").toBe(3);
         });
       });
 
@@ -451,12 +473,12 @@ scenario(
         });
 
         await step("Rename the artifact to something askable", async () => {
-          // Row actions reveal on hover; the row is the link's enclosing entry.
-          const row = page.locator('[data-slot="card-stack-entry"]').filter({
+          // Card actions reveal on hover; the card is the link's enclosing tile.
+          const card = page.locator('[data-slot="artifact-card"]').filter({
             hasText: originalTitle,
           });
-          await row.hover();
-          await row.getByRole("button", { name: "Rename" }).click();
+          await card.hover();
+          await card.getByRole("button", { name: "Rename" }).click();
 
           const dialog = page.getByRole("dialog");
           await dialog.getByRole("heading", { name: "Rename Artifact" }).waitFor();
@@ -483,12 +505,12 @@ scenario(
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Delete the artifact from the list", async () => {
           await page.goto("/artifacts", { waitUntil: "networkidle" });
-          const row = page.locator('[data-slot="card-stack-entry"]').filter({
+          const card = page.locator('[data-slot="artifact-card"]').filter({
             hasText: renamedTitle,
           });
-          await row.waitFor({ timeout: 20_000 });
-          await row.hover();
-          await row.getByRole("button", { name: "Delete" }).click();
+          await card.waitFor({ timeout: 20_000 });
+          await card.hover();
+          await card.getByRole("button", { name: "Delete" }).click();
 
           const confirm = page.getByRole("alertdialog");
           await confirm.getByRole("heading", { name: `Delete ${renamedTitle}?` }).waitFor();
