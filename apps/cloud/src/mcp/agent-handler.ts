@@ -135,6 +135,9 @@ const propsForPrincipal = (
         artifactsEnabled: readArtifactsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
+        // The whole verified caller, so the session DO rebuilds its runtime
+        // with the same identity the in-memory store passes to buildServer.
+        principal,
       },
       propagation,
     };
