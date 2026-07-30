@@ -1,5 +1,28 @@
 # @executor-js/host-selfhost
 
+## 0.0.36
+
+### Patch Changes
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/analytics@0.1.1
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/app@1.4.4
+  - @executor-js/execution@1.5.37
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.5
+  - @executor-js/plugin-encrypted-secrets@0.0.36
+  - @executor-js/plugin-graphql@1.5.37
+  - @executor-js/plugin-mcp@1.5.37
+  - @executor-js/plugin-openapi@1.5.37
+  - @executor-js/plugin-provider-service-split@0.0.8
+  - @executor-js/plugin-toolkits@1.5.29
+  - @executor-js/react@1.4.57
+  - @executor-js/runtime-quickjs@1.5.37
+
 ## 0.0.35
 
 ### Patch Changes

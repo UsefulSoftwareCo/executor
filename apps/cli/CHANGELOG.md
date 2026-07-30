@@ -1,5 +1,37 @@
 # executor
 
+## 1.5.37
+
+### Patch Changes
+
+- [#1506](https://github.com/UsefulSoftwareCo/executor/pull/1506) [`c05a1cf`](https://github.com/UsefulSoftwareCo/executor/commit/c05a1cfa629b7f28a7d870c584998cb9cbbaf303) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Artifacts are now on by default for MCP connections.** A plain endpoint URL serves the full artifact surface — the artifact tools, the app shell resource, and the artifact skills. Connections that don't want it opt out with `?artifacts=false` (or `--no-artifacts` on the stdio CLI); `?artifacts=true` remains accepted as the explicit default. Previously the surface required a `?artifacts=true` opt-in.
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- [#1500](https://github.com/UsefulSoftwareCo/executor/pull/1500) [`5eb2ca3`](https://github.com/UsefulSoftwareCo/executor/commit/5eb2ca36f93d2dae6eb8b3506c5de04ca141bb20) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the artifact migration no longer narrows `definition.name` to varchar(255), which failed on existing long definition names**
+
+- [#1472](https://github.com/UsefulSoftwareCo/executor/pull/1472) [`1178e3b`](https://github.com/UsefulSoftwareCo/executor/commit/1178e3b31cd62cd2c05d6504d1586c2d8f018692) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add an Artifacts tab. Interactive components an agent generates with `render-ui` are saved and listed in the console, and each one has its own page that renders it live — the page an MCP client without MCP Apps support deep-links to. Artifacts can be renamed and deleted from the console, and agents find them again by title.
+
+- [#1505](https://github.com/UsefulSoftwareCo/executor/pull/1505) [`9bd4a5b`](https://github.com/UsefulSoftwareCo/executor/commit/9bd4a5b6063bd98f5ae8070baf0dd3ee3e110d68) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Artifact tool results now include the web deep link beside the inline widget payload, not just on the no-apps fallback. Clients can lose a rendered widget in ways the server never sees — a reopened transcript that skips the resource re-read shows raw JSON — and the URL in the result is the model's way to point the user back at the artifact.
+
+- [#1483](https://github.com/UsefulSoftwareCo/executor/pull/1483) [`54df2e3`](https://github.com/UsefulSoftwareCo/executor/commit/54df2e3e99509008759269b27484ee6581ce8827) Thanks [@davidwrossiter](https://github.com/davidwrossiter)! - **Fix: GraphQL connections now reject credentials when schema introspection fails and show actionable tool sync diagnostics**
+
+- [#1499](https://github.com/UsefulSoftwareCo/executor/pull/1499) [`010ea98`](https://github.com/UsefulSoftwareCo/executor/commit/010ea98e520643731b07e68e21119f12b8ef1505) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the add-connection wizard no longer wipes a pasted credential when the key check saves a health check mid-flow**
+
+- [#1503](https://github.com/UsefulSoftwareCo/executor/pull/1503) [`a7c4689`](https://github.com/UsefulSoftwareCo/executor/commit/a7c468944837cfe097f03f69d612bde31903f284) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP responses larger than Durable Object storage's 128 KiB per-value cap hung the client instead of being delivered**
+
+  The DO transport persisted every outbound message for reconnect replay before writing the live SSE frame, and `storage.put` of an oversize value throws — so a large response (the `ui://executor/shell.html` resource is ~5 MB) was neither stored nor sent, and the client waited on keepalives forever. The transport now delivers the live frame first and treats persistence as best-effort: an oversize message skips the event store with a logged warning and arrives without a replay id, which only costs replayability if the connection drops mid-delivery.
+
+- [#1502](https://github.com/UsefulSoftwareCo/executor/pull/1502) [`25270b1`](https://github.com/UsefulSoftwareCo/executor/commit/25270b1f1f091778ba6584e41b041092fc1bdd00) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP clients of the cloud host got a "Shell not built" placeholder as the `ui://executor/shell.html` resource, so every artifact rendered as a widget that never finished loading**
+
+  The deployed Worker has no filesystem, and the shell loader silently fell back to an inert placeholder document when its `fs.readFile` failed. Workers hosts now fetch the built shell through the static-assets binding (the app build emits a stable-named copy alongside the hashed one), the self-host image reads the same emitted asset from its SPA dist, and a host that cannot produce the shell now fails the resource read with an actionable error instead of serving a document that hangs the client. App builds fail if the shell asset was not emitted.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/local@1.4.4
+  - @executor-js/runtime-quickjs@1.5.37
+
 ## 1.5.36
 
 ### Patch Changes
