@@ -120,6 +120,11 @@ export interface AnalyticsEvents {
     success: boolean;
   };
 
+  // ── Artifacts page ───────────────────────────────────────────────────────
+  artifact_opened: { surface: "list" | "deep_link" };
+  artifact_renamed: { success: boolean };
+  artifact_removed: { success: boolean };
+
   // ── API keys ─────────────────────────────────────────────────────────────
   api_key_created: { success: boolean };
   api_key_revoked: { success: boolean };
@@ -148,6 +153,7 @@ export interface AnalyticsEvents {
   };
   mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
+  mcp_install_artifacts_toggled: { artifacts: boolean };
 
   // ── Command palette ──────────────────────────────────────────────────────
   command_palette_navigated: {

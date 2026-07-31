@@ -248,6 +248,17 @@ export const McpAuthLive = Layer.effect(
         return mcpUnauthorized("invalid_token", "The API key is invalid");
       }
 
+      // An ORG-level key resolves to the read-only platform view and has no
+      // acting member. Every MCP session binds to one subject, so there is
+      // nothing honest to bind here — reject rather than invent a subject.
+      if (principal.scope === "org" || principal.accountId == null) {
+        yield* Effect.annotateCurrentSpan({
+          "mcp.auth.outcome": "invalid",
+          "mcp.auth.invalid_reason": "org_api_key",
+        });
+        return mcpUnauthorized("invalid_token", "Organization API keys cannot open an MCP session");
+      }
+
       yield* Effect.annotateCurrentSpan({
         "mcp.auth.outcome": "verified",
         "mcp.auth.credential_type": "api_key",

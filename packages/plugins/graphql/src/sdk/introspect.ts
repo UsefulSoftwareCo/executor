@@ -267,6 +267,7 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
       () =>
         new GraphqlIntrospectionError({
           message: "Failed to reach GraphQL endpoint",
+          reason: "network",
         }),
     ),
   );
@@ -285,6 +286,9 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
       message: upstreamMessage
         ? `Introspection failed with status ${response.status}: ${upstreamMessage}`
         : `Introspection failed with status ${response.status}`,
+      status: response.status,
+      reason: "http",
+      ...(upstreamMessage ? { upstreamMessage } : {}),
     });
   }
 
@@ -294,6 +298,8 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
       () =>
         new GraphqlIntrospectionError({
           message: `Failed to parse introspection response as JSON`,
+          status: response.status,
+          reason: "invalid-json",
         }),
     ),
   );
@@ -303,22 +309,29 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
       () =>
         new GraphqlIntrospectionError({
           message: "Introspection response has an invalid shape",
+          status: response.status,
+          reason: "invalid-shape",
         }),
     ),
   );
 
   if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
-    const upstreamMessage = firstUpstreamErrorMessage(json);
+    const upstreamMessage = upstreamTextMessage(firstUpstreamErrorMessage(json) ?? "");
     return yield* new GraphqlIntrospectionError({
       message: upstreamMessage
         ? `Introspection returned ${json.errors.length} error(s): ${upstreamMessage}`
         : `Introspection returned ${json.errors.length} error(s)`,
+      status: response.status,
+      reason: "graphql-errors",
+      ...(upstreamMessage ? { upstreamMessage } : {}),
     });
   }
 
   if (!json.data?.__schema) {
     return yield* new GraphqlIntrospectionError({
       message: "Introspection response missing __schema",
+      status: response.status,
+      reason: "missing-schema",
     });
   }
 

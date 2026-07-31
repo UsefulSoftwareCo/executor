@@ -28,11 +28,25 @@ export const revokeApiKey = AccountApiClient.mutation("account", "revokeApiKey")
 
 // ── Organization members ─────────────────────────────────────────────────────
 
-export const orgMembersAtom = Atom.refreshOnWindowFocus(
-  AccountApiClient.query("account", "listMembers", {
-    timeToLive: "30 seconds",
-    reactivityKeys: [ReactivityKey.orgMembers],
-  }),
+// `refreshOnWindowFocus` is BROWSER-ONLY: its signal atom subscribes to
+// `window`/`document.visibilityState` the first time the atom is read, so
+// evaluating it on a server throws `ReferenceError: window is not defined` —
+// synchronously, in render, where no Suspense boundary can absorb it.
+//
+// `withServerValueInitial` gives the atom an explicit server snapshot
+// (`AsyncResult.initial(true)`) that `useAtomValue`'s `getServerSnapshot` reads
+// INSTEAD of evaluating the atom, so the read function never runs server-side.
+// Every reader already handles the initial state (it is the ordinary loading
+// state), and the client refetches on mount. Without this, any SSR'd tree that
+// reads the member list — cloud's shell does, to decide the admin nav — fails
+// the whole document render.
+export const orgMembersAtom = Atom.withServerValueInitial(
+  Atom.refreshOnWindowFocus(
+    AccountApiClient.query("account", "listMembers", {
+      timeToLive: "30 seconds",
+      reactivityKeys: [ReactivityKey.orgMembers],
+    }),
+  ),
 );
 
 export const orgRolesAtom = AccountApiClient.query("account", "listRoles", {

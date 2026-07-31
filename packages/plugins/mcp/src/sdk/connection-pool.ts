@@ -27,6 +27,13 @@ const isDeadConnectionFailure = (error: unknown): boolean => {
   return (
     error.transportFailure === true ||
     error.status === 400 ||
+    // A 401 means the bearer this session was dialled with is no longer
+    // accepted. The session is bound to that token for its lifetime, so
+    // retaining it would hand the same dead credential to every caller for the
+    // full idle window — and would defeat core's post-401 token refresh, whose
+    // freshly minted token can only reach the server over a NEW session. Drop
+    // it so the retry dials with the new credential.
+    error.status === 401 ||
     error.status === 404 ||
     error.status === 408
   );

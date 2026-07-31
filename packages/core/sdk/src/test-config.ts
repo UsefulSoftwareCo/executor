@@ -122,6 +122,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
    *  no OAuth callback (exercises the fail-loud redirect path). */
   readonly redirectUri?: string | null;
   readonly oauthCallbackStateOrgSlug?: string;
+  readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -159,6 +160,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     testDb,
     // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",
+    onIntegrationChange: options?.onIntegrationChange,
     ...(redirectUri != null ? { redirectUri } : {}),
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
   };

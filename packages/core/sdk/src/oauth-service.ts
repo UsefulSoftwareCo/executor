@@ -83,6 +83,10 @@ export interface MintOAuthConnectionInput {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
+  /** Display label derived from the provider (OIDC id_token claims), as opposed
+   *  to `identityLabel` which the user chose. Only fills an EMPTY label slot:
+   *  a re-mint must never clobber a curated label with a derived one. */
+  readonly derivedIdentityLabel?: string | null;
   /** Credential provider key + item id the access token is stored under. */
   readonly provider: string;
   readonly itemId: string;
@@ -127,6 +131,14 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Whether a connection row exists under `(owner, integration, name)`: the
+   *  raw row, not the policy-filtered list, so `start` can resolve a free
+   *  name for `newConnection` flows against what is actually stored. */
+  readonly connectionNameTaken: (ref: {
+    readonly owner: Owner;
+    readonly integration: IntegrationSlug;
+    readonly name: ConnectionName;
+  }) => Effect.Effect<boolean, StorageFailure>;
   /**
    * Resolve the OAuth scope policy for a `(integration, template)`:
    *  - `{ kind: "scopes", scopes }`: the scopes the integration's auth template
@@ -1060,6 +1072,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
 
+      // newConnection: resolve the requested name to a FREE one against the
+      // stored rows (not a client-side, policy-filtered view), so a second
+      // untyped connect mints `personalGmail2` instead of silently re-minting
+      // the first account's row. Reconnects omit the flag and keep targeting
+      // their existing row. Bounded: a pathological owner with 1000 same-named
+      // connections fails loudly rather than scanning forever.
+      let name = input.name;
+      if (input.newConnection === true) {
+        let suffix = 2;
+        while (
+          yield* deps.connectionNameTaken({
+            owner: input.owner,
+            integration: input.integration,
+            name,
+          })
+        ) {
+          if (suffix > 1000) {
+            return yield* new OAuthStartError({
+              message: `No free connection name derivable from ${input.name}.`,
+            });
+          }
+          name = ConnectionName.make(`${String(input.name)}${suffix}`);
+          suffix++;
+        }
+      }
+
       // Declared scopes win (driven by the selected auth template). MCP-style
       // integrations declare none and discover them from the client's protected
       // resource / authorization server metadata at connect.
@@ -1107,7 +1145,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
         const connection = yield* mintFromToken(
-          input,
+          { ...input, name },
           client,
           token,
           requestedScopes,
@@ -1163,7 +1201,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           state: String(state),
           client_slug: String(input.client),
           integration: String(input.integration),
-          name: String(input.name),
+          name: String(name),
           template: String(input.template),
           redirect_url: flowRedirectUri,
           pkce_verifier: verifier,
@@ -1245,6 +1283,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           clientOwnerFromPayload(sessionRow.payload) ?? (String(sessionRow.owner) as Owner),
       };
 
+      // Annotate as soon as the session resolves the flow's identity, so even
+      // a completion that fails at the exchange still says WHOSE connect died.
+      yield* Effect.annotateCurrentSpan({
+        "executor.integration": String(session.integration),
+        "executor.connection": String(session.name),
+        "executor.template": String(session.template),
+        "executor.oauth.client": String(session.clientSlug),
+      });
+
       // Expired sessions are not redeemable — drop + treat as not found.
       if (Number.isFinite(session.expiresAt) && session.expiresAt <= Date.now()) {
         yield* deleteSession(input.state);
@@ -1308,7 +1355,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           name: session.name,
           integration: session.integration,
           template: session.template,
-          identityLabel: session.identityLabel ?? token.idTokenIdentityLabel ?? null,
+          identityLabel: session.identityLabel ?? null,
         },
         client,
         token,
@@ -1330,9 +1377,30 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         ),
       );
 
+      // Everything a "why did this connect fail / where did it go" question
+      // needs, none of it secret: slugs, owner scope, and whether the token
+      // host was rebound to a regional endpoint (the Datadog multi-site path —
+      // a bug there previously shipped and was only diagnosable by hand).
+      // Deliberately absent: the code, the PKCE verifier, the token, the
+      // callback domain (can embed an org's private site), and identityLabel
+      // (resolves to an email).
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.token_host_rebound": tokenUrl !== client.tokenUrl,
+      });
+
       yield* deleteSession(input.state);
       return connection;
-    });
+    }).pipe(
+      Effect.withSpan("executor.oauth.complete", {
+        attributes: {
+          "executor.oauth.grant": "authorization_code",
+          // Same per-customer dimensions as executor.oauth.refresh, so a
+          // connect and its later refresh failures group under one tenant.
+          "executor.tenant": deps.tenant,
+          ...(deps.subject != null ? { "executor.subject": deps.subject } : {}),
+        },
+      }),
+    );
 
   // -----------------------------------------------------------------------
   // Mint the connection from a freshly exchanged token: store the access
@@ -1378,12 +1446,33 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       }
 
       const oauthScope = recordedOAuthScope(token, requestedScopes);
+      const missingScopes =
+        client.grant === "authorization_code"
+          ? missingGrantedOAuthScopes(requestedScopes, oauthScope)
+          : [];
+      // The freshness facts of this connection AT BIRTH, on the enclosing
+      // span (executor.oauth.complete, or the reconnect path's request
+      // envelope). Every "why did this connection later go stale" question
+      // starts here: a partial grant fails later as oauth_scope_insufficient
+      // in an unrelated trace; no refresh token means the first expiry is
+      // terminal; no advertised expiry means only the reactive 401 path can
+      // ever refresh it. Counts and booleans only — scope VALUES can encode
+      // customer resource names on some providers.
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.scope_requested_count": requestedScopes.length,
+        "executor.oauth.scope_missing_count": missingScopes.length,
+        "executor.oauth.has_refresh_token": token.refresh_token !== undefined,
+        "executor.oauth.has_advertised_expiry": typeof token.expires_in === "number",
+      });
       return yield* deps.mintOAuthConnection({
         owner: target.owner,
         name: target.name,
         integration: target.integration,
         template: target.template,
         identityLabel: target.identityLabel ?? null,
+        // The OIDC account claims travel separately: they may only FILL an
+        // empty label, never replace a user-curated one on reconnect.
+        derivedIdentityLabel: token.idTokenIdentityLabel ?? null,
         provider: String(provider.key),
         itemId,
         oauthClient: OAuthClientSlug.make(client.slug),
@@ -1395,10 +1484,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // non-resource scope from the token `scope` string, so preserve it when
         // the refresh token proves it was granted.
         oauthScope,
-        missingOAuthScopes:
-          client.grant === "authorization_code"
-            ? missingGrantedOAuthScopes(requestedScopes, oauthScope)
-            : [],
+        missingOAuthScopes: missingScopes,
         oauthTokenUrl,
       });
     });

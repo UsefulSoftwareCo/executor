@@ -23,6 +23,7 @@
 import { createMiddleware } from "@tanstack/react-start";
 import { Effect, Exit, Layer, ManagedRuntime } from "effect";
 
+import { isValidOrgSlug } from "@executor-js/api";
 import {
   AUTH_HINT_COOKIE,
   AUTH_HINT_MAX_AGE_SECONDS,
@@ -35,7 +36,9 @@ import { isAppOwnedPath } from "../app-paths";
 import { makeDbLayer } from "../db/db";
 import { makeUserStoreLayer, UserStoreService } from "./context";
 import { parseCookie } from "./cookies";
+import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import { sealedSessionDisplayName } from "./middleware";
+import { authorizeOrganizationSelector } from "./organization";
 import { browserOriginFromRequest } from "./request-origin";
 import { loginPath, safeReturnTo } from "./return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "./route-paths";
@@ -158,6 +161,23 @@ const organizationDisplay = async (
     : { name: "", slug: "" };
 };
 
+// Live membership check for the last-org cookie's slug. Same authorize path
+// as any org selector — the cookie is a preference, so a slug the user can't
+// access (stale after removal/deletion, or forged) resolves to null and the
+// bare path falls through to today's canonicalize-onto-session-org behavior.
+// Per-request store layers for the same reason as organizationDisplay.
+const authorizeLastOrgSlug = async (
+  userId: string,
+  slug: string,
+): Promise<{ readonly id: string } | null> => {
+  const exit = await getRuntime().runPromiseExit(
+    authorizeOrganizationSelector(userId, slug).pipe(
+      Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer())),
+    ),
+  );
+  return Exit.isSuccess(exit) ? exit.value : null;
+};
+
 const hintSetCookie = (hint: AuthHint) =>
   `${AUTH_HINT_COOKIE}=${encodeAuthHint(hint)}; ${HINT_COOKIE_ATTRIBUTES}; Max-Age=${AUTH_HINT_MAX_AGE_SECONDS}`;
 
@@ -224,6 +244,39 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
     // exists so the app shell is never painted for an org-less session.
     if (!session.organizationId && !ONBOARDING_PATHS.has(pathname)) {
       return redirect("/create-org", { refreshedSession: session.refreshedSession });
+    }
+
+    // A BARE console path (no org slug in the URL) canonicalizes onto the org
+    // this browser last worked in (the last-org cookie), not the org pinned in
+    // the session at login time — a multi-org user re-entering at `/` lands
+    // where they left off. Slugged URLs never enter here (the URL names its
+    // own scope), so this costs nothing on the steady state; the not-found
+    // contract is untouched because an unknown-but-valid slug in the URL reads
+    // as slugged, not bare. When the cookie matches the session's own org (the
+    // overwhelmingly common single-org case) the client-side OrgSlugGate
+    // already canonicalizes onto it, so skip the live membership check and the
+    // redirect entirely.
+    const lastOrgSlug = parseCookie(cookieHeader, LAST_ORG_COOKIE);
+    const firstSegment = pathname.split("/")[1] ?? "";
+    if (
+      session.organizationId &&
+      lastOrgSlug &&
+      isValidOrgSlug(lastOrgSlug) &&
+      !isValidOrgSlug(firstSegment) &&
+      !ONBOARDING_PATHS.has(pathname)
+    ) {
+      const sessionOrgSlug = (await organizationDisplay(session.organizationId)).slug;
+      if (lastOrgSlug !== sessionOrgSlug) {
+        // The cookie is a preference, not an authority: only redirect onto an
+        // org the caller actively belongs to (stale/forged values fall through
+        // to today's session-org canonicalization).
+        const lastOrg = await authorizeLastOrgSlug(session.userId, lastOrgSlug);
+        if (lastOrg) {
+          return redirect(`/${lastOrgSlug}${pathname === "/" ? "" : pathname}${url.search}`, {
+            refreshedSession: session.refreshedSession,
+          });
+        }
+      }
     }
 
     // Serve the document WITH the verified identity: the hint rides to the

@@ -10,6 +10,7 @@ import {
   type InviteCode as InviteCodeSchema,
 } from "./api";
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
+import { requireInstanceAdmin } from "./require-admin";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
 import {
   createInviteCode,
@@ -22,9 +23,11 @@ import {
 // ---------------------------------------------------------------------------
 // Handlers for the self-host admin (invite-code) API. Every Promise-returning
 // boundary (Better Auth, the libSQL store) is wrapped in Effect.tryPromise with
-// a typed failure — no raw try/catch, no Promise.catch. Each route is gated:
-// the caller must be an owner/admin member of the one org (resolved through the
-// org primitive's getActiveMember).
+// a typed failure — no raw try/catch, no Promise.catch. Each route is gated by
+// the SHARED `requireInstanceAdmin`: the caller must be an owner/admin member
+// of THIS INSTANCE'S organization, named explicitly rather than taken from the
+// caller's session (see require-admin.ts for the escalation that rule refuses —
+// this plane mints invite codes, so a bypass here is durable admin).
 // ---------------------------------------------------------------------------
 
 const requestHeaders = Effect.map(
@@ -32,18 +35,15 @@ const requestHeaders = Effect.map(
   (request): Headers => new Headers({ ...request.headers }),
 );
 
-// Resolve + authorize the caller, returning their member record (for userId).
+// Resolve + authorize the caller, rendering the shared gate's denial in THIS
+// plane's error vocabulary (the HttpApi group declares these, not the users
+// plane's).
 const requireAdmin = (headers: Headers) =>
-  Effect.gen(function* () {
-    const { auth } = yield* BetterAuth;
-    const member = yield* Effect.tryPromise({
-      try: () => auth.api.getActiveMember({ headers }),
-      catch: () => new AdminError({ message: "Failed to resolve session" }),
-    }).pipe(Effect.orElseSucceed(() => null));
-    if (!member) return yield* new AdminUnauthorized();
-    if (member.role !== "owner" && member.role !== "admin") return yield* new AdminForbidden();
-    return member;
-  });
+  requireInstanceAdmin(headers).pipe(
+    Effect.mapError((denial) =>
+      denial === "unauthorized" ? new AdminUnauthorized() : new AdminForbidden(),
+    ),
+  );
 
 const narrowRole = (role: string | undefined): InviteRole =>
   role === "admin" ? "admin" : "member";

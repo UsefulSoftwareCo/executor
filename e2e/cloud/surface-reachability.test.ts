@@ -35,6 +35,27 @@ scenario(
     expect(paths, "path-param routes are documented").toContain(
       "/api/executions/{executionId}/resume",
     );
+
+    // The account and admin-users groups. These are composed into the spec by
+    // hand (`CloudOpenApi` in `extensions/routes.ts`), and the composition is
+    // the ONLY thing that documents them — the routes serve either way, so a
+    // group dropped from the `.add(...)` chain leaves a mounted, undocumented
+    // plane and nothing else fails. Asserted against the SERVED spec rather
+    // than the module: cloud builds the same composition twice (here and in
+    // `extensions/docs.ts`) and only this one reaches the runtime, so importing
+    // either module could pass while the wire is wrong.
+    expect(paths, "the account plane is documented").toContain("/api/account/me");
+    expect(paths, "including the org-key surface the console reads").toContain(
+      "/api/account/org-api-keys",
+    );
+    expect(paths, "the tenant-wide admin users plane is documented").toContain("/api/admin/users");
+    expect(paths, "including the joined view the console list consumes").toContain(
+      "/api/admin/users/with-connections",
+    );
+    expect(paths, "and the per-user connections read").toContain(
+      "/api/admin/users/{externalId}/connections",
+    );
+    expect(paths, "and the single-user read").toContain("/api/admin/users/{identifier}");
   }),
 );
 

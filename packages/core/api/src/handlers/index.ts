@@ -7,6 +7,7 @@ import { ProvidersHandlers } from "./providers";
 import { ExecutionsHandlers } from "./executions";
 import { OAuthHandlers } from "./oauth";
 import { PoliciesHandlers } from "./policies";
+import { ArtifactsHandlers } from "./artifacts";
 
 export { ToolsHandlers } from "./tools";
 export { IntegrationsHandlers } from "./integrations";
@@ -15,6 +16,7 @@ export { ProvidersHandlers } from "./providers";
 export { ExecutionsHandlers } from "./executions";
 export { OAuthHandlers } from "./oauth";
 export { PoliciesHandlers } from "./policies";
+export { ArtifactsHandlers } from "./artifacts";
 
 export const CoreHandlers = Layer.mergeAll(
   ToolsHandlers,
@@ -24,4 +26,5 @@ export const CoreHandlers = Layer.mergeAll(
   ExecutionsHandlers,
   OAuthHandlers,
   PoliciesHandlers,
+  ArtifactsHandlers,
 );

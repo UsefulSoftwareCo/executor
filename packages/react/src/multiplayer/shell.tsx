@@ -52,6 +52,7 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/secrets", label: "Providers" },
   { to: "/policies", label: "Policies" },
   { to: "/toolkits", label: "Toolkits" },
+  { to: "/artifacts", label: "Artifacts" },
 ];
 
 /** Canonical public docs (Mintlify). Same-origin on cloud (executor.sh proxies

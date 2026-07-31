@@ -43,10 +43,18 @@ export const withLocalServer = (
     /** Extra env merged into the `executor web` process, e.g. to force a
      *  published-version signal for the update check. */
     readonly env?: Record<string, string>;
+    /** Reuse an existing data dir instead of a throwaway one (and keep it on
+     *  exit) — for durability scenarios that boot the server twice against the
+     *  same persisted state. The caller owns cleanup. */
+    readonly dataDir?: string;
+    /** Terminal cast filename (default "terminal.cast") so multi-boot
+     *  scenarios keep one recording per boot. */
+    readonly castName?: string;
   },
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const dataDir = mkdtempSync(join(tmpdir(), "executor-local-e2e-"));
+    const ownsDataDir = options?.dataDir === undefined;
+    const dataDir = options?.dataDir ?? mkdtempSync(join(tmpdir(), "executor-local-e2e-"));
 
     let publishUrl!: (url: string) => void;
     const urlReady = new Promise<string>((res) => {
@@ -103,7 +111,7 @@ export const withLocalServer = (
           {
             cwd: repoRoot,
             env: { EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: dataDir, ...options?.env },
-            record: join(runDir, "terminal.cast"),
+            record: join(runDir, options?.castName ?? "terminal.cast"),
             viewport: { cols: 120, rows: 40 },
           },
         ),
@@ -119,5 +127,11 @@ export const withLocalServer = (
         }),
       ],
       { concurrency: "unbounded" },
-    ).pipe(Effect.ensuring(Effect.sync(() => rmSync(dataDir, { recursive: true, force: true }))));
+    ).pipe(
+      Effect.ensuring(
+        ownsDataDir
+          ? Effect.sync(() => rmSync(dataDir, { recursive: true, force: true }))
+          : Effect.void,
+      ),
+    );
   });

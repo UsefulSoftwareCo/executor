@@ -1,5 +1,25 @@
 # @executor-js/api
 
+## 1.4.57
+
+### Patch Changes
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/execution@1.5.37
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/execution@1.5.36
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.55
 
 ### Patch Changes

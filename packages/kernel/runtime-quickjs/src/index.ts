@@ -9,6 +9,11 @@ import {
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import {
+  executeSealedBundle as runSealedBundleWith,
+  type SealedBundleError,
+  type SealedBundleOptions,
+} from "./sealed-bundle";
+import {
   getQuickJS,
   type QuickJSContext,
   type QuickJSDeferredPromise,
@@ -32,6 +37,21 @@ export const setQuickJSModule = (mod: QuickJSWASMModule) => {
 
 const resolveQuickJS = (): Promise<QuickJSWASMModule> =>
   preloadedModule ? Promise.resolve(preloadedModule) : getQuickJS();
+
+/**
+ * Run a sealed, self-contained bundle in a QuickJS sandbox.
+ *
+ * A sibling of `makeQuickJsExecutor` for validation work rather than user
+ * execution — no tool bridge, no code recovery, no metering above it. See
+ * `sealed-bundle.ts` for why that separation matters. The WASM module is
+ * resolved the same way, so a host that called `setQuickJSModule` (Workers must)
+ * is honoured here too.
+ */
+export const executeSealedBundle = (
+  options: SealedBundleOptions,
+): Effect.Effect<string, SealedBundleError> => runSealedBundleWith(options, resolveQuickJS);
+
+export { SealedBundleError, type SealedBundleOptions } from "./sealed-bundle";
 
 class QuickJsExecutionError extends Data.TaggedError("QuickJsExecutionError")<{
   readonly message: string;

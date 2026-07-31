@@ -33,6 +33,22 @@ export const integration = pgTable(
   (table) => [uniqueIndex("integration_uidx").on(table.tenant, table.slug)],
 );
 
+export const subject = pgTable(
+  "subject",
+  {
+    external_id: varchar("external_id", { length: 255 }).notNull(),
+    created_at: timestamp("created_at").notNull(),
+    last_seen_at: bigint("last_seen_at", { mode: "bigint" }),
+    status: text("status"),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("subject_uidx").on(table.tenant, table.external_id)],
+);
+
 export const connection = pgTable(
   "connection",
   {
@@ -165,7 +181,7 @@ export const definition = pgTable(
     integration: varchar("integration", { length: 255 }).notNull(),
     connection: varchar("connection", { length: 255 }).notNull(),
     plugin_id: text("plugin_id").notNull(),
-    name: varchar("name", { length: 255 }).notNull(),
+    name: text("name").notNull(),
     schema: json("schema").notNull(),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
@@ -208,6 +224,28 @@ export const tool_policy = pgTable(
   (table) => [
     uniqueIndex("tool_policy_uidx").on(table.tenant, table.owner, table.subject, table.id),
   ],
+);
+
+export const artifact = pgTable(
+  "artifact",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    code: text("code").notNull(),
+    bindings: json("bindings"),
+    preview: text("preview"),
+    created_at: timestamp("created_at").notNull(),
+    updated_at: timestamp("updated_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("artifact_uidx").on(table.tenant, table.owner, table.subject, table.id)],
 );
 
 export const plugin_storage = pgTable(

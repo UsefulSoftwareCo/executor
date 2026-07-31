@@ -27,6 +27,7 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
+import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import {
   ORG_SELECTOR_HEADER,
   authorizeOrganization,
@@ -218,11 +219,25 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             : null;
 
           // Prefer the org in the URL that sent the user to login. If the URL
-          // is bare, or not an org route, fall back to WorkOS's org and then to
-          // the first active membership for org-less sessions. Pending
-          // memberships are skipped because refreshing into one 400s and would
-          // bypass invite consent.
-          let targetOrganizationId = requestedOrg?.id ?? result.organizationId ?? null;
+          // is bare, or not an org route, prefer the org this browser last
+          // worked in (the last-org cookie — it outlives the session precisely
+          // so a fresh login lands where the user left off), then WorkOS's
+          // org, then the first active membership for org-less sessions.
+          // Pending memberships are skipped because refreshing into one 400s
+          // and would bypass invite consent. The cookie is membership-checked
+          // like any selector, so a stale one just falls through.
+          let targetOrganizationId = requestedOrg?.id ?? null;
+          if (!targetOrganizationId && !requestedOrgSelector) {
+            const lastOrgSlug = request.cookies[LAST_ORG_COOKIE];
+            const lastOrg =
+              lastOrgSlug && isValidOrgSlug(lastOrgSlug)
+                ? yield* authorizeOrganizationSelector(result.user.id, lastOrgSlug).pipe(
+                    Effect.orElseSucceed(() => null),
+                  )
+                : null;
+            targetOrganizationId = lastOrg?.id ?? null;
+          }
+          targetOrganizationId ??= result.organizationId ?? null;
           if (!targetOrganizationId && !requestedOrgSelector) {
             const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");

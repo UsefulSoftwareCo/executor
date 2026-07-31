@@ -573,18 +573,41 @@ export const connectionNameFrom = (
 ): ConnectionName =>
   connectionIdentifier(connectionLabelForHost(label, owner, integrationName, organizationId));
 
+/** Uniquify a derived callable name against the owner's existing connections
+ *  for the integration: a fresh OAuth connect mints a NEW connection, and two
+ *  untyped connects both derive `personalGmail`; without a suffix the second
+ *  silently replaces the first account's token and label. */
+export const uniqueConnectionName = (
+  base: ConnectionName,
+  takenNames: ReadonlySet<string>,
+): ConnectionName => {
+  if (!takenNames.has(String(base))) return base;
+  let suffix = 2;
+  while (takenNames.has(`${String(base)}${suffix}`)) suffix++;
+  return ConnectionName.make(`${String(base)}${suffix}`);
+};
+
+/** The `oauth.start` identity label: only a label the user actually typed.
+ *  An untyped connect sends none, so the server may fill the label from the
+ *  provider's OIDC claims (the account email) instead of a generic
+ *  "Personal Gmail" that would also clobber a curated label on reconnect. */
+export const typedIdentityLabel = (label: string): string | undefined => {
+  const trimmed = label.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
 export const oauthIdentityLabelFromHealth = (input: {
   readonly result: HealthCheckResult;
   readonly typedLabel: string;
   readonly storedIdentityLabel?: string | null;
-  readonly defaultIdentityLabel: string;
 }): string | null => {
   const identity = input.result.identity?.trim();
   if (input.result.status !== "healthy" || !identity) return null;
   if (input.typedLabel.trim().length > 0) return null;
-  const defaultLabel = input.defaultIdentityLabel.trim();
-  const storedLabel = (input.storedIdentityLabel ?? defaultLabel).trim();
-  return storedLabel === defaultLabel ? identity : null;
+  // Fill only an unset label: an untyped connect stores none unless the grant
+  // carried OIDC claims, and anything already stored (typed, curated, or
+  // claims-derived) wins over a probed identity.
+  return (input.storedIdentityLabel ?? "").trim().length === 0 ? identity : null;
 };
 
 // ---------------------------------------------------------------------------
@@ -763,7 +786,6 @@ type RunDcrConnectInput = {
    *  discovery URL (non-MCP DCR), collapsing the resource to null as before. */
   readonly resourceFallback?: string;
   readonly owner: Owner;
-  readonly integrationName: string;
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
@@ -772,10 +794,14 @@ type RunDcrConnectInput = {
   readonly integration: IntegrationSlug;
 };
 
-export const dcrClientNameForIntegration = (integrationName: string): string => {
-  const trimmed = integrationName.trim();
-  return trimmed.length > 0 ? `Executor for ${trimmed}` : "Executor";
-};
+/** RFC 7591 `client_name` sent for every dynamic registration. Deliberately
+ *  the bare product name, never "Executor for <integration>": some servers
+ *  (e.g. Mercury) vet the name and reject any value containing their own
+ *  brand with `invalid_client_metadata`, killing the automatic connect. The
+ *  name is cosmetic (it only labels the provider's consent screen and app
+ *  list, where the provider is already evident), so the suffix bought
+ *  nothing worth that failure class. */
+const DCR_CLIENT_NAME = "Executor";
 
 /**
  * Run the transparent DCR connect sequence: probe → register → start.
@@ -808,7 +834,7 @@ export async function runDcrConnect(
     resource: probe.resource ?? input.resourceFallback ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-    clientName: dcrClientNameForIntegration(input.integrationName),
+    clientName: DCR_CLIENT_NAME,
     redirectUri: input.redirectUri,
     originIntegration: input.integration,
   });
@@ -1238,6 +1264,30 @@ function AddAccountModalView(props: AddAccountModalProps) {
     () => buildUsageMap(AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []),
     [connectionsResult],
   );
+  // PREVIEW-ONLY uniquify against the loaded connections list: the callable
+  // name shown before an OAuth connect anticipates the server's suffixing
+  // (`personalGmail2`). The AUTHORITATIVE resolution happens in `oauth.start`
+  // against stored rows (`newConnection: true`); this view may be stale or
+  // policy-filtered and must never be the thing preventing an overwrite.
+  const takenConnectionNames = useMemo<ReadonlyMap<Owner, ReadonlySet<string>>>(() => {
+    const map = new Map<Owner, Set<string>>();
+    if (!AsyncResult.isSuccess(connectionsResult)) return map;
+    for (const connection of connectionsResult.value) {
+      if (String(connection.integration) !== String(integration)) continue;
+      const names = map.get(connection.owner) ?? new Set<string>();
+      names.add(String(connection.name));
+      map.set(connection.owner, names);
+    }
+    return map;
+  }, [connectionsResult, integration]);
+  const previewConnectionName = useCallback(
+    (typed: string, connectionOwner: Owner): ConnectionName =>
+      uniqueConnectionName(
+        connectionNameFrom(typed, connectionOwner, integrationName, organizationId),
+        takenConnectionNames.get(connectionOwner) ?? new Set<string>(),
+      ),
+    [takenConnectionNames, integrationName, organizationId],
+  );
 
   const method = useMemo(
     () => allMethods.find((m: AuthMethod) => m.id === methodId) ?? allMethods[0],
@@ -1253,8 +1303,19 @@ function AddAccountModalView(props: AddAccountModalProps) {
     setMethodId(allMethods[0]!.id);
   }, [allMethods, methodId]);
 
+  // Apply the handoff prefill ONCE per handoff key (tracked by ref). The
+  // effect's deps include `allMethods`, which gets a new identity whenever the
+  // integration refetches — and the wizard itself triggers a refetch mid-flow
+  // (Continue probes the key and saves the health check). Re-running the reset
+  // then would wipe the credential the user just pasted.
+  const handoffAppliedKey = useRef<string | null>(null);
   useEffect(() => {
     if (!initialState) return;
+    // Methods load in a second fetch after the modal opens; when the handoff
+    // preselects one, retry until they land so the match has something to hit.
+    if (initialState.template != null && allMethods.length === 0) return;
+    if (handoffAppliedKey.current === initialState.key) return;
+    handoffAppliedKey.current = initialState.key;
     const initialMethod = initialState.template
       ? allMethods.find(
           (m: AuthMethod) =>
@@ -1520,7 +1581,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const savedToOptions = isOAuth && !automaticOAuthActive ? oauthConnectionOptions : ownerOptions;
   const savedToOwner = isOAuth && !automaticOAuthActive ? oauthConnectionOwner : owner;
   const showSavedToPicker = !oauthRegistering && savedToOptions.length > 1;
-  const callableName = connectionNameFrom(label, savedToOwner, integrationName, organizationId);
+  // OAuth mints a NEW connection per connect, so its preview shows the
+  // uniquified name (`personalGmail2`); credential saves keep the plain
+  // derivation (they surface an explicit overwrite through the same name).
+  const callableName = isOAuth
+    ? previewConnectionName(label, savedToOwner)
+    : connectionNameFrom(label, savedToOwner, integrationName, organizationId);
   const authStepLabel = isOAuth ? (cimdActive ? "OAuth setup" : "OAuth app") : "Credential";
 
   // Build the picker row's Edit/Remove menu for an app, but only once its full
@@ -1663,7 +1729,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const probeAndAutoNameOAuthConnection = async (
     connection: OAuthCompletionPayload,
     typedLabel: string,
-    defaultIdentityLabel: string,
   ): Promise<void> => {
     const check = await doCheckConnectionHealth({
       params: {
@@ -1679,7 +1744,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
       result: check.value,
       typedLabel,
       storedIdentityLabel: connection.identityLabel,
-      defaultIdentityLabel,
     });
     if (nextIdentityLabel === null) return;
     const updated = await doUpdateConnection({
@@ -1764,13 +1828,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (continueError !== null) setContinueError(null);
   };
 
-  // Check the key works: probe the pasted credential WITHOUT saving the
-  // connection. When the integration has a configured health check we run it;
-  // otherwise we run the inline-picked candidate and, if it comes back healthy,
-  // save it as the integration's health check (so it's configured "then").
-  // Probe the pasted credential WITHOUT saving the connection. With a
-  // configured check the panel's Check runs this directly; with none it runs
-  // via handleCandidateProbe, which drafts a spec from the picked candidate.
+  // Probe the pasted credential without saving the connection. A configured
+  // health check runs directly; otherwise the picked candidate supplies a
+  // draft spec and becomes the integration's health check when it succeeds.
   const handleValidate = async (draftSpec?: HealthCheckSpec) => {
     const payloadOrigin = createCredentialPayloadOrigin({
       origin: credentialOrigin,
@@ -1779,7 +1839,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       onePasswordItemId,
       singleInput,
     });
-    if (!method || payloadOrigin === null || validating) return;
+    if (!method || payloadOrigin === null || validating) return null;
     setValidating(true);
     const exit = await doValidate({
       payload: {
@@ -1796,7 +1856,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (Exit.isFailure(exit)) {
       setValidationResult(null);
       toast.error(messageFromExit(exit, "Couldn't check the key"));
-      return;
+      return null;
     }
     const result = exit.value;
     setValidationResult(result);
@@ -1830,19 +1890,56 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return probedIdentity;
       });
     }
+    return result;
+  };
+
+  const candidateHealthSpec = (): HealthCheckSpec | null => {
+    if (!hcCandidateReady) return null;
+    const argEntries = Object.entries(hcArgs)
+      .map(([key, value]) => [key, value.trim()] as const)
+      .filter(([, value]) => value.length > 0);
+    return {
+      operation: hcOperation,
+      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+    };
   };
 
   // No configured check: build a draft spec from the picked candidate and
   // probe with it.
   const handleCandidateProbe = async () => {
-    if (!hcCandidateReady) return;
-    const argEntries = Object.entries(hcArgs)
-      .map(([key, value]) => [key, value.trim()] as const)
-      .filter(([, value]) => value.length > 0);
-    await handleValidate({
-      operation: hcOperation,
-      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
-    });
+    const spec = candidateHealthSpec();
+    if (spec) await handleValidate(spec);
+  };
+
+  // Continue probes the key, but only a DEFINITIVE rejection (the upstream
+  // answered 401/403 → "expired") blocks the step. An inconclusive probe —
+  // upstream unreachable, no runnable check, the probe call itself failing —
+  // advances: the pasted key may be perfectly valid, and stranding the user on
+  // an upstream outage would make the wizard depend on availability, not
+  // credential correctness.
+  const handleContinue = async () => {
+    if (credentialPayloadOrigin === null) {
+      setContinueError(singleInput ? "Enter the key first" : "Fill in every credential field");
+      return;
+    }
+
+    if (canCheckKey) {
+      const result =
+        validationResult?.status === "healthy"
+          ? validationResult
+          : hasHealthCheck
+            ? await handleValidate()
+            : await handleValidate(candidateHealthSpec() ?? undefined);
+      if (result?.status === "expired") {
+        setContinueError(
+          result.detail ?? "Check the credential and resolve the connection error to continue.",
+        );
+        return;
+      }
+    }
+
+    setContinueError(null);
+    setWizardStep("place");
   };
 
   // The user clicked a field in the probe's response: that field IS the
@@ -1878,20 +1975,21 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // backend resolves the app own→shared from the slug, so the payload carries
     // only the host-resolved connection owner.
     const connectionOwner = oauthConnectionOwner;
-    const identityLabel = connectionLabelForHost(
-      label,
-      connectionOwner,
-      integrationName,
-      organizationId,
-    );
+    // Untyped connects carry NO identity label: the server fills it from the
+    // provider's OIDC claims (the account email), and the fallback probe below
+    // covers providers without an id_token. Sending the "<owner> <integration>"
+    // default here would both bury the real account identity and clobber a
+    // curated label on a same-name reconnect.
+    const identityLabel = typedIdentityLabel(label);
     const payload = {
       client: chosenClient.slug,
       clientOwner: chosenClient.owner,
       owner: connectionOwner,
-      name: connectionNameFrom(label, connectionOwner, integrationName, organizationId),
+      name: previewConnectionName(label, connectionOwner),
+      newConnection: true,
       integration,
       template: method.template,
-      identityLabel,
+      ...(identityLabel !== undefined ? { identityLabel } : {}),
     };
     // client_credentials mints inline (no redirect); authorization_code runs the popup.
     if (chosenClient.grant === "client_credentials") {
@@ -1912,7 +2010,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return;
       }
       if (exit.value.status === "connected") {
-        await probeAndAutoNameOAuthConnection(exit.value.connection, label, identityLabel);
+        await probeAndAutoNameOAuthConnection(exit.value.connection, label);
       }
       setCcBusy(false);
       toast.success("Connection added");
@@ -1945,7 +2043,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         });
       },
       onSuccess: async (connection: OAuthCompletionPayload) => {
-        await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
+        await probeAndAutoNameOAuthConnection(connection, label);
         toast.success("Connection added");
         close();
       },
@@ -1960,8 +2058,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
       return;
     }
     const cimdOwner = owner;
-    const connectionName = connectionNameFrom(label, cimdOwner, integrationName, organizationId);
-    const identityLabel = connectionLabelForHost(label, cimdOwner, integrationName, organizationId);
+    const connectionName = previewConnectionName(label, cimdOwner);
+    const identityLabel = typedIdentityLabel(label);
     setCimdBusy(true);
     const outcome = await runCimdConnect(
       {
@@ -1993,10 +2091,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
               name: connectionName,
               integration,
               template: method.template,
-              identityLabel,
+              newConnection: true,
+              ...(identityLabel !== undefined ? { identityLabel } : {}),
             },
             onSuccess: async (connection: OAuthCompletionPayload) => {
-              await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
+              await probeAndAutoNameOAuthConnection(connection, label);
               toast.success("Connection added");
               close();
             },
@@ -2036,8 +2135,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
       return;
     }
     const dcrOwner = owner;
-    const connectionName = connectionNameFrom(label, dcrOwner, integrationName, organizationId);
-    const identityLabel = connectionLabelForHost(label, dcrOwner, integrationName, organizationId);
+    const connectionName = previewConnectionName(label, dcrOwner);
+    const identityLabel = typedIdentityLabel(label);
     setDcrBusy(true);
     const outcome = await runDcrConnect(
       {
@@ -2084,10 +2183,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
               name: connectionName,
               integration,
               template: method.template,
-              identityLabel,
+              newConnection: true,
+              ...(identityLabel !== undefined ? { identityLabel } : {}),
             },
             onSuccess: async (connection: OAuthCompletionPayload) => {
-              await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
+              await probeAndAutoNameOAuthConnection(connection, label);
               toast.success("Connection added");
               close();
             },
@@ -2101,7 +2201,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
         // not, so pass the un-collapsed method value here.
         resourceFallback: method.oauth?.discoveryUrl,
         owner: dcrOwner,
-        integrationName,
         // DCR slugs are server-keyed (Part A): the connect path no longer depends
         // on the picker's app list, so it need not be threaded here.
         declaredScopes: method.oauth?.scopes,
@@ -2697,7 +2796,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     hint={
                       nameOptions.length > 0
                         ? "from the account your key returned, or type your own"
-                        : "how you'll tell accounts apart"
+                        : isOAuth
+                          ? "detected from the account you sign in with, or type your own"
+                          : "how you'll tell accounts apart"
                     }
                     htmlFor="connection-name"
                   />
@@ -2727,12 +2828,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   ) : (
                     <Input
                       id="connection-name"
-                      placeholder={connectionLabelForHost(
-                        "",
-                        owner,
-                        integrationName,
-                        organizationId,
-                      )}
+                      placeholder={
+                        isOAuth
+                          ? "you@example.com"
+                          : connectionLabelForHost("", owner, integrationName, organizationId)
+                      }
                       value={label}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                         setLabel(e.target.value);
@@ -2819,20 +2919,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       : "Connect with OAuth"}
                 </Button>
               ) : wizardActive && wizardStep === "validate" ? (
-                <Button
-                  type="button"
-                  onClick={() => {
-                    if (credentialPayloadOrigin === null) {
-                      setContinueError(
-                        singleInput ? "Enter the key first" : "Fill in every credential field",
-                      );
-                      return;
-                    }
-                    setContinueError(null);
-                    setWizardStep("place");
-                  }}
-                  loading={validating}
-                >
+                <Button type="button" onClick={() => void handleContinue()} loading={validating}>
                   Continue
                 </Button>
               ) : (

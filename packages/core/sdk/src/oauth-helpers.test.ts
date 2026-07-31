@@ -871,6 +871,68 @@ describe("refreshAccessToken", () => {
       }),
     ),
   );
+
+  // Datadog answers refresh grants with a non-conform envelope; the §5.2 code
+  // must still be recovered so invalid_grant classifies as reauth-required
+  // instead of a retried-forever transient (owner.com prod, 2026-07-30).
+  it.effect("recovers invalid_grant from Datadog's non-conform errors array", () =>
+    withTokenEndpoint(
+      () =>
+        json(400, {
+          errors: ["invalid_grant - Invalid or expired refresh token or code verifier."],
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("recovers a bare non-conform `error` string outside the spec envelope shape", () =>
+    withTokenEndpoint(
+      () => json(400, { error: "invalid_grant", detail: 42 }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("does not invent a code from free-text error bodies", () =>
+    withTokenEndpoint(
+      () => json(400, { errors: ["something went wrong, try again later"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
+    ),
+  );
+
+  it.effect("does not probe non-conform bodies on 5xx responses", () =>
+    withTokenEndpoint(
+      () => json(502, { errors: ["invalid_grant - upstream proxy noise"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
+    ),
+  );
 });
 
 describe("shouldRefreshToken", () => {
