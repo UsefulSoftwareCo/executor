@@ -69,6 +69,9 @@ export type OAuthStartPayload = {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string;
+  /** Mint a NEW connection: the server resolves a taken `name` to the next
+   *  free suffixed one. Omitted on reconnect, which targets the existing row. */
+  readonly newConnection?: boolean;
   readonly redirectUri?: string;
 };
 
@@ -381,6 +384,7 @@ export function useOAuthPopupFlow<
               integration: input.payload.integration,
               template: input.payload.template,
               identityLabel: input.payload.identityLabel,
+              newConnection: input.payload.newConnection,
               redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
             },
           }).then((exit) =>

@@ -177,6 +177,10 @@ const serviceEnvironment = (
     "EXECUTOR_SENTRY_RELEASE",
     "EXECUTOR_SENTRY_ENVIRONMENT",
     "EXECUTOR_RUN_ID",
+    // Analytics opt-out must survive into the supervised unit's minimal env,
+    // or an opted-out install would silently re-enable analytics under launchd.
+    "DO_NOT_TRACK",
+    "EXECUTOR_DISABLE_ANALYTICS",
   ] as const;
   const passThrough = Object.fromEntries(
     passThroughKeys.flatMap((key) => {

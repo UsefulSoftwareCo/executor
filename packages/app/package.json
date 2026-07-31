@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@effect/atom-react": "catalog:",
+    "@executor-js/mcp-apps-shell": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",

@@ -91,16 +91,19 @@ export const workosAccountProvider: Layer.Layer<
         ? Effect.succeed(caller.session)
         : Effect.fail<AccountUnauthorized>(new AccountUnauthorized());
 
-    // The org scope for an org-scoped request: the console URL's org (sent in
-    // the selector header) when present, else the session's own org. Membership
-    // is re-checked live, so the header is a selector, not a trust boundary —
+    // The org scope for an org-scoped request: the console URL's org, sent in
+    // the selector header. FAIL CLOSED when it's missing — the session's own
+    // org is a browser-global pinned to whichever org WorkOS last touched, so
+    // falling back to it scopes a multi-org user's request to the WRONG org
+    // (see workos-auth-provider.resolveSessionPrincipal). Membership is
+    // re-checked live, so the header is a selector, not a trust boundary —
     // and two browser tabs on different orgs each send their own header, so
     // they stay independent (see organization.ts). Yields the session +
     // resolved org, or AccountNoOrganization.
     const requireOrganization = (headers: AccountHeaders) =>
       Effect.gen(function* () {
         const session = yield* requireSession();
-        const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+        const selector = headers[ORG_SELECTOR_HEADER];
         if (!selector) {
           return yield* new AccountNoOrganization();
         }
@@ -180,9 +183,15 @@ export const workosAccountProvider: Layer.Layer<
       me: (headers) =>
         Effect.gen(function* () {
           const session = yield* requireSession();
-          // Same selector precedence as requireOrganization: the URL's org
-          // (header) drives /account/me so the shell reflects the org the tab
-          // is viewing, not a session-global active org.
+          // The ONE sanctioned fallback to the session org. /account/me is
+          // identity, not tenant data: on a bare URL (no org slug yet, so no
+          // header) it answers "which org should this browser land in", and
+          // the session's pinned org is the only candidate. Every org-scoped
+          // DATA read fails closed instead (requireOrganization above,
+          // resolveSessionPrincipal) — serving tenant data from this fallback
+          // is exactly the wrong-org connection-list bug (2026-07). With a
+          // header (any slugged URL), the URL's org drives the answer so the
+          // shell reflects the org the tab is viewing.
           const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
           const org = selector
             ? yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
@@ -234,6 +243,52 @@ export const workosAccountProvider: Layer.Layer<
           yield* apiKeys
             .revokeUserKey({ keyId: apiKeyId })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
+          return { success: true };
+        }),
+
+      // Org keys read every user in the tenant through the `/admin/*` plane, so
+      // both paths are admin-gated — unlike personal keys, which any member may
+      // mint for themselves.
+      listOrgApiKeys: (headers) =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireOrganization(headers);
+          yield* requireAdmin(session.accountId, org.id);
+          const keys = yield* apiKeys
+            .listOrgKeys({ organizationId: org.id })
+            .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
+          return { apiKeys: keys };
+        }),
+
+      createOrgApiKey: (headers, name) =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireOrganization(headers);
+          yield* requireAdmin(session.accountId, org.id);
+          const trimmed = name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
+          if (!trimmed) {
+            return yield* new AccountError({ message: "API key name is required" });
+          }
+          return yield* apiKeys
+            .createOrgKey({ organizationId: org.id, name: trimmed })
+            .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
+        }),
+
+      // Same admin gate as the mint. Note this deliberately does NOT reuse
+      // `revokeApiKey`: that path resolves ownership against the caller's
+      // personal keys, so an org key id is never in its owned set. Ownership
+      // here is resolved against the ORG's keys inside `revokeOrgKey`, which is
+      // what keeps a user-scoped (or foreign-org) key id from being destroyed
+      // through the org route — it surfaces as a 404-shaped AccountError, not a
+      // silent success and not a 500.
+      revokeOrgApiKey: (headers, apiKeyId) =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireOrganization(headers);
+          yield* requireAdmin(session.accountId, org.id);
+          yield* apiKeys.revokeOrgKey({ organizationId: org.id, keyId: apiKeyId }).pipe(
+            Effect.catchTag("ApiKeyManagementError", toAccountError),
+            Effect.catchTag("OrgApiKeyNotFound", () =>
+              Effect.fail(new AccountError({ message: "Organization API key not found" })),
+            ),
+          );
           return { success: true };
         }),
 

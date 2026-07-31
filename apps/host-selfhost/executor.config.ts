@@ -10,11 +10,6 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
-import {
-  makeWorkerdAppToolExecutor,
-  makeWorkerBundlerBackend,
-} from "@executor-js/plugin-apps/selfhost";
-import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
@@ -32,14 +27,13 @@ import { resolveSecretKey } from "./src/config";
 
 interface SelfHostPluginDeps {
   readonly activeToolkitSlug?: string;
-  readonly sourceKinds?: readonly ("git" | "local-directory")[];
   /** Accepted for test-harness parity; the Microsoft Graph URL override moved
    *  into the OpenAPI provider presets, so the factory no longer reads it. */
   readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug, sourceKinds }: SelfHostPluginDeps = {}) =>
+  plugins: ({ activeToolkitSlug }: SelfHostPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -47,12 +41,6 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
-      appsHttpPlugin({
-        executor: makeWorkerdAppToolExecutor(),
-        bundler: makeWorkerBundlerBackend(),
-        sourceKinds: sourceKinds ?? ["git"],
-        allowPrivateGitHosts: true,
-      }),
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),

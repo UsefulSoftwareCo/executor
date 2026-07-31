@@ -52,6 +52,7 @@ export {
   ToolName,
   ElicitationId,
   PolicyId,
+  ArtifactId,
   Tenant,
   Subject,
   Owner,
@@ -71,6 +72,7 @@ export {
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
+  ArtifactNotFoundError,
   isUserActionableError,
   type ExecuteError,
   type ExecutorError,
@@ -83,6 +85,7 @@ export type {
   AuthMethodOAuthDescriptor,
   AuthPlacementDescriptor,
   Integration,
+  IntegrationChangeEvent,
   IntegrationConfig,
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
@@ -142,6 +145,7 @@ export {
   TOOL_POLICY_ACTIONS,
   type CoreSchema,
   type IntegrationRow,
+  type SubjectRow,
   type ConnectionRow,
   type OAuthClientRow,
   type OAuthSessionRow,
@@ -149,6 +153,7 @@ export {
   type ToolInvocationRow,
   type DefinitionRow,
   type ToolPolicyRow,
+  type ArtifactRow,
   type PluginStorageRow,
   type BlobRow,
   type ToolPolicyAction,
@@ -160,7 +165,17 @@ export {
   executorOwnerPolicyName,
   executorUnscopedPolicyName,
   type ExecutorOwnerPolicyContext,
+  type ExecutorReach,
+  type ExecutorWrites,
 } from "./owner-policy";
+
+// Provider item-id owner grammar — the partition credential providers file
+// rows under (issues #950, #1453).
+export {
+  OWNER_SCOPED_ITEM_ID_PREFIXES,
+  embeddedItemOwner,
+  ownerForItemId,
+} from "./provider-item-owner";
 
 // Tool policies.
 export {
@@ -176,6 +191,23 @@ export {
   type EffectivePolicy,
   type PolicySource,
 } from "./policies";
+
+// Artifacts — saved generative-UI components.
+export {
+  rowToArtifact,
+  rowToArtifactSummary,
+  previewFromColumn,
+  ArtifactBinding,
+  ArtifactBindings,
+  type Artifact,
+  type ArtifactPreview,
+  type ArtifactSummary,
+  type SaveArtifactInput,
+  type RenameArtifactInput,
+  type RemoveArtifactInput,
+  type SetArtifactPreviewInput,
+} from "./artifact";
+export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
 
 // Elicitation.
 export {
@@ -204,6 +236,15 @@ export {
   type PluginBlobStore,
   type OwnerPartitions,
 } from "./blob";
+
+// Durable pending approvals — how an artifact action that paused on a human
+// survives a host whose HTTP API builds a fresh engine per request.
+export {
+  makePendingApprovalStore,
+  PendingApproval,
+  PENDING_APPROVAL_TTL_MS,
+  type PendingApprovalStore,
+} from "./pending-approval";
 
 // Plugin storage.
 export {
@@ -334,7 +375,14 @@ export {
 // local/cloud DB bring-up). Its definition stays here because `createExecutor`
 // uses it; the host surface (`@executor-js/api/server`) re-exports it.
 export {
+  ADMIN_DEFAULT_PAGE_SIZE,
+  ADMIN_MAX_PAGE_SIZE,
+  type AdminConnection,
+  type AdminListSubjectsOptions,
+  type AdminSubject,
+  type AdminSubjectWithConnections,
   type Executor,
+  type ExecutorAdmin,
   type ExecutorConfig,
   type ExecutorDb,
   type ExecutorDbFactory,
@@ -404,6 +452,7 @@ export {
 } from "./sqlite-oauth-client-gc-migration";
 export {
   authToolFailure,
+  isUnauthorizedToolFailure,
   type AuthToolFailureCode,
   type AuthToolFailureInput,
 } from "./auth-tool-failure";

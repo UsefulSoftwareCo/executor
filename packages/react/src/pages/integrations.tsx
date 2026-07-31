@@ -49,7 +49,6 @@ import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
-  apps: "apps",
   openapi: "openapi",
   mcp: "mcp",
   graphql: "graphql",
@@ -66,41 +65,6 @@ const bestDetection = (
   results: readonly IntegrationDetectionResult[],
 ): IntegrationDetectionResult | undefined =>
   [...results].sort((a, b) => detectionRank[b.confidence] - detectionRank[a.confidence])[0];
-
-// Hosts where a two-segment path (owner/repo) is unambiguously a git remote.
-const GIT_REPO_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"]);
-
-// Deliberately conservative: only claim URLs that are unambiguously git
-// remotes (a `.git` suffix, or owner/repo on a known git host). Anything else
-// falls through to the server-side detection so OpenAPI/MCP/GraphQL URLs keep
-// their existing flows.
-const detectGitRepository = (
-  raw: string,
-): { readonly endpoint: string; readonly slug: string } | null => {
-  const value = raw.trim();
-  if (!URL.canParse(value)) return null;
-  const parsed = new URL(value);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
-  if (parsed.username || parsed.password) return null;
-  const segments = parsed.pathname.split("/").filter(Boolean);
-  const knownGitHost =
-    GIT_REPO_HOSTS.has(parsed.hostname.toLowerCase()) &&
-    segments.length === 2 &&
-    parsed.search === "";
-  if (!parsed.pathname.endsWith(".git") && !knownGitHost) return null;
-  const name = segments.at(-1)?.replace(/\.git$/, "") ?? "";
-  if (!name) return null;
-  parsed.hash = "";
-  return {
-    endpoint: parsed.toString(),
-    slug: name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80),
-  };
-};
 
 // ---------------------------------------------------------------------------
 // Page
@@ -212,22 +176,6 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
     if (!trimmed) return;
     setDetecting(true);
     setError(null);
-    const gitRepository = detectGitRepository(trimmed);
-    if (gitRepository && integrationPlugins.some((p) => p.key === "apps")) {
-      trackEvent("integration_detect_submitted", {
-        success: true,
-        detected_kind: "apps",
-        confidence: "high",
-      });
-      trackEvent("integration_add_started", { plugin_key: "apps", via: "detect" });
-      closeAndReset();
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey: "apps" },
-        search: { url: gitRepository.endpoint, namespace: gitRepository.slug },
-      });
-      return;
-    }
     // Detection is read-only — it inspects a URL and returns candidates without
     // mutating the catalog, so it invalidates nothing.
     const exit = await doDetect({

@@ -91,6 +91,29 @@ export const activeFumaDbRef = Context.Reference<FumaDb | null>("executor/Active
   defaultValue: () => null,
 });
 
+// Post-commit hooks. `transaction()` nests by pass-through (an inner
+// `transaction()` call inside an active transaction just runs its effect), so
+// an effect that must observe only DURABLE changes cannot simply run "after
+// the transaction" — after an inner pass-through the outer transaction may
+// still roll back. `afterCommit` solves this structurally: while a transaction
+// is active the effect is queued on the outermost transaction's hook list and
+// runs after its commit; with no active transaction it runs immediately.
+// Hooks are best-effort observers: failures and defects are swallowed, and a
+// rolled-back transaction discards its queue.
+const pendingCommitHooksRef = Context.Reference<Array<Effect.Effect<void>> | null>(
+  "executor/PendingCommitHooks",
+  { defaultValue: () => null },
+);
+
+export const afterCommit = (effect: Effect.Effect<void>): Effect.Effect<void> =>
+  Effect.flatMap(Effect.service(pendingCommitHooksRef), (hooks) =>
+    hooks
+      ? Effect.sync(() => {
+          hooks.push(effect);
+        })
+      : effect.pipe(Effect.ignoreCause({ log: false })),
+  );
+
 class TransactionEffectFailure {
   constructor(readonly error: unknown) {}
 }
@@ -158,11 +181,18 @@ export const makeFumaClient = (db: FumaDb, options: MakeFumaClientOptions = {}):
     Effect.flatMap(Effect.service(activeFumaDbRef), (active) => {
       if (active) return effect as Effect.Effect<unknown, unknown>;
 
+      // The outermost transaction owns the post-commit hook queue; hooks
+      // queued anywhere inside (including nested pass-through transactions)
+      // run only after THIS commit, and are discarded on rollback.
+      const commitHooks: Array<Effect.Effect<void>> = [];
       return Effect.tryPromise({
         try: () =>
           db.transaction(async (transactionDb) => {
             const exit = await Effect.runPromiseExit(
-              effect.pipe(Effect.provideService(activeFumaDbRef, transactionDb)),
+              effect.pipe(
+                Effect.provideService(activeFumaDbRef, transactionDb),
+                Effect.provideService(pendingCommitHooksRef, commitHooks),
+              ),
             );
             if (Exit.isSuccess(exit)) return exit.value;
 
@@ -179,7 +209,13 @@ export const makeFumaClient = (db: FumaDb, options: MakeFumaClientOptions = {}):
           }
           return fumaFailureFromCause("transaction", cause);
         },
-      });
+      }).pipe(
+        Effect.tap(() =>
+          Effect.forEach(commitHooks, (hook) => hook.pipe(Effect.ignoreCause({ log: false })), {
+            discard: true,
+          }),
+        ),
+      );
     }).pipe(Effect.withSpan("fumadb.transaction")) as Effect.Effect<A, E | StorageFailure>;
 
   return { use, transaction };

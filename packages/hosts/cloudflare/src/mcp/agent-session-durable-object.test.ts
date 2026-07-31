@@ -216,6 +216,96 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   return session;
 };
 
+// The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
+// in the rebuilt server's memory. These pin the storage round-trip that lets a
+// cold-restored session rebuild with it instead of silently downgrading every
+// artifact to a deep link.
+describe("McpAgentSessionDOBase apps capability persistence", () => {
+  type CapabilitySession = HarnessSession & {
+    persistAppsEnabled: (appsEnabled: boolean) => Effect.Effect<void>;
+    loadSessionMeta: () => Effect.Effect<SessionMeta | null>;
+    resolveSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+    resolveAndStoreSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+  };
+
+  const baseMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const makeCapabilitySession = async (
+    stored: SessionMeta = baseMeta,
+  ): Promise<{ session: CapabilitySession; storage: MemoryStorage }> => {
+    const storage = new MemoryStorage();
+    await storage.put("session-meta", stored);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+    return { session, storage };
+  };
+
+  it("persists the negotiated capability so a later restore can read it back", async () => {
+    const { session, storage } = await makeCapabilitySession();
+
+    await Effect.runPromise(session.persistAppsEnabled(true));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({
+      organizationId: "org-1",
+      appsEnabled: true,
+    });
+  });
+
+  it("records a client that loses apps support just as durably", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+
+    await Effect.runPromise(session.persistAppsEnabled(false));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: false });
+  });
+
+  // `init` runs again on every cold restore and rebuilds meta from the bearer
+  // token, which carries no capabilities. If that overwrite won, restoring the
+  // session would erase the very bit meant to survive it.
+  it("carries the stored capability through the re-resolve on cold restore", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+    // What the token resolves to: no `appsEnabled` anywhere in sight.
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBe(true);
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: true });
+  });
+
+  it("leaves a session with no negotiated capability untouched", async () => {
+    const { session, storage } = await makeCapabilitySession();
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).not.toHaveProperty("appsEnabled");
+  });
+
+  // Persistence is best-effort observation of a capability, never a reason to
+  // fail the session that was merely trying to render something.
+  it("stays silent when there is no stored meta to merge into", async () => {
+    const storage = new MemoryStorage();
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+
+    await expect(Effect.runPromise(session.persistAppsEnabled(true))).resolves.toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).toBeUndefined();
+  });
+});
+
 describe("McpAgentSessionDOBase transport restore", () => {
   it("restores a same-session request after idle disposal leaves a stale server transport", async () => {
     const session = await makeHarnessSession();

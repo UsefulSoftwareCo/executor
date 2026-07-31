@@ -1555,7 +1555,23 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             detail: error.message,
           } satisfies HealthCheckResult),
         ),
-        Effect.withSpan("mcp.plugin.check_health"),
+        // Every failure above folds onto the SUCCESS channel, so without this
+        // the span ends green on an expired credential — a 401 auth wall and a
+        // healthy dial were indistinguishable in traces.
+        Effect.tap((result) =>
+          Effect.annotateCurrentSpan({
+            "mcp.health.status": result.status,
+            ...("httpStatus" in result && result.httpStatus !== undefined
+              ? { "mcp.health.http_status": result.httpStatus }
+              : {}),
+          }),
+        ),
+        Effect.withSpan("mcp.plugin.check_health", {
+          attributes: {
+            "executor.integration": String(credential.integration),
+            "mcp.connection.name": String(credential.connection),
+          },
+        }),
       ),
 
     describeAuthMethods: describeMcpAuthMethods,

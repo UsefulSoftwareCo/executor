@@ -1,7 +1,17 @@
 import { Duration, Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ContentBlockSchema,
+  type ClientCapabilities,
+  type ContentBlock,
+} from "@modelcontextprotocol/sdk/types.js";
+import {
+  getUiCapability,
+  registerAppResource,
+  registerAppTool,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import type {
   jsonSchemaValidator,
   JsonSchemaType,
@@ -10,12 +20,16 @@ import type {
 import { Validator } from "@cfworker/json-schema";
 import * as z from "zod/v4";
 
-import { isToolFile } from "@executor-js/sdk";
+import { isToolFile, sanitizeArtifactPreviewMarkup } from "@executor-js/sdk";
 import type {
+  Artifact,
+  ArtifactBinding,
+  ArtifactSummary,
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
   ElicitationRequest,
+  SaveArtifactInput,
   ToolFileValue,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
@@ -26,8 +40,10 @@ import {
   formatTtlDuration,
   findSkill,
   renderSkillsIndex,
+  skillCatalogFor,
   EXECUTE_SKILL,
   INTEGRATION_INVENTORY_HEADER,
+  type Skill,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ResumeResponse,
@@ -35,6 +51,19 @@ import {
   type PausedExecution,
   type PausedExecutionDeadline,
 } from "@executor-js/execution";
+import {
+  MCP_APPS_SHELL_RESOURCE_URI,
+  smokeRenderRejection,
+  validateArtifactCode,
+  type ArtifactSmokeRenderResult,
+} from "./create-artifact";
+import { TOOL_CALL_CONTRACT_MESSAGE } from "./tool-call-code";
+import { resolveArtifactAction } from "./artifact-action";
+import {
+  extractArtifactRoles,
+  resolveArtifactBindings,
+  type BindableConnection,
+} from "./artifact-bindings";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -118,6 +147,109 @@ type SharedMcpServerConfig = {
     executionId: string,
     response: ResumeResponse,
   ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
+  /**
+   * Loads the MCP-Apps shell HTML served as the `ui://executor/shell.html`
+   * resource. Injected rather than imported: the shell carries React, Recharts
+   * and Tailwind, and this package also runs on Workers. Hosts that can serve
+   * it pass `loadMcpAppsShellHtml` from `@executor-js/mcp-apps-shell`; hosts
+   * that leave it unset simply don't register the resource or the ui tools.
+   */
+  readonly loadAppShellHtml?: () => Promise<string>;
+  /**
+   * Per-connection artifacts opt-out. Defaults to true. A client that connects
+   * with `?artifacts=false` gets NO artifact surface at all: none of the five
+   * artifact tools, no `ui://` shell resource, and no artifact entries in the
+   * `skills` inventory — the same shape a host without `loadAppShellHtml`
+   * serves. `execute`, `skills` and `resume` are untouched.
+   */
+  readonly artifactsEnabled?: boolean;
+  /**
+   * Renders an artifact once, server-side, before it is saved — so a component
+   * that throws on its first render is refused at create time with the real
+   * error instead of saving cleanly and dying on the user's page.
+   *
+   * Injected for the same reason `loadAppShellHtml` is: it needs React,
+   * react-dom/server and the whole component barrel, and this package must not
+   * drag any of that into the graph of a host that only ever calls `execute`.
+   * Hosts that can afford it pass `smokeRenderArtifact` from
+   * `@executor-js/mcp-apps-shell`, which loads it behind a dynamic import.
+   *
+   * Unset means no smoke check: creates are validated statically and saved, as
+   * they were before. That is also what happens when the check itself fails —
+   * see the fail-open path in `createArtifact`.
+   */
+  readonly smokeRenderArtifact?: (code: string) => Promise<ArtifactSmokeRenderResult>;
+  /**
+   * The scoped executor's artifact operations, so `create-artifact` can persist what
+   * it renders and `list-artifacts` / `show-artifact` can read it back. Only
+   * the three operations the MCP surface needs, so hosts don't have to hand the
+   * whole `Executor` across this boundary.
+   */
+  readonly artifacts?: McpArtifactsPort;
+  /**
+   * The caller's saved connections, for binding an artifact's integration roles
+   * at create time. Structurally satisfied by `executor.connections`; hosts pass
+   * the same scoped executor they pass `artifacts`.
+   *
+   * Absent means `create-artifact` cannot bind, so it refuses code that calls an
+   * integration rather than saving an artifact that could never run.
+   */
+  readonly connections?: McpConnectionsPort;
+  /**
+   * Builds the web-app deep link for a saved artifact. Clients that can't
+   * render MCP Apps get this URL instead of an inline widget. Absent (stdio has
+   * no origin at all) means `create-artifact` still persists and reports the id, but
+   * has no URL to offer.
+   */
+  readonly artifactUrl?: (artifactId: string) => string;
+  /**
+   * Notified when an agent-facing artifact tool completes a user-meaningful
+   * operation: `create-artifact` (created, or updated when it overwrote an
+   * existing id) and `show-artifact` (viewed). Internal artifact reads —
+   * binding resolution inside `execute-action` — deliberately do not notify.
+   * Best-effort observation: failures are swallowed and cannot affect the tool
+   * result. Hosts recording product analytics supply it; core stays agnostic.
+   */
+  readonly onArtifactUsage?: (action: "created" | "viewed" | "updated") => Effect.Effect<void>;
+  /**
+   * Whether the client this session belongs to can render MCP Apps, as
+   * negotiated at a previous `initialize`.
+   *
+   * Capabilities normally arrive from the client at `initialize` and live only
+   * in the server instance. A session whose host evicted and cold-restored it
+   * (deploy, idle) is rebuilt mid-conversation with no `initialize` to replay,
+   * so without this the rebuilt server assumes no apps support and silently
+   * downgrades every artifact to a deep link. Hosts that persist the
+   * negotiated value pass it back here; the next `initialize`, if one comes,
+   * overwrites it.
+   */
+  readonly restoredAppsEnabled?: boolean;
+  /**
+   * Called when `initialize` negotiates the client's MCP-Apps support, so the
+   * host can persist it for {@link restoredAppsEnabled} on a later cold
+   * restore. Best-effort: failures are swallowed and never affect the session.
+   */
+  readonly onAppsEnabledChange?: (appsEnabled: boolean) => Effect.Effect<void>;
+};
+
+/**
+ * The narrow artifact surface the MCP tools need. Structurally satisfied by
+ * `Executor["artifacts"]`, so hosts holding a scoped executor can pass
+ * `executor.artifacts` directly.
+ */
+export type McpArtifactsPort = {
+  readonly list: () => Effect.Effect<readonly ArtifactSummary[], unknown>;
+  readonly get: (id: string) => Effect.Effect<Artifact, unknown>;
+  readonly save: (input: SaveArtifactInput) => Effect.Effect<Artifact, unknown>;
+};
+
+/**
+ * The connection surface binding needs: list what this caller can reach. The
+ * scoped executor has already narrowed it, so an inferred binding can never
+ * name a connection the caller couldn't call themselves.
+ */
+export type McpConnectionsPort = {
+  readonly list: () => Effect.Effect<readonly BindableConnection[], unknown>;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -620,15 +752,25 @@ const fallbackOutcomeResult = (
 // The `execute` skill also gets the live integration inventory appended, the
 // same block the execute tool description carries, so a model reading the guide
 // sees what is connected without a second round trip.
-const skillsResult = (name: string | undefined, executeInventory: string): McpToolResult => {
+//
+// The catalog is per-session: a connection that opted out of artifacts never
+// sees the artifact skills, so the index cannot advertise a how-to for tools it
+// does not have, and fetching one by name misses like any unknown skill.
+const skillsResult = (
+  name: string | undefined,
+  executeInventory: string,
+  catalog: readonly Skill[],
+): McpToolResult => {
   const trimmed = name?.trim();
   if (!trimmed) {
-    return { content: [{ type: "text", text: renderSkillsIndex() }] };
+    return { content: [{ type: "text", text: renderSkillsIndex(catalog) }] };
   }
-  const skill = findSkill(trimmed);
+  const skill = findSkill(trimmed, catalog);
   if (!skill) {
     return {
-      content: [{ type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex()}` }],
+      content: [
+        { type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex(catalog)}` },
+      ],
       isError: true,
     };
   }
@@ -646,6 +788,230 @@ const extractInventory = (description: string): string => {
   const index = description.indexOf(INTEGRATION_INVENTORY_HEADER);
   return index === -1 ? "" : description.slice(index).trimEnd();
 };
+
+// ---------------------------------------------------------------------------
+// Hang-visibility join keys
+// ---------------------------------------------------------------------------
+// A killed execution exports nothing: OTEL only ships a span when it ends, and
+// a Cloudflare deploy/eviction cancels the request without an error, so a hung
+// `execute` is invisible in the trace store. Two mitigations live here:
+//   1. Every execution-path span carries the JSON-RPC id + transport session id
+//      (`mcp.rpc.id`, `mcp.request.session_id`), so a client's
+//      `notifications/cancelled` — which names the cancelled request id — can
+//      be joined to the exact call it gave up on.
+//   2. A zero-duration start marker span (`<completion span name>.start`, a
+//      1:1 pairing so "started without finishing" is a single unambiguous
+//      query) is emitted the moment execution begins. It ends immediately, so
+//      it becomes exportable while the execution is still running; whether it
+//      actually ships before a kill depends on the host's span processor
+//      draining first (cloud batches on a 1s timer, so markers for executions
+//      that survive >1s export, sub-second kills can still lose theirs). A
+//      start marker without a matching completion span is a true positive for
+//      an execution that died mid-flight.
+
+type McpRequestJoinKeys = {
+  readonly requestId: string | number;
+  readonly sessionId?: string | undefined;
+};
+
+// `mcp.request.session_id` is emitted unconditionally (empty string when the
+// transport carries none) to match the worker-side `annotateMcpRequest`
+// producer: JSON-RPC ids are small per-session integers, so a row without the
+// session key would make `mcp.rpc.id` globally ambiguous.
+const joinKeyAttributes = (joinKeys: McpRequestJoinKeys): Record<string, unknown> => ({
+  "mcp.rpc.id": String(joinKeys.requestId),
+  "mcp.request.session_id": joinKeys.sessionId ?? "",
+});
+
+const startMarker = (name: string, attributes: Record<string, unknown>): Effect.Effect<void> =>
+  Effect.void.pipe(Effect.withSpan(name, { attributes }));
+
+// ---------------------------------------------------------------------------
+// Artifacts / MCP Apps result formatting
+// ---------------------------------------------------------------------------
+//
+// Delivery is negotiated, not branched on by the model: an artifact reaches the
+// user as an inline widget when the client renders MCP Apps, and as a link into
+// the web app when it doesn't. Both carry `artifactId`, because either way the
+// artifact was saved and can be reopened later.
+
+const renderRejectedResult = (reason: string): McpToolResult => ({
+  content: [{ type: "text", text: `create-artifact rejected: ${reason}` }],
+  structuredContent: { status: "error", error: reason },
+  isError: true,
+});
+
+/** `execute-action` was handed something other than a single proxy-shaped tool
+ *  call. Names the contract rather than just refusing, since the reader is
+ *  either a confused iframe or someone probing the app channel by hand. */
+const actionRejectedResult = (): McpToolResult => ({
+  content: [{ type: "text", text: TOOL_CALL_CONTRACT_MESSAGE }],
+  structuredContent: { status: "error", error: "invalid_action_code" },
+  isError: true,
+});
+
+/**
+ * The artifact whose bindings a call must be resolved through is missing or
+ * isn't this caller's.
+ *
+ * One result for both, deliberately: distinguishing "no such artifact" from
+ * "not yours" would let the app channel probe for ids that exist.
+ */
+const actionArtifactUnavailableResult = (): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: "This action refers to an artifact that isn't available on this account.",
+    },
+  ],
+  structuredContent: { status: "error", error: "artifact_unavailable" },
+  isError: true,
+});
+
+/**
+ * A role in the artifact's code has no connection behind it.
+ *
+ * Structured rather than prose-only because the binding UI that ships with
+ * sharing renders exactly this: which role failed, for which integration, and
+ * what the viewer could bind it to instead. The apps plugin's `BindingError`
+ * carries the same three facts for the same reason.
+ */
+const bindingUnresolvedResult = (input: {
+  readonly role: string;
+  readonly integration: string;
+  readonly message: string;
+  readonly candidates: readonly string[];
+}): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text:
+        input.candidates.length > 0
+          ? `${input.message} Choose one of ${input.candidates.join(", ")}.`
+          : input.message,
+    },
+  ],
+  structuredContent: {
+    status: "error",
+    error: "binding_unresolved",
+    role: input.role,
+    integration: input.integration,
+    candidates: input.candidates,
+  },
+  isError: true,
+});
+
+const renderedInAppResult = (input: {
+  readonly code: string;
+  readonly artifactId: string;
+  readonly title: string;
+  readonly url?: string | undefined;
+}): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: [
+        `Rendered "${input.title}" as an interactive UI component. Saved as artifact ${input.artifactId}.`,
+        // The link rides along even though the widget rendered: clients lose
+        // rendered widgets in ways the server never sees (a transcript
+        // reopened without re-reading the ui:// resource shows raw JSON), and
+        // when that happens this URL in the conversation is the only path
+        // back to the artifact the model can offer.
+        ...(input.url ? [`It also stays available at ${input.url}`] : []),
+      ].join("\n"),
+    },
+  ],
+  structuredContent: {
+    code: input.code,
+    artifactId: input.artifactId,
+    ...(input.url ? { url: input.url } : {}),
+  },
+});
+
+const renderedAsLinkResult = (input: {
+  readonly url: string;
+  readonly artifactId: string;
+  readonly title: string;
+}): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: [
+        `Saved "${input.title}" as artifact ${input.artifactId}.`,
+        "This MCP client cannot display MCP Apps, so give the user this URL to open it:",
+        input.url,
+      ].join("\n"),
+    },
+  ],
+  structuredContent: {
+    status: "fallback_url",
+    url: input.url,
+    artifactId: input.artifactId,
+  },
+});
+
+const renderedWithoutSurfaceResult = (input: {
+  readonly artifactId: string;
+  readonly title: string;
+}): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: [
+        `Saved "${input.title}" as artifact ${input.artifactId}.`,
+        "This MCP client cannot display MCP Apps and this deployment has no web UI configured, so there is nowhere to show it right now.",
+        "Tell the user the artifact was saved and can be opened from a client that supports MCP Apps.",
+      ].join("\n"),
+    },
+  ],
+  structuredContent: {
+    status: "fallback_unavailable",
+    reason: "mcp_apps_unsupported",
+    artifactId: input.artifactId,
+  },
+});
+
+const artifactsUnavailableResult = (): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: "Artifacts are not available on this connection.",
+    },
+  ],
+  structuredContent: { status: "error", error: "artifacts_unavailable" },
+  isError: true,
+});
+
+const artifactListResult = (artifacts: readonly ArtifactSummary[]): McpToolResult => {
+  const items = artifacts.map((artifact) => ({
+    id: artifact.id,
+    title: artifact.title,
+    description: artifact.description,
+    updatedAt: artifact.updatedAt.toISOString(),
+  }));
+  const text =
+    items.length === 0
+      ? "No saved artifacts yet. Use create-artifact to make one."
+      : [
+          "Saved artifacts:",
+          ...items.map(
+            (item) =>
+              `- ${item.id} — ${item.title}${item.description ? `: ${item.description}` : ""} (updated ${item.updatedAt})`,
+          ),
+        ].join("\n");
+  return { content: [{ type: "text", text }], structuredContent: { artifacts: items } };
+};
+
+const artifactNotFoundResult = (id: string): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: `No artifact with id "${id}". Call list-artifacts to see what is saved.`,
+    },
+  ],
+  structuredContent: { status: "error", error: "artifact_not_found", id },
+  isError: true,
+});
 
 const JsonObjectFromString = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 const decodeJsonObjectString = Schema.decodeUnknownOption(JsonObjectFromString);
@@ -671,6 +1037,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // The same live integration inventory the description carries, re-used by
     // the `skills` tool so the `execute` guide lists what is connected too.
     const executeInventory = extractInventory(description);
+    // Artifacts are on unless this connection opted out (`?artifacts=false`).
+    // One flag decides the whole surface: the tools, the shell resource, and
+    // the skills catalog below.
+    const artifactsEnabled = config.artifactsEnabled ?? true;
+    const skillCatalog: readonly Skill[] = skillCatalogFor({ artifacts: artifactsEnabled });
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -725,7 +1096,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
     const formatPausedModelResult = (
       execution: PausedExecution,
-      source: "execute" | "resume" | "browser_resume",
+      source: "execute" | "execute_action" | "resume" | "browser_resume",
     ): Effect.Effect<McpToolResult> =>
       Effect.gen(function* () {
         const deadline = pauseDeadline();
@@ -758,14 +1129,25 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         new McpServer(
           { name: "executor", version: "1.0.0" },
           {
-            capabilities: { tools: {} },
+            // `resources` is required to serve the MCP-Apps shell at
+            // `ui://executor/shell.html`; it stays advertised even when no
+            // shell loader is configured so the capability set doesn't vary
+            // per host.
+            capabilities: { resources: {}, tools: {} },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
           },
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
 
-    const executeCode = (code: string): Effect.Effect<McpToolResult, E> =>
+    const executeCode = (
+      code: string,
+      extra: McpRequestJoinKeys,
+    ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
+        yield* startMarker("mcp.host.tool.execute.start", {
+          "mcp.tool.name": "execute",
+          "mcp.execute.code_length": code.length,
+        });
         debugLog("execute.call", {
           elicitationMode: elicitationMode.mode,
           elicitationSupport: getElicitationSupport(server),
@@ -807,14 +1189,129 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             "mcp.execute.code_length": code.length,
           },
         }),
+        Effect.annotateSpans(joinKeyAttributes(extra)),
+      );
+
+    /** What the caller could bind an unresolved role to. Best effort: the
+     *  connections port is optional, and a failure to enumerate must not
+     *  replace the real error with a different one. */
+    const bindingCandidates = (integration: string): Effect.Effect<readonly string[]> =>
+      config.connections
+        ? config.connections.list().pipe(
+            Effect.map((all) =>
+              all
+                .filter((connection) => connection.integration === integration)
+                .map(
+                  (connection) =>
+                    `${connection.integration}.${connection.owner}.${connection.name}`,
+                ),
+            ),
+            Effect.catchCause(() => Effect.succeed([] as readonly string[])),
+          )
+        : Effect.succeed([]);
+
+    /** The artifact as THIS caller can read it. A miss and a row owned by
+     *  someone else are the same answer, because they are the same query. */
+    const loadArtifact = (id: string): Effect.Effect<Artifact | null> =>
+      config.artifacts
+        ? config.artifacts.get(id).pipe(Effect.catchCause(() => Effect.succeed(null)))
+        : Effect.succeed(null);
+
+    // `execute-action` is `execute` as called by the shell rather than by the
+    // model, and the difference is who owns approval. The shell renders the
+    // approval modal itself in its trusted outer frame, so a pause here must
+    // come back as the `waiting_for_interaction` payload the shell knows how to
+    // resolve — never as a browser approval URL, which the user would have no
+    // way to act on from inside a widget. That holds even when the session's
+    // elicitation mode is `browser`, which is why this doesn't just call
+    // `executeCode`.
+    //
+    // The other difference is WIDTH. `execute` takes arbitrary code because the
+    // model writes it; this channel takes exactly one proxy-shaped tool call,
+    // because that is all a declarative artifact can produce. See
+    // `tool-call-code.ts`.
+    //
+    // The third difference is that the incoming path is not yet an ADDRESS.
+    // Artifact code names an integration and, optionally, a role; the tier and
+    // connection are held on the artifact row. So this channel re-writes the
+    // call against those bindings before executing, and the executed code is
+    // built HERE, from a parsed path and a stored binding, never taken from the
+    // iframe verbatim. That is what makes the short form safe: an iframe that
+    // invented a five-segment address would only be naming a role the artifact
+    // has no binding for, and would be refused.
+    const executeCodeFromApp = (
+      code: string,
+      artifactId: string | undefined,
+    ): Effect.Effect<McpToolResult, E> =>
+      Effect.gen(function* () {
+        const resolution = yield* resolveArtifactAction({ code, artifactId, loadArtifact });
+        debugLog("execute_action.call", {
+          elicitationMode: elicitationMode.mode,
+          elicitationSupport: getElicitationSupport(server),
+          codeLength: code.length,
+          status: resolution.status,
+          artifactId: artifactId ?? null,
+        });
+        if (resolution.status === "invalid_action_code") {
+          yield* Effect.annotateCurrentSpan({ "mcp.execute_action.rejected": true });
+          return actionRejectedResult();
+        }
+        if (resolution.status === "artifact_unavailable") {
+          return actionArtifactUnavailableResult();
+        }
+        if (resolution.status === "binding_unresolved") {
+          yield* Effect.annotateCurrentSpan({
+            "mcp.execute_action.binding_unresolved": true,
+            "mcp.execute_action.role": resolution.role,
+          });
+          return bindingUnresolvedResult({
+            role: resolution.role,
+            integration: resolution.integration,
+            message: resolution.message,
+            candidates: yield* bindingCandidates(resolution.integration),
+          });
+        }
+        const boundCode = resolution.code;
+
+        if (elicitationMode.mode === "native") {
+          const result = yield* engine.execute(boundCode, {
+            onElicitation: makeMcpElicitationHandler(server, debugLog),
+          });
+          return toMcpResult(result);
+        }
+        const outcome = yield* engine.executeWithPause(boundCode);
+        debugLog("execute_action.paused_flow_result", {
+          status: outcome.status,
+          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+          interactionKind:
+            outcome.status === "paused"
+              ? pausedInteractionKind(outcome.execution.elicitationContext.request)
+              : undefined,
+        });
+        if (outcome.status === "paused") {
+          return yield* formatPausedModelResult(outcome.execution, "execute_action");
+        }
+        return toMcpResult(outcome.result);
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.execute_action", {
+          attributes: {
+            "mcp.tool.name": "execute-action",
+            "mcp.execute.code_length": code.length,
+          },
+        }),
       );
 
     const resumeExecution = (
       executionId: string,
       action: "accept" | "decline" | "cancel",
       content: Record<string, unknown> | undefined,
+      extra: McpRequestJoinKeys,
     ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
+        yield* startMarker("mcp.host.tool.resume.start", {
+          "mcp.tool.name": "resume",
+          "mcp.execute.execution_id": executionId,
+        });
         debugLog("resume.call", {
           executionId,
           action,
@@ -855,6 +1352,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             "mcp.execute.execution_id": executionId,
           },
         }),
+        Effect.annotateSpans(joinKeyAttributes(extra)),
       );
 
     const requireUserResumeApproval = (executionId: string): Effect.Effect<McpToolResult> =>
@@ -898,8 +1396,15 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       );
     };
 
-    const resumeAfterBrowserApproval = (executionId: string): Effect.Effect<McpToolResult, E> =>
+    const resumeAfterBrowserApproval = (
+      executionId: string,
+      extra: McpRequestJoinKeys,
+    ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
+        yield* startMarker("mcp.host.tool.resume.browser_approval.start", {
+          "mcp.tool.name": "resume",
+          "mcp.execute.execution_id": executionId,
+        });
         const response = yield* waitForBrowserApprovalResponse(executionId);
         if (!response) return yield* requireUserResumeApproval(executionId);
 
@@ -926,6 +1431,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             "mcp.execute.execution_id": executionId,
           },
         }),
+        Effect.annotateSpans(joinKeyAttributes(extra)),
       );
 
     // --- tools ---
@@ -937,7 +1443,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           description,
           inputSchema: { code: z.string().trim().min(1) },
         },
-        ({ code }) => runToolEffect(executeCode(code)),
+        ({ code }, extra) => runToolEffect(executeCode(code, extra)),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -961,7 +1467,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               .describe('The skill to fetch, e.g. "execute". Omit to list available skills.'),
           },
         },
-        ({ name }) => runToolEffect(Effect.succeed(skillsResult(name, executeInventory))),
+        ({ name }) =>
+          runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog))),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -993,8 +1500,10 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 .default("{}"),
             },
           },
-          ({ executionId, action, content: rawContent }) =>
-            runToolEffect(resumeExecution(executionId, action, parseJsonContent(rawContent))),
+          ({ executionId, action, content: rawContent }, extra) =>
+            runToolEffect(
+              resumeExecution(executionId, action, parseJsonContent(rawContent), extra),
+            ),
         );
       }
 
@@ -1010,7 +1519,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             executionId: z.string().describe("The execution ID from the paused result"),
           },
         },
-        ({ executionId }) => runToolEffect(resumeAfterBrowserApproval(executionId)),
+        ({ executionId }, extra) => runToolEffect(resumeAfterBrowserApproval(executionId, extra)),
       );
     }).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -1018,7 +1527,525 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       }),
     );
 
-    yield* Effect.sync(() => {
+    // --- artifacts / MCP Apps ---
+    //
+    // These register unconditionally once a shell loader is configured. Whether
+    // the client can actually *render* an app is only known after `initialize`,
+    // so the app-only tools are toggled in `syncToolAvailability` below; the
+    // model-facing three stay enabled either way and fall back to a deep link.
+
+    const artifacts = config.artifacts;
+
+    // Set from the client's advertised capabilities at `initialize`. Read by
+    // the render handlers to choose inline widget vs. deep link. Seeded from
+    // the host's persisted value so a cold-restored session keeps rendering
+    // inline for a client that had already negotiated apps support.
+    //
+    // This is a cache, not the source of truth: `appsSupported()` below reads
+    // the live server on every render, because a cold restore re-establishes
+    // capabilities without ever running the hook that maintains this variable.
+    let appsEnabled = config.restoredAppsEnabled ?? false;
+    let executeActionTool: { enable: () => void; disable: () => void } | undefined;
+    let executeActionResumeTool: { enable: () => void; disable: () => void } | undefined;
+
+    /**
+     * Move the cached flag and the app-only tools together.
+     *
+     * `execute-action` is only callable from inside a rendered app, so a client
+     * that can't render one should never see it. `create-artifact`,
+     * `list-artifacts` and `show-artifact` stay visible regardless: they still
+     * persist, and still return something useful (a deep link).
+     */
+    const applyAppsEnabled = (next: boolean): void => {
+      appsEnabled = next;
+      if (next) {
+        executeActionTool?.enable();
+        executeActionResumeTool?.enable();
+      } else {
+        executeActionTool?.disable();
+        executeActionResumeTool?.disable();
+      }
+    };
+
+    // Best-effort usage observation; a failing observer never affects the tool.
+    const notifyArtifactUsage = (action: "created" | "viewed" | "updated"): Effect.Effect<void> =>
+      config.onArtifactUsage
+        ? config.onArtifactUsage(action).pipe(Effect.ignoreCause({ log: false }))
+        : Effect.void;
+
+    const saveAndDeliverArtifact = (input: {
+      readonly code: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly existingId?: string;
+      readonly bindings?: Readonly<Record<string, ArtifactBinding>>;
+      /** Sanitized layout markup from the smoke render, when it produced any. */
+      readonly preview?: string | null;
+    }): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        if (!artifacts) return artifactsUnavailableResult();
+        const saved = yield* artifacts.save({
+          ...(input.existingId === undefined ? {} : { id: input.existingId }),
+          title: input.title,
+          description: input.description ?? null,
+          code: input.code,
+          ...(input.bindings === undefined ? {} : { bindings: input.bindings }),
+          preview: input.preview ?? null,
+        });
+        yield* notifyArtifactUsage(input.existingId === undefined ? "created" : "updated");
+        // Resolve once and report the value actually used, so the span can
+        // never disagree with what the client received.
+        const delivered = deliverArtifact({
+          code: saved.code,
+          artifactId: saved.id,
+          title: saved.title,
+        });
+        yield* Effect.annotateCurrentSpan({
+          "mcp.artifact.id": saved.id,
+          "mcp.artifact.apps_enabled": appsEnabled,
+        });
+        return delivered;
+      });
+
+    /**
+     * Whether the client can render an app, resolved at render time.
+     *
+     * `appsEnabled` alone is not enough. On a cold restore the host replays the
+     * persisted `initialize` *request* — which does set the server's client
+     * capabilities — but never the `notifications/initialized` notification,
+     * and `oninitialized` (the only hook that re-runs `syncToolAvailability`)
+     * fires solely on that notification. So a restored session can hold full
+     * apps capabilities while `appsEnabled` still reads its seeded value, and
+     * the replay is dispatched un-awaited, so a tool call can land before it.
+     *
+     * Reading the live server here makes both orderings produce the same
+     * answer, and keeps the seeded value as the fallback for the window before
+     * any capabilities exist.
+     */
+    const appsSupported = (): boolean => {
+      const live = server.server.getClientCapabilities();
+      if (!live) return appsEnabled;
+      const uiCapability = getUiCapability(
+        live as ClientCapabilities & { extensions?: Record<string, unknown> },
+      );
+      const supported = Boolean(uiCapability?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
+      // Reconcile the tools too: a restore that re-established capabilities
+      // without firing `oninitialized` would otherwise render inline while
+      // `execute-action` — the tool that rendered app calls back into — stayed
+      // hidden, leaving the widget unable to do anything.
+      if (supported !== appsEnabled) applyAppsEnabled(supported);
+      return supported;
+    };
+
+    const deliverArtifact = (input: {
+      readonly code: string;
+      readonly artifactId: string;
+      readonly title: string;
+    }): McpToolResult => {
+      const url = config.artifactUrl?.(input.artifactId);
+      if (appsSupported()) return renderedInAppResult({ ...input, url });
+      return url
+        ? renderedAsLinkResult({ url, artifactId: input.artifactId, title: input.title })
+        : renderedWithoutSurfaceResult({ artifactId: input.artifactId, title: input.title });
+    };
+
+    /**
+     * Bind the integration roles an artifact's code uses, at create time.
+     *
+     * Binding happens HERE rather than at render time because this is the only
+     * moment the author, the code and their connections are all in hand — and
+     * because a create that can't bind is a create that would have saved a
+     * broken artifact. The model finds out now, with the candidate list, rather
+     * than the user finding out later through a query error inside the UI.
+     *
+     * `artifactId` turns the same call into an update in place. A model tweaking
+     * a dashboard has the whole component in hand already — it fetched it with
+     * `show-artifact`, edited it, and is calling back with the result — so a
+     * separate `update-artifact` tool would take the same four arguments and
+     * differ only in whether a row is minted. One tool keeps the catalog small
+     * and makes the wrong thing (a copy per tweak) the thing the model has to
+     * ask for rather than the thing it gets by default.
+     *
+     * An update replaces the code outright — v1 keeps no version history — and
+     * re-extracts and re-resolves the bindings from the NEW source, because the
+     * roles the new code uses are not necessarily the ones the old code did.
+     * `title` and `description` are optional on an update and absent means keep
+     * what is stored, so a pure code tweak doesn't have to restate them.
+     */
+    const createArtifact = (input: {
+      readonly code: string;
+      readonly title?: string;
+      readonly description?: string;
+      readonly connections?: Readonly<Record<string, string>>;
+      readonly artifactId?: string;
+    }): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        // An update reads the existing row FIRST, both to carry its title and
+        // description forward and to refuse a foreign id before any work. The
+        // refusal is `artifact_unavailable` — the same answer `execute-action`
+        // gives — so create-artifact cannot be used to probe which ids exist.
+        const existing =
+          input.artifactId === undefined ? null : yield* loadArtifact(input.artifactId);
+        if (input.artifactId !== undefined && !existing) return actionArtifactUnavailableResult();
+
+        const title = input.title ?? existing?.title;
+        if (title === undefined) {
+          return renderRejectedResult(
+            "title is required when creating an artifact. Give it a short human-readable name.",
+          );
+        }
+        // Only an update inherits; a create with no description stores none.
+        const description = input.description ?? existing?.description ?? undefined;
+
+        const rejection = validateArtifactCode(input.code);
+        if (rejection) return renderRejectedResult(rejection);
+
+        // Static checks first, then the real one: render it. See
+        // `smokeRenderRejection` for what the model is told.
+        //
+        // FAIL OPEN. The renderer is injected, runs on three different hosts,
+        // and is the newest thing in this path — if IT breaks (a missing
+        // module, an environment gap on some host), the right outcome is a
+        // saved artifact and a logged warning, never a refused create of code
+        // that is perfectly good. Only a definite `failed` blocks a save.
+        const smoke = config.smokeRenderArtifact;
+        // The render that validates the artifact is also the render that
+        // previews it: the same pass produces the loading-state markup the
+        // gallery draws, so a preview costs nothing beyond sanitizing it.
+        let preview: string | null = null;
+        if (smoke) {
+          const smokeResult: ArtifactSmokeRenderResult = yield* Effect.tryPromise(() =>
+            smoke(input.code),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.as(Effect.logWarning("create-artifact smoke render was unavailable", cause), {
+                status: "ok",
+              } satisfies ArtifactSmokeRenderResult),
+            ),
+          );
+          const renderRejection = smokeRenderRejection(smokeResult);
+          if (renderRejection) {
+            yield* Effect.annotateCurrentSpan({ "mcp.artifact.smoke_render": "failed" });
+            return renderRejectedResult(renderRejection);
+          }
+          // Fail open, exactly as the verdict does: a preview that cannot be
+          // produced or cannot be sanitized is a card that falls back to its
+          // schematic, never a create that is refused.
+          preview =
+            smokeResult.status === "ok" && smokeResult.markup !== undefined
+              ? sanitizeArtifactPreviewMarkup(smokeResult.markup)
+              : null;
+        }
+
+        const saveInput = {
+          code: input.code,
+          title,
+          preview,
+          ...(description === undefined ? {} : { description }),
+          ...(existing === null ? {} : { existingId: existing.id }),
+        };
+
+        const roles = extractArtifactRoles(input.code);
+        if (roles.length === 0 && input.connections === undefined) {
+          return yield* saveAndDeliverArtifact({ ...saveInput, bindings: {} });
+        }
+
+        if (!config.connections) {
+          return renderRejectedResult(
+            "This connection cannot bind integrations, so an artifact that calls one cannot be saved here.",
+          );
+        }
+
+        const available = yield* config.connections
+          .list()
+          .pipe(Effect.catchCause(() => Effect.succeed([] as readonly BindableConnection[])));
+        const resolved = resolveArtifactBindings({
+          roles,
+          connections: input.connections,
+          available,
+        });
+        if (!resolved.ok) return renderRejectedResult(resolved.message);
+
+        yield* Effect.annotateCurrentSpan({
+          "mcp.artifact.role_count": roles.length,
+        });
+        return yield* saveAndDeliverArtifact({ ...saveInput, bindings: resolved.bindings });
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.create_artifact", {
+          attributes: {
+            "mcp.tool.name": "create-artifact",
+            "mcp.artifact.update": input.artifactId !== undefined,
+            "mcp.execute.code_length": input.code.length,
+          },
+        }),
+      );
+
+    const listArtifacts = (): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        if (!artifacts) return artifactsUnavailableResult();
+        return artifactListResult(yield* artifacts.list());
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.list_artifacts", {
+          attributes: { "mcp.tool.name": "list-artifacts" },
+        }),
+      );
+
+    const showArtifact = (id: string): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        if (!artifacts) return artifactsUnavailableResult();
+        // A miss is the ordinary case (the model guessed an id, or the row was
+        // deleted), so it becomes an isError result rather than a defect.
+        const artifact: Artifact | null = yield* artifacts
+          .get(id)
+          .pipe(Effect.catchCause(() => Effect.succeed(null)));
+        if (!artifact) return artifactNotFoundResult(id);
+        yield* notifyArtifactUsage("viewed");
+        return deliverArtifact({
+          code: artifact.code,
+          artifactId: artifact.id,
+          title: artifact.title,
+        });
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.show_artifact", {
+          attributes: { "mcp.tool.name": "show-artifact", "mcp.artifact.id": id },
+        }),
+      );
+
+    // Two independent reasons to serve no artifact surface: the host cannot
+    // (no shell loader), or this connection opted out (`?artifacts=false`).
+    // Either way nothing below registers, so a disabled session is byte-for-byte
+    // a session on a host that never had artifacts.
+    const loadAppShellHtml = artifactsEnabled ? config.loadAppShellHtml : undefined;
+
+    if (loadAppShellHtml) {
+      yield* Effect.sync(() => {
+        registerAppResource(
+          server,
+          "Executor Shell",
+          MCP_APPS_SHELL_RESOURCE_URI,
+          { mimeType: RESOURCE_MIME_TYPE },
+          async () => ({
+            contents: [
+              {
+                uri: MCP_APPS_SHELL_RESOURCE_URI,
+                mimeType: RESOURCE_MIME_TYPE,
+                text: await loadAppShellHtml(),
+                // Zero allowed domains: the shell may open no network
+                // connection of its own. Every read and write goes back over
+                // the MCP bridge through `execute-action`.
+                _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } } },
+              },
+            ],
+          }),
+        );
+      }).pipe(
+        Effect.withSpan("mcp.host.register_resource", {
+          attributes: { "mcp.resource.uri": MCP_APPS_SHELL_RESOURCE_URI },
+        }),
+      );
+
+      yield* Effect.sync(() =>
+        registerAppTool(
+          server,
+          "create-artifact",
+          {
+            description: [
+              "Render an interactive React UI component as an MCP app, and save it as a reusable artifact.",
+              'Call `skills({ name: "create-artifact" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope. Call `skills({ name: "artifact-style" })` for how it must look — artifacts render inside the Executor console and must match its design system.',
+              "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<integration>.<tool>.queryOptions(args))`.",
+              "Lay it out as an app, not a document: an artifact may be given the whole viewport, so make the root `flex h-full flex-col`, keep headers and filters as ordinary children, and give the one long table or list `flex-1 min-h-0 overflow-auto` — its header then stays put while the rows scroll under it.",
+              "Artifact code addresses an INTEGRATION, never a connection: write `tools.vercel.domains.getDomains`, not the full `tools.vercel.user.personalVercel.domains.getDomains` address `execute` uses for discovery. The connection is bound when the artifact is saved, so it stays portable. Code containing a `.user.` or `.org.` segment is rejected.",
+              'To use two accounts of the same integration, tag each call site with a role — `tools.linear("prod").issues.list` and `tools.linear("staging").issues.list` — and map every role in `connections`.',
+              "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
+              "To read every page of a paginated tool, call `useInfiniteQuery(tools.<integration>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
+              "To CHANGE an artifact that already exists — a tweak, a fix, a new column — pass its `artifactId` and it is updated in place. Fetch the current source with `show-artifact` first, edit that, and send the whole component back. Never create a second artifact for a revision of an existing one.",
+              "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
+            ].join("\n"),
+            inputSchema: {
+              code: z.string().trim().min(1).describe("The React component source. Export `App`."),
+              artifactId: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                  "The artifact to update in place, from `list-artifacts` or a previous create. Omit to create a new one. `code` fully replaces the stored source and the connection bindings are re-resolved from it, so send the complete component, not a fragment.",
+                ),
+              connections: z
+                .record(z.string(), z.string())
+                .optional()
+                .describe(
+                  'Which connection each integration role in `code` uses, as `<integration>.<user|org>.<connection>` (the address `connections.list` reports, minus the leading `tools.`). Keys are roles: the integration slug for an untagged `tools.linear.…`, or the tag for `tools.linear("prod").…`. Optional when you have exactly one connection per integration used — that one binds automatically. Required when you have several, and the error lists them.',
+                ),
+              title: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                  'Short human-readable name for the artifact, e.g. "Active users dashboard". The user sees this and you match against it later. Required when creating; on an update, omit it to keep the current title.',
+                ),
+              description: z
+                .string()
+                .optional()
+                .describe(
+                  "What this UI shows, in a sentence. Used to find the artifact again on a later request. On an update, omit it to keep the current description.",
+                ),
+            },
+            _meta: {
+              ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
+            },
+          },
+          ({ code, title, description, connections, artifactId }) =>
+            runToolEffect(createArtifact({ code, title, description, connections, artifactId })),
+        ),
+      ).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "create-artifact" },
+        }),
+      );
+
+      yield* Effect.sync(() =>
+        server.registerTool(
+          "list-artifacts",
+          {
+            description: [
+              "List the saved UI artifacts for this account, newest first.",
+              "Match the user's phrasing against the returned titles and descriptions, then call `show-artifact` with that id.",
+            ].join("\n"),
+            inputSchema: {},
+          },
+          () => runToolEffect(listArtifacts()),
+        ),
+      ).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "list-artifacts" },
+        }),
+      );
+
+      yield* Effect.sync(() =>
+        registerAppTool(
+          server,
+          "show-artifact",
+          {
+            description: [
+              "Re-render a saved UI artifact by id.",
+              "Use `list-artifacts` first to find the id whose title or description matches what the user asked for.",
+              "Clients that cannot display MCP apps receive a link to the artifact instead.",
+            ].join("\n"),
+            inputSchema: {
+              id: z.string().trim().min(1).describe("The artifact id from `list-artifacts`."),
+            },
+            _meta: {
+              ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
+            },
+          },
+          ({ id }) => runToolEffect(showArtifact(id)),
+        ),
+      ).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "show-artifact" },
+        }),
+      );
+
+      yield* Effect.sync(() => {
+        executeActionTool = registerAppTool(
+          server,
+          "execute-action",
+          {
+            description:
+              "Execute code from the UI shell. Used by interactive components to call tools and run mutations.",
+            inputSchema: {
+              code: z.string().trim().min(1),
+              artifactId: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                  "The artifact making the call. Its stored bindings resolve the integration role in `code` to a connection.",
+                ),
+            },
+            _meta: {
+              ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["app"] },
+            },
+          },
+          ({ code, artifactId }) => runToolEffect(executeCodeFromApp(code, artifactId)),
+        );
+
+        executeActionResumeTool = registerAppTool(
+          server,
+          "execute-action-resume",
+          {
+            description: "Resume an interactive UI action after shell-owned user approval.",
+            inputSchema: {
+              executionId: z.string().describe("The execution ID from the paused UI action"),
+              action: z
+                .enum(["accept", "decline", "cancel"])
+                .describe("How to respond to the interaction"),
+              content: z
+                .string()
+                .describe("Optional JSON-encoded response content for form elicitations")
+                .default("{}"),
+            },
+            _meta: {
+              ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["app"] },
+            },
+          },
+          ({ executionId, action, content: rawContent }, extra) =>
+            runToolEffect(
+              resumeExecution(executionId, action, parseJsonContent(rawContent), extra),
+            ),
+        );
+      }).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "execute-action" },
+        }),
+      );
+    }
+
+    // Client capabilities only exist after `initialize`, and `tools/list` is
+    // answered from whatever is registered at that moment — so app-only tool
+    // visibility has to be re-synced from the `oninitialized` hook rather than
+    // decided at construction.
+    //
+    // This hook covers live clients only. It does NOT run on a cold restore:
+    // the host replays the persisted `initialize` request, but `oninitialized`
+    // fires on the `notifications/initialized` notification, which is never
+    // persisted. `appsSupported()` is what makes the restored case correct.
+    const syncToolAvailability = () => {
+      const clientCapabilities = server.server.getClientCapabilities();
+      const uiCapability = getUiCapability(
+        clientCapabilities as
+          | (ClientCapabilities & { extensions?: Record<string, unknown> })
+          | null,
+      );
+      // Absent capabilities (the SDK returns `undefined`) mean `initialize`
+      // hasn't happened on THIS server instance — the construction-time call
+      // below, or a cold restore that resumed mid-conversation. Neither is
+      // evidence the client lost apps support, so the restored value stands
+      // until a real `initialize` replaces it. Reading `false` off an absent
+      // value here is exactly what made a cold-restored session fall back to
+      // deep links.
+      const negotiated = clientCapabilities
+        ? Boolean(uiCapability?.mimeTypes?.includes(RESOURCE_MIME_TYPE))
+        : appsEnabled;
+      const changed = negotiated !== appsEnabled;
+      applyAppsEnabled(negotiated);
+
+      // Persist only a real negotiation that moved the value, so the next cold
+      // restore seeds itself. Best-effort: the session must not fail on it.
+      // The `clientCapabilities` guard matters beyond skipping a no-op write:
+      // persisting an absent-capability reading would make a downgrade durable
+      // for every future restore of the session.
+      const onAppsEnabledChange = config.onAppsEnabledChange;
+      if (clientCapabilities && changed && onAppsEnabledChange) {
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: `oninitialized` is a sync SDK hook; persistence is fire-and-forget and its failure must not fail the session
+        void Effect.runPromiseWith(context)(
+          onAppsEnabledChange(negotiated).pipe(Effect.ignoreCause({ log: false })),
+        );
+      }
+
       console.error(
         "[executor] MCP session mode",
         JSON.stringify({
@@ -1028,11 +2055,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
       debugLog("tool.visibility", {
-        clientCapabilities: server.server.getClientCapabilities() ?? null,
+        clientCapabilities: clientCapabilities ?? null,
         elicitationSupport: getElicitationSupport(server),
         elicitationMode: elicitationMode.mode,
         resumeEnabled: elicitationMode.mode !== "native",
+        appsSupport: uiCapability ?? null,
+        appsEnabled,
+        executeActionEnabled: appsEnabled,
       });
+    };
+
+    yield* Effect.sync(() => {
+      syncToolAvailability();
+      server.server.oninitialized = syncToolAvailability;
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
 
     return server;

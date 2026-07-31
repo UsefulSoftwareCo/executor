@@ -1,4 +1,4 @@
-import { ToolResult, type ToolError } from "./tool-result";
+import { isToolResult, ToolResult, type ToolError } from "./tool-result";
 
 export type AuthToolFailureCode =
   | "connection_value_missing"
@@ -84,3 +84,21 @@ export const authToolFailure = <T = never>(input: AuthToolFailureInput): ToolRes
   };
   return ToolResult.fail(error);
 };
+
+/**
+ * Whether a tool result is the upstream saying "this credential is not valid"
+ * — an HTTP 401 that every protocol plugin reports as `connection_rejected`.
+ *
+ * This is the trigger for a reactive token refresh, so it is deliberately
+ * exact. `oauth_scope_insufficient` and any 403 are excluded: those mean
+ * authenticated-but-not-permitted, and re-minting the same grant returns the
+ * identical answer (a retry loop that burns a refresh-token rotation per call
+ * and never converges). `oauth_reauth_required` and `oauth_refresh_failed` are
+ * excluded too — they are raised by the refresh path itself, so retrying on
+ * them would mean refreshing in response to a failed refresh.
+ */
+export const isUnauthorizedToolFailure = (value: unknown): boolean =>
+  isToolResult(value) &&
+  !value.ok &&
+  value.error.code === "connection_rejected" &&
+  value.error.status === 401;

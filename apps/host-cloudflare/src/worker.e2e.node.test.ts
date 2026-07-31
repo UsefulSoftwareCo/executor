@@ -19,6 +19,18 @@ import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsof
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const runId = randomUUID().slice(0, 8);
 
+const ensureStaticAssets = () => {
+  // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
+  // assets dir wrangler.jsonc points `assets.directory` at) is absent and
+  // `unstable_dev`'s assets validation aborts boot. These tests drive the
+  // API/MCP surface (all `run_worker_first` paths), not the SPA.
+  const distIndex = resolve(dir, "../dist/index.html");
+  if (!existsSync(distIndex)) {
+    mkdirSync(resolve(dir, "../dist"), { recursive: true });
+    writeFileSync(distIndex, "<!doctype html><title>executor</title>");
+  }
+};
+
 // Inline spec (no network); registers one tool, exercising the D1 write path.
 const SPEC = JSON.stringify({
   openapi: "3.0.0",
@@ -77,21 +89,13 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
   let worker: Unstable_DevWorker;
 
   beforeAll(async () => {
-    // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
-    // assets dir wrangler.jsonc points `assets.directory` at) is absent and
-    // `unstable_dev`'s assets validation aborts boot. This e2e drives the
-    // API/MCP surface (all `run_worker_first` paths), not the SPA, so a minimal
-    // placeholder index.html satisfies the validation without a real build.
-    const distIndex = resolve(dir, "../dist/index.html");
-    if (!existsSync(distIndex)) {
-      mkdirSync(resolve(dir, "../dist"), { recursive: true });
-      writeFileSync(distIndex, "<!doctype html><title>executor</title>");
-    }
+    ensureStaticAssets();
 
     worker = await unstable_dev(resolve(dir, "worker.ts"), {
       config: resolve(dir, "../wrangler.jsonc"),
       ip: "127.0.0.1",
       local: true,
+      persist: false,
       experimental: { disableExperimentalWarning: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
@@ -473,4 +477,38 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(resumed.result?.isError).toBeFalsy();
     expect(resumed.result?.structuredContent?.status).toBe("completed");
   }, 60_000);
+});
+
+describe("cloudflare host configuration errors", () => {
+  let worker: Unstable_DevWorker;
+
+  beforeAll(async () => {
+    ensureStaticAssets();
+    worker = await unstable_dev(resolve(dir, "worker.ts"), {
+      config: resolve(dir, "../wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      experimental: { disableExperimentalWarning: true },
+      vars: {
+        EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
+      },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await worker?.stop();
+  });
+
+  it("returns an actionable response when Cloudflare Access is not configured", async () => {
+    for (const path of ["/api/account/me", "/mcp"]) {
+      const response = await worker.fetch(path);
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.text()).resolves.toBe(
+        "Cloudflare Access is not configured. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD before serving requests.\n",
+      );
+    }
+  });
 });

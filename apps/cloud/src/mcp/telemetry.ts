@@ -105,12 +105,23 @@ const InitializeParams = Schema.Struct({
 const NamedParams = Schema.Struct({ name: Schema.optional(Schema.String) });
 const UriParams = Schema.Struct({ uri: Schema.optional(Schema.String) });
 
+// `notifications/cancelled` carries no JSON-RPC id of its own, but its params
+// name the request the client gave up on. Surfacing that id as
+// `mcp.rpc.cancelled_id` makes "a client gave up" joinable to the exact
+// `tools/call` (and the execution spans, which carry `mcp.rpc.id`) that hung —
+// the best available proxy for a killed execution.
+const CancelledParams = Schema.Struct({
+  requestId: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+  reason: Schema.optional(Schema.String),
+});
+
 const decodeJsonRpcEnvelopeString = Schema.decodeUnknownOption(
   Schema.fromJsonString(JsonRpcEnvelope),
 );
 const decodeInitializeParams = Schema.decodeUnknownOption(InitializeParams);
 const decodeNamedParams = Schema.decodeUnknownOption(NamedParams);
 const decodeUriParams = Schema.decodeUnknownOption(UriParams);
+const decodeCancelledParams = Schema.decodeUnknownOption(CancelledParams);
 const decodeElicitationReplyResult = Schema.decodeUnknownOption(ElicitationReplyResult);
 
 const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<JsonRpcEnvelope>> =>
@@ -156,6 +167,15 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
         onSome: ({ name }) => (name ? { "mcp.prompt.name": name } : {}),
+      }),
+    ),
+    Match.when("notifications/cancelled", () =>
+      Option.match(decodeCancelledParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
+        onSome: ({ requestId, reason }) => ({
+          ...(requestId !== undefined && { "mcp.rpc.cancelled_id": String(requestId) }),
+          ...(reason && { "mcp.rpc.cancelled_reason": reason }),
+        }),
       }),
     ),
     Match.option,

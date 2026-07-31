@@ -1,9 +1,4 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
-import {
-  makeWorkerBundlerBackend,
-  makeWorkerdAppToolExecutor,
-} from "@executor-js/plugin-apps/selfhost";
-import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   googleCatalog,
@@ -43,15 +38,14 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       graphqlHttpPlugin(),
-      appsHttpPlugin({
-        executor: makeWorkerdAppToolExecutor(),
-        bundler: makeWorkerBundlerBackend(),
-        sourceKinds: ["git", "local-directory"],
-        allowPrivateGitHosts: true,
-      }),
       toolkitsPlugin({ activeToolkitSlug }),
-      keychainPlugin(),
+      // The durable file store must register before keychain: the first
+      // writable provider becomes the default for minted OAuth tokens, and on
+      // sandbox/headless hosts the keychain is an in-memory keyring that a
+      // stop/recreate wipes while only EXECUTOR_DATA_DIR is persisted.
+      // Keychain stays registered for explicit external refs.
       fileSecretsPlugin(),
+      keychainPlugin(),
       onepasswordHttpPlugin(),
       desktopSettingsPlugin({
         webBaseUrl:

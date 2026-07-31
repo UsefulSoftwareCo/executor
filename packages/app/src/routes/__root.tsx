@@ -3,8 +3,16 @@ import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { LocalAuthGate } from "@executor-js/react/api/local-auth";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { Toaster } from "@executor-js/react/components/sonner";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { Shell } from "../web/shell";
+
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. It is registered as a dynamic import the
+// artifact page resolves in the browser, never a static one, so it stays out of
+// any server graph. Module scope keeps the loader identity stable, so the lazy
+// component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
@@ -35,9 +43,11 @@ function RootComponent() {
   return (
     <ExecutorProvider>
       <ExecutorPluginsProvider plugins={clientPlugins}>
-        <LocalAuthGate>
-          <Shell />
-        </LocalAuthGate>
+        <ArtifactRendererProvider loader={artifactRendererLoader}>
+          <LocalAuthGate>
+            <Shell />
+          </LocalAuthGate>
+        </ArtifactRendererProvider>
         <Toaster />
       </ExecutorPluginsProvider>
     </ExecutorProvider>

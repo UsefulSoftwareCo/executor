@@ -26,6 +26,7 @@ import {
 import { BunFileSystem, BunHttpServer, BunPath, BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
+import { disposeAnalytics } from "./analytics";
 import { makeSelfHostApp } from "./app";
 import { loadConfig } from "./config";
 import type { BetterAuthHandle } from "./auth";
@@ -120,6 +121,11 @@ export const startServer = async (): Promise<void> => {
     cacheControl: "no-cache",
   }).pipe(Layer.provide(BunFileSystem.layer), Layer.provide(BunPath.layer));
 
+  // Server-scope finalizer: flush buffered analytics on graceful shutdown.
+  const AnalyticsFlushLive = Layer.effectDiscard(
+    Effect.addFinalizer(() => Effect.promise(() => disposeAnalytics())),
+  );
+
   const ServerLive = HttpRouter.serve(Layer.mergeAll(AppLayer, AssetsLive, SpaLive), {
     middleware: selfHostHttpMiddleware(betterAuth),
   }).pipe(
@@ -128,7 +134,7 @@ export const startServer = async (): Promise<void> => {
     ),
   );
 
-  await BunRuntime.runMain(Layer.launch(ServerLive));
+  await BunRuntime.runMain(Layer.launch(Layer.merge(ServerLive, AnalyticsFlushLive)));
 };
 
 if (import.meta.main) {

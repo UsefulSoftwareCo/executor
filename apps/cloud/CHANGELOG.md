@@ -1,5 +1,46 @@
 # @executor-js/cloud
 
+## 1.4.55
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/execution@1.5.37
+  - @executor-js/vite-plugin@0.0.54
+  - @executor-js/cloudflare@0.0.36
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.5
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-graphql@1.5.37
+  - @executor-js/plugin-mcp@1.5.37
+  - @executor-js/plugin-openapi@1.5.37
+  - @executor-js/plugin-toolkits@1.5.29
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.57
+  - @executor-js/runtime-quickjs@1.5.37
+
+## 1.4.54
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/runtime-quickjs@1.5.36
+  - @executor-js/execution@1.5.36
+  - @executor-js/plugin-graphql@1.5.36
+  - @executor-js/plugin-mcp@1.5.36
+  - @executor-js/plugin-openapi@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/vite-plugin@0.0.53
+  - @executor-js/cloudflare@0.0.35
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-toolkits@1.5.28
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.56
+
 ## 1.4.53
 
 ### Patch Changes

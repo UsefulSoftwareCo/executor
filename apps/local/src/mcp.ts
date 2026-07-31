@@ -17,6 +17,7 @@ import {
   approvalUrlForRequest,
   decodeResumeResponse,
   formatResumeAcknowledgement,
+  readArtifactsEnabled,
   readElicitationMode,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
@@ -210,6 +211,7 @@ export const createMcpRequestHandler = (
           createExecutorMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
+            artifactsEnabled: readArtifactsEnabled(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {

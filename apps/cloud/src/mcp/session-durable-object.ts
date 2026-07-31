@@ -25,6 +25,9 @@ import {
   createExecutorMcpServer,
 } from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
@@ -64,6 +67,7 @@ import {
   type DbServiceShape,
 } from "../db/db";
 import { makeExecutionStack } from "../engine/execution-stack";
+import { preloadQuickJs } from "../quickjs";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
@@ -152,6 +156,18 @@ const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
   return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices);
 };
 
+// The `ui://executor/shell.html` resource, over the ASSETS binding: the
+// deployed Worker has no filesystem, so the document is the stable-named
+// asset the client build emitted (`mcpAppsShellAsset`), fetched at first
+// artifact resource read. Module scope so the fetch-and-verify happens once
+// per isolate, not once per session. The dev thunk carries the built shell
+// inline under `vite dev`, where no assets exist yet for the binding to find.
+const loadAppShellHtml = makeAssetsShellHtmlLoader({
+  assets: env.ASSETS,
+  devShellHtml: () =>
+    import("virtual:executor-mcp-apps-shell-dev-html").then((mod) => mod.devShellHtml),
+});
+
 // ---------------------------------------------------------------------------
 // Durable Object
 // ---------------------------------------------------------------------------
@@ -209,6 +225,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         userId: token.userId,
         resource: token.resource,
         elicitationMode: token.elicitationMode,
+        artifactsEnabled: token.artifactsEnabled,
       } satisfies SessionMeta;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
@@ -225,6 +242,13 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
+      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
+      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
+      // user `execute` code on the dynamic-worker runtime, but the artifact
+      // smoke render is a QuickJS sandbox on every host — without this it fails
+      // open on each create and the check silently does nothing.
+      // Idempotent per isolate.
+      yield* Effect.promise(() => preloadQuickJs());
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
@@ -250,6 +274,22 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
+        artifacts: executor.artifacts,
+        connections: executor.connections,
+        // Artifacts are on by default, opt-out per connection. A session
+        // persisted without a value restores to the default, same as a fresh
+        // connection whose URL says nothing about `?artifacts=`.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Cold restores rebuild this server with no `initialize` to replay, so
+        // the negotiated apps support comes back from storage instead.
+        restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
+        onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        loadAppShellHtml,
+        smokeRenderArtifact,
+        artifactUrl: artifactUrlFor(
+          env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+          sessionMeta.organizationSlug,
+        ),
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,

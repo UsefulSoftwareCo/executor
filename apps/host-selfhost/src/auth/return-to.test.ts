@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { isSafeReturnTo, loginPath, mcpAuthorizeResumeTarget, safeReturnTo } from "./return-to";
+import {
+  isSafeReturnTo,
+  loginPath,
+  mcpAuthorizeResumeTarget,
+  postLoginTarget,
+  safeReturnTo,
+} from "./return-to";
 
 describe("isSafeReturnTo", () => {
   const safe = [
@@ -70,6 +76,44 @@ describe("mcpAuthorizeResumeTarget", () => {
     expect(
       mcpAuthorizeResumeTarget("?response_type=token&client_id=abc&redirect_uri=x"),
     ).toBeNull();
+  });
+});
+
+describe("postLoginTarget", () => {
+  // Self-host renders the login page IN PLACE of the requested route without
+  // navigating, so the live location is the only record of where the person was
+  // headed. A connect deep link must survive sign-in on that basis alone.
+  it("returns to the deep link the person actually opened", () => {
+    expect(postLoginTarget({ pathname: "/connect/linear", search: "" })).toBe("/connect/linear");
+    expect(postLoginTarget({ pathname: "/integrations/sentry", search: "?addAccount=1" })).toBe(
+      "/integrations/sentry?addAccount=1",
+    );
+  });
+
+  it("lands on the dashboard when signing in from the bare login page", () => {
+    // No deep link to resume, and echoing /login back would re-render the form.
+    expect(postLoginTarget({ pathname: "/login", search: "" })).toBe("/");
+  });
+
+  it("prefers an explicit returnTo over the current location", () => {
+    expect(postLoginTarget({ pathname: "/login", search: "?returnTo=%2Fconnect%2Flinear" })).toBe(
+      "/connect/linear",
+    );
+  });
+
+  it("prefers an MCP authorize resume over everything else", () => {
+    const target = postLoginTarget({
+      pathname: "/login",
+      search:
+        "?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A3118%2Fcallback",
+    });
+    expect(target.startsWith("/api/auth/mcp/authorize?")).toBe(true);
+  });
+
+  it("never honors an unsafe location", () => {
+    // `safeReturnTo` vets the echoed path too — an app-plane path is not a
+    // place to land a freshly signed-in browser.
+    expect(postLoginTarget({ pathname: "/api/auth/logout", search: "" })).toBe("/");
   });
 });
 

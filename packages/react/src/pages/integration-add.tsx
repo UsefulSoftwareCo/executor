@@ -5,7 +5,6 @@ import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { useExecutorDocumentTitle } from "../lib/document-title";
-import { integrationDetailTabForAddCompletion } from "../lib/integration-detail-tabs";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -64,13 +63,12 @@ export function AddIntegrationPage(props: {
                 ...(slug ? { integration_slug: slug } : {}),
               });
               refreshIntegrations();
-              const tab = integrationDetailTabForAddCompletion(pluginKey);
               void navigate(
                 slug
                   ? {
                       to: "/{-$orgSlug}/integrations/$namespace",
                       params: { namespace: slug },
-                      search: tab ? { tab } : {},
+                      search: {},
                     }
                   : { to: "/{-$orgSlug}" },
               );

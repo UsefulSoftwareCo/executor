@@ -544,6 +544,33 @@ const make = Effect.gen(function* () {
         return response.data;
       }),
 
+    /**
+     * List the ORGANIZATION-owned api keys of an org. Unlike the user-key
+     * paths above, org keys are first-class in the installed SDK
+     * (`organizations.listOrganizationApiKeys`), so no raw escape hatch is
+     * needed. Returned unknown and decoded in `auth/api-keys.ts` like every
+     * other key response.
+     */
+    listOrgApiKeys: (organizationId: string) =>
+      use(async (wos) =>
+        collectWorkOSList(await wos.organizations.listOrganizationApiKeys({ organizationId })),
+      ),
+
+    /**
+     * Mint an ORGANIZATION-owned api key: the credential that resolves to the
+     * read-only platform view (`PlatformAuth`) instead of an acting member.
+     * Privileged — the caller must be an admin of the org, which is enforced at
+     * the account-provider boundary, not here.
+     */
+    createOrgApiKey: (params: { organizationId: string; name: string }) =>
+      use(
+        (wos) =>
+          wos.organizations.createOrganizationApiKey({
+            organizationId: params.organizationId,
+            name: params.name,
+          }) as Promise<unknown>,
+      ),
+
     deleteApiKey: (id: string) => use((wos) => wos.apiKeys.deleteApiKey(id)),
 
     /** List organization memberships with user details. */
