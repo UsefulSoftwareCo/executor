@@ -2,11 +2,13 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import type { PlatformError } from "effect/PlatformError";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOST_PACKAGE_URL = import.meta.resolve("@executor-js/host-cloudflare/package.json");
@@ -34,34 +36,64 @@ const namesForStage = (stage: string) => {
 const optionalString = (name: string) =>
   Config.string(name).pipe(Config.option, Config.map(Option.getOrUndefined));
 
-const hashAssetsDirectory = async (root: string): Promise<string> => {
-  const files: string[] = [];
-  const walk = async (directory: string): Promise<void> => {
-    const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await walk(path);
-      } else {
-        files.push(path);
-      }
-    }
-  };
-  await walk(root);
+const compareCodeUnits = (left: string, right: string) =>
+  left < right ? -1 : left > right ? 1 : 0;
 
-  const hash = createHash("sha256");
-  for (const path of files) {
-    const contents = await readFile(path);
-    const relativePath = relative(root, path).split(sep).join("/");
-    hash.update(relativePath);
-    hash.update("\0");
-    hash.update(String(contents.byteLength));
-    hash.update("\0");
-    hash.update(contents);
-  }
-  return hash.digest("hex");
-};
+class AssetHashError extends Data.TaggedError("AssetHashError")<{
+  readonly cause: unknown;
+}> {}
+
+const hashAssetsDirectory = (root: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const files: string[] = [];
+    const walk = (directory: string): Effect.Effect<void, PlatformError> =>
+      Effect.gen(function* () {
+        const entries = yield* fs.readDirectory(directory);
+        entries.sort(compareCodeUnits);
+        for (const entry of entries) {
+          const entryPath = path.join(directory, entry);
+          const linkTarget = yield* fs.readLink(entryPath).pipe(Effect.option);
+          if (Option.isSome(linkTarget)) {
+            files.push(entryPath);
+            continue;
+          }
+
+          const info = yield* fs.stat(entryPath);
+          if (info.type === "Directory") {
+            yield* walk(entryPath);
+          } else {
+            files.push(entryPath);
+          }
+        }
+      });
+
+    yield* walk(root);
+
+    const assets: Array<{ relativePath: string; contents: Uint8Array }> = [];
+    for (const file of files) {
+      assets.push({
+        relativePath: path.relative(root, file).split(path.sep).join("/"),
+        contents: yield* fs.readFile(file),
+      });
+    }
+
+    return yield* Effect.try({
+      try: () => {
+        const hash = createHash("sha256");
+        for (const { relativePath, contents } of assets) {
+          hash.update(relativePath);
+          hash.update("\0");
+          hash.update(String(contents.byteLength));
+          hash.update("\0");
+          hash.update(contents);
+        }
+        return hash.digest("hex");
+      },
+      catch: (cause) => new AssetHashError({ cause }),
+    });
+  });
 
 export default Alchemy.Stack(
   "ExecutorCloudflare",
@@ -89,7 +121,7 @@ export default Alchemy.Stack(
     const allowLocalNetwork = yield* optionalString("ALLOW_LOCAL_NETWORK");
     const publicSiteUrl = yield* optionalString("VITE_PUBLIC_SITE_URL");
     const executorSecretKey = yield* Config.redacted("EXECUTOR_SECRET_KEY");
-    const assetsHash = yield* Effect.tryPromise(() => hashAssetsDirectory(HOST_ASSETS_DIR)).pipe(
+    const assetsHash = yield* hashAssetsDirectory(HOST_ASSETS_DIR).pipe(
       Effect.mapError(
         (cause) =>
           new Config.ConfigError(

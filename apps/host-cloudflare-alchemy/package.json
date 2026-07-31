@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/platform-bun": "4.0.0-beta.102",
     "@executor-js/host-cloudflare": "workspace:*",
     "alchemy": "2.0.0-beta.66",
     "effect": "4.0.0-beta.102"
