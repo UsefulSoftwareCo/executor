@@ -1,0 +1,29 @@
+{
+  "name": "@executor-js/host-cloudflare-alchemy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "auth": "alchemy login --configure",
+    "auth:status": "alchemy profile show",
+    "deploy": "alchemy deploy --stage prod",
+    "deploy:adopt": "alchemy deploy --stage prod --adopt",
+    "deploy:validation": "alchemy deploy --stage validation",
+    "destroy": "alchemy destroy --stage prod",
+    "destroy:validation": "alchemy destroy --stage validation",
+    "plan": "alchemy plan --stage prod",
+    "plan:adopt": "alchemy deploy --stage prod --adopt --dry-run",
+    "plan:validation": "alchemy plan --stage validation",
+    "state:bootstrap": "alchemy cloudflare bootstrap",
+    "token:create": "alchemy cloudflare create-token",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@executor-js/host-cloudflare": "workspace:*",
+    "alchemy": "2.0.0-beta.66",
+    "effect": "4.0.0-beta.102"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.11",
+    "typescript": "catalog:"
+  }
+}

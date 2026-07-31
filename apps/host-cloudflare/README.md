@@ -64,6 +64,26 @@ The Access values are live Worker variables, not values in `wrangler.jsonc`.
 Wrangler's `keep_vars` option preserves them during later code deploys. Run the
 command above again whenever you need to change them.
 
+### Experimental Alchemy deployment
+
+An opt-in Alchemy v2 stack lives in `../host-cloudflare-alchemy`. It manages the
+Worker, D1, R2, Durable Object bindings, static assets, variables, and secret
+while retaining this app's existing async Worker entry:
+
+```bash
+bun run --cwd ../host-cloudflare-alchemy auth
+bun run --cwd ../host-cloudflare-alchemy state:bootstrap
+cp ../host-cloudflare-alchemy/.env.example ../host-cloudflare-alchemy/.env
+$EDITOR ../host-cloudflare-alchemy/.env
+bun run plan:alchemy
+bun run deploy:alchemy
+```
+
+See [`../host-cloudflare-alchemy/README.md`](../host-cloudflare-alchemy/README.md)
+before adopting an existing deployment. Wrangler remains the default until
+resource adoption, Durable Object migrations, secret preservation, and rollback
+have been rehearsed on a disposable stack.
+
 ## Local development
 
 ```bash
