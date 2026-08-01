@@ -163,11 +163,8 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Browser reverse bridge for Executor Browser extension (API-key auth).
-        HttpRouter.add(
-          "*",
-          "/api/browser-bridge",
-          HttpEffect.fromWebHandler(browserBridgeHandler),
-        ),
+        // Subpaths only (…/session, …/sessions, …/call). Do not also register
+        // the bare prefix — find-my-way treats that as a duplicate ACL route.
         HttpRouter.add(
           "*",
           "/api/browser-bridge/*",
