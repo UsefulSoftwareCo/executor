@@ -5,9 +5,13 @@
  * Requires a live extension session (path B). Agents call e.g. tools.chrome.snapshot.
  */
 
-import { Effect, Schema } from "effect";
-
-import { definePlugin, tool, type StaticToolSchema } from "@executor-js/sdk/core";
+import {
+  definePlugin,
+  tool,
+  Effect,
+  Schema,
+  type StaticToolSchema,
+} from "@executor-js/sdk/core";
 
 import { callTool, listSessionsForUser, sessionPublicView } from "./store";
 
