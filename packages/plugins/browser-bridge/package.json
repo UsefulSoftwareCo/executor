@@ -1,0 +1,24 @@
+{
+  "name": "@executor-js/plugin-browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reverse browser bridge: extension dials out; agents call tools.chrome.* via live desktop sessions.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./store": "./src/store.ts",
+    "./http": "./src/http.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -29,6 +29,7 @@ import { makeSelfHostMcpSeams } from "./mcp";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
+import { makeBrowserBridgeHandler } from "@executor-js/plugin-browser-bridge/http";
 
 // ===========================================================================
 // The self-hosted Executor app, as ONE `ExecutorApp.make` call.
@@ -79,6 +80,32 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // Pass the pinned public origin so browser-approval URLs are reachable behind
   // a reverse proxy (not the internal 127.0.0.1 bind from the request URL).
   const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl);
+
+  // Browser reverse bridge (Executor Browser extension path B).
+  // Same auth as API: cookie, Bearer session, or API key as Bearer / x-api-key.
+  const browserBridgeHandler = makeBrowserBridgeHandler({
+    getSession: async (request) => {
+      try {
+        let session = await betterAuth.auth.api.getSession({ headers: request.headers });
+        if (!session) {
+          const authz = request.headers.get("authorization") || "";
+          const m = authz.match(/^Bearer\s+(.+)$/i);
+          if (m?.[1]) {
+            session = await betterAuth.auth.api.getSession({
+              headers: { "x-api-key": m[1] },
+            });
+          }
+        }
+        if (!session?.user?.id) return null;
+        return session as {
+          user: { id: string; name?: string | null; email?: string | null };
+          session?: { activeOrganizationId?: string | null };
+        };
+      } catch {
+        return null;
+      }
+    },
+  });
 
   // CLI device-login discovery (`executor login`). Points the CLI at Better
   // Auth's device endpoints; `requestFormat: "json"` because those endpoints
@@ -135,6 +162,17 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         makeSelfHostAdminUsersApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        // Browser reverse bridge for Executor Browser extension (API-key auth).
+        HttpRouter.add(
+          "*",
+          "/api/browser-bridge",
+          HttpEffect.fromWebHandler(browserBridgeHandler),
+        ),
+        HttpRouter.add(
+          "*",
+          "/api/browser-bridge/*",
+          HttpEffect.fromWebHandler(browserBridgeHandler),
+        ),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
         HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
       ],
