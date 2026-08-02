@@ -57,17 +57,51 @@ const encodeReservedAware = (raw: string, allowReserved: boolean): string => {
   return out;
 };
 
-const queryParamValues = (value: unknown, param: OperationParameter): string[] => {
+type QueryParamEntry = readonly [name: string, value: string];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const queryParamEntries = (value: unknown, param: OperationParameter): QueryParamEntry[] => {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) return [primitiveToString(value)];
 
   const style = Option.getOrUndefined(param.style) ?? "form";
   const explode = Option.getOrElse(param.explode, () => true);
 
-  if (explode) return value.map(primitiveToString);
+  if (isRecord(value)) {
+    const entries = Object.entries(value).filter(
+      ([, nested]) => nested !== undefined && nested !== null,
+    );
+
+    if (style === "form") {
+      if (explode) {
+        // OAS form + explode=true serializes an object as top-level query
+        // fields, e.g. `{ region: "west", tier: "standard" }` ->
+        // `region=west&tier=standard`.
+        return entries.map(([name, nested]) => [name, primitiveToString(nested)]);
+      }
+
+      return [
+        [
+          param.name,
+          entries.flatMap(([name, nested]) => [name, primitiveToString(nested)]).join(","),
+        ],
+      ];
+    }
+
+    if (style === "deepObject") {
+      return entries.map(([name, nested]) => [`${param.name}[${name}]`, primitiveToString(nested)]);
+    }
+
+    return [[param.name, primitiveToString(value)]];
+  }
+
+  if (!Array.isArray(value)) return [[param.name, primitiveToString(value)]];
+
+  if (explode) return value.map((nested) => [param.name, primitiveToString(nested)]);
 
   const separator = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
-  return [value.map(primitiveToString).join(separator)];
+  return [[param.name, value.map(primitiveToString).join(separator)]];
 };
 
 // ---------------------------------------------------------------------------
@@ -903,8 +937,8 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   for (const param of operation.parameters) {
     if (param.location !== "query") continue;
     const value = readParamValue(args, param);
-    for (const paramValue of queryParamValues(value, param)) {
-      request = HttpClientRequest.appendUrlParam(request, param.name, paramValue);
+    for (const [name, paramValue] of queryParamEntries(value, param)) {
+      request = HttpClientRequest.appendUrlParam(request, name, paramValue);
     }
   }
 
