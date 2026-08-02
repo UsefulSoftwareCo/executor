@@ -225,6 +225,278 @@ const FILE_OUTPUT_HINT =
 const withFileEmitHint = (description: string, returnsFile: boolean): string =>
   returnsFile ? `${description}\n\n${FILE_OUTPUT_HINT}` : description;
 
+// ---------------------------------------------------------------------------
+// Coolify environment-variable request-schema compatibility
+// ---------------------------------------------------------------------------
+
+type CoolifyApplicationEnvironmentWriteKind = "single" | "batch";
+
+type CoolifyApplicationEnvironmentWriteSignature = {
+  readonly kind: CoolifyApplicationEnvironmentWriteKind;
+  readonly method: "post" | "patch";
+  readonly pathTemplate: string;
+};
+
+const COOLIFY_APPLICATION_ENV_WRITE_SIGNATURES = new Map<
+  string,
+  CoolifyApplicationEnvironmentWriteSignature
+>([
+  [
+    "applications.createEnvByApplicationUuid",
+    { kind: "single", method: "post", pathTemplate: "/applications/{uuid}/envs" },
+  ],
+  [
+    "applications.updateEnvByApplicationUuid",
+    { kind: "single", method: "patch", pathTemplate: "/applications/{uuid}/envs" },
+  ],
+  [
+    "applications.updateEnvsByApplicationUuid",
+    { kind: "batch", method: "patch", pathTemplate: "/applications/{uuid}/envs/bulk" },
+  ],
+]);
+
+const COOLIFY_ENVIRONMENT_LIFECYCLE_PROPERTIES = {
+  is_runtime: {
+    type: "boolean",
+    description: "Whether this environment variable is available to the running application.",
+  },
+  is_buildtime: {
+    type: "boolean",
+    description: "Whether this environment variable is available while the application builds.",
+  },
+} as const;
+
+const COOLIFY_LEGACY_ENVIRONMENT_PROPERTIES = {
+  key: "string",
+  value: "string",
+  is_preview: "boolean",
+  is_literal: "boolean",
+  is_multiline: "boolean",
+  is_shown_once: "boolean",
+} as const;
+
+const COOLIFY_ENVIRONMENT_PROPERTIES: Readonly<Record<string, string>> = {
+  ...COOLIFY_LEGACY_ENVIRONMENT_PROPERTIES,
+  is_runtime: "boolean",
+  is_buildtime: "boolean",
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const hasExactPropertyTypes = (
+  schema: unknown,
+  expected: Readonly<Record<string, string>>,
+): boolean => {
+  const object = asRecord(schema);
+  const properties = asRecord(object?.properties);
+  const expectedNames = Object.keys(expected);
+  if (
+    object?.type !== "object" ||
+    !properties ||
+    Object.keys(properties).length !== expectedNames.length
+  ) {
+    return false;
+  }
+  return expectedNames.every((name) => asRecord(properties[name])?.type === expected[name]);
+};
+
+const hasExactRequiredProperties = (schema: Record<string, unknown>, names: readonly string[]) => {
+  const required = schema.required;
+  return (
+    Array.isArray(required) &&
+    required.length === names.length &&
+    names.every((name) => required.includes(name))
+  );
+};
+
+const isLegacyCoolifyEnvironmentVariableSchema = (schema: unknown): boolean => {
+  const object = asRecord(schema);
+  const properties = asRecord(object?.properties);
+  if (
+    object?.type !== "object" ||
+    !properties ||
+    !Object.entries(COOLIFY_LEGACY_ENVIRONMENT_PROPERTIES).every(
+      ([name, type]) => asRecord(properties[name])?.type === type,
+    )
+  ) {
+    return false;
+  }
+  // An upstream schema may gain either lifecycle field before the other, but
+  // no unrelated property may turn a similarly named tenant endpoint into a
+  // compatibility candidate.
+  return Object.entries(properties).every(
+    ([name, property]) => asRecord(property)?.type === COOLIFY_ENVIRONMENT_PROPERTIES[name],
+  );
+};
+
+const isCoolifyEnvironmentWriteInputShape = (
+  kind: CoolifyApplicationEnvironmentWriteKind,
+  inputSchema: unknown,
+): boolean => {
+  const root = asRecord(inputSchema);
+  const rootProperties = asRecord(root?.properties);
+  if (
+    !root ||
+    root.additionalProperties !== false ||
+    !rootProperties ||
+    !hasExactRequiredProperties(root, ["uuid", "body"]) ||
+    !hasExactPropertyTypes(root, { uuid: "string", body: "object" })
+  ) {
+    return false;
+  }
+
+  const body = rootProperties.body;
+  if (kind === "single") return isLegacyCoolifyEnvironmentVariableSchema(body);
+
+  const bodyObject = asRecord(body);
+  const bodyProperties = asRecord(bodyObject?.properties);
+  const data = bodyProperties?.data;
+  const dataObject = asRecord(data);
+  return (
+    bodyObject?.type === "object" &&
+    bodyProperties !== undefined &&
+    Object.keys(bodyProperties).length === 1 &&
+    dataObject?.type === "array" &&
+    isLegacyCoolifyEnvironmentVariableSchema(dataObject.items)
+  );
+};
+
+const isCoolifyEnvironmentWriteOperation = (
+  signature: CoolifyApplicationEnvironmentWriteSignature,
+  operation:
+    | {
+        readonly method: string;
+        readonly pathTemplate: string;
+        readonly parameters: readonly {
+          readonly name: string;
+          readonly location: string;
+          readonly required: boolean;
+        }[];
+      }
+    | undefined,
+): boolean =>
+  operation?.method === signature.method &&
+  operation.pathTemplate === signature.pathTemplate &&
+  hasRequiredApplicationUuidPathParameter(operation.parameters);
+
+const hasRequiredApplicationUuidPathParameter = (
+  parameters: readonly {
+    readonly name: string;
+    readonly location: string;
+    readonly required: boolean;
+  }[],
+): boolean =>
+  parameters.some(
+    (parameter) => parameter.name === "uuid" && parameter.location === "path" && parameter.required,
+  );
+
+/** Whether this is one of the only tool names that can need the compatibility repair. */
+export const isCoolifyApplicationEnvironmentWriteTool = (toolName: string): boolean =>
+  COOLIFY_APPLICATION_ENV_WRITE_SIGNATURES.has(toolName);
+
+/** Add only the lifecycle fields absent from an inline object schema. */
+const withCoolifyEnvironmentLifecycleProperties = (schema: unknown): unknown => {
+  const object = asRecord(schema);
+  const properties = asRecord(object?.properties);
+  if (!object || !properties) return schema;
+
+  const additions = Object.fromEntries(
+    Object.entries(COOLIFY_ENVIRONMENT_LIFECYCLE_PROPERTIES).filter(
+      ([name]) => !Object.hasOwn(properties, name),
+    ),
+  );
+  if (Object.keys(additions).length === 0) return schema;
+
+  return {
+    ...object,
+    properties: {
+      ...properties,
+      ...additions,
+    },
+  };
+};
+
+/**
+ * Coolify accepts `is_runtime` and `is_buildtime` on its application env
+ * create, update, and bulk-update endpoints, but its public OpenAPI request
+ * schemas currently omit both fields while its `EnvironmentVariable` response
+ * schema documents them. Catalog slugs are tenant-defined, so there is no
+ * trustworthy "coolify" slug to gate on: the repair instead requires the
+ * exact target operation method/path and the complete legacy inline request
+ * body fingerprint. The normal OpenAPI request path already serializes the
+ * caller's JSON `body` unchanged, so this is schema discoverability and
+ * validation metadata, not a parallel transport protocol.
+ *
+ * This is deliberately applied at the final tool-schema projection as well as
+ * connection refresh: deployed Executor instances can immediately describe
+ * existing persisted Coolify tool rows correctly. Remove this compatibility
+ * mapping once Coolify's published request schemas include both fields and a
+ * refresh regression proves new and legacy bindings no longer require it.
+ */
+export const repairCoolifyApplicationEnvInputSchema = (
+  toolName: string,
+  inputSchema: unknown,
+  operation?: {
+    readonly method: string;
+    readonly pathTemplate: string;
+    readonly parameters: readonly {
+      readonly name: string;
+      readonly location: string;
+      readonly required: boolean;
+    }[];
+  },
+): unknown => {
+  const signature = COOLIFY_APPLICATION_ENV_WRITE_SIGNATURES.get(toolName);
+  if (!signature || !isCoolifyEnvironmentWriteOperation(signature, operation)) return inputSchema;
+  if (!isCoolifyEnvironmentWriteInputShape(signature.kind, inputSchema)) return inputSchema;
+
+  const root = asRecord(inputSchema);
+  const rootProperties = asRecord(root?.properties);
+  const body = rootProperties?.body;
+  if (!root || !rootProperties || body === undefined) return inputSchema;
+
+  if (signature.kind === "single") {
+    const repairedBody = withCoolifyEnvironmentLifecycleProperties(body);
+    if (repairedBody === body) return inputSchema;
+    return {
+      ...root,
+      properties: {
+        ...rootProperties,
+        body: repairedBody,
+      },
+    };
+  }
+
+  const bodyObject = asRecord(body);
+  const bodyProperties = asRecord(bodyObject?.properties);
+  const data = bodyProperties?.data;
+  const dataObject = asRecord(data);
+  const items = dataObject?.items;
+  if (!bodyObject || !bodyProperties || !dataObject || items === undefined) return inputSchema;
+
+  const repairedItems = withCoolifyEnvironmentLifecycleProperties(items);
+  if (repairedItems === items) return inputSchema;
+  return {
+    ...root,
+    properties: {
+      ...rootProperties,
+      body: {
+        ...bodyObject,
+        properties: {
+          ...bodyProperties,
+          data: {
+            ...dataObject,
+            items: repairedItems,
+          },
+        },
+      },
+    },
+  };
+};
+
 export interface CompiledOpenApiSpec {
   readonly definitions: readonly ToolDefinition[];
   readonly hoistedDefs: Record<string, unknown>;
@@ -318,7 +590,15 @@ export const openApiToolDefsFromCompiled = (compiled: CompiledOpenApiSpec): read
     return {
       name: ToolName.make(def.toolPath),
       description: withFileEmitHint(descriptionFor(def), returnsFile),
-      inputSchema: normalizeOpenApiRefs(Option.getOrUndefined(def.operation.inputSchema)),
+      inputSchema: repairCoolifyApplicationEnvInputSchema(
+        def.toolPath,
+        normalizeOpenApiRefs(Option.getOrUndefined(def.operation.inputSchema)),
+        {
+          method: def.operation.method,
+          pathTemplate: def.operation.pathTemplate,
+          parameters: def.operation.parameters,
+        },
+      ),
       outputSchema: returnsFile
         ? ToolFileJsonSchema
         : normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
@@ -409,12 +689,20 @@ const toolDefFromStoredOperation = (op: StoredOperation): ToolDef => {
       op.description ?? `${binding.method.toUpperCase()} ${binding.pathTemplate}`,
       returnsFile,
     ),
-    inputSchema: normalizeOpenApiRefs(
-      buildInputSchema(
-        binding.parameters,
-        Option.getOrUndefined(binding.requestBody),
-        binding.servers ?? [],
+    inputSchema: repairCoolifyApplicationEnvInputSchema(
+      op.toolName,
+      normalizeOpenApiRefs(
+        buildInputSchema(
+          binding.parameters,
+          Option.getOrUndefined(binding.requestBody),
+          binding.servers ?? [],
+        ),
       ),
+      {
+        method: binding.method,
+        pathTemplate: binding.pathTemplate,
+        parameters: binding.parameters,
+      },
     ),
     outputSchema: returnsFile
       ? ToolFileJsonSchema
@@ -609,7 +897,10 @@ export const resolveOpenApiBackedTools = ({
             .listOperations(String(integration.slug))
             .pipe(Effect.catch(() => Effect.succeed(null)));
           if (ops == null) return incomplete("OpenAPI operation bindings could not be loaded.");
-          return { tools: ops.map(toolDefFromStoredOperation), definitions };
+          return {
+            tools: ops.map(toolDefFromStoredOperation),
+            definitions,
+          };
         }
       }
     }

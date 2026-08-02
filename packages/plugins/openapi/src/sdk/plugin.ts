@@ -55,8 +55,10 @@ import {
   compileAndPersistOpenApiSpecStreaming,
   compileOpenApiSpec,
   invokeOpenApiBackedTool,
+  isCoolifyApplicationEnvironmentWriteTool,
   listHealthCheckCandidatesOpenApi,
   openApiStoredOperationsFromCompiled,
+  repairCoolifyApplicationEnvInputSchema,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
   validateOpenApiBackedToolArgs,
@@ -1282,6 +1284,29 @@ export const openApiPlugin = definePlugin<
     // catalog config points at.
     resolveTools: ({ integration, config, storage }) =>
       resolveOpenApiBackedTools({ integration, config, storage }),
+
+    projectToolSchema: ({ ctx, toolRow, inputSchema }) => {
+      if (!isCoolifyApplicationEnvironmentWriteTool(toolRow.name)) return Effect.succeed({});
+      return ctx.storage.getOperation(toolRow.integration, toolRow.name).pipe(
+        Effect.map((operation) => {
+          const repaired = repairCoolifyApplicationEnvInputSchema(
+            toolRow.name,
+            inputSchema,
+            operation
+              ? {
+                  method: operation.binding.method,
+                  pathTemplate: operation.binding.pathTemplate,
+                  parameters: operation.binding.parameters,
+                }
+              : undefined,
+          );
+          return repaired === inputSchema ? {} : { inputSchema: repaired };
+        }),
+        // A missing/corrupt legacy operation binding must leave describe usable;
+        // a later refresh can rebuild it from the saved spec.
+        Effect.catch(() => Effect.succeed({})),
+      );
+    },
 
     invokeTool: ({ ctx: invokeCtx, toolRow, credential, args }) => {
       const httpClientLayer = options?.httpClientLayer ?? invokeCtx.httpClientLayer;
