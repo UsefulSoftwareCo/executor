@@ -69,6 +69,35 @@ the container defaults.
 | `EXECUTOR_ORG_SLUG`                 | `default`                       | URL slug for that org.                                                                          |
 | `EXECUTOR_ALLOW_LOCAL_NETWORK`      | `false`                         | Allow sandboxed code to reach loopback / private addresses. Keep off unless you trust the code. |
 
+## Tracing
+
+If a request is slow, point the server at an OpenTelemetry collector and the
+answer is a waterfall instead of a stopwatch: which phase of the request took
+the time — building the executor stack, initializing plugins, a storage query,
+or the upstream integration itself.
+
+Export is off by default and stays off until you set an endpoint. Nothing leaves
+the container otherwise.
+
+```bash
+docker run -d \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.local:4318 \
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
+```
+
+| Variable                             | Default | Purpose                                                                     |
+| ------------------------------------ | ------- | --------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | unset   | Collector base URL. Turns on trace export; `/v1/traces` is appended.        |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset   | Full traces URL, used as-is. Overrides the base for this signal.            |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | unset   | `key=value,key2=value2` headers, for a collector that needs authentication. |
+| `EXECUTOR_OTEL_EXPORT_LOGS`          | `false` | Also export logs. Separate opt-in — logs carry more than timings.           |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`   | unset   | Full logs URL. Required if only the traces endpoint is set.                 |
+
+The exporter speaks OTLP over HTTP with a JSON payload, which every collector
+accepts on port `4318`.
+
 ## Behind a domain or TLS
 
 <Warning>
