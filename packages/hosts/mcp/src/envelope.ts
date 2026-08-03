@@ -35,9 +35,9 @@ import {
 // Runtime-agnostic: built on `effect/unstable/http` (HttpRouter), NO
 // platform-bun. The `/mcp` flow is fully Effect; the streamable-HTTP transport
 // works on web `Request`/`Response`, so the envelope reconstructs the inbound
-// web request once, hands it to the store, and wraps the store's `Response`
-// with `HttpServerResponse.raw` (which passes a `Response` body through
-// unchanged, preserving streaming SSE bodies).
+// web request once, hands it to the store, and converts the store's `Response`
+// into an Effect response while preserving both streaming bodies and outer
+// metadata (the latter matters when the HTTP adapter strips a HEAD body).
 // ---------------------------------------------------------------------------
 
 const MCP_PATH = "/mcp";
@@ -45,6 +45,22 @@ const TOOLKIT_MCP_PATH = "/mcp/toolkits/:toolkitSlug";
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
+
+/**
+ * Preserve a WHATWG response's status and headers on the Effect wrapper.
+ *
+ * Passing only `response` to `HttpServerResponse.raw` works for ordinary
+ * requests because `toWeb` returns the nested Response verbatim. For HEAD,
+ * however, the adapter intentionally omits the nested body and serializes the
+ * outer wrapper instead; without copied metadata that becomes an empty 200
+ * with no content type.
+ */
+const fromWebResponse = (response: Response): HttpServerResponse.HttpServerResponse =>
+  HttpServerResponse.raw(response, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 
 /**
  * The canonical CORS preflight `Response` (204) answered for an `OPTIONS` on
@@ -152,7 +168,7 @@ const discoveryRoute = (handler: (request: Request) => Effect.Effect<Response>) 
     const httpRequest = yield* HttpServerRequest.HttpServerRequest;
     const request = yield* toWebRequest(httpRequest);
     const response = yield* handler(request);
-    return HttpServerResponse.raw(response);
+    return fromWebResponse(response);
   });
 
 /**
@@ -206,7 +222,7 @@ const mcpDispatch = (resource: McpResource) =>
 
     // CORS preflight: answer before auth so unauthenticated clients can probe.
     if (request.method === "OPTIONS") {
-      return HttpServerResponse.raw(corsPreflightResponse());
+      return fromWebResponse(corsPreflightResponse());
     }
 
     // Streamable-HTTP only defines GET/POST/DELETE on the endpoint. Any other
@@ -214,7 +230,7 @@ const mcpDispatch = (resource: McpResource) =>
     // otherwise it would fall through and spin up a session engine for a method
     // the transport can't serve.
     if (!ALLOWED_MCP_METHODS.has(request.method)) {
-      return HttpServerResponse.raw(jsonRpcResponse(405, -32001, "Method not allowed"));
+      return fromWebResponse(jsonRpcResponse(405, -32001, "Method not allowed"));
     }
 
     const sessionId = request.headers.get("mcp-session-id");
@@ -225,7 +241,7 @@ const mcpDispatch = (resource: McpResource) =>
     // resource; an auth-level Forbidden may not carry either.
     const outcome = yield* auth.authenticate(request);
     if (!Predicate.isTagged(outcome, "Authenticated")) {
-      return HttpServerResponse.raw(renderAuthError(auth, request, outcome));
+      return fromWebResponse(renderAuthError(auth, request, outcome));
     }
     const principal = outcome.principal;
 
@@ -235,12 +251,12 @@ const mcpDispatch = (resource: McpResource) =>
     // an engine for a bare GET/DELETE.
     if (!sessionId) {
       if (request.method === "GET") {
-        return HttpServerResponse.raw(
+        return fromWebResponse(
           jsonRpcResponse(400, -32000, "mcp-session-id header required for SSE"),
         );
       }
       if (request.method === "DELETE") {
-        return HttpServerResponse.raw(
+        return fromWebResponse(
           new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } }),
         );
       }
@@ -253,9 +269,7 @@ const mcpDispatch = (resource: McpResource) =>
       sessionId,
       method: request.method,
     });
-    return HttpServerResponse.raw(
-      result instanceof Response ? result : renderDispatchError(result),
-    );
+    return fromWebResponse(result instanceof Response ? result : renderDispatchError(result));
   });
 
 /**
@@ -272,7 +286,7 @@ const mcpRoute = (resource: McpResource) =>
       Effect.gen(function* () {
         const reporter = yield* McpErrorReporter;
         yield* reporter.report(cause);
-        return HttpServerResponse.raw(jsonRpcResponse(500, -32603, "Internal server error"));
+        return fromWebResponse(jsonRpcResponse(500, -32603, "Internal server error"));
       }),
     ),
   );
@@ -301,7 +315,7 @@ export const McpServingRoutes = HttpRouter.use((router) =>
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.sync(() => HttpServerResponse.raw(corsPreflightResponse())),
+        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
       );
     }
     yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
@@ -327,7 +341,7 @@ export const McpDiscoveryRoutes = HttpRouter.use((router) =>
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.sync(() => HttpServerResponse.raw(corsPreflightResponse())),
+        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
       );
     }
   }),

@@ -1,6 +1,11 @@
 export { introspect, parseIntrospectionJson } from "./introspect";
 export { extract, type ExtractionOutput } from "./extract";
-export { invoke, invokeWithLayer } from "./invoke";
+export {
+  GRAPHQL_INVOCATION_TIMEOUT_MS,
+  invoke,
+  invokeWithLayer,
+  type GraphqlInvokeOptions,
+} from "./invoke";
 export {
   describeGraphqlAuthMethods,
   graphqlPlugin,

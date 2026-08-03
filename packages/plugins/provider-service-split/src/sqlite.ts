@@ -1,6 +1,6 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor, executor/no-json-parse -- boundary: one-shot provider service split data migration preserves legacy SQLite row coercion and typed DataMigrationError wrapping */
 import { Effect } from "effect";
-import { DataMigrationError, type SqliteDataMigrationClient } from "@executor-js/sdk";
+import { DataMigrationError, sha256Hex, type SqliteDataMigrationClient } from "@executor-js/sdk";
 
 import {
   operationStorageKey,
@@ -53,14 +53,8 @@ const scrubJson = (value: unknown): unknown => {
   return value;
 };
 
-const stableId = (...parts: readonly string[]): string => {
-  const text = parts.join("\u0000");
-  let hash = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
-  }
-  return `service_split_${hash.toString(36)}`;
-};
+const stableId = (...parts: readonly string[]): Effect.Effect<string> =>
+  sha256Hex(JSON.stringify(parts)).pipe(Effect.map((hash) => `service_split_${hash}`));
 
 const tableExists = (client: SqliteDataMigrationClient, table: string) =>
   execute(client, {
@@ -293,6 +287,7 @@ const applyOrg = (
     const now = Date.now();
 
     for (const copy of org.blobCopies.filter((item) => item.backend === "database")) {
+      const rowId = yield* stableId("blob", org.tenant, copy.targetNamespace, copy.key);
       const source = yield* execute(client, {
         sql: "SELECT value FROM blob WHERE namespace = ? AND key = ? LIMIT 1",
         args: [copy.sourceNamespace, copy.key],
@@ -305,24 +300,27 @@ const applyOrg = (
         });
       }
       yield* execute(client, {
-        sql: `INSERT OR IGNORE INTO blob (namespace, key, value, row_id, id)
-          VALUES (?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO blob (namespace, key, value, row_id, id)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO NOTHING`,
         args: [
           copy.targetNamespace,
           copy.key,
           sourceRow.value,
-          stableId("blob", org.tenant, copy.targetNamespace, copy.key),
+          rowId,
           JSON.stringify([copy.targetNamespace, copy.key]),
         ],
       });
     }
 
     for (const row of org.integrations.filter((item) => item.action === "create")) {
+      const rowId = yield* stableId("integration", org.tenant, row.target.slug);
       yield* execute(client, {
-        sql: `INSERT OR IGNORE INTO integration
+        sql: `INSERT INTO integration
           (slug, plugin_id, name, description, config, health_check, config_revised_at,
            can_remove, can_refresh, created_at, updated_at, row_id, tenant)
-          VALUES (?, ?, ?, ?, ?, ?, NULL, 1, 1, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, NULL, 1, 1, ?, ?, ?, ?)
+          ON CONFLICT(tenant, slug) DO NOTHING`,
         args: [
           row.target.slug,
           row.target.pluginId,
@@ -332,15 +330,23 @@ const applyOrg = (
           row.healthCheck ? JSON.stringify(scrubJson(row.healthCheck)) : null,
           now,
           now,
-          stableId("integration", org.tenant, row.target.slug),
+          rowId,
           org.tenant,
         ],
       });
     }
 
     for (const row of org.connections.filter((item) => item.action === "clone")) {
+      const rowId = yield* stableId(
+        "connection",
+        org.tenant,
+        row.source.owner,
+        row.source.subject,
+        row.targetIntegration,
+        row.source.name,
+      );
       yield* execute(client, {
-        sql: `INSERT OR IGNORE INTO connection
+        sql: `INSERT INTO connection
           (integration, name, template, provider, item_ids, identity_label, description,
            last_health, tools_synced_at, oauth_client, oauth_client_owner, refresh_item_id,
            expires_at, oauth_scope, oauth_token_url, provider_state, created_at, updated_at,
@@ -349,18 +355,12 @@ const applyOrg = (
             NULL, NULL, oauth_client, oauth_client_owner, refresh_item_id, expires_at,
             oauth_scope, oauth_token_url, provider_state, created_at, ?, ?, tenant, owner, subject
           FROM connection
-          WHERE tenant = ? AND owner = ? AND subject = ? AND integration = ? AND name = ?`,
+          WHERE tenant = ? AND owner = ? AND subject = ? AND integration = ? AND name = ?
+          ON CONFLICT(tenant, owner, subject, integration, name) DO NOTHING`,
         args: [
           row.targetIntegration,
           now,
-          stableId(
-            "connection",
-            org.tenant,
-            row.source.owner,
-            row.source.subject,
-            row.targetIntegration,
-            row.source.name,
-          ),
+          rowId,
           org.tenant,
           row.source.owner,
           row.source.subject,
@@ -371,8 +371,15 @@ const applyOrg = (
     }
 
     for (const integration of org.integrations) {
+      const toolRowIdPrefix = yield* stableId("tool", org.tenant, integration.target.slug);
       for (const contribution of integration.sourceContributions) {
         for (const toolName of contribution.operationToolNames) {
+          const operationRowId = yield* stableId(
+            "operation",
+            org.tenant,
+            integration.target.slug,
+            toolName,
+          );
           const operation = yield* execute(client, {
             sql: `SELECT data, created_at, updated_at
             FROM plugin_storage
@@ -424,23 +431,24 @@ const applyOrg = (
               ),
               source.created_at,
               now,
-              stableId("operation", org.tenant, integration.target.slug, toolName),
+              operationRowId,
               org.tenant,
             ],
           });
           yield* execute(client, {
-            sql: `INSERT OR IGNORE INTO tool
+            sql: `INSERT INTO tool
             (integration, connection, plugin_id, name, description, input_schema, output_schema,
              annotations, created_at, updated_at, row_id, tenant, owner, subject)
             SELECT ?, connection, ?, name, description, input_schema, output_schema,
               annotations, created_at, ?, ? || '_' || row_id, tenant, owner, subject
             FROM tool
-            WHERE tenant = ? AND integration = ? AND name = ?`,
+            WHERE tenant = ? AND integration = ? AND name = ?
+            ON CONFLICT(tenant, owner, subject, integration, connection, name) DO NOTHING`,
             args: [
               integration.target.slug,
               integration.target.pluginId,
               now,
-              stableId("tool", org.tenant, integration.target.slug),
+              toolRowIdPrefix,
               org.tenant,
               contribution.source.slug,
               toolName,
@@ -456,10 +464,12 @@ const applyOrg = (
         args: [org.tenant, policy.policy.owner, policy.policy.subject, policy.policy.id],
       });
       for (const [index, pattern] of policy.afterPatterns.entries()) {
+        const rowId = yield* stableId("policy", org.tenant, policy.policy.id, pattern);
         yield* execute(client, {
-          sql: `INSERT OR IGNORE INTO tool_policy
+          sql: `INSERT INTO tool_policy
             (id, pattern, action, position, created_at, updated_at, row_id, tenant, owner, subject)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tenant, owner, subject, id) DO NOTHING`,
           args: [
             policy.afterPatterns.length === 1
               ? policy.policy.id
@@ -469,7 +479,7 @@ const applyOrg = (
             policy.policy.position,
             now,
             now,
-            stableId("policy", org.tenant, policy.policy.id, pattern),
+            rowId,
             org.tenant,
             policy.policy.owner,
             policy.policy.subject,
