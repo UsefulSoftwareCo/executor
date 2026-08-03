@@ -136,6 +136,12 @@ jobs:
 
       - run: bun run typecheck
 
+      # The committed routeTree.gen.ts files are generated but checked in, and
+      # they carry @ts-nocheck — so the typecheck above structurally CANNOT see
+      # a route that the contract declares and the tree lacks. That drift has
+      # already shipped a live 404 once. Regenerate and diff instead.
+      - run: bun run check:routes
+
   test:
     name: Test
     runs-on: blacksmith-4vcpu-ubuntu-2404

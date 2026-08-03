@@ -14,12 +14,13 @@ import {
   connectionLabel,
   connectionLabelForHost,
   createCredentialPayloadOrigin,
-  dcrClientNameForIntegration,
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
   oauthIdentityLabelFromHealth,
   runCimdConnect,
   runDcrConnect,
+  typedIdentityLabel,
+  uniqueConnectionName,
 } from "./add-account-modal";
 
 const apiKeyMethod = (id: string, source: "spec" | "custom", template = id): AuthMethod => ({
@@ -112,6 +113,32 @@ describe("connectionNameFrom", () => {
   });
 });
 
+describe("uniqueConnectionName", () => {
+  const base = connectionNameFrom("", "user", "Gmail", "org_123");
+
+  it("keeps the derived name when it is not taken", () => {
+    expect(String(uniqueConnectionName(base, new Set()))).toBe("personalGmail");
+  });
+
+  it("suffixes past taken names so a second untyped connect mints a NEW connection", () => {
+    expect(String(uniqueConnectionName(base, new Set(["personalGmail"])))).toBe("personalGmail2");
+    expect(String(uniqueConnectionName(base, new Set(["personalGmail", "personalGmail2"])))).toBe(
+      "personalGmail3",
+    );
+  });
+});
+
+describe("typedIdentityLabel", () => {
+  it("returns undefined for empty/whitespace labels so oauth.start omits the label", () => {
+    expect(typedIdentityLabel("")).toBeUndefined();
+    expect(typedIdentityLabel("   ")).toBeUndefined();
+  });
+
+  it("returns the trimmed label the user typed", () => {
+    expect(typedIdentityLabel("  Work Gmail ")).toBe("Work Gmail");
+  });
+});
+
 describe("oauthIdentityLabelFromHealth", () => {
   const healthyResult = {
     status: "healthy" as const,
@@ -119,13 +146,12 @@ describe("oauthIdentityLabelFromHealth", () => {
     checkedAt: 1,
   };
 
-  it("uses a healthy probed identity when the stored label is still the default", () => {
+  it("fills an unset label (untyped connect with no OIDC claims)", () => {
     expect(
       oauthIdentityLabelFromHealth({
         result: healthyResult,
         typedLabel: "",
-        storedIdentityLabel: "Personal Google",
-        defaultIdentityLabel: "Personal Google",
+        storedIdentityLabel: null,
       }),
     ).toBe("user@example.com");
   });
@@ -136,7 +162,6 @@ describe("oauthIdentityLabelFromHealth", () => {
         result: healthyResult,
         typedLabel: "My Google Account",
         storedIdentityLabel: "My Google Account",
-        defaultIdentityLabel: "Personal Google",
       }),
     ).toBeNull();
   });
@@ -147,7 +172,16 @@ describe("oauthIdentityLabelFromHealth", () => {
         result: healthyResult,
         typedLabel: "",
         storedIdentityLabel: "Finance Google",
-        defaultIdentityLabel: "Personal Google",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not overwrite a label already filled from OIDC claims", () => {
+    expect(
+      oauthIdentityLabelFromHealth({
+        result: healthyResult,
+        typedLabel: "",
+        storedIdentityLabel: "alice@example.com",
       }),
     ).toBeNull();
   });
@@ -157,16 +191,14 @@ describe("oauthIdentityLabelFromHealth", () => {
       oauthIdentityLabelFromHealth({
         result: { status: "degraded", checkedAt: 1 },
         typedLabel: "",
-        storedIdentityLabel: "Personal Google",
-        defaultIdentityLabel: "Personal Google",
+        storedIdentityLabel: null,
       }),
     ).toBeNull();
     expect(
       oauthIdentityLabelFromHealth({
         result: { status: "healthy", checkedAt: 1 },
         typedLabel: "",
-        storedIdentityLabel: "Personal Google",
-        defaultIdentityLabel: "Personal Google",
+        storedIdentityLabel: null,
       }),
     ).toBeNull();
   });
@@ -356,11 +388,6 @@ describe("runCimdConnect", () => {
 });
 
 describe("runDcrConnect", () => {
-  it("names dynamically registered OAuth apps as Executor clients", () => {
-    expect(dcrClientNameForIntegration("PostHog MCP")).toBe("Executor for PostHog MCP");
-    expect(dcrClientNameForIntegration("   ")).toBe("Executor");
-  });
-
   it("auto-registers (no picker) then starts: probe → register → start in order", async () => {
     const calls: string[] = [];
     let registerArgs: RegisterArgs | null = null;
@@ -393,7 +420,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "Linear MCP",
         redirectUri: "https://localhost:5394/api/oauth/callback",
         integration: TEST_INTEGRATION,
       },
@@ -412,7 +438,9 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
-    expect(registerArgs!.clientName).toBe("Executor for Linear MCP");
+    // Always the bare product name: brand-vetting servers (e.g. Mercury)
+    // reject client_names containing their own brand.
+    expect(registerArgs!.clientName).toBe("Executor");
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
     expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);
@@ -443,7 +471,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         declaredScopes: ["declared.scope"],
         integration: TEST_INTEGRATION,
       },
@@ -479,7 +506,6 @@ describe("runDcrConnect", () => {
         // discoveryUrl collapsed to the token endpoint (no real discovery URL).
         discoveryUrl: "https://auth.example.com/token",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -510,7 +536,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -544,7 +569,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -573,7 +597,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -611,7 +634,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );
@@ -653,7 +675,6 @@ describe("runDcrConnect", () => {
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
-        integrationName: "App",
         integration: TEST_INTEGRATION,
       },
     );

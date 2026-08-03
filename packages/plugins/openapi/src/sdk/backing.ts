@@ -716,7 +716,16 @@ export const invokeOpenApiBackedTool = (input: {
                 details: error.cause ?? error,
               }),
             })
-          : Effect.fail(error),
+          : error.reason === "response_body_timeout"
+            ? Effect.succeed({
+                ok: false as const,
+                failure: ToolResult.fail({
+                  code: "upstream_response_body_timeout",
+                  message: error.message,
+                  details: error.cause ?? error,
+                }),
+              })
+            : Effect.fail(error),
       ),
     );
 

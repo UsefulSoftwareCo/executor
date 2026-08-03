@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
+import { innerRendererPlugin, mcpAppsShellAsset } from "@executor-js/mcp-apps-shell/vite";
 
 import { routes } from "./tsr.routes.ts";
 
@@ -51,6 +52,12 @@ export default function appPlugin(options: AppPluginOptions = {}): PluginOption[
       },
     },
     tailwindcss(),
+    // The artifact page hosts the MCP-Apps shell as a sandboxed iframe over the
+    // MCP-Apps protocol: `mcpAppsShellAsset` emits the built shell document and
+    // hands the page its URL, and `innerRendererPlugin` inlines the shell's own
+    // sandboxed inner frame from `virtual:executor-inner-renderer`.
+    mcpAppsShellAsset() as PluginOption,
+    innerRendererPlugin() as PluginOption,
     executorVitePlugin({
       ...(options.executorConfigPath ? { configPath: options.executorConfigPath } : {}),
       ...(options.executorJsoncPath ? { jsoncPath: options.executorJsoncPath } : {}),

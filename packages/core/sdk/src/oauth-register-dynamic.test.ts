@@ -527,6 +527,183 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  // Repro: a recreated sandbox changes the executor's callback origin while
+  // the DCR client minted for the OLD callback survives in storage. Reuse is
+  // keyed on (owner, issuer, resource) and never compares the redirect URI the
+  // client was registered with, so `oauth.start` pairs the stale registration
+  // with the NEW callback — and a strict authorization server (the test AS
+  // included) rejects the authorize request with 400 `redirect_uri is not
+  // registered`. Contract: a changed flow redirect URI must trigger a fresh
+  // registration instead of reusing the stale client.
+  it.effect("re-registers instead of reusing the DCR client when the redirect URI changed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        // Original sandbox: DCR registration carries the ORIGINAL callback.
+        yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("original-sandbox"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        yield* server.clearRequests;
+
+        const originalSlug = yield* Effect.map(executor.oauth.listClients(), (clients) =>
+          String(clients[0]!.slug),
+        );
+
+        // Recreated sandbox: same persisted oauth_client rows, NEW callback
+        // origin. The register call runs again the way the connect flow does.
+        const recreatedRedirectUri = "https://localhost:6410/api/oauth/callback";
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("recreated-sandbox"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: recreatedRedirectUri,
+          originIntegration: INTEG,
+        });
+
+        // The changed redirect URI must have minted a FRESH registration whose
+        // redirect_uris carry the recreated callback — reusing the stale
+        // client would make the authorize hop below the reported 400. The new
+        // client takes a DIFFERENT slug so it does not clobber the stale row
+        // (existing connections still refresh through the old client_id).
+        expect(registerRequestCount(yield* server.requests)).toBe(1);
+        expect(String(slug)).not.toBe(originalSlug);
+        const slugsAfter = yield* Effect.map(executor.oauth.listClients(), (clients) =>
+          clients.map((client) => String(client.slug)),
+        );
+        expect(slugsAfter).toContain(originalSlug);
+        expect(slugsAfter).toContain(String(slug));
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: slug,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          redirectUri: recreatedRedirectUri,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        // The strict AS accepts the authorize request only when the flow's
+        // redirect_uri matches the client's registration — with the stale
+        // reused client this hop is the reported 400.
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+        expect(String(connection.address)).toBe("tools.acme.org.main");
+      }),
+    ),
+  );
+
+  // Regression: Mercury's authorization server vets `client_name` and rejects
+  // any value containing its own brand with `invalid_client_metadata`, which
+  // the old auto-generated "Executor for Mercury MCP" always tripped. The UI
+  // flow now always registers under the bare product name, which brand-vetting
+  // servers accept.
+  it.effect("registers under the bare product name against a brand-vetting server", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          // Mirror Mercury: reject any client_name containing the brand.
+          approveClientName: (name) => !name.includes("Acme"),
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const slug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Executor",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(slug).length).toBeGreaterThan(0);
+
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(1);
+        expect(registers[0]!.body).toContain('"client_name":"Executor"');
+      }),
+    ),
+  );
+
+  // A server that rejects even the bare product name surfaces the RFC error
+  // untouched: no retry loop, no masking of the server-authored description.
+  it.effect("surfaces invalid_client_metadata when the server rejects the client_name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          approveClientName: () => false,
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const error = yield* Effect.flip(
+          executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: CLIENT,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Executor",
+            redirectUri: FLOW_REDIRECT_URI,
+            originIntegration: INTEG,
+          }),
+        );
+        expect(Predicate.isTagged("OAuthRegisterDynamicError")(error)).toBe(true);
+        const registerError = error as OAuthRegisterDynamicError;
+        expect(registerError.message).toContain(
+          "Dynamic Client Registration failed: invalid_client_metadata",
+        );
+
+        const requests = yield* server.requests;
+        const registers = requests.filter((r) => r.path === "/register" && r.method === "POST");
+        expect(registers).toHaveLength(1);
+      }),
+    ),
+  );
+
   // Regression: issue #770. Vercel (and other RFC 8252-strict servers) only
   // approve loopback redirect URIs for anonymous DCR, so a hosted/tailnet/LAN
   // origin trips `invalid_redirect_uri`. The failure must explain the loopback

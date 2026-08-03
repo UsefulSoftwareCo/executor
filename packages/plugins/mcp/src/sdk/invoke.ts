@@ -2,9 +2,12 @@
 // MCP tool invocation — shared helper called from plugin.invokeTool.
 //
 // Responsible for:
-//   1. Dialing a fresh MCP client connection for the call (no DB-connection
-//      caching — request-scoped per the Hyperdrive rule; each invoke acquires
-//      and releases its own connection).
+//   1. Leasing remote connections from a per-plugin-instance pool when one is
+//      provided. MCP streamable-http is a series of HTTP requests keyed by the
+//      application-level `Mcp-Session-Id`, not a raw pooled socket, and servers
+//      legitimately retain state in that session. The pool keeps one idle
+//      connection per resolved identity and leases it exclusively per invoke;
+//      stdio and callers without a pool remain strictly per-call.
 //   2. Installing a per-invocation `ElicitRequestSchema` handler that bridges
 //      MCP's elicit capability into the host's elicit function threaded via
 //      `InvokeToolInput.elicit`.
@@ -30,6 +33,7 @@ import {
 
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
+import type { McpConnectionPool } from "./connection-pool";
 import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
 
 // ---------------------------------------------------------------------------
@@ -181,13 +185,17 @@ const useConnection = (
             message: `MCP tool call failed for ${toolName}`,
             status: 403,
             insufficientScope: true,
+            transportFailure: true,
           });
         }
         const status = httpStatusFromCause(cause);
+        // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK protocol failures are its McpError subclass; transport failures use other error shapes
+        const protocolFailure = cause instanceof McpError;
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,
           ...(status === undefined ? {} : { status }),
+          ...(!protocolFailure ? { transportFailure: true } : {}),
           ...(isUnknownToolCause(cause, toolName) ? { unknownTool: true } : {}),
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }
@@ -211,8 +219,12 @@ export interface InvokeMcpToolInput {
   readonly toolName: string;
   readonly args: unknown;
   readonly transport: string;
-  /** Dials a fresh connection. The connection is closed after the call. */
+  /** Dials a fresh connection when no reusable remote session is available. */
   readonly connector: McpConnector;
+  /** Optional per-plugin-instance pool and resolved remote identity key. Both
+   *  must be present to enable reuse; otherwise the connection is per-call. */
+  readonly connectionPool?: McpConnectionPool;
+  readonly connectionPoolKey?: string;
   readonly elicit: Elicit;
   /** Fired when the server sends `notifications/tools/list_changed` during
    *  the call window. Synchronous and non-throwing by contract; the caller
@@ -228,6 +240,20 @@ export const invokeMcpTool = (
 > =>
   Effect.gen(function* () {
     const args = argsRecord(input.args);
+    const use = (connection: McpConnection) =>
+      useConnection(connection, input.toolName, args, input.elicit, input.onToolListChanged);
+
+    if (input.connectionPool && input.connectionPoolKey) {
+      return yield* input.connectionPool.withConnection(
+        input.connectionPoolKey,
+        input.connector.pipe(
+          Effect.withSpan("plugin.mcp.connection.acquire", {
+            attributes: { "plugin.mcp.transport": input.transport },
+          }),
+        ),
+        use,
+      );
+    }
 
     const connection = yield* Effect.acquireRelease(
       input.connector.pipe(
@@ -248,13 +274,7 @@ export const invokeMcpTool = (
         ),
     );
 
-    return yield* useConnection(
-      connection,
-      input.toolName,
-      args,
-      input.elicit,
-      input.onToolListChanged,
-    );
+    return yield* use(connection);
   }).pipe(
     Effect.scoped,
     Effect.withSpan("plugin.mcp.invoke", {

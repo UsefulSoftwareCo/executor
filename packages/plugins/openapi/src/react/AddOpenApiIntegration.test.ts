@@ -5,7 +5,9 @@ import {
   AddOpenApiHealthCheckSection,
   baseUrlFromSpecInput,
   openApiPreviewFailureMessage,
+  resolveOpenApiPreset,
 } from "./AddOpenApiIntegration";
+import { openApiPresets } from "../sdk/presets";
 
 const visibleText = (node: React.ReactNode): string => {
   if (node === null || node === undefined || typeof node === "boolean") return "";
@@ -39,6 +41,29 @@ describe("openApiPreviewFailureMessage", () => {
     expect(openApiPreviewFailureMessage("")).toBe(
       "Couldn't load or parse this spec: unknown error",
     );
+  });
+});
+
+describe("resolveOpenApiPreset", () => {
+  it("matches Figma defaults from its canonical spec URL", () => {
+    const preset = resolveOpenApiPreset(
+      openApiPresets,
+      undefined,
+      "https://raw.githubusercontent.com/figma/rest-api-spec/refs/heads/main/openapi/openapi.yaml#ignored",
+    );
+
+    expect(preset?.id).toBe("figma");
+    expect(preset?.specOverrides).toBeTruthy();
+  });
+
+  it("prefers an explicitly selected preset over URL matching", () => {
+    const preset = resolveOpenApiPreset(
+      openApiPresets,
+      "stripe",
+      "https://raw.githubusercontent.com/figma/rest-api-spec/refs/heads/main/openapi/openapi.yaml",
+    );
+
+    expect(preset?.id).toBe("stripe");
   });
 });
 

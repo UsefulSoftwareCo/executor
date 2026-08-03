@@ -107,6 +107,8 @@ const serveMetadataServer = (config: {
     | "error"
     | null;
   readonly authServerScopes?: readonly string[];
+  readonly authServerAuthorizationPath?: string;
+  readonly authServerTokenPath?: string;
 }) =>
   Effect.gen(function* () {
     const baseUrlRef = { value: "" };
@@ -133,8 +135,8 @@ const serveMetadataServer = (config: {
       ) {
         return HttpServerResponse.jsonUnsafe({
           issuer: base,
-          authorization_endpoint: `${base}/authorize`,
-          token_endpoint: `${base}/token`,
+          authorization_endpoint: `${base}${config.authServerAuthorizationPath ?? "/authorize"}`,
+          token_endpoint: `${base}${config.authServerTokenPath ?? "/token"}`,
           response_types_supported: ["code"],
           code_challenge_methods_supported: ["S256"],
           scopes_supported: config.authServerScopes,
@@ -323,6 +325,49 @@ describe("oauth.start integration-driven scopes", () => {
           expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([]);
         }),
       ),
+  );
+
+  it.effect("keeps declared scopes when same-origin metadata describes another OAuth surface", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMetadataServer({
+          authServerScopes: ["mcp:connect"],
+          authServerAuthorizationPath: "/oauth/mcp",
+        });
+        const plugins = [
+          memoryCredentialsPlugin(),
+          makeScopePlugin({ scopes: ["file_content:read", "file_comments:write"] }),
+        ] as const;
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "file_content:read",
+          "file_comments:write",
+        ]);
+      }),
+    ),
   );
 
   it.effect(

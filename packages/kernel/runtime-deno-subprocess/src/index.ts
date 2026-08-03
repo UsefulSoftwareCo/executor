@@ -256,6 +256,10 @@ const executeInDeno = (
       catch: (cause) => new DenoSpawnError({ executable: denoExecutable, reason: cause }),
     });
 
+    const start = Date.now();
+    let inFlight = 0;
+    let lastReturnedAt = start;
+
     const startError = yield* Effect.gen(function* () {
       yield* Effect.tryPromise({
         try: () => worker.ready,
@@ -272,8 +276,14 @@ const executeInDeno = (
       return { result: null, error: startError.message };
     }
 
-    // Set up timeout — kills process and completes the deferred
-    const timer = setTimeout(() => {
+    // Measure only continuous autonomous subprocess compute. Tool dispatches
+    // suspend the clock and each return grants a fresh timeout budget.
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (inFlight > 0 || now - Math.max(start, lastReturnedAt) < timeoutMs) {
+        return;
+      }
+
       worker.dispose();
       runSync(
         completeWith({
@@ -281,7 +291,7 @@ const executeInDeno = (
           error: `Deno subprocess execution timed out after ${timeoutMs}ms`,
         }),
       );
-    }, timeoutMs);
+    }, 1_000);
 
     // -----------------------------------------------------------------------
     // Message processing fiber — tool calls happen here, inside Effect
@@ -294,7 +304,11 @@ const executeInDeno = (
 
           switch (msg.type) {
             case "tool_call": {
-              const toolResult = yield* toolInvoker
+              // Symmetric bracket (mirrors ToolDispatcher.call): the decrement
+              // must run even if the invoke or write dies, or the watchdog's
+              // in-flight guard would suspend the timeout forever.
+              inFlight += 1;
+              const writeSucceeded = yield* toolInvoker
                 .invoke({ path: msg.toolPath, args: msg.args })
                 .pipe(
                   Effect.map(
@@ -315,14 +329,18 @@ const executeInDeno = (
                       error: causeMessage(cause),
                     }),
                   ),
+                  Effect.flatMap((toolResult) => writeMessage(worker, toolResult)),
+                  Effect.as(true),
+                  Effect.catchTag("DenoProcessWriteError", (error) =>
+                    completeWith({ result: null, error: error.message }).pipe(Effect.as(false)),
+                  ),
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      inFlight -= 1;
+                      lastReturnedAt = Date.now();
+                    }),
+                  ),
                 );
-
-              const writeSucceeded = yield* writeMessage(worker, toolResult).pipe(
-                Effect.as(true),
-                Effect.catchTag("DenoProcessWriteError", (error) =>
-                  completeWith({ result: null, error: error.message }).pipe(Effect.as(false)),
-                ),
-              );
               if (!writeSucceeded) {
                 return;
               }
@@ -365,7 +383,7 @@ const executeInDeno = (
     const output = yield* Deferred.await(result).pipe(
       Effect.ensuring(
         Effect.gen(function* () {
-          clearTimeout(timer);
+          clearInterval(timer);
           yield* Fiber.interrupt(processFiber);
           worker.dispose();
         }),

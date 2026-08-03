@@ -7,6 +7,7 @@ import {
 } from "@executor-js/sdk/http-auth";
 
 import type { Authentication } from "./types";
+import { SpecOverridesSchema, type SpecOverrides } from "./spec-overrides";
 
 // ---------------------------------------------------------------------------
 // OpenAPI integration config — the opaque blob stored on the catalog
@@ -17,6 +18,7 @@ import type { Authentication } from "./types";
 // StoredSource credential config. The config carries only:
 //   - the content hash of the spec blob and/or the source URL to (re)fetch
 //     from,
+//   - optional RFC 6902 overrides and the raw source hash they apply to,
 //   - the optional base URL override,
 //   - the auth templates a connection's value is rendered through.
 // The resolved spec text itself lives in the plugin blob store, keyed
@@ -43,6 +45,8 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
   /** Hex SHA-256 of the resolved spec text — the content address of the spec
    *  blob (`spec/<hash>` in the plugin blob store). */
   specHash: Schema.optional(Schema.String),
+  /** Hex SHA-256 of the unmodified source text when spec overrides are active. */
+  sourceSpecHash: Schema.optional(Schema.String),
   /** Origin URL the spec was fetched from, when known. Enables refresh. */
   specUrl: Schema.optional(Schema.String),
   /** Optional base URL override. */
@@ -55,17 +59,20 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
   specFormat: Schema.optional(Schema.String),
   /** Catalog family for grouped integration display. */
   family: Schema.optional(Schema.String),
+  /** Ordered RFC 6902 operations reapplied whenever the source spec is refreshed. */
+  specOverrides: Schema.optional(SpecOverridesSchema),
   /** The auth methods a connection's value can be applied through. */
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
 });
 
 export type OpenApiIntegrationConfig = Omit<
   typeof OpenApiIntegrationConfigSchema.Type,
-  "authenticationTemplate"
+  "authenticationTemplate" | "specOverrides"
 > & {
   /** Branded over the schema's structural form so the template renderer can
    *  treat `slug` as an `AuthTemplateSlug`. */
   readonly authenticationTemplate?: readonly Authentication[];
+  readonly specOverrides?: SpecOverrides;
 };
 
 const decodeConfig = Schema.decodeUnknownOption(OpenApiIntegrationConfigSchema);

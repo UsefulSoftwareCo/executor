@@ -45,6 +45,7 @@
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:changelog-stubs",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
     "check:patches": "bun run scripts/check-patched-deps.ts",
+    "check:routes": "bun run scripts/check-route-trees.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
     "docs:smoke:install": "bun run scripts/smoke-docs-install.ts",
@@ -66,7 +67,7 @@
     "release:publish:packages:prepare": "bun run scripts/publish-packages.ts --prepare-only",
     "release:smoke:packages": "bun run scripts/smoke-test-packed.ts",
     "clean": "bun run scripts/clean.ts",
-    "prepare": "effect-language-service patch && effect-tsgo patch && bun run --cwd packages/core/vite-plugin build:bundle && bun run --cwd packages/plugins/apps build:bundle && bun run --cwd packages/react build"
+    "prepare": "effect-language-service patch && effect-tsgo patch && bun run --cwd packages/core/vite-plugin build:bundle && bun run --cwd packages/react build && bun run --cwd packages/hosts/mcp-apps-shell gen:smoke-harness"
   },
   "dependencies": {},
   "devDependencies": {

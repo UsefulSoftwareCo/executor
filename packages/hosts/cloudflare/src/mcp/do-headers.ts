@@ -97,11 +97,12 @@ export const withMcpResponseHeaders = (response: Response): Response => {
   });
 };
 
-// The elicitation-mode query contract (`?elicitation_mode=` plus the legacy
-// `?allow_model_resume` alias) is shared with every host that serves the
-// browser-approval flow. Re-exported here so the worker dispatcher's existing
-// import site (`./do-headers`) is unchanged.
+// The endpoint query contract — `?elicitation_mode=` (plus the legacy
+// `?allow_model_resume` alias) and the `?artifacts=` opt-in — is shared with
+// every host that serves these connections. Re-exported here so the worker
+// dispatcher's existing import site (`./do-headers`) is unchanged.
 export {
+  readArtifactsEnabled,
   readElicitationMode,
   type McpElicitationMode,
 } from "@executor-js/host-mcp/browser-approval";

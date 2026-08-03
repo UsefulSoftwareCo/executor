@@ -9,6 +9,7 @@ import {
 } from "@executor-js/sdk";
 import { openApiNdjsonOutputDataMigration } from "@executor-js/plugin-openapi";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+import { encryptedSecretsRepartitionDataMigration } from "@executor-js/plugin-encrypted-secrets";
 
 import {
   providerServiceSplitDataMigration,
@@ -246,6 +247,9 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
   // Stale-mark connections whose operations return NDJSON so their tool rows
   // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
   openApiNdjsonOutputDataMigration,
+  // Re-file credential rows the pre-fix provider stored under the acting
+  // caller's partition instead of the owner embedded in the item id (#1453).
+  encryptedSecretsRepartitionDataMigration,
 ];
 
 export const runCloudflareDataMigrations = (

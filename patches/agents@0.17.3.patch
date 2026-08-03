@@ -1,3 +1,22 @@
+diff --git a/node_modules/agents/.bun-tag-c0c639aa2299e502 b/.bun-tag-c0c639aa2299e502
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/agent-tool-types-CNyE1iz_.d.ts b/dist/agent-tool-types-CNyE1iz_.d.ts
+index 571eececebd5a1eaf7f2fbf5278801c4d34728ba..317e526489fcd3fd477a50525da0df666253bf0b 100644
+--- a/dist/agent-tool-types-CNyE1iz_.d.ts
++++ b/dist/agent-tool-types-CNyE1iz_.d.ts
+@@ -480,7 +480,10 @@ declare class DurableObjectEventStore implements EventStore {
+   private readonly seqByStream;
+   private readonly seqInit;
+   constructor(storage: DurableObjectStorage);
+-  storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId>;
++  /** Resolves `undefined` for a message too large for DO storage's 128 KiB
++   *  per-value cap: the event is delivered live without a replay id rather
++   *  than failing the send. */
++  storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId | undefined>;
+   getStreamIdForEventId(eventId: EventId): Promise<StreamId | undefined>;
+   replayEventsAfter(
+     lastEventId: EventId,
 diff --git a/dist/mcp/index.d.ts b/dist/mcp/index.d.ts
 index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202fe75b3bd 100644
 --- a/dist/mcp/index.d.ts
@@ -19,7 +38,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67dbf3c266 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756cd72faef 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -666,7 +685,31 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  			for (const message of messages) {
  				if (this.messageInterceptor) {
  					if (await this.messageInterceptor(message, {
-@@ -777,9 +1136,11 @@ var StreamableHTTPServerTransport = class {
+@@ -760,7 +1119,22 @@ var StreamableHTTPServerTransport = class {
+ 	* when the originating WS has dropped.
+ 	*/
+ 	async sendOnStream(agent, streamId, relatedIds, liveConnection, message, requestId) {
+-		const eventId = await this._eventStore?.storeEvent(streamId, message);
++		// Persistence is best-effort and must never block live delivery: a
++		// storeEvent failure (storage cap, storage outage) used to throw here,
++		// before writeSSEEvent, so the response was neither stored NOR sent and
++		// the client hung on keepalives. Deliver-live-first; a message without
++		// an eventId just isn't replayable after a drop.
++		let eventId;
++		try {
++			eventId = await this._eventStore?.storeEvent(streamId, message);
++		} catch (error) {
++			console.warn(JSON.stringify({
++				event: "mcp_event_store_put_failed",
++				streamId,
++				error: String(error)
++			}));
++			this.onerror?.(error);
++		}
+ 		let shouldClose = false;
+ 		if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+ 			let responseIds = this._streamResponseIds.get(streamId);
+@@ -777,9 +1151,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -680,7 +723,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1222,10 @@ var StreamableHTTPServerTransport = class {
+@@ -861,12 +1237,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -697,7 +740,34 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -899,6 +1258,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -893,12 +1267,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+ 	}
+ 	async storeEvent(streamId, message) {
+ 		if (streamId.includes(":")) throw new Error(`DurableObjectEventStore: streamId must not contain ':' (got ${JSON.stringify(streamId)})`);
++		// DO storage caps each value at 128 KiB; storage.put of a larger
++		// message throws, and before this guard that throw escaped through
++		// sendOnStream BEFORE the live SSE write, so an oversize response
++		// (e.g. the ~5MB ui:// shell document) was never delivered at all —
++		// the client saw only keepalives. Skip persistence instead: the
++		// event is delivered live without a replay id, which is strictly
++		// better than never delivering it. Undeliverable-if-dropped is the
++		// documented cost, logged so it is visible.
++		let messageBytes = 0;
++		try {
++			messageBytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
++		} catch {}
++		if (messageBytes > DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES) {
++			console.warn(JSON.stringify({
++				event: "mcp_event_store_skipped_oversize",
++				streamId,
++				messageBytes,
++				limit: DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES
++			}));
++			return void 0;
++		}
+ 		await this.ensureSeqLoaded(streamId);
+ 		const seq = (this.seqByStream.get(streamId) ?? 0) + 1;
+ 		this.seqByStream.set(streamId, seq);
  		const eventId = `${streamId}:${seq.toString(16).padStart(DurableObjectEventStore.SEQ_PAD, "0")}`;
  		const eventKey = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${eventId}`;
  		await this.storage.put(eventKey, message);
@@ -705,7 +775,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1275,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1311,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -713,8 +783,8 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
 +		for (const [key, message] of rows) try {
 +			await send(key.slice(DurableObjectEventStore.EVENT_KEY_PREFIX.length), message);
 +		} catch {}
- 		return streamId;
- 	}
++		return streamId;
++	}
 +	async replayEventsForStream(streamId, { send }) {
 +		const prefix = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${streamId}:`;
 +		const rows = await this.storage.list({
@@ -724,8 +794,8 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
 +		for (const [key, message] of rows) try {
 +			await send(key.slice(DurableObjectEventStore.EVENT_KEY_PREFIX.length), message);
 +		} catch {}
-+		return streamId;
-+	}
+ 		return streamId;
+ 	}
 +	async trimStream(streamId) {
 +		const prefix = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${streamId}:`;
 +		const rows = await this.storage.list({
@@ -766,17 +836,21 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1383,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1419,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
 +DurableObjectEventStore.MAX_EVENTS_PER_STREAM = 64;
 +DurableObjectEventStore.MAX_BYTES_PER_STREAM = 2 * 1024 * 1024;
 +DurableObjectEventStore.MAX_EVENT_BYTES = 2 * 1024 * 1024;
++// DO storage's per-value hard cap is 128 KiB. The JSON byte length measured in
++// storeEvent is a close proxy for the runtime's serialized size; the margin
++// below it absorbs the difference. Anything larger is delivered live only.
++DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES = 120 * 1024;
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1794,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1834,47 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -824,7 +898,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2151,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2191,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";

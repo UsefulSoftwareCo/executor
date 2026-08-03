@@ -11,6 +11,7 @@ import {
 } from "@executor-js/host-mcp";
 import {
   currentPropagationHeaders,
+  readArtifactsEnabled,
   readElicitationMode,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
@@ -131,6 +132,7 @@ const propsForPrincipal = (
         organizationId: principal.organizationId,
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        artifactsEnabled: readArtifactsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },

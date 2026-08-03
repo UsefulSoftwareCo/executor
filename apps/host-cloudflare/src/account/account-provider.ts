@@ -61,6 +61,11 @@ export const cloudflareAccountProvider = (
     listApiKeys: () => Effect.succeed({ apiKeys: [] }),
     createApiKey: () => forbiddenWrite,
     revokeApiKey: () => forbiddenWrite,
+    // Org-owned keys are a WorkOS concept; Access-managed instances have no
+    // credential store of their own to mint one from.
+    listOrgApiKeys: () => Effect.succeed({ apiKeys: [] }),
+    createOrgApiKey: () => forbiddenWrite,
+    revokeOrgApiKey: () => forbiddenWrite,
     listMembers: () => Effect.succeed({ members: [] }),
     listRoles: () => Effect.succeed({ roles: [] }),
     inviteMember: () => forbiddenWrite,

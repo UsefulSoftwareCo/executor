@@ -456,6 +456,46 @@ const make = Effect.gen(function* () {
       }),
 
     /**
+     * The WorkOS logout URL for a sealed session, or null when the cookie
+     * doesn't unseal or carries no session id (fail-open: the caller clears
+     * local cookies and redirects home instead). The access token is decoded
+     * WITHOUT signature verification, deliberately — WorkOS's documented
+     * logout flow reads `sid` from a possibly-expired token, and logout must
+     * still work for a stale session. (The SDK's `session.getLogoutUrl()` is
+     * deliberately NOT used: it re-authenticates first and throws on an
+     * expired token.) Pure URL construction, no network call; hitting the
+     * URL is the browser's navigation, which is what ends the AuthKit
+     * session upstream.
+     */
+    logoutUrl: (sessionData: string, returnTo?: string) =>
+      Effect.gen(function* () {
+        const unsealed = yield* Effect.tryPromise({
+          try: () => unsealWorkOSSession(sessionData, cookiePassword),
+          catch: (cause) => new LocalSessionCookieError({ cause }),
+        }).pipe(
+          Effect.catchTag("LocalSessionCookieError", () => Effect.succeed(null as unknown | null)),
+        );
+        if (!unsealed) return null;
+
+        const session = Option.getOrNull(decodeSealedSessionPayload(unsealed));
+        if (!session) return null;
+
+        const claims = yield* Effect.try({
+          try: () => decodeJwt(session.accessToken),
+          catch: (cause) => new LocalSessionCookieError({ cause }),
+        }).pipe(
+          Effect.map((jwt) => Option.getOrNull(decodeJwtClaims(jwt))),
+          Effect.catchTag("LocalSessionCookieError", () => Effect.succeed(null)),
+        );
+        if (!claims) return null;
+
+        return workos.userManagement.getLogoutUrl({
+          sessionId: claims.sid,
+          ...(returnTo ? { returnTo } : {}),
+        });
+      }),
+
+    /**
      * Authenticate a sealed session string. Returns the user info plus
      * any refreshed session that needs to be set on the response.
      * Returns null if the session is missing or invalid.
@@ -503,6 +543,33 @@ const make = Effect.gen(function* () {
         });
         return response.data;
       }),
+
+    /**
+     * List the ORGANIZATION-owned api keys of an org. Unlike the user-key
+     * paths above, org keys are first-class in the installed SDK
+     * (`organizations.listOrganizationApiKeys`), so no raw escape hatch is
+     * needed. Returned unknown and decoded in `auth/api-keys.ts` like every
+     * other key response.
+     */
+    listOrgApiKeys: (organizationId: string) =>
+      use(async (wos) =>
+        collectWorkOSList(await wos.organizations.listOrganizationApiKeys({ organizationId })),
+      ),
+
+    /**
+     * Mint an ORGANIZATION-owned api key: the credential that resolves to the
+     * read-only platform view (`PlatformAuth`) instead of an acting member.
+     * Privileged — the caller must be an admin of the org, which is enforced at
+     * the account-provider boundary, not here.
+     */
+    createOrgApiKey: (params: { organizationId: string; name: string }) =>
+      use(
+        (wos) =>
+          wos.organizations.createOrganizationApiKey({
+            organizationId: params.organizationId,
+            name: params.name,
+          }) as Promise<unknown>,
+      ),
 
     deleteApiKey: (id: string) => use((wos) => wos.apiKeys.deleteApiKey(id)),
 

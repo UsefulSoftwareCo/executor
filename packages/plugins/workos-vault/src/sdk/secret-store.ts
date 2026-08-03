@@ -2,7 +2,8 @@ import { Effect, Option, Predicate, Schema } from "effect";
 
 import {
   type CredentialProvider,
-  Owner,
+  embeddedItemOwner,
+  ownerForItemId,
   type OwnerBinding,
   type PluginStorageEntry,
   ProviderItemId,
@@ -87,36 +88,6 @@ const entryToMetadataRow = (entry: PluginStorageEntry): MetadataRow | null =>
   });
 
 type WorkosVaultMetadataData = typeof WorkosVaultMetadataData.Type;
-
-/** Map the executor's (tenant, subject?) binding onto the storage `Owner`
- *  literal: a bound subject writes the user's own partition, otherwise the
- *  org-shared one. Fallback only — prefer `ownerForItemId`. */
-const ownerOf = (binding: OwnerBinding): Owner =>
-  binding.subject == null ? Owner.make("org") : Owner.make("user");
-
-// Item ids whose SECOND colon-segment is the owning partition:
-//   connection:<owner>:<integration>:<name>:<variable>
-//   oauth:<owner>:<integration>:<name>[:refresh]
-//   oauth-client:<owner>:<slug>:secret
-const OWNER_SCOPED_PREFIXES: ReadonlySet<string> = new Set(["connection", "oauth", "oauth-client"]);
-
-/** The owner a logical item id embeds, or null for ids that carry none
- *  (legacy random `secret_*` ids). Reads the second colon-segment of the
- *  owner-scoped prefixes. */
-const embeddedOwner = (id: string): Owner | null => {
-  const [prefix, owner] = id.split(":");
-  if (OWNER_SCOPED_PREFIXES.has(prefix ?? "") && (owner === "org" || owner === "user")) {
-    return Owner.make(owner);
-  }
-  return null;
-};
-
-/** The partition a credential's metadata belongs to: the CREDENTIAL's owner
- *  (embedded in the item id), not the acting caller's binding — so an org
- *  member's workspace connection files org-shared metadata that every member
- *  can resolve. Ids without an embedded owner fall back to the caller binding. */
-const ownerForItemId = (id: string, binding: OwnerBinding): Owner =>
-  embeddedOwner(id) ?? ownerOf(binding);
 
 // ---------------------------------------------------------------------------
 // WorkosVaultStore — typed metadata-store the plugin uses internally.
@@ -225,7 +196,7 @@ const sha256Base64Url = (input: string): Effect.Effect<string> =>
 /** Partition path segments for a logical item id, or null for legacy ids that
  *  carry no embedded owner (those keep the flat, unscoped name). */
 const objectScopeSegments = (id: string, binding: OwnerBinding): readonly string[] | null => {
-  const owner = embeddedOwner(id);
+  const owner = embeddedItemOwner(id);
   if (owner === null) return null;
   const tenant = encodeObjectNameSegment(String(binding.tenant));
   return owner === "user"
@@ -250,7 +221,7 @@ const secretObjectName = (
  *  per-user) context so WorkOS provisions an isolated KEK per partition; legacy
  *  ids keep the original shared context so existing objects stay decryptable. */
 const vaultContextFor = (id: string, binding: OwnerBinding): Record<string, string> => {
-  const owner = embeddedOwner(id);
+  const owner = embeddedItemOwner(id);
   if (owner === null) return { app: "executor" };
   const context: Record<string, string> = {
     app: "executor",

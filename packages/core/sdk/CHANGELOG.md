@@ -1,5 +1,29 @@
 # @executor-js/sdk
 
+## 1.5.37
+
+### Patch Changes
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+## 1.5.36
+
+## 1.5.35
+
+### Patch Changes
+
+- [#1443](https://github.com/UsefulSoftwareCo/executor/pull/1443) [`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Re-register a dynamically registered OAuth client when the configured callback URL changes instead of reusing the stale registration. DCR clients now persist the redirect URI they registered with the authorization server (`oauth_client.origin_redirect_uri`), and the per-issuer reuse lookup compares it against the current flow callback — a mismatch (for example after a sandbox recreation moved the callback origin) mints a fresh client rather than pairing the old registration with the new callback, which strict providers reject with `invalid_redirect_uri`. The stale client row is left in place so existing connections keep refreshing through it; clients persisted before this release have no stored redirect URI and continue to be reused as before.
+
+## 1.5.34
+
+### Patch Changes
+
+- [#1422](https://github.com/UsefulSoftwareCo/executor/pull/1422) [`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - A token refresh the authorization server definitively rejects (any RFC 6749 error code, not just `invalid_grant`) now surfaces to the sandbox as an `oauth_refresh_failed` auth failure carrying the server's error code and description, instead of being scrubbed to "Internal tool error". `invalid_grant` still classifies as `oauth_reauth_required`. Code-less failures (transport blips) keep retrying as before.
+
+- [#1427](https://github.com/UsefulSoftwareCo/executor/pull/1427) [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Apply persisted RFC 6902 overrides to OpenAPI specifications during preview, import, and refresh so upstream documents can be corrected without maintaining a fork. Figma imports automatically narrow OAuth to the scopes supported by its OAuth app configuration.
+
+- [#1425](https://github.com/UsefulSoftwareCo/executor/pull/1425) [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Preserve an integration's declared OAuth scopes when same-origin authorization-server metadata describes a different authorization or token endpoint.
+
 ## 1.5.33
 
 ## 1.5.32

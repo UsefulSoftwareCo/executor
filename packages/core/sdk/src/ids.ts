@@ -59,6 +59,10 @@ export type ElicitationId = typeof ElicitationId.Type;
 export const PolicyId = Schema.String.pipe(Schema.brand("PolicyId"));
 export type PolicyId = typeof PolicyId.Type;
 
+/** A saved generative-UI artifact's id, unique within its owner partition. */
+export const ArtifactId = Schema.String.pipe(Schema.brand("ArtifactId"));
+export type ArtifactId = typeof ArtifactId.Type;
+
 /**
  * The isolation partition (the org/workspace). Owns the catalog and namespaces
  * every connection. The executor is bound to one; `owner: "org"` files at this

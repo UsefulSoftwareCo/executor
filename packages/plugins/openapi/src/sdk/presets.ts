@@ -1,4 +1,5 @@
 import type { HealthCheckSpec, IntegrationPresetAuthentication } from "@executor-js/sdk/core";
+import type { SpecOverrides } from "./spec-overrides";
 
 export interface OpenApiPreset {
   readonly id: string;
@@ -10,11 +11,48 @@ export interface OpenApiPreset {
   readonly family?: string;
   readonly specFormat?: string;
   readonly defaultSlug?: string;
+  readonly specOverrides?: SpecOverrides;
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
 }
 
+export const FIGMA_SUPPORTED_OAUTH_SCOPES = [
+  "current_user:read",
+  "file_comments:read",
+  "file_comments:write",
+  "file_content:read",
+  "file_dev_resources:read",
+  "file_dev_resources:write",
+  "file_metadata:read",
+  "file_versions:read",
+  "library_assets:read",
+  "library_content:read",
+  "project_metadata:read",
+  "projects:read",
+  "team_library_content:read",
+  "webhooks:read",
+  "webhooks:write",
+] as const;
+
+export const FIGMA_SPEC_OVERRIDES: SpecOverrides = [
+  {
+    op: "replace",
+    path: "/components/securitySchemes/OAuth2/flows/authorizationCode/scopes",
+    value: Object.fromEntries(FIGMA_SUPPORTED_OAUTH_SCOPES.map((scope) => [scope, ""])),
+  },
+];
+
 const openApiOnlyPresets: readonly OpenApiPreset[] = [
+  {
+    id: "figma",
+    name: "Figma",
+    summary: "Files, comments, components, variables, projects, and webhooks.",
+    url: "https://raw.githubusercontent.com/figma/rest-api-spec/refs/heads/main/openapi/openapi.yaml",
+    icon: "https://integrations.sh/logo/figma.com",
+    featured: true,
+    defaultSlug: "figma_api",
+    specOverrides: FIGMA_SPEC_OVERRIDES,
+  },
   {
     id: "stripe",
     name: "Stripe",

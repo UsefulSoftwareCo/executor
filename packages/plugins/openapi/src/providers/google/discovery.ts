@@ -829,7 +829,7 @@ const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
 const GOOGLE_PHOTOS_LIBRARY_SERVICE = "photoslibrary";
 const GOOGLE_PHOTOS_APPENDONLY_SCOPE = "https://www.googleapis.com/auth/photoslibrary.appendonly";
 const GOOGLE_PHOTOS_UPLOAD_TOOL_PATH = "photoslibrary.mediaItems.upload";
-const GOOGLE_PHOTOS_UPLOAD_PATH = "/uploads";
+const GOOGLE_PHOTOS_UPLOAD_PATH = "/v1/uploads";
 
 const isGooglePhotosService = (service: string): boolean =>
   service === GOOGLE_PHOTOS_LIBRARY_SERVICE || service === GOOGLE_PHOTOS_PICKER_SERVICE;

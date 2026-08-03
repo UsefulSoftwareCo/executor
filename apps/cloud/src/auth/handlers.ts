@@ -27,6 +27,7 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
+import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import {
   ORG_SELECTOR_HEADER,
   authorizeOrganization,
@@ -218,11 +219,25 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             : null;
 
           // Prefer the org in the URL that sent the user to login. If the URL
-          // is bare, or not an org route, fall back to WorkOS's org and then to
-          // the first active membership for org-less sessions. Pending
-          // memberships are skipped because refreshing into one 400s and would
-          // bypass invite consent.
-          let targetOrganizationId = requestedOrg?.id ?? result.organizationId ?? null;
+          // is bare, or not an org route, prefer the org this browser last
+          // worked in (the last-org cookie — it outlives the session precisely
+          // so a fresh login lands where the user left off), then WorkOS's
+          // org, then the first active membership for org-less sessions.
+          // Pending memberships are skipped because refreshing into one 400s
+          // and would bypass invite consent. The cookie is membership-checked
+          // like any selector, so a stale one just falls through.
+          let targetOrganizationId = requestedOrg?.id ?? null;
+          if (!targetOrganizationId && !requestedOrgSelector) {
+            const lastOrgSlug = request.cookies[LAST_ORG_COOKIE];
+            const lastOrg =
+              lastOrgSlug && isValidOrgSlug(lastOrgSlug)
+                ? yield* authorizeOrganizationSelector(result.user.id, lastOrgSlug).pipe(
+                    Effect.orElseSucceed(() => null),
+                  )
+                : null;
+            targetOrganizationId = lastOrg?.id ?? null;
+          }
+          targetOrganizationId ??= result.organizationId ?? null;
           if (!targetOrganizationId && !requestedOrgSelector) {
             const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");
@@ -305,15 +320,33 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         }),
       )
       .handleRaw("logout", () =>
-        Effect.succeed(
+        Effect.gen(function* () {
+          const workos = yield* WorkOSClient;
+          const session = yield* SessionContext;
+
+          // WorkOS's documented sign-out: send the browser through the WorkOS
+          // logout endpoint, which ends the AuthKit session upstream and then
+          // redirects to the registered sign-out URL. Without this hop, the
+          // hosted session survives and the next "Sign in" silently
+          // re-authenticates (issue #1445). Fail-open when the cookie won't
+          // unseal: local sign-out must still complete, so fall back to "/".
+          const origin = env.VITE_PUBLIC_SITE_URL ?? "";
+          const logoutUrl = yield* workos.logoutUrl(
+            session.sealedSession,
+            origin ? `${origin}/` : undefined,
+          );
+
           // The auth-hint travels with the session: leaving it behind would
           // make the next page load optimistically paint the app shell for a
           // signed-out browser.
-          deleteResponseCookie(
-            deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+          return deleteResponseCookie(
+            deleteResponseCookie(
+              HttpServerResponse.redirect(logoutUrl ?? "/", { status: 302 }),
+              "wos-session",
+            ),
             AUTH_HINT_COOKIE,
-          ),
-        ),
+          );
+        }),
       )
       .handle("organizations", () =>
         Effect.gen(function* () {

@@ -1285,6 +1285,95 @@ describe("tool discovery", () => {
     ),
   );
 
+  // Prod regression (Pylon, 2026-07-16): the AS rejected refresh grants with a
+  // 400 whose error code was NOT invalid_grant. That is a definitive "no" from
+  // the AS, but it surfaced to the sandbox as an opaque "Internal tool error
+  // [hex]" — the caller had no way to know the connection needed re-auth.
+  it.effect("returns AS-rejected token refreshes (non-invalid_grant) as ToolResult.fail", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          invalidRefreshTokenErrorCode: "invalid_request",
+          invalidRefreshTokenDescription: "Refresh token expired",
+        });
+        const config = makeTestConfig({
+          plugins: [memoryCredentialsPlugin(), oauthErrorPlugin] as const,
+        });
+        const executor = yield* createExecutor(config);
+        yield* executor["oauth-error-test"].seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAUTH_CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAUTH_CLIENT,
+          clientOwner: "org",
+          name: CONN,
+          integration: IntegrationSlug.make("oauth_records"),
+          template: OAUTH_TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        // Expire the access token so the next resolve fires a real
+        // refresh-token grant against the live test AS, which rejects it.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) =>
+              b.and(b("integration", "=", "oauth_records"), b("name", "=", String(CONN))),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+
+        const invoker = makeExecutorToolInvoker(executor, {
+          invokeOptions: { onElicitation: acceptAll },
+        });
+        const result = yield* invoker.invoke({
+          path: "oauth_records.org.main.queryRows",
+          args: {},
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_refresh_failed",
+            details: {
+              category: "authentication",
+              credential: {
+                kind: "oauth",
+                label: "oauth_records.org.main",
+              },
+            },
+            retryable: false,
+          },
+        });
+        const failure = result as {
+          readonly ok: false;
+          readonly error: { readonly message: string };
+        };
+        // The AS's verdict (code + description) reaches the caller verbatim —
+        // never the scrubbed "Internal tool error [hex]".
+        expect(failure.error.message).toContain("invalid_request");
+        expect(failure.error.message).toContain("Refresh token expired");
+        expect(failure.error.message).not.toContain("Internal tool error");
+      }),
+    ),
+  );
+
   it.effect("returns missing tool dispatches as ToolResult.fail", () =>
     Effect.gen(function* () {
       const executor = yield* makeExecutorWith([] as const);
@@ -1654,28 +1743,37 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
-  // live clock: the sandbox timeout is a real timer, so the test must
-  // actually wait for it rather than suspend on the virtual TestClock.
+  // Live clock: the failing executor delays long enough for its detached tool
+  // invocation to publish the pause before the executor settles on its own.
   it.live(
     "a pause abandoned by a failing sandbox is dropped and its resume replays the failure outcome",
     () =>
       Effect.gen(function* () {
         const executor = yield* makeElicitingExecutor();
-        // Sandbox times out while suspended on the elicitation, so the fiber
-        // settles without a resume ever arriving.
+        const failingCodeExecutor = {
+          execute: (_code, toolInvoker) =>
+            Effect.gen(function* () {
+              yield* Effect.forkChild(
+                toolInvoker
+                  .invoke({ path: "api.org.main.singleApproval", args: {} })
+                  .pipe(Effect.ignore),
+              );
+              yield* Effect.sleep("100 millis");
+              return { result: null, error: "sandbox failed after pausing" };
+            }),
+        } satisfies typeof codeExecutor;
         const engine = createExecutionEngine({
           executor,
-          codeExecutor: makeQuickJsExecutor({ timeoutMs: 250 }),
+          codeExecutor: failingCodeExecutor,
         });
-        const code = "return await tools.api.org.main.singleApproval({});";
 
-        const outcome1 = yield* engine.executeWithPause(code);
+        const outcome1 = yield* engine.executeWithPause("ignored");
         expect(outcome1.status).toBe("paused");
         if (outcome1.status !== "paused") return;
         const executionId = outcome1.execution.id;
 
-        // Wait for the sandbox timeout to settle the detached fiber.
-        yield* Effect.sleep("600 millis");
+        // Wait for the sandbox failure to settle the detached fiber.
+        yield* Effect.sleep("300 millis");
 
         // The dead pause must no longer be reported as live...
         const stillPaused = yield* engine.getPausedExecution(executionId);
@@ -1685,7 +1783,7 @@ describe("pause/resume with multiple elicitations", () => {
         const late = yield* engine.resume(executionId, { action: "accept" });
         expect(late?.status).toBe("completed");
         const completed = late as Extract<NonNullable<typeof late>, { status: "completed" }>;
-        expect(completed.result.error).toContain("timed out");
+        expect(completed.result.error).toBe("sandbox failed after pausing");
       }),
     { timeout: 10000 },
   );

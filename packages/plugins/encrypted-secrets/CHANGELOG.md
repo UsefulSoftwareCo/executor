@@ -1,5 +1,33 @@
 # @executor-js/plugin-encrypted-secrets
 
+## 0.0.36
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+
+## 0.0.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+
+## 0.0.34
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+
+## 0.0.33
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+
 ## 0.0.32
 
 ### Patch Changes

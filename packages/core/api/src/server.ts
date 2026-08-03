@@ -1,4 +1,9 @@
-export { ExecutorService, ExecutionEngineService } from "./services";
+export {
+  ArtifactUsageObserver,
+  ExecutorService,
+  ExecutionEngineService,
+  type ArtifactUsageAction,
+} from "./services";
 export {
   CoreHandlers,
   ToolsHandlers,
@@ -7,6 +12,7 @@ export {
   ProvidersHandlers,
   OAuthHandlers,
   PoliciesHandlers,
+  ArtifactsHandlers,
   ExecutionsHandlers,
 } from "./handlers";
 export {
@@ -18,6 +24,25 @@ export {
 } from "./plugin-routes";
 export { AccountProvider, type AccountProviderShape, type AccountHeaders } from "./account/service";
 export { AccountHandlers } from "./account/handlers";
+export {
+  AdminUsersProvider,
+  type AdminUsersProviderShape,
+  type AdminUsersHeaders,
+  type AdminUsersListOptions,
+} from "./admin/service";
+export { AdminUsersHandlers } from "./admin/handlers";
+export {
+  platformViewOf,
+  listUsers as listAdminUsers,
+  listUsersWithConnections as listAdminUsersWithConnections,
+  listUserConnections as listAdminUserConnections,
+  getUser as getAdminUser,
+  normalizeEmail as normalizeAdminUserEmail,
+  type AdminEmailResolver,
+  type AdminIdentityDirectory,
+  type AdminUserDirectory,
+  type AdminUserIdentity,
+} from "./admin/reads";
 export { requestScopedMiddleware } from "./server/request-scoped";
 export { RouterConfigLive } from "./server/router-config";
 export { consoleErrorCapture } from "./server/console-error-capture";
@@ -53,6 +78,7 @@ export {
 } from "./server/executor-fuma-db";
 export {
   makeScopedExecutor,
+  makePlatformExecutor,
   HostConfig,
   PluginsProvider,
   RequestWebOrigin,
@@ -89,10 +115,12 @@ export {
 export {
   makeProtectedApiLayer,
   makeAccountApiLayer,
+  makeAdminUsersApiLayer,
   accountProviderMiddlewareLayer,
   toApiHandler,
   type MakeProtectedApiLayerOptions,
   type MakeAccountApiLayerOptions,
+  type MakeAdminUsersApiLayerOptions,
   type ApiHandler,
 } from "./server/host-foundation";
 export {

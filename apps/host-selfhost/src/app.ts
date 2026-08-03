@@ -2,17 +2,24 @@ import { HttpApiSwagger } from "effect/unstable/httpapi";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
-import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
+import {
+  ArtifactUsageObserver,
+  composePluginApi,
+  ExecutorApp,
+  textFailureStrategy,
+} from "@executor-js/api/server";
 
 import { runSqliteDataMigrations } from "@executor-js/sdk";
 
 import { resolveAuthProviders } from "./auth";
 import { selfHostDataMigrations } from "./db/data-migrations";
 import { makeSelfHostAdminApiLayer } from "./admin/handlers";
+import { makeSelfHostAdminUsersApiLayer } from "./admin/admin-users-api";
 import { makeSelfHostSystemApiLayer } from "./system/handlers";
 import { selfHostAccountMiddleware } from "./account";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "./config";
 import { createSelfHostDb, SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
+import { selfHostAnalytics, SelfHostAnalyticsEngineDecorator } from "./analytics";
 import {
   SelfHostCodeExecutorProvider,
   SelfHostHostConfig,
@@ -97,7 +104,12 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
       identity: identityLayer,
       account: selfHostAccountMiddleware(betterAuth),
       db: SelfHostDbProvider,
-      engine: { codeExecutor: SelfHostCodeExecutorProvider }, // decorator defaults to no-op (no metering)
+      engine: {
+        codeExecutor: SelfHostCodeExecutorProvider,
+        // Anonymous execution analytics (this seam is the HTTP plane; the MCP
+        // plane's decorator is wired in mcp/session-store.ts's stack layer).
+        decorator: SelfHostAnalyticsEngineDecorator,
+      },
       mcp: { auth: mcp.auth, sessions: mcp.sessions, reporter: mcp.reporter },
       plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
       errorCapture: ErrorCaptureLive,
@@ -117,6 +129,10 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(mcp.approvalHandler)),
         // App-local admin (invite-code) API, served under /api/admin/*.
         makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        // Tenant-wide admin users API (/api/admin/users*): the owner's view of
+        // who uses this instance and what they've connected. Owner/admin-gated,
+        // same as the invite routes above.
+        makeSelfHostAdminUsersApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
@@ -126,8 +142,16 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     config: { mountPrefix: "/api", failure: textFailureStrategy },
     // The boot-scoped context provideMerge'd under everything: the long-lived DB
     // handle (read by the DbProvider seam, Better Auth, and the MCP store) + the
-    // resolved identity (captured once by the execution middleware + MCP auth).
-    boot: Layer.merge(Layer.succeed(SelfHostDb)(dbHandle), identityLayer),
+    // resolved identity (captured once by the execution middleware + MCP auth)
+    // + the artifact-usage observer (this HTTP plane is the console UI's data
+    // layer, so operations it serves file as `via: "ui"`).
+    boot: Layer.mergeAll(
+      Layer.succeed(SelfHostDb)(dbHandle),
+      identityLayer,
+      Layer.succeed(ArtifactUsageObserver)((action) =>
+        selfHostAnalytics.record(`artifact_${action}`, { via: "ui" }),
+      ),
+    ),
   });
 
   return {

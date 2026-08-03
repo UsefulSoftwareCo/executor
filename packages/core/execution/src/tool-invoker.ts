@@ -177,6 +177,7 @@ const credentialResolutionToolFailure = (input: {
   readonly label: string;
   readonly message: string;
   readonly reauthRequired?: boolean;
+  readonly oauthErrorCode?: string;
 }) =>
   authToolFailure({
     code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
@@ -188,6 +189,12 @@ const credentialResolutionToolFailure = (input: {
       kind: "oauth",
       label: input.label,
     },
+    // The AS's own RFC 6749 §5.2 verdict, when there was one — structured so
+    // the agent (and anyone reading the failure) can distinguish a dead grant
+    // from a misconfigured app without parsing the message.
+    ...(input.oauthErrorCode !== undefined
+      ? { upstream: { details: { oauthErrorCode: input.oauthErrorCode } } }
+      : {}),
   });
 
 const bindingToolFailure = (value: unknown): ToolError | null => {
@@ -310,6 +317,7 @@ export const makeExecutorToolInvoker = (
             label: `${err.integration}.${err.owner}.${err.name}`,
             message: err.message,
             reauthRequired: err.reauthRequired,
+            oauthErrorCode: err.oauthErrorCode,
           }),
         ),
       ),

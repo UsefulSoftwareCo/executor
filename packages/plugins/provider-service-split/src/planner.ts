@@ -9,7 +9,7 @@ import {
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   microsoftCatalog,
 } from "@executor-js/plugin-openapi/providers/microsoft";
-import type { OpenApiPreset } from "@executor-js/plugin-openapi/presets";
+import type { IntegrationPreset } from "@executor-js/sdk/core";
 
 type MonolithPluginId = "google" | "microsoft";
 
@@ -330,11 +330,11 @@ const integrationPatternSegment = (
   return { prefix, integration: tail.split(".")[0] ?? "" };
 };
 
-const googleCatalogById: ReadonlyMap<string, OpenApiPreset> = new Map(
+const googleCatalogById: ReadonlyMap<string, IntegrationPreset> = new Map(
   googleCatalog.map((preset) => [preset.id, preset]),
 );
 
-const microsoftCatalogByMonolithPresetId: ReadonlyMap<string, OpenApiPreset> = new Map(
+const microsoftCatalogByMonolithPresetId: ReadonlyMap<string, IntegrationPreset> = new Map(
   microsoftCatalog.map((preset) => [preset.id.replace(/^microsoft-/, ""), preset]),
 );
 

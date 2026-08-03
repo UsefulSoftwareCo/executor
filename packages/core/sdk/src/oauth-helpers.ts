@@ -320,6 +320,55 @@ const bodyPreviewFromResponse = async (response: Response): Promise<string | und
   return redacted.length > 500 ? `${redacted.slice(0, 500)}...` : redacted;
 };
 
+// RFC 6749 §5.2's closed set. Only these are ever recovered from a
+// non-conform body: a free-text match against an open set would let an
+// arbitrary error message masquerade as an AS verdict.
+const RFC6749_TOKEN_ERROR_CODES = [
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+] as const;
+
+const rfc6749CodeFromCandidate = (candidate: unknown): string | undefined => {
+  if (typeof candidate !== "string") return undefined;
+  const trimmed = candidate.trim();
+  return RFC6749_TOKEN_ERROR_CODES.find(
+    (code) => trimmed === code || trimmed.startsWith(`${code} `) || trimmed.startsWith(`${code}:`),
+  );
+};
+
+/** Recover the AS's §5.2 verdict from an error body oauth4webapi refused to
+ *  parse. Some ASes wrap the code in a non-conform envelope — Datadog answers
+ *  refresh grants with `{"errors": ["invalid_grant - Invalid or expired
+ *  refresh token or code verifier."]}` — and without this probe a definitive
+ *  `invalid_grant` (dead refresh token, reconnect required) is classified as
+ *  a transient failure and retried forever instead of surfacing a re-auth. */
+const oauthErrorCodeFromNonConformBody = (text: string): string | undefined => {
+  const parsed: unknown = (() => {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted upstream body that already failed spec parsing; a parse failure just means "no recoverable code"
+    try {
+      // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is only structurally inspected against the closed §5.2 code set, never decoded into domain types
+      return JSON.parse(text) as unknown;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const envelope = parsed as { readonly error?: unknown; readonly errors?: unknown };
+  const direct = rfc6749CodeFromCandidate(envelope.error);
+  if (direct) return direct;
+  if (Array.isArray(envelope.errors)) {
+    for (const entry of envelope.errors) {
+      const code = rfc6749CodeFromCandidate(entry);
+      if (code) return code;
+    }
+  }
+  return undefined;
+};
+
 const toOAuth2Error = (cause: unknown): OAuth2Error => {
   if (isOAuth2Error(cause)) return cause;
   if (typeof cause === "object" && cause !== null) {
@@ -352,20 +401,69 @@ const toOAuth2ErrorWithHttpSummary = (cause: unknown): Effect.Effect<OAuth2Error
   const base = toOAuth2Error(cause);
   const response = responseFromOAuthErrorCause(cause);
   if (!response) return Effect.succeed(base);
-  return Effect.promise(() => tokenEndpointHttpSummary(response)).pipe(
-    Effect.map(
-      (summary) =>
-        new OAuth2Error({
-          message: `${base.message} (${summary})`,
-          error: base.error,
-          cause,
-        }),
-    ),
-  );
+  return Effect.promise(async () => {
+    const summary = await tokenEndpointHttpSummary(response);
+    // A 4xx the spec parser refused may still carry the AS's verdict in a
+    // non-conform envelope; recover it so classification (invalid_grant →
+    // reauth-required) sees the code instead of a code-less "transient".
+    const recovered =
+      base.error === undefined && response.status >= 400 && response.status < 500
+        ? oauthErrorCodeFromNonConformBody(
+            await Promise.resolve()
+              .then(() => response.clone().text())
+              .then(
+                (value) => value,
+                () => "",
+              ),
+          )
+        : undefined;
+    return new OAuth2Error({
+      message: `${base.message} (${summary})`,
+      error: base.error ?? recovered,
+      cause,
+    });
+  });
 };
 
 const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2Error> =>
   toOAuth2ErrorWithHttpSummary(cause).pipe(Effect.flatMap((error) => Effect.fail(error)));
+
+/** Trace one token-endpoint round trip. This is the ONLY place a token request
+ *  can be observed: oauth4webapi drives the raw global `fetch`, not Effect's
+ *  HttpClient, so no `http.client` span exists underneath — without this span
+ *  the AS's latency and refusal rate are invisible.
+ *
+ *  Attribute discipline: hostname (never the full URL — some providers carry
+ *  tenant ids in the path), the grant literal, the auth method, and on failure
+ *  the AS's RFC 6749 §5.2 code. Never the OAuth2Error message (it embeds the
+ *  response URL and a body preview), never token or code material. */
+const withTokenRequestSpan =
+  (input: {
+    readonly grantType: "authorization_code" | "client_credentials" | "refresh_token";
+    readonly tokenUrl: string;
+    readonly clientAuth: ClientAuthMethod | undefined;
+    readonly hasResource: boolean;
+  }) =>
+  <A>(effect: Effect.Effect<A, OAuth2Error>): Effect.Effect<A, OAuth2Error> =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.annotateCurrentSpan({
+          ...(error.error !== undefined ? { "executor.oauth.error_code": error.error } : {}),
+        }),
+      ),
+      Effect.withSpan("executor.oauth.token_request", {
+        attributes: {
+          "executor.oauth.grant_type": input.grantType,
+          "executor.oauth.token_host": hostnameForTelemetry(input.tokenUrl),
+          "executor.oauth.client_auth": input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+          "executor.oauth.has_resource": input.hasResource,
+        },
+      }),
+    );
+
+/** The hostname alone — a malformed URL yields "invalid" rather than leaking
+ *  whatever string failed to parse. */
+const hostnameForTelemetry = (url: string): string => URL.parse(url)?.hostname ?? "invalid";
 
 // ---------------------------------------------------------------------------
 // oauth4webapi adapter helpers
@@ -614,7 +712,15 @@ export const exchangeAuthorizationCode = (
       return await processTokenEndpointResponse(as, client, response);
     },
     catch: (cause) => cause,
-  }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+  }).pipe(
+    Effect.catch(failOAuth2WithHttpSummary),
+    withTokenRequestSpan({
+      grantType: "authorization_code",
+      tokenUrl: input.tokenUrl,
+      clientAuth: input.clientAuth,
+      hasResource: input.resource !== undefined,
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Exchange client credentials → tokens (RFC 6749 §4.4)
@@ -669,7 +775,15 @@ export const exchangeClientCredentials = (
       return tokenResponseFrom(result);
     },
     catch: (cause) => cause,
-  }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+  }).pipe(
+    Effect.catch(failOAuth2WithHttpSummary),
+    withTokenRequestSpan({
+      grantType: "client_credentials",
+      tokenUrl: input.tokenUrl,
+      clientAuth: input.clientAuth,
+      hasResource: input.resource !== undefined,
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Refresh access token
@@ -740,12 +854,33 @@ export const refreshAccessToken = (
       return tokenResponseFrom(result);
     },
     catch: (cause) => cause,
-  }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+  }).pipe(
+    Effect.catch(failOAuth2WithHttpSummary),
+    withTokenRequestSpan({
+      grantType: "refresh_token",
+      tokenUrl: input.tokenUrl,
+      clientAuth: input.clientAuth,
+      hasResource: input.resource !== undefined,
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Refresh-needed predicate
 // ---------------------------------------------------------------------------
 
+/** Whether the stored access token is close enough to its expiry to be
+ *  re-minted BEFORE the next call goes out (the proactive path).
+ *
+ *  A null `expiresAt` means the authorization server never told us when the
+ *  token dies (`expires_in` omitted from the token response). That is not the
+ *  same as "never expires": the token may well be revoked or time out
+ *  upstream. We deliberately do NOT refresh on every call for those — that
+ *  would hammer the AS on connections whose tokens are genuinely long-lived,
+ *  and there is no expiry to be "close to". Instead the reactive path owns
+ *  them: an upstream 401 is the only truthful signal that an unknown-expiry
+ *  token is dead, and `executor.execute` re-mints and retries once on that
+ *  signal. Keep the two paths in sync — narrowing the reactive retry strands
+ *  every null-expiry connection with no way to recover short of a reconnect. */
 export const shouldRefreshToken = (input: {
   readonly expiresAt: number | null;
   readonly now?: number;

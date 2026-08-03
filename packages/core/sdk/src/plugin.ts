@@ -568,6 +568,8 @@ export interface IntegrationPreset {
   readonly family?: string;
   readonly specFormat?: string;
   readonly defaultSlug?: string;
+  /** Plugin-specific RFC 6902 operations applied to a fetched specification. */
+  readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
   readonly transport?: "remote" | "stdio";

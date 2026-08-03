@@ -162,6 +162,7 @@ function SidebarContent(props: {
   const isSecrets = props.pathname === "/secrets";
   const isPolicies = props.pathname === "/policies";
   const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
+  const isArtifacts = props.pathname === "/artifacts" || props.pathname.startsWith("/artifacts/");
 
   return (
     <>
@@ -199,6 +200,12 @@ function SidebarContent(props: {
           to="/{-$orgSlug}/toolkits"
           label="Toolkits"
           active={isToolkits}
+          onNavigate={props.onNavigate}
+        />
+        <NavItem
+          to="/{-$orgSlug}/artifacts"
+          label="Artifacts"
+          active={isArtifacts}
           onNavigate={props.onNavigate}
         />
 

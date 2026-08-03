@@ -79,7 +79,7 @@ export const resolveSpecText = (input: string, credentials?: SpecFetchCredential
  * the 128MB Cloudflare Workers memory cap.
  */
 export const parse = Effect.fn("OpenApi.parse")(function* (text: string) {
-  const api = yield* parseTextToObject(text);
+  const api = yield* parseSpecObject(text);
 
   if (!isOpenApi3(api)) {
     return yield* new OpenApiExtractionErrorFromParse({
@@ -98,7 +98,8 @@ export const parse = Effect.fn("OpenApi.parse")(function* (text: string) {
 const isOpenApi3 = (doc: OpenAPI.Document): doc is OpenAPIV3.Document | OpenAPIV3_1.Document =>
   "openapi" in doc && typeof doc.openapi === "string" && doc.openapi.startsWith("3.");
 
-const parseTextToObject = (text: string): Effect.Effect<OpenAPI.Document, OpenApiParseError> =>
+/** Parse JSON or YAML text into an object without applying OpenAPI version validation. */
+export const parseSpecObject = (text: string): Effect.Effect<OpenAPI.Document, OpenApiParseError> =>
   Effect.gen(function* () {
     const trimmed = text.trim();
     if (trimmed.length === 0) {

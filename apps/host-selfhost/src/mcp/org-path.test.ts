@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { stripMcpOrgSegment } from "./org-path";
+import { isMcpServingPath, stripMcpOrgSegment } from "./org-path";
 
 describe("stripMcpOrgSegment", () => {
   it("strips a single org segment before /mcp", () => {
@@ -30,5 +30,22 @@ describe("stripMcpOrgSegment", () => {
     expect(stripMcpOrgSegment("/integrations")).toBeNull();
     expect(stripMcpOrgSegment("/")).toBeNull();
     expect(stripMcpOrgSegment("/a/b/mcp")).toBeNull(); // deeper than one segment
+  });
+});
+
+describe("isMcpServingPath", () => {
+  it("recognizes bare and org-scoped MCP serving routes", () => {
+    expect(isMcpServingPath("/mcp")).toBe(true);
+    expect(isMcpServingPath("/mcp/")).toBe(true);
+    expect(isMcpServingPath("/mcp/toolkits/deploy")).toBe(true);
+    expect(isMcpServingPath("/default/mcp")).toBe(true);
+    expect(isMcpServingPath("/default/mcp/toolkits/deploy")).toBe(true);
+  });
+
+  it("does not claim discovery, OAuth, or unrelated paths", () => {
+    expect(isMcpServingPath("/.well-known/oauth-protected-resource")).toBe(false);
+    expect(isMcpServingPath("/api/auth/mcp/authorize")).toBe(false);
+    expect(isMcpServingPath("/mcp/unknown")).toBe(false);
+    expect(isMcpServingPath("/")).toBe(false);
   });
 });
