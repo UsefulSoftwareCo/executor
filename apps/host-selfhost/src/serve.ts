@@ -35,6 +35,7 @@ import {
   oauthCallbackSignInRedirectLocation,
 } from "./auth/oauth-callback-login";
 import { MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./mcp/org-path";
+import { makeTelemetryLive } from "./telemetry";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const assetsDir = fileURLToPath(new URL("../dist/assets/", import.meta.url));
@@ -126,6 +127,15 @@ export const startServer = async (): Promise<void> => {
     Effect.addFinalizer(() => Effect.promise(() => disposeAnalytics())),
   );
 
+  // OTLP export, or `Layer.empty` when no collector is configured (see
+  // ./telemetry). The `http.server` envelope span each request's `withSpan`
+  // children parent under is NOT wired here: `HttpEffect.toHandled` already
+  // wraps every served app in `HttpMiddleware.tracer`, which also continues an
+  // inbound `traceparent` so a request arriving through a tunnel keeps one
+  // trace id. Adding it here as well produced two identical `http.server`
+  // spans per request, one the parent of the other.
+  const TelemetryLive = makeTelemetryLive();
+
   const ServerLive = HttpRouter.serve(Layer.mergeAll(AppLayer, AssetsLive, SpaLive), {
     middleware: selfHostHttpMiddleware(betterAuth),
   }).pipe(
@@ -134,7 +144,12 @@ export const startServer = async (): Promise<void> => {
     ),
   );
 
-  await BunRuntime.runMain(Layer.launch(Layer.merge(ServerLive, AnalyticsFlushLive)));
+  // Provided UNDER the server, not merged beside it: the tracer must already be
+  // in scope while the app's layers build, or spans created during construction
+  // resolve the default no-op tracer and are silently dropped.
+  await BunRuntime.runMain(
+    Layer.launch(Layer.merge(ServerLive, AnalyticsFlushLive).pipe(Layer.provide(TelemetryLive))),
+  );
 };
 
 if (import.meta.main) {
