@@ -7,20 +7,19 @@
 // theater (src/clients/chat-theater.ts) presenting REAL mcporter MCP calls
 // — OAuth, execute, approval pause/resume all genuine, every tool spinner
 // on screen bracketing the actual call it narrates. The provider on the
-// other side is real too (resend.emulators.dev); its request ledger is the
-// final evidence.
+// other side is real too (a per-run Resend instance on emulators.dev); its
+// request ledger is the final evidence.
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
+import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Browser, Cli, Mcp, RunDir, Target } from "../src/services";
 import { withChatTheater } from "../src/clients/chat-theater";
 import type { McpSession } from "../src/surfaces/mcp";
-
-const EMULATOR_BASE = "https://resend.emulators.dev";
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -28,11 +27,9 @@ const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`
 // `servers`) — adding by URL with nothing else is exactly what an agent
 // does, and the platform derives the paste-a-token auth method from the
 // spec's security scheme.
-const EMULATOR_SPEC_URL = `${EMULATOR_BASE}/openapi.json`;
-
-const addSpecCode = (slug: string) => `
+const addSpecCode = (slug: string, specUrl: string) => `
 const added = await tools.executor.openapi.addSpec({
-  spec: { kind: "url", url: ${JSON.stringify(EMULATOR_SPEC_URL)} },
+  spec: { kind: "url", url: ${JSON.stringify(specUrl)} },
   slug: ${JSON.stringify(slug)},
 });
 return added.ok ? { ok: true, slug: added.data.slug, toolCount: added.data.toolCount } : { ok: false, error: added.error };
@@ -76,17 +73,18 @@ const executeJson = (session: McpSession, code: string) =>
     return JSON.parse(result.text) as Record<string, unknown>;
   });
 
-const mintEmulatorApiKey = Effect.promise(async () => {
-  const response = await fetch(`${EMULATOR_BASE}/_emulate/credentials`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "api-key" }),
+const mintEmulatorApiKey = (emulatorBase: string) =>
+  Effect.promise(async () => {
+    const response = await fetch(`${emulatorBase}/_emulate/credentials`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "api-key" }),
+    });
+    const body = (await response.json()) as { credential?: { token?: string } };
+    const token = body.credential?.token;
+    if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(body)}`);
+    return token;
   });
-  const body = (await response.json()) as { credential?: { token?: string } };
-  const token = body.credential?.token;
-  if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(body)}`);
-  return token;
-});
 
 scenario(
   "Connect · developer session: agent chat → handoff link → paste key → verified send",
@@ -101,7 +99,8 @@ scenario(
 
       const integration = unique("resendsesh");
       const emailSubject = unique("dev-session");
-      const apiKey = yield* mintEmulatorApiKey;
+      const emulatorBase = yield* createEmulatorInstance("resend", "dev-session");
+      const apiKey = yield* mintEmulatorApiKey(emulatorBase);
       const identity = yield* target.newIdentity();
       const session = mcp.session(identity);
 
@@ -121,8 +120,11 @@ scenario(
             );
             yield* chat.assistant("I'll register the Resend API in your Executor now.");
             const added = yield* chat.tool(
-              { name: "execute", input: addSpecCode(integration) },
-              executeJson(session, addSpecCode(integration)),
+              {
+                name: "execute",
+                input: addSpecCode(integration, `${emulatorBase}/openapi.json`),
+              },
+              executeJson(session, addSpecCode(integration, `${emulatorBase}/openapi.json`)),
             );
             expect(added.ok, `addSpec succeeded: ${JSON.stringify(added)}`).toBe(true);
 
@@ -191,7 +193,7 @@ scenario(
 
       // Final evidence: the emulator's ledger saw the send from Executor.
       const ledger = yield* Effect.promise(async () =>
-        (await fetch(`${EMULATOR_BASE}/_emulate/ledger`)).text(),
+        (await fetch(`${emulatorBase}/_emulate/ledger`)).text(),
       );
       expect(
         ledger.includes(emailSubject),

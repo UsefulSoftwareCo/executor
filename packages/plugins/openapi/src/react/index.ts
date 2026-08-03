@@ -1,6 +1,6 @@
-export { openApiIntegrationPlugin } from "./source-plugin";
+export { openApiIntegrationPlugin } from "./integration-plugin";
 export { OpenApiClient } from "./client";
-export { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
+export { OpenApiIntegrationDetailsFields } from "./OpenApiIntegrationDetailsFields";
 export {
   authenticationFromEditorValue,
   authMethodsFromConfig,

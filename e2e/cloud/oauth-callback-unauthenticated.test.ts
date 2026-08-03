@@ -117,7 +117,7 @@ scenario(
       await step("Provider sends a signed-out browser to the OAuth callback", async () => {
         const response = await page.goto(callbackPath, { waitUntil: "commit" });
         expect(response?.status(), "the callback redirects into the login flow").toBe(200);
-        await page.getByText("Sign in to manage your tools and sources").waitFor();
+        await page.getByText("Sign in to manage your tools and integrations").waitFor();
       });
 
       const loginUrl = new URL(page.url());

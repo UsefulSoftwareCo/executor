@@ -10,10 +10,13 @@ import {
   ToolAddress,
   ToolName,
 } from "./ids";
+import { authToolFailure } from "./auth-tool-failure";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
+import { missingGrantedOAuthScopes } from "./oauth-service";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
+import { ToolResult } from "./tool-result";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // Milestone 2: prove the v2 `oauth.start` / `oauth.complete` token-minting flow
@@ -290,6 +293,262 @@ describe("oauth.start / oauth.complete", () => {
         });
 
         expect(connection.oauthScope?.split(/\s+/)).toEqual(["read", "offline_access"]);
+      }),
+    ),
+  );
+
+  it.effect("persists connection identity from id_token claims on authorization-code grant", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.identityLabel).toBe("alice@example.com");
+      }),
+    ),
+  );
+
+  it.effect("keeps an explicit OAuth session identity label over id_token claims", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          identityLabel: "Work account",
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.identityLabel).toBe("Work account");
+      }),
+    ),
+  );
+
+  it.effect("newConnection resolves a taken name to the next free suffix", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const runFlow = Effect.gen(function* () {
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            newConnection: true,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return null;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          return yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+        });
+
+        const first = yield* runFlow;
+        const second = yield* runFlow;
+        expect(String(first?.name)).toBe("main");
+        expect(String(second?.name)).toBe("main2");
+
+        const connections = yield* executor.connections.list({ integration: INTEG });
+        expect(connections.map((connection) => String(connection.name)).sort()).toEqual([
+          "main",
+          "main2",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("preserves a curated label when reconnecting without an explicit label", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const runFlow = Effect.gen(function* () {
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return null;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          return yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+        });
+
+        const first = yield* runFlow;
+        expect(first?.identityLabel).toBe("alice@example.com");
+
+        // The user renames the connection, then reconnects (no typed label).
+        yield* executor.connections.update(
+          { owner: "org", integration: INTEG, name: ConnectionName.make("main") },
+          { identityLabel: "Finance account" },
+        );
+        const second = yield* runFlow;
+        expect(second?.identityLabel).toBe("Finance account");
+      }),
+    ),
+  );
+
+  it.effect("does not overwrite connection identity from id_token claims on refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+          refreshIdTokenClaims: { email: "refreshed@example.com", sub: "user-2" },
+        });
+        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = harness;
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+
+        yield* executor.execute(ToolAddress.make("tools.acme.org.main.whoami"), {});
+        const refreshed = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(refreshed?.identityLabel).toBe("alice@example.com");
       }),
     ),
   );
@@ -702,6 +961,280 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       }),
     ),
   );
+
+  it.effect("a definitively rejected grant is not re-sent to the AS on later refreshes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          tokenExpiresInSeconds: 0,
+          invalidRefreshTokenDescription: "Grant revoked",
+        });
+        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = harness;
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        yield* server.clearRequests;
+
+        // First resolve: the refresh grant reaches the AS and is rejected
+        // with invalid_grant — the AS's definitive verdict.
+        const first = yield* Effect.flip(
+          executor.execute(ToolAddress.make("tools.acme.org.main.whoami"), {}),
+        );
+        expect(JSON.stringify(first)).toContain("invalid_grant");
+
+        // The verdict is persisted: the dead-grant marker plus an expired
+        // health record, without waiting for a probe.
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+        );
+        expect(
+          (row?.provider_state as { oauthReauthRequiredAt?: number } | null)?.oauthReauthRequiredAt,
+        ).toEqual(expect.any(Number));
+        expect(row?.last_health).toMatchObject({ status: "expired" });
+
+        const grantRequests = () =>
+          server.requests.pipe(
+            Effect.map(
+              (all) =>
+                all.filter((r) => r.path === "/token" && r.body.includes("refresh_token")).length,
+            ),
+          );
+        const sentBefore = yield* grantRequests();
+        expect(sentBefore).toBe(1);
+
+        // Later resolves still fail reauth-required, but WITHOUT re-sending
+        // the dead grant: the token endpoint sees no further traffic.
+        const second = yield* Effect.flip(
+          executor.execute(ToolAddress.make("tools.acme.org.main.whoami"), {}),
+        );
+        expect(JSON.stringify(second)).toContain("Reconnect");
+        expect(yield* grantRequests()).toBe(sentBefore);
+
+        // Reconnecting mints a fresh grant and re-arms refresh: the marker is
+        // gone and resolution works again.
+        const restarted = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(restarted.status).toBe("redirect");
+        if (restarted.status !== "redirect") return;
+        const reCallback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: restarted.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: restarted.state, code: reCallback.code });
+
+        const cleared = yield* Effect.promise(() =>
+          config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+        );
+        expect(
+          (cleared?.provider_state as { oauthReauthRequiredAt?: number } | null)
+            ?.oauthReauthRequiredAt,
+        ).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect(
+    "checkHealth reports healthy from OAuth credential resolution when no probe is configured",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+          yield* server.clearRequests;
+
+          const result = yield* executor.connections.checkHealth({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+
+          expect(result).toMatchObject({
+            status: "healthy",
+            detail: "Credential resolved (no probe configured).",
+          });
+          expect(result.identity).toBeUndefined();
+          const requests = yield* server.requests;
+          expect(requests).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect("records missing authorization-code scopes without blocking the connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "offline_access", "read", "write"],
+          omitTokenResponseScopes: ["email", "profile", "write"],
+        });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed([
+          "openid",
+          "email",
+          "profile",
+          "offline_access",
+          "read",
+          "write",
+        ]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.missingOAuthScopes).toEqual(["write"]);
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", {
+            where: (b) => b("name", "=", "main"),
+          }),
+        );
+        expect(row?.provider_state).toEqual({ missingOAuthScopes: ["write"] });
+        const listed = yield* executor.connections.list({ integration: INTEG });
+        expect(listed[0]?.missingOAuthScopes).toEqual(["write"]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "does not persist missing scopes when the authorization-code grant covers requested scopes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read", "write"] });
+          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed(["read", "write"]);
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          const connection = yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+
+          expect(connection.missingOAuthScopes).toEqual([]);
+          const row = yield* Effect.promise(() =>
+            config.db.findFirst("connection", {
+              where: (b) => b("name", "=", "main"),
+            }),
+          );
+          expect(row?.provider_state).toBeNull();
+        }),
+      ),
+  );
 });
 
 // Multi-site providers (Datadog) statically advertise one region's token
@@ -862,6 +1395,377 @@ describe("oauth.complete regional token-endpoint rebind (Datadog multi-site)", (
           config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
         );
         expect(row?.oauth_token_url ?? null).toBeNull();
+      }),
+    ),
+  );
+});
+
+describe("missingGrantedOAuthScopes canonicalization", () => {
+  it("treats Microsoft fully-qualified granted scopes as covering short-form requests", () => {
+    const missing = missingGrantedOAuthScopes(
+      [
+        "offline_access",
+        "User.Read",
+        "https://graph.microsoft.com/.default",
+        "Mail.ReadWrite",
+        "Mail.Send",
+        "MailboxSettings.ReadWrite",
+      ],
+      [
+        "https://graph.microsoft.com/Mail.ReadWrite",
+        "https://graph.microsoft.com/Mail.Send",
+        "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+        "https://graph.microsoft.com/User.Read",
+      ].join(" "),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("still reports genuinely ungranted scopes under the qualified Microsoft shape", () => {
+    const missing = missingGrantedOAuthScopes(
+      ["User.Read", "Mail.ReadWrite", "Mail.Send"],
+      "https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite",
+    );
+    expect(missing).toEqual(["Mail.Send"]);
+  });
+
+  it("maps Google userinfo aliases and ignores identity meta-scopes", () => {
+    const missing = missingGrantedOAuthScopes(
+      ["openid", "email", "profile", "https://www.googleapis.com/auth/calendar"],
+      [
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/calendar",
+      ].join(" "),
+    );
+    expect(missing).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reactive refresh: an upstream 401 re-mints the access token and retries once.
+//
+// `expires_at` is only ever the authorization server's ADVERTISED lifetime. The
+// upstream rejecting the token is the authoritative word on whether it is still
+// good, and the two diverge routinely: server-side revocation, an identity
+// provider's idle-timeout policy shorter than the token lifetime, and the case
+// these tests pin hardest — an AS that omits `expires_in` entirely, leaving a
+// null expiry that the proactive check can never fire on.
+// ---------------------------------------------------------------------------
+
+/** A plugin whose tool authenticates for real: any token in `revoked` gets the
+ *  same `connection_rejected` / HTTP 401 shape every protocol plugin emits;
+ *  anything else succeeds. Modelling revocation (rather than "only the newest
+ *  token works") is what lets a test assert that the RETRY succeeded — the
+ *  re-minted token is simply one the upstream never revoked. */
+const makeRejectingPlugin = (state: {
+  revoked: Set<string>;
+  /** Reject every token, even a freshly minted one — a dead grant. */
+  rejectEverything?: boolean;
+  calls: string[];
+}) =>
+  definePlugin(() => ({
+    id: "acme" as const,
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("whoami"), description: "whoami" }] }),
+    describeAuthMethods: () => [
+      {
+        id: "oauth",
+        label: "OAuth2",
+        kind: "oauth" as const,
+        template: String(TEMPLATE),
+        oauth: { scopes: [] },
+      },
+    ],
+    invokeTool: ({ credential }) => {
+      const token = credential.value;
+      state.calls.push(String(token));
+      if (token !== null && !state.rejectEverything && !state.revoked.has(token)) {
+        return Effect.succeed(ToolResult.ok({ token }));
+      }
+      return Effect.succeed(
+        authToolFailure({
+          code: "connection_rejected",
+          status: 401,
+          message: "Upstream rejected credentials with HTTP 401.",
+          integration: { id: String(credential.integration) },
+          credential: { kind: "upstream", label: String(credential.connection) },
+        }),
+      );
+    },
+    extension: (ctx) => ({
+      seed: () => ctx.core.integrations.register({ slug: INTEG, description: "Acme", config: {} }),
+    }),
+  }))();
+
+/** Mint a connection against `server` and return the harness + call log. */
+const connectRejecting = (options?: { readonly tokenExpiresInSeconds?: number }) =>
+  Effect.gen(function* () {
+    const server = yield* serveOAuthTestServer({
+      scopes: ["read"],
+      ...(options?.tokenExpiresInSeconds !== undefined
+        ? { tokenExpiresInSeconds: options.tokenExpiresInSeconds }
+        : {}),
+    });
+    const state = {
+      revoked: new Set<string>(),
+      rejectEverything: false,
+      calls: [] as string[],
+    };
+    const issuedLatest = Effect.gen(function* () {
+      const issued = yield* server.issuedAccessTokens;
+      return issued.length > 0 ? issued[issued.length - 1]! : null;
+    });
+    const harness = yield* makeTestWorkspaceHarness({
+      plugins: [memoryCredentialsPlugin(), makeRejectingPlugin(state)] as const,
+    });
+    const { executor, config } = harness;
+    yield* executor.acme.seed();
+    yield* executor.oauth.createClient({
+      owner: "org",
+      slug: CLIENT,
+      authorizationUrl: server.authorizationEndpoint,
+      tokenUrl: server.tokenEndpoint,
+      grant: "authorization_code",
+      clientId: "test-client",
+      clientSecret: "test-secret",
+    });
+    const started = yield* executor.oauth.start({
+      owner: "org",
+      client: CLIENT,
+      clientOwner: "org",
+      name: ConnectionName.make("mine"),
+      integration: INTEG,
+      template: TEMPLATE,
+    });
+    if (started.status !== "redirect") {
+      return yield* Effect.die("expected a redirect-status OAuth start");
+    }
+    const callback = yield* server.completeAuthorizationCodeFlow({
+      authorizationUrl: started.authorizationUrl,
+    });
+    yield* executor.oauth.complete({ state: started.state, code: callback.code });
+    return { server, state, executor, config, issuedLatest };
+  });
+
+const ADDRESS = ToolAddress.make("tools.acme.org.mine.whoami");
+
+/** Mark every token the AS has issued so far as no longer honoured upstream —
+ *  the state a revocation or an idle-timeout policy leaves behind. */
+const revokeIssuedSoFar = (
+  server: { readonly issuedAccessTokens: Effect.Effect<readonly string[]> },
+  state: { revoked: Set<string> },
+) =>
+  Effect.gen(function* () {
+    for (const token of yield* server.issuedAccessTokens) state.revoked.add(token);
+  });
+
+const refreshGrants = (requests: readonly { readonly path: string; readonly body: string }[]) =>
+  requests.filter((r) => r.path === "/token" && r.body.includes("grant_type=refresh_token"));
+
+describe("reactive OAuth refresh on upstream 401", () => {
+  it.effect(
+    "re-mints and retries once when the upstream rejects a token it still believes valid",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { server, state, executor, issuedLatest } = yield* connectRejecting();
+
+          // Simulate the divergence: the AS says the token is good for an hour,
+          // but the upstream has already stopped honouring it (revoked / idle
+          // timeout). Nothing about `expires_at` reflects this.
+          yield* revokeIssuedSoFar(server, state);
+          yield* server.clearRequests;
+
+          const result = (yield* executor.execute(ADDRESS, {})) as {
+            data: { token: string };
+          };
+
+          // The retry ran against a token the upstream would accept, so the call
+          // succeeded rather than surfacing the 401 to the user.
+          const latest = yield* issuedLatest;
+          expect(result.data.token).toBe(latest);
+          expect(state.calls).toHaveLength(2);
+          expect(state.calls[0]).not.toBe(state.calls[1]);
+
+          // Exactly one refresh grant — the retry is single-shot, not a loop.
+          expect(refreshGrants(yield* server.requests)).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it.effect("recovers a null-expiry connection, which the proactive check can never fire on", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { server, state, executor, config, issuedLatest } = yield* connectRejecting();
+
+        // An AS that omits `expires_in` leaves expires_at null. `shouldRefreshToken`
+        // returns false for null forever, so before the reactive path these
+        // connections could never refresh at all — they died silently and only a
+        // manual reconnect brought them back. 5 such rows existed in production.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "mine"),
+            set: { expires_at: null },
+          }),
+        );
+        yield* revokeIssuedSoFar(server, state);
+        yield* server.clearRequests;
+
+        const result = (yield* executor.execute(ADDRESS, {})) as {
+          data: { token: string };
+        };
+
+        expect(result.data.token).toBe(yield* issuedLatest);
+        expect(refreshGrants(yield* server.requests)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("persists the re-minted token so the next call needs no second refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { server, state, executor, issuedLatest } = yield* connectRejecting();
+        yield* revokeIssuedSoFar(server, state);
+        yield* executor.execute(ADDRESS, {});
+
+        // The re-minted token is not revoked, so a second call must reuse the
+        // stored value rather than refreshing again.
+        const current = yield* issuedLatest;
+        yield* server.clearRequests;
+
+        const result = (yield* executor.execute(ADDRESS, {})) as {
+          data: { token: string };
+        };
+        expect(result.data.token).toBe(current);
+        expect(refreshGrants(yield* server.requests)).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("surfaces the upstream's own 401 when the re-minted token is also rejected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { server, state, executor } = yield* connectRejecting();
+
+        // The upstream rejects everything, including whatever the refresh mints
+        // — a genuinely dead grant, not a stale token. The user must see the
+        // upstream's auth failure and its reconnect guidance, NOT a masked
+        // error or a retry loop.
+        state.rejectEverything = true;
+        yield* server.clearRequests;
+
+        const result = yield* executor.execute(ADDRESS, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "connection_rejected", status: 401 },
+        });
+        // Tried twice, refreshed once, then stopped.
+        expect(state.calls).toHaveLength(2);
+        expect(refreshGrants(yield* server.requests)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("does not retry a 403 — re-minting the same grant returns the same answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const calls: string[] = [];
+        const forbiddenPlugin = definePlugin(() => ({
+          id: "acme" as const,
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.succeed({ tools: [{ name: ToolName.make("whoami"), description: "whoami" }] }),
+          describeAuthMethods: () => [
+            {
+              id: "oauth",
+              label: "OAuth2",
+              kind: "oauth" as const,
+              template: String(TEMPLATE),
+              oauth: { scopes: [] },
+            },
+          ],
+          invokeTool: ({ credential }) => {
+            calls.push(String(credential.value));
+            return Effect.succeed(
+              authToolFailure({
+                code: "connection_rejected",
+                status: 403,
+                message: "Upstream rejected credentials with HTTP 403.",
+                integration: { id: String(credential.integration) },
+                credential: { kind: "upstream", label: String(credential.connection) },
+              }),
+            );
+          },
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({ slug: INTEG, description: "Acme", config: {} }),
+          }),
+        }))();
+
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [memoryCredentialsPlugin(), forbiddenPlugin] as const,
+        });
+        yield* executor.acme.seed();
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("mine"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+        yield* server.clearRequests;
+
+        const result = yield* executor.execute(ADDRESS, {});
+
+        // A 403 is authenticated-but-not-permitted. Retrying would burn a
+        // refresh-token rotation per call and never converge.
+        expect(result).toMatchObject({ ok: false, error: { status: 403 } });
+        expect(calls).toHaveLength(1);
+        expect(refreshGrants(yield* server.requests)).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("does not retry when the connection holds no refresh token", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { server, state, executor, config } = yield* connectRejecting();
+
+        // Nothing to re-mint from: the only recovery is a human reconnect, so
+        // the upstream's failure must reach the caller on the first try.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "mine"),
+            set: { refresh_item_id: null },
+          }),
+        );
+        yield* revokeIssuedSoFar(server, state);
+        yield* server.clearRequests;
+
+        const result = yield* executor.execute(ADDRESS, {});
+
+        expect(result).toMatchObject({ ok: false, error: { status: 401 } });
+        expect(state.calls).toHaveLength(1);
+        expect(refreshGrants(yield* server.requests)).toHaveLength(0);
       }),
     ),
   );

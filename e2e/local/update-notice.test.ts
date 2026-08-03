@@ -87,7 +87,7 @@ scenario(
           await step("Open the console via the CLI's ?_token URL", async () => {
             await page.goto(url, { waitUntil: "domcontentloaded" });
             // The console renders past the auth gate: the Integrations page and
-            // its built-in Executor source row load (proves auth + data, not
+            // its built-in Executor integration row load (proves auth + data, not
             // just the static shell).
             await page.getByRole("heading", { name: "Integrations" }).waitFor({ timeout: 60_000 });
             await page.getByText("Tool providers available").waitFor({ timeout: 30_000 });

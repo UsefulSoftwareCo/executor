@@ -34,13 +34,17 @@ export const ORG_SLUG_SEGMENT = "{-$orgSlug}";
  *  are these paths prefixed with `/{-$orgSlug}`. */
 export const CONSOLE_ROUTE_PATHS = [
   "/",
+  "/connect/$integrationSlug",
   "/integrations/$namespace",
   "/integrations/add/$pluginKey",
   "/policies",
   "/secrets",
   "/tools",
+  "/users",
   "/toolkits",
   "/toolkits/$toolkitSlug",
+  "/artifacts",
+  "/artifacts/$artifactId",
   "/resume/$executionId",
   "/plugins/$pluginId/$",
 ] as const;
@@ -63,6 +67,10 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
   const entries: ReadonlyArray<readonly [ConsoleRoutePath, VirtualRouteNode]> = [
     ["/", index(file("index.tsx"))],
     [
+      "/connect/$integrationSlug",
+      route("/connect/$integrationSlug", file("connect.$integrationSlug.tsx")),
+    ],
+    [
       "/integrations/$namespace",
       route("/integrations/$namespace", file("integrations.$namespace.tsx")),
     ],
@@ -73,8 +81,14 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     ["/policies", route("/policies", file("policies.tsx"))],
     ["/secrets", route("/secrets", file("secrets.tsx"))],
     ["/tools", route("/tools", file("tools.tsx"))],
+    // The admin users view. Hosts that don't serve `/admin/users*` (local /
+    // desktop, cloudflare) exclude it — the page would only ever render its
+    // denied state there.
+    ["/users", route("/users", file("users.tsx"))],
     ["/toolkits", route("/toolkits", file("toolkits.tsx"))],
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],
+    ["/artifacts", route("/artifacts", file("artifacts.tsx"))],
+    ["/artifacts/$artifactId", route("/artifacts/$artifactId", file("artifacts.$artifactId.tsx"))],
     ["/resume/$executionId", route("/resume/$executionId", file("resume.$executionId.tsx"))],
     ["/plugins/$pluginId/$", route("/plugins/$pluginId/$", file("plugins.$pluginId.$.tsx"))],
   ];

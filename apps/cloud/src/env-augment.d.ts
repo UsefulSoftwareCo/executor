@@ -22,6 +22,10 @@ declare global {
       DATABASE_URL?: string;
       EXECUTOR_DIRECT_DATABASE_URL?: string;
 
+      // Static asset binding emitted by @cloudflare/vite-plugin in
+      // dist/server/wrangler.json as assets.directory = "../client".
+      ASSETS: { readonly fetch: (request: Request) => Promise<Response> };
+
       // Plugin blob seam backend (wrangler.jsonc `r2_buckets`). Declared here
       // (optional) rather than regenerating worker-configuration.d.ts: test
       // workers and older local setups run without the binding, and the db

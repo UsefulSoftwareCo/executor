@@ -5,6 +5,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
+import { innerRendererPlugin, mcpAppsShellAsset } from "@executor-js/mcp-apps-shell/vite";
 import { unstable_readConfig } from "wrangler";
 
 import { routes } from "./tsr.routes";
@@ -66,7 +67,7 @@ export default defineConfig(({ command, mode }) => {
   }
 
   // Deps vite only discovers once a lazy-loaded React chunk actually renders
-  // (e.g. opening the MCP/OpenAPI "add source" flow). Discovering them mid-run
+  // (e.g. opening the MCP/OpenAPI "add integration" flow). Discovering them mid-run
   // forces a re-optimize + full program reload; in workerd (apps/cloud's SSR
   // worker) each reload stacks a new isolate's heap on top of the last one
   // without freeing it, so a handful of reloads exhausts the worker's heap
@@ -126,6 +127,13 @@ export default defineConfig(({ command, mode }) => {
     plugins: [
       devCrashGuard(),
       tailwindcss(),
+      // The artifact page hosts the MCP-Apps shell as a sandboxed iframe over
+      // the MCP-Apps protocol: `mcpAppsShellAsset` emits the built shell
+      // document and hands the page its URL, and `innerRendererPlugin` inlines
+      // the shell's own sandboxed inner frame from
+      // `virtual:executor-inner-renderer`.
+      mcpAppsShellAsset() as Plugin,
+      innerRendererPlugin(),
       executorVitePlugin(),
       cloudflare({ viteEnvironment: { name: "ssr" }, inspectorPort: false }),
       tanstackStart({

@@ -188,8 +188,11 @@ export const makeExecutionStackMiddleware = <
           // provider carried one. Absent slug -> the service stays unprovided and
           // the URL falls back to its bare, client-canonicalized form.
           const { executor, engine } = yield* resolved.organizationSlug !== undefined
-            ? stack.pipe(Effect.provideService(RequestOrgSlug, { slug: resolved.organizationSlug }))
-            : stack;
+            ? stack.pipe(
+                Effect.provideService(RequestOrgSlug, { slug: resolved.organizationSlug }),
+                Effect.withSpan("executor.stack.http.resolve"),
+              )
+            : stack.pipe(Effect.withSpan("executor.stack.http.resolve"));
           return yield* httpEffect.pipe(
             Effect.provideService(AuthContext, auth),
             Effect.provideService(ExecutorService, executor),

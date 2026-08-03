@@ -16,8 +16,13 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 // stdio branch of `createMcpConnector`.
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
-import { McpConnectionError, McpOAuthReauthorizationRequired } from "./errors";
+import {
+  McpConnectionError,
+  McpInsufficientScopeError,
+  McpOAuthReauthorizationRequired,
+} from "./errors";
 import { httpStatusFromCause } from "./http-status";
+import { detectInsufficientScope } from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
 // Connection type
@@ -143,7 +148,30 @@ const fetchFromHttpClientLayer = (
         headers: responseHeaders,
       });
     }).pipe(Effect.provide(httpClientLayer));
-    const promise = Effect.runPromise(effect);
+    // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
+    // HERE, below the SDK: with an authProvider the SDK would consume the
+    // challenge and re-run auth ("upscoping"), which our static-token
+    // provider can only answer by demanding reauthorization — misclassifying
+    // an unfixable scope shortfall as oauth_reauth_required. Thrown as the
+    // tagged error from the fetch adapter (a true runtime edge: the SDK
+    // consumes promise rejections) so it reaches the invoke/connect catch
+    // sites verbatim.
+    const promise = Effect.runPromise(effect).then((response) => {
+      if (response.status === 403) {
+        const challenge = response.headers.get("www-authenticate");
+        if (
+          challenge !== null &&
+          detectInsufficientScope({ headers: { "www-authenticate": challenge } }) !== null
+        ) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
+          throw new McpInsufficientScopeError({
+            message:
+              "MCP server rejected the call: the OAuth grant does not cover the required scope",
+          });
+        }
+      }
+      return response;
+    });
     if (!init?.signal) return promise;
     // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
     if (init.signal.aborted) return Promise.reject(abortError(init.signal));
@@ -185,6 +213,16 @@ const connectionFailure = (
 ): McpConnectionError | McpOAuthReauthorizationRequired => {
   if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
     return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
+  }
+  if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
+    // Surfaced as a connection error with the 403 status; the invoke/connect
+    // catch sites detect the tag and classify as oauth_scope_insufficient.
+    return new McpConnectionError({
+      transport,
+      message: `${message} (HTTP 403: insufficient scope)`,
+      httpStatus: 403,
+      insufficientScope: true,
+    });
   }
   // Carry the handshake HTTP status structurally (and in the message for
   // humans) so the liveness health check can classify a rejected credential

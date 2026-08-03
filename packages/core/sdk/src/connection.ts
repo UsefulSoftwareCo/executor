@@ -54,6 +54,9 @@ export interface Connection {
    *  declared scopes to decide whether this connection must reconnect to grant
    *  newly-needed access. Null for static creds / when the AS omitted `scope`. */
   readonly oauthScope?: string | null;
+  /** Requested authorization-code scopes the provider did not grant, excluding
+   *  identity/refresh scopes. Informational only: connect still succeeds. */
+  readonly missingOAuthScopes?: readonly string[];
   /** Last health-check verdict, persisted by every `checkHealth` run. Answers
    *  "has this expired?" at a glance in the connections list without probing.
    *  Null/absent = never checked. */

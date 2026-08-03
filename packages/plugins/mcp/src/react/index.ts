@@ -1,5 +1,5 @@
-export { mcpIntegrationPlugin, createMcpIntegrationPlugin } from "./source-plugin";
-export type { McpIntegrationPluginOptions } from "./source-plugin";
+export { mcpIntegrationPlugin, createMcpIntegrationPlugin } from "./integration-plugin";
+export type { McpIntegrationPluginOptions } from "./integration-plugin";
 export { McpClient } from "./client";
 export {
   probeMcpEndpoint,

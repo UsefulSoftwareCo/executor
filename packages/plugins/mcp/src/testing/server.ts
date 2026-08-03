@@ -12,6 +12,10 @@ export type McpTestServer = {
   readonly sessionCount: () => number;
   readonly requests: Effect.Effect<readonly McpTestRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
+  /** Drops all server-side session registrations without notifying clients. */
+  readonly forgetSessions: Effect.Effect<void>;
+  /** Rejects the next request carrying an MCP session id with this status. */
+  readonly rejectNextSessionRequest: (status: number) => Effect.Effect<void>;
 };
 
 export type McpTestRequest = {
@@ -64,9 +68,11 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
   Effect.acquireRelease(
     Effect.gen(function* () {
       const transports = new Map<string, StreamableHTTPServerTransport>();
+      const allTransports = new Set<StreamableHTTPServerTransport>();
       const requests = yield* Ref.make<readonly McpTestRequest[]>([]);
       const path = options.path ?? "/";
       let sessions = 0;
+      let nextSessionRequestStatus: number | undefined;
 
       const handleMcpRequest = (
         request: http.IncomingMessage,
@@ -130,6 +136,13 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             }
           }
 
+          if (sessionId && request.method === "POST" && nextSessionRequestStatus !== undefined) {
+            const status = nextSessionRequestStatus;
+            nextSessionRequestStatus = undefined;
+            writeText(response, status, `Forced HTTP ${status}`);
+            return;
+          }
+
           const existingTransport = sessionId ? transports.get(sessionId) : undefined;
           if (sessionId && !existingTransport) {
             writeText(response, 404, "Session not found");
@@ -150,6 +163,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
               transports.set(sid, transport);
             },
           });
+          allTransports.add(transport);
           sessions += 1;
 
           const mcpServer = factory();
@@ -202,21 +216,32 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
         sessionCount: () => sessions,
         requests: Ref.get(requests),
         clearRequests: Ref.set(requests, []),
+        forgetSessions: Effect.sync(() => transports.clear()),
+        rejectNextSessionRequest: (status: number) =>
+          Effect.sync(() => {
+            nextSessionRequestStatus = status;
+          }),
         close: Effect.gen(function* () {
-          for (const transport of transports.values()) {
+          for (const transport of allTransports) {
             yield* Effect.tryPromise({
               try: () => transport.close(),
               catch: (cause) => new McpTestServerError({ cause }),
             }).pipe(Effect.ignore);
           }
-          yield* Effect.sync(() => {
-            nodeServer.close();
+          yield* Effect.callback<void>((resume) => {
+            nodeServer.close(() => resume(Effect.void));
             nodeServer.closeAllConnections?.();
           });
+          // closeAllConnections destroys sockets out from under in-flight SDK
+          // reads; give those rejections a beat to settle before the scope
+          // ends so they surface inside the test, not as unhandled rejections.
+          // A raw timer, not Effect.sleep: this runs inside it.effect tests
+          // whose TestClock never advances wall-clock sleeps.
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)));
         }),
       };
     }),
-    (server) => server.close,
+    (server) => server.close.pipe(Effect.ignore),
   ).pipe(Effect.map(({ close: _close, ...server }) => server));
 
 export const serveMcpServerWithOAuth = (

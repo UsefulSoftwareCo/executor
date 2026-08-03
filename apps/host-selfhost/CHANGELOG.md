@@ -1,5 +1,167 @@
 # @executor-js/host-selfhost
 
+## 0.0.36
+
+### Patch Changes
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/analytics@0.1.1
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/app@1.4.4
+  - @executor-js/execution@1.5.37
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.5
+  - @executor-js/plugin-encrypted-secrets@0.0.36
+  - @executor-js/plugin-graphql@1.5.37
+  - @executor-js/plugin-mcp@1.5.37
+  - @executor-js/plugin-openapi@1.5.37
+  - @executor-js/plugin-provider-service-split@0.0.8
+  - @executor-js/plugin-toolkits@1.5.29
+  - @executor-js/react@1.4.57
+  - @executor-js/runtime-quickjs@1.5.37
+
+## 0.0.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/runtime-quickjs@1.5.36
+  - @executor-js/execution@1.5.36
+  - @executor-js/plugin-graphql@1.5.36
+  - @executor-js/plugin-mcp@1.5.36
+  - @executor-js/plugin-openapi@1.5.36
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.56
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-encrypted-secrets@0.0.35
+  - @executor-js/plugin-provider-service-split@0.0.7
+  - @executor-js/plugin-toolkits@1.5.28
+  - @executor-js/react@1.4.56
+
+## 0.0.34
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df), [`af95edb`](https://github.com/UsefulSoftwareCo/executor/commit/af95edbb0bbde544bb1f4c6e18e9d64a2bcab0f8), [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/plugin-mcp@1.5.35
+  - @executor-js/runtime-quickjs@1.5.35
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.55
+  - @executor-js/execution@1.5.35
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.6
+  - @executor-js/plugin-encrypted-secrets@0.0.34
+  - @executor-js/plugin-graphql@1.5.35
+  - @executor-js/plugin-openapi@1.5.35
+  - @executor-js/plugin-provider-service-split@0.0.6
+  - @executor-js/plugin-toolkits@1.5.27
+  - @executor-js/react@1.4.55
+
+## 0.0.33
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`a86cc4e`](https://github.com/UsefulSoftwareCo/executor/commit/a86cc4e6d0252c90834f40ee09837d8a19cab7fe), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f), [`171de20`](https://github.com/UsefulSoftwareCo/executor/commit/171de204725d10405c693549febc3a1cce2c24d8)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/execution@1.5.34
+  - @executor-js/plugin-openapi@1.5.34
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.54
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.5
+  - @executor-js/plugin-encrypted-secrets@0.0.33
+  - @executor-js/plugin-graphql@1.5.34
+  - @executor-js/plugin-mcp@1.5.34
+  - @executor-js/plugin-provider-service-split@0.0.5
+  - @executor-js/plugin-toolkits@1.5.26
+  - @executor-js/react@1.4.54
+  - @executor-js/runtime-quickjs@1.5.34
+
+## 0.0.32
+
+### Patch Changes
+
+- Updated dependencies [[`5e0dd15`](https://github.com/UsefulSoftwareCo/executor/commit/5e0dd15291daaedf10f6eb8e03c5afdca8787764)]:
+  - @executor-js/plugin-provider-service-split@0.0.4
+  - @executor-js/sdk@1.5.33
+  - @executor-js/runtime-quickjs@1.5.33
+  - @executor-js/execution@1.5.33
+  - @executor-js/plugin-graphql@1.5.33
+  - @executor-js/plugin-mcp@1.5.33
+  - @executor-js/plugin-openapi@1.5.33
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.53
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.4
+  - @executor-js/plugin-encrypted-secrets@0.0.32
+  - @executor-js/plugin-toolkits@1.5.25
+  - @executor-js/react@1.4.53
+
+## 0.0.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/runtime-quickjs@1.5.32
+  - @executor-js/execution@1.5.32
+  - @executor-js/plugin-graphql@1.5.32
+  - @executor-js/plugin-mcp@1.5.32
+  - @executor-js/plugin-openapi@1.5.32
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.52
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.3
+  - @executor-js/plugin-encrypted-secrets@0.0.31
+  - @executor-js/plugin-provider-service-split@0.0.3
+  - @executor-js/plugin-toolkits@1.5.24
+  - @executor-js/react@1.4.52
+
+## 0.0.30
+
+### Patch Changes
+
+- Updated dependencies [[`9e38928`](https://github.com/UsefulSoftwareCo/executor/commit/9e38928f0fda9032b64b26990270c5d2b6690d13)]:
+  - @executor-js/plugin-openapi@1.5.31
+  - @executor-js/plugin-provider-service-split@0.0.2
+  - @executor-js/sdk@1.5.31
+  - @executor-js/runtime-quickjs@1.5.31
+  - @executor-js/execution@1.5.31
+  - @executor-js/plugin-graphql@1.5.31
+  - @executor-js/plugin-mcp@1.5.31
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.51
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.2
+  - @executor-js/plugin-encrypted-secrets@0.0.30
+  - @executor-js/plugin-toolkits@1.5.23
+  - @executor-js/react@1.4.51
+
+## 0.0.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/runtime-quickjs@1.5.30
+  - @executor-js/execution@1.5.30
+  - @executor-js/plugin-graphql@1.5.30
+  - @executor-js/plugin-mcp@1.5.30
+  - @executor-js/plugin-openapi@1.5.30
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.50
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-apps@0.1.1
+  - @executor-js/plugin-encrypted-secrets@0.0.29
+  - @executor-js/plugin-provider-service-split@0.0.1
+  - @executor-js/plugin-toolkits@1.5.22
+  - @executor-js/react@1.4.50
+
 ## 0.0.28
 
 ### Patch Changes

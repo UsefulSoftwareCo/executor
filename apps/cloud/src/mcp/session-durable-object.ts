@@ -14,7 +14,6 @@
 // ---------------------------------------------------------------------------
 
 import { env } from "cloudflare:workers";
-import { createTraceState } from "@opentelemetry/api";
 import { Data, Effect, Layer } from "effect";
 import type { Cause } from "effect";
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
@@ -26,6 +25,9 @@ import {
   createExecutorMcpServer,
 } from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
@@ -65,6 +67,7 @@ import {
   type DbServiceShape,
 } from "../db/db";
 import { makeExecutionStack } from "../engine/execution-stack";
+import { preloadQuickJs } from "../quickjs";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
@@ -73,6 +76,7 @@ import {
   captureCauseEffect as reportCauseEffect,
   tagCurrentSentryScopeWithCurrentOtelSpan,
 } from "../observability";
+import { parseTraceparent } from "./traceparent";
 
 // Re-export the shared types so existing cloud importers
 // (`auth/handlers.ts`, etc.) keep their `../mcp/session-durable-object` path.
@@ -113,34 +117,6 @@ class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForward
   readonly cause: unknown;
 }> {}
 
-// W3C propagation across the worker→DO boundary. The worker injects its
-// `traceparent` and forwards incoming `tracestate` / `baggage`; we parse the
-// context and use `OtelTracer.withSpanContext` to stitch the DO's root span
-// under the worker span so the entire logical request lives in one trace.
-const TRACEPARENT_PATTERN = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
-
-type IncomingSpanContext = {
-  readonly traceId: string;
-  readonly spanId: string;
-  readonly traceFlags: number;
-  readonly traceState?: ReturnType<typeof createTraceState>;
-};
-
-const parseTraceparent = (
-  traceparent: string | null | undefined,
-  tracestate: string | null | undefined,
-): IncomingSpanContext | null => {
-  if (!traceparent) return null;
-  const match = TRACEPARENT_PATTERN.exec(traceparent);
-  if (!match) return null;
-  return {
-    traceId: match[2]!,
-    spanId: match[3]!,
-    traceFlags: parseInt(match[4]!, 16),
-    ...(tracestate ? { traceState: createTraceState(tracestate) } : {}),
-  };
-};
-
 /**
  * The DO keeps one postgres.js client for the MCP session runtime. postgres.js
  * closes idle sockets quickly, while the runtime object stays alive so the MCP
@@ -179,6 +155,18 @@ const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
   const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
   return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices);
 };
+
+// The `ui://executor/shell.html` resource, over the ASSETS binding: the
+// deployed Worker has no filesystem, so the document is the stable-named
+// asset the client build emitted (`mcpAppsShellAsset`), fetched at first
+// artifact resource read. Module scope so the fetch-and-verify happens once
+// per isolate, not once per session. The dev thunk carries the built shell
+// inline under `vite dev`, where no assets exist yet for the binding to find.
+const loadAppShellHtml = makeAssetsShellHtmlLoader({
+  assets: env.ASSETS,
+  devShellHtml: () =>
+    import("virtual:executor-mcp-apps-shell-dev-html").then((mod) => mod.devShellHtml),
+});
 
 // ---------------------------------------------------------------------------
 // Durable Object
@@ -237,6 +225,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         userId: token.userId,
         resource: token.resource,
         elicitationMode: token.elicitationMode,
+        artifactsEnabled: token.artifactsEnabled,
       } satisfies SessionMeta;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
@@ -253,6 +242,13 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
+      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
+      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
+      // user `execute` code on the dynamic-worker runtime, but the artifact
+      // smoke render is a QuickJS sandbox on every host — without this it fails
+      // open on each create and the check silently does nothing.
+      // Idempotent per isolate.
+      yield* Effect.promise(() => preloadQuickJs());
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
@@ -271,11 +267,29 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       // Build the description here so `executor.connections.list()` stays under
       // the DO startup span and the MCP SDK receives a concrete string instead
       // of invoking `engine.getDescription` across its async boundary.
-      const description = yield* buildExecuteDescription(executor);
+      const description = yield* buildExecuteDescription(executor).pipe(
+        Effect.withSpan("mcp.execute.description.build"),
+      );
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
+        artifacts: executor.artifacts,
+        connections: executor.connections,
+        // Artifacts are on by default, opt-out per connection. A session
+        // persisted without a value restores to the default, same as a fresh
+        // connection whose URL says nothing about `?artifacts=`.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Cold restores rebuild this server with no `initialize` to replay, so
+        // the negotiated apps support comes back from storage instead.
+        restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
+        onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        loadAppShellHtml,
+        smokeRenderArtifact,
+        artifactUrl: artifactUrlFor(
+          env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+          sessionMeta.organizationSlug,
+        ),
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,

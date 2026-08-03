@@ -10,6 +10,10 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 // this app only owns its root (the Cloudflare-Access shell). To add
 // app-specific routes, create web/routes/app and mount it inside the org
 // scope via `orgScoped: [physical("", "app")]` — the directory must exist.
+//
+// /users is excluded: this host mounts no admin-users routes (identity is
+// Cloudflare Access, which has no in-app role to gate on), so the page would
+// only ever render its denied state.
 export const routes = rootRoute("__root.tsx", [
-  ...consoleRoutes({ dir: "../../../../packages/react/src/routes" }),
+  ...consoleRoutes({ dir: "../../../../packages/react/src/routes", exclude: ["/users"] }),
 ]);

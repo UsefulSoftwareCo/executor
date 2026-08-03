@@ -14,6 +14,7 @@ import { setOAuthCompletionListener } from "@executor-js/api";
 import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
 import { loadOrMintLocalAuthToken } from "./auth";
 import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
+import { disposeAnalytics } from "./analytics";
 import { startIntegrationsRefresh } from "./integrations";
 import { disposeServerHandlers, getServerHandlers } from "./main";
 import {
@@ -324,6 +325,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
     } else {
       await closeProvidedHandlers(handlers);
     }
+    // Final analytics flush; the layer finalizer drains the buffer.
+    await disposeAnalytics();
     if (viteChild) await viteChild.stop();
   };
 

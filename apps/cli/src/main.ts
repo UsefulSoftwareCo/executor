@@ -64,7 +64,12 @@ if (sentryDsn) {
 import { Argument as Args, Command, Flag as Options } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { FileSystem, Path as PlatformPath } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
@@ -131,7 +136,9 @@ import {
 import {
   canAutoStartCliServerConnection,
   chooseCliServerConnectionWithActiveLocal,
+  describeUnauthorizedCliServer,
   parseCliExecutorServerConnection,
+  profileNameFromConnectionKey,
   type CliServerConnectionSource,
   withCliServerAuthFallback,
 } from "./server-connection";
@@ -162,7 +169,7 @@ import {
   buildDescribeToolCode,
   filterToolPathChildren,
   buildInvokeToolCode,
-  buildListSourcesCode,
+  buildListIntegrationsCode,
   buildSearchToolsCode,
   extractExecutionId,
   extractPausedInteraction,
@@ -743,9 +750,6 @@ const resolveRequestedExecutorServerConnection = (
 // login. The refreshed tokens are written back to the originating profile.
 const OAUTH_REFRESH_SKEW_SECONDS = 60;
 
-const profileNameFromKey = (key: string): string | null =>
-  key.startsWith("profile:") ? key.slice("profile:".length) : null;
-
 const refreshOAuthConnection = (
   connection: ExecutorServerConnection,
 ): Effect.Effect<ExecutorServerConnection, never, FileSystem.FileSystem | PlatformPath.Path> =>
@@ -780,7 +784,7 @@ const refreshOAuthConnection = (
       },
     });
 
-    const profileName = profileNameFromKey(connection.key);
+    const profileName = profileNameFromConnectionKey(connection.key);
     if (profileName) {
       yield* upsertCliServerConnectionProfile({
         name: profileName,
@@ -961,7 +965,7 @@ const executeCode = (input: {
 }): Effect.Effect<ExecuteCodeResult, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
     const connection = yield* resolveExecutorServerConnection(input.target);
-    const client = yield* makeApiClient(connection);
+    const client = yield* makeApiClient(connection, input.target);
     const response = yield* client.executions.execute({
       payload: {
         code: input.code,
@@ -1050,7 +1054,7 @@ const printExecutionOutcome = (input: {
 // Typed API client
 // ---------------------------------------------------------------------------
 
-const makeApiClient = (connection: ExecutorServerConnection) => {
+const makeApiClient = (connection: ExecutorServerConnection, target: ServerTarget = {}) => {
   const authorization = getExecutorServerAuthorizationHeader(connection);
   return HttpApiClient.make(ExecutorApi, {
     baseUrl: connection.apiBaseUrl,
@@ -1061,6 +1065,18 @@ const makeApiClient = (connection: ExecutorServerConnection) => {
           ),
         }
       : {}),
+    // A 401 on an endpoint that doesn't model it is a sign-in problem: rewrite
+    // the transport-level error into the login hint. Without this the client
+    // fails decoding the unexpected status and prints the opaque
+    // `Decode error (401 GET .../api/tools)`. Declared 401s (typed API errors)
+    // decode before this catch and pass through untouched.
+    transformResponse: (effect) =>
+      Effect.catchIf(
+        effect,
+        (cause) => HttpClientError.isHttpClientError(cause) && cause.response?.status === 401,
+        () =>
+          Effect.fail(new Error(describeUnauthorizedCliServer({ connection, cliPrefix, target }))),
+      ),
   }).pipe(Effect.provide(FetchHttpClient.layer));
 };
 
@@ -1321,13 +1337,19 @@ const runBackgroundDaemonStart = (input: {
 // Stdio MCP session: a pure stdio <-> HTTP bridge to the owning local daemon.
 // ---------------------------------------------------------------------------
 
-const mcpUrlForActiveLocalServer = (
-  connection: ExecutorServerConnection,
-  elicitationMode: "browser" | "model",
-): URL => {
-  const url = new URL("/mcp", connection.origin);
-  if (elicitationMode === "browser") {
+const mcpUrlForActiveLocalServer = (input: {
+  readonly connection: ExecutorServerConnection;
+  readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
+}): URL => {
+  const url = new URL("/mcp", input.connection.origin);
+  if (input.elicitationMode === "browser") {
     url.searchParams.set("elicitation_mode", "browser");
+  }
+  // Artifacts are on by default; only the opt-out is spelled out, so the
+  // default endpoint stays clean.
+  if (!input.artifacts) {
+    url.searchParams.set("artifacts", "false");
   }
   return url;
 };
@@ -1343,11 +1365,16 @@ const mcpUrlForActiveLocalServer = (
 const runMcpHttpBridge = async (input: {
   readonly manifest: ExecutorLocalServerManifest;
   readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
 }): Promise<void> => {
   const stdio = new StdioServerTransport();
   const authorization = getExecutorServerAuthorizationHeader(input.manifest.connection);
   const http = new StreamableHTTPClientTransport(
-    mcpUrlForActiveLocalServer(input.manifest.connection, input.elicitationMode),
+    mcpUrlForActiveLocalServer({
+      connection: input.manifest.connection,
+      elicitationMode: input.elicitationMode,
+      artifacts: input.artifacts,
+    }),
     authorization ? { requestInit: { headers: { Authorization: authorization } } } : undefined,
   );
 
@@ -1422,7 +1449,10 @@ const runMcpHttpBridge = async (input: {
   }
 };
 
-const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
+const runStdioMcpSession = (input: {
+  readonly elicitationMode: "browser" | "model";
+  readonly artifacts: boolean;
+}) =>
   Effect.gen(function* () {
     // `executor mcp` never owns the local database. If a local server is already
     // running, bridge this stdio client to it; otherwise ensure a durable
@@ -1434,7 +1464,11 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
     const active = yield* readActiveLocalServerManifest();
     if (active) {
       yield* Effect.promise(() =>
-        runMcpHttpBridge({ manifest: active, elicitationMode: input.elicitationMode }),
+        runMcpHttpBridge({
+          manifest: active,
+          elicitationMode: input.elicitationMode,
+          artifacts: input.artifacts,
+        }),
       );
       return;
     }
@@ -1456,7 +1490,11 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
       );
     }
     yield* Effect.promise(() =>
-      runMcpHttpBridge({ manifest: elected, elicitationMode: input.elicitationMode }),
+      runMcpHttpBridge({
+        manifest: elected,
+        elicitationMode: input.elicitationMode,
+        artifacts: input.artifacts,
+      }),
     );
   });
 
@@ -1504,14 +1542,45 @@ const parseOptionalJsonObject = (
         Effect.mapError((error) => new Error(`Invalid --content JSON: ${error.message}`)),
       );
 
-const formatUnknownMessage = (cause: unknown): string => {
-  if (cause instanceof Error) return cause.message;
-  if (typeof cause === "string") return cause;
-  if (typeof cause === "object" && cause !== null && "message" in cause) {
-    const message = cause.message;
-    if (typeof message === "string") return message;
+const ownMessage = (value: unknown): string => {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "object" && value !== null && "message" in value) {
+    const message = (value as { message: unknown }).message;
+    if (typeof message === "string") return message.trim();
   }
-  return String(cause);
+  return "";
+};
+
+/**
+ * Render an unknown failure by walking its `cause` chain. Wrapper errors
+ * (tagged errors carrying only `{ cause }`) have an empty own message; without
+ * descending, a boot failure like a data-migration error printed as literally
+ * "Unknown error" (issue #1403). Nested messages that merely repeat their
+ * parent are dropped.
+ */
+const formatUnknownMessage = (cause: unknown): string => {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = cause;
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const message = ownMessage(current);
+    if (message.length > 0 && !messages.some((existing) => existing.includes(message))) {
+      messages.push(message);
+    }
+    current =
+      typeof current === "object" && "cause" in current
+        ? (current as { cause: unknown }).cause
+        : undefined;
+  }
+  if (messages.length === 0) {
+    return typeof cause === "string"
+      ? cause
+      : cause instanceof Error
+        ? cause.message
+        : String(cause);
+  }
+  return messages.join("\ncaused by: ");
 };
 
 const readCliLogLevel = (argv: ReadonlyArray<string>): string | undefined => {
@@ -1802,11 +1871,9 @@ const runCallHelp = (
   Effect.gen(function* () {
     if (args.scopeDir) process.env.EXECUTOR_SCOPE_DIR = resolve(args.scopeDir);
 
-    const connection = yield* resolveExecutorServerConnection({
-      baseUrl: args.baseUrl,
-      serverName: args.serverName,
-    });
-    const client = yield* makeApiClient(connection);
+    const target: ServerTarget = { baseUrl: args.baseUrl, serverName: args.serverName };
+    const connection = yield* resolveExecutorServerConnection(target);
+    const client = yield* makeApiClient(connection, target);
     const tools = yield* client.tools.list({ query: {} });
     const toolPaths = tools.map((tool) => tool.address);
 
@@ -1987,7 +2054,7 @@ const resumeCommand = Command.make(
 
       const contentObj = yield* parseOptionalJsonObject(Option.getOrUndefined(content));
 
-      const client = yield* makeApiClient(connection);
+      const client = yield* makeApiClient(connection, target);
       const result = yield* client.executions.resume({
         params: { executionId },
         payload: { action, content: contentObj },
@@ -2052,8 +2119,8 @@ const toolsSearchCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Search tools by natural-language query"));
 
-const toolsSourcesCommand = Command.make(
-  "sources",
+const toolsIntegrationsCommand = Command.make(
+  "integrations",
   {
     query: Options.string("query").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(50)),
@@ -2065,7 +2132,7 @@ const toolsSourcesCommand = Command.make(
     Effect.gen(function* () {
       applyScope(scope);
       const target = serverTargetFromOptions({ baseUrl, server });
-      const code = buildListSourcesCode({
+      const code = buildListIntegrationsCode({
         query: Option.getOrUndefined(query),
         limit,
       });
@@ -2077,7 +2144,7 @@ const toolsSourcesCommand = Command.make(
         outcome: result.outcome,
       });
     }),
-).pipe(Command.withDescription("List configured sources and tool counts"));
+).pipe(Command.withDescription("List configured integrations and tool counts"));
 
 const toolsDescribeCommand = Command.make(
   "describe",
@@ -2102,8 +2169,12 @@ const toolsDescribeCommand = Command.make(
 ).pipe(Command.withDescription("Describe a tool's TypeScript and JSON schema"));
 
 const toolsCommand = Command.make("tools").pipe(
-  Command.withSubcommands([toolsSearchCommand, toolsSourcesCommand, toolsDescribeCommand] as const),
-  Command.withDescription("Discover available tools and sources"),
+  Command.withSubcommands([
+    toolsSearchCommand,
+    toolsIntegrationsCommand,
+    toolsDescribeCommand,
+  ] as const),
+  Command.withDescription("Discover available tools and integrations"),
 );
 
 const profileConnectionInput = (input: {
@@ -2307,9 +2378,13 @@ const chooseLoginProfileName = (
   }
 };
 
+/** Where `executor login` lands with no flags and no stored profiles. */
+const DEFAULT_LOGIN_ORIGIN = "https://executor.sh";
+
 // Resolve which server a login/logout targets: an existing profile (--server
-// or the default) or a bare origin (--base-url). The profile name is decided
-// later, from the authenticated account.
+// or the default), a bare origin (--base-url), or hosted Executor when
+// nothing is configured yet. The profile name is decided later, from the
+// authenticated account.
 const resolveLoginOrigin = (input: {
   readonly baseUrl: Option.Option<string>;
   readonly server: Option.Option<string>;
@@ -2337,11 +2412,7 @@ const resolveLoginOrigin = (input: {
     const store = yield* readCliServerConnectionStore();
     const profile = defaultCliServerConnectionProfile(store);
     if (profile) return { origin: profile.connection.origin, profile };
-    return yield* Effect.fail(
-      new Error(
-        "No server to log in to. Pass --base-url <https://your-host> or --server <profile>.",
-      ),
-    );
+    return { origin: DEFAULT_LOGIN_ORIGIN, profile: null };
   });
 
 const loginNameOption = Options.string("name").pipe(
@@ -2366,6 +2437,9 @@ const loginCommand = Command.make(
     Effect.gen(function* () {
       const target = yield* resolveLoginOrigin({ baseUrl, server });
       const explicitName = Option.getOrUndefined(name);
+      // The target may have been picked implicitly (default profile, or the
+      // hosted fallback): say where the login is going before the device flow.
+      console.log(`Signing in to ${target.origin}`);
       const discovery = yield* Effect.tryPromise({
         try: () => discoverCliLogin(target.origin),
         catch: toError,
@@ -2420,12 +2494,24 @@ const loginCommand = Command.make(
       });
 
       console.log("");
-      console.log(`Logged in to ${target.origin} (profile "${profileName}", now the default).`);
+      // Profile bookkeeping stays backstage unless the user works with named
+      // profiles (--name, or a store that already has several).
+      const mentionProfile =
+        explicitName !== undefined || (yield* readCliServerConnectionStore()).profiles.length > 1;
+      console.log(
+        mentionProfile
+          ? `Logged in to ${target.origin} (profile "${profileName}", now the default).`
+          : `Logged in to ${target.origin}.`,
+      );
       if (email) console.log(`Account: ${email}`);
       if (org) console.log(`Organization: ${org}`);
       else if (sub) console.log(`User: ${sub}`);
     }),
-).pipe(Command.withDescription("Sign in to a hosted Executor server in the browser (device flow)"));
+).pipe(
+  Command.withDescription(
+    "Sign in to a hosted Executor server in the browser (device flow). Defaults to https://executor.sh.",
+  ),
+);
 
 const logoutCommand = Command.make(
   "logout",
@@ -2441,8 +2527,14 @@ const logoutCommand = Command.make(
         console.log(`No stored login for ${target.origin}.`);
         return;
       }
+      // Profile bookkeeping stays backstage unless the user addressed one.
+      const mentionProfile = Option.isSome(server) || store.profiles.length > 1;
       if (!profile.connection.auth) {
-        console.log(`Profile "${profile.name}" has no stored credentials.`);
+        console.log(
+          mentionProfile
+            ? `Profile "${profile.name}" has no stored credentials.`
+            : `Not signed in to ${target.origin}.`,
+        );
         return;
       }
       yield* upsertCliServerConnectionProfile({
@@ -2455,7 +2547,9 @@ const logoutCommand = Command.make(
         makeDefault: store.defaultProfile === profile.name,
       });
       console.log(
-        `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`,
+        mentionProfile
+          ? `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`
+          : `Logged out of ${profile.connection.origin}.`,
       );
     }),
 ).pipe(Command.withDescription("Clear stored credentials for a server profile"));
@@ -2709,11 +2803,18 @@ const mcpCommand = Command.make(
           "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",
         ),
       ),
+    noArtifacts: Options.boolean("no-artifacts")
+      .pipe(Options.withDefault(false))
+      .pipe(
+        Options.withDescription(
+          "Withhold the artifact surface from this connection: the artifact tools, the app shell resource, and the artifact skills. Served by default.",
+        ),
+      ),
   },
-  ({ scope, elicitationMode }) =>
+  ({ scope, elicitationMode, noArtifacts }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runStdioMcpSession({ elicitationMode });
+      yield* runStdioMcpSession({ elicitationMode, artifacts: !noArtifacts });
     }),
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 
@@ -3164,7 +3265,12 @@ const program = (
       } else {
         console.error(renderCliError(cause));
       }
-      process.exitCode = 1;
+      // Exit hard, not via exitCode: this handler converts the failure into a
+      // success, so runMain's teardown never force-exits, and background fibers
+      // (the integrations-refresh fork) keep the event loop alive. A daemon
+      // that failed boot then lingers with its port unbound, and the desktop
+      // waits on the ready sentinel forever (issue #1403).
+      process.exit(1);
     }),
   ),
 );

@@ -82,6 +82,11 @@ export type OAuthClientOrigin =
 export type CreateOAuthClientInput = OAuthClient & {
   readonly origin?: OAuthClientOrigin;
   readonly originIssuer?: string | null;
+  /** The redirect URI a DCR registration sent as the client's `redirect_uris`
+   *  entry. Persisted so reuse can detect a changed callback (strict servers
+   *  reject an authorize request whose redirect_uri differs from the
+   *  registration). Ignored for manual clients. */
+  readonly originRedirectUri?: string | null;
 };
 
 /** Metadata-only projection of a registered client for listing in the UI.
@@ -122,7 +127,15 @@ export interface OAuthStartInput {
   readonly name: ConnectionName;
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
+  /** Display label for the minted connection. When omitted, the server derives
+   *  one from the provider's OIDC account claims (the account email) when the
+   *  grant carries them; a re-mint of an existing connection keeps its stored
+   *  label. Send a value only for a label the user actually chose. */
   readonly identityLabel?: string | null;
+  /** Mint a NEW connection: when `name` is already taken, the mint picks the
+   *  next free suffixed name (`personalGmail2`) instead of re-minting the
+   *  existing row. Omit for reconnect flows, which target the existing row. */
+  readonly newConnection?: boolean;
   /** Browser-facing callback URL for this flow. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
 }

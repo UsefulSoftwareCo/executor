@@ -81,6 +81,8 @@ const IntegrationResponse = Schema.Struct({
   authMethods: Schema.Array(AuthMethodDescriptorSchema),
   /** Non-secret URL derived from opaque integration config for favicons. */
   displayUrl: Schema.optional(Schema.String),
+  /** Catalog family derived from opaque integration config for grouped display. */
+  family: Schema.optional(Schema.String),
 });
 
 const UpdateIntegrationPayload = Schema.Struct({

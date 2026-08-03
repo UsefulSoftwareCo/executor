@@ -55,11 +55,22 @@ export interface OAuthTestServerOptions {
   readonly supportRefresh?: boolean;
   readonly tokenExpiresInSeconds?: number;
   readonly invalidRefreshTokenDescription?: string;
+  /** RFC 6749 error code returned when a refresh-token grant is rejected.
+   *  Defaults to `invalid_grant`; set to e.g. `invalid_request` to mirror
+   *  authorization servers that reject dead refresh tokens with other codes. */
+  readonly invalidRefreshTokenErrorCode?: string;
+  readonly idTokenClaims?: Readonly<Record<string, unknown>>;
+  readonly refreshIdTokenClaims?: Readonly<Record<string, unknown>>;
   /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
    *  `/register` returns `400 invalid_redirect_uri` unless every requested
    *  `redirect_uris` entry is approved. Mirrors authorization servers (e.g.
    *  Vercel) that only accept loopback redirect URIs for anonymous DCR. */
   readonly approveRedirectUri?: (uri: string) => boolean;
+  /** Gate Dynamic Client Registration on the requested `client_name`. When set,
+   *  `/register` returns `400 invalid_client_metadata` unless the requested
+   *  name is approved. Mirrors authorization servers (e.g. Mercury) that
+   *  reject third-party client names containing their own brand. */
+  readonly approveClientName?: (name: string) => boolean;
 }
 
 export interface OAuthTestServerShape {
@@ -127,6 +138,7 @@ const TokenResponse = Schema.Struct({
   token_type: Schema.String,
   expires_in: Schema.optional(Schema.Number),
   scope: Schema.optional(Schema.String),
+  id_token: Schema.optional(Schema.String),
 });
 const decodeTokenResponse = Schema.decodeUnknownEffect(TokenResponse);
 
@@ -178,6 +190,12 @@ const decodeBasicAuthorization = (
 
 const codeChallengeForVerifier = (verifier: string): string =>
   createHash("sha256").update(verifier).digest("base64url");
+
+const jwtPart = (value: unknown): string =>
+  Buffer.from(JSON.stringify(value)).toString("base64url");
+
+const unsignedJwt = (claims: Readonly<Record<string, unknown>>): string =>
+  `${jwtPart({ alg: "RS256", typ: "JWT" })}.${jwtPart(claims)}.sig`;
 
 const oauthError = (status: number, error: string, errorDescription: string) =>
   jsonResponse(
@@ -417,6 +435,7 @@ export const serveOAuthTestServer = (
     const tokenExpiresInSeconds = options.tokenExpiresInSeconds ?? 3600;
     const invalidRefreshTokenDescription =
       options.invalidRefreshTokenDescription ?? "Unknown refresh token";
+    const invalidRefreshTokenErrorCode = options.invalidRefreshTokenErrorCode ?? "invalid_grant";
     const scopes = options.scopes ?? defaultScopes;
     const omittedTokenResponseScopes = new Set(options.omitTokenResponseScopes ?? []);
     const tokenResponseScope = (scope: string | null): string | undefined => {
@@ -502,6 +521,14 @@ export const serveOAuthTestServer = (
           const json = parseJsonObject(body);
           if (!json) {
             return oauthError(400, "invalid_client_metadata", "Expected JSON body");
+          }
+          const requestedClientName = typeof json.client_name === "string" ? json.client_name : "";
+          if (options.approveClientName && !options.approveClientName(requestedClientName)) {
+            return oauthError(
+              400,
+              "invalid_client_metadata",
+              "The requested client_name is not allowed by this authorization server.",
+            );
           }
           const requestedMethod =
             typeof json.token_endpoint_auth_method === "string"
@@ -652,6 +679,7 @@ export const serveOAuthTestServer = (
                 token_type: "Bearer",
                 expires_in: tokenExpiresInSeconds,
                 ...(scope ? { scope } : {}),
+                ...(options.idTokenClaims ? { id_token: unsignedJwt(options.idTokenClaims) } : {}),
               },
               { "cache-control": "no-store" },
             );
@@ -661,7 +689,7 @@ export const serveOAuthTestServer = (
             const refreshToken = params.get("refresh_token");
             const record = refreshToken ? refreshTokens.get(refreshToken) : undefined;
             if (!supportRefresh || !refreshToken || !record || record.clientId !== clientId) {
-              return oauthError(400, "invalid_grant", invalidRefreshTokenDescription);
+              return oauthError(400, invalidRefreshTokenErrorCode, invalidRefreshTokenDescription);
             }
             const nextAccessToken = `at_${randomUUID()}`;
             const nextRefreshToken = `rt_${randomUUID()}`;
@@ -680,6 +708,9 @@ export const serveOAuthTestServer = (
                 token_type: "Bearer",
                 expires_in: tokenExpiresInSeconds,
                 ...(scope ? { scope } : {}),
+                ...(options.refreshIdTokenClaims
+                  ? { id_token: unsignedJwt(options.refreshIdTokenClaims) }
+                  : {}),
               },
               { "cache-control": "no-store" },
             );

@@ -31,6 +31,7 @@ import { createExecutionEngine } from "./engine";
 import { ExecutionToolError } from "./errors";
 import {
   describeTool,
+  listExecutorIntegrations,
   makeExecutorToolInvoker,
   searchTools,
   type ToolDiscoveryProvider,
@@ -305,6 +306,27 @@ const unmarkedErrorPlugin = makeTestPlugin({
   ],
 });
 
+const bindingErrorPlugin = makeTestPlugin({
+  pluginId: "binding-error-test",
+  integration: "binding",
+  tools: [
+    {
+      name: "sync",
+      description: "Sync with a caller-selected connection",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () =>
+        Effect.fail({
+          _tag: "BindingError",
+          message: 'unknown connection "personal" for role "github" (github)',
+          role: "github",
+          integration: "github",
+          requestedConnection: "personal",
+        }),
+    },
+  ],
+});
+
 const oauthErrorPlugin = definePlugin(() => ({
   id: "oauth-error-test" as const,
   storage: () => ({}),
@@ -481,6 +503,105 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("enumerates a namespace's full catalog for an empty query with a namespace", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+
+      // Enumeration, not search: every github tool, path-sorted, score 0.
+      // `total` is the census an agent can reconcile against the integration's
+      // reported toolCount — keyword search can only ever lower-bound it.
+      const enumerated = yield* searchTools(executor, "", 100, { namespace: "github" });
+      expect(enumerated.items.length).toBeGreaterThan(0);
+      expect(enumerated.total).toBe(enumerated.items.length);
+      expect(enumerated.items.map((item) => item.path)).toEqual(
+        [...enumerated.items.map((item) => item.path)].sort((a, b) => a.localeCompare(b)),
+      );
+      expect(enumerated.items.every((item) => item.integration === "github")).toBe(true);
+      expect(enumerated.items.every((item) => item.score === 0)).toBe(true);
+
+      // The census matches what the integrations list reports for the same
+      // namespace — the reconciliation #1383 could not perform.
+      const integrations = yield* listExecutorIntegrations(executor, { limit: 50 });
+      const github = integrations.items.find((item) => item.id === "github");
+      expect(github?.toolCount).toBe(enumerated.total);
+
+      // Enumeration pages like any other discovery result.
+      const firstPage = yield* searchTools(executor, "", 1, { namespace: "github" });
+      expect(firstPage.items).toEqual([enumerated.items[0]]);
+      expect(firstPage.total).toBe(enumerated.total);
+      expect(firstPage.hasMore).toBe(enumerated.total > 1);
+    }),
+  );
+
+  it.effect("enumeration scopes by exact slug, not the prefix matching ranked search uses", () =>
+    Effect.gen(function* () {
+      // Prefix-sibling integrations: "google" is a token prefix of both
+      // "google_gmail" and "google_sheets". Ranked search deliberately treats
+      // namespace as a fuzzy prefix filter; enumeration must NOT, or its
+      // `total` stops being a census of one integration.
+      const google = makeTestPlugin({
+        pluginId: "google-test",
+        integration: "google",
+        tools: [
+          {
+            name: "ping",
+            description: "Ping",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+        ],
+      });
+      const gmail = makeTestPlugin({
+        pluginId: "google-gmail-test",
+        integration: "google_gmail",
+        tools: [
+          {
+            name: "listMessages",
+            description: "List messages",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+          {
+            name: "sendMessage",
+            description: "Send a message",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+        ],
+      });
+      const executor = yield* makeExecutorWith([google, gmail] as const);
+      yield* provision(executor as never, [
+        { pluginId: "google-test", integration: "google" },
+        { pluginId: "google-gmail-test", integration: "google_gmail" },
+      ]);
+
+      const parent = yield* searchTools(executor, "", 100, { namespace: "google" });
+      expect(
+        parent.items.map((item) => item.integration),
+        "enumerating 'google' returns only the google integration's tools",
+      ).toEqual(["google"]);
+      expect(parent.total).toBe(1);
+
+      const sibling = yield* searchTools(executor, "", 100, { namespace: "google_gmail" });
+      expect(
+        sibling.items.every((item) => item.integration === "google_gmail"),
+        "enumerating the sibling returns only its own tools",
+      ).toBe(true);
+      expect(sibling.total).toBe(2);
+
+      // Ranked search keeps its fuzzy namespace semantics: a keyword search
+      // scoped to "google" may still match tools in google_gmail.
+      const fuzzy = yield* searchTools(executor, "message", 100, { namespace: "google" });
+      expect(
+        fuzzy.items.some((item) => item.integration === "google_gmail"),
+        "ranked search still prefix-matches sibling namespaces",
+      ).toBe(true);
+    }),
+  );
+
   it.effect("paginates ranked matches via limit + offset with hasMore + nextOffset", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();
@@ -630,7 +751,7 @@ describe("tool discovery", () => {
       const executor = yield* makeSearchExecutor();
 
       const listed = yield* createExecutionEngine({ executor, codeExecutor }).execute(
-        "return await tools.executor.sources.list();",
+        "return await tools.executor.integrations.list();",
         { onElicitation: acceptAll },
       );
       expect(listed.error).toBeUndefined();
@@ -666,7 +787,7 @@ describe("tool discovery", () => {
 
       // total = 2 (github, crm), sorted by id ("crm" < "github")
       const firstPage = yield* engine.execute(
-        "return await tools.executor.sources.list({ limit: 1 });",
+        "return await tools.executor.integrations.list({ limit: 1 });",
         { onElicitation: acceptAll },
       );
       expect(firstPage.error).toBeUndefined();
@@ -680,7 +801,7 @@ describe("tool discovery", () => {
       );
 
       const secondPage = yield* engine.execute(
-        "return await tools.executor.sources.list({ limit: 1, offset: 1 });",
+        "return await tools.executor.integrations.list({ limit: 1, offset: 1 });",
         { onElicitation: acceptAll },
       );
       expect(secondPage.error).toBeUndefined();
@@ -719,7 +840,7 @@ describe("tool discovery", () => {
       const badList = yield* engine.execute(
         [
           "try {",
-          "  await tools.executor.sources.list({ offset: -5 });",
+          "  await tools.executor.integrations.list({ offset: -5 });",
           '  return "unexpected";',
           "} catch (error) {",
           "  return error instanceof Error ? error.message : String(error);",
@@ -729,7 +850,7 @@ describe("tool discovery", () => {
       );
       expect(badList.error).toBeUndefined();
       expect(String(badList.result)).toContain(
-        "tools.executor.sources.list offset must be a non-negative number when provided",
+        "tools.executor.integrations.list offset must be a non-negative number when provided",
       );
     }),
   );
@@ -876,13 +997,13 @@ describe("tool discovery", () => {
       const execution = yield* engine.execute(
         [
           "const searchDetails = await tools.describe.tool({ path: 'search' });",
-          "const sourceDetails = await tools.describe.tool({ path: 'executor.sources.list' });",
+          "const integrationDetails = await tools.describe.tool({ path: 'executor.integrations.list' });",
           "const describeDetails = await tools.describe.tool({ path: 'describe.tool' });",
           "return {",
           "  searchDetails,",
           "  searchResult: await tools.search({ query: 'repo details', limit: 2 }),",
-          "  sourceDetails,",
-          "  sourceResult: await tools.executor.sources.list({ limit: 2 }),",
+          "  integrationDetails,",
+          "  integrationResult: await tools.executor.integrations.list({ limit: 2 }),",
           "  describeDetails,",
           "  describeResult: await tools.describe.tool({ path: 'github.org.main.getRepositoryDetails' }),",
           "};",
@@ -894,8 +1015,8 @@ describe("tool discovery", () => {
       const observed = execution.result as {
         readonly searchDetails: DescribedToolContract;
         readonly searchResult: unknown;
-        readonly sourceDetails: DescribedToolContract;
-        readonly sourceResult: unknown;
+        readonly integrationDetails: DescribedToolContract;
+        readonly integrationResult: unknown;
         readonly describeDetails: DescribedToolContract;
         readonly describeResult: unknown;
       };
@@ -904,7 +1025,7 @@ describe("tool discovery", () => {
         typeCheckDescribedInvocation(observed.searchDetails, observed.searchResult, ""),
       ).toEqual([]);
       expect(
-        typeCheckDescribedInvocation(observed.sourceDetails, observed.sourceResult, ""),
+        typeCheckDescribedInvocation(observed.integrationDetails, observed.integrationResult, ""),
       ).toEqual([]);
       expect(
         typeCheckDescribedInvocation(observed.describeDetails, observed.describeResult, ""),
@@ -1164,6 +1285,95 @@ describe("tool discovery", () => {
     ),
   );
 
+  // Prod regression (Pylon, 2026-07-16): the AS rejected refresh grants with a
+  // 400 whose error code was NOT invalid_grant. That is a definitive "no" from
+  // the AS, but it surfaced to the sandbox as an opaque "Internal tool error
+  // [hex]" — the caller had no way to know the connection needed re-auth.
+  it.effect("returns AS-rejected token refreshes (non-invalid_grant) as ToolResult.fail", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          invalidRefreshTokenErrorCode: "invalid_request",
+          invalidRefreshTokenDescription: "Refresh token expired",
+        });
+        const config = makeTestConfig({
+          plugins: [memoryCredentialsPlugin(), oauthErrorPlugin] as const,
+        });
+        const executor = yield* createExecutor(config);
+        yield* executor["oauth-error-test"].seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAUTH_CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAUTH_CLIENT,
+          clientOwner: "org",
+          name: CONN,
+          integration: IntegrationSlug.make("oauth_records"),
+          template: OAUTH_TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        // Expire the access token so the next resolve fires a real
+        // refresh-token grant against the live test AS, which rejects it.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) =>
+              b.and(b("integration", "=", "oauth_records"), b("name", "=", String(CONN))),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+
+        const invoker = makeExecutorToolInvoker(executor, {
+          invokeOptions: { onElicitation: acceptAll },
+        });
+        const result = yield* invoker.invoke({
+          path: "oauth_records.org.main.queryRows",
+          args: {},
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_refresh_failed",
+            details: {
+              category: "authentication",
+              credential: {
+                kind: "oauth",
+                label: "oauth_records.org.main",
+              },
+            },
+            retryable: false,
+          },
+        });
+        const failure = result as {
+          readonly ok: false;
+          readonly error: { readonly message: string };
+        };
+        // The AS's verdict (code + description) reaches the caller verbatim —
+        // never the scrubbed "Internal tool error [hex]".
+        expect(failure.error.message).toContain("invalid_request");
+        expect(failure.error.message).toContain("Refresh token expired");
+        expect(failure.error.message).not.toContain("Internal tool error");
+      }),
+    ),
+  );
+
   it.effect("returns missing tool dispatches as ToolResult.fail", () =>
     Effect.gen(function* () {
       const executor = yield* makeExecutorWith([] as const);
@@ -1209,6 +1419,33 @@ describe("tool discovery", () => {
               expect.objectContaining({ path: ["owner"], message: "Missing key" }),
               expect.objectContaining({ path: ["repo"], message: "Missing key" }),
             ]),
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("returns binding errors as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([bindingErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "binding-error-test", integration: "binding" },
+      ]);
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "binding.org.main.sync", args: {} });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "binding_error",
+          message: 'unknown connection "personal" for role "github" (github)',
+          details: {
+            role: "github",
+            integration: "github",
+            requestedConnection: "personal",
           },
         },
       });
@@ -1506,28 +1743,37 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
-  // live clock: the sandbox timeout is a real timer, so the test must
-  // actually wait for it rather than suspend on the virtual TestClock.
+  // Live clock: the failing executor delays long enough for its detached tool
+  // invocation to publish the pause before the executor settles on its own.
   it.live(
     "a pause abandoned by a failing sandbox is dropped and its resume replays the failure outcome",
     () =>
       Effect.gen(function* () {
         const executor = yield* makeElicitingExecutor();
-        // Sandbox times out while suspended on the elicitation, so the fiber
-        // settles without a resume ever arriving.
+        const failingCodeExecutor = {
+          execute: (_code, toolInvoker) =>
+            Effect.gen(function* () {
+              yield* Effect.forkChild(
+                toolInvoker
+                  .invoke({ path: "api.org.main.singleApproval", args: {} })
+                  .pipe(Effect.ignore),
+              );
+              yield* Effect.sleep("100 millis");
+              return { result: null, error: "sandbox failed after pausing" };
+            }),
+        } satisfies typeof codeExecutor;
         const engine = createExecutionEngine({
           executor,
-          codeExecutor: makeQuickJsExecutor({ timeoutMs: 250 }),
+          codeExecutor: failingCodeExecutor,
         });
-        const code = "return await tools.api.org.main.singleApproval({});";
 
-        const outcome1 = yield* engine.executeWithPause(code);
+        const outcome1 = yield* engine.executeWithPause("ignored");
         expect(outcome1.status).toBe("paused");
         if (outcome1.status !== "paused") return;
         const executionId = outcome1.execution.id;
 
-        // Wait for the sandbox timeout to settle the detached fiber.
-        yield* Effect.sleep("600 millis");
+        // Wait for the sandbox failure to settle the detached fiber.
+        yield* Effect.sleep("300 millis");
 
         // The dead pause must no longer be reported as live...
         const stillPaused = yield* engine.getPausedExecution(executionId);
@@ -1537,7 +1783,7 @@ describe("pause/resume with multiple elicitations", () => {
         const late = yield* engine.resume(executionId, { action: "accept" });
         expect(late?.status).toBe("completed");
         const completed = late as Extract<NonNullable<typeof late>, { status: "completed" }>;
-        expect(completed.result.error).toContain("timed out");
+        expect(completed.result.error).toBe("sandbox failed after pausing");
       }),
     { timeout: 10000 },
   );

@@ -1,5 +1,101 @@
 # @executor-js/e2e
 
+## 0.0.34
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/plugin-graphql@1.5.37
+  - @executor-js/plugin-mcp@1.5.37
+  - @executor-js/plugin-openapi@1.5.37
+  - @executor-js/plugin-toolkits@1.5.29
+
+## 0.0.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/plugin-graphql@1.5.36
+  - @executor-js/plugin-mcp@1.5.36
+  - @executor-js/plugin-openapi@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/plugin-toolkits@1.5.28
+
+## 0.0.32
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df), [`af95edb`](https://github.com/UsefulSoftwareCo/executor/commit/af95edbb0bbde544bb1f4c6e18e9d64a2bcab0f8)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/plugin-mcp@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/plugin-graphql@1.5.35
+  - @executor-js/plugin-openapi@1.5.35
+  - @executor-js/plugin-toolkits@1.5.27
+
+## 0.0.31
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`a86cc4e`](https://github.com/UsefulSoftwareCo/executor/commit/a86cc4e6d0252c90834f40ee09837d8a19cab7fe), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f), [`171de20`](https://github.com/UsefulSoftwareCo/executor/commit/171de204725d10405c693549febc3a1cce2c24d8)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/plugin-openapi@1.5.34
+  - @executor-js/api@1.4.54
+  - @executor-js/plugin-graphql@1.5.34
+  - @executor-js/plugin-mcp@1.5.34
+  - @executor-js/plugin-toolkits@1.5.26
+
+## 0.0.30
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.33
+  - @executor-js/plugin-graphql@1.5.33
+  - @executor-js/plugin-mcp@1.5.33
+  - @executor-js/plugin-openapi@1.5.33
+  - @executor-js/api@1.4.53
+  - @executor-js/plugin-toolkits@1.5.25
+
+## 0.0.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/plugin-graphql@1.5.32
+  - @executor-js/plugin-mcp@1.5.32
+  - @executor-js/plugin-openapi@1.5.32
+  - @executor-js/api@1.4.52
+  - @executor-js/plugin-toolkits@1.5.24
+
+## 0.0.28
+
+### Patch Changes
+
+- Updated dependencies [[`9e38928`](https://github.com/UsefulSoftwareCo/executor/commit/9e38928f0fda9032b64b26990270c5d2b6690d13)]:
+  - @executor-js/plugin-openapi@1.5.31
+  - @executor-js/sdk@1.5.31
+  - @executor-js/plugin-graphql@1.5.31
+  - @executor-js/plugin-mcp@1.5.31
+  - @executor-js/api@1.4.51
+  - @executor-js/plugin-toolkits@1.5.23
+
+## 0.0.27
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/plugin-graphql@1.5.30
+  - @executor-js/plugin-mcp@1.5.30
+  - @executor-js/plugin-openapi@1.5.30
+  - @executor-js/api@1.4.50
+  - @executor-js/plugin-toolkits@1.5.22
+
 ## 0.0.26
 
 ### Patch Changes

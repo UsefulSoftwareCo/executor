@@ -484,6 +484,64 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.result).toBe(30);
   });
 
+  it("suspends the execution deadline while a tool dispatch is in flight", async () => {
+    const timeoutMs = 200;
+    const executor = makeDynamicWorkerExecutor({
+      loader,
+      timeoutMs,
+      hostTimeoutGraceMs: 5_000,
+    });
+    const invoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("slow result")),
+    };
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.slow.wait({})", invoker),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("slow result");
+  });
+
+  it("still times out continuous autonomous compute", async () => {
+    const timeoutMs = 200;
+    const executor = makeDynamicWorkerExecutor({
+      loader,
+      timeoutMs,
+      hostTimeoutGraceMs: 5_000,
+    });
+    const invoker = makeInvoker(() => null);
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await new Promise(() => {})", invoker),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`Execution timed out after ${timeoutMs}ms`);
+  });
+
+  it("resets the execution deadline after a tool dispatch returns", async () => {
+    const timeoutMs = 200;
+    const executor = makeDynamicWorkerExecutor({
+      loader,
+      timeoutMs,
+      hostTimeoutGraceMs: 5_000,
+    });
+    const invoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("done")),
+    };
+
+    const result = await Effect.runPromise(
+      executor.execute(
+        "async () => { await tools.slow.wait({}); await new Promise(() => {}); }",
+        invoker,
+      ),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`Execution timed out after ${timeoutMs}ms`);
+  });
+
   it("returns an execution error for circular tool args", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const invoker = makeInvoker(() => null);
@@ -945,9 +1003,9 @@ describe("makeDynamicWorkerExecutor", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.result).toEqual({
-        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
         spread:
-          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
       });
     }),
   );

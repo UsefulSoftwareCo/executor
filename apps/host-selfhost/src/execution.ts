@@ -4,13 +4,13 @@ import {
   CodeExecutorProvider,
   DbProvider,
   EngineDecorator,
-  EngineDecoratorNoop,
   HostConfig,
   PluginsProvider,
 } from "@executor-js/api/server";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 import executorConfig from "../executor.config";
+import { selfHostAnalytics, SelfHostAnalyticsEngineDecorator } from "./analytics";
 import { SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
 import { loadConfig } from "./config";
 
@@ -21,7 +21,7 @@ import { loadConfig } from "./config";
 //   makeScopedExecutor -> createExecutionEngine -> EngineDecorator.decorate.
 // Self-host just supplies the five seam Layers it reads from. Differences from
 // cloud: the QuickJS in-process code substrate (vs the Cloudflare dynamic
-// worker) and a NO-OP engine decorator (no usage metering).
+// worker) and an analytics engine decorator instead of cloud's usage metering.
 //
 //   - DbProvider          -> SelfHostDbProvider: projects the long-lived
 //                            libSQL handle (built once at boot, see db/). The
@@ -33,7 +33,8 @@ import { loadConfig } from "./config";
 //   - HostConfig           -> `{ allowLocalNetwork, webBaseUrl }` from
 //                            `loadConfig()`.
 //   - CodeExecutorProvider -> `makeQuickJsExecutor()`.
-//   - EngineDecorator      -> no-op (self-host does not meter executions).
+//   - EngineDecorator      -> execution analytics (anonymous per-install
+//                             counters; see ./analytics.ts).
 // ---------------------------------------------------------------------------
 
 export { makeExecutionStack } from "@executor-js/api/server";
@@ -44,10 +45,6 @@ export const SelfHostPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succe
       executorConfig.plugins({
         activeToolkitSlug:
           context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
-        // Read the env directly (same computation as loadConfig().allowLocalNetwork):
-        // plugins() runs per request, and loadConfig does filesystem work
-        // (data dir, secret key) that must not ride the request path.
-        allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
       }),
   },
 );
@@ -58,6 +55,11 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    onIntegrationChange: (event) =>
+      selfHostAnalytics.record(
+        event.kind === "added" ? "integration_added" : "integration_removed",
+        { plugin_key: event.pluginKey },
+      ),
   };
 });
 
@@ -86,4 +88,8 @@ export const SelfHostExecutionStackLayer: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,
   never,
   SelfHostDb
-> = Layer.mergeAll(SelfHostScopedExecutorSeams, SelfHostCodeExecutorProvider, EngineDecoratorNoop);
+> = Layer.mergeAll(
+  SelfHostScopedExecutorSeams,
+  SelfHostCodeExecutorProvider,
+  SelfHostAnalyticsEngineDecorator,
+);

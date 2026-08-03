@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { EXECUTE_SKILL, SKILLS, findSkill, renderSkillsIndex } from "./skills";
+import { EXECUTE_SKILL, SKILLS, findSkill, renderSkillsIndex, skillCatalogFor } from "./skills";
 
 describe("skills registry", () => {
   it("includes the execute skill with the full how-to body", () => {
@@ -27,5 +27,22 @@ describe("skills registry", () => {
     for (const skill of SKILLS) {
       expect(index).toContain(`- \`${skill.name}\` — ${skill.summary}`);
     }
+  });
+
+  // A connection that did not opt in to artifacts — the default — has no tool
+  // the artifact skills apply to, so they leave its catalog entirely rather
+  // than documenting a surface it cannot reach.
+  it("drops the artifact skills from a catalog without artifacts", () => {
+    const catalog = skillCatalogFor({ artifacts: false });
+    expect(catalog).toContain(EXECUTE_SKILL);
+    expect(catalog.map((skill) => skill.name)).not.toContain("create-artifact");
+    expect(catalog.map((skill) => skill.name)).not.toContain("artifact-style");
+
+    expect(findSkill("create-artifact", catalog)).toBeUndefined();
+    expect(renderSkillsIndex(catalog)).not.toContain("`create-artifact`");
+  });
+
+  it("serves the full catalog to a session that opted in to artifacts", () => {
+    expect(skillCatalogFor({ artifacts: true })).toEqual(SKILLS);
   });
 });

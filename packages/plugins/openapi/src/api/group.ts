@@ -2,14 +2,21 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import { ApiKeyAuthMethod, ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 import {
+  HealthCheckSpec,
   InternalError,
   IntegrationAlreadyExistsError,
   IntegrationNotFoundError,
   IntegrationSlug,
 } from "@executor-js/sdk/shared";
 
-import { OpenApiParseError, OpenApiExtractionError, OpenApiOAuthError } from "../sdk/errors";
+import {
+  OpenApiParseError,
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  OpenApiSpecOverrideError,
+} from "../sdk/errors";
 import { SpecPreviewSummary } from "../sdk/preview";
+import { SpecOverridesSchema } from "../sdk/spec-overrides";
 
 // ---------------------------------------------------------------------------
 // Errors — the plugin-domain tagged errors flow directly to clients
@@ -24,6 +31,7 @@ const DomainErrors = [
   OpenApiParseError,
   OpenApiExtractionError,
   OpenApiOAuthError,
+  OpenApiSpecOverrideError,
   IntegrationAlreadyExistsError,
 ] as const;
 
@@ -34,6 +42,7 @@ const UpdateSpecErrors = [
   OpenApiParseError,
   OpenApiExtractionError,
   OpenApiOAuthError,
+  OpenApiSpecOverrideError,
   IntegrationNotFound,
 ] as const;
 
@@ -68,25 +77,33 @@ const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMet
 
 const AddSpecPayload = Schema.Struct({
   spec: OpenApiSpecInputPayload,
-  slug: Schema.String,
+  slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specFormat: Schema.optional(Schema.String),
+  family: Schema.optional(Schema.String),
+  healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const PreviewSpecPayload = Schema.Struct({
   spec: Schema.String,
+  specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 // The `configure` payload — the new/updated auth methods to merge onto the
-// integration's `authenticationTemplate`. Reuses the same `AuthenticationPayload`
-// schema as `addSpec` so a custom apiKey method round-trips identically.
+// integration's `authenticationTemplate`, plus request routing metadata.
+// Reuses the same `AuthenticationPayload` schema as `addSpec` so a custom apiKey
+// method round-trips identically.
 const ConfigurePayload = Schema.Struct({
-  authenticationTemplate: Schema.Array(AuthenticationPayload),
+  authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
   mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+  baseUrl: Schema.optional(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
@@ -102,6 +119,7 @@ const AddSpecResponse = Schema.Struct({
 // "re-fetch from the stored source URL".
 const UpdateSpecPayload = Schema.Struct({
   spec: Schema.optional(OpenApiSpecInputPayload),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const UpdateSpecResponse = Schema.Struct({
@@ -127,10 +145,11 @@ const IntegrationView = Schema.Struct({
 // deliberately NOT served: it's a multi-MB build artifact in the plugin blob
 // store, and no client reads it (the configure UI only touches the template).
 const OpenApiConfigView = Schema.Struct({
-  sourceUrl: Schema.optional(Schema.String),
+  specUrl: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specOverrides: Schema.optional(SpecOverridesSchema),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationResponse)),
 });
 

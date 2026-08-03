@@ -50,7 +50,7 @@ scenario(
       // the URL segment, so the slug is cosmetic and an unknown one canonicalizes
       // onto the shell rather than 404ing. Cloud enforces the not-found; selfhost
       // legitimately does not.
-      if (target.name !== "selfhost") {
+      if (!target.name.startsWith("selfhost")) {
         await step("An unknown org slug is a wrong address, not a redirect", async () => {
           await page.goto("/zz-no-such-org/policies", { waitUntil: "networkidle" });
           await page.getByText("Page not found").waitFor({ timeout: 30_000 });

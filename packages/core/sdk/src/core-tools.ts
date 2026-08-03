@@ -22,6 +22,7 @@ import {
   type Owner,
 } from "./ids";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
+import { HealthCheckResult } from "./health-check";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
 
@@ -76,6 +77,7 @@ const ConnectionOutput = Schema.Struct({
   oauthClient: Schema.NullOr(Schema.String),
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScope: Schema.NullOr(Schema.String),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
 const ConnectionsListInput = Schema.Struct({
@@ -102,6 +104,7 @@ const ConnectionListItem = Schema.Struct({
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScopeCount: Schema.NullOr(Schema.Number),
   oauthScope: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 const ConnectionsListOutput = Schema.Struct({
   connections: Schema.Array(ConnectionListItem),
@@ -171,6 +174,7 @@ const ToolOutput = Schema.Struct({
 });
 const ConnectionsRefreshOutput = Schema.Struct({
   tools: Schema.Array(ToolOutput),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
 const RemovedOutput = Schema.Struct({ removed: Schema.Boolean });
@@ -373,6 +377,7 @@ const connectionToOutput = (connection: Connection) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScope: connection.oauthScope ?? null,
+  lastHealth: connection.lastHealth ?? null,
 });
 
 /** Number of space-separated grants in an `oauthScope` string, or null when
@@ -396,6 +401,7 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
+  lastHealth: connection.lastHealth ?? null,
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 
@@ -514,7 +520,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
   storage: () => ({}),
   extension: () => ({}),
 
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "coreTools",
       kind: "executor",
@@ -556,7 +562,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "connections.list",
           description:
-            "List saved connections (the credential for one integration). Never returns the credential value. Optionally filter by integration or owner. OAuth scopes are summarized as `oauthScopeCount` by default; pass `verbose: true` to include the full `oauthScope` grant string per connection.",
+            "List saved connections and their last health verdict. Never returns credential values. Optionally filter by integration or owner. OAuth scopes are summarized as `oauthScopeCount` by default; pass `verbose: true` to include the full `oauthScope` grant string per connection.",
           inputSchema: ConnectionsListInputStd,
           outputSchema: ConnectionsListOutputStd,
           execute: (input: typeof ConnectionsListInput.Type, { ctx }) =>
@@ -627,7 +633,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "connections.refresh",
           description:
-            "Re-run an integration's tool production for a saved connection, replacing that connection's persisted tools.",
+            "Re-run an integration's tool production for a saved connection. Returns the tools and the resulting health verdict so an empty catalog is distinguishable from a failed sync.",
           inputSchema: ConnectionRefInputStd,
           outputSchema: ConnectionsRefreshOutputStd,
           // Refresh replaces a connection's persisted tool set; for a mutable
@@ -636,9 +642,15 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // `sources.refresh`.
           annotations: { requiresApproval: true },
           execute: (input: typeof ConnectionRefInput.Type, { ctx }) =>
-            Effect.map(ctx.connections.refresh(connectionRefFromInput(input)), (tools) => ({
-              tools: tools.map(toolToOutput),
-            })),
+            Effect.gen(function* () {
+              const ref = connectionRefFromInput(input);
+              const tools = yield* ctx.connections.refresh(ref);
+              const connection = yield* ctx.connections.get(ref);
+              return {
+                tools: tools.map(toolToOutput),
+                lastHealth: connection?.lastHealth ?? null,
+              };
+            }),
         }),
         // removed: tools.list — the cross-connection tool catalog is an
         // executor-surface read, not exposed on PluginCtx.

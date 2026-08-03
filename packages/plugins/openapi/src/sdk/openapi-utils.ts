@@ -128,3 +128,36 @@ export const preferredResponseContent = (
     entries[0];
   return pick ? { mediaType: pick[0], media: pick[1] } : undefined;
 };
+
+// ---------------------------------------------------------------------------
+// NDJSON responses
+// ---------------------------------------------------------------------------
+
+export const normalizeMediaType = (mediaType: string | null | undefined): string =>
+  mediaType?.split(";")[0]?.trim().toLowerCase() ?? "";
+
+/** Media types whose bodies are newline-delimited JSON documents. The invoke
+ *  path collects these streams and returns an ARRAY of parsed lines, so every
+ *  schema surface must describe that array: the spec convention is to declare
+ *  the schema of ONE line (e.g. Vercel's runtime-logs endpoint). */
+export const NDJSON_MEDIA_TYPES: ReadonlySet<string> = new Set([
+  "application/stream+json",
+  "application/x-ndjson",
+  "application/jsonl",
+]);
+
+export const isNdjsonMediaType = (mediaType: string | null | undefined): boolean =>
+  NDJSON_MEDIA_TYPES.has(normalizeMediaType(mediaType));
+
+/** Wrap a per-line NDJSON response schema into the array the runtime actually
+ *  returns. The description rides into the compiled TypeScript preview as a
+ *  JSDoc comment, so agents learn the truncation and raw-text caveats where
+ *  they read the type. */
+export const ndjsonArrayOutputSchema = (lineSchema: unknown): Record<string, unknown> => ({
+  type: "array",
+  items: lineSchema,
+  description:
+    "Parsed NDJSON stream: one array item per line. The stream may be truncated " +
+    "(`x-executor-stream: truncated` response header); a body that is not valid " +
+    "NDJSON is returned as the raw string instead.",
+});

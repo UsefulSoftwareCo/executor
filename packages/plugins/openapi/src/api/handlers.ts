@@ -44,7 +44,11 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
       capture(
         Effect.gen(function* () {
           const ext = yield* OpenApiExtensionService;
-          const preview = yield* ext.previewSpec({ spec: payload.spec });
+          const preview = yield* ext.previewSpec({
+            spec: payload.spec,
+            specFormat: payload.specFormat,
+            specOverrides: payload.specOverrides,
+          });
           return specPreviewSummary(preview);
         }),
       ),
@@ -61,7 +65,11 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             baseUrl: payload.baseUrl,
             headers: payload.headers ? { ...payload.headers } : undefined,
             queryParams: payload.queryParams ? { ...payload.queryParams } : undefined,
+            specFormat: payload.specFormat,
+            family: payload.family,
+            healthCheck: payload.healthCheck,
             authenticationTemplate: payload.authenticationTemplate,
+            specOverrides: payload.specOverrides,
           });
         }),
       ),
@@ -90,10 +98,11 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const config = yield* ext.getConfig(params.slug);
           return config
             ? {
-                sourceUrl: config.sourceUrl,
+                specUrl: config.specUrl,
                 baseUrl: config.baseUrl,
                 headers: config.headers ? { ...config.headers } : undefined,
                 queryParams: config.queryParams ? { ...config.queryParams } : undefined,
+                specOverrides: config.specOverrides ? [...config.specOverrides] : undefined,
                 authenticationTemplate: config.authenticationTemplate
                   ? [...config.authenticationTemplate]
                   : undefined,
@@ -109,6 +118,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const authenticationTemplate = yield* ext.configure(params.slug, {
             authenticationTemplate: payload.authenticationTemplate,
             mode: payload.mode ?? "merge",
+            baseUrl: payload.baseUrl,
           });
           return { authenticationTemplate: [...authenticationTemplate] };
         }),
@@ -120,6 +130,9 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const ext = yield* OpenApiExtensionService;
           const result = yield* ext.updateSpec(params.slug, {
             ...(payload.spec !== undefined ? { spec: payload.spec } : {}),
+            ...(payload.specOverrides !== undefined
+              ? { specOverrides: payload.specOverrides }
+              : {}),
           });
           return {
             slug: result.slug,

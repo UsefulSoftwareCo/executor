@@ -17,6 +17,7 @@ import { loadPluginsFromJsonc } from "@executor-js/config";
 import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
 import executorConfig from "../executor.config";
+import { localAnalytics } from "./analytics";
 import { localDataMigrations } from "./db/data-migrations";
 import { openOwnedLocalDatabase } from "./db/owned-database";
 
@@ -91,6 +92,10 @@ const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
   readonly plugins: LocalPlugins;
+  /** Where this daemon's web UI is reachable, resolved once at boot. Surfaced
+   *  so callers building user-facing links (MCP artifact deep links) use the
+   *  same origin the executor itself was configured with. */
+  readonly webBaseUrl: string;
 }
 
 class LocalExecutorTag extends Context.Service<LocalExecutorTag, LocalExecutorBundle>()(
@@ -191,6 +196,11 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
         subject: Subject.make(LOCAL_SUBJECT),
         db: sqlite.db,
         plugins,
+        onIntegrationChange: (event) =>
+          localAnalytics.record(
+            event.kind === "added" ? "integration_added" : "integration_removed",
+            { plugin_key: event.pluginKey },
+          ),
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
         // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
@@ -233,7 +243,7 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
           );
       }
 
-      return { executor, plugins };
+      return { executor, plugins, webBaseUrl };
     }),
   );
 };
@@ -246,6 +256,7 @@ export const createExecutorHandle = async (options: LocalExecutorOptions = {}) =
   return {
     executor: bundle.executor,
     plugins: bundle.plugins,
+    webBaseUrl: bundle.webBaseUrl,
     dispose: async () => {
       await Effect.runPromise(Effect.ignore(bundle.executor.close()));
       await ignorePromiseFailure("disposeRuntime", () => runtime.dispose());

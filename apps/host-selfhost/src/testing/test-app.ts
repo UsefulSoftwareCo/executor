@@ -5,6 +5,7 @@ import {
   composePluginApi,
   ExecutorApp,
   IdentityProvider,
+  PluginsProvider,
   type Principal,
   textFailureStrategy,
   Unauthorized,
@@ -22,6 +23,7 @@ import {
   SelfHostHostConfig,
   SelfHostPluginsProvider,
 } from "../execution";
+import executorConfig from "../../executor.config";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
 import {
   makeSelfHostMcpSessionStore,
@@ -165,6 +167,8 @@ export interface MakeSelfHostTestAppOptions {
   readonly identity: Layer.Layer<IdentityProvider>;
   /** Override the SQLite path (defaults to the config data dir). */
   readonly dbPath?: string;
+  /** Test-only override for executor.config.ts plugin dependencies. */
+  readonly pluginDeps?: Parameters<typeof executorConfig.plugins>[0];
 }
 
 export interface SelfHostTestHandler {
@@ -185,6 +189,21 @@ export const makeSelfHostTestApp = async (
   });
 
   const sessionStore = makeSelfHostMcpSessionStore(dbHandle);
+  const pluginsProvider = options.pluginDeps
+    ? Layer.succeed(PluginsProvider)({
+        plugins: (context) =>
+          executorConfig.plugins({
+            ...options.pluginDeps,
+            activeToolkitSlug:
+              context?.mcpResource?.kind === "toolkit"
+                ? context.mcpResource.slug
+                : options.pluginDeps?.activeToolkitSlug,
+            allowLocalNetwork:
+              options.pluginDeps?.allowLocalNetwork ??
+              process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+          }),
+      })
+    : SelfHostPluginsProvider;
 
   const { toWebHandler } = ExecutorApp.make({
     plugins: selfHostPlugins,
@@ -197,7 +216,7 @@ export const makeSelfHostTestApp = async (
         sessions: selfHostMcpSessions(sessionStore),
         reporter: selfHostMcpReporter,
       },
-      plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
+      plugins: { provider: pluginsProvider, config: SelfHostHostConfig },
       errorCapture: ErrorCaptureLive,
     },
     extensions: {

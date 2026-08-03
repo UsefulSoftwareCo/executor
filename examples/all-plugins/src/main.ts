@@ -33,12 +33,19 @@ import {
 } from "@executor-js/sdk";
 
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
-import { googlePlugin } from "@executor-js/plugin-google";
+import {
+  googleCatalog,
+  googleDiscoveryAdapter,
+} from "@executor-js/plugin-openapi/providers/google";
 import { graphqlPlugin } from "@executor-js/plugin-graphql";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { mcpPlugin } from "@executor-js/plugin-mcp";
 import { onepasswordPlugin } from "@executor-js/plugin-onepassword";
 import { openApiPlugin, variable } from "@executor-js/plugin-openapi";
+import {
+  microsoftCatalog,
+  microsoftGraphAdapter,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { workosVaultPlugin } from "@executor-js/plugin-workos-vault";
 
 // ---------------------------------------------------------------------------
@@ -78,10 +85,12 @@ const plugins = [
   // Integration plugins — these declare their own schemas (tables), register
   // integrations via their extension methods (`addSpec` / `addServer` /
   // `addIntegration`), and produce tools per connection.
-  googlePlugin(),
   graphqlPlugin(),
   mcpPlugin({ dangerouslyAllowStdioMCP: false }),
-  openApiPlugin(),
+  openApiPlugin({
+    presets: [...googleCatalog, ...microsoftCatalog],
+    specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+  }),
 
   // workos-vault is a cloud-hosted credential provider. It would contribute a
   // "workos-vault" provider if credentials were available. We skip it here
@@ -418,7 +427,7 @@ const program = Effect.gen(function* () {
   console.log("  executor.fileSecrets.filePath:   ", executor.fileSecrets.filePath);
 
   // executor.mcp.addServer({ transport: "remote", name: "...", endpoint: "...", slug: "..." });
-  // executor.google.addBundle({ urls: ["..."], slug: "google" });
+  // Google catalog rows are added through executor.openapi.addSpec with specFormat "google-discovery".
   // executor.onepassword.configure({ auth: { kind: "desktop-app", accountName: "..." }, vaultId: "..." });
 
   // -------------------------------------------------------------------------

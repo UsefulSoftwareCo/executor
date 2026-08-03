@@ -2,7 +2,14 @@ import { Schema } from "effect";
 
 import { ElicitationDeclinedError } from "./elicitation";
 import type { StorageFailure } from "./fuma-runtime";
-import { ConnectionName, IntegrationSlug, Owner, ProviderKey, ToolAddress } from "./ids";
+import {
+  ArtifactId,
+  ConnectionName,
+  IntegrationSlug,
+  Owner,
+  ProviderKey,
+  ToolAddress,
+} from "./ids";
 
 export interface UserActionableError {
   readonly __executorUserActionable: true;
@@ -181,8 +188,30 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
     /** True when the stored grant is permanently invalid and the user must
      *  sign in again (RFC 6749 §5.2 invalid_grant and friends). */
     reauthRequired: Schema.optional(Schema.Boolean),
+    /** The authorization server's RFC 6749 §5.2 error code (`invalid_grant`,
+     *  `invalid_client`, …), when the failure came from a token-endpoint
+     *  refusal. A typed field rather than message text so telemetry and
+     *  classification read it structurally — the misclassification where
+     *  `invalid_client` (rotated app secret, fleet-wide) surfaced as a vague
+     *  "degraded" was only findable by grepping persisted message strings. */
+    oauthErrorCode: Schema.optional(Schema.String),
   },
 ) {}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+/** No artifact with this id is visible to the bound owner scope — it was never
+ *  saved, was deleted, or belongs to another subject. */
+export class ArtifactNotFoundError extends Schema.TaggedErrorClass<ArtifactNotFoundError>()(
+  "ArtifactNotFoundError",
+  { id: ArtifactId },
+) {
+  override get message(): string {
+    return `Artifact not found: ${this.id}`;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Union — the failure channel of `execute`.
@@ -204,4 +233,5 @@ export type ExecuteError =
 export type ExecutorError =
   | ExecuteError
   | IntegrationNotFoundError
-  | IntegrationRemovalNotAllowedError;
+  | IntegrationRemovalNotAllowedError
+  | ArtifactNotFoundError;

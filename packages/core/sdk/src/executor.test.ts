@@ -15,7 +15,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
-import { makeTestExecutor } from "./testing";
+import { makeTestExecutor, memoryCredentialsPlugin } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
@@ -112,6 +112,25 @@ const demoPlugin = definePlugin(() => ({
   }),
 }))();
 
+const diagnosticsPlugin = definePlugin(() => ({
+  id: "diagnostics" as const,
+  storage: () => ({}),
+  resolveTools: () =>
+    Effect.succeed({
+      tools: [],
+      incomplete: true,
+      incompleteReason: "Schema introspection was rejected",
+    }),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make("diagnostics"),
+        description: "Diagnostics",
+        config: {},
+      }),
+  }),
+}))();
+
 const detector = (id: string, confidence: IntegrationDetectionResult["confidence"]) =>
   definePlugin(() => ({
     id,
@@ -158,6 +177,65 @@ describe("createExecutor", () => {
       });
       yield* executor.close();
       expect(closed).toBe(true);
+    }),
+  );
+
+  it.effect("notifies onIntegrationChange on create and remove, not on re-register", () =>
+    Effect.gen(function* () {
+      const events: Array<{ kind: string; pluginKey: string; slug: string }> = [];
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        onIntegrationChange: (event) =>
+          Effect.sync(() => {
+            events.push({
+              kind: event.kind,
+              pluginKey: event.pluginKey,
+              slug: String(event.slug),
+            });
+          }),
+      });
+
+      yield* executor.demo.seed();
+      expect(events).toEqual([{ kind: "added", pluginKey: "demo", slug: String(INTEG) }]);
+
+      // Upsert re-register of the same slug is not a durable change.
+      yield* executor.demo.seed();
+      expect(events).toHaveLength(1);
+
+      yield* executor.integrations.remove(INTEG);
+      expect(events).toEqual([
+        { kind: "added", pluginKey: "demo", slug: String(INTEG) },
+        { kind: "removed", pluginKey: "demo", slug: String(INTEG) },
+      ]);
+
+      // Removing an already-absent slug notifies nothing.
+      yield* executor.integrations.remove(INTEG);
+      expect(events).toHaveLength(2);
+    }),
+  );
+
+  it.effect("a failing onIntegrationChange observer never fails the operation", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        onIntegrationChange: () => Effect.die("observer exploded"),
+      });
+      yield* executor.demo.seed();
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.map((i) => String(i.slug))).toContain(String(INTEG));
+    }),
+  );
+
+  it.effect("a rolled-back transaction never notifies onIntegrationChange", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        onIntegrationChange: (event) => Effect.sync(() => void events.push(String(event.slug))),
+      });
+      const result = yield* Effect.result(executor.demo.failAfterPluginAndCoreWrites());
+      expect(Result.isFailure(result)).toBe(true);
+      expect(events).not.toContain("tx-integration");
     }),
   );
 
@@ -266,6 +344,59 @@ describe("createExecutor", () => {
 
       const out = yield* executor.execute(addr("run"), {});
       expect(out).toEqual({ ran: "run" });
+    }),
+  );
+
+  it.effect("surfaces failed tool sync diagnostics through connection tools", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.diagnostics.seed();
+
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics",
+          template: "none",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const listed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.list"),
+        { integration: "diagnostics" },
+      );
+      expect(listed).toMatchObject({
+        connections: [
+          {
+            lastHealth: {
+              status: "degraded",
+              detail: "Tool sync failing: Schema introspection was rejected",
+            },
+          },
+        ],
+      });
+
+      const refreshed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.refresh"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics",
+        },
+        { onElicitation: "accept-all" },
+      );
+      expect(refreshed).toMatchObject({
+        tools: [],
+        lastHealth: {
+          status: "degraded",
+          detail: "Tool sync failing: Schema introspection was rejected",
+        },
+      });
     }),
   );
 

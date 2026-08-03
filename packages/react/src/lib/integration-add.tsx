@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Integration add-flow helpers — the plugin-agnostic pieces every Add-source
+// Integration add-flow helpers — the plugin-agnostic pieces every Add-integration
 // form repeats: decoding a mutation Exit into a user-facing message, the
 // IntegrationAlreadyExistsError guard, the live slug-collision check against
 // the catalog, and the inline error/collision alerts.

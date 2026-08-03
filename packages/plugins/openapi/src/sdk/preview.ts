@@ -146,7 +146,7 @@ export const OAuth2Preset = Schema.Struct({
 export type OAuth2Preset = typeof OAuth2Preset.Type;
 
 // ---------------------------------------------------------------------------
-// Preview operation — lightweight shape for the add-source UI list
+// Preview operation — lightweight shape for the add-integration UI list
 // ---------------------------------------------------------------------------
 
 export const PreviewOperation = Schema.Struct({
@@ -171,7 +171,7 @@ export const SpecPreview = Schema.Struct({
   /** Reuses ServerInfo from extraction */
   servers: Schema.Array(ServerInfo),
   operationCount: Schema.Number,
-  /** Lightweight operation list for the add-source UI */
+  /** Lightweight operation list for the add-integration UI */
   operations: Schema.Array(PreviewOperation),
   tags: Schema.Array(Schema.String),
   securitySchemes: Schema.Array(SecurityScheme),

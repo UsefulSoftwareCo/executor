@@ -351,9 +351,9 @@ Do not use a uniform icon pack (Tabler, Lucide-as-decoration, Heroicons) or
 monogram-in-rounded-square placeholders: both read as generic, generated UI. Identity comes from
 authentic specifics or from nothing at all.
 
-- **App**: source and brand marks use the real favicon service,
+- **App**: integration and brand marks use the real favicon service,
   `https://www.google.com/s2/favicons?domain={host}&sz={n}` (`integration-favicon.tsx`, rendered
-  2x for retina), with Executor's own `/favicon-32.png` for the built-in source. The only
+  2x for retina), with Executor's own `/favicon-32.png` for the built-in integration. The only
   lucide import there is `BoxIcon` as a neutral fallback when a favicon fails to load.
 - **Marketing**: brand marks are local SVGs in `apps/marketing/src/assets/logos` (`github.svg`,
   `stripe.svg`, `linear.svg`, `claude.svg`, ...); the hub uses `/favicon-192.png`.
@@ -376,13 +376,13 @@ above.)
 Copy is part of the design; keep it precise, technical, and free of filler.
 
 - Title Case for labels, buttons, titles, and tabs; sentence case for body, helper text, toasts.
-- Name actions with a verb and a noun (`Add Source`, `Connect Agent`, `Revoke Token`), never
+- Name actions with a verb and a noun (`Add Integration`, `Connect Agent`, `Revoke Token`), never
   `Confirm`, `OK`, or a bare verb.
-- Errors are what happened plus what to do next: `Couldn't reach the source. Check the server is
+- Errors are what happened plus what to do next: `Couldn't reach the integration. Check the server is
 running, then retry.`
 - Toasts name the specific thing that changed, drop the trailing period, never say
-  `successfully`: `Source added`, not `Successfully added the source.`
-- Empty states point to the first action: `No sources yet. Add one to start sharing tools across
+  `successfully`: `Integration added`, not `Successfully added the integration.`
+- Empty states point to the first action: `No integrations yet. Add one to start sharing tools across
 your agents.`
 - Present participle with an ellipsis for in-progress states: `Connecting...`, `Syncing...`.
 - Use numerals (`3 tools`); skip `please` and marketing superlatives (powerful, seamless, robust,

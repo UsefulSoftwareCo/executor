@@ -44,7 +44,7 @@ const EmptyInputSchema = Schema.toStandardSchemaV1(
 const approvalPlugin = definePlugin(() => ({
   id: "browser-resume-test" as const,
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "api",
       kind: "in-memory",

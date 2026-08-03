@@ -34,7 +34,7 @@ import type { OpenapiStore } from "./store";
 import type { AuthenticationInput } from "./types";
 import { defsBlobKey, specBlobKey } from "./store";
 import {
-  makeOpenApiHttpApiTestSourceConfig,
+  makeOpenApiHttpApiTestIntegrationConfig,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
@@ -61,7 +61,7 @@ const EchoGroupLive = HttpApiBuilder.group(TestApi, "items", (handlers) =>
 );
 
 const specText = () => {
-  const spec = makeOpenApiHttpApiTestSourceConfig(TestApi, {}).spec;
+  const spec = makeOpenApiHttpApiTestIntegrationConfig(TestApi, {}).spec;
   if (spec.kind === "blob") return spec.value;
   return spec.url;
 };

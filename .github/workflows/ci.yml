@@ -136,6 +136,12 @@ jobs:
 
       - run: bun run typecheck
 
+      # The committed routeTree.gen.ts files are generated but checked in, and
+      # they carry @ts-nocheck — so the typecheck above structurally CANNOT see
+      # a route that the contract declares and the tree lacks. That drift has
+      # already shipped a live 404 once. Regenerate and diff instead.
+      - run: bun run check:routes
+
   test:
     name: Test
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -414,4 +420,35 @@ jobs:
           context: .
           file: apps/host-selfhost/Dockerfile
           push: false
+          load: true
           tags: executor-selfhost:ci
+
+      # Building alone doesn't catch startup crashes (e.g. a runtime-resolved
+      # package missing from the packaged runtime), so boot the container and
+      # require a healthy /api/health before calling the image good.
+      - name: Boot image and check health
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name selfhost-smoke -p 4788:4788 \
+            -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+            -e EXECUTOR_BOOTSTRAP_ADMIN_EMAIL=smoke@example.com \
+            -e EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD="$(openssl rand -hex 16)" \
+            -e EXECUTOR_WEB_BASE_URL=http://localhost:4788 \
+            executor-selfhost:ci
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' selfhost-smoke)" != "true" ]; then
+              echo "container exited during startup"
+              docker logs selfhost-smoke
+              exit 1
+            fi
+            if curl -fsS http://localhost:4788/api/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              docker logs selfhost-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "health check never passed"
+          docker logs selfhost-smoke
+          exit 1

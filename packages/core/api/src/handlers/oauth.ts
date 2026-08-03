@@ -45,6 +45,7 @@ const connectionToResponse = (c: Connection) => ({
   oauthClient: c.oauthClient ?? null,
   oauthClientOwner: c.oauthClientOwner ?? null,
   oauthScope: c.oauthScope ?? null,
+  missingOAuthScopes: c.missingOAuthScopes ?? [],
 });
 
 const startResultToResponse = (result: ConnectResult) =>
@@ -160,6 +161,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             integration: payload.integration,
             template: payload.template,
             identityLabel: payload.identityLabel,
+            newConnection: payload.newConnection,
             redirectUri: payload.redirectUri,
           });
           return startResultToResponse(result);

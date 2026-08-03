@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
+import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
 // End-to-end test for the Cloudflare host: boots the REAL worker on workerd via
@@ -17,6 +18,18 @@ import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const runId = randomUUID().slice(0, 8);
+
+const ensureStaticAssets = () => {
+  // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
+  // assets dir wrangler.jsonc points `assets.directory` at) is absent and
+  // `unstable_dev`'s assets validation aborts boot. These tests drive the
+  // API/MCP surface (all `run_worker_first` paths), not the SPA.
+  const distIndex = resolve(dir, "../dist/index.html");
+  if (!existsSync(distIndex)) {
+    mkdirSync(resolve(dir, "../dist"), { recursive: true });
+    writeFileSync(distIndex, "<!doctype html><title>executor</title>");
+  }
+};
 
 // Inline spec (no network); registers one tool, exercising the D1 write path.
 const SPEC = JSON.stringify({
@@ -76,21 +89,13 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
   let worker: Unstable_DevWorker;
 
   beforeAll(async () => {
-    // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
-    // assets dir wrangler.jsonc points `assets.directory` at) is absent and
-    // `unstable_dev`'s assets validation aborts boot. This e2e drives the
-    // API/MCP surface (all `run_worker_first` paths), not the SPA, so a minimal
-    // placeholder index.html satisfies the validation without a real build.
-    const distIndex = resolve(dir, "../dist/index.html");
-    if (!existsSync(distIndex)) {
-      mkdirSync(resolve(dir, "../dist"), { recursive: true });
-      writeFileSync(distIndex, "<!doctype html><title>executor</title>");
-    }
+    ensureStaticAssets();
 
     worker = await unstable_dev(resolve(dir, "worker.ts"), {
       config: resolve(dir, "../wrangler.jsonc"),
       ip: "127.0.0.1",
       local: true,
+      persist: false,
       experimental: { disableExperimentalWarning: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
@@ -187,13 +192,48 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(integration?.slug).toBe(slug);
   }, 60_000);
 
-  it("registers the Microsoft Graph API route in the runtime plugin set", async () => {
-    const res = await worker.fetch("/api/microsoft/graph", {
+  it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {
+    const microsoftFilesPreset = microsoftCatalog.find(
+      (preset) => preset.defaultSlug === "microsoft_files",
+    );
+    expect(microsoftFilesPreset).toBeTruthy();
+
+    const removedProviderRoute = await worker.fetch("/api/microsoft/graph", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(400);
+    expect(removedProviderRoute.status).toBe(404);
+
+    const slug = `microsoft-files-${runId}`;
+    const add = await worker.fetch("/api/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: SPEC },
+        slug,
+        name: microsoftFilesPreset?.name,
+        description: microsoftFilesPreset?.summary,
+        family: microsoftFilesPreset?.family,
+        authenticationTemplate: microsoftFilesPreset?.authTemplate,
+      }),
+    });
+    expect(add.status).toBe(200);
+
+    const res = await worker.fetch(`/api/integrations/${slug}`);
+    expect(res.status).toBe(200);
+    const integration = (await res.json()) as {
+      readonly slug: string;
+      readonly kind: string;
+      readonly family?: string;
+      readonly authMethods: readonly { readonly template: string; readonly kind: string }[];
+    };
+    expect(integration.slug).toBe(slug);
+    expect(integration.kind).toBe("openapi");
+    expect(integration.family).toBe("microsoft");
+    expect(integration.authMethods.some((method) => method.template === "azureAdDelegated")).toBe(
+      true,
+    );
   });
 
   it("gates the API when dev-auth is on but treats the request as the dev admin", async () => {
@@ -437,4 +477,38 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(resumed.result?.isError).toBeFalsy();
     expect(resumed.result?.structuredContent?.status).toBe("completed");
   }, 60_000);
+});
+
+describe("cloudflare host configuration errors", () => {
+  let worker: Unstable_DevWorker;
+
+  beforeAll(async () => {
+    ensureStaticAssets();
+    worker = await unstable_dev(resolve(dir, "worker.ts"), {
+      config: resolve(dir, "../wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      experimental: { disableExperimentalWarning: true },
+      vars: {
+        EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
+      },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await worker?.stop();
+  });
+
+  it("returns an actionable response when Cloudflare Access is not configured", async () => {
+    for (const path of ["/api/account/me", "/mcp"]) {
+      const response = await worker.fetch(path);
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.text()).resolves.toBe(
+        "Cloudflare Access is not configured. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD before serving requests.\n",
+      );
+    }
+  });
 });

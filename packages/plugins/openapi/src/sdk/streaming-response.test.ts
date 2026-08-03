@@ -13,7 +13,7 @@ import {
   ToolAddress,
 } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
-import { makeOpenApiHttpApiTestSourceConfig, unwrapInvocation } from "../testing";
+import { makeOpenApiHttpApiTestIntegrationConfig, unwrapInvocation } from "../testing";
 
 import { collectStreamingBody, STREAM_MAX_BYTES } from "./invoke";
 import { openApiPlugin } from "./plugin";
@@ -37,7 +37,7 @@ const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(StreamingApi, { slug: "streaming", baseUrl }),
+      makeOpenApiHttpApiTestIntegrationConfig(StreamingApi, { slug: "streaming", baseUrl }),
     );
     yield* executor.connections.create({
       owner: "org",
@@ -271,6 +271,87 @@ describe("OpenAPI streaming responses", () => {
 
       expect(text).toMatch(/422|too_short|name|response|error/i);
       expect(text).not.toMatch(/x-executor-stream/);
+    }),
+  );
+
+  it.effect("advertises an NDJSON operation's output as the array invoke returns", () =>
+    Effect.gen(function* () {
+      // The spec declares the schema of ONE line (Vercel's runtime-logs
+      // convention); the runtime returns an array of parsed lines. The
+      // advertised output schema must describe that array on BOTH serve
+      // paths (the add-time compile and the stored-binding rebuild) or
+      // agents write code against a shape that never comes back.
+      const lineSchema = {
+        type: "object",
+        properties: { level: { type: "string" }, message: { type: "string" } },
+      };
+      const server = yield* startRawServer((res) => {
+        res.writeHead(200, { "content-type": "application/stream+json" });
+        res.end(
+          `${JSON.stringify({ level: "info", message: "a" })}\n` +
+            `${JSON.stringify({ level: "error", message: "b" })}\n`,
+        );
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      yield* executor.openapi.addSpec({
+        spec: {
+          kind: "blob",
+          value: JSON.stringify({
+            openapi: "3.0.3",
+            info: { title: "Runtime Logs", version: "1.0.0" },
+            servers: [{ url: server.baseUrl }],
+            paths: {
+              "/logs": {
+                get: {
+                  operationId: "getLogs",
+                  tags: ["logs"],
+                  responses: {
+                    "200": {
+                      description: "Log lines",
+                      content: { "application/stream+json": { schema: lineSchema } },
+                    },
+                  },
+                },
+              },
+            },
+          }),
+        },
+        slug: "ndjson_logs",
+        baseUrl: server.baseUrl,
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("ndjson_logs"),
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "token",
+      });
+      const address = ToolAddress.make("tools.ndjson_logs.org.main.logs.getLogs");
+
+      const schema = yield* executor.tools.schema(address);
+      const outputSchema = schema?.outputSchema as Record<string, unknown>;
+      expect(outputSchema.type).toBe("array");
+      expect(outputSchema.items).toEqual(lineSchema);
+
+      // Force a catalog rebuild (the stored-binding serve path) to re-derive
+      // the same array wrap from the persisted content type.
+      yield* executor.connections.refresh({
+        owner: "org",
+        integration: IntegrationSlug.make("ndjson_logs"),
+        name: ConnectionName.make("main"),
+      });
+      const rebuilt = yield* executor.tools.schema(address);
+      const rebuiltOutput = rebuilt?.outputSchema as Record<string, unknown>;
+      expect(rebuiltOutput.type).toBe("array");
+      expect(rebuiltOutput.items).toEqual(lineSchema);
+
+      // And the runtime value is exactly that array.
+      const result = unwrapInvocation<unknown[]>(yield* executor.execute(address, {}));
+      expect(result.data).toEqual([
+        { level: "info", message: "a" },
+        { level: "error", message: "b" },
+      ]);
     }),
   );
 });

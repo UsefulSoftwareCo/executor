@@ -22,6 +22,8 @@ import type { IntegrationSlug } from "./ids";
 export interface IntegrationDisplayDescriptor {
   /** Non-secret URL suitable for display metadata such as favicons. */
   readonly url?: string;
+  /** Catalog family derived from plugin config for grouped display. */
+  readonly family?: string;
 }
 
 /** Where a credential value is carried. `header`/`query` place it on an
@@ -100,6 +102,8 @@ export interface Integration {
   /** Non-secret display URL derived by the owning plugin from opaque config.
    *  Used for catalog favicons; never includes credentials or plugin config. */
   readonly displayUrl?: string;
+  /** Catalog family derived by the owning plugin from opaque config. */
+  readonly family?: string;
 }
 
 /** Plugin-owned, opaque-to-core configuration stored on the integration row. The
@@ -147,6 +151,20 @@ export const mergeAuthTemplates = <T extends { readonly slug: string }>(
   }
   return result;
 };
+
+/**
+ * A durable change to the integration catalog, emitted through
+ * `ExecutorConfig.onIntegrationChange`: a row was created (`added` — upsert
+ * re-registers of an existing slug do not fire) or removed. The hook is a
+ * neutral notification seam — hosts decide what to do with it (the non-cloud
+ * hosts feed product analytics); core carries no analytics vocabulary.
+ */
+export interface IntegrationChangeEvent {
+  readonly kind: "added" | "removed";
+  /** The owning plugin's id (`openapi`, `mcp`, `graphql`, ...). */
+  readonly pluginKey: string;
+  readonly slug: IntegrationSlug;
+}
 
 /** What a plugin's extension method passes to `ctx.core.integrations.register`.
  *  The v2 analog of v1's `SourceInput`, minus the per-source tool list (tools are

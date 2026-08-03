@@ -50,6 +50,7 @@ const ConnectionResponse = Schema.Struct({
   oauthClient: Schema.NullOr(OAuthClientSlug),
   oauthClientOwner: Schema.NullOr(Owner),
   oauthScope: Schema.NullOr(Schema.String),
+  missingOAuthScopes: Schema.Array(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,9 @@ const StartPayload = Schema.Struct({
   integration: IntegrationSlug,
   template: AuthTemplateSlug,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Mint a NEW connection: a taken `name` resolves to the next free suffixed
+   *  name server-side instead of re-minting the existing row. */
+  newConnection: Schema.optional(Schema.Boolean),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
 });
 

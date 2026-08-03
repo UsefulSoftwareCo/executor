@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { FileSystem } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as jsonc from "jsonc-parser";
-import type { SourceConfig, ExecutorFileConfig } from "./schema";
+import type { IntegrationConfig, ExecutorFileConfig } from "./schema";
 
 export class ConfigWriteError {
   readonly _tag = "ConfigWriteError";
@@ -19,7 +19,7 @@ const FORMATTING: jsonc.FormattingOptions = {
 };
 
 const DEFAULT_CONFIG = `{
-  "sources": []
+  "integrations": []
 }
 `;
 
@@ -36,35 +36,35 @@ const readOrCreate = (
   });
 
 /**
- * Add a source entry to the config file. Creates the file if it doesn't exist.
+ * Add an integration entry to the config file. Creates the file if it doesn't exist.
  * Preserves existing comments and formatting.
  */
-export const addSourceToConfig = (
+export const addIntegrationToConfig = (
   path: string,
-  source: SourceConfig,
+  integration: IntegrationConfig,
 ): Effect.Effect<void, PlatformError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     let text = yield* readOrCreate(fs, path);
 
-    // Ensure "sources" array exists
+    // Ensure "integrations" array exists
     let tree = jsonc.parseTree(text);
-    let sourcesNode = tree ? jsonc.findNodeAtLocation(tree, ["sources"]) : undefined;
+    let integrationsNode = tree ? jsonc.findNodeAtLocation(tree, ["integrations"]) : undefined;
 
-    if (!sourcesNode) {
-      const edits = jsonc.modify(text, ["sources"], [source], {
+    if (!integrationsNode) {
+      const edits = jsonc.modify(text, ["integrations"], [integration], {
         formattingOptions: FORMATTING,
       });
       text = jsonc.applyEdits(text, edits);
     } else {
       // Remove existing entry with same namespace (if any) to avoid duplicates
-      const ns = "namespace" in source ? source.namespace : undefined;
-      if (ns && sourcesNode.children) {
-        for (let i = sourcesNode.children.length - 1; i >= 0; i--) {
-          const child = sourcesNode.children[i]!;
+      const ns = "namespace" in integration ? integration.namespace : undefined;
+      if (ns && integrationsNode.children) {
+        for (let i = integrationsNode.children.length - 1; i >= 0; i--) {
+          const child = integrationsNode.children[i]!;
           const nsNode = jsonc.findNodeAtLocation(child, ["namespace"]);
           if (nsNode && jsonc.getNodeValue(nsNode) === ns) {
-            const edits = jsonc.modify(text, ["sources", i], undefined, {
+            const edits = jsonc.modify(text, ["integrations", i], undefined, {
               formattingOptions: FORMATTING,
             });
             text = jsonc.applyEdits(text, edits);
@@ -72,11 +72,11 @@ export const addSourceToConfig = (
         }
         // Re-parse after removals
         tree = jsonc.parseTree(text);
-        sourcesNode = tree ? jsonc.findNodeAtLocation(tree, ["sources"]) : undefined;
+        integrationsNode = tree ? jsonc.findNodeAtLocation(tree, ["integrations"]) : undefined;
       }
 
-      const count = sourcesNode?.children?.length ?? 0;
-      const edits = jsonc.modify(text, ["sources", count], source, {
+      const count = integrationsNode?.children?.length ?? 0;
+      const edits = jsonc.modify(text, ["integrations", count], integration, {
         formattingOptions: FORMATTING,
       });
       text = jsonc.applyEdits(text, edits);
@@ -86,9 +86,9 @@ export const addSourceToConfig = (
   });
 
 /**
- * Remove a source from the config file by namespace.
+ * Remove an integration from the config file by namespace.
  */
-export const removeSourceFromConfig = (
+export const removeIntegrationFromConfig = (
   path: string,
   namespace: string,
 ): Effect.Effect<void, PlatformError, FileSystem.FileSystem> =>
@@ -102,15 +102,15 @@ export const removeSourceFromConfig = (
     const tree = jsonc.parseTree(text);
     if (!tree) return;
 
-    const sourcesNode = jsonc.findNodeAtLocation(tree, ["sources"]);
-    if (!sourcesNode?.children) return;
+    const integrationsNode = jsonc.findNodeAtLocation(tree, ["integrations"]);
+    if (!integrationsNode?.children) return;
 
     // Walk backwards so indices stay valid after each removal
-    for (let i = sourcesNode.children.length - 1; i >= 0; i--) {
-      const child = sourcesNode.children[i]!;
+    for (let i = integrationsNode.children.length - 1; i >= 0; i--) {
+      const child = integrationsNode.children[i]!;
       const nsNode = jsonc.findNodeAtLocation(child, ["namespace"]);
       if (nsNode && jsonc.getNodeValue(nsNode) === namespace) {
-        const edits = jsonc.modify(text, ["sources", i], undefined, {
+        const edits = jsonc.modify(text, ["integrations", i], undefined, {
           formattingOptions: FORMATTING,
         });
         text = jsonc.applyEdits(text, edits);

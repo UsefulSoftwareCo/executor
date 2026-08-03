@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Identity marker for runtime loaders: an ASSETS-binding fetch under
+         SPA not-found handling answers a miss with index.html and a 200, so
+         loaders verify this fragment before serving the document as the
+         ui:// shell resource. See MCP_APPS_SHELL_DOCUMENT_MARKER. -->
+    <meta name="executor-mcp-apps-shell" content="shell" />
+    <title>Executor Shell</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./mcp-app.tsx"></script>
+  </body>
+</html>

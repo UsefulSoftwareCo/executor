@@ -12,12 +12,12 @@
 
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
-import { createMcpIntegrationPlugin } from "./source-plugin";
+import { createMcpIntegrationPlugin } from "./integration-plugin";
 
 export interface McpClientConfig {
   /**
    * Mirrors `dangerouslyAllowStdioMCP` on the server-side plugin. When
-   * false, the AddMcpSource UI hides the stdio tab and stdio presets.
+   * false, the AddMcpIntegration UI hides the stdio tab and stdio presets.
    * Defaults to false — same default as the server flag.
    */
   readonly allowStdio?: boolean;

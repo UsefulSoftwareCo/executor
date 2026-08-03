@@ -477,8 +477,8 @@ function HealthCheckEditorSheet(props: {
         <SheetHeader>
           <SheetTitle>Health check</SheetTitle>
           <SheetDescription>
-            One read-only call Executor runs to tell whether a connection's credential is still
-            alive and, optionally, whose account it is. A 401 or 403 marks the connection expired.
+            Optional read-only depth for live upstream checks. OAuth validity and identity come from
+            the grant itself. For non-OAuth methods, a 401 or 403 marks the connection expired.
           </SheetDescription>
         </SheetHeader>
 
@@ -553,8 +553,8 @@ export function HealthCheckEditor(props: {
       <div className="space-y-1">
         <h3 className="text-sm font-medium">Health check</h3>
         <p className="text-xs text-muted-foreground">
-          A read-only call Executor runs to tell whether a connection's credential is still alive
-          and, optionally, whose account it is.
+          Optional read-only depth for live upstream checks. OAuth identity comes from the account
+          grant, while probe identity fields are useful for non-OAuth methods.
         </p>
       </div>
       <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">

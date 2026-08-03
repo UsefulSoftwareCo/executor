@@ -1,5 +1,142 @@
 # executor
 
+## 1.5.37
+
+### Patch Changes
+
+- [#1506](https://github.com/UsefulSoftwareCo/executor/pull/1506) [`c05a1cf`](https://github.com/UsefulSoftwareCo/executor/commit/c05a1cfa629b7f28a7d870c584998cb9cbbaf303) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Artifacts are now on by default for MCP connections.** A plain endpoint URL serves the full artifact surface — the artifact tools, the app shell resource, and the artifact skills. Connections that don't want it opt out with `?artifacts=false` (or `--no-artifacts` on the stdio CLI); `?artifacts=true` remains accepted as the explicit default. Previously the surface required a `?artifacts=true` opt-in.
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- [#1500](https://github.com/UsefulSoftwareCo/executor/pull/1500) [`5eb2ca3`](https://github.com/UsefulSoftwareCo/executor/commit/5eb2ca36f93d2dae6eb8b3506c5de04ca141bb20) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the artifact migration no longer narrows `definition.name` to varchar(255), which failed on existing long definition names**
+
+- [#1472](https://github.com/UsefulSoftwareCo/executor/pull/1472) [`1178e3b`](https://github.com/UsefulSoftwareCo/executor/commit/1178e3b31cd62cd2c05d6504d1586c2d8f018692) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add an Artifacts tab. Interactive components an agent generates with `render-ui` are saved and listed in the console, and each one has its own page that renders it live — the page an MCP client without MCP Apps support deep-links to. Artifacts can be renamed and deleted from the console, and agents find them again by title.
+
+- [#1505](https://github.com/UsefulSoftwareCo/executor/pull/1505) [`9bd4a5b`](https://github.com/UsefulSoftwareCo/executor/commit/9bd4a5b6063bd98f5ae8070baf0dd3ee3e110d68) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Artifact tool results now include the web deep link beside the inline widget payload, not just on the no-apps fallback. Clients can lose a rendered widget in ways the server never sees — a reopened transcript that skips the resource re-read shows raw JSON — and the URL in the result is the model's way to point the user back at the artifact.
+
+- [#1483](https://github.com/UsefulSoftwareCo/executor/pull/1483) [`54df2e3`](https://github.com/UsefulSoftwareCo/executor/commit/54df2e3e99509008759269b27484ee6581ce8827) Thanks [@davidwrossiter](https://github.com/davidwrossiter)! - **Fix: GraphQL connections now reject credentials when schema introspection fails and show actionable tool sync diagnostics**
+
+- [#1499](https://github.com/UsefulSoftwareCo/executor/pull/1499) [`010ea98`](https://github.com/UsefulSoftwareCo/executor/commit/010ea98e520643731b07e68e21119f12b8ef1505) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the add-connection wizard no longer wipes a pasted credential when the key check saves a health check mid-flow**
+
+- [#1503](https://github.com/UsefulSoftwareCo/executor/pull/1503) [`a7c4689`](https://github.com/UsefulSoftwareCo/executor/commit/a7c468944837cfe097f03f69d612bde31903f284) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP responses larger than Durable Object storage's 128 KiB per-value cap hung the client instead of being delivered**
+
+  The DO transport persisted every outbound message for reconnect replay before writing the live SSE frame, and `storage.put` of an oversize value throws — so a large response (the `ui://executor/shell.html` resource is ~5 MB) was neither stored nor sent, and the client waited on keepalives forever. The transport now delivers the live frame first and treats persistence as best-effort: an oversize message skips the event store with a logged warning and arrives without a replay id, which only costs replayability if the connection drops mid-delivery.
+
+- [#1502](https://github.com/UsefulSoftwareCo/executor/pull/1502) [`25270b1`](https://github.com/UsefulSoftwareCo/executor/commit/25270b1f1f091778ba6584e41b041092fc1bdd00) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP clients of the cloud host got a "Shell not built" placeholder as the `ui://executor/shell.html` resource, so every artifact rendered as a widget that never finished loading**
+
+  The deployed Worker has no filesystem, and the shell loader silently fell back to an inert placeholder document when its `fs.readFile` failed. Workers hosts now fetch the built shell through the static-assets binding (the app build emits a stable-named copy alongside the hashed one), the self-host image reads the same emitted asset from its SPA dist, and a host that cannot produce the shell now fails the resource read with an actionable error instead of serving a document that hangs the client. App builds fail if the shell asset was not emitted.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/local@1.4.4
+  - @executor-js/runtime-quickjs@1.5.37
+
+## 1.5.36
+
+### Patch Changes
+
+- [#1478](https://github.com/UsefulSoftwareCo/executor/pull/1478) [`8ecbfd6`](https://github.com/UsefulSoftwareCo/executor/commit/8ecbfd65f2c1393c75661c792723961877866cc5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Store minted OAuth tokens in the durable file secret store (`auth.json` under `EXECUTOR_DATA_DIR`) instead of the system keychain. On sandbox/headless hosts the keychain can be an in-memory keyring that a stop/recreate wipes, leaving OAuth connections expired with "Stored refresh token could not be resolved." Existing keychain-backed connections migrate with one clean reconnect.
+
+- [#1462](https://github.com/UsefulSoftwareCo/executor/pull/1462) [`5a70675`](https://github.com/UsefulSoftwareCo/executor/commit/5a706756c66e53c9a929e9a8c30e57166b8d121b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: org OAuth connections on self-host worked only for whoever ran the consent**
+
+  The encrypted-secrets credential provider (the writable provider on the self-hosted and Cloudflare hosts) filed token rows under the _acting user's_ private partition instead of the credential's own owner. An org-owned OAuth connection whose consent completed in one member's browser session therefore resolved only for that member — every other principal failed with `oauth_connection_missing`, while the UI showed the connection healthy. The provider now partitions by the owner embedded in the item id (`oauth:org:…` → org-shared), matching the WorkOS Vault provider, and a boot-time data migration re-files rows already written wrong. The encrypted value itself was never affected.
+
+- [#1459](https://github.com/UsefulSoftwareCo/executor/pull/1459) [`fc1e589`](https://github.com/UsefulSoftwareCo/executor/commit/fc1e589613a14750c2ca8c34838a71c758544c8d) Thanks [@wan0net](https://github.com/wan0net)! - Preserve `elicitation_mode=native` when creating self-hosted MCP sessions.
+
+- [#1475](https://github.com/UsefulSoftwareCo/executor/pull/1475) [`77b0821`](https://github.com/UsefulSoftwareCo/executor/commit/77b0821ff9bddd6fb419d81a18b9e1af804fdb55) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Refresh OAuth tokens when the upstream rejects them with HTTP 401, not only when the stored expiry says they are due. Connections whose authorization server omits `expires_in` can now recover without a manual reconnect, and the refresh path is traced.
+
+- [#1476](https://github.com/UsefulSoftwareCo/executor/pull/1476) [`167d899`](https://github.com/UsefulSoftwareCo/executor/commit/167d899162794064eeac0a755697c2c943f1b9ac) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Remove the custom apps plugin. Git and local-directory app sources are no
+  longer supported. The packed binary still ships the workerd and worker-bundler
+  sidecars.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/runtime-quickjs@1.5.36
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.56
+
+## 1.5.35
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df), [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/runtime-quickjs@1.5.35
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.55
+
+## 1.5.34
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.54
+  - @executor-js/runtime-quickjs@1.5.34
+
+## 1.5.33
+
+### Patch Changes
+
+- [#1404](https://github.com/UsefulSoftwareCo/executor/pull/1404) [`5e0dd15`](https://github.com/UsefulSoftwareCo/executor/commit/5e0dd15291daaedf10f6eb8e03c5afdca8787764) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - The provider service split boot migration now skips an org whose Google or Microsoft integration cannot be migrated (for example a config without a stored specHash) instead of failing the whole migration and blocking server startup. A daemon that does fail during boot now exits with the underlying error message instead of hanging with a generic "Unknown error".
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.33
+  - @executor-js/runtime-quickjs@1.5.33
+  - @executor-js/api@1.4.53
+
+## 1.5.32
+
+### Patch Changes
+
+- [#1395](https://github.com/UsefulSoftwareCo/executor/pull/1395) [`d90d8be`](https://github.com/UsefulSoftwareCo/executor/commit/d90d8be38fa26d3a6b8a5ac648af815191f537bb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Policy create now defaults a new rule's position below any more-specific existing rule on the server, so a broad rule written without an explicit position (stale UI, API, agent tool) cannot shadow an existing narrower rule.
+
+- [#1394](https://github.com/UsefulSoftwareCo/executor/pull/1394) [`1ca5111`](https://github.com/UsefulSoftwareCo/executor/commit/1ca511101fad057d129db9941b5c9bce963baf0a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Ship the platform workerd binary in the self-host Docker runtime; without it custom app tools failed to sync or invoke with "workerd is unavailable on this platform".
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/runtime-quickjs@1.5.32
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.52
+
+## 1.5.31
+
+### Patch Changes
+
+- [#1390](https://github.com/UsefulSoftwareCo/executor/pull/1390) [`d95e63c`](https://github.com/UsefulSoftwareCo/executor/commit/d95e63cc33ade4ce0996678cfa51a5e4c784a9ea) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Ship @cloudflare/worker-bundler in the self-host Docker runtime so the server starts; it was resolved at runtime since the dynamic Worker bundler change but never copied into the image.
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.31
+  - @executor-js/runtime-quickjs@1.5.31
+  - @executor-js/api@1.4.51
+
+## 1.5.30
+
+### Patch Changes
+
+- [#1371](https://github.com/UsefulSoftwareCo/executor/pull/1371) [`262fc3e`](https://github.com/UsefulSoftwareCo/executor/commit/262fc3edcad31a53bd8aecacf8fe784b276fb745) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Explain 401s from a hosted server as a sign-in problem with the exact `executor login` command to run, instead of surfacing a raw decode error. `executor login` now defaults to https://executor.sh when no server is specified, and profile plumbing stays out of messages unless you address servers by name.
+
+- [#1375](https://github.com/UsefulSoftwareCo/executor/pull/1375) [`0f81165`](https://github.com/UsefulSoftwareCo/executor/commit/0f81165138c1c987f13ff9839e46539f80b229b0) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Run cloud custom tool bundling in a dynamically loaded Worker so dependency installation and bundling do not share the serving request isolate.
+
+- [#1349](https://github.com/UsefulSoftwareCo/executor/pull/1349) [`a7e3091`](https://github.com/UsefulSoftwareCo/executor/commit/a7e3091a94fbdf032ef134989ceaba4f0b1b3231) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Back-stop code execution with a host-side timeout so a wedged sandbox delivers a descriptive error instead of hanging silently.
+
+- [#1351](https://github.com/UsefulSoftwareCo/executor/pull/1351) [`93b000a`](https://github.com/UsefulSoftwareCo/executor/commit/93b000a4ba24317f5a1f08fd8d7f72457d115f06) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Let stock MCP clients auto-reconnect and recover a tool result when a POST stream drops mid-call.
+
+- [#1345](https://github.com/UsefulSoftwareCo/executor/pull/1345) [`c46730b`](https://github.com/UsefulSoftwareCo/executor/commit/c46730b5d48cc62dae1abdbe32136f3c229d79f6) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Preserve MCP tool results across dropped streamable HTTP SSE connections.
+
+- [#1357](https://github.com/UsefulSoftwareCo/executor/pull/1357) [`4c319ee`](https://github.com/UsefulSoftwareCo/executor/commit/4c319ee2e4a8d062402a80419dd3e1d829908ad8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Throw a guidance error when sandbox code enumerates the `tools` proxy (`Object.keys`, spread, `for...in`) instead of returning an empty list, pointing agents at `tools.search()`.
+
+- [#1352](https://github.com/UsefulSoftwareCo/executor/pull/1352) [`8bdf315`](https://github.com/UsefulSoftwareCo/executor/commit/8bdf31550f702e6bce6c3460bb9d26fcce925d7b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Treat a transient WorkOS outage during the MCP live-membership check as a retryable 503 instead of a Forbidden that destroys the session.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/runtime-quickjs@1.5.30
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.50
+
 ## 1.5.29
 
 ### Patch Changes

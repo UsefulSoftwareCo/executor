@@ -106,20 +106,20 @@ describe("describeOpenApiAuthMethods", () => {
         ...recordWith([]),
         config: {
           spec: "{}",
-          sourceUrl: "https://api.example.com/openapi.json",
+          specUrl: "https://api.example.com/openapi.json",
           baseUrl: "https://api.example.com",
         } as IntegrationConfig,
       }),
     ).toEqual({ url: "https://api.example.com" });
   });
 
-  it("falls back to sourceUrl for display metadata", () => {
+  it("falls back to specUrl for display metadata", () => {
     expect(
       describeOpenApiIntegrationDisplay({
         ...recordWith([]),
         config: {
           spec: "{}",
-          sourceUrl: "https://api.example.com/openapi.json",
+          specUrl: "https://api.example.com/openapi.json",
         } as IntegrationConfig,
       }),
     ).toEqual({ url: "https://api.example.com/openapi.json" });

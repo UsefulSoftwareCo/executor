@@ -35,7 +35,7 @@ const result = await executor.tools.invoke("petstore.listPets", {});
 
 ## Secret-backed auth headers
 
-Wire API keys or bearer tokens through the executor's secret store — never hard-code them in source configs:
+Wire API keys or bearer tokens through the executor's secret store — never hard-code them in integration configs:
 
 ```ts
 import { createExecutor } from "@executor-js/sdk";

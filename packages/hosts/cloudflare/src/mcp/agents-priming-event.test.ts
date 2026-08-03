@@ -74,7 +74,10 @@ describe("POST-stream priming event: store ordering and replay", () => {
     const store = new DurableObjectEventStore(storage as never);
     const streamId = "post-stream";
 
-    // Transport order: priming event first, then the tool response.
+    // Transport order: priming event first, then the tool response. Both are
+    // tiny, so storeEvent always persists them and returns an id — the
+    // `undefined` arm of its signature is the oversize skip, pinned in
+    // agents-event-store.test.ts.
     const primingId = await store.storeEvent(streamId, PRIMING_MESSAGE);
     const response = {
       jsonrpc: "2.0" as const,
@@ -87,10 +90,13 @@ describe("POST-stream priming event: store ordering and replay", () => {
     expect(responseId, "response is seq 2, after the priming id").toBe(
       `${streamId}:0000000000000002`,
     );
-    expect(primingId < responseId, "priming id sorts strictly before the response id").toBe(true);
+    expect(
+      (primingId ?? "") < (responseId ?? ""),
+      "priming id sorts strictly before the response id",
+    ).toBe(true);
 
     const replayed: Array<{ readonly eventId: string; readonly message: unknown }> = [];
-    await store.replayEventsAfter(primingId, {
+    await store.replayEventsAfter(primingId ?? "", {
       send: async (eventId: string, message: unknown) => {
         replayed.push({ eventId, message });
       },
@@ -108,9 +114,10 @@ describe("POST-stream priming event: store ordering and replay", () => {
     const store = new DurableObjectEventStore(storage as never);
     const streamId = "post-stream";
     const primingId = await store.storeEvent(streamId, PRIMING_MESSAGE);
+    expect(primingId, "a tiny priming message always persists and gets an id").toBeDefined();
 
     const replayed: string[] = [];
-    await store.replayEventsAfter(primingId, {
+    await store.replayEventsAfter(primingId ?? "", {
       send: async (eventId: string) => {
         replayed.push(eventId);
       },

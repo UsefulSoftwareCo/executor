@@ -22,6 +22,7 @@ import { HttpApi } from "effect/unstable/httpapi";
 import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as AtomHttpApi from "effect/unstable/reactivity/AtomHttpApi";
+import type { HealthCheckSpec } from "./health-check";
 
 // ---------------------------------------------------------------------------
 // Re-exports — the curated set of primitives a plugin author needs to
@@ -112,7 +113,34 @@ export interface IntegrationPreset {
   readonly icon?: string;
   /** Shown in the top-level grid on the integrations page when true. */
   readonly featured?: boolean;
+  readonly family?: string;
+  readonly specFormat?: string;
+  readonly defaultSlug?: string;
+  /** Plugin-specific RFC 6902 operations applied to a fetched specification. */
+  readonly specOverrides?: readonly unknown[];
+  readonly authTemplate?: readonly IntegrationPresetAuthentication[];
+  readonly healthCheck?: HealthCheckSpec;
 }
+
+export type IntegrationPresetAuthentication =
+  | {
+      readonly slug: string;
+      readonly kind: "oauth2";
+      readonly authorizationUrl: string;
+      readonly tokenUrl: string;
+      readonly resource?: string | null;
+      readonly scopes: readonly string[];
+      readonly supportsClientIdMetadataDocument?: boolean;
+    }
+  | {
+      readonly kind: "apiKey";
+      readonly slug?: string;
+      readonly name?: string;
+      readonly placements?: readonly unknown[];
+      readonly headers?: Readonly<Record<string, readonly unknown[]>>;
+      readonly queryParams?: Readonly<Record<string, readonly unknown[]>>;
+      readonly cookies?: Readonly<Record<string, readonly unknown[]>>;
+    };
 
 export interface IntegrationAccountHandoff {
   /** Changes on each handoff URL, so the accounts UI can open once per link. */
@@ -151,7 +179,7 @@ export type EditSheetApplyResult =
   | { readonly ok: false };
 
 export interface EditSheetSectionProps {
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly onPendingChange?: (apply: (() => Promise<EditSheetApplyResult>) | null) => void;
 }
 
@@ -173,7 +201,7 @@ export interface IntegrationPlugin {
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */
   readonly edit?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly onSave: () => void;
   }>;
   /** Plugin-owned configuration rendered inside the integration's Edit sheet,
@@ -184,7 +212,7 @@ export interface IntegrationPlugin {
    *  apply keeps the sheet open with the section showing its own error. */
   readonly editSheet?: ComponentType<EditSheetSectionProps>;
   readonly summary?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly variant?: "badge" | "panel";
     readonly onAction?: () => void;
   }>;
@@ -192,7 +220,7 @@ export interface IntegrationPlugin {
    *  the detail page's Accounts tab. Plugins that declare auth methods implement
    *  this; the page falls back to a generic accounts list when absent. */
   readonly accounts?: ComponentType<{
-    readonly sourceId: string;
+    readonly integrationId: string;
     readonly integrationName: string;
     readonly accountHandoff?: IntegrationAccountHandoff | null;
   }>;
@@ -222,7 +250,7 @@ export interface ClientPluginSpec<TId extends string = string> {
   readonly widgets?: readonly WidgetDecl[];
   readonly slots?: Record<string, SlotComponent>;
   /** Integration plugin contribution — populated by plugins that expose
-   *  `kind` rows in the core `source` table (openapi, mcp, graphql).
+   *  `kind` rows in the core `integration` table (openapi, mcp, graphql).
    *  The host's integrations page derives its provider
    *  list from the union of every loaded plugin's `integrationPlugin`. */
   readonly integrationPlugin?: IntegrationPlugin;

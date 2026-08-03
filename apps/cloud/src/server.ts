@@ -14,6 +14,7 @@ import handler from "@tanstack/react-start/server-entry";
 import { isAppOwnedPath } from "./app-paths";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
+import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import {
   beforeSendWithOtelCorrelation,
@@ -124,16 +125,66 @@ const cloudflareHandler: ExportedHandler<Env> = {
     const url = new URL(request.url);
     const mcpRoute = classifyMcpPath(url.pathname);
     const tracingInstalled = installTracerProvider();
+    // Join the caller's W3C trace when the request carries one — the web UI
+    // sends traceparent on every API fetch, so the browser's spans and this
+    // request share one trace id end to end. Same parsing the DO path does
+    // in session-durable-object.ts.
+    const inbound = parseTraceparent(request.headers.get("traceparent"), null);
+    const parentContext = inbound
+      ? trace.setSpanContext(context.active(), {
+          traceId: inbound.traceId,
+          spanId: inbound.spanId,
+          traceFlags: inbound.traceFlags,
+          isRemote: true,
+        })
+      : context.active();
     if (mcpRoute?.kind === "mcp") {
       // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
       // to pass authenticated session props into the hibernatable DO.
       // Discovery docs still flow through the app-level MCP envelope.
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; keep trace export alive after the Agents bridge resolves or rejects
-      try {
-        return await mcpAgentHandler(prepareMcpOrgScope(request), env, ctx);
-      } finally {
-        if (tracingInstalled) ctx.waitUntil(flushTracerProvider());
+      const forwarded = prepareMcpOrgScope(request);
+      if (!tracingInstalled) {
+        return mcpAgentHandler(forwarded, env, ctx);
       }
+      // /mcp left the Effect app in the Agents-bridge migration, so no
+      // downstream HttpMiddleware.tracer opens the request envelope anymore —
+      // this worker span is now THE `http.server` span for MCP traffic. Its
+      // context is stamped onto the forwarded request's traceparent so the
+      // agent handler's Effect programs (mcp.request and children) and the
+      // session DO parent under it instead of exporting orphaned roots.
+      return tracer.startActiveSpan(
+        `http.server ${request.method}`,
+        { kind: SpanKind.SERVER },
+        parentContext,
+        async (span) => {
+          span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
+          span.setAttribute(ATTR_URL_FULL, request.url);
+          span.setAttribute(ATTR_URL_PATH, url.pathname);
+          span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
+          const spanContext = span.spanContext();
+          const headers = new Headers(forwarded.headers);
+          headers.set(
+            "traceparent",
+            `00-${spanContext.traceId}-${spanContext.spanId}-${(spanContext.traceFlags & 0xff).toString(16).padStart(2, "0")}`,
+          );
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep trace export alive after the Agents bridge resolves or rejects
+          try {
+            const response = await mcpAgentHandler(new Request(forwarded, { headers }), env, ctx);
+            span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+            if (response.status >= 500) {
+              span.setStatus({ code: SpanStatusCode.ERROR });
+            }
+            return response;
+          } catch (err) {
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
+            throw err;
+          } finally {
+            span.end();
+            ctx.waitUntil(flushTracerProvider());
+          }
+        },
+      );
     }
     if (!tracingInstalled) {
       return fetchHandler(request, env, ctx);
@@ -150,21 +201,6 @@ const cloudflareHandler: ExportedHandler<Env> = {
         ctx.waitUntil(flushTracerProvider());
       }
     }
-    // Join the caller's W3C trace when the request carries one — the web UI
-    // sends traceparent on every API fetch, so the browser's spans and this
-    // request share one trace id end to end. Same parsing the DO path does
-    // in session-durable-object.ts.
-    const traceparentMatch = /^[0-9a-f]{2}-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(
-      request.headers.get("traceparent") ?? "",
-    );
-    const parentContext = traceparentMatch
-      ? trace.setSpanContext(context.active(), {
-          traceId: traceparentMatch[1]!,
-          spanId: traceparentMatch[2]!,
-          traceFlags: parseInt(traceparentMatch[3]!, 16),
-          isRemote: true,
-        })
-      : context.active();
     return tracer.startActiveSpan(
       `http.server ${request.method}`,
       { kind: SpanKind.SERVER },

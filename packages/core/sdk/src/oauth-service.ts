@@ -54,6 +54,7 @@ import {
   discoverProtectedResourceMetadata,
   OAuthDiscoveryError,
   registerDynamicClient as registerDynamicClientDcr,
+  type OAuthAuthorizationServerMetadata,
 } from "./oauth-discovery";
 import {
   assertSupportedOAuthEndpointUrl,
@@ -82,6 +83,10 @@ export interface MintOAuthConnectionInput {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
+  /** Display label derived from the provider (OIDC id_token claims), as opposed
+   *  to `identityLabel` which the user chose. Only fills an EMPTY label slot:
+   *  a re-mint must never clobber a curated label with a derived one. */
+  readonly derivedIdentityLabel?: string | null;
   /** Credential provider key + item id the access token is stored under. */
   readonly provider: string;
   readonly itemId: string;
@@ -91,6 +96,7 @@ export interface MintOAuthConnectionInput {
   readonly refreshItemId: string | null;
   readonly expiresAt: number | null;
   readonly oauthScope: string | null;
+  readonly missingOAuthScopes?: readonly string[];
   /** Per-connection override for the token endpoint, persisted only when the
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
@@ -125,6 +131,14 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Whether a connection row exists under `(owner, integration, name)`: the
+   *  raw row, not the policy-filtered list, so `start` can resolve a free
+   *  name for `newConnection` flows against what is actually stored. */
+  readonly connectionNameTaken: (ref: {
+    readonly owner: Owner;
+    readonly integration: IntegrationSlug;
+    readonly name: ConnectionName;
+  }) => Effect.Effect<boolean, StorageFailure>;
   /**
    * Resolve the OAuth scope policy for a `(integration, template)`:
    *  - `{ kind: "scopes", scopes }`: the scopes the integration's auth template
@@ -201,6 +215,52 @@ const recordedOAuthScope = (
     token.refresh_token && requestedScopes.includes("offline_access") ? ["offline_access"] : [];
   const recorded = dedupeScopes([...granted, ...coveredByRefreshToken]);
   return recorded.join(" ") || null;
+};
+
+const OAUTH_SCOPE_ALIASES: Readonly<Record<string, string>> = {
+  "https://www.googleapis.com/auth/userinfo.email": "email",
+  "https://www.googleapis.com/auth/userinfo.profile": "profile",
+};
+
+const informationalOAuthScopes = new Set(["openid", "email", "profile", "offline_access"]);
+
+/** Canonicalize a scope for granted-vs-requested comparison. Microsoft's token
+ *  endpoint returns Graph scopes fully qualified
+ *  (`https://graph.microsoft.com/Mail.ReadWrite`) even when the request used
+ *  the short form, so resource-URI prefixes are stripped down to the scope's
+ *  final path segment before comparing. */
+const canonicalOAuthScope = (scope: string): string => {
+  const aliased = OAUTH_SCOPE_ALIASES[scope];
+  if (aliased) return aliased;
+  if (/^https?:\/\/graph\.microsoft\.(com|us|de)\//i.test(scope)) {
+    return scope.slice(scope.lastIndexOf("/") + 1);
+  }
+  return scope;
+};
+
+/** `.default` is a request-time meta-scope (Microsoft expands it server-side
+ *  and never echoes it in the granted scope), so it can never be "missing". */
+const isMetaOAuthScope = (scope: string): boolean => scope.toLowerCase().endsWith("/.default");
+
+const normalizedOAuthScopeSet = (scopes: readonly string[]): ReadonlySet<string> =>
+  new Set(scopes.map((scope) => canonicalOAuthScope(scope.trim())).filter(Boolean));
+
+export const missingGrantedOAuthScopes = (
+  requestedScopes: readonly string[],
+  recordedScope: string | null,
+): readonly string[] => {
+  const granted = normalizedOAuthScopeSet(recordedScope?.split(/\s+/).filter(Boolean) ?? []);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of requestedScopes) {
+    const trimmed = raw.trim();
+    if (isMetaOAuthScope(trimmed)) continue;
+    const scope = canonicalOAuthScope(trimmed);
+    if (scope.length === 0 || informationalOAuthScopes.has(scope) || seen.has(scope)) continue;
+    seen.add(scope);
+    if (!granted.has(scope)) out.push(scope);
+  }
+  return out;
 };
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
@@ -367,6 +427,14 @@ const canonicalUrlString = (value: string): string => {
   return url.toString();
 };
 
+const oauthMetadataMatchesClient = (
+  client: Pick<LoadedOAuthClient, "authorizationUrl" | "tokenUrl">,
+  metadata: OAuthAuthorizationServerMetadata,
+): boolean =>
+  canonicalUrlString(metadata.authorization_endpoint) ===
+    canonicalUrlString(client.authorizationUrl) &&
+  canonicalUrlString(metadata.token_endpoint) === canonicalUrlString(client.tokenUrl);
+
 const isWellKnownOAuthMetadataUrl = (value: string): boolean => {
   const path = new URL(value.trim()).pathname.toLowerCase();
   return (
@@ -447,7 +515,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         Effect.catch(() => Effect.succeed(null)),
         Effect.provide(httpClientLayer),
       );
-      return intersectScopes(requestedScopes, as?.metadata.scopes_supported);
+      if (!as || !oauthMetadataMatchesClient(client, as.metadata)) return requestedScopes;
+      return intersectScopes(requestedScopes, as.metadata.scopes_supported);
     }).pipe(Effect.catch(() => Effect.succeed(requestedScopes)));
 
   // Caps on server-controlled discovery input — a hostile or buggy server must
@@ -586,6 +655,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             input.origin?.kind === "dynamic_client_registration"
               ? (canonicalIssuerUrl(input.originIssuer) ?? null)
               : null,
+          origin_redirect_uri:
+            input.origin?.kind === "dynamic_client_registration"
+              ? (input.originRedirectUri ?? null)
+              : null,
           created_at: now,
         }),
       );
@@ -649,6 +722,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   type DcrReuseCandidate = {
     readonly slug: OAuthClientSlug;
     readonly resource: string | null;
+    /** Redirect URI the candidate registered with the AS; null for rows
+     *  predating the column (treated as matching any flow callback). */
+    readonly redirectUri: string | null;
   };
 
   // `oauth_client.created_at` is a date column that surfaces as a Date, an ISO
@@ -697,6 +773,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 {
                   slug: OAuthClientSlug.make(String(row.slug)),
                   resource: row.resource == null ? null : String(row.resource),
+                  redirectUri:
+                    row.origin_redirect_uri == null ? null : String(row.origin_redirect_uri),
                   createdAt: candidateCreatedAt(row.created_at),
                 },
               ];
@@ -712,13 +790,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               (a, b) =>
                 a.createdAt - b.createdAt || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0),
             )
-            .map(({ slug, resource }): DcrReuseCandidate => ({ slug, resource }));
+            .map(
+              ({ slug, resource, redirectUri }): DcrReuseCandidate => ({
+                slug,
+                resource,
+                redirectUri,
+              }),
+            );
         }),
       );
 
   const decideDcrClientReuse = (
     input: RegisterDynamicClientInput,
     issuer: string | null,
+    flowRedirectUri: string | null,
   ): Effect.Effect<
     {
       readonly existingSlug: OAuthClientSlug | null;
@@ -729,12 +814,35 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     Effect.gen(function* () {
       const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
       const resource = input.resource ?? null;
+      // A candidate is reusable only when the callback it registered with the
+      // AS still matches the current flow's callback — strict servers reject an
+      // authorize request whose redirect_uri differs from the registration
+      // (e.g. the callback origin changed after a sandbox was recreated while
+      // the persisted client survived). A null stored redirect is a legacy row
+      // predating the column: treated as matching so an upgrade doesn't
+      // re-register every client whose callback never changed. A null FLOW
+      // redirect has nothing to compare against, so it also reuses — the only
+      // alternative is a fresh registration, which the missing-redirectUri
+      // guard would fail.
+      const redirectMatches = (candidate: DcrReuseCandidate): boolean =>
+        candidate.redirectUri === null ||
+        flowRedirectUri === null ||
+        candidate.redirectUri === flowRedirectUri;
+      // A fresh registration must never take a slug an existing candidate
+      // holds: `createClient` deletes any colliding (owner, slug) row first,
+      // which would clobber a client that live connections still refresh
+      // through (a redirect-mismatched client stays valid for refresh — the
+      // token grant doesn't involve the redirect URI).
+      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
       if (resource !== null) {
         const matchingResource = candidates.find((client) => client.resource === resource);
-        if (matchingResource) {
+        if (matchingResource && redirectMatches(matchingResource)) {
           return { existingSlug: matchingResource.slug, registrationSlug: matchingResource.slug };
         }
-        const slug = dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug);
+        const slug = uniqueDcrSlug(
+          dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug),
+          takenSlugs,
+        );
         return {
           existingSlug: null,
           registrationSlug: slug,
@@ -746,15 +854,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // resource-less flow (its tokens are bound to that resource), so when only
       // resource-scoped candidates exist we register a fresh resource-less client
       // rather than silently borrowing one (the old `?? candidates[0]` bug).
-      const reusable = candidates.find((client) => client.resource === null);
+      const reusable = candidates.find(
+        (client) => client.resource === null && redirectMatches(client),
+      );
       if (reusable) return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
       // Fresh resource-less client. Its slug is the bare `dcr-<host>` base, but
       // the FIRST resource-scoped registration for an issuer also takes that base
-      // (dcrClientSlug only suffixes once candidates exist). `createClient`
-      // deletes any row with a colliding (owner, slug) first, so reusing the base
-      // here would silently clobber that resource-scoped client. Dedupe against
-      // the existing candidate slugs so the resource-less client keeps its own row.
-      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
+      // (dcrClientSlug only suffixes once candidates exist) — the takenSlugs
+      // dedupe keeps the resource-less client on its own row.
       const slug = uniqueDcrSlug(dcrClientSlug(issuer, null, input.slug), takenSlugs);
       return { existingSlug: null, registrationSlug: slug };
     });
@@ -764,11 +871,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
     Effect.gen(function* () {
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
-      const reuse = yield* decideDcrClientReuse(input, issuer);
+      // Resolved before the reuse decision: a persisted client registered with
+      // a DIFFERENT callback must not be reused (strict servers 400 the
+      // authorize request), so the reuse lookup compares against this value.
+      const flowRedirectUri = input.redirectUri ?? redirectUri ?? null;
+      const reuse = yield* decideDcrClientReuse(input, issuer, flowRedirectUri);
       if (reuse.existingSlug !== null) return reuse.existingSlug;
 
       const slug = reuse.registrationSlug;
-      const flowRedirectUri = input.redirectUri ?? redirectUri;
       // DCR registers our callback as the client's redirect_uri — fail loudly
       // if the executor has none rather than registering a localhost URL.
       if (flowRedirectUri == null) {
@@ -831,6 +941,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           integration: input.originIntegration ?? null,
         },
         originIssuer: issuer,
+        originRedirectUri: flowRedirectUri,
       });
       return slug;
     });
@@ -961,6 +1072,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
 
+      // newConnection: resolve the requested name to a FREE one against the
+      // stored rows (not a client-side, policy-filtered view), so a second
+      // untyped connect mints `personalGmail2` instead of silently re-minting
+      // the first account's row. Reconnects omit the flag and keep targeting
+      // their existing row. Bounded: a pathological owner with 1000 same-named
+      // connections fails loudly rather than scanning forever.
+      let name = input.name;
+      if (input.newConnection === true) {
+        let suffix = 2;
+        while (
+          yield* deps.connectionNameTaken({
+            owner: input.owner,
+            integration: input.integration,
+            name,
+          })
+        ) {
+          if (suffix > 1000) {
+            return yield* new OAuthStartError({
+              message: `No free connection name derivable from ${input.name}.`,
+            });
+          }
+          name = ConnectionName.make(`${String(input.name)}${suffix}`);
+          suffix++;
+        }
+      }
+
       // Declared scopes win (driven by the selected auth template). MCP-style
       // integrations declare none and discover them from the client's protected
       // resource / authorization server metadata at connect.
@@ -1008,7 +1145,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
         const connection = yield* mintFromToken(
-          input,
+          { ...input, name },
           client,
           token,
           requestedScopes,
@@ -1064,7 +1201,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           state: String(state),
           client_slug: String(input.client),
           integration: String(input.integration),
-          name: String(input.name),
+          name: String(name),
           template: String(input.template),
           redirect_url: flowRedirectUri,
           pkce_verifier: verifier,
@@ -1146,6 +1283,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           clientOwnerFromPayload(sessionRow.payload) ?? (String(sessionRow.owner) as Owner),
       };
 
+      // Annotate as soon as the session resolves the flow's identity, so even
+      // a completion that fails at the exchange still says WHOSE connect died.
+      yield* Effect.annotateCurrentSpan({
+        "executor.integration": String(session.integration),
+        "executor.connection": String(session.name),
+        "executor.template": String(session.template),
+        "executor.oauth.client": String(session.clientSlug),
+      });
+
       // Expired sessions are not redeemable — drop + treat as not found.
       if (Number.isFinite(session.expiresAt) && session.expiresAt <= Date.now()) {
         yield* deleteSession(input.state);
@@ -1209,7 +1355,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           name: session.name,
           integration: session.integration,
           template: session.template,
-          identityLabel: session.identityLabel,
+          identityLabel: session.identityLabel ?? null,
         },
         client,
         token,
@@ -1231,9 +1377,30 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         ),
       );
 
+      // Everything a "why did this connect fail / where did it go" question
+      // needs, none of it secret: slugs, owner scope, and whether the token
+      // host was rebound to a regional endpoint (the Datadog multi-site path —
+      // a bug there previously shipped and was only diagnosable by hand).
+      // Deliberately absent: the code, the PKCE verifier, the token, the
+      // callback domain (can embed an org's private site), and identityLabel
+      // (resolves to an email).
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.token_host_rebound": tokenUrl !== client.tokenUrl,
+      });
+
       yield* deleteSession(input.state);
       return connection;
-    });
+    }).pipe(
+      Effect.withSpan("executor.oauth.complete", {
+        attributes: {
+          "executor.oauth.grant": "authorization_code",
+          // Same per-customer dimensions as executor.oauth.refresh, so a
+          // connect and its later refresh failures group under one tenant.
+          "executor.tenant": deps.tenant,
+          ...(deps.subject != null ? { "executor.subject": deps.subject } : {}),
+        },
+      }),
+    );
 
   // -----------------------------------------------------------------------
   // Mint the connection from a freshly exchanged token: store the access
@@ -1278,12 +1445,34 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         yield* provider.set(ProviderItemId.make(refreshItemId), token.refresh_token);
       }
 
+      const oauthScope = recordedOAuthScope(token, requestedScopes);
+      const missingScopes =
+        client.grant === "authorization_code"
+          ? missingGrantedOAuthScopes(requestedScopes, oauthScope)
+          : [];
+      // The freshness facts of this connection AT BIRTH, on the enclosing
+      // span (executor.oauth.complete, or the reconnect path's request
+      // envelope). Every "why did this connection later go stale" question
+      // starts here: a partial grant fails later as oauth_scope_insufficient
+      // in an unrelated trace; no refresh token means the first expiry is
+      // terminal; no advertised expiry means only the reactive 401 path can
+      // ever refresh it. Counts and booleans only — scope VALUES can encode
+      // customer resource names on some providers.
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.scope_requested_count": requestedScopes.length,
+        "executor.oauth.scope_missing_count": missingScopes.length,
+        "executor.oauth.has_refresh_token": token.refresh_token !== undefined,
+        "executor.oauth.has_advertised_expiry": typeof token.expires_in === "number",
+      });
       return yield* deps.mintOAuthConnection({
         owner: target.owner,
         name: target.name,
         integration: target.integration,
         template: target.template,
         identityLabel: target.identityLabel ?? null,
+        // The OIDC account claims travel separately: they may only FILL an
+        // empty label, never replace a user-curated one on reconnect.
+        derivedIdentityLabel: token.idTokenIdentityLabel ?? null,
         provider: String(provider.key),
         itemId,
         oauthClient: OAuthClientSlug.make(client.slug),
@@ -1294,7 +1483,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // Microsoft, issue a refresh token for `offline_access` but omit that
         // non-resource scope from the token `scope` string, so preserve it when
         // the refresh token proves it was granted.
-        oauthScope: recordedOAuthScope(token, requestedScopes),
+        oauthScope,
+        missingOAuthScopes: missingScopes,
         oauthTokenUrl,
       });
     });

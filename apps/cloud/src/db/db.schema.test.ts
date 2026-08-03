@@ -2,7 +2,7 @@
 // merge of cloud + executor schemas. If ANY call site builds its own
 // `{ schema }` without spreading both, `db._.fullSchema` comes back
 // missing tables and the drizzle adapter throws
-// `unknown model "source"` at the first request that touches scoped data.
+// `unknown model "integration"` at the first request that touches scoped data.
 //
 // We hit this in prod (MCP endpoint) when `mcp-session.ts` built
 // `combinedSchema = { ...cloudSchema }` and forgot to spread the executor
@@ -56,7 +56,7 @@ describe("combinedSchema", () => {
     }
   });
 
-  // Executor-schema drives the scope-sharded tables (source/tool/etc). If
+  // Executor-schema drives the scope-sharded tables (integration/tool/etc). If
   // any of these go missing the drizzle adapter's `getTable` lookup throws.
   it("includes scope-sharded executor tables", () => {
     for (const key of Object.keys(executorSchema)) {

@@ -117,7 +117,7 @@ describe("missingScopes (Part 2 informational subset warning)", () => {
 
 describe("reconsentRequiredScopes", () => {
   it("treats spec-derived oauth scopes as NOT required (opportunistic catalog)", () => {
-    // An OpenAPI source (e.g. PostHog) declares the full per-operation scope
+    // An OpenAPI integration (e.g. PostHog) declares the full per-operation scope
     // catalog. A narrower grant is healthy and must not nag for reconnect.
     expect(
       reconsentRequiredScopes({

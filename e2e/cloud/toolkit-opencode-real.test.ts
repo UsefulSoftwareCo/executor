@@ -1,5 +1,5 @@
 // The toolkit-connect performance bug, reproduced with the REAL opencode
-// binary in a REAL terminal. A user adds a dozen sources to their workspace,
+// binary in a REAL terminal. A user adds a dozen integrations to their workspace,
 // makes a toolkit, and points OpenCode at /mcp/toolkits/<slug>. OpenCode runs
 // its own OAuth (discovery, DCR, PKCE) and then `mcp list`. The whole session
 // runs in one recorded PTY: the run's terminal.cast replays exactly what a
@@ -37,8 +37,8 @@ scenario(
       const email = identity.credentials?.email ?? identity.label;
       const client = yield* makeClient(catalogApi, identity);
 
-      // Build a production-shaped workspace: one real spec + ten more sources,
-      // a toolkit scoped to one of them. ~3,300 tools across 11 sources — large
+      // Build a production-shaped workspace: one real spec + ten more integrations,
+      // a toolkit scoped to one of them. ~3,300 tools across 11 integrations — large
       // enough that the pre-fix per-tool policy N+1 pushes the toolkit connect
       // past OpenCode's client timeout.
       const seeded = yield* seedLargeCatalog(client);

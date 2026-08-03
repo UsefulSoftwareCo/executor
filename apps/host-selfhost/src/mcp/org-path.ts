@@ -73,6 +73,18 @@ export const isRecognizedMcpOrgPath = (pathname: string): boolean =>
   stripMcpOrgSegment(pathname) !== null;
 
 /**
+ * Whether `pathname` targets one of self-host's MCP serving endpoints, in
+ * either bare or org-scoped form. Used by the production HTTP boundary to
+ * reject HEAD explicitly before the SPA's GET/HEAD fallback can claim it.
+ */
+export const isMcpServingPath = (pathname: string): boolean => {
+  const routed = stripMcpOrgSegment(pathname) ?? pathname;
+  if (routed === "/mcp" || routed === "/mcp/") return true;
+  const segments = routed.split("/").filter((segment) => segment.length > 0);
+  return segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits";
+};
+
+/**
  * Given a recognized original pathname (a `MCP_ORIGINAL_PATH_HEADER` value —
  * either the org-scoped MCP path itself, or its PRM-prefixed discovery-doc
  * form), return the org-scoped MCP resource path alone:

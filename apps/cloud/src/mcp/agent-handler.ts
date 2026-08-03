@@ -1,3 +1,4 @@
+import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { Effect, Predicate } from "effect";
 
 import {
@@ -10,6 +11,7 @@ import {
 } from "@executor-js/host-mcp";
 import {
   currentPropagationHeaders,
+  readArtifactsEnabled,
   readElicitationMode,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
@@ -17,8 +19,10 @@ import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
+import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
 import { McpSessionDOSqlite } from "./session-durable-object";
+import { parseTraceparent } from "./traceparent";
 
 const corsPreflightResponse = (): Response =>
   new Response(null, {
@@ -82,6 +86,28 @@ const authenticate = (request: Request) =>
     return { auth, outcome };
   }).pipe(Effect.provide(cloudMcpAuth));
 
+// The pre-Agents envelope ran the MCP auth path inside the Effect app, whose
+// HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
+// span (client fingerprint, rpc method, auth outcome) exported from. This
+// handler dispatches from the raw worker entry instead, so a bare
+// `Effect.runPromise` leaves every span in Effect's no-op default tracer and
+// they silently never export. Run each program under the worker telemetry
+// layer, parented to the edge `http.server` span server.ts stamps onto the
+// forwarded request's traceparent — which also makes `currentPropagationHeaders`
+// (via Effect.currentParentSpan) ferry that same trace into the session DO
+// instead of letting the DO start a fresh root per request.
+const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> => {
+  const parsed = parseTraceparent(
+    request.headers.get("traceparent"),
+    request.headers.get("tracestate"),
+  );
+  return Effect.runPromise(
+    (parsed ? OtelTracer.withSpanContext(program, parsed) : program).pipe(
+      Effect.provide(WorkerTelemetryLive),
+    ),
+  );
+};
+
 // The MCP resource the request targets. `server.ts` routes both the bare `/mcp`
 // and `/mcp/toolkits/<slug>` to this handler (`prepareMcpOrgScope` strips the org
 // selector but keeps the toolkit segment), so a session minted on a toolkit path
@@ -106,6 +132,7 @@ const propsForPrincipal = (
         organizationId: principal.organizationId,
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        artifactsEnabled: readArtifactsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },
@@ -142,7 +169,7 @@ export const makeCloudMcpAgentHandler = () => {
     }
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await Effect.runPromise(authenticate(request));
+    const { auth, outcome } = await runTraced(request, authenticate(request));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       // Destroying a live session on auth grounds requires a POSITIVE
       // determination that access is genuinely gone — only `Forbidden` carries
@@ -191,7 +218,7 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     const resource = resourceFromPath(request);
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
+    const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withVerifiedIdentityHeaders(
       request,

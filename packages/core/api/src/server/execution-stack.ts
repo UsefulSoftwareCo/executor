@@ -69,7 +69,18 @@ export interface EngineDecoratorShape {
   readonly decorate: <E extends Cause.YieldableError>(
     engine: ExecutionEngine<E>,
     identity: EngineStackIdentity,
+    context: EngineStackContext,
   ) => ExecutionEngine<E>;
+}
+
+/**
+ * What the stack was built to serve, beyond the identity: the MCP resource
+ * when the caller is an MCP session (absent on the HTTP plane). Lets a
+ * decorator distinguish a toolkit-scoped engine without the host threading a
+ * side channel.
+ */
+export interface EngineStackContext {
+  readonly mcpResource?: McpResource;
 }
 
 export class EngineDecorator extends Context.Service<EngineDecorator, EngineDecoratorShape>()(
@@ -108,13 +119,23 @@ export const makeExecutionStack = <
       organizationId,
       organizationName,
       { plugins: { mcpResource: options?.mcpResource } },
+    ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
+    const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(
+      Effect.withSpan("executor.stack.code_executor"),
     );
-    const codeExecutor = yield* CodeExecutorProvider;
-    const { decorate } = yield* EngineDecorator;
-    const engine = decorate(createExecutionEngine({ executor, codeExecutor }), {
-      accountId,
-      organizationId,
-      organizationName,
-    });
+    const { decorate } = yield* EngineDecorator.asEffect().pipe(
+      Effect.withSpan("executor.stack.decorator"),
+    );
+    const engine = yield* Effect.sync(() =>
+      decorate(
+        createExecutionEngine({ executor, codeExecutor }),
+        {
+          accountId,
+          organizationId,
+          organizationName,
+        },
+        { mcpResource: options?.mcpResource },
+      ),
+    ).pipe(Effect.withSpan("executor.stack.engine.init"));
     return { executor, engine };
-  });
+  }).pipe(Effect.withSpan("executor.stack.build"));

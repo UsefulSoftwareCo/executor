@@ -2,7 +2,6 @@
 import Layout from "../layouts/Layout.astro";
 import { AnimatedBeamDemo } from "../components/animated-beam-demo";
 import { ContextBloatDemo } from "../components/context-bloat-demo";
-import { SelfHostContactModal } from "../components/self-host-contact-modal";
 // Imported so Vite emits it as a hashed build asset (served from /_astro/...);
 // the deploy pipeline does not pick up newly added /public files.
 import ycBackedBy from "../assets/yc-backed-by.svg?url";
@@ -411,7 +410,9 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
               </p>
               <a href="/cloud" class="btn-primary self-start">Try Cloud →</a>
               <p class="mt-3 min-h-[1.25rem] text-[13px] leading-[1.5] text-ink-3">
-                <SelfHostContactModal client:load variant="inline" />
+                <a href="https://executor.sh/docs/hosted/docker" class="link-accent"
+                  >Looking for self-hosted? →</a
+                >
               </p>
             </div>
 

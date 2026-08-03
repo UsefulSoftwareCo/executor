@@ -1,5 +1,77 @@
 # @executor-js/plugin-toolkits
 
+## 1.5.29
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/react@1.4.57
+
+## 1.5.28
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/react@1.4.56
+
+## 1.5.27
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/react@1.4.55
+
+## 1.5.26
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/api@1.4.54
+  - @executor-js/react@1.4.54
+
+## 1.5.25
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.33
+  - @executor-js/api@1.4.53
+  - @executor-js/react@1.4.53
+
+## 1.5.24
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/api@1.4.52
+  - @executor-js/react@1.4.52
+
+## 1.5.23
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.31
+  - @executor-js/api@1.4.51
+  - @executor-js/react@1.4.51
+
+## 1.5.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/api@1.4.50
+  - @executor-js/react@1.4.50
+
 ## 1.5.21
 
 ### Patch Changes

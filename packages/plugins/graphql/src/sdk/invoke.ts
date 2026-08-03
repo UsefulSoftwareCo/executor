@@ -139,6 +139,8 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     status,
     data: gqlBody?.data ?? null,
     errors: hasErrors ? gqlBody!.errors : null,
+    body,
+    headers: { ...response.headers },
   });
 });
 

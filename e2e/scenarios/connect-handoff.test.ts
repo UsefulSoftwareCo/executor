@@ -2,8 +2,9 @@
 // handoff URL (`coreTools.connections.createHandoff`), and the user opens that
 // URL in a browser to paste the credential. This scenario walks the WHOLE
 // path — the exact flow that failed in production with a "wrong / bad" URL —
-// against a real emulated provider (resend.emulators.dev) so the failure
-// point is captured with trace + screenshots instead of guessed at:
+// against a real emulated Resend provider (a per-run emulators.dev instance)
+// so the failure point is captured with trace + screenshots instead of
+// guessed at:
 //
 //   1. MCP `execute` → `openapi.addSpec` registers the emulated Resend API
 //   2. MCP `execute` → `connections.createHandoff` returns the browser URL
@@ -22,9 +23,10 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { AccountHttpApi } from "@executor-js/api";
 import { composePluginApi } from "@executor-js/api/server";
-import { connectEmulator } from "@executor-js/emulate";
+import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 
+import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
@@ -35,18 +37,14 @@ const api = composePluginApi([openApiHttpPlugin()] as const);
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
-const EMULATOR_BASE = "https://resend.emulators.dev";
-
 // The emulator serves its own OpenAPI document (bearer auth, same shape as
 // real Resend — and as the Sentry spec that failed in prod). Adding it by URL
 // with no authenticationTemplate exercises exactly the agentic path: the
 // add-account modal must render a paste-a-token flow derived from the spec's
 // bare `http`/`bearer` security scheme.
-const EMULATOR_SPEC_URL = `${EMULATOR_BASE}/openapi.json`;
-
-const addSpecCode = (slug: string) => `
+const addSpecCode = (slug: string, specUrl: string) => `
 const added = await tools.executor.openapi.addSpec({
-  spec: { kind: "url", url: ${JSON.stringify(EMULATOR_SPEC_URL)} },
+  spec: { kind: "url", url: ${JSON.stringify(specUrl)} },
   slug: ${JSON.stringify(slug)},
 });
 return added.ok ? { ok: true, slug: added.data.slug, toolCount: added.data.toolCount } : { ok: false, error: added.error };
@@ -104,16 +102,19 @@ const executeJson = (session: McpSession, code: string) =>
   });
 
 // The typed control-plane client — minting and ledger reads with real shapes
-// instead of hand-rolled fetch + casts.
-const emulator = Effect.promise(() => connectEmulator({ baseUrl: EMULATOR_BASE }));
-
-const mintEmulatorApiKey = Effect.gen(function* () {
-  const client = yield* emulator;
-  const credential = yield* Effect.promise(() => client.credentials.mint({ type: "api-key" }));
-  const token = credential.token;
-  if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(credential)}`);
-  return token;
+// instead of hand-rolled fetch + casts, against this scenario's own instance.
+const emulator = Effect.gen(function* () {
+  const baseUrl = yield* createEmulatorInstance("resend", "connect-handoff");
+  return yield* Effect.promise(() => connectEmulator({ baseUrl }));
 });
+
+const mintEmulatorApiKey = (client: EmulatorClient) =>
+  Effect.gen(function* () {
+    const credential = yield* Effect.promise(() => client.credentials.mint({ type: "api-key" }));
+    const token = credential.token;
+    if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(credential)}`);
+    return token;
+  });
 
 scenario(
   "Connect · the agentic handoff URL opens this deployment's add-account flow and the pasted key works",
@@ -126,7 +127,8 @@ scenario(
 
     const integration = unique("resendhf");
     const emailSubject = unique("connect-handoff");
-    const apiKey = yield* mintEmulatorApiKey;
+    const emulatorClient = yield* emulator;
+    const apiKey = yield* mintEmulatorApiKey(emulatorClient);
 
     const identity = yield* target.newIdentity();
     const session = mcp.session(identity);
@@ -148,6 +150,7 @@ scenario(
       emailSubject,
       apiKey,
       orgSlug: orgSlug!,
+      emulatorClient,
     }).pipe(
       // Best-effort cleanup even on failure: drop the created connection(s)
       // over MCP, then the integration over the API. `connections.remove` is
@@ -172,13 +175,23 @@ const runScenario = (input: {
   readonly emailSubject: string;
   readonly apiKey: string;
   readonly orgSlug: string;
+  readonly emulatorClient: EmulatorClient;
 }) =>
   Effect.gen(function* () {
-    const { target, browser, session, identity, integration, emailSubject, apiKey, orgSlug } =
-      input;
+    const {
+      target,
+      browser,
+      session,
+      identity,
+      integration,
+      emailSubject,
+      apiKey,
+      orgSlug,
+      emulatorClient,
+    } = input;
 
     // 1. Agent registers the emulated provider over MCP.
-    const added = yield* executeJson(session, addSpecCode(integration));
+    const added = yield* executeJson(session, addSpecCode(integration, emulatorClient.openapiUrl));
     expect(added.ok, `addSpec succeeded: ${JSON.stringify(added)}`).toBe(true);
 
     // 2. Agent asks for the browser handoff URL.
@@ -238,7 +251,6 @@ const runScenario = (input: {
     const sent = yield* executeJson(session, sendEmailCode(integration, emailSubject));
     expect(sent.ok, `email sent through the pasted connection: ${JSON.stringify(sent)}`).toBe(true);
 
-    const emulatorClient = yield* emulator;
     const entries = yield* Effect.promise(() => emulatorClient.ledger.list());
     const recorded = entries.find((entry) =>
       JSON.stringify(entry.request.body ?? "").includes(emailSubject),

@@ -31,7 +31,7 @@ import { openApiPlugin } from "./plugin";
 import type { APIKeyAuthentication, Authentication, AuthenticationInput } from "./types";
 import { variable } from "@executor-js/sdk/http-auth";
 import {
-  makeOpenApiHttpApiTestSourceConfig,
+  makeOpenApiHttpApiTestIntegrationConfig,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
@@ -66,7 +66,7 @@ const servePluginTestApi = () =>
   serveOpenApiHttpApiTestServer({ api: TestApi, handlersLayer: EchoGroupLive });
 
 const specText = () => {
-  const spec = makeOpenApiHttpApiTestSourceConfig(TestApi, {}).spec;
+  const spec = makeOpenApiHttpApiTestIntegrationConfig(TestApi, {}).spec;
   if (spec.kind === "blob") return spec.value;
   return spec.url;
 };

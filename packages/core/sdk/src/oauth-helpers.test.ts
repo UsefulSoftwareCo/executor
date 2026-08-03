@@ -19,6 +19,7 @@ import {
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
   exchangeClientCredentials,
+  idTokenIdentityLabel,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -362,6 +363,81 @@ describe("exchangeAuthorizationCode", () => {
           });
           expect(result.access_token).toBe("tok");
           expect(result.refresh_token).toBe("rtok");
+          expect(result.idTokenIdentityLabel).toBe("user-1");
+        }),
+    ),
+  );
+
+  it.effect("extracts id_token email as the identity label", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          email: "alice@example.com",
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.idTokenIdentityLabel).toBe("alice@example.com");
+        }),
+    ),
+  );
+
+  it.effect("falls back from id_token email to preferred_username then sub", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const preferred = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(preferred.idTokenIdentityLabel).toBe("alice");
+        }),
+    ),
+  );
+
+  it("falls back to sub and ignores malformed id_tokens", () => {
+    expect(idTokenIdentityLabel(unsignedJwt({ sub: "user-1" }))).toBe("user-1");
+    expect(idTokenIdentityLabel("not-a-jwt")).toBeUndefined();
+    expect(idTokenIdentityLabel(undefined)).toBeUndefined();
+  });
+
+  it.effect("ignores malformed id_tokens without failing the exchange", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: "not-a-jwt",
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.access_token).toBe("tok");
+          expect(result.idTokenIdentityLabel).toBeUndefined();
         }),
     ),
   );
@@ -406,6 +482,7 @@ describe("exchangeAuthorizationCode", () => {
         expect(result.access_token).toBe("tok");
         expect(result.refresh_token).toBe("rtok");
         expect(result.expires_in).toBe(3600);
+        expect(result.idTokenIdentityLabel).toBeUndefined();
       }),
     ),
   );
@@ -792,6 +869,68 @@ describe("refreshAccessToken", () => {
         expect(result.access_token).toBe("tok2");
         expect(result.expires_in).toBe(3600);
       }),
+    ),
+  );
+
+  // Datadog answers refresh grants with a non-conform envelope; the §5.2 code
+  // must still be recovered so invalid_grant classifies as reauth-required
+  // instead of a retried-forever transient (owner.com prod, 2026-07-30).
+  it.effect("recovers invalid_grant from Datadog's non-conform errors array", () =>
+    withTokenEndpoint(
+      () =>
+        json(400, {
+          errors: ["invalid_grant - Invalid or expired refresh token or code verifier."],
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("recovers a bare non-conform `error` string outside the spec envelope shape", () =>
+    withTokenEndpoint(
+      () => json(400, { error: "invalid_grant", detail: 42 }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("does not invent a code from free-text error bodies", () =>
+    withTokenEndpoint(
+      () => json(400, { errors: ["something went wrong, try again later"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
+    ),
+  );
+
+  it.effect("does not probe non-conform bodies on 5xx responses", () =>
+    withTokenEndpoint(
+      () => json(502, { errors: ["invalid_grant - upstream proxy noise"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
     ),
   );
 });

@@ -74,12 +74,12 @@ the CLI:
 
 ## Add an integration
 
-From the web UI, click **Add Source** and paste an OpenAPI, GraphQL, or MCP URL.
+From the web UI, click **Add Integration** and paste an OpenAPI, GraphQL, or MCP URL.
 Executor detects the type, indexes the tools, and handles auth. Or add one from the
 CLI:
 
 ```bash
-executor call executor openapi addSource '{
+executor call executor openapi addIntegration '{
   "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
   "namespace": "petstore",
   "baseUrl": "https://petstore3.swagger.io/api/v3"
@@ -91,7 +91,7 @@ Use `baseUrl` when the OpenAPI document has relative `servers` entries (e.g. `"/
 Confirm it's live:
 
 ```bash
-executor tools sources   # lists configured integrations + tool counts
+executor tools integrations   # lists configured integrations + tool counts
 ```
 
 ## Call tools

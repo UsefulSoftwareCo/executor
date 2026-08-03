@@ -41,6 +41,7 @@ import {
 } from "@executor-js/sdk/http-auth";
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
+import { createMcpConnectionPool } from "./connection-pool";
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
@@ -292,18 +293,33 @@ const mcpInvocationAuthFailure = (input: {
   readonly status: 401 | 403;
   readonly integration: string;
   readonly connection: string;
-}) =>
-  authToolFailure({
+  readonly insufficientScope?: boolean;
+}) => {
+  // A 403 that named a scope shortfall is unfixable by re-running the same
+  // grant, so it carries its own code (and recovery without the oauth.start
+  // hint) instead of the re-authenticate loop.
+  if (input.status === 403 && input.insufficientScope === true) {
+    return authToolFailure({
+      code: "oauth_scope_insufficient",
+      message: `MCP server rejected connection "${input.connection}" with HTTP 403: the connection's OAuth grant does not cover the scope this tool requires. Re-authenticating with the same grant will return the same error; reconnect with broader access.`,
+      integration: { id: input.integration },
+      credential: { kind: "oauth", label: input.connection },
+      status: input.status,
+      upstream: { status: input.status },
+    });
+  }
+  return authToolFailure({
     code: "connection_rejected",
     message:
       input.status === 403
         ? `MCP server rejected connection "${input.connection}" with HTTP 403. The credential may lack access or required scope; re-authenticate or update the connection before retrying this tool.`
         : `MCP server rejected connection "${input.connection}" with HTTP 401. Re-authenticate or update the connection before retrying this tool.`,
-    source: { id: input.integration },
+    integration: { id: input.integration },
     credential: { kind: "upstream", label: input.connection },
     status: input.status,
     upstream: { status: input.status },
   });
+};
 
 const mcpInvocationOAuthReauthFailure = (input: {
   readonly integration: string;
@@ -312,7 +328,7 @@ const mcpInvocationOAuthReauthFailure = (input: {
   authToolFailure({
     code: "oauth_reauth_required",
     message: `OAuth connection "${input.connection}" requires reauthorization before retrying this MCP tool.`,
-    source: { id: input.integration },
+    integration: { id: input.integration },
     credential: { kind: "oauth", label: input.connection },
   });
 
@@ -600,6 +616,33 @@ const buildConnectorInput = (
   });
 };
 
+// Record fields are key-sorted before stringifying: the key only guards
+// same-identity reuse (a mismatch merely costs a fresh dial), but insertion
+// order must not make two equal identities look distinct.
+const sortedRecord = (
+  record: Record<string, string | null | undefined> | undefined,
+): Record<string, string | null> =>
+  Object.fromEntries(
+    Object.entries(record ?? {})
+      .filter((entry): entry is [string, string | null] => entry[1] !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+
+const connectionPoolKey = (
+  input: Extract<ConnectorInput, { readonly transport: "remote" }>,
+  template: string,
+  values: Record<string, string | null>,
+): string =>
+  JSON.stringify({
+    endpoint: input.endpoint,
+    transport: input.transport,
+    remoteTransport: input.remoteTransport,
+    headers: sortedRecord(input.headers),
+    queryParams: sortedRecord(input.queryParams),
+    template,
+    values: sortedRecord(values),
+  });
+
 // ---------------------------------------------------------------------------
 // Declared auth methods — project the stored MCP config into the catalog's
 // plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. Pure and
@@ -684,6 +727,7 @@ export interface McpPluginOptions {
 
 export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
   const allowStdio = options?.dangerouslyAllowStdioMCP ?? false;
+  const connectionPool = createMcpConnectionPool();
 
   const presetEntries = (
     allowStdio
@@ -716,6 +760,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // factory reads `allowStdio` and gates the stdio tab + presets.
     clientConfig: { allowStdio },
     storage: () => ({}),
+    close: () => connectionPool.close(),
 
     extension: (ctx: PluginCtx) => {
       const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
@@ -1244,20 +1289,25 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               return authToolFailure({
                 code: "connection_value_missing",
                 message: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}. Re-create the connection with the required value(s).`,
-                source: { id: String(credential.integration) },
+                integration: { id: String(credential.integration) },
                 credential: { kind: "upstream", label: String(credential.connection) },
               });
             }
           }
         }
 
-        const connector: McpConnector = yield* buildConnectorInput(
+        const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           String(credential.template),
           allowStdio,
           options?.httpClientLayer ?? ctx.httpClientLayer,
-        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+        );
+        const connector: McpConnector = createMcpConnector(connectorInput);
+        const poolKey =
+          connectorInput.transport === "remote"
+            ? connectionPoolKey(connectorInput, String(credential.template), credential.values)
+            : undefined;
 
         const connectionRef = {
           owner: credential.owner,
@@ -1278,6 +1328,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           args,
           transport,
           connector,
+          ...(poolKey === undefined ? {} : { connectionPool, connectionPoolKey: poolKey }),
           elicit,
           onToolListChanged: () => {
             toolListChanged = true;
@@ -1328,6 +1379,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 status: error.httpStatus,
                 integration: String(credential.integration),
                 connection: String(credential.connection),
+                ...(error.insufficientScope === true ? { insufficientScope: true } : {}),
               }),
             );
           }
@@ -1335,7 +1387,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             authToolFailure({
               code: "connection_rejected",
               message: error.message,
-              source: { id: String(credential.integration) },
+              integration: { id: String(credential.integration) },
               credential: { kind: "upstream", label: String(credential.connection) },
             }),
           );
@@ -1347,6 +1399,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 status: error.status,
                 integration: String(credential.integration),
                 connection: String(credential.connection),
+                ...(error.insufficientScope === true ? { insufficientScope: true } : {}),
               }),
             );
           }
@@ -1502,7 +1555,23 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             detail: error.message,
           } satisfies HealthCheckResult),
         ),
-        Effect.withSpan("mcp.plugin.check_health"),
+        // Every failure above folds onto the SUCCESS channel, so without this
+        // the span ends green on an expired credential — a 401 auth wall and a
+        // healthy dial were indistinguishable in traces.
+        Effect.tap((result) =>
+          Effect.annotateCurrentSpan({
+            "mcp.health.status": result.status,
+            ...("httpStatus" in result && result.httpStatus !== undefined
+              ? { "mcp.health.http_status": result.httpStatus }
+              : {}),
+          }),
+        ),
+        Effect.withSpan("mcp.plugin.check_health", {
+          attributes: {
+            "executor.integration": String(credential.integration),
+            "mcp.connection.name": String(credential.connection),
+          },
+        }),
       ),
 
     describeAuthMethods: describeMcpAuthMethods,
@@ -1518,7 +1587,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }),
     },
 
-    staticSources: (self) => [
+    staticIntegrations: (self) => [
       {
         id: "mcp",
         kind: "executor",

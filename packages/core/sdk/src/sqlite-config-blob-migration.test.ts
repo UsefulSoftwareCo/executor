@@ -49,7 +49,7 @@ describe("runSqliteConfigBlobMigration", () => {
           tenant: "t1",
           slug: "legacy_api",
           pluginId: "openapi",
-          config: { spec, sourceUrl: "https://example.com/spec.json" },
+          config: { spec, specUrl: "https://example.com/spec.json" },
         }),
       );
 
@@ -63,7 +63,7 @@ describe("runSqliteConfigBlobMigration", () => {
       expect(config.spec).toBeUndefined();
       expect(typeof config.specHash).toBe("string");
       // Untouched fields survive the rewrite.
-      expect(config.sourceUrl).toBe("https://example.com/spec.json");
+      expect(config.specUrl).toBe("https://example.com/spec.json");
 
       // The blob row uses the runtime's exact naming: namespace
       // `o:<tenant>/<pluginId>`, key `spec/<hash>`, id JSON.stringify pair.

@@ -230,11 +230,21 @@ const executeInDeno = (
       catch: (cause) => new DenoSpawnError({ executable: denoExecutable, reason: cause }),
     });
 
+    const start = Date.now();
+    let inFlight = 0;
+    let lastReturnedAt = start;
+
     // Send code to the subprocess
     writeMessage(worker.stdin, { type: "start", code: recoveredBody, nonce });
 
-    // Set up timeout — kills process and completes the deferred
-    const timer = setTimeout(() => {
+    // Measure only continuous autonomous subprocess compute. Tool dispatches
+    // suspend the clock and each return grants a fresh timeout budget.
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (inFlight > 0 || now - Math.max(start, lastReturnedAt) < timeoutMs) {
+        return;
+      }
+
       worker.dispose();
       runSync(
         completeWith({
@@ -242,7 +252,7 @@ const executeInDeno = (
           error: `Deno subprocess execution timed out after ${timeoutMs}ms`,
         }),
       );
-    }, timeoutMs);
+    }, 1_000);
 
     // -----------------------------------------------------------------------
     // Message processing fiber — tool calls happen here, inside Effect
@@ -255,30 +265,39 @@ const executeInDeno = (
 
           switch (msg.type) {
             case "tool_call": {
-              const toolResult = yield* toolInvoker
-                .invoke({ path: msg.toolPath, args: msg.args })
-                .pipe(
-                  Effect.map(
-                    (value): HostToWorkerMessage => ({
-                      type: "tool_result",
-                      nonce,
-                      requestId: msg.requestId,
-                      ok: true,
-                      value,
-                    }),
-                  ),
-                  Effect.catchCause((cause) =>
-                    Effect.succeed<HostToWorkerMessage>({
-                      type: "tool_result",
-                      nonce,
-                      requestId: msg.requestId,
-                      ok: false,
-                      error: causeMessage(cause),
-                    }),
-                  ),
-                );
-
-              writeMessage(worker.stdin, toolResult);
+              // Symmetric bracket (mirrors ToolDispatcher.call): the decrement
+              // must run even if the invoke or write dies, or the watchdog's
+              // in-flight guard would suspend the timeout forever.
+              inFlight += 1;
+              yield* toolInvoker.invoke({ path: msg.toolPath, args: msg.args }).pipe(
+                Effect.map(
+                  (value): HostToWorkerMessage => ({
+                    type: "tool_result",
+                    nonce,
+                    requestId: msg.requestId,
+                    ok: true,
+                    value,
+                  }),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.succeed<HostToWorkerMessage>({
+                    type: "tool_result",
+                    nonce,
+                    requestId: msg.requestId,
+                    ok: false,
+                    error: causeMessage(cause),
+                  }),
+                ),
+                Effect.flatMap((toolResult) =>
+                  Effect.sync(() => writeMessage(worker.stdin, toolResult)),
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    inFlight -= 1;
+                    lastReturnedAt = Date.now();
+                  }),
+                ),
+              );
               break;
             }
 
@@ -318,7 +337,7 @@ const executeInDeno = (
     const output = yield* Deferred.await(result).pipe(
       Effect.ensuring(
         Effect.gen(function* () {
-          clearTimeout(timer);
+          clearInterval(timer);
           yield* Fiber.interrupt(processFiber);
           worker.dispose();
         }),

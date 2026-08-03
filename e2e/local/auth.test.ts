@@ -35,7 +35,7 @@ scenario(
         await step("Open the ?_token URL printed by executor web --foreground", async () => {
           await page.goto(url, { waitUntil: "domcontentloaded" });
           await page.getByRole("link", { name: "Secrets" }).first().waitFor({ timeout: 30_000 });
-          // Integrations actually LOAD (the built-in Executor source) — proves
+          // Integrations actually LOAD (the built-in Executor integration) — proves
           // auth + data, not just the static shell.
           await page.getByText("built-in").first().waitFor({ timeout: 30_000 });
           // The token is moved out of the URL and persisted to localStorage.

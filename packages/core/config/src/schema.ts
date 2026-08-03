@@ -23,26 +23,26 @@ export type ConfigHeaderValue = typeof ConfigHeaderValue.Type;
 const ConfigHeaders = Schema.Record(Schema.String, ConfigHeaderValue);
 
 // ---------------------------------------------------------------------------
-// Source configs — discriminated union on "kind"
+// Integration configs — discriminated union on "kind"
 // ---------------------------------------------------------------------------
 
-export const OpenApiSourceConfig = Schema.Struct({
+export const OpenApiIntegrationConfig = Schema.Struct({
   kind: Schema.Literal("openapi"),
   spec: Schema.String,
   baseUrl: Schema.optional(Schema.String),
   namespace: Schema.optional(Schema.String),
   headers: Schema.optional(ConfigHeaders),
 });
-export type OpenApiSourceConfig = typeof OpenApiSourceConfig.Type;
+export type OpenApiIntegrationConfig = typeof OpenApiIntegrationConfig.Type;
 
-export const GraphqlSourceConfig = Schema.Struct({
+export const GraphqlIntegrationConfig = Schema.Struct({
   kind: Schema.Literal("graphql"),
   endpoint: Schema.String,
   introspectionJson: Schema.optional(Schema.NullOr(Schema.String)),
   namespace: Schema.optional(Schema.String),
   headers: Schema.optional(ConfigHeaders),
 });
-export type GraphqlSourceConfig = typeof GraphqlSourceConfig.Type;
+export type GraphqlIntegrationConfig = typeof GraphqlIntegrationConfig.Type;
 
 const StringMap = Schema.Record(Schema.String, Schema.String);
 
@@ -66,7 +66,7 @@ export const McpAuthConfig = Schema.Union([
 ]);
 export type McpAuthConfig = typeof McpAuthConfig.Type;
 
-export const McpRemoteSourceConfig = Schema.Struct({
+export const McpRemoteIntegrationConfig = Schema.Struct({
   kind: Schema.Literal("mcp"),
   transport: Schema.Literal("remote"),
   name: Schema.String,
@@ -77,9 +77,9 @@ export const McpRemoteSourceConfig = Schema.Struct({
   headers: Schema.optional(ConfigHeaders),
   auth: Schema.optional(McpAuthConfig),
 });
-export type McpRemoteSourceConfig = typeof McpRemoteSourceConfig.Type;
+export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
-export const McpStdioSourceConfig = Schema.Struct({
+export const McpStdioIntegrationConfig = Schema.Struct({
   kind: Schema.Literal("mcp"),
   transport: Schema.Literal("stdio"),
   name: Schema.String,
@@ -89,15 +89,15 @@ export const McpStdioSourceConfig = Schema.Struct({
   cwd: Schema.optional(Schema.String),
   namespace: Schema.optional(Schema.String),
 });
-export type McpStdioSourceConfig = typeof McpStdioSourceConfig.Type;
+export type McpStdioIntegrationConfig = typeof McpStdioIntegrationConfig.Type;
 
-export const SourceConfig = Schema.Union([
-  OpenApiSourceConfig,
-  GraphqlSourceConfig,
-  McpRemoteSourceConfig,
-  McpStdioSourceConfig,
+export const IntegrationConfig = Schema.Union([
+  OpenApiIntegrationConfig,
+  GraphqlIntegrationConfig,
+  McpRemoteIntegrationConfig,
+  McpStdioIntegrationConfig,
 ]);
-export type SourceConfig = typeof SourceConfig.Type;
+export type IntegrationConfig = typeof IntegrationConfig.Type;
 
 // ---------------------------------------------------------------------------
 // Secret metadata
@@ -136,7 +136,7 @@ export const ExecutorFileConfig = Schema.Struct({
   $schema: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   plugins: Schema.optional(Schema.Array(PluginConfig)),
-  sources: Schema.optional(Schema.Array(SourceConfig)),
+  integrations: Schema.optional(Schema.Array(IntegrationConfig)),
   secrets: Schema.optional(Schema.Record(Schema.String, SecretMetadata)),
 });
 export type ExecutorFileConfig = typeof ExecutorFileConfig.Type;

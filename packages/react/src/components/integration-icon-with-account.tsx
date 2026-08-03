@@ -2,7 +2,7 @@ import { IntegrationFavicon } from "./integration-favicon";
 
 export function IntegrationIconWithAccount(props: {
   readonly icon?: string | null;
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly url?: string;
   readonly size?: "sm" | "md";
 }) {
@@ -11,7 +11,7 @@ export function IntegrationIconWithAccount(props: {
     <span className={props.size === "sm" ? "relative size-4 shrink-0" : "relative size-8 shrink-0"}>
       <IntegrationFavicon
         icon={props.icon}
-        sourceId={props.sourceId}
+        integrationId={props.integrationId}
         url={props.url}
         size={iconSize}
       />
