@@ -62,6 +62,10 @@ describe("hosted outbound HTTP client", () => {
         // The subdomain form is what a dev server or local reverse proxy
         // actually hands out, and it never reaches the resolved-address check.
         "http://app.localhost/",
+        // WHATWG keeps every trailing dot, so a hostname stripped of only one
+        // stays unequal to "localhost" and skips the whole name check while
+        // still resolving to the same host.
+        "http://localhost../",
         "http://0.0.0.0/",
         "http://127.0.0.1:3000",
         "http://10.0.0.1/openapi.json",
@@ -84,13 +88,25 @@ describe("hosted outbound HTTP client", () => {
           reason: "Local and private network addresses are not allowed",
         });
       }
-      const metadataError = yield* validateHostedOutboundUrl(
+      // The second entry is the same name with a second root dot appended:
+      // the resolver treats it identically, so stripping only one dot would
+      // let the metadata endpoint through by adding one character.
+      for (const url of [
         "http://169.254.169.254/latest/meta-data/",
-      ).pipe(Effect.flip);
-      expect(metadataError).toMatchObject({
-        _tag: "HostedOutboundRequestBlocked",
-        reason: "Metadata service addresses are not allowed",
-      });
+        "http://metadata.google.internal../computeMetadata/v1/",
+      ]) {
+        const metadataError = yield* validateHostedOutboundUrl(url, {
+          // allowLocalNetwork isolates the metadata arm: without it the
+          // local/private check would block the name first and the test would
+          // pass whether or not the trailing dots were handled.
+          allowLocalNetwork: true,
+          resolveHostname: publicResolver,
+        }).pipe(Effect.flip);
+        expect(metadataError).toMatchObject({
+          _tag: "HostedOutboundRequestBlocked",
+          reason: "Metadata service addresses are not allowed",
+        });
+      }
     }),
   );
 
@@ -885,15 +901,52 @@ describe("hosted outbound HTTP client", () => {
 
   // A stream reads once, so replaying the same object on the next hop sends an
   // empty body and still returns 200 — the caller's upload silently truncated.
-  // This is the common shape, not an exotic one: FetchHttpClient passes a
-  // ReadableStream for every streamed body.
-  it("replays a streamed body across a same-origin redirect", async () => {
-    const seen: number[] = [];
+  // The hop is refused rather than buffering every upload up front to make it
+  // replayable: FetchHttpClient passes a ReadableStream for every streamed
+  // body, so that buffer would land on every request, redirect or not.
+  it("refuses to replay a streamed body across a redirect", async () => {
+    const seen: Array<boolean> = [];
     const underlying: typeof globalThis.fetch = async (input, init) => {
-      const body = init?.body;
-      seen.push(body instanceof ArrayBuffer ? body.byteLength : -1);
+      seen.push(init?.body instanceof ReadableStream);
       if (String(input) === "https://api.example/start") {
         return new Response(null, { status: 308, headers: { location: "/moved" } });
+      }
+      return new Response("ok");
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello-streamed-body"));
+        controller.close();
+      },
+    });
+
+    await expect(
+      hostedFetch("https://api.example/start", { method: "POST", body: stream }),
+    ).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "Redirect cannot replay a streamed request body",
+    });
+    // The first hop got the stream itself, unbuffered — the whole point of
+    // refusing the replay rather than materializing it.
+    expect(seen).toEqual([true]);
+  });
+
+  // The refusal is scoped to a replay. A 303 or 301 demotes to GET and drops
+  // the body first, so there is no stream left to replay and the redirect is
+  // followed normally — blocking those too would break every streamed upload
+  // whose upstream answers with a see-other.
+  it("follows a demoting redirect after a streamed body, since the body is dropped", async () => {
+    const seen: Array<{ url: string; method: string; hasBody: boolean }> = [];
+    const underlying: typeof globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      seen.push({
+        url,
+        method: init?.method ?? "GET",
+        hasBody: init?.body !== undefined && init?.body !== null,
+      });
+      if (url === "https://api.example/start") {
+        return new Response(null, { status: 303, headers: { location: "/moved" } });
       }
       return new Response("ok");
     };
@@ -911,9 +964,11 @@ describe("hosted outbound HTTP client", () => {
     });
 
     expect(response.status).toBe(200);
-    // -1 marks a body that reached the adapter still a stream: the second hop
-    // would be sending an already-drained object.
-    expect(seen).toEqual([19, 19]);
+    expect(seen[1]).toMatchObject({
+      url: "https://api.example/moved",
+      method: "GET",
+      hasBody: false,
+    });
   });
 
   // One representative per arm of redirectDemotesToGet, mirroring the
@@ -948,16 +1003,14 @@ describe("hosted outbound HTTP client", () => {
     expect(await run(301, "HEAD")).toMatchObject({ method: "HEAD" });
   });
 
-  it("preserves method, headers and body from a Request input across redirects", async () => {
-    const seen: Array<{ url: string; method: string; accept: string | null; body: string }> = [];
+  it("preserves method and headers from a Request input across redirects", async () => {
+    const seen: Array<{ url: string; method: string; accept: string | null }> = [];
     const underlying: typeof globalThis.fetch = async (input, init) => {
       const url = String(input);
-      const body = init?.body instanceof ArrayBuffer ? new TextDecoder().decode(init.body) : "";
       seen.push({
         url,
         method: init?.method ?? "GET",
         accept: new Headers(init?.headers).get("accept"),
-        body,
       });
       if (url === "https://api.example/start") {
         return new Response(null, { status: 307, headers: { location: "/moved" } });
@@ -968,9 +1021,8 @@ describe("hosted outbound HTTP client", () => {
 
     const response = await hostedFetch(
       new Request("https://api.example/start", {
-        method: "POST",
+        method: "DELETE",
         headers: { accept: "application/json" },
-        body: "payload",
       }),
     );
 
@@ -978,9 +1030,30 @@ describe("hosted outbound HTTP client", () => {
     expect(seen).toHaveLength(2);
     expect(seen[1]).toMatchObject({
       url: "https://api.example/moved",
-      method: "POST",
+      method: "DELETE",
       accept: "application/json",
-      body: "payload",
+    });
+  });
+
+  // A Request always exposes its body as a ReadableStream, whatever it was
+  // constructed from, so a 307/308 after one hits the same one-shot problem as
+  // an explicitly streamed body and is refused for the same reason. The
+  // alternative is not "replay it" — the bytes are gone once the first hop
+  // reads them — it is sending a bodyless POST under a 200 and calling that
+  // success.
+  it("refuses to replay a Request input's body across a redirect", async () => {
+    const underlying: typeof globalThis.fetch = async (input) =>
+      String(input) === "https://api.example/start"
+        ? new Response(null, { status: 307, headers: { location: "/moved" } })
+        : new Response("ok", { status: 200 });
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await expect(
+      hostedFetch(new Request("https://api.example/start", { method: "POST", body: "payload" })),
+    ).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      url: "https://api.example/moved",
+      reason: "Redirect cannot replay a streamed request body",
     });
   });
 

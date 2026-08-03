@@ -155,7 +155,7 @@ const canonicalHostname = (hostname: string): string =>
   hostname
     .toLowerCase()
     .replace(/^\[|\]$/g, "")
-    .replace(/\.$/, "");
+    .replace(/\.+$/, "");
 
 const isBlockedMetadataHostname = (normalized: string): boolean =>
   normalized === "metadata.google.internal" ||
@@ -400,27 +400,23 @@ const demoteToGet = (init: RequestInit | undefined): RequestInit => {
 const redirectDemotesToGet = (status: number, method: string): boolean =>
   status === 303 || ((status === 301 || status === 302) && method !== "GET" && method !== "HEAD");
 
-// A stream can only be read once, so replaying it on the next hop would send
-// an empty body and report success — the caller's upload silently truncated.
-// Buffering up front is what makes a redirect replayable at all, and it has to
-// happen for a plain fetch(url, {body: stream}) too: FetchHttpClient passes a
-// ReadableStream for every streamed body, so that is the common path here, not
-// an exotic one.
-const bufferSingleUseBody = async (
-  init: RequestInit | undefined,
-): Promise<RequestInit | undefined> =>
-  init?.body instanceof ReadableStream
-    ? { ...init, body: await new Response(init.body).arrayBuffer() }
-    : init;
+// A stream can only be read once, so a hop that would replay it sends an empty
+// body and still reports success — the caller's upload silently truncated. The
+// stream is passed through untouched and the replay is refused instead:
+// buffering it up front to make the rare redirect replayable would materialize
+// every streamed upload in memory, and FetchHttpClient passes a ReadableStream
+// for every streamed body, so that cost lands on the common path.
+const isStreamedBody = (init: RequestInit | undefined): boolean =>
+  init?.body instanceof ReadableStream;
 
 // A Request input is read into url + init up front so redirect hops keep the
 // request shape instead of silently degrading to a bare GET.
-const normalizeFetchInput = async (
+const normalizeFetchInput = (
   input: Parameters<typeof globalThis.fetch>[0],
   init: RequestInit | undefined,
-): Promise<{ readonly url: string; readonly init: RequestInit | undefined }> => {
+): { readonly url: string; readonly init: RequestInit | undefined } => {
   if (!(input instanceof Request)) {
-    return { url: String(input), init: await bufferSingleUseBody(init) };
+    return { url: String(input), init };
   }
   const normalized: RequestInit = {
     method: input.method,
@@ -436,9 +432,9 @@ const normalizeFetchInput = async (
     ...init,
   };
   if (input.body !== null && normalized.body === undefined) {
-    normalized.body = await input.arrayBuffer();
+    normalized.body = input.body;
   }
-  return { url: input.url, init: await bufferSingleUseBody(normalized) };
+  return { url: input.url, init: normalized };
 };
 
 // An abort during the guard would otherwise surface as the interrupt Effect
@@ -469,7 +465,7 @@ const guardFetch = (
   // @types/bun require. The call signature is checked by the annotations, and
   // the return type is `Promise<Response>` on every path.
   return (async (input, init) => {
-    const normalized = await normalizeFetchInput(input, init);
+    const normalized = normalizeFetchInput(input, init);
     let currentUrl = normalized.url;
     let currentInit = normalized.init;
     const signal = currentInit?.signal ?? undefined;
@@ -479,10 +475,13 @@ const guardFetch = (
         { signal },
       );
       if (Exit.isFailure(guarded)) {
-        // The cause decides, not the signal: a caller whose signal happens to
-        // be aborted still gets its guard verdict, because an AbortError is
-        // read as a retryable transport failure and would bury the reason.
-        if (signal && Cause.hasInterruptsOnly(guarded.cause)) rejectAsAbort(signal);
+        // Both halves are required. The cause decides that this was an
+        // interrupt rather than a guard verdict — an aborted signal alone
+        // would bury a real SSRF block under a retryable AbortError. The
+        // signal's own state decides that the caller asked for it: an
+        // interrupt from anywhere else must not be reported as the caller's
+        // abort, which would fabricate a reason that never happened.
+        if (signal?.aborted && Cause.hasInterruptsOnly(guarded.cause)) rejectAsAbort(signal);
         return await Effect.runPromise(Effect.failCause(guarded.cause));
       }
       const response = await underlying(currentUrl, {
@@ -497,8 +496,19 @@ const guardFetch = (
       ) {
         // The 3xx is abandoned here. Undici keeps a connection out of the
         // pool until an unread body is consumed or cancelled, so a
-        // redirect-heavy integration would leak one connection per hop.
-        await response.body?.cancel();
+        // redirect-heavy integration would leak one connection per hop. A
+        // cancel that itself fails — a 3xx declaring Content-Length whose
+        // connection dies mid-body rejects with "terminated" — is connection
+        // hygiene failing, not the request: the redirect still proceeds.
+        const body = response.body;
+        if (body) {
+          await Effect.runPromise(
+            Effect.tryPromise({
+              try: () => body.cancel(),
+              catch: (error) => error,
+            }).pipe(Effect.ignore),
+          );
+        }
         const location = response.headers.get("location")!;
         // A malformed Location header is a rejected redirect target, not a
         // client defect, so it surfaces as the tagged guard error.
@@ -514,6 +524,20 @@ const guardFetch = (
         );
         if (redirectDemotesToGet(response.status, currentInit?.method ?? "GET")) {
           currentInit = demoteToGet(currentInit);
+        }
+        // A demotion has already dropped the body, so what is left here is a
+        // 307/308 that would replay it. A stream cannot be replayed — the
+        // first hop drained it — and sending the drained object would deliver
+        // an empty body under a 200, so the hop is refused instead.
+        if (isStreamedBody(currentInit)) {
+          return await Effect.runPromise(
+            Effect.fail(
+              new HostedOutboundRequestBlocked({
+                url: next.toString(),
+                reason: "Redirect cannot replay a streamed request body",
+              }),
+            ),
+          );
         }
         // Cross-origin redirects are followed (the loop re-validates every
         // hop), but credentials minted for the original origin — in any
