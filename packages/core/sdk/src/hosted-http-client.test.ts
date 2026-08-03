@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { createServer, type Server } from "node:http";
 
 import {
   type HostedHostnameResolver,
@@ -10,6 +11,45 @@ import {
 } from "./hosted-http-client";
 
 const publicResolver: HostedHostnameResolver = async () => [{ address: "93.184.216.34" }];
+
+// A stub `fetch` accepts any init, so the shape of what the adapter hands the
+// transport is exactly what a stub cannot check — undici rejects a streamed
+// body whose init omits `duplex`, and no fake will ever say so. This drives a
+// real server so the transport's own requirements are the assertion.
+const withServer = <A>(
+  f: (input: {
+    readonly baseUrl: string;
+    readonly received: Array<{ readonly method: string; readonly body: string }>;
+  }) => Promise<A>,
+) =>
+  new Promise<A>((resolve, reject) => {
+    const received: Array<{ method: string; body: string }> = [];
+    const server: Server = createServer((request, response) => {
+      const chunks: Array<Buffer> = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        received.push({
+          method: request.method ?? "",
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        response.statusCode = 200;
+        response.end("ok");
+      });
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: Node listen callback is adapted into the test Promise failure path
+        reject(new Error("Server did not bind to a TCP port"));
+        return;
+      }
+      f({ baseUrl: `http://127.0.0.1:${address.port}`, received })
+        .then(resolve, reject)
+        .finally(() => server.close());
+    });
+  });
 
 // Reproduces the raw Promise rejection node:dns/promises produces at the
 // adapter boundary under test. The rejection value is deliberately opaque:
@@ -843,6 +883,43 @@ describe("hosted outbound HTTP client", () => {
     });
   });
 
+  // The scrub is not only about headers. `referrer` and `credentials` are
+  // credential-carrying init fields, and the platform renders `referrer` into
+  // a real Referer header — the full URL, query included, under
+  // referrerPolicy "unsafe-url". An OAuth callback whose query holds a token
+  // would hand that token to the redirect target, past a header safelist that
+  // looks like it covered this.
+  it("drops credential-carrying init fields on cross-origin redirects", async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    const underlying: typeof globalThis.fetch = async (input, init) => {
+      seen.push(init);
+      return String(input).startsWith("https://api.example/start")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "https://evil.example/collect" },
+          })
+        : new Response("ok", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await hostedFetch(
+      new Request("https://api.example/start?code=authorization-code", {
+        method: "GET",
+        referrer: "https://api.example/start?code=authorization-code",
+        referrerPolicy: "unsafe-url",
+        credentials: "include",
+      }),
+    );
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({
+      referrer: "https://api.example/start?code=authorization-code",
+    });
+    expect(seen[1]?.referrer).toBeUndefined();
+    expect(seen[1]?.referrerPolicy).toBeUndefined();
+    expect(seen[1]?.credentials).toBeUndefined();
+  });
+
   // Origin is scheme plus host, and the scheme half is the half that matters
   // here: comparing hosts alone would call an https -> http hop to the same
   // name same-origin and replay the credential headers over plaintext.
@@ -1041,6 +1118,41 @@ describe("hosted outbound HTTP client", () => {
   // alternative is not "replay it" — the bytes are gone once the first hop
   // reads them — it is sending a bodyless POST under a 200 and calling that
   // success.
+  // normalizeFetchInput turns every Request input into its ReadableStream
+  // body, and undici refuses a streamed body whose init omits `duplex`. Both
+  // of these reach the real transport as streams, so without it every
+  // body-bearing Request and every streamed upload throws before a byte
+  // leaves — a failure the whole rest of this file is structurally blind to.
+  it("sends body-bearing requests through a real transport", async () => {
+    await withServer(async ({ baseUrl, received }) => {
+      const hostedFetch = makeHostedFetch({
+        allowLocalNetwork: true,
+        resolveHostname: publicResolver,
+      });
+
+      const fromRequest = await hostedFetch(
+        new Request(`${baseUrl}/from-request`, { method: "POST", body: "payload" }),
+      );
+      expect(fromRequest.status).toBe(200);
+
+      const streamed = await hostedFetch(`${baseUrl}/streamed`, {
+        method: "PUT",
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("streamed"));
+            controller.close();
+          },
+        }),
+      });
+      expect(streamed.status).toBe(200);
+
+      expect(received).toEqual([
+        { method: "POST", body: "payload" },
+        { method: "PUT", body: "streamed" },
+      ]);
+    });
+  });
+
   it("refuses to replay a Request input's body across a redirect", async () => {
     const underlying: typeof globalThis.fetch = async (input) =>
       String(input) === "https://api.example/start"

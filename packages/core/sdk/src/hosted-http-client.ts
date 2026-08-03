@@ -378,7 +378,23 @@ const retainSafeRedirectHeaders = (init: RequestInit | undefined): RequestInit =
     const value = headers.get(name);
     if (value !== null) kept.set(name, value);
   }
-  return { ...init, headers: kept, body: undefined, method: init?.method ?? "GET" };
+  // Rebuilt field by field rather than spread from the original: `referrer`
+  // and `credentials` are credential-carrying too, and spreading would carry
+  // them past the header scrub. The platform turns `referrer` into a real
+  // Referer header — the whole URL, query string included, once the caller
+  // asked for `referrerPolicy: "unsafe-url"` — so an OAuth callback whose
+  // query holds a token would hand that token to the redirect target. Only
+  // the transport-shaped fields survive.
+  return {
+    headers: kept,
+    body: undefined,
+    method: init?.method ?? "GET",
+    signal: init?.signal,
+    cache: init?.cache,
+    keepalive: init?.keepalive,
+    mode: init?.mode,
+    redirect: init?.redirect,
+  };
 };
 
 const CONTENT_HEADERS = [
@@ -408,6 +424,20 @@ const redirectDemotesToGet = (status: number, method: string): boolean =>
 // for every streamed body, so that cost lands on the common path.
 const isStreamedBody = (init: RequestInit | undefined): boolean =>
   init?.body instanceof ReadableStream;
+
+// Every hop goes out through here, so this is the one place the transport's
+// requirements are met. `redirect: "manual"` is what makes the guard see each
+// hop at all — without it the platform follows 3xx internally and hops 2..n
+// are never re-validated. `duplex: "half"` is required by undici whenever the
+// body is a stream, and rejects the request outright when it is missing; since
+// normalizeFetchInput turns every Request input into its ReadableStream body,
+// omitting it would kill every body-bearing Request and every streamed upload.
+const withStreamingDuplex = (init: RequestInit | undefined): RequestInit => ({
+  ...init,
+  redirect: "manual",
+  // @ts-expect-error — undici/Bun extension, absent from the DOM RequestInit
+  duplex: isStreamedBody(init) ? "half" : undefined,
+});
 
 // A Request input is read into url + init up front so redirect hops keep the
 // request shape instead of silently degrading to a bare GET.
@@ -484,10 +514,7 @@ const guardFetch = (
         if (signal?.aborted && Cause.hasInterruptsOnly(guarded.cause)) rejectAsAbort(signal);
         return await Effect.runPromise(Effect.failCause(guarded.cause));
       }
-      const response = await underlying(currentUrl, {
-        ...currentInit,
-        redirect: "manual",
-      });
+      const response = await underlying(currentUrl, withStreamingDuplex(currentInit));
       if (
         response.status >= 300 &&
         response.status < 400 &&
