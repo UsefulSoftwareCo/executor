@@ -615,6 +615,7 @@ describe("oauth.start / oauth.complete", () => {
           grant: "client_credentials",
           clientId: "test-client",
           clientSecret: "test-secret",
+          clientAuth: "basic",
         });
 
         const started = yield* executor.oauth.start({
@@ -626,6 +627,13 @@ describe("oauth.start / oauth.complete", () => {
           template: TEMPLATE,
         });
         expect(started.status).toBe("connected");
+        const tokenRequest = (yield* server.requests).find(
+          (request) => request.path === "/token" && request.body.includes("client_credentials"),
+        );
+        expect(tokenRequest?.headers.authorization).toBe(
+          `Basic ${Buffer.from("test%2Dclient:test%2Dsecret").toString("base64")}`,
+        );
+        expect(tokenRequest?.body).not.toContain("client_secret=");
       }),
     ),
   );
@@ -765,6 +773,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           grant: "authorization_code",
           clientId: "test-client",
           clientSecret: "test-secret",
+          clientAuth: "basic",
           resource: server.mcpResourceUrl,
         });
 
@@ -811,9 +820,17 @@ describe("oauth token refresh in resolveConnectionValue", () => {
         expect(refreshedToken.token).not.toBe(firstToken.token);
         expect(yield* server.acceptsAccessToken(refreshedToken.token)).toBe(true);
         const requests = yield* server.requests;
+        const expectedAuthorization = `Basic ${Buffer.from("test%2Dclient:test%2Dsecret").toString("base64")}`;
+        const exchangeRequest = requests.find(
+          (r) => r.path === "/token" && r.body.includes("grant_type=authorization_code"),
+        );
         const refreshRequest = requests.find(
           (r) => r.path === "/token" && r.method === "POST" && r.body.includes("refresh_token"),
         );
+        expect(exchangeRequest?.headers.authorization).toBe(expectedAuthorization);
+        expect(exchangeRequest?.body).not.toContain("client_secret=");
+        expect(refreshRequest?.headers.authorization).toBe(expectedAuthorization);
+        expect(refreshRequest?.body).not.toContain("client_secret=");
         expect(refreshRequest?.body).toContain(
           `resource=${encodeURIComponent(server.mcpResourceUrl)}`,
         );

@@ -161,9 +161,11 @@ import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } fr
 import { buildToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
 import {
+  DEFAULT_CLIENT_AUTH_METHOD,
   refreshAccessToken,
   exchangeClientCredentials,
   shouldRefreshToken,
+  type ClientAuthMethod,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -1839,6 +1841,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ? ((yield* provider.get(ProviderItemId.make(String(clientRow.client_secret_item_id)))) ??
             "")
           : "";
+        const clientAuth: ClientAuthMethod =
+          clientRow.client_auth == null
+            ? DEFAULT_CLIENT_AUTH_METHOD
+            : clientRow.client_auth === "body" || clientRow.client_auth === "basic"
+              ? clientRow.client_auth
+              : yield* new StorageError({
+                  message: `OAuth client "${row.oauth_client}" has an unknown client auth method: ${String(clientRow.client_auth)}`,
+                  cause: undefined,
+                });
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
         // refresh must not exceed the originally-granted scope). Empty → omit
         // the param, which the AS treats as "same scopes as granted".
@@ -1864,6 +1875,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 tokenUrl,
                 clientId: String(clientRow.client_id),
                 clientSecret,
+                clientAuth,
                 scopes: grantedScopes,
                 resource: clientRow.resource ? String(clientRow.resource) : undefined,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
@@ -1894,6 +1906,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   tokenUrl,
                   clientId: String(clientRow.client_id),
                   clientSecret,
+                  clientAuth,
                   refreshToken,
                   scopes: grantedScopes,
                   // RFC 8707: keep the re-minted token bound to the same resource

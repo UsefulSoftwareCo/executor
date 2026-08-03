@@ -50,7 +50,7 @@ describe("oauth.listClients", () => {
   it.effect("returns owner-visible clients as summaries without the secret", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
 
         yield* executor.oauth.createClient({
           owner: "org",
@@ -60,6 +60,7 @@ describe("oauth.listClients", () => {
           grant: "authorization_code",
           clientId: "org-client-id",
           clientSecret: "org-super-secret",
+          clientAuth: "basic",
         });
         yield* executor.oauth.createClient({
           owner: "user",
@@ -70,6 +71,14 @@ describe("oauth.listClients", () => {
           clientId: "user-client-id",
           clientSecret: "user-super-secret",
         });
+        // Rows written before client_auth existed read as the historical body
+        // default rather than becoming unusable after an upgrade.
+        yield* Effect.promise(() =>
+          config.db.updateMany("oauth_client", {
+            where: (b) => b("slug", "=", String(USER_CLIENT)),
+            set: { client_auth: null },
+          }),
+        );
 
         const clients = yield* executor.oauth.listClients();
 
@@ -91,6 +100,7 @@ describe("oauth.listClients", () => {
           tokenUrl: "https://acme.test/token",
           resource: null,
           clientId: "org-client-id",
+          clientAuth: "basic",
           // Manual apps carry a nullable recorded-intent integration; a client
           // created outside any integration dialog stamps null.
           origin: { kind: "manual", integration: null },
@@ -98,6 +108,7 @@ describe("oauth.listClients", () => {
         expect(user!.owner).toBe("user");
         expect(user!.grant).toBe("client_credentials");
         expect(user!.clientId).toBe("user-client-id");
+        expect(user!.clientAuth).toBe("body");
 
         // The secret is NEVER projected onto a summary.
         for (const client of clients) {

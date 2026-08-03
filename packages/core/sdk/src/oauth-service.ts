@@ -67,6 +67,8 @@ import {
   exchangeClientCredentials,
   isLoopbackHttpUrl,
   rebindTokenEndpointHostToCallbackDomain,
+  DEFAULT_CLIENT_AUTH_METHOD,
+  type ClientAuthMethod,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
@@ -300,6 +302,9 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
 const parseGrant = (grant: unknown): OAuthGrant | null =>
   grant === "client_credentials" || grant === "authorization_code" ? grant : null;
 
+const parseClientAuth = (clientAuth: unknown): ClientAuthMethod | null =>
+  clientAuth == null || clientAuth === "body" ? "body" : clientAuth === "basic" ? "basic" : null;
+
 const canonicalDcrIssuer = (
   issuer: string | null | undefined,
   registrationEndpoint: string,
@@ -398,6 +403,7 @@ interface LoadedOAuthClient {
   readonly tokenUrl: string;
   readonly grant: OAuthGrant;
   readonly clientId: string;
+  readonly clientAuth: ClientAuthMethod;
   /** Resolved literal secret (read from the provider via the stored item id). */
   readonly clientSecret: string;
   readonly resource: string | null;
@@ -642,6 +648,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           token_url: input.tokenUrl,
           grant: input.grant,
           client_id: input.clientId,
+          client_auth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
           client_secret_item_id: clientSecretItemIdValue,
           resource: input.resource ?? null,
           origin_kind: input.origin?.kind ?? "manual",
@@ -959,12 +966,21 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) => {
             const grant = parseGrant(row.grant);
+            const clientAuth = parseClientAuth(row.client_auth);
             // EXPLICIT — a row with an unknown grant is corrupt; surface it
             // loudly rather than silently displaying it as authorization_code.
             if (grant === null) {
               return Effect.fail(
                 new StorageError({
                   message: `oauth_client ${String(row.slug)} has an unknown grant: ${String(row.grant)}`,
+                  cause: undefined,
+                }),
+              );
+            }
+            if (clientAuth === null) {
+              return Effect.fail(
+                new StorageError({
+                  message: `oauth_client ${String(row.slug)} has an unknown client auth method: ${String(row.client_auth)}`,
                   cause: undefined,
                 }),
               );
@@ -977,6 +993,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               tokenUrl: String(row.token_url),
               resource: row.resource == null ? null : String(row.resource),
               clientId: String(row.client_id),
+              clientAuth,
               origin: parseOAuthClientOrigin(row),
             } satisfies OAuthClientSummary);
           }),
@@ -1000,6 +1017,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         Effect.flatMap((row) => {
           if (!row) return Effect.succeed(null);
           const grant = parseGrant(row.grant);
+          const clientAuth = parseClientAuth(row.client_auth);
           // EXPLICIT — this row drives the token exchange. An unknown grant is a
           // corrupt row; fail loudly rather than guessing authorization_code and
           // running the wrong flow.
@@ -1007,6 +1025,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             return Effect.fail(
               new StorageError({
                 message: `oauth_client ${String(slug)} has an unknown grant: ${String(row.grant)}`,
+                cause: undefined,
+              }),
+            );
+          }
+          if (clientAuth === null) {
+            return Effect.fail(
+              new StorageError({
+                message: `oauth_client ${String(slug)} has an unknown client auth method: ${String(row.client_auth)}`,
                 cause: undefined,
               }),
             );
@@ -1031,6 +1057,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               tokenUrl: String(row.token_url),
               grant,
               clientId: String(row.client_id),
+              clientAuth,
               clientSecret,
               resource: row.resource == null ? null : String(row.resource),
             } satisfies LoadedOAuthClient;
@@ -1131,6 +1158,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           tokenUrl: client.tokenUrl,
           clientId: client.clientId,
           clientSecret: client.clientSecret,
+          clientAuth: client.clientAuth,
           scopes: requestedScopes,
           resource: client.resource ?? undefined,
           endpointUrlPolicy: deps.endpointUrlPolicy,
@@ -1332,6 +1360,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         tokenUrl,
         clientId: client.clientId,
         clientSecret: client.clientSecret,
+        clientAuth: client.clientAuth,
         redirectUrl: session.redirectUrl,
         codeVerifier: session.pkceVerifier,
         code: input.code,

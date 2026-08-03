@@ -12,6 +12,7 @@ import {
   OAuthState,
   type Owner,
 } from "./ids";
+import type { ClientAuthMethod } from "./oauth-helpers";
 
 /* The v2 OAuth surface contracts. OAuth is a credential mechanism, not an
  * integration type. A client is a registered app; running its flow mints a
@@ -56,6 +57,10 @@ export interface OAuthClient {
   readonly tokenUrl: string;
   readonly grant: OAuthGrant;
   readonly clientId: string;
+  /** How a confidential client authenticates at the token endpoint. Defaults
+   *  to `"body"` (`client_secret_post`) for compatibility. Public clients
+   *  without a secret ignore this setting. */
+  readonly clientAuth?: ClientAuthMethod;
   /** The literal client secret. Stored out-of-band in the credential provider
    *  (vault item id), never inline. Empty string for public / PKCE clients. */
   readonly clientSecret: string;
@@ -101,6 +106,7 @@ export interface OAuthClientSummary {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly clientId: string;
+  readonly clientAuth?: ClientAuthMethod;
   readonly origin: OAuthClientOrigin;
 }
 

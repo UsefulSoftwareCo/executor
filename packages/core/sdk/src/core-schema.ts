@@ -256,6 +256,9 @@ export const coreTables = defineTables({
       token_url: textColumn("token_url"),
       grant: textColumn("grant"),
       client_id: textColumn("client_id"),
+      // Token-endpoint authentication for confidential clients. Null in old
+      // databases means the historical default, client_secret_post ("body").
+      client_auth: nullableTextColumn("client_auth"),
       // The client secret is NOT stored inline — it's a provider `item_id` that
       // resolves to the value via the default writable credential provider
       // (WorkOS Vault on cloud, the local store on desktop). Null for public /

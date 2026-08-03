@@ -183,8 +183,10 @@ const decodeBasicAuthorization = (
   const separator = decoded.indexOf(":");
   if (separator < 0) return null;
   return {
-    username: decoded.slice(0, separator),
-    password: decoded.slice(separator + 1),
+    // RFC 6749 §2.3.1 applies application/x-www-form-urlencoded encoding to
+    // each credential before constructing the Basic value.
+    username: new URLSearchParams(`value=${decoded.slice(0, separator)}`).get("value") ?? "",
+    password: new URLSearchParams(`value=${decoded.slice(separator + 1)}`).get("value") ?? "",
   };
 };
 
