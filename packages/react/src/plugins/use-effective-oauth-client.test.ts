@@ -267,6 +267,65 @@ describe("selectClientsForEndpoints", () => {
       "spotify-app-2",
     ]);
   });
+
+  it("ranks a first-party app above BYO apps when both match", () => {
+    const integration = IntegrationSlug.make("github_rest");
+    const byo = app("my-github-app", {
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+    });
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [integration] },
+    });
+    const result = selectClientsForEndpoints([byo, firstParty], {
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      integration,
+    });
+    expect(result.endpointMatched).toBe(true);
+    // First-party leads despite being org-owned (user-owned normally sorts first).
+    expect(result.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:github",
+      "my-github-app",
+    ]);
+  });
+
+  it("intent-matches a first-party app to its declared integrations even without endpoints", () => {
+    const integration = IntegrationSlug.make("github_rest");
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [integration] },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      requireEndpointMatch: true,
+      integration,
+    });
+    expect(result.endpointMatched).toBe(true);
+    expect(result.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:github",
+    ]);
+  });
+
+  it("does not surface a first-party app for an unrelated integration", () => {
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [IntegrationSlug.make("github_rest")] },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      authorizationUrl: "https://accounts.spotify.com/authorize",
+      tokenUrl: "https://accounts.spotify.com/api/token",
+      integration: IntegrationSlug.make("spotify"),
+    });
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+  });
 });
 
 describe("selectDcrClientsForIntegration", () => {

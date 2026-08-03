@@ -43,7 +43,7 @@ import {
   collectTables,
 } from "@executor-js/api/server";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
-import type { AnyPlugin } from "@executor-js/sdk";
+import type { AnyPlugin, FirstPartyOAuthClientConfig } from "@executor-js/sdk";
 
 import executorConfig from "../../executor.config";
 import { DbService } from "../db/db";
@@ -88,6 +88,35 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
  */
 export const CLOUD_MOUNT_PREFIX = "/api" as const;
 
+// Executor-owned provider apps, enabled per provider by setting BOTH env vars
+// (id + secret). Each provider-side registration must list
+// `${VITE_PUBLIC_SITE_URL}/api/oauth/callback` as its callback; the org slug
+// travels inside OAuth `state`, so the single static callback serves every org.
+const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] => [
+  ...(env.FIRST_PARTY_GITHUB_CLIENT_ID && env.FIRST_PARTY_GITHUB_CLIENT_SECRET
+    ? [
+        {
+          name: "github",
+          authorizationUrl: "https://github.com/login/oauth/authorize",
+          tokenUrl: "https://github.com/login/oauth/access_token",
+          clientId: env.FIRST_PARTY_GITHUB_CLIENT_ID,
+          clientSecret: env.FIRST_PARTY_GITHUB_CLIENT_SECRET,
+        },
+      ]
+    : []),
+  ...(env.FIRST_PARTY_GOOGLE_CLIENT_ID && env.FIRST_PARTY_GOOGLE_CLIENT_SECRET
+    ? [
+        {
+          name: "google",
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+          tokenUrl: "https://oauth2.googleapis.com/token",
+          clientId: env.FIRST_PARTY_GOOGLE_CLIENT_ID,
+          clientSecret: env.FIRST_PARTY_GOOGLE_CLIENT_SECRET,
+        },
+      ]
+    : []),
+];
+
 export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, () => ({
   // SSRF / private-network egress guard. Config-driven, NOT a test flag:
   // production leaves `ALLOW_LOCAL_NETWORK` unset so the guard stays ON (`false`);
@@ -99,6 +128,7 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // WorkOS Vault is cloud's credential storage implementation detail, not a
   // user-selectable provider surface.
   exposeCredentialProviders: false,
+  firstPartyOAuthClients: cloudFirstPartyOAuthClients(),
 }));
 
 export const CloudCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(

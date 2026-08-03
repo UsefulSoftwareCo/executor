@@ -876,11 +876,18 @@ function OAuthAppRadioRow(props: {
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium">{clientDisplayName(String(app.slug))}</span>
           <span className="block truncate text-xs text-muted-foreground">
-            {clientHost(app.tokenUrl)} ·{" "}
-            {app.grant === "client_credentials" ? "app-to-app" : "you'll sign in"}
+            {app.origin.kind === "first_party"
+              ? "No setup needed · you'll sign in"
+              : `${clientHost(app.tokenUrl)} · ${
+                  app.grant === "client_credentials" ? "app-to-app" : "you'll sign in"
+                }`}
           </span>
         </span>
-        {showOwnerLabel ? <Badge variant="outline">{ownerLabel(app.owner)}</Badge> : null}
+        {app.origin.kind === "first_party" ? (
+          <Badge variant="outline">Built-in</Badge>
+        ) : showOwnerLabel ? (
+          <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
+        ) : null}
       </Label>
       {onManage ? (
         <DropdownMenu>
@@ -1595,6 +1602,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const manageHandlersFor = (
     appOption: OAuthClientOption,
   ): { readonly onEdit: () => void; readonly onRemove: () => void } | undefined => {
+    // First-party apps are host config, not rows: nothing to edit or remove.
+    if (appOption.origin.kind === "first_party") return undefined;
     const summary = clientSummaries.find(
       (c: OAuthClientSummary) =>
         c.owner === appOption.owner && String(c.slug) === String(appOption.slug),

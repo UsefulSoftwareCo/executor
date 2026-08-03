@@ -53,6 +53,16 @@ declare global {
       // number to drive the backstop. Production leaves it unset.
       EXECUTION_RATE_LIMIT_PER_HOUR?: string;
 
+      // First-party OAuth apps (executor-owned provider registrations). Each
+      // pair enables one-click connect through `first-party:<provider>`; an
+      // unset pair simply ships no first-party app for that provider. The
+      // registered callback on the provider side must be
+      // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback`.
+      FIRST_PARTY_GITHUB_CLIENT_ID?: string;
+      FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+
       // Billing
       AUTUMN_SECRET_KEY?: string;
       /** Optional Autumn base-URL override (Autumn emulator in tests/dev). */

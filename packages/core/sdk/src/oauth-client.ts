@@ -77,10 +77,57 @@ export type OAuthClientOrigin =
   | {
       readonly kind: "dynamic_client_registration";
       readonly integration?: IntegrationSlug | null;
+    }
+  | {
+      /** A host-operated app declared in executor config (`firstPartyOAuthClients`),
+       *  not a stored row: the deployment operator registered ONE app with the
+       *  provider (GitHub, Google, …) and every org connects through it, so
+       *  users paste nothing. Config-resolved — never persisted, never
+       *  creatable or removable through the client CRUD surface. Plural
+       *  `integrations` (unlike the stored origins' single recorded intent):
+       *  one Google app deliberately backs gmail, calendar, drive, …. */
+      readonly kind: "first_party";
+      readonly integrations?: readonly IntegrationSlug[];
     };
 
+/** Slug namespace separating config-declared first-party apps from stored
+ *  owner-scoped rows. A first-party client declared as `github` is addressed
+ *  everywhere (start input, connection rows' `oauth_client` column, listings)
+ *  as `first-party:github`, so it can never collide with a BYO row and every
+ *  load path can intercept before touching storage. The client CRUD surface
+ *  rejects the prefix on stored rows. */
+export const FIRST_PARTY_OAUTH_CLIENT_PREFIX = "first-party:";
+
+export const isFirstPartyOAuthClientSlug = (slug: string): boolean =>
+  slug.startsWith(FIRST_PARTY_OAUTH_CLIENT_PREFIX);
+
+export const firstPartyOAuthClientSlug = (name: string): OAuthClientSlug =>
+  OAuthClientSlug.make(`${FIRST_PARTY_OAUTH_CLIENT_PREFIX}${name}`);
+
+/** A first-party OAuth app the HOST declares at composition time — the
+ *  deployment operator's own registered app for a provider. The secret comes
+ *  from host env/config and stays in memory: it is never written to a
+ *  credential provider and never surfaced over any read surface. Minted
+ *  connections (and their tokens) remain per-owner exactly as with BYO apps;
+ *  only the app identity is shared. */
+export interface FirstPartyOAuthClientConfig {
+  /** Unprefixed name, e.g. `"github"`; addressed as `first-party:github`. */
+  readonly name: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly clientId: string;
+  /** Literal secret from host env. Empty string for a public/PKCE client. */
+  readonly clientSecret: string;
+  /** Integrations this app is intended for, used by pickers to rank it as the
+   *  exact-match default for those integrations. Endpoint-host matching still
+   *  applies when omitted. */
+  readonly integrations?: readonly IntegrationSlug[];
+}
+
 export type CreateOAuthClientInput = OAuthClient & {
-  readonly origin?: OAuthClientOrigin;
+  /** Stored-row origins only — `first_party` is config-declared, never created
+   *  through this surface (the service also rejects the slug namespace). */
+  readonly origin?: Exclude<OAuthClientOrigin, { kind: "first_party" }>;
   readonly originIssuer?: string | null;
   /** The redirect URI a DCR registration sent as the client's `redirect_uris`
    *  entry. Persisted so reuse can detect a changed callback (strict servers

@@ -121,6 +121,13 @@ const OAuthClientSummaryResponse = Schema.Struct({
       kind: Schema.Literal("dynamic_client_registration"),
       integration: Schema.optional(Schema.NullOr(IntegrationSlug)),
     }),
+    /** Host-operated app declared in executor config — every org connects
+     *  through it; nothing to paste. `integrations` ranks it as the default
+     *  for those integrations in the picker. */
+    Schema.Struct({
+      kind: Schema.Literal("first_party"),
+      integrations: Schema.optional(Schema.Array(IntegrationSlug)),
+    }),
   ]),
 });
 

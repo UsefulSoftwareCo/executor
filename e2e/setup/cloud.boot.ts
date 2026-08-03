@@ -94,6 +94,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
     MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
     ALLOW_LOCAL_NETWORK: "true",
+    // A first-party GitHub app for the first-party-oauth scenario: proves the
+    // env → HostConfig → executor plumbing end to end. The scenario asserts the
+    // authorize REDIRECT only (client id + callback), never visits github.com.
+    FIRST_PARTY_GITHUB_CLIENT_ID: "e2e-first-party-github",
+    FIRST_PARTY_GITHUB_CLIENT_SECRET: "e2e-first-party-github-secret",
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real
     // executions — but see execution-limits.ts: it must stay above every other

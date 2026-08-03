@@ -41,6 +41,7 @@ import {
   type AnyPlugin,
   type Executor,
   type ExecutorConfig,
+  type FirstPartyOAuthClientConfig,
   type StorageFailure,
 } from "@executor-js/sdk";
 import {
@@ -97,6 +98,14 @@ export interface HostConfigShape {
    * Hosts that record product analytics supply it; omitted -> no observation.
    */
   readonly onIntegrationChange?: ExecutorConfig["onIntegrationChange"];
+  /**
+   * Host-operated OAuth apps (`first-party:<name>`), threaded verbatim into
+   * `createExecutor`. Declared here — not per-request — because the registered
+   * redirect URI on the provider side is fixed per deployment, and both request
+   * planes (HTTP API, MCP session DO) must resolve the same apps. Hosts that
+   * ship none simply omit it.
+   */
+  readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -281,6 +290,7 @@ export const makeScopedExecutor = <
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
+      firstPartyOAuthClients: config.firstPartyOAuthClients,
       coreTools: {
         webBaseUrl,
         orgSlug,
