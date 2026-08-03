@@ -59,6 +59,9 @@ describe("hosted outbound HTTP client", () => {
     Effect.gen(function* () {
       for (const url of [
         "http://localhost:3000",
+        // The subdomain form is what a dev server or local reverse proxy
+        // actually hands out, and it never reaches the resolved-address check.
+        "http://app.localhost/",
         "http://0.0.0.0/",
         "http://127.0.0.1:3000",
         "http://10.0.0.1/openapi.json",
@@ -216,9 +219,12 @@ describe("hosted outbound HTTP client", () => {
   it.effect("rejects input that is not a URL", () =>
     Effect.gen(function* () {
       const error = yield* validateHostedOutboundUrl("not a url").pipe(Effect.flip);
+      // The url field is asserted, not just the reason: it is the only part of
+      // the error telling an operator which destination was refused.
       expect(error).toMatchObject({
         _tag: "HostedOutboundRequestBlocked",
         reason: "URL is invalid",
+        url: "not a url",
       });
     }),
   );
@@ -686,20 +692,48 @@ describe("hosted outbound HTTP client", () => {
     });
   });
 
+  // Every redirect rule below is downstream of one instruction: the adapter
+  // must ask the transport not to follow 3xx itself. A real fetch left on its
+  // default follows internally, so hops 2..n are never re-validated and none of
+  // the stripping runs — the guard sees one request and an already-followed
+  // response. The fakes here cannot show that, so the mode is asserted directly.
+  it("tells the transport not to follow redirects on any hop", async () => {
+    const modes: Array<RequestRedirect | undefined> = [];
+    const underlying: typeof globalThis.fetch = async (input, init) => {
+      modes.push(init?.redirect);
+      if (String(input) === "https://api.example/start") {
+        return new Response(null, { status: 302, headers: { location: "/moved" } });
+      }
+      return new Response("ok", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await hostedFetch("https://api.example/start");
+
+    expect(modes).toEqual(["manual", "manual"]);
+  });
+
   it("demotes POST to GET and drops the body on a 302 redirect", async () => {
     const seen: Array<{
       url: string;
       method: string;
       hasBody: boolean;
       contentType: string | null;
+      contentLength: string | null;
+      contentEncoding: string | null;
+      contentLanguage: string | null;
     }> = [];
     const underlying: typeof globalThis.fetch = async (input, init) => {
       const url = String(input);
+      const headers = new Headers(init?.headers);
       seen.push({
         url,
         method: init?.method ?? "GET",
         hasBody: init?.body !== undefined && init?.body !== null,
-        contentType: new Headers(init?.headers).get("content-type"),
+        contentType: headers.get("content-type"),
+        contentLength: headers.get("content-length"),
+        contentEncoding: headers.get("content-encoding"),
+        contentLanguage: headers.get("content-language"),
       });
       if (url === "https://api.example/start") {
         return new Response(null, { status: 302, headers: { location: "/see-here" } });
@@ -710,16 +744,27 @@ describe("hosted outbound HTTP client", () => {
 
     await hostedFetch("https://api.example/start", {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "content-length": "25",
+        "content-encoding": "gzip",
+        "content-language": "en",
+      },
       body: "client_secret=supersecret",
     });
 
     expect(seen).toHaveLength(2);
+    // One representative per content header the demotion drops: a bodyless GET
+    // still advertising content-length: 25 reads as a truncated request, and
+    // the upstream 4xx gets blamed on the caller.
     expect(seen[1]).toMatchObject({
       url: "https://api.example/see-here",
       method: "GET",
       hasBody: false,
       contentType: null,
+      contentLength: null,
+      contentEncoding: null,
+      contentLanguage: null,
     });
   });
 
@@ -731,6 +776,8 @@ describe("hosted outbound HTTP client", () => {
       url: string;
       apiKey: string | null;
       accept: string | null;
+      acceptLanguage: string | null;
+      userAgent: string | null;
       hasBody: boolean;
     }> = [];
     const underlying: typeof globalThis.fetch = async (input, init) => {
@@ -740,6 +787,8 @@ describe("hosted outbound HTTP client", () => {
         url,
         apiKey: headers.get("x-api-key"),
         accept: headers.get("accept"),
+        acceptLanguage: headers.get("accept-language"),
+        userAgent: headers.get("user-agent"),
         hasBody: init?.body !== undefined && init?.body !== null,
       });
       if (url === "https://api.example/start") {
@@ -754,18 +803,54 @@ describe("hosted outbound HTTP client", () => {
 
     await hostedFetch("https://api.example/start", {
       method: "POST",
-      headers: { "x-api-key": "rendered-credential", accept: "application/json" },
+      headers: {
+        "x-api-key": "rendered-credential",
+        accept: "application/json",
+        "accept-language": "en-GB",
+        "user-agent": "executor-test",
+      },
       body: "client_secret=supersecret",
     });
 
     expect(seen).toHaveLength(2);
     expect(seen[0]).toMatchObject({ apiKey: "rendered-credential", hasBody: true });
+    // One representative per safelisted header: dropping user-agent on a hop
+    // changes what the upstream serves — bot rules, content negotiation — so
+    // the safelist is a contract, not an implementation detail.
     expect(seen[1]).toMatchObject({
       url: "https://evil.example/collect",
       apiKey: null,
       accept: "application/json",
+      acceptLanguage: "en-GB",
+      userAgent: "executor-test",
       hasBody: false,
     });
+  });
+
+  // Origin is scheme plus host, and the scheme half is the half that matters
+  // here: comparing hosts alone would call an https -> http hop to the same
+  // name same-origin and replay the credential headers over plaintext.
+  it("treats a scheme downgrade to the same host as cross-origin", async () => {
+    const seen: Array<{ url: string; apiKey: string | null }> = [];
+    const underlying: typeof globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      seen.push({ url, apiKey: new Headers(init?.headers).get("x-api-key") });
+      if (url === "https://api.example/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://api.example/moved" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await hostedFetch("https://api.example/start", {
+      headers: { "x-api-key": "rendered-credential" },
+    });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toMatchObject({ url: "http://api.example/moved", apiKey: null });
   });
 
   // A 307/308 keeps the method, so stripping the body would send a bodyless
@@ -848,13 +933,19 @@ describe("hosted outbound HTTP client", () => {
         return new Response("ok", { status: 200 });
       };
       const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
-      await hostedFetch("https://api.example/start", { method, body: "secret=1" });
+      await hostedFetch(
+        "https://api.example/start",
+        method === "HEAD" ? { method } : { method, body: "secret=1" },
+      );
       return seen[1];
     };
 
     expect(await run(303, "POST")).toMatchObject({ method: "GET", hasBody: false });
     expect(await run(301, "POST")).toMatchObject({ method: "GET", hasBody: false });
     expect(await run(308, "POST")).toMatchObject({ method: "POST", hasBody: true });
+    // The demotion exempts GET and HEAD: turning a HEAD probe into a GET makes
+    // the caller download a body it deliberately asked not to receive.
+    expect(await run(301, "HEAD")).toMatchObject({ method: "HEAD" });
   });
 
   it("preserves method, headers and body from a Request input across redirects", async () => {
@@ -1072,6 +1163,13 @@ describe("hosted outbound HTTP client", () => {
       );
 
       expectBlocked(result, "Metadata service addresses are not allowed");
+      // On a redirect block the reported url is genuinely ambiguous — the
+      // request the caller made, or the hop that was actually refused. It is
+      // the hop: naming the original would point an operator at a URL that is
+      // fine and hide the destination the guard stopped.
+      expect(result).toMatchObject({
+        failure: { cause: { url: "http://169.254.169.254/latest/meta-data/" } },
+      });
       expect(calls).toBe(1);
     }),
   );
