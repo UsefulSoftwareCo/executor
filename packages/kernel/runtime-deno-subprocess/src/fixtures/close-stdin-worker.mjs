@@ -1,25 +1,37 @@
 #!/usr/bin/env node
 
-import { closeSync } from "node:fs";
-import { createInterface } from "node:readline";
+// Reads the start message with raw fd reads instead of a stdin stream: only
+// an unwatched fd can be closed here, since libuv aborts the process when
+// fd 0 is closed while a stream watcher is attached, and a stream destroy()
+// never closes the underlying stdio fd, so the host's writes would keep
+// succeeding instead of failing with EPIPE.
 
-const input = createInterface({ input: process.stdin });
+import { closeSync, readSync } from "node:fs";
 
-input.once("line", (line) => {
-  const { nonce } = JSON.parse(line);
+let buffered = "";
+const chunk = Buffer.alloc(4096);
+while (!buffered.includes("\n")) {
+  try {
+    const bytesRead = readSync(0, chunk, 0, chunk.length);
+    if (bytesRead <= 0) break;
+    buffered += chunk.toString("utf8", 0, bytesRead);
+  } catch (error) {
+    if (error.code === "EAGAIN") continue;
+    throw error;
+  }
+}
 
-  input.close();
-  process.stdin.destroy();
-  closeSync(0);
-  process.stdout.write(
-    `@@executor-ipc@@${JSON.stringify({
-      type: "tool_call",
-      nonce,
-      requestId: "request-1",
-      toolPath: "test.call",
-      args: {},
-    })}\n`,
-  );
+const { nonce } = JSON.parse(buffered.slice(0, buffered.indexOf("\n")));
 
-  setTimeout(() => process.exit(0), 5_000);
-});
+closeSync(0);
+process.stdout.write(
+  `@@executor-ipc@@${JSON.stringify({
+    type: "tool_call",
+    nonce,
+    requestId: "request-1",
+    toolPath: "test.call",
+    args: {},
+  })}\n`,
+);
+
+setTimeout(() => process.exit(0), 5_000);
