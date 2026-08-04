@@ -38,7 +38,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756cd72faef 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..f168ef8efadc3b3a1700ee90801ecc2f8916c9ec 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -167,13 +167,13 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
 +										// canceled the POST response body, and request.signal does
 +										// not reliably fire for that cancellation, so a successful
 +										// close is NOT proof of delivery. Never ack POST-stream
-+										// deliveries: the DO keeps the response persisted and the
-+										// client's own reconnect GET replays and acks it. A client
-+										// that DID receive the result closes the POST body reader
-+										// without a Last-Event-ID reconnect, and the SDK drops
-+										// responses for request ids it no longer tracks, so the
-+										// worst case of this at-least-once choice is a benign
-+										// replay to a fresh GET, not a wedged tool call.
++										// deliveries: the DO keeps each response persisted for its
++										// own Last-Event-ID recovery or an explicitly cursorless
++										// fresh GET. A client that DID receive the result closes the
++										// POST body reader without recovery, so the worst case of
++										// this at-least-once choice is a duplicate on that fresh-GET
++										// fallback, never a response injected into another cursor's
++										// recovery stream.
 +										ws?.close(1000, "SSE response delivered");
 +									}
 +								}
@@ -494,7 +494,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -634,7 +857,23 @@ var StreamableHTTPServerTransport = class {
+@@ -634,7 +857,21 @@ var StreamableHTTPServerTransport = class {
  				}
  				this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
  				connection.setState(resumeState);
@@ -502,12 +502,10 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
 +				const ackStreamIds = [];
 +				const replayedResponse = await this.replayEvents(lastEventId);
 +				if (resumedStreamId !== STANDALONE_STREAM_ID && replayedResponse) ackStreamIds.push(resumedStreamId);
-+				// A reconnect can carry a Last-Event-ID for an already-delivered
-+				// stream (e.g. the initialize response) while a tool result
-+				// completed on a since-abandoned POST stream. Replay those other
-+				// undelivered responses on this connection too, otherwise they are
-+				// stranded until the session is torn down.
-+				ackStreamIds.push(...await this.replayUndeliveredResponses(agent, connection, resumedStreamId));
++				// Last-Event-ID identifies one disconnected stream. Keep replay
++				// scoped to that stream: mixing another POST's response into this
++				// recovery stream can make a client stop reconnecting before the
++				// response it is actually waiting for arrives.
 +				// Storage is NOT cleared here: replayed events are only enqueued
 +				// on the WS bridge, and workerd cannot tell a dead client from a
 +				// live one at write time. The close frame below makes the bridge
@@ -519,14 +517,14 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  				return;
  			}
  		}
-@@ -644,6 +883,26 @@ var StreamableHTTPServerTransport = class {
+@@ -644,6 +881,26 @@ var StreamableHTTPServerTransport = class {
  			_standaloneSse: true
  		};
  		connection.setState(standaloneState);
-+		const replayedStreamIds = await this.replayUndeliveredResponses(agent, connection);
-+		// Same delivery-confirmed clearing as the resume branch above. When
-+		// nothing was replayed no close frame is sent and this connection stays
-+		// open as the session's long-lived standalone listener.
++		const replayedStreamIds = await this.replayUndeliveredResponsesOnFreshGet(agent, connection);
++		// A GET without Last-Event-ID has no identified stream to preserve, so
++		// retain the existing fallback that drains completed POST responses.
++		// When nothing was replayed this stays the long-lived listener.
 +		if (replayedStreamIds.length > 0) this.sendReplayComplete(connection, replayedStreamIds);
 +	}
 +	/**
@@ -546,7 +544,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	}
  	/**
  	* Close any connection (other than `selfId`) currently bound to
-@@ -664,12 +923,14 @@ var StreamableHTTPServerTransport = class {
+@@ -664,12 +921,14 @@ var StreamableHTTPServerTransport = class {
  	* Only used when resumability is enabled
  	*/
  	async replayEvents(lastEventId) {
@@ -562,25 +560,26 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  					this.writeSSEEvent(connection, message, eventId);
  				} catch (error) {
  					this.onerror?.(error);
-@@ -678,6 +939,33 @@ var StreamableHTTPServerTransport = class {
+@@ -678,6 +937,34 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
 +		return replayedResponse;
 +	}
 +	/**
-+	* Enqueue every undelivered stream's events on `connection` and return
-+	* the stream ids whose replay included a response. Deliberately does
-+	* NOT clear storage: the caller sends a replay-complete close frame and
-+	* the bridge acks each stream only after the client-facing writer
-+	* drained and closed with the client still attached.
++	* For a fresh GET without Last-Event-ID, enqueue every undelivered
++	* stream's events on `connection` and return the stream ids whose
++	* replay included a response. A cursor-bearing GET never calls this:
++	* MCP requires that replay to stay on the stream the cursor identifies.
++	* Deliberately does NOT clear storage: the caller sends a replay-complete
++	* close frame and the bridge acks each stream only after the client-facing
++	* writer drained and closed with the client still attached.
 +	*/
-+	async replayUndeliveredResponses(agent, connection, skipStreamId) {
++	async replayUndeliveredResponsesOnFreshGet(agent, connection) {
 +		const replayedStreamIds = [];
 +		if (!this._eventStore?.replayEventsForStream) return replayedStreamIds;
 +		const streamIds = await agent.getUndeliveredStreamIds();
 +		for (const streamId of streamIds) {
-+			if (skipStreamId !== void 0 && streamId === skipStreamId) continue;
 +			let replayedResponse = false;
 +			await this._eventStore.replayEventsForStream(streamId, { send: async (eventId, message) => {
 +				try {
@@ -596,7 +595,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	}
  	/**
  	* Writes an event to the SSE stream with proper formatting
-@@ -689,10 +977,65 @@ var StreamableHTTPServerTransport = class {
+@@ -689,10 +976,65 @@ var StreamableHTTPServerTransport = class {
  		return connection.send(JSON.stringify({
  			type: "cf_mcp_agent_event",
  			event: eventData,
@@ -662,7 +661,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	* Handles POST requests containing JSON-RPC messages
  	*/
  	async handlePostRequest(req, parsedBody) {
-@@ -733,6 +1076,22 @@ var StreamableHTTPServerTransport = class {
+@@ -733,6 +1075,22 @@ var StreamableHTTPServerTransport = class {
  			};
  			connection.setState(postState);
  			if (this._eventStore) await agent.setStreamRequestIds(streamId, requestIds);
@@ -685,7 +684,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  			for (const message of messages) {
  				if (this.messageInterceptor) {
  					if (await this.messageInterceptor(message, {
-@@ -760,7 +1119,22 @@ var StreamableHTTPServerTransport = class {
+@@ -760,7 +1118,22 @@ var StreamableHTTPServerTransport = class {
  	* when the originating WS has dropped.
  	*/
  	async sendOnStream(agent, streamId, relatedIds, liveConnection, message, requestId) {
@@ -709,7 +708,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		let shouldClose = false;
  		if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
  			let responseIds = this._streamResponseIds.get(streamId);
-@@ -777,9 +1151,11 @@ var StreamableHTTPServerTransport = class {
+@@ -777,9 +1150,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -723,7 +722,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1237,10 @@ var StreamableHTTPServerTransport = class {
+@@ -861,12 +1236,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -740,7 +739,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -893,12 +1267,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -893,12 +1266,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  	}
  	async storeEvent(streamId, message) {
  		if (streamId.includes(":")) throw new Error(`DurableObjectEventStore: streamId must not contain ':' (got ${JSON.stringify(streamId)})`);
@@ -775,7 +774,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1311,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1310,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -836,7 +835,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1419,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1418,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -850,7 +849,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1834,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1833,47 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -898,7 +897,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2191,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2190,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
