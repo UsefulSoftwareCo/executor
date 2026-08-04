@@ -124,6 +124,12 @@ describe("hosted outbound HTTP client", () => {
         "http://100.127.255.255/",
         "http://172.31.255.255/",
         "http://198.19.255.255/",
+        // 224.0.0.0-255.255.255.255 is one arm spanning four /4s: with only
+        // 224.0.0.1 above, narrowing it to `a === 224` — or to multicast plus
+        // one value — unblocks reserved 240.0.0.0/4 and the broadcast address
+        // with the suite still green.
+        "http://240.0.0.1/",
+        "http://255.255.255.255/",
       ]) {
         // The public resolver pins WHICH rule blocked: were these to slip
         // past the pre-resolution check, resolution would succeed with a
@@ -142,6 +148,17 @@ describe("hosted outbound HTTP client", () => {
       for (const url of [
         "http://169.254.169.254/latest/meta-data/",
         "http://metadata.google.internal../computeMetadata/v1/",
+        // The metadata block runs ahead of the allowLocalNetwork gate, so its
+        // invariant is "never reachable" — and a comparison against the one
+        // dotted-decimal spelling cannot hold that. Every IPv6 form carrying
+        // the same destination has to take the same block, or the local and
+        // desktop hosts reach the endpoint by writing the address differently.
+        "http://[::ffff:169.254.169.254]/latest/meta-data/",
+        "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+        "http://[::169.254.169.254]/latest/meta-data/",
+        "http://[::ffff:0:a9fe:a9fe]/latest/meta-data/",
+        "http://[2002:a9fe:a9fe::]/latest/meta-data/",
+        "http://[64:ff9b::169.254.169.254]/latest/meta-data/",
       ]) {
         const metadataError = yield* validateHostedOutboundUrl(url, {
           // allowLocalNetwork isolates the metadata arm: without it the
@@ -173,6 +190,11 @@ describe("hosted outbound HTTP client", () => {
         // half of each range with the suite still green. These pin the width.
         "http://[fc00::1]/",
         "http://[febf::1]/",
+        // Site-local (fec0::/10) is deprecated but still routed by older
+        // stacks and still handed out by some equipment, and it sits in the
+        // half of fe80::/9 that a link-local-only mask leaves public.
+        "http://[fec0::1]/",
+        "http://[feff::1]/",
       ]) {
         const error = yield* validateHostedOutboundUrl(url).pipe(Effect.flip);
         expect(error).toMatchObject({
@@ -185,15 +207,19 @@ describe("hosted outbound HTTP client", () => {
 
   // Every prefix that carries an IPv4 destination in its low 32 bits must be
   // classified by that destination. Reading the first non-empty group instead
-  // would let "::169.254.169.254" — which starts with six zero words, not with
-  // 0xa9fe — straight through to the metadata service.
+  // would let "::169.254.1.1" — which starts with six zero words, not with
+  // 0xa9fe — straight through to the link-local range.
+  //
+  // These deliberately avoid 169.254.169.254: the metadata check runs ahead of
+  // this one and would answer for them, leaving the local/private classifier
+  // free to break with the suite green.
   it.effect("rejects IPv6 literals that embed a private IPv4 address", () =>
     Effect.gen(function* () {
       for (const url of [
-        "http://[::169.254.169.254]/latest/meta-data/",
+        "http://[::169.254.1.1]/",
         "http://[::127.0.0.1]/",
         "http://[::10.0.0.1]/",
-        "http://[64:ff9b::169.254.169.254]/",
+        "http://[64:ff9b::169.254.1.1]/",
         "http://[64:ff9b::127.0.0.1]/",
         // RFC 6052 IPv4-translatable (::ffff:0:0:0/96), 6to4 (2002::/16), and
         // RFC 8215 local-use NAT64 (64:ff9b:1::/48) each reach an embedded or
@@ -201,8 +227,8 @@ describe("hosted outbound HTTP client", () => {
         // skip the resolved-address check entirely, so classifying them by
         // their own prefix is the whole guard, not one layer of it.
         "http://[::ffff:0:7f00:1]/",
-        "http://[::ffff:0:a9fe:a9fe]/latest/meta-data/",
-        "http://[2002:a9fe:a9fe::]/latest/meta-data/",
+        "http://[::ffff:0:a9fe:101]/",
+        "http://[2002:a9fe:101::]/",
         "http://[2002:7f00:1::]/",
         "http://[64:ff9b:1::a9fe:a9fe]/",
       ]) {
@@ -486,7 +512,7 @@ describe("hosted outbound HTTP client", () => {
         "http://[::ffff:10.0.0.1]/openapi.json",
         "http://[::ffff:172.16.0.1]/graphql",
         "http://[::ffff:192.168.1.10]/mcp",
-        "http://[::ffff:169.254.169.254]/latest/meta-data/",
+        "http://[::ffff:169.254.1.1]/",
       ]) {
         const error = yield* validateHostedOutboundUrl(url, {
           resolveHostname: publicResolver,

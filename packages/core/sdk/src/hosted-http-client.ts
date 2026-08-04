@@ -155,8 +155,12 @@ const isBlockedIpv6 = (words: ReadonlyArray<number>): boolean => {
   const embedded = embeddedIpv4(words);
   if (embedded) return isBlockedIpv4(embedded);
   const leading = words[0];
+  // fe80::/9 rather than fe80::/10: the upper half of it is site-local
+  // (fec0::/10), deprecated by RFC 3879 but still routed by stacks that
+  // predate the deprecation and still assigned by some equipment, so fec0::1
+  // is a local address that the /10 mask let through as public.
   return (
-    (leading & 0xffc0) === 0xfe80 || (leading & 0xfe00) === 0xfc00 || (leading & 0xff00) === 0xff00
+    (leading & 0xff80) === 0xfe80 || (leading & 0xfe00) === 0xfc00 || (leading & 0xff00) === 0xff00
   );
 };
 
@@ -170,11 +174,31 @@ const canonicalHostname = (hostname: string): string =>
     .replace(/^\[|\]$/g, "")
     .replace(/\.+$/, "");
 
+const isMetadataAddress = ([a, b, c, d]: readonly [number, number, number, number]): boolean =>
+  a === 169 && b === 254 && c === 169 && d === 254;
+
+// The metadata endpoint is blocked unconditionally, ahead of the
+// allowLocalNetwork gate, so the invariant is "never reachable" — which a
+// string comparison cannot hold. It only ever matched the one dotted-decimal
+// spelling, so under allowLocalNetwork (the local and desktop hosts) every
+// IPv6 form carrying the same destination — ::ffff:169.254.169.254, the 6to4
+// 2002:a9fe:a9fe::, the NAT64 64:ff9b::169.254.169.254 — reached it untouched.
+// The address decides now, by the same parsers the rest of the guard uses, so
+// every spelling of it takes the same block.
+const isBlockedMetadataAddress = (normalized: string): boolean => {
+  const ipv4 = parseIpv4(normalized);
+  if (ipv4) return isMetadataAddress(ipv4);
+  const ipv6 = parseIpv6(normalized);
+  if (!ipv6) return false;
+  const embedded = embeddedIpv4(ipv6);
+  return embedded !== null && isMetadataAddress(embedded);
+};
+
 const isBlockedMetadataHostname = (normalized: string): boolean =>
   normalized === "metadata.google.internal" ||
   normalized === "metadata" ||
   normalized === "instance-data" ||
-  normalized === "169.254.169.254";
+  isBlockedMetadataAddress(normalized);
 
 const isLocalOrPrivateHostname = (normalized: string): boolean => {
   if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
