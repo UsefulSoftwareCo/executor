@@ -153,8 +153,10 @@ describe("hosted outbound HTTP client", () => {
         // dotted-decimal spelling cannot hold that. Every IPv6 form carrying
         // the same destination has to take the same block, or the local and
         // desktop hosts reach the endpoint by writing the address differently.
+        // Each of these normalizes to a distinct hostname — the WHATWG parser
+        // rewrites a dotted quad inside a literal, so ::ffff:169.254.169.254
+        // and ::ffff:a9fe:a9fe are one input, not two.
         "http://[::ffff:169.254.169.254]/latest/meta-data/",
-        "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
         "http://[::169.254.169.254]/latest/meta-data/",
         "http://[::ffff:0:a9fe:a9fe]/latest/meta-data/",
         "http://[2002:a9fe:a9fe::]/latest/meta-data/",
@@ -183,7 +185,6 @@ describe("hosted outbound HTTP client", () => {
         "http://[fe80::1]/",
         "http://[fd00::1]/",
         "http://[ff02::1]/",
-        "http://[0:0:0:0:0:0:0:1]/",
         // Both classifiers match a masked range, so testing only its most
         // canonical member leaves the mask width free: fc00::/7 tightened to
         // fd00::/8, or fe80::/10 to the exact word, would unblock the other
@@ -387,6 +388,70 @@ describe("hosted outbound HTTP client", () => {
     }),
   );
 
+  // The name blocklist covers the published metadata hostnames, which is not
+  // the same as covering the endpoint: any name at all can carry an A record
+  // for it. Since the metadata rule holds regardless of allowLocalNetwork, the
+  // resolved-address check has to run in that mode too — gating the lookup on
+  // the flag left the endpoint one DNS record away on exactly the hosts that
+  // set it, with the name never resolved and so never classified.
+  it.effect("blocks a public name that resolves to the metadata endpoint", () =>
+    Effect.gen(function* () {
+      for (const allowLocalNetwork of [false, true]) {
+        const error = yield* validateHostedOutboundUrl(
+          "http://harmless.example/latest/meta-data/",
+          {
+            allowLocalNetwork,
+            resolveHostname: async () => [{ address: "169.254.169.254" }],
+          },
+        ).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "HostedOutboundRequestBlocked",
+          reason: "Metadata service addresses are not allowed",
+        });
+      }
+    }),
+  );
+
+  // The permissive mode allows local destinations by name; only the metadata
+  // rule applies to what comes back. Were the resolved-address check to reject
+  // local answers here, the flag would stop doing the one thing it exists for.
+  it.effect("allows a name resolving to a local address when local network is allowed", () =>
+    Effect.gen(function* () {
+      yield* validateHostedOutboundUrl("http://nas.local/openapi.json", {
+        allowLocalNetwork: true,
+        resolveHostname: async () => [{ address: "192.168.1.10" }],
+      });
+    }),
+  );
+
+  // A name this resolver cannot see is fatal in the default mode and not in
+  // the permissive one: a self-host behind a tunnel resolves names remotely,
+  // so the transport reaches destinations the local resolver cannot, and that
+  // deployment is what the flag is for. Nothing resolved means nothing can be
+  // the metadata endpoint, and a name that truly does not exist fails at the
+  // transport with its own error.
+  it.effect("does not block on an unresolvable name when local network is allowed", () =>
+    Effect.gen(function* () {
+      const options = {
+        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: a resolver is a Promise-returning platform seam, and a rejected lookup is what node:dns actually does
+        resolveHostname: async () => Promise.reject(new Error("EAI_AGAIN")),
+      };
+      yield* validateHostedOutboundUrl("http://tunnel.internal/mcp", {
+        ...options,
+        allowLocalNetwork: true,
+      });
+
+      const error = yield* validateHostedOutboundUrl("http://tunnel.internal/mcp", options).pipe(
+        Effect.flip,
+      );
+      expect(error).toMatchObject({
+        _tag: "HostedOutboundRequestBlocked",
+        reason: "Hostname could not be resolved",
+      });
+    }),
+  );
+
   // The named metadata hostnames are the classic cloud SSRF vector; they are
   // blocked before resolution, so no resolver is consulted.
   it.effect("rejects metadata service hostnames without resolving them", () =>
@@ -553,6 +618,24 @@ describe("hosted outbound HTTP client", () => {
     }),
   );
 
+  // A resolver returns whatever string the platform gives it, uncompressed
+  // forms included, and nothing normalizes it on the way in — unlike a URL
+  // literal, which the WHATWG parser always compresses. So this is the only
+  // path that reaches the eight-group branch of parseIpv6; a URL can never
+  // exercise it.
+  it.effect("classifies an uncompressed IPv6 address returned by the resolver", () =>
+    Effect.gen(function* () {
+      const error = yield* validateHostedOutboundUrl("https://api.example/openapi.json", {
+        resolveHostname: async () => [{ address: "0:0:0:0:0:0:0:1" }],
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "HostedOutboundRequestBlocked",
+        reason: "Resolved address is local or private",
+      });
+    }),
+  );
+
   // A hostname may hold several A records, and an attacker only needs one of
   // them to point inside. Every address the name resolves to has to clear the
   // check, not just the first one the resolver happened to order first —
@@ -560,7 +643,7 @@ describe("hosted outbound HTTP client", () => {
   it.effect("rejects a hostname whose records mix a public address with a private one", () =>
     Effect.gen(function* () {
       const error = yield* validateHostedOutboundUrl("https://api.example/openapi.json", {
-        resolveHostname: async () => [{ address: "93.184.216.34" }, { address: "169.254.169.254" }],
+        resolveHostname: async () => [{ address: "93.184.216.34" }, { address: "169.254.1.1" }],
       }).pipe(Effect.flip);
 
       expect(error).toMatchObject({
@@ -579,7 +662,7 @@ describe("hosted outbound HTTP client", () => {
       const error = yield* validateHostedOutboundUrl("https://beef.cafe/x", {
         resolveHostname: async (hostname) => {
           resolved.push(hostname);
-          return [{ address: "169.254.169.254" }];
+          return [{ address: "169.254.1.1" }];
         },
       }).pipe(Effect.flip);
 
@@ -606,7 +689,7 @@ describe("hosted outbound HTTP client", () => {
         Effect.provide(
           makeHostedHttpClientLayer({
             fetch: fakeFetch,
-            resolveHostname: async () => [{ address: "169.254.169.254" }],
+            resolveHostname: async () => [{ address: "169.254.1.1" }],
           }),
         ),
         Effect.result,
@@ -901,10 +984,15 @@ describe("hosted outbound HTTP client", () => {
       maxRedirects: 3,
     });
 
-    const response = await hostedFetch("https://api.example/start");
-
+    // The exhausted budget is a guard decision, so it arrives as one. Handing
+    // back the raw 302 would be indistinguishable from a successful final
+    // response to a caller that asked to follow redirects, and it may then
+    // follow the Location itself with no guard in front of it.
+    await expect(hostedFetch("https://api.example/start")).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "Redirect limit of 3 exceeded",
+    });
     expect(calls).toBe(4);
-    expect(response.status).toBe(302);
   });
 
   it("rejects redirects whose Location header is not a valid URL", async () => {
@@ -1352,6 +1440,16 @@ describe("hosted outbound HTTP client", () => {
     // The demotion exempts GET and HEAD: turning a HEAD probe into a GET makes
     // the caller download a body it deliberately asked not to receive.
     expect(await run(301, "HEAD")).toMatchObject({ method: "HEAD" });
+    // 301/302 demote POST alone, which is where a "any non-GET" reading
+    // diverges from platform fetch and from every caller's expectation: a
+    // rewritten DELETE never deletes and a rewritten PUT never writes, and
+    // both hand back a 200 for a request that was never made. Verified against
+    // Node's own fetch against a real server, which keeps the method here.
+    expect(await run(301, "DELETE")).toMatchObject({ method: "DELETE", hasBody: true });
+    expect(await run(302, "PUT")).toMatchObject({ method: "PUT", hasBody: true });
+    // 303 is the mirror: it demotes any method except GET and HEAD.
+    expect(await run(303, "DELETE")).toMatchObject({ method: "GET", hasBody: false });
+    expect(await run(303, "HEAD")).toMatchObject({ method: "HEAD" });
   });
 
   it("preserves method and headers from a Request input across redirects", async () => {
@@ -1591,7 +1689,7 @@ describe("hosted outbound HTTP client", () => {
       }).pipe(
         Effect.provide(
           makeHostedHttpClientLayer({
-            resolveHostname: async () => [{ address: "169.254.169.254" }],
+            resolveHostname: async () => [{ address: "169.254.1.1" }],
           }).pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(ambient))),
         ),
         Effect.result,

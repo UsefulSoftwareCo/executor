@@ -389,30 +389,56 @@ const validateOutboundUrl = (
       });
     }
 
-    if (!options.allowLocalNetwork && !isAddressLiteral(normalizedHostname)) {
-      // The empty answer is already a failure by the time it arrives here —
-      // the cached lookup raises it, so it takes the zero failure TTL instead
-      // of being retained as a successful "no addresses" for the full window.
-      const addresses = yield* resolve(normalizedHostname).pipe(
-        Effect.catchTag("HostedHostnameResolutionFailed", (error) =>
-          Effect.fail(
-            new HostedOutboundRequestBlocked({
-              url: value,
-              reason: error.empty
-                ? "Hostname did not resolve to an address"
-                : "Hostname could not be resolved",
-            }),
-          ),
-        ),
-      );
+    // The resolved-address check runs whether or not the local network is
+    // allowed, because the metadata block above is only as good as the names it
+    // sees. Gating the whole lookup on `!allowLocalNetwork` left the endpoint
+    // one DNS record away on exactly the hosts that set the flag: a name with
+    // an A record for 169.254.169.254 is not an address literal, so nothing
+    // resolved it and nothing classified it. What the flag changes is the
+    // verdict, not whether the lookup happens — with it set, only the metadata
+    // rule applies to the answers, so a local address stays reachable by name
+    // as intended. The lookup this adds is the cached one, so a repeat name
+    // costs nothing after the first.
+    if (isAddressLiteral(normalizedHostname)) return;
 
-      for (const { address } of addresses) {
-        if (!isAllowedResolvedAddress(address)) {
-          return yield* new HostedOutboundRequestBlocked({
-            url: value,
-            reason: "Resolved address is local or private",
-          });
-        }
+    // The empty answer is already a failure by the time it arrives here —
+    // the cached lookup raises it, so it takes the zero failure TTL instead
+    // of being retained as a successful "no addresses" for the full window.
+    //
+    // A lookup that fails is fatal in the default mode and not in the
+    // permissive one. Blocking on it there would newly reject names this
+    // resolver cannot see but the transport can — a self-host behind a tunnel
+    // that resolves remotely is the case, and it is the deployment the flag
+    // exists for. No address came back, so none of them can be the metadata
+    // endpoint; a name that truly does not resolve fails at the transport a
+    // moment later, with its own error rather than a guard verdict.
+    const addresses = yield* resolve(normalizedHostname).pipe(
+      Effect.catchTag("HostedHostnameResolutionFailed", (error) =>
+        options.allowLocalNetwork
+          ? Effect.succeed([])
+          : Effect.fail(
+              new HostedOutboundRequestBlocked({
+                url: value,
+                reason: error.empty
+                  ? "Hostname did not resolve to an address"
+                  : "Hostname could not be resolved",
+              }),
+            ),
+      ),
+    );
+
+    for (const { address } of addresses) {
+      if (isBlockedMetadataAddress(address.toLowerCase().replace(/^\[|\]$/g, ""))) {
+        return yield* new HostedOutboundRequestBlocked({
+          url: value,
+          reason: "Metadata service addresses are not allowed",
+        });
+      }
+      if (!options.allowLocalNetwork && !isAllowedResolvedAddress(address)) {
+        return yield* new HostedOutboundRequestBlocked({
+          url: value,
+          reason: "Resolved address is local or private",
+        });
       }
     }
   });
@@ -487,8 +513,15 @@ const demoteToGet = (init: RequestInit | undefined): RequestInit => {
   return { ...init, method: "GET", body: undefined, headers };
 };
 
+// The WHATWG rule, which is narrower than "3xx that is not 307/308": 303
+// demotes everything except GET and HEAD, and 301/302 demote POST alone.
+// Demoting on 301/302 for any non-GET rewrote a DELETE or a PUT into a GET —
+// the delete never happened, the write never happened, and the caller got a
+// 200 for a request it did not make. A HEAD meeting a 303 was turned into a
+// GET the same way, downloading a body the caller asked not to receive.
 const redirectDemotesToGet = (status: number, method: string): boolean =>
-  status === 303 || ((status === 301 || status === 302) && method !== "GET" && method !== "HEAD");
+  (status === 303 && method !== "GET" && method !== "HEAD") ||
+  ((status === 301 || status === 302) && method === "POST");
 
 // A stream can only be read once, so a hop that would replay it sends an empty
 // body and still reports success — the caller's upload silently truncated. The
@@ -690,6 +723,17 @@ const guardFetch = (
         }
         currentUrl = next.toString();
         continue;
+      }
+      // A 3xx still here means the budget ran out: the manual and error modes
+      // returned above, so a "follow" caller would otherwise receive the raw
+      // 3xx as if it were the final response and might follow it itself,
+      // unguarded. Every sibling anomaly in this loop is a typed rejection, so
+      // this one is too.
+      if (isRedirect) {
+        return await rejectBlocked(
+          currentUrl,
+          `Redirect limit of ${String(maxRedirects)} exceeded`,
+        );
       }
       return response;
     }
