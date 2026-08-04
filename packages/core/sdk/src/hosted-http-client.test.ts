@@ -246,6 +246,47 @@ describe("hosted outbound HTTP client", () => {
     }),
   );
 
+  // Where the parsers disagree with the platform resolver about what an
+  // address means, the guard reads one destination and the connection dials
+  // another. Both forms below are decoded by the parsers, not rejected by
+  // them, so they reach the classifiers wearing a public-looking leading word
+  // — the exact failure the "cannot classify" test above cannot catch.
+  //
+  // A dotted quad is legal only at the end of the whole address; permitting
+  // one at the end of the head half of a compressed literal puts 0x7f00 in
+  // the leading word, where no prefix or mask matches it. And a leading zero
+  // means octal to inet_aton, so "0177.0.0.1" is 127.0.0.1 to the resolver
+  // and 177.0.0.1 to a decimal-only parser.
+  it.effect("rejects resolved addresses whose syntax the platform reads differently", () =>
+    Effect.gen(function* () {
+      for (const address of [
+        "127.0.0.1::1",
+        "192.168.1.1::",
+        "10.0.0.1::0",
+        "169.254.169.254::1",
+        "0177.0.0.1",
+      ]) {
+        const error = yield* validateHostedOutboundUrl("https://api.example/x", {
+          resolveHostname: async () => [{ address }],
+        }).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "HostedOutboundRequestBlocked",
+          reason: "Resolved address is local or private",
+        });
+      }
+
+      // Guards against over-blocking: the trailing quad is still legal where
+      // it belongs, so tightening the rule must not reject the v4-compatible
+      // and v4-mapped forms of an ordinary public address.
+      for (const address of ["::93.184.216.34", "::ffff:93.184.216.34"]) {
+        yield* validateHostedOutboundUrl("https://api.example/x", {
+          resolveHostname: async () => [{ address }],
+        });
+      }
+    }),
+  );
+
   // node:dns can hand back a link-local address carrying its interface scope.
   // The zone identifier is not part of the address and must not defeat the
   // classification of the address it is attached to.
@@ -343,6 +384,32 @@ describe("hosted outbound HTTP client", () => {
       });
     }),
   );
+
+  // An empty answer is a failure, not a successful "no addresses". Only the
+  // error channel takes the zero failure TTL, so caching it as a success would
+  // stamp the full 60s window on one transient empty answer and blackhole the
+  // hostname for its duration — something the uncached code could never do.
+  it("re-resolves after a resolver returns no addresses", async () => {
+    let attempts = 0;
+    const hostedFetch = makeHostedFetch({
+      fetch: async () => new Response("ok"),
+      resolveHostname: async () => {
+        attempts++;
+        return attempts === 1 ? [] : [{ address: "93.184.216.34" }];
+      },
+    });
+
+    await expect(hostedFetch("https://api.example/x")).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "Hostname did not resolve to an address",
+    });
+
+    // The second request must reach the resolver again rather than replaying
+    // the empty answer out of the cache.
+    const recovered = await hostedFetch("https://api.example/x");
+    expect(recovered.status).toBe(200);
+    expect(attempts).toBe(2);
+  });
 
   it.effect("rejects IPv4-mapped IPv6 URLs for local and private networks", () =>
     Effect.gen(function* () {
@@ -620,12 +687,18 @@ describe("hosted outbound HTTP client", () => {
         await gate.promise;
         return [{ address: "93.184.216.34" }];
       },
+      // A zero TTL is what makes the count mean what this test says it means.
+      // Under the default 60s window a settled entry is reusable, so
+      // `resolutions === 1` is also satisfied by the second request simply
+      // arriving after the first finished and reading the cache — the test
+      // would keep passing while no longer testing in-flight sharing at all.
+      // With no settled entry to find, one resolution can only be a join.
+      dnsCacheTtlMillis: 0,
     });
 
     // The second request is issued only once the first is provably inside the
-    // resolver, so a single resolution can only mean it joined the in-flight
-    // lookup. Firing both at once and counting would also pass if the second
-    // simply arrived after the first settled and hit the TTL cache.
+    // resolver, then given a turn of the event loop to reach the cache before
+    // the gate opens: issuance order alone does not put it there.
     const first = hostedFetch("https://api.example/one");
     await entered.promise;
     const second = hostedFetch("https://api.example/two");
@@ -641,13 +714,11 @@ describe("hosted outbound HTTP client", () => {
   // point: before the shared lookup was detached from the requesting fiber it
   // failed with an untyped "All fibers interrupted without error".
   it("keeps concurrent requests alive when one caller aborts", async () => {
-    let resolutions = 0;
     const gate = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     const hostedFetch = makeHostedFetch({
       fetch: async () => new Response("ok"),
       resolveHostname: async () => {
-        resolutions++;
         entered.resolve();
         await gate.promise;
         return [{ address: "93.184.216.34" }];
@@ -667,8 +738,14 @@ describe("hosted outbound HTTP client", () => {
     // Asserting the shape, not merely that it threw: the regression this test
     // exists to exclude also throws, so a bare toThrow() would accept it.
     await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    // The survivor completing is the assertion. Its 200 does not prove it was
+    // still waiting on the shared lookup — under the default TTL a caller that
+    // arrived after the first resolution settled would read the cache and get
+    // the same 200 — so no resolution count is asserted here. That the lookup
+    // survives an abort at all is what fails without forkDetach: the survivor
+    // rejects with "All fibers interrupted without error". In-flight sharing
+    // itself is pinned by the zero-TTL test above.
     expect((await survivor).status).toBe(200);
-    expect(resolutions).toBe(1);
   });
 
   // The guard's verdict is decided by the failure's cause, not by whether the

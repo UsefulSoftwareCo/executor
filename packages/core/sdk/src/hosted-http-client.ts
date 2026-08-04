@@ -34,12 +34,18 @@ export interface HostedHttpClientOptions {
   readonly dnsResolutionTimeoutMillis?: number;
 }
 
+// Octets are decimal-only and leading zeros are rejected. inet_aton reads a
+// leading zero as octal, so accepting "0177.0.0.1" here would classify it as
+// 177.0.0.1 (public) while the platform resolver dials 127.0.0.1 — the guard
+// and the connection would disagree about the destination. WHATWG normalizes
+// these forms, so the URL path never produces one, but a resolver answer
+// reaches isAllowedResolvedAddress unnormalized.
 const parseIpv4 = (hostname: string): readonly [number, number, number, number] | null => {
   const parts = hostname.split(".");
   if (parts.length !== 4) return null;
   const parsed: number[] = [];
   for (const part of parts) {
-    if (!/^\d+$/.test(part)) return null;
+    if (!/^(?:0|[1-9]\d*)$/.test(part)) return null;
     const value = Number(part);
     if (!Number.isInteger(value) || value < 0 || value > 255) return null;
     parsed.push(value);
@@ -47,13 +53,19 @@ const parseIpv4 = (hostname: string): readonly [number, number, number, number] 
   return parsed as [number, number, number, number];
 };
 
-const parseIpv6Groups = (text: string): number[] | null => {
+// `allowTrailingQuad` is the caller's statement that this segment ends the
+// whole address, not merely that it ends its own half. Deciding it from the
+// segment alone would legalize a quad at the end of the head half of a
+// compressed literal: "127.0.0.1::1" would parse, land 0x7f00 in the leading
+// word where no prefix or mask matches it, and be classified public.
+const parseIpv6Groups = (text: string, allowTrailingQuad: boolean): number[] | null => {
   if (text === "") return [];
   const parts = text.split(":");
   const groups: number[] = [];
   for (const [index, part] of parts.entries()) {
     // A trailing dotted quad is the only place IPv4 syntax is legal.
     if (index === parts.length - 1 && part.includes(".")) {
+      if (!allowTrailingQuad) return null;
       const dotted = parseIpv4(part);
       if (!dotted) return null;
       groups.push((dotted[0] << 8) | dotted[1], (dotted[2] << 8) | dotted[3]);
@@ -78,11 +90,12 @@ const parseIpv6 = (hostname: string): ReadonlyArray<number> | null => {
   const [head, tail, ...extra] = hostname.replace(/%.*$/, "").split("::");
   if (extra.length > 0) return null;
 
-  const high = parseIpv6Groups(head);
+  // The head half ends the address only when there is no "::" after it.
+  const high = parseIpv6Groups(head, tail === undefined);
   if (high === null) return null;
   if (tail === undefined) return high.length === 8 ? high : null;
 
-  const low = parseIpv6Groups(tail);
+  const low = parseIpv6Groups(tail, true);
   if (low === null) return null;
   const elided = 8 - high.length - low.length;
   if (elided < 1) return null;
@@ -193,10 +206,15 @@ const isAllowedResolvedAddress = (address: string): boolean => {
 const isAddressLiteral = (normalized: string): boolean =>
   parseIpv4(normalized) !== null || normalized.includes(":");
 
+// `empty` separates "the resolver answered, with nothing" from "the resolver
+// did not answer". Both fail closed and both must stay out of the success
+// cache, but they are different operator diagnoses, so the block reason keeps
+// them apart rather than collapsing into one message.
 class HostedHostnameResolutionFailed extends Schema.TaggedErrorClass<HostedHostnameResolutionFailed>()(
   "HostedHostnameResolutionFailed",
   {
     hostname: Schema.String,
+    empty: Schema.Boolean,
   },
 ) {}
 
@@ -210,13 +228,24 @@ type GuardResolver = (
   hostname: string,
 ) => Effect.Effect<ReadonlyArray<HostedResolvedAddress>, HostedHostnameResolutionFailed>;
 
+// An empty answer becomes a failure at the resolver boundary, not at the call
+// site, so it reaches every caller the same way: the cached path needs it in
+// the error channel for the zero failure TTL to drop it, and putting it here
+// rather than inside the cache keeps the uncached path — the exported
+// validateHostedOutboundUrl — from having a second copy of the rule.
 const toGuardResolver =
   (resolve: HostedHostnameResolver): GuardResolver =>
   (hostname) =>
     Effect.tryPromise({
       try: (signal) => resolve(hostname, signal),
-      catch: () => new HostedHostnameResolutionFailed({ hostname }),
-    });
+      catch: () => new HostedHostnameResolutionFailed({ hostname, empty: false }),
+    }).pipe(
+      Effect.flatMap((addresses) =>
+        addresses.length === 0
+          ? Effect.fail(new HostedHostnameResolutionFailed({ hostname, empty: true }))
+          : Effect.succeed(addresses),
+      ),
+    );
 
 const DNS_CACHE_TTL_MILLIS = 60_000;
 const DNS_CACHE_CAPACITY = 256;
@@ -261,12 +290,18 @@ const withResolutionCache = (
   // the request instead is a worse outcome than the wait. Callers that will
   // not wait that long abort their own fetch, which the detached lookup
   // survives on behalf of everyone else waiting on it.
+  //
+  // An empty answer is already a failure by the time it reaches the cache —
+  // toGuardResolver raises it — so the zero failure TTL drops it. Were it a
+  // success, one transient empty answer would stamp the full TTL on "no
+  // addresses" and blackhole the hostname for the rest of the window; the
+  // uncached code re-resolved every request and never could.
   const bounded: GuardResolver = (hostname) =>
     Effect.timeoutOrElse(resolve(hostname), {
       duration: Duration.millis(
         options.dnsResolutionTimeoutMillis ?? DNS_RESOLUTION_TIMEOUT_MILLIS,
       ),
-      orElse: () => Effect.fail(new HostedHostnameResolutionFailed({ hostname })),
+      orElse: () => Effect.fail(new HostedHostnameResolutionFailed({ hostname, empty: false })),
     });
   const cache = Effect.runSync(
     Cache.makeWith(bounded, {
@@ -321,23 +356,21 @@ const validateOutboundUrl = (
     }
 
     if (!options.allowLocalNetwork && !isAddressLiteral(normalizedHostname)) {
+      // The empty answer is already a failure by the time it arrives here —
+      // the cached lookup raises it, so it takes the zero failure TTL instead
+      // of being retained as a successful "no addresses" for the full window.
       const addresses = yield* resolve(normalizedHostname).pipe(
-        Effect.catchTag("HostedHostnameResolutionFailed", () =>
+        Effect.catchTag("HostedHostnameResolutionFailed", (error) =>
           Effect.fail(
             new HostedOutboundRequestBlocked({
               url: value,
-              reason: "Hostname could not be resolved",
+              reason: error.empty
+                ? "Hostname did not resolve to an address"
+                : "Hostname could not be resolved",
             }),
           ),
         ),
       );
-
-      if (addresses.length === 0) {
-        return yield* new HostedOutboundRequestBlocked({
-          url: value,
-          reason: "Hostname did not resolve to an address",
-        });
-      }
 
       for (const { address } of addresses) {
         if (!isAllowedResolvedAddress(address)) {
