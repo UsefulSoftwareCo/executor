@@ -1,5 +1,11 @@
 # @executor-js/sdk
 
+## 1.5.39
+
+### Patch Changes
+
+- [#1531](https://github.com/UsefulSoftwareCo/executor/pull/1531) [`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Revert the hosted outbound DNS guard resolution cache and the accompanying outbound guard changes released in 1.5.38. The guard returns to its previous behavior: no resolution cache, the caller's `redirect` mode is not honored, and `makeHostedHttp` is no longer exported — use `makeHostedFetch` and `makeHostedHttpClientLayer` as before.
+
 ## 1.5.38
 
 ### Patch Changes

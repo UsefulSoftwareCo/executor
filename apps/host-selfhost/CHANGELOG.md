@@ -1,5 +1,26 @@
 # @executor-js/host-selfhost
 
+## 0.0.38
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.3
+  - @executor-js/api@1.4.59
+  - @executor-js/execution@1.5.39
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.7
+  - @executor-js/plugin-encrypted-secrets@0.0.38
+  - @executor-js/plugin-graphql@1.5.39
+  - @executor-js/plugin-mcp@1.5.39
+  - @executor-js/plugin-openapi@1.5.39
+  - @executor-js/plugin-provider-service-split@0.0.10
+  - @executor-js/plugin-toolkits@1.5.31
+  - @executor-js/react@1.4.59
+  - @executor-js/runtime-quickjs@1.5.39
+
 ## 0.0.37
 
 ### Patch Changes
