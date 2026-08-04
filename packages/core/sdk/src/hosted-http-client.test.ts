@@ -116,6 +116,13 @@ describe("hosted outbound HTTP client", () => {
         "http://192.168.1.10/mcp",
         "http://198.18.0.1/",
         "http://224.0.0.1/",
+        // The far edge of every range spanning more than one second octet.
+        // Without these, narrowing a range to the single value tested above
+        // leaves the suite green while a live private destination becomes
+        // reachable — the guard would still look covered.
+        "http://100.127.255.255/",
+        "http://172.31.255.255/",
+        "http://198.19.255.255/",
       ]) {
         // The public resolver pins WHICH rule blocked: were these to slip
         // past the pre-resolution check, resolution would succeed with a
@@ -159,6 +166,12 @@ describe("hosted outbound HTTP client", () => {
         "http://[fd00::1]/",
         "http://[ff02::1]/",
         "http://[0:0:0:0:0:0:0:1]/",
+        // Both classifiers match a masked range, so testing only its most
+        // canonical member leaves the mask width free: fc00::/7 tightened to
+        // fd00::/8, or fe80::/10 to the exact word, would unblock the other
+        // half of each range with the suite still green. These pin the width.
+        "http://[fc00::1]/",
+        "http://[febf::1]/",
       ]) {
         const error = yield* validateHostedOutboundUrl(url).pipe(Effect.flip);
         expect(error).toMatchObject({
