@@ -411,6 +411,34 @@ describe("hosted outbound HTTP client", () => {
     expect(attempts).toBe(2);
   });
 
+  // A failed lookup is stale under the zero TTL but still occupies a slot, so
+  // a run of dead hostnames would otherwise push the working ones out and put
+  // the resolver back on the hot path — the stall this cache exists to remove.
+  it("does not let failed lookups evict cached ones", async () => {
+    const resolved: Array<string> = [];
+    const hostedFetch = makeHostedFetch({
+      fetch: async () => new Response("ok"),
+      dnsCacheCapacity: 4,
+      resolveHostname: async (hostname) => {
+        resolved.push(hostname);
+        if (hostname.startsWith("dead")) return [];
+        return [{ address: "93.184.216.34" }];
+      },
+    });
+
+    await hostedFetch("https://live.example/x");
+    expect(resolved).toEqual(["live.example"]);
+
+    for (let index = 0; index < 20; index++) {
+      await expect(hostedFetch(`https://dead${index}.example/x`)).rejects.toMatchObject({
+        _tag: "HostedOutboundRequestBlocked",
+      });
+    }
+
+    await hostedFetch("https://live.example/x");
+    expect(resolved.filter((hostname) => hostname === "live.example")).toHaveLength(1);
+  });
+
   it.effect("rejects IPv4-mapped IPv6 URLs for local and private networks", () =>
     Effect.gen(function* () {
       for (const url of [
@@ -997,6 +1025,54 @@ describe("hosted outbound HTTP client", () => {
     expect(seen[1]?.credentials).toBeUndefined();
   });
 
+  // `fetch(request, {method: undefined})` keeps the Request's method — the
+  // undefined member is absent, not an instruction to clear the field. Reading
+  // the Request into an init and spreading over it would invert that, sending
+  // a credential-bearing POST as an unauthenticated GET.
+  it("ignores explicitly undefined init members over a Request input", async () => {
+    const seen: Array<{ method: string; authorization: string | null }> = [];
+    const underlying: typeof globalThis.fetch = async (_input, init) => {
+      seen.push({
+        method: init?.method ?? "GET",
+        authorization: new Headers(init?.headers).get("authorization"),
+      });
+      return new Response("ok", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await hostedFetch(
+      new Request("https://api.example/x", {
+        method: "POST",
+        headers: { authorization: "Bearer token" },
+      }),
+      { method: undefined, headers: undefined },
+    );
+
+    expect(seen).toEqual([{ method: "POST", authorization: "Bearer token" }]);
+  });
+
+  // `integrity` is a check on what comes back, not a secret handed to the
+  // target, so the scrub that drops credentials must not drop it too: the hop
+  // that lands on a different origin is precisely the one whose bytes the
+  // caller has least reason to trust unverified.
+  it("keeps subresource integrity across a cross-origin redirect", async () => {
+    const seen: Array<string | undefined> = [];
+    const underlying: typeof globalThis.fetch = async (input, init) => {
+      seen.push(init?.integrity);
+      return String(input) === "https://api.example/start"
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "https://cdn.example/asset.js" },
+          })
+        : new Response("ok", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await hostedFetch(new Request("https://api.example/start", { integrity: "sha256-abc" }));
+
+    expect(seen).toEqual(["sha256-abc", "sha256-abc"]);
+  });
+
   // Origin is scheme plus host, and the scheme half is the half that matters
   // here: comparing hosts alone would call an https -> http hop to the same
   // name same-origin and replay the credential headers over plaintext.
@@ -1102,7 +1178,7 @@ describe("hosted outbound HTTP client", () => {
       if (url === "https://api.example/start") {
         return new Response(null, { status: 303, headers: { location: "/moved" } });
       }
-      return new Response("ok");
+      return new Response("final-body");
     };
     const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
     const stream = new ReadableStream<Uint8Array>({
@@ -1118,6 +1194,9 @@ describe("hosted outbound HTTP client", () => {
     });
 
     expect(response.status).toBe(200);
+    // The body the last hop produced reaches the caller — the redirect loop
+    // returns that response rather than a synthesized or drained stand-in.
+    expect(await response.text()).toBe("final-body");
     expect(seen[1]).toMatchObject({
       url: "https://api.example/moved",
       method: "GET",
@@ -1211,6 +1290,11 @@ describe("hosted outbound HTTP client", () => {
         new Request(`${baseUrl}/from-request`, { method: "POST", body: "payload" }),
       );
       expect(fromRequest.status).toBe(200);
+      // The adapter's primary contract, and the one a status-only assertion
+      // cannot see: the caller gets the upstream body back unread. Cancelling
+      // or draining it anywhere in the guard would leave the status intact and
+      // hand the caller nothing.
+      expect(await fromRequest.text()).toBe("ok");
 
       const streamed = await hostedFetch(`${baseUrl}/streamed`, {
         method: "PUT",
@@ -1222,6 +1306,7 @@ describe("hosted outbound HTTP client", () => {
         }),
       });
       expect(streamed.status).toBe(200);
+      expect(await streamed.text()).toBe("ok");
 
       expect(received).toEqual([
         { method: "POST", body: "payload" },

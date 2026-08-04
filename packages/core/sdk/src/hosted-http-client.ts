@@ -309,12 +309,22 @@ const withResolutionCache = (
       timeToLive: (exit) => (Exit.isSuccess(exit) ? ttl : Duration.zero),
     }),
   );
+  // A zero TTL makes a failed entry stale, not absent: it still holds a slot
+  // until something evicts it. Failures are the unbounded input here — one
+  // agent walking a list of dead hostnames mints a fresh key per name — so at
+  // capacity they evict the live entries this cache exists to keep, and the
+  // per-request resolver stall comes back for every hostname that still works.
+  // Dropping a failed entry on the way out keeps capacity for answers.
+  const forget = (hostname: string) =>
+    Effect.onExit(Cache.get(cache, hostname), (exit) =>
+      Exit.isSuccess(exit) ? Effect.void : Cache.invalidate(cache, hostname),
+    );
   // The lookup runs on a detached fiber that no caller owns, and each caller
   // only joins it. A cache entry is shared, so running it on the requesting
   // fiber would make one caller's abort interrupt the resolution every other
   // caller is waiting on — they would fail with an untyped interrupt instead
   // of their own answer.
-  return (hostname) => Effect.flatMap(Effect.forkDetach(Cache.get(cache, hostname)), Fiber.join);
+  return (hostname) => Effect.flatMap(Effect.forkDetach(forget(hostname)), Fiber.join);
 };
 
 const validateOutboundUrl = (
@@ -418,12 +428,19 @@ const retainSafeRedirectHeaders = (init: RequestInit | undefined): RequestInit =
   // asked for `referrerPolicy: "unsafe-url"` — so an OAuth callback whose
   // query holds a token would hand that token to the redirect target. Only
   // the transport-shaped fields survive.
+  //
+  // `integrity` is kept because it is a check on the response, not a secret
+  // sent to the target, and the cross-origin hop is exactly where it earns its
+  // keep: dropping it would leave the caller believing the bytes were verified
+  // while whatever the redirect target served went unchecked. Platform fetch
+  // carries it across redirects for the same reason.
   return {
     headers: kept,
     body: undefined,
     method: init?.method ?? "GET",
     signal: init?.signal,
     cache: init?.cache,
+    integrity: init?.integrity,
     keepalive: init?.keepalive,
     mode: init?.mode,
     redirect: init?.redirect,
@@ -472,6 +489,16 @@ const withStreamingDuplex = (init: RequestInit | undefined): RequestInit => ({
   duplex: isStreamedBody(init) ? "half" : undefined,
 });
 
+// `fetch(request, init)` treats a member the caller left undefined as absent,
+// so the Request's own value stands. A plain spread does not: an explicit
+// `{ method: undefined }` would overwrite the Request's POST with undefined,
+// which the transport then reads as GET, and `{ headers: undefined }` would
+// erase the Authorization header — a credential-bearing call would go out as a
+// bare unauthenticated GET. Dropping the undefined members restores the
+// platform's own merge.
+const definedMembers = (init: RequestInit | undefined): RequestInit =>
+  Object.fromEntries(Object.entries(init ?? {}).filter(([, value]) => value !== undefined));
+
 // A Request input is read into url + init up front so redirect hops keep the
 // request shape instead of silently degrading to a bare GET.
 const normalizeFetchInput = (
@@ -492,7 +519,7 @@ const normalizeFetchInput = (
     mode: input.mode,
     referrer: input.referrer,
     referrerPolicy: input.referrerPolicy,
-    ...init,
+    ...definedMembers(init),
   };
   if (input.body !== null && normalized.body === undefined) {
     normalized.body = input.body;
