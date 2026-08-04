@@ -1,5 +1,28 @@
 # @executor-js/host-selfhost
 
+## 0.0.37
+
+### Patch Changes
+
+- [#1525](https://github.com/UsefulSoftwareCo/executor/pull/1525) [`c757e13`](https://github.com/UsefulSoftwareCo/executor/commit/c757e13fa5de3a0e49865f2198ee84788452c175) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Export self-host traces to an OpenTelemetry collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so a slow request can be read as a waterfall rather than a wall-clock number. Off by default; logs are a separate opt-in via `EXECUTOR_OTEL_EXPORT_LOGS`.
+
+- Updated dependencies [[`df01d91`](https://github.com/UsefulSoftwareCo/executor/commit/df01d9197e7b4fca9bd0adaca0705a80435e188c), [`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4), [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8)]:
+  - @executor-js/plugin-openapi@1.5.38
+  - @executor-js/sdk@1.5.38
+  - @executor-js/react@1.4.58
+  - @executor-js/plugin-provider-service-split@0.0.9
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.2
+  - @executor-js/api@1.4.58
+  - @executor-js/execution@1.5.38
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.6
+  - @executor-js/plugin-encrypted-secrets@0.0.37
+  - @executor-js/plugin-graphql@1.5.38
+  - @executor-js/plugin-mcp@1.5.38
+  - @executor-js/plugin-toolkits@1.5.30
+  - @executor-js/runtime-quickjs@1.5.38
+
 ## 0.0.36
 
 ### Patch Changes

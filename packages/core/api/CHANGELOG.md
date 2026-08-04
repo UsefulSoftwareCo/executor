@@ -1,5 +1,14 @@
 # @executor-js/api
 
+## 1.4.58
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/execution@1.5.38
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.57
 
 ### Patch Changes

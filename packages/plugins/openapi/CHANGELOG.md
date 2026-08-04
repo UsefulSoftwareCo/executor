@@ -1,5 +1,17 @@
 # @executor-js/plugin-openapi
 
+## 1.5.38
+
+### Patch Changes
+
+- [#1428](https://github.com/UsefulSoftwareCo/executor/pull/1428) [`df01d91`](https://github.com/UsefulSoftwareCo/executor/commit/df01d9197e7b4fca9bd0adaca0705a80435e188c) Thanks [@saga-agent](https://github.com/saga-agent)! - Use the versioned Google Photos raw upload endpoint so generated upload tools send media to `/v1/uploads` instead of the invalid `/uploads` path.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4), [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/react@1.4.58
+  - @executor-js/api@1.4.58
+  - @executor-js/config@1.5.38
+
 ## 1.5.37
 
 ### Patch Changes

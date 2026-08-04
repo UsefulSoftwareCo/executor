@@ -1,5 +1,29 @@
 # executor
 
+## 1.5.38
+
+### Patch Changes
+
+- [#1417](https://github.com/UsefulSoftwareCo/executor/pull/1417) [`046d67d`](https://github.com/UsefulSoftwareCo/executor/commit/046d67d75c3a8bc4cf0ab9dc4e723bc26ff130a3) Thanks [@morluto](https://github.com/morluto)! - Show policy and OAuth app removal failures in the UI, and keep success-only state unchanged when those writes fail.
+
+- [#1511](https://github.com/UsefulSoftwareCo/executor/pull/1511) [`7eb795d`](https://github.com/UsefulSoftwareCo/executor/commit/7eb795dda19c6177ad3bd590005eca1e326f760c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: `execute` scripts that both `emit()` output and `return` a value no longer lose the returned value in MCP clients that ignore `structuredContent` — the return value is now appended to the tool-result content after the emitted items**
+
+- [#1418](https://github.com/UsefulSoftwareCo/executor/pull/1418) [`d3610e3`](https://github.com/UsefulSoftwareCo/executor/commit/d3610e386324891ccfde111e1ff519ec9218d30f) Thanks [@morluto](https://github.com/morluto)! - Return an execution error when a Deno subprocess closes stdin instead of emitting an unhandled write failure.
+
+- [#1507](https://github.com/UsefulSoftwareCo/executor/pull/1507) [`541549a`](https://github.com/UsefulSoftwareCo/executor/commit/541549a5dd8806f45b1a01ea6f4fa18ac41f53b1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: OAuth refresh rejections with non-spec error bodies (e.g. Datadog) now surface as expired connections with a reconnect path, and definitively dead refresh tokens are no longer retried against the authorization server**
+
+- [#1517](https://github.com/UsefulSoftwareCo/executor/pull/1517) [`59a6640`](https://github.com/UsefulSoftwareCo/executor/commit/59a6640e575c740d22e7804cdb67cd76efe8332b) Thanks [@kitze](https://github.com/kitze)! - **Fix: OpenAPI query parameters that use form-style exploded objects now serialize each object field as a query parameter.**
+
+- [#1416](https://github.com/UsefulSoftwareCo/executor/pull/1416) [`f1b617c`](https://github.com/UsefulSoftwareCo/executor/commit/f1b617ce82475d4fe35be7a98c6bf9f468dbbd60) Thanks [@morluto](https://github.com/morluto)! - Prevent provider service migration row loss caused by generated ID conflicts.
+
+- [#1420](https://github.com/UsefulSoftwareCo/executor/pull/1420) [`8c71744`](https://github.com/UsefulSoftwareCo/executor/commit/8c7174452fe05f32815950ed06f38516883a7c8f) Thanks [@morluto](https://github.com/morluto)! - Abort GraphQL tool calls that exceed the configured invocation timeout instead of waiting indefinitely for an upstream response.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.58
+  - @executor-js/runtime-quickjs@1.5.38
+
 ## 1.5.37
 
 ### Patch Changes
