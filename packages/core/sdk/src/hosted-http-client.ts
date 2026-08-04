@@ -517,6 +517,7 @@ const normalizeFetchInput = (
     integrity: input.integrity,
     keepalive: input.keepalive,
     mode: input.mode,
+    redirect: input.redirect,
     referrer: input.referrer,
     referrerPolicy: input.referrerPolicy,
     ...definedMembers(init),
@@ -541,14 +542,30 @@ const rejectAsAbort = (signal: AbortSignal): never => {
   throw error;
 };
 
-const guardFetch = (
-  underlying: typeof globalThis.fetch,
-  options: HostedHttpClientOptions,
-): typeof globalThis.fetch => {
-  const resolve = withResolutionCache(
+// One place the guard's verdict becomes a rejected Promise. Each call site had
+// its own `Effect.runPromise(Effect.fail(...))`, which is a fresh fiber per
+// verdict carrying no context and no signal — six runtime entries for what is
+// one decision repeated. The adapter must return `Promise<Response>`, so the
+// rejection itself is the contract; this keeps the tagged error the single
+// currency and the entry in one reviewable spot.
+const rejectBlocked = (url: string, reason: string): Promise<never> =>
+  Effect.runPromise(Effect.fail(new HostedOutboundRequestBlocked({ url, reason })));
+
+// The cached resolver for one composition. Built here rather than inside
+// guardFetch so several adapters over the same options can share a single
+// cache instead of one each.
+const makeSharedResolver = (options: HostedHttpClientOptions): GuardResolver =>
+  withResolutionCache(
     toGuardResolver(options.resolveHostname ?? resolveHostnameWithNodeDns),
     options,
   );
+
+const guardFetch = (
+  underlying: typeof globalThis.fetch,
+  options: HostedHttpClientOptions,
+  sharedResolve?: GuardResolver,
+): typeof globalThis.fetch => {
+  const resolve = sharedResolve ?? makeSharedResolver(options);
   const maxRedirects = Math.max(0, options.maxRedirects ?? 10);
   // SAFETY: narrowed to the one thing a closure cannot express — Bun's fetch
   // type carries a static `preconnect` property, which packages built against
@@ -559,6 +576,8 @@ const guardFetch = (
     let currentUrl = normalized.url;
     let currentInit = normalized.init;
     const signal = currentInit?.signal ?? undefined;
+    // Read once, before the loop rewrites `currentInit` on each hop.
+    const redirectMode = currentInit?.redirect ?? "follow";
     for (let redirects = 0; ; redirects++) {
       const guarded = await Effect.runPromiseExit(
         validateOutboundUrl(currentUrl, options, resolve),
@@ -575,12 +594,23 @@ const guardFetch = (
         return await Effect.runPromise(Effect.failCause(guarded.cause));
       }
       const response = await underlying(currentUrl, withStreamingDuplex(currentInit));
-      if (
-        response.status >= 300 &&
-        response.status < 400 &&
-        response.headers.has("location") &&
-        redirects < maxRedirects
-      ) {
+      const isRedirect =
+        response.status >= 300 && response.status < 400 && response.headers.has("location");
+      // The guard pins the transport to `redirect: "manual"` so it sees every
+      // hop, which is a separate question from what the caller asked for.
+      // Following anyway would answer a caller who asked to inspect a 3xx with
+      // the followed response and no Location header — the OAuth authorize
+      // probe reads exactly that header — and would turn a requested rejection
+      // into a 200. Neither mode is a security concession: not following is
+      // strictly safer than following, so the caller's intent stands.
+      if (isRedirect && redirectMode === "error") {
+        return await rejectBlocked(
+          currentUrl,
+          "Redirect received while the caller requested redirect: error",
+        );
+      }
+      if (isRedirect && redirectMode === "manual") return response;
+      if (isRedirect && redirects < maxRedirects) {
         // The 3xx is abandoned here. Undici keeps a connection out of the
         // pool until an unread body is consumed or cancelled, so a
         // redirect-heavy integration would leak one connection per hop. A
@@ -599,16 +629,11 @@ const guardFetch = (
         const location = response.headers.get("location")!;
         // A malformed Location header is a rejected redirect target, not a
         // client defect, so it surfaces as the tagged guard error.
-        const next = await Effect.runPromise(
-          Effect.try({
-            try: () => new URL(location, currentUrl),
-            catch: () =>
-              new HostedOutboundRequestBlocked({
-                url: location,
-                reason: "Redirect target is not a valid URL",
-              }),
-          }),
-        );
+        const parsed = URL.parse(location, currentUrl);
+        if (parsed === null) {
+          return await rejectBlocked(location, "Redirect target is not a valid URL");
+        }
+        const next = parsed;
         if (redirectDemotesToGet(response.status, currentInit?.method ?? "GET")) {
           currentInit = demoteToGet(currentInit);
         }
@@ -617,13 +642,9 @@ const guardFetch = (
         // first hop drained it — and sending the drained object would deliver
         // an empty body under a 200, so the hop is refused instead.
         if (isStreamedBody(currentInit)) {
-          return await Effect.runPromise(
-            Effect.fail(
-              new HostedOutboundRequestBlocked({
-                url: next.toString(),
-                reason: "Redirect cannot replay a streamed request body",
-              }),
-            ),
+          return await rejectBlocked(
+            next.toString(),
+            "Redirect cannot replay a streamed request body",
           );
         }
         // Cross-origin redirects are followed (the loop re-validates every
@@ -636,13 +657,9 @@ const guardFetch = (
           // would misattribute the cause. The hop is refused instead, so the
           // caller sees the guard decision rather than an upstream symptom.
           if (currentInit?.body !== undefined && currentInit?.body !== null) {
-            return await Effect.runPromise(
-              Effect.fail(
-                new HostedOutboundRequestBlocked({
-                  url: next.toString(),
-                  reason: "Cross-origin redirect cannot replay a request body",
-                }),
-              ),
+            return await rejectBlocked(
+              next.toString(),
+              "Cross-origin redirect cannot replay a request body",
             );
           }
           currentInit = retainSafeRedirectHeaders(currentInit);
@@ -659,18 +676,48 @@ export const makeHostedFetch = (options: HostedHttpClientOptions = {}): typeof g
   // oxlint-disable-next-line executor/no-raw-fetch -- boundary: exposes a guarded Fetch API adapter for libraries that require fetch
   guardFetch(options.fetch ?? globalThis.fetch, options);
 
-export const makeHostedHttpClientLayer = (
+/**
+ * The guarded fetch and the guarded HttpClient layer over ONE resolution
+ * cache.
+ *
+ * Calling `makeHostedFetch` and `makeHostedHttpClientLayer` separately builds
+ * a cache each, so a composition that needs both — every host does, since
+ * plugins take the raw fetch and the SDK takes the layer — resolves each
+ * hostname twice and runs two TTL windows that drift apart. That halves the
+ * benefit the cache exists for, on the path where it matters most. Prefer this
+ * over constructing the two independently.
+ */
+export const makeHostedHttp = (
   options: HostedHttpClientOptions = {},
+): {
+  readonly fetch: typeof globalThis.fetch;
+  readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient>;
+} => {
+  const resolve = makeSharedResolver(options);
+  return {
+    // oxlint-disable-next-line executor/no-raw-fetch -- boundary: exposes a guarded Fetch API adapter for libraries that require fetch
+    fetch: guardFetch(options.fetch ?? globalThis.fetch, options, resolve),
+    httpClientLayer: hostedHttpClientLayer(options, resolve),
+  };
+};
+
+const hostedHttpClientLayer = (
+  options: HostedHttpClientOptions,
+  resolve?: GuardResolver,
 ): Layer.Layer<HttpClient.HttpClient> =>
   FetchHttpClient.layer.pipe(
     Layer.provide(
       options.fetch
-        ? Layer.succeed(FetchHttpClient.Fetch)(guardFetch(options.fetch, options))
+        ? Layer.succeed(FetchHttpClient.Fetch)(guardFetch(options.fetch, options, resolve))
         : Layer.effect(
             FetchHttpClient.Fetch,
             Effect.map(Effect.service(FetchHttpClient.Fetch), (underlying) =>
-              guardFetch(underlying, options),
+              guardFetch(underlying, options, resolve),
             ),
           ),
     ),
   );
+
+export const makeHostedHttpClientLayer = (
+  options: HostedHttpClientOptions = {},
+): Layer.Layer<HttpClient.HttpClient> => hostedHttpClientLayer(options);

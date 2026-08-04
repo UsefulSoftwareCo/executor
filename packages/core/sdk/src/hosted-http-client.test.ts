@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import {
   type HostedHostnameResolver,
   makeHostedFetch,
+  makeHostedHttp,
   makeHostedHttpClientLayer,
   validateHostedOutboundUrl,
 } from "./hosted-http-client";
@@ -423,6 +424,32 @@ describe("hosted outbound HTTP client", () => {
     expect(recovered.status).toBe(200);
     expect(attempts).toBe(2);
   });
+
+  // Every host needs both adapters — plugins take the raw fetch, the SDK takes
+  // the layer — so building them separately would resolve each hostname twice
+  // per session and run two TTL windows side by side.
+  it.effect("shares one resolution cache between the fetch and the client layer", () =>
+    Effect.gen(function* () {
+      let resolutions = 0;
+      const fakeFetch: typeof globalThis.fetch = async () => new Response("ok", { status: 200 });
+      const hosted = makeHostedHttp({
+        fetch: fakeFetch,
+        resolveHostname: async () => {
+          resolutions++;
+          return [{ address: "93.184.216.34" }];
+        },
+      });
+
+      yield* Effect.promise(() => hosted.fetch("https://api.example/one"));
+      yield* Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient;
+        return yield* client.execute(HttpClientRequest.get("https://api.example/two"));
+      }).pipe(Effect.provide(hosted.httpClientLayer));
+
+      // The layer's request reuses what the fetch already resolved.
+      expect(resolutions).toBe(1);
+    }),
+  );
 
   // A failed lookup is stale under the zero TTL but still occupies a slot, so
   // a run of dead hostnames would otherwise push the working ones out and put
@@ -1036,6 +1063,58 @@ describe("hosted outbound HTTP client", () => {
     expect(seen[1]?.referrer).toBeUndefined();
     expect(seen[1]?.referrerPolicy).toBeUndefined();
     expect(seen[1]?.credentials).toBeUndefined();
+  });
+
+  // The guard pins the transport to `redirect: "manual"` for its own reasons,
+  // which must not be mistaken for the caller's intent. A caller inspecting a
+  // 3xx — the standard OAuth authorize probe — needs the unfollowed response
+  // with its Location header intact.
+  it("returns the unfollowed 3xx when the caller asks for manual redirects", async () => {
+    const seen: Array<string> = [];
+    const underlying: typeof globalThis.fetch = async (input) => {
+      seen.push(String(input));
+      return String(input) === "https://api.example/start"
+        ? new Response(null, { status: 302, headers: { location: "https://api.example/moved" } })
+        : new Response("followed", { status: 200 });
+    };
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    const response = await hostedFetch("https://api.example/start", { redirect: "manual" });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://api.example/moved");
+    // The hop was never taken, so the guard never saw the second URL.
+    expect(seen).toEqual(["https://api.example/start"]);
+  });
+
+  it("rejects a redirect when the caller asks for redirect: error", async () => {
+    const underlying: typeof globalThis.fetch = async (input) =>
+      String(input) === "https://api.example/start"
+        ? new Response(null, { status: 302, headers: { location: "https://api.example/moved" } })
+        : new Response("followed", { status: 200 });
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    await expect(
+      hostedFetch("https://api.example/start", { redirect: "error" }),
+    ).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "Redirect received while the caller requested redirect: error",
+    });
+  });
+
+  // The mode travels on a Request the same way it travels on an init.
+  it("honors a Request input's redirect mode", async () => {
+    const underlying: typeof globalThis.fetch = async (input) =>
+      String(input) === "https://api.example/start"
+        ? new Response(null, { status: 302, headers: { location: "https://api.example/moved" } })
+        : new Response("followed", { status: 200 });
+    const hostedFetch = makeHostedFetch({ fetch: underlying, resolveHostname: publicResolver });
+
+    const response = await hostedFetch(
+      new Request("https://api.example/start", { redirect: "manual" }),
+    );
+
+    expect(response.status).toBe(302);
   });
 
   // `fetch(request, {method: undefined})` keeps the Request's method — the

@@ -32,6 +32,7 @@
 export {
   HostedOutboundRequestBlocked,
   makeHostedFetch,
+  makeHostedHttp,
   makeHostedHttpClientLayer,
   type HostedHttpClientOptions,
 } from "./hosted-http-client";
