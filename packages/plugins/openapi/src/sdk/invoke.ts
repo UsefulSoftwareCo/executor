@@ -1,6 +1,6 @@
 import { Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import type { ToolFileValue } from "@executor-js/sdk/core";
+import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
 import { isNdjsonMediaType, NDJSON_MEDIA_TYPES, resolveServerUrl } from "./openapi-utils";
@@ -588,6 +588,21 @@ const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   return copy;
 };
 
+const formPartFromToolFile = (
+  file: ToolFileValue,
+  contentTypeOverride?: string,
+): Blob | File | null => {
+  const bytes = base64ToUint8Array(file.data);
+  if (!bytes) return null;
+
+  const type = contentTypeOverride ?? file.mimeType;
+  const body = toArrayBuffer(bytes);
+  if (typeof File !== "undefined") {
+    return new File([body], file.name ?? "file", { type });
+  }
+  return new Blob([body], { type });
+};
+
 // ---------------------------------------------------------------------------
 // OpenAPI 3.x encoding — per-property style/explode/allowReserved/contentType
 // for multipart/form-data and application/x-www-form-urlencoded bodies.
@@ -709,6 +724,12 @@ const coerceFormDataRecord = (
       ? Option.getOrUndefined(encoding[key]!.contentType)
       : undefined;
 
+    if (isToolFile(raw)) {
+      const filePart = formPartFromToolFile(raw, partType);
+      out[key] = (filePart ?? JSON.stringify(raw)) as FormDataCoercible;
+      continue;
+    }
+
     // Explicit per-part content type: wrap in a typed Blob so the framer
     // emits `Content-Type: <partType>` on this part. JSON types get the
     // value JSON-stringified first so the blob body is valid JSON.
@@ -738,13 +759,15 @@ const coerceFormDataRecord = (
     }
     if (Array.isArray(raw)) {
       out[key] = raw.map((v) =>
-        typeof v === "string" ||
-        typeof v === "number" ||
-        typeof v === "boolean" ||
-        v instanceof Blob ||
-        (typeof File !== "undefined" && v instanceof File)
-          ? (v as FormDataCoercible)
-          : JSON.stringify(v),
+        isToolFile(v)
+          ? (formPartFromToolFile(v, partType) ?? JSON.stringify(v))
+          : typeof v === "string" ||
+              typeof v === "number" ||
+              typeof v === "boolean" ||
+              v instanceof Blob ||
+              (typeof File !== "undefined" && v instanceof File)
+            ? (v as FormDataCoercible)
+            : JSON.stringify(v),
       ) as FormDataCoercible;
       continue;
     }

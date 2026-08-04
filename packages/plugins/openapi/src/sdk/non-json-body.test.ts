@@ -185,6 +185,82 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
+  it.effect("multipart/form-data: binary file fields use ToolFile and real file parts", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "upload",
+        path: "/upload",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent(
+          "/upload",
+          "post",
+          {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  document: {
+                    type: "string",
+                    format: "binary",
+                    description: "PDF document to upload.",
+                  },
+                  title: { type: "string" },
+                },
+                required: ["document"],
+              },
+            },
+          },
+          { document: { contentType: "application/pdf" } },
+        ),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "paperless" });
+
+      const schema = yield* executor.tools.schema(conn.address("body.upload"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: {
+          body: {
+            properties: {
+              document: {
+                properties: {
+                  _tag: { enum: ["ToolFile"] },
+                  data: { contentEncoding: "base64" },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const pdfBytes = Buffer.from("%PDF-1.4\nexecutor upload test\n");
+      yield* executor.execute(conn.address("body.upload"), {
+        body: {
+          document: {
+            _tag: "ToolFile",
+            name: "invoice.pdf",
+            mimeType: "application/pdf",
+            encoding: "base64",
+            data: pdfBytes.toString("base64"),
+            byteLength: pdfBytes.byteLength,
+          },
+          title: "Invoice",
+        },
+      });
+
+      expect(captured.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      const body = captured.body.toString("utf8");
+      expect(body).toContain('name="document"; filename="invoice.pdf"');
+      expect(body).toMatch(
+        /name="document"; filename="invoice\.pdf"[\s\S]*?Content-Type: application\/pdf/,
+      );
+      expect(body).toContain("%PDF-1.4");
+      expect(body).toContain('name="title"');
+      expect(body).toContain("Invoice");
+      expect(body).not.toContain("[object Object]");
+    }),
+  );
+
   it.effect("application/xml: string body passes through with xml content-type", () =>
     Effect.gen(function* () {
       const { server, captured } = yield* startEchoServer({

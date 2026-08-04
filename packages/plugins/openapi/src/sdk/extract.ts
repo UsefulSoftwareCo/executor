@@ -1,4 +1,5 @@
 import { Effect, Option } from "effect";
+import { ToolFileJsonSchema } from "@executor-js/sdk/core";
 
 import { planToolPaths, type OperationPathInput, type PlannedToolPath } from "./definitions";
 import { OpenApiExtractionError } from "./errors";
@@ -135,7 +136,7 @@ const extractRequestBody = (
   const contents = declaredContents(body.content).map(({ mediaType, media }) =>
     MediaBinding.make({
       contentType: mediaType,
-      schema: Option.fromNullishOr(media.schema),
+      schema: Option.fromNullishOr(multipartFileInputSchema(media.schema, mediaType)),
       encoding: Option.fromNullishOr(
         buildEncodingRecord((media as { encoding?: Record<string, unknown> }).encoding),
       ),
@@ -183,6 +184,39 @@ const isJsonMediaType = (mediaType: string): boolean => {
 
 const binaryStringSchema = (schema: Record<string, unknown>): boolean =>
   stringType(schema) && (schema.format === "binary" || schema.format === "byte");
+
+const isMultipartMediaType = (mediaType: string): boolean =>
+  normalizedMediaType(mediaType) === "multipart/form-data";
+
+const multipartFileInputSchema = (schema: unknown, mediaType: string): unknown => {
+  if (!isMultipartMediaType(mediaType)) return schema;
+
+  const rewrite = (node: unknown): unknown => {
+    if (Array.isArray(node)) {
+      let changed = false;
+      const out = node.map((item) => {
+        const next = rewrite(item);
+        if (next !== item) changed = true;
+        return next;
+      });
+      return changed ? out : node;
+    }
+
+    if (!isRecord(node)) return node;
+    if (binaryStringSchema(node)) return ToolFileJsonSchema;
+
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) {
+      const next = rewrite(value);
+      if (next !== value) changed = true;
+      out[key] = next;
+    }
+    return changed ? out : node;
+  };
+
+  return rewrite(schema);
+};
 
 const base64EncodingFromDescription = (schema: Record<string, unknown>): "base64" | "base64url" =>
   typeof schema.description === "string" &&
