@@ -1644,7 +1644,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
 // ---------------------------------------------------------------------------
 
 describe("MCP host server — elicitation error handling", () => {
-  it("elicitInput failure falls back to cancel", async () => {
+  it("elicitInput failure is not reported as user cancellation", async () => {
     const engine = makeElicitingEngine(
       FormElicitation.make({
         message: "will fail",
@@ -1666,7 +1666,15 @@ describe("MCP host server — elicitation error handling", () => {
         name: "execute",
         arguments: { code: "fail" },
       });
-      expect(result.content).toEqual([{ type: "text", text: "fallback:cancel" }]);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(
+        /^Error: Native elicitation transport failed \[[0-9a-f]{8}\]\. Reconnect the MCP client and try again\.$/,
+      );
+      expect(result.structuredContent).toMatchObject({
+        status: "error",
+        errorCode: "native_elicitation_transport_failed",
+      });
+      expect(textOf(result)).not.toContain("fallback:cancel");
     });
   });
 });

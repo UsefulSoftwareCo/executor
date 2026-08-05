@@ -1021,6 +1021,16 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           (r) => r.path === "/token" && r.method === "POST" && r.body.includes("refresh_token"),
         );
         expect(refreshRequest).toBeDefined();
+
+        yield* server.clearRequests;
+        const repeated = yield* executor.connections.checkHealth({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(repeated.status).toBe("expired");
+        expect(repeated.detail).toContain("Grant not found");
+        expect(yield* server.requests).toHaveLength(0);
       }),
     ),
   );
