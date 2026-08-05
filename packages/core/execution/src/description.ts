@@ -29,7 +29,7 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
       const lines = [
         "Execute TypeScript in a sandboxed runtime.",
         "",
-        'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
+        "Before writing code, fetch the `execute` guide with the companion `skills` MCP tool (name: `execute`). Do not call `skills` inside this sandbox; it is not available here.",
       ];
       const inventory = formatIntegrationInventory(connections);
       if (inventory.length > 0) {

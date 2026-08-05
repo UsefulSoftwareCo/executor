@@ -1796,6 +1796,9 @@ describe("MCP host server — skills tool", () => {
     await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("skills");
+      const skills = tools.find((tool) => tool.name === "skills");
+      expect(skills?.description).toContain("Invoke this companion MCP tool");
+      expect(skills?.description).not.toContain("skills({");
     });
   });
 

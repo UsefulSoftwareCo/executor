@@ -1480,7 +1480,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         {
           description: [
             "Fetch a named how-to skill. Skills hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
-            'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
+            "Invoke this companion MCP tool with name `execute` for the full guide to writing code for the `execute` sandbox (search the catalog, call tools, emit results, resume paused runs).",
             "Call with no name to list the available skills.",
           ].join("\n"),
           inputSchema: {
@@ -1943,7 +1943,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           {
             description: [
               "Render an interactive React UI component as an MCP app, and save it as a reusable artifact.",
-              'Call `skills({ name: "create-artifact" })` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope. Call `skills({ name: "artifact-style" })` for how it must look — artifacts render inside the Executor console and must match its design system.',
+              "Use the companion `skills` MCP tool with name `create-artifact` for the full guide: the discovery-then-render protocol, TanStack Query rules, and every component already in scope. Fetch `artifact-style` the same way for how it must look — artifacts render inside the Executor console and must match its design system.",
               "Write a component named `App` in `code`. Do not import anything and do not paste fetched data into JSX — read it live with `useQuery(tools.<integration>.<tool>.queryOptions(args))`.",
               "Lay it out as an app, not a document: an artifact may be given the whole viewport, so make the root `flex h-full flex-col`, keep headers and filters as ordinary children, and give the one long table or list `flex-1 min-h-0 overflow-auto` — its header then stays put while the rows scroll under it.",
               "Artifact code addresses an INTEGRATION, never a connection: write `tools.vercel.domains.getDomains`, not the full `tools.vercel.user.personalVercel.domains.getDomains` address `execute` uses for discovery. The connection is bound when the artifact is saved, so it stays portable. Code containing a `.user.` or `.org.` segment is rejected.",
