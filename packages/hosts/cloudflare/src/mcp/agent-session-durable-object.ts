@@ -619,11 +619,13 @@ export abstract class McpAgentSessionDOBase<
       : built;
   }
 
-  private closeRuntime(): Effect.Effect<void> {
+  private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       yield* self.releaseAllPendingApprovalLeases();
-      yield* Effect.sync(() => self.closeActiveStreams());
+      if (options.closeStreams ?? true) {
+        yield* Effect.sync(() => self.closeActiveStreams());
+      }
       if (self.server) {
         const server = self.server;
         delete (self as { server?: McpServer }).server;
@@ -658,7 +660,15 @@ export abstract class McpAgentSessionDOBase<
   private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      yield* self.closeRuntime();
+      // PartyServer can rehydrate WebSockets before onStart runs in a
+      // cold-restored isolate. With no in-memory runtime to replace, those
+      // sockets are the live MCP response streams that triggered the restore.
+      const hasInMemoryRuntime =
+        self.initialized ||
+        self.engine !== null ||
+        self.dbHandle !== null ||
+        self.server !== undefined;
+      yield* self.closeRuntime({ closeStreams: hasInMemoryRuntime });
       const started = yield* Effect.exit(Effect.promise(() => self.runMcpAgentOnStart(props)));
       if (Exit.isFailure(started)) {
         yield* self.closeRuntime();

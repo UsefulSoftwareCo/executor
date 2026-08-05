@@ -84,6 +84,7 @@ type HarnessSession = {
   ctx: MemoryStorage;
   dbHandle: { readonly end: () => void } | null;
   engine: ExecutionEngine<Cause.YieldableError> | null;
+  getConnections?: () => Iterable<unknown>;
   getSessionId: () => string;
   initialized: boolean;
   lastActivityMs: number;
@@ -307,6 +308,56 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
 });
 
 describe("McpAgentSessionDOBase transport restore", () => {
+  it("preserves hibernated response streams when a cold isolate starts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.initialized = false;
+    session.engine = null;
+    session.dbHandle = null;
+    delete session.server;
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
+    };
+
+    await session.onStart();
+
+    expect(closeCalls).toBe(0);
+    expect(session.initialized).toBe(true);
+  });
+
+  it("closes response streams when an in-memory runtime restarts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
+    };
+
+    await session.onStart();
+
+    expect(closeCalls).toBe(1);
+    expect(session.initialized).toBe(true);
+  });
+
   it("restores a same-session request after idle disposal leaves a stale server transport", async () => {
     const session = await makeHarnessSession();
 
