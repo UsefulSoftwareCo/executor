@@ -9,6 +9,11 @@ import {
 } from "@executor-js/sdk";
 import { openApiNdjsonOutputDataMigration } from "@executor-js/plugin-openapi";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+import {
+  microsoftOpenApiOwnershipCandidate,
+  microsoftOpenApiOwnershipDataMigration,
+  runSqliteMicrosoftOpenApiOwnershipMigration,
+} from "@executor-js/plugin-openapi/providers/microsoft";
 import { encryptedSecretsRepartitionDataMigration } from "@executor-js/plugin-encrypted-secrets";
 
 import {
@@ -224,6 +229,47 @@ const copyProviderServiceSplitBlobsToR2 = (
       }),
   });
 
+const copyMicrosoftOpenApiOwnershipBlobsToR2 = (
+  client: SqliteDataMigrationClient,
+  bucket: R2Bucket,
+): Effect.Effect<void, DataMigrationError> =>
+  Effect.gen(function* () {
+    const attempt = <A>(run: () => Promise<A>): Effect.Effect<A, DataMigrationError> =>
+      Effect.tryPromise({
+        try: run,
+        catch: (cause) =>
+          new DataMigrationError({
+            migration: microsoftOpenApiOwnershipDataMigration.name,
+            cause,
+          }),
+      });
+    const result = yield* attempt(() =>
+      client.execute(
+        `SELECT tenant, json_extract(config, '$.specHash') AS spec_hash
+         FROM integration
+         WHERE ${microsoftOpenApiOwnershipCandidate()}`,
+      ),
+    );
+    for (const row of result.rows) {
+      if (typeof row.tenant !== "string" || typeof row.spec_hash !== "string") continue;
+      const tenant = row.tenant;
+      const specHash = row.spec_hash;
+      for (const key of [`spec/${specHash}`, `defs/${specHash}`]) {
+        const target = r2ObjectName(tenant, "openapi", key);
+        if ((yield* attempt(() => bucket.head(target))) != null) continue;
+        const source = yield* attempt(() => bucket.get(r2ObjectName(tenant, "microsoft", key)));
+        if (source == null) {
+          return yield* new DataMigrationError({
+            migration: microsoftOpenApiOwnershipDataMigration.name,
+            cause: `Missing Microsoft OpenAPI ownership source object ${key}`,
+          });
+        }
+        const value = yield* attempt(() => source.text());
+        yield* attempt(() => bucket.put(target, value));
+      }
+    }
+  });
+
 const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly SqliteDataMigration[] => [
   {
     name: googleOpenApiOwnershipDataMigration.name,
@@ -250,6 +296,16 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
   // Re-file credential rows the pre-fix provider stored under the acting
   // caller's partition instead of the owner embedded in the item id (#1453).
   encryptedSecretsRepartitionDataMigration,
+  {
+    name: microsoftOpenApiOwnershipDataMigration.name,
+    run: (client) =>
+      Effect.gen(function* () {
+        if (bucket) yield* copyMicrosoftOpenApiOwnershipBlobsToR2(client, bucket);
+        yield* runSqliteMicrosoftOpenApiOwnershipMigration(client, {
+          blobBackend: bucket ? "external" : "database",
+        }).pipe(Effect.asVoid);
+      }),
+  },
 ];
 
 export const runCloudflareDataMigrations = (

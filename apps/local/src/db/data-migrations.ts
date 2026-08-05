@@ -19,6 +19,7 @@ import {
 } from "@executor-js/plugin-openapi";
 import { graphqlIntrospectionBlobDataMigration } from "@executor-js/plugin-graphql";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+import { microsoftOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/microsoft";
 
 import { providerServiceSplitDataMigration } from "@executor-js/plugin-provider-service-split";
 import { authConfigTransforms } from "./auth-config-migration";
@@ -51,4 +52,5 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   // Stale-mark connections whose operations return NDJSON so their tool rows
   // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
   openApiNdjsonOutputDataMigration,
+  microsoftOpenApiOwnershipDataMigration,
 ];

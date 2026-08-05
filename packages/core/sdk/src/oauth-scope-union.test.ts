@@ -222,13 +222,24 @@ describe("oauth.start integration-driven scopes", () => {
       ),
   );
 
-  it.effect("filters stale declared scopes against authorization-server metadata", () =>
+  it.effect("requests declared resource scopes absent from authorization-server metadata", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const server = yield* serveOAuthTestServer({ scopes: ["calendar", "drive"] });
+        // Microsoft publishes OIDC scopes in authorization-server metadata,
+        // while Graph permissions are resource scopes and do not appear there.
+        // A declared integration contract must therefore remain authoritative.
+        const server = yield* serveMetadataServer({
+          authServerScopes: ["openid", "profile", "email", "offline_access"],
+        });
+        const graphScopes = [
+          "offline_access",
+          "User.Read",
+          "Files.Read.All",
+          "Sites.Read.All",
+        ] as const;
         const plugins = [
           memoryCredentialsPlugin(),
-          makeScopePlugin({ scopes: ["calendar", "stale_scope", "drive"] }),
+          makeScopePlugin({ scopes: graphScopes }),
         ] as const;
         const { executor } = yield* makeTestWorkspaceHarness({ plugins });
         yield* executor.acme.seed();
@@ -241,7 +252,6 @@ describe("oauth.start integration-driven scopes", () => {
           grant: "authorization_code",
           clientId: "test-client",
           clientSecret: "test-secret",
-          resource: server.resourceUrl,
         });
 
         const started = yield* executor.oauth.start({
@@ -255,7 +265,7 @@ describe("oauth.start integration-driven scopes", () => {
         expect(started.status).toBe("redirect");
         if (started.status !== "redirect") return;
 
-        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["calendar", "drive"]);
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([...graphScopes]);
       }),
     ),
   );

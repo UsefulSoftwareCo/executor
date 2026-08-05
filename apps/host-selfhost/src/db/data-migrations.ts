@@ -14,6 +14,7 @@ import {
 } from "@executor-js/plugin-openapi";
 import { graphqlIntrospectionBlobDataMigration } from "@executor-js/plugin-graphql";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+import { microsoftOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/microsoft";
 
 import { providerServiceSplitDataMigration } from "@executor-js/plugin-provider-service-split";
 import { encryptedSecretsRepartitionDataMigration } from "@executor-js/plugin-encrypted-secrets";
@@ -41,4 +42,5 @@ export const selfHostDataMigrations: readonly SqliteDataMigration[] = [
   // Re-file credential rows the pre-fix provider stored under the acting
   // caller's partition instead of the owner embedded in the item id (#1453).
   encryptedSecretsRepartitionDataMigration,
+  microsoftOpenApiOwnershipDataMigration,
 ];

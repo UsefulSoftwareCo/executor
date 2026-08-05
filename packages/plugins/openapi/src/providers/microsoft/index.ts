@@ -39,3 +39,9 @@ export {
   type MicrosoftGraphSpecBuild,
 } from "./graph";
 export { microsoftGraphAdapter } from "./spec-format-adapter";
+export {
+  microsoftOpenApiOwnershipCandidate,
+  microsoftOpenApiOwnershipDataMigration,
+  runSqliteMicrosoftOpenApiOwnershipMigration,
+  type MicrosoftOpenApiOwnershipMigrationOptions,
+} from "./openapi-ownership-migration";
