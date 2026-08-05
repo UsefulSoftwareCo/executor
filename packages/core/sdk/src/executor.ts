@@ -783,18 +783,19 @@ const missingOAuthScopesFromProviderState = (value: unknown): readonly string[] 
     : [];
 };
 
-/** Epoch ms of the definitive refresh rejection recorded on `provider_state`,
- *  or null. Set when the AS rejects the grant itself (RFC 6749 invalid_grant —
- *  retrying cannot change the verdict); cleared by the reconnect mint, which
- *  rewrites `provider_state` wholesale. While set, refresh attempts are
- *  skipped: the pre-fix behavior re-sent a known-dead grant to the AS every
- *  proactive cycle, forever, and surfaced nothing to the user. */
-const oauthReauthRequiredAtFromProviderState = (value: unknown): number | null => {
-  const decoded = decodeJsonColumn(value);
-  if (decoded == null || typeof decoded !== "object" || Array.isArray(decoded)) return null;
-  const at = (decoded as Record<string, unknown>).oauthReauthRequiredAt;
-  return typeof at === "number" ? at : null;
-};
+/** The definitive refresh rejection recorded on `provider_state`, or null.
+ *  Set when the AS rejects the grant itself (RFC 6749 invalid_grant — retrying
+ *  cannot change the verdict); cleared by the reconnect mint, which rewrites
+ *  `provider_state` wholesale. While set, refresh attempts are skipped. */
+const decodeOAuthReauthRequiredProviderState = Schema.decodeUnknownOption(
+  Schema.Struct({
+    oauthReauthRequiredAt: Schema.Number,
+    oauthReauthRequiredDetail: Schema.optional(Schema.String),
+  }),
+);
+
+const oauthReauthRequiredFromProviderState = (value: unknown) =>
+  Option.getOrNull(decodeOAuthReauthRequiredProviderState(decodeJsonColumn(value)));
 
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
@@ -1787,7 +1788,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               b("name", "=", String(row.name)),
             ),
           set: {
-            provider_state: { ...mergedState, oauthReauthRequiredAt: Date.now() },
+            provider_state: {
+              ...mergedState,
+              oauthReauthRequiredAt: Date.now(),
+              oauthReauthRequiredDetail: detail,
+            },
             last_health: health,
             updated_at: new Date(),
           },
@@ -1819,11 +1824,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // dead connection re-sent its dead grant on every proactive cycle,
         // indefinitely (owner.com's Datadog connections: 100+ identical
         // rejections over two days, surfacing nothing).
-        if (oauthReauthRequiredAtFromProviderState(row.provider_state) !== null) {
+        const reauthState = oauthReauthRequiredFromProviderState(row.provider_state);
+        if (reauthState !== null) {
           yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.skipped_known_dead": true });
-          return yield* reauth(
-            "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
-          );
+          const recordedHealth = Option.getOrNull(decodeLastHealth(row.last_health));
+          const recordedDetail =
+            reauthState.oauthReauthRequiredDetail ??
+            (recordedHealth?.status === "expired" ? recordedHealth.detail : undefined);
+          const detail =
+            recordedDetail === undefined
+              ? "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue."
+              : recordedDetail.endsWith("Reconnect to continue.")
+                ? recordedDetail
+                : `${recordedDetail} Reconnect to continue.`;
+          return yield* reauth(detail);
         }
 
         // Load the backing app by the owner STORED on the connection (a Personal

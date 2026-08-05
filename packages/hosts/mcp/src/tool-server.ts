@@ -1,4 +1,4 @@
-import { Duration, Effect, Match, Option, Schema } from "effect";
+import { Data, Duration, Effect, Match, Option, Predicate, Result, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
@@ -318,6 +318,12 @@ const capabilitySnapshot = (server: McpServer) => ({
   elicitationSupport: getElicitationSupport(server),
 });
 
+class McpNativeElicitationTransportError extends Data.TaggedError(
+  "McpNativeElicitationTransportError",
+)<{
+  readonly cause: unknown;
+}> {}
+
 type ElicitInputParams =
   | {
       mode?: "form";
@@ -374,6 +380,7 @@ const elicitationRequestToParams: (request: ElicitationRequest) => ElicitInputPa
 const makeMcpElicitationHandler =
   (
     server: McpServer,
+    relatedRequestId: string | number,
     debugLog?: (event: string, data: Record<string, unknown>) => void,
   ): ElicitationHandler =>
   (ctx: ElicitationContext): Effect.Effect<typeof ElicitationResponse.Type> => {
@@ -407,35 +414,39 @@ const makeMcpElicitationHandler =
         clientCapabilities: server.server.getClientCapabilities() ?? null,
       });
 
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK elicitInput is a Promise API; failures become a cancel response
-      try {
-        const response = await server.server.elicitInput(
-          params as Parameters<typeof server.server.elicitInput>[0],
-        );
+      const response = await server.server.elicitInput(
+        params as Parameters<typeof server.server.elicitInput>[0],
+        { relatedRequestId },
+      );
 
-        debugLog?.("elicitation.response", {
-          requestTag,
-          action: response.action,
-          hasContent:
-            typeof response.content === "object" &&
-            response.content !== null &&
-            Object.keys(response.content).length > 0,
-        });
+      debugLog?.("elicitation.response", {
+        requestTag,
+        action: response.action,
+        hasContent:
+          typeof response.content === "object" &&
+          response.content !== null &&
+          Object.keys(response.content).length > 0,
+      });
 
-        return {
-          action: response.action as typeof ElicitationResponse.Type.action,
-          content: response.content,
-        };
-      } catch (err) {
-        const error = formatBoundaryError(err);
-        debugLog?.("elicitation.error", {
-          requestTag,
-          error,
-          clientCapabilities: server.server.getClientCapabilities() ?? null,
-        });
-        return { action: "cancel" as const } as ElicitationResponse;
-      }
-    });
+      return {
+        action: response.action as typeof ElicitationResponse.Type.action,
+        content: response.content,
+      };
+    }).pipe(
+      Effect.tapDefect((defect) =>
+        Effect.sync(() => {
+          debugLog?.("elicitation.error", {
+            requestTag: elicitationRequestTag(ctx.request),
+            error: formatBoundaryError(defect),
+            clientCapabilities: server.server.getClientCapabilities() ?? null,
+          });
+        }),
+      ),
+      Effect.catchDefect((cause) =>
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ElicitationHandler has no error channel, so retain a classified defect for the MCP result boundary.
+        Effect.die(new McpNativeElicitationTransportError({ cause })),
+      ),
+    );
   };
 
 const formatBoundaryError = (err: unknown): { name?: string; message: string; stack?: string } => {
@@ -662,6 +673,10 @@ const formatResumeApprovalRequired = (input: {
 
 const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   const correlationId = newCorrelationId();
+  const defect = Cause.findDefect(cause);
+  const nativeElicitationFailed =
+    Result.isSuccess(defect) &&
+    Predicate.isTagged("McpNativeElicitationTransportError")(defect.success);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort defect logging must tolerate non-serializable causes
   try {
     console.error(
@@ -671,10 +686,16 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   } catch {
     /* ignore logger failures */
   }
-  const text = `Internal tool error [${correlationId}]`;
+  const text = nativeElicitationFailed
+    ? `Native elicitation transport failed [${correlationId}]. Reconnect the MCP client and try again.`
+    : `Internal tool error [${correlationId}]`;
   return {
     content: [{ type: "text", text: `Error: ${text}` }],
-    structuredContent: { status: "error", error: text },
+    structuredContent: {
+      status: "error",
+      error: text,
+      ...(nativeElicitationFailed ? { errorCode: "native_elicitation_transport_failed" } : {}),
+    },
     isError: true,
   };
 };
@@ -1162,6 +1183,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
 
+    const executeWithNativeElicitation = (
+      code: string,
+      extra: McpRequestJoinKeys,
+    ): Effect.Effect<McpToolResult, E> =>
+      engine
+        .execute(code, {
+          onElicitation: makeMcpElicitationHandler(server, extra.requestId, debugLog),
+        })
+        .pipe(Effect.map(toMcpResult));
+
     const executeCode = (
       code: string,
       extra: McpRequestJoinKeys,
@@ -1178,10 +1209,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           codeLength: code.length,
         });
         if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(code, {
-            onElicitation: makeMcpElicitationHandler(server, debugLog),
-          });
-          return toMcpResult(result);
+          return yield* executeWithNativeElicitation(code, extra);
         }
         const outcome = yield* engine.executeWithPause(code);
         debugLog("execute.paused_flow_result", {
@@ -1265,6 +1293,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const executeCodeFromApp = (
       code: string,
       artifactId: string | undefined,
+      extra: McpRequestJoinKeys,
     ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
         const resolution = yield* resolveArtifactAction({ code, artifactId, loadArtifact });
@@ -1297,10 +1326,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const boundCode = resolution.code;
 
         if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(boundCode, {
-            onElicitation: makeMcpElicitationHandler(server, debugLog),
-          });
-          return toMcpResult(result);
+          return yield* executeWithNativeElicitation(boundCode, extra);
         }
         const outcome = yield* engine.executeWithPause(boundCode);
         debugLog("execute_action.paused_flow_result", {
@@ -2128,7 +2154,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["app"] },
             },
           },
-          ({ code, artifactId }) => runToolEffect(executeCodeFromApp(code, artifactId)),
+          ({ code, artifactId }, extra) =>
+            runToolEffect(executeCodeFromApp(code, artifactId, extra)),
         );
 
         executeActionResumeTool = registerAppTool(
