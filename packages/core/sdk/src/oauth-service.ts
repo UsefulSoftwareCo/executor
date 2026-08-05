@@ -17,6 +17,7 @@
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
+import { connectionIdentifier } from "./connection-name-identifier";
 import type { Connection } from "./connection";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
 import { StorageError } from "./fuma-runtime";
@@ -1072,13 +1073,16 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
 
+      // Normalize the name the same way the mint stores it, so the free-name
+      // guard below compares against the exact stored form.
+      const requestedName = connectionIdentifier(String(input.name));
       // newConnection: resolve the requested name to a FREE one against the
       // stored rows (not a client-side, policy-filtered view), so a second
       // untyped connect mints `personalGmail2` instead of silently re-minting
       // the first account's row. Reconnects omit the flag and keep targeting
       // their existing row. Bounded: a pathological owner with 1000 same-named
       // connections fails loudly rather than scanning forever.
-      let name = input.name;
+      let name = requestedName;
       if (input.newConnection === true) {
         let suffix = 2;
         while (
@@ -1093,7 +1097,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               message: `No free connection name derivable from ${input.name}.`,
             });
           }
-          name = ConnectionName.make(`${String(input.name)}${suffix}`);
+          name = ConnectionName.make(`${String(requestedName)}${suffix}`);
           suffix++;
         }
       }

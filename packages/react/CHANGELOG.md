@@ -1,5 +1,23 @@
 # @executor-js/react
 
+## 1.4.59
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/api@1.4.59
+
+## 1.4.58
+
+### Patch Changes
+
+- [#1240](https://github.com/UsefulSoftwareCo/executor/pull/1240) [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8) Thanks [@jackulau](https://github.com/jackulau)! - Keep native `<select>` dropdown options readable in dark mode. The console themes through `prefers-color-scheme` and never sets a `.dark` class, so Tailwind `dark:` utilities never matched and the native option popup rendered with a light color scheme over dark text. `NativeSelect` now uses a solid themed surface (`bg-popover`) and pins `color-scheme` to the active theme, so the browser draws a matching, readable popup.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/api@1.4.58
+
 ## 1.4.57
 
 ### Patch Changes

@@ -49,8 +49,8 @@ describe("buildUserAgent", () => {
     expect(buildUserAgent({ channel: "stable", version: "1.2.3", client: "cli" })).toBe(
       "executor/stable/1.2.3/cli",
     );
-    expect(buildUserAgent({ channel: "beta", version: "1.2.3-beta.0", client: "local" })).toBe(
-      "executor/beta/1.2.3-beta.0/local",
+    expect(buildUserAgent({ channel: "beta", version: "1.2.3-beta.0", client: "desktop" })).toBe(
+      "executor/beta/1.2.3-beta.0/desktop",
     );
   });
 
