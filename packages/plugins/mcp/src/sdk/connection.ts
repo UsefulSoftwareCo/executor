@@ -179,6 +179,7 @@ const fetchFromHttpClientLayer = (
     // the upstream is already gone that rejection is unhandled, which kills
     // the whole Bun server process, not just this call. Browsers never crash
     // on an unobserved fetch rejection; this adapter must match.
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: Fetch-compatible adapter must observe rejections the SDK abandons
     promise.catch(() => undefined);
     if (!init?.signal) return promise;
     // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
