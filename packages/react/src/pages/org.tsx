@@ -14,6 +14,16 @@ import {
   DialogFooter,
   DialogClose,
 } from "../components/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/alert-dialog";
 import { Button } from "../components/button";
 import { PageContainer, PageHeader } from "../components/page";
 import { Badge } from "../components/badge";
@@ -153,6 +163,7 @@ export function OrgPage(props: {
   const refreshMembers = useAtomRefresh(orgMembersAtom);
   const rolesResult = useAtomValue(orgRolesAtom);
   const doRemove = useAtomSet(removeMember, { mode: "promiseExit" });
+  const [removingMember, setRemovingMember] = useState<{ id: string; name: string } | null>(null);
   const doUpdateRole = useAtomSet(updateMemberRole, { mode: "promiseExit" });
   const doUpdateOrgName = useAtomSet(updateOrgName, { mode: "promiseExit" });
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -179,6 +190,7 @@ export function OrgPage(props: {
   const showUpgradeOnInvite = atSeatLimit && !!props.upgradeAction;
 
   const handleRemove = async (membershipId: string, name: string) => {
+    setRemovingMember(null);
     const exit = await doRemove({
       params: { membershipId },
       reactivityKeys: orgMemberWriteKeys,
@@ -406,7 +418,12 @@ export function OrgPage(props: {
                             )}
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive text-sm"
-                              onClick={() => handleRemove(member.id, member.name ?? member.email)}
+                              onClick={() =>
+                                setRemovingMember({
+                                  id: member.id,
+                                  name: member.name ?? member.email,
+                                })
+                              }
                             >
                               Remove member
                             </DropdownMenuItem>
@@ -425,6 +442,38 @@ export function OrgPage(props: {
       </section>
 
       {props.dangerZoneSection}
+
+      <AlertDialog
+        open={removingMember !== null}
+        onOpenChange={(open: boolean) => {
+          if (!open) setRemovingMember(null);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {removingMember ? `Remove ${removingMember.name}?` : "Remove member?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              They lose access to this organization immediately. This cannot be undone; you would
+              need to invite them again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (removingMember !== null) {
+                  void handleRemove(removingMember.id, removingMember.name);
+                }
+              }}
+            >
+              Remove member
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />
       <UpgradeDialog
