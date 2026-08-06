@@ -42,6 +42,16 @@ const revalidateQuery = (
 ): { readonly ifStaleMs?: number } =>
   last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
 
+/** Identity of a persisted verdict, for deciding when to revalidate again.
+ *  Revalidation is once per VERDICT, not once per mount: an OAuth re-mint
+ *  clears `last_health` and a probe from another surface lands a fresher one,
+ *  and both must re-trigger the background probe even though the row never
+ *  remounts (its React key is owner:integration:name, unchanged by a
+ *  reconnect). `null` is a real epoch — the never-checked / just-re-minted
+ *  state — distinct from the "never revalidated" sentinel `undefined`. */
+const verdictEpoch = (last: HealthCheckResult | null | undefined): number | null =>
+  last?.checkedAt ?? null;
+
 /**
  * Imperative invalidation of the connections cache for one owner. The server
  * persists every verdict on `last_health`, so after a check we must re-read the
@@ -81,24 +91,34 @@ export function useConnectionHealth(connection: Connection): {
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
   // older than the freshness window (or never checked), stale-while-revalidate
   // style: the persisted verdict renders instantly, the probe corrects it in
-  // place.
-  const revalidated = useRef(false);
+  // place. The guard is once per VERDICT (not per mount): the ref holds the
+  // epoch this hook last acted on, and only a DIFFERENT epoch re-triggers —
+  // that is how an OAuth reconnect (re-mint clears `last_health`, refetch
+  // delivers a null epoch) gets its recovery probe without a page reload,
+  // while the refetch echoing a probe's own persisted verdict matches the
+  // epoch and stays quiet.
+  // `undefined` = never revalidated (epochs are number | null, so it can
+  // never collide with a real epoch).
+  const revalidatedEpoch = useRef<number | null | undefined>(undefined);
   useEffect(() => {
-    if (revalidated.current) return;
     const last = connection.lastHealth;
+    const epoch = verdictEpoch(last);
+    if (revalidatedEpoch.current === epoch) return;
+    revalidatedEpoch.current = epoch;
     if (healthyAndFresh(last)) return;
-    revalidated.current = true;
     void doCheck({
       params: connectionParams(connection),
       query: revalidateQuery(last),
     }).then((exit) => {
       // Background refresh: update the dot on success, stay quiet on failure
-      // (the persisted verdict is still the best known state). Invalidate the
-      // connections cache ONLY when the verdict actually changed: on the common
-      // no-change reconfirm we skip it, so an automatic probe never churns the
-      // cache (which would refetch connections, re-run this effect, and, but
-      // for the once-per-mount ref guard, risk a probe loop).
+      // (the persisted verdict is still the best known state). Adopt the
+      // result's own epoch so the refetch below finds it already handled.
+      // Invalidate the connections cache ONLY when the verdict actually
+      // changed: on the common no-change reconfirm we skip it, so an automatic
+      // probe never churns the cache (which would refetch connections, re-run
+      // this effect, and, but for the epoch guard, risk a probe loop).
       if (!Exit.isSuccess(exit)) return;
+      revalidatedEpoch.current = exit.value.checkedAt;
       setLiveProbe(exit.value);
       if (exit.value.status !== (last?.status ?? "unknown")) {
         invalidateConnections(connection.owner);
@@ -108,14 +128,17 @@ export function useConnectionHealth(connection: Connection): {
 
   const runCheck = useCallback(async () => {
     // Manual "Check now": invalidate the connections cache unconditionally so
-    // every surface picks up the freshly persisted verdict. Re-running this
-    // effect after the refetch is harmless: the ref guard blocks a re-probe.
+    // every surface picks up the freshly persisted verdict. Adopting the
+    // result's epoch keeps the resulting refetch from re-probing.
     const exit = await doCheck({
       params: connectionParams(connection),
       query: {},
       reactivityKeys: connectionCheckKeys,
     });
-    if (Exit.isSuccess(exit)) setLiveProbe(exit.value);
+    if (Exit.isSuccess(exit)) {
+      revalidatedEpoch.current = exit.value.checkedAt;
+      setLiveProbe(exit.value);
+    }
     return exit;
   }, [connection, doCheck]);
 
@@ -140,25 +163,29 @@ export function useConnectionsHealth(
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
-  // Once per mount PER CONNECTION: the list streams in asynchronously, so the
-  // effect re-runs as rows arrive; the key set keeps each row to one probe.
-  const revalidated = useRef(new Set<string>());
+  // Once per VERDICT per connection (same epoch guard as the single-connection
+  // hook): the list streams in asynchronously, so the effect re-runs as rows
+  // arrive; each row probes once per persisted-verdict epoch, and a re-minted
+  // connection (epoch cleared to null) probes again without a remount.
+  const revalidated = useRef(new Map<string, number | null>());
   useEffect(() => {
     for (const connection of connections) {
       const key = probeKey(connection);
-      if (revalidated.current.has(key)) continue;
       const last = connection.lastHealth;
+      const epoch = verdictEpoch(last);
+      if (revalidated.current.has(key) && revalidated.current.get(key) === epoch) continue;
+      revalidated.current.set(key, epoch);
       if (healthyAndFresh(last)) continue;
-      revalidated.current.add(key);
       void doCheck({
         params: connectionParams(connection),
         query: revalidateQuery(last),
       }).then((exit) => {
         // Same automatic-path rule as the single-connection hook: reflect the
-        // verdict, and invalidate the connections cache only when it changed so
-        // an unchanged reconfirm never churns the cache (the per-key ref guard
-        // already prevents a re-probe on the resulting re-render).
+        // verdict, adopt its epoch so the refetch doesn't re-probe, and
+        // invalidate the connections cache only when the verdict changed so an
+        // unchanged reconfirm never churns the cache.
         if (!Exit.isSuccess(exit)) return;
+        revalidated.current.set(key, exit.value.checkedAt);
         setLiveProbes((current) => new Map(current).set(key, exit.value));
         if (exit.value.status !== (last?.status ?? "unknown")) {
           invalidateConnections(connection.owner);

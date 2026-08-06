@@ -2789,6 +2789,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 input.missingOAuthScopes && input.missingOAuthScopes.length > 0
                   ? { missingOAuthScopes: input.missingOAuthScopes }
                   : null,
+              // A re-mint replaces the grant, so any persisted verdict describes
+              // a credential that no longer exists. Clear it rather than let a
+              // pre-reconnect "expired" outlive the reconnect; the next health
+              // check writes the verdict for the new grant.
+              last_health: null,
               updated_at: now,
             };
             if (existing) {
