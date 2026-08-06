@@ -172,6 +172,14 @@ const fetchFromHttpClientLayer = (
       }
       return response;
     });
+    // Mark the request promise observed (a no-op handler on the ORIGINAL
+    // promise; callers still see the rejection). The MCP SDK fires some
+    // requests without a rejection handler — a cancellation notification
+    // after a request timeout, an SSE dial raced against an abort — and when
+    // the upstream is already gone that rejection is unhandled, which kills
+    // the whole Bun server process, not just this call. Browsers never crash
+    // on an unobserved fetch rejection; this adapter must match.
+    promise.catch(() => undefined);
     if (!init?.signal) return promise;
     // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
     if (init.signal.aborted) return Promise.reject(abortError(init.signal));
