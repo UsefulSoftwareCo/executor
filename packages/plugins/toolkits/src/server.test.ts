@@ -132,6 +132,40 @@ describe("toolkitsPlugin", () => {
     }),
   );
 
+  it.effect("treats a persisted connection-root approve as an access policy", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+      });
+
+      const toolkit = yield* executor.toolkits.create({
+        owner: "org",
+        name: "Core Tools Kit",
+      });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "executor.coreTools.*",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "executor.coreTools.*",
+        action: "approve",
+      });
+
+      const result = yield* executor.toolkits.resolvePolicyForSlug(
+        toolkit.slug,
+        "executor.coreTools.connections.remove",
+        true,
+      );
+      expect(result.action).toBe("approve");
+      expect(result.source).toBe("user");
+
+      const rules = yield* executor.toolkits.policyRulesForSlug(toolkit.slug);
+      expect(
+        rules.map((rule) => `${rule.pattern} ${rule.action}`),
+        "policy listing agrees with toolkit enforcement",
+      ).toContain("executor.coreTools.* approve");
+    }),
+  );
+
   it.effect("applies a broad approve policy over a narrower connection", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
