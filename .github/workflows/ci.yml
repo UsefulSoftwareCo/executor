@@ -199,7 +199,13 @@ jobs:
           - { target: cloud, shard: 2/4, shard-name: 2of4 }
           - { target: cloud, shard: 3/4, shard-name: 3of4 }
           - { target: cloud, shard: 4/4, shard-name: 4of4 }
-          - target: selfhost
+          # Selfhost shards the same way: each shard is its own runner booting
+          # its own fresh instance (own port block + data dir), so the
+          # project's shared-bootstrap-admin assumption stays intact per shard
+          # and `fileParallelism: false` still serializes within a shard.
+          - { target: selfhost, shard: 1/3, shard-name: 1of3 }
+          - { target: selfhost, shard: 2/3, shard-name: 2of3 }
+          - { target: selfhost, shard: 3/3, shard-name: 3of3 }
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
@@ -254,7 +260,7 @@ jobs:
 
       - name: Run selfhost scenarios
         if: matrix.target == 'selfhost'
-        run: bunx vitest run --project selfhost --retry=2
+        run: bunx vitest run --project selfhost --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in

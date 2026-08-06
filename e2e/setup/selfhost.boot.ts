@@ -21,6 +21,9 @@ export interface SelfhostBootOptions {
   /** vite --host (e.g. "0.0.0.0" to be tailnet-reachable). */
   readonly host?: string;
   readonly logFile?: string;
+  /** Shrink the sandbox execution budget (EXECUTOR_SANDBOX_TIMEOUT_MS) so
+   *  deadline scenarios prove their race in seconds. Omit for production. */
+  readonly sandboxTimeoutMs?: number;
 }
 
 export const bootSelfhost = async (options: SelfhostBootOptions): Promise<BootedProcesses> => {
@@ -51,6 +54,9 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
           // instance at them; the hosted SSRF guard would otherwise block
           // outbound probes/dials to localhost. Hermetic test instance only.
           EXECUTOR_ALLOW_LOCAL_NETWORK: "true",
+          ...(options.sandboxTimeoutMs !== undefined
+            ? { EXECUTOR_SANDBOX_TIMEOUT_MS: String(options.sandboxTimeoutMs) }
+            : {}),
         },
         logFile: options.logFile,
       },
