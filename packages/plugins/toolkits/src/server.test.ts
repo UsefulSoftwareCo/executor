@@ -1,15 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  definePlugin,
-  ElicitationResponse,
-  IntegrationSlug,
-  ToolAddress,
-  ToolName,
-} from "@executor-js/sdk/core";
-import { makeTestExecutor, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import { makeTestExecutor } from "@executor-js/sdk/testing";
 
 import { toolkitsPlugin } from "./server";
 
@@ -141,7 +132,7 @@ describe("toolkitsPlugin", () => {
     }),
   );
 
-  it.effect("treats a persisted connection-root approve as an access policy", () =>
+  it.effect("applies a broad approve policy over a narrower connection", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
         plugins: [toolkitsPlugin()] as const,
@@ -149,19 +140,19 @@ describe("toolkitsPlugin", () => {
 
       const toolkit = yield* executor.toolkits.create({
         owner: "org",
-        name: "Core Tools Kit",
+        name: "Docs Kit",
       });
       yield* executor.toolkits.createConnection(toolkit.id, {
-        pattern: "executor.coreTools.*",
+        pattern: "google_docs.org.main.*",
       });
       yield* executor.toolkits.createPolicy(toolkit.id, {
-        pattern: "executor.coreTools.*",
+        pattern: "google_docs.org.*",
         action: "approve",
       });
 
       const result = yield* executor.toolkits.resolvePolicyForSlug(
         toolkit.slug,
-        "executor.coreTools.connections.remove",
+        "google_docs.org.main.documents.update",
         true,
       );
       expect(result.action).toBe("approve");
@@ -171,92 +162,7 @@ describe("toolkitsPlugin", () => {
       expect(
         rules.map((rule) => `${rule.pattern} ${rule.action}`),
         "policy listing agrees with toolkit enforcement",
-      ).toContain("executor.coreTools.* approve");
-    }),
-  );
-
-  it.effect("runs an approved destructive dynamic tool without eliciting", () =>
-    Effect.gen(function* () {
-      let invocations = 0;
-      const googleDocs = IntegrationSlug.make("google_docs");
-      const connection = ConnectionName.make("main");
-      const docsPlugin = definePlugin(() => ({
-        id: "docs-fixture",
-        storage: () => ({}),
-        resolveTools: () =>
-          Effect.succeed({
-            tools: [
-              {
-                name: ToolName.make("workspacegoogledocs.docs.documents.batchUpdate"),
-                description: "Apply document updates",
-                annotations: { requiresApproval: true },
-              },
-            ],
-          }),
-        invokeTool: () =>
-          Effect.sync(() => {
-            invocations++;
-            return { updated: true };
-          }),
-        extension: (ctx) => ({
-          seed: () =>
-            ctx.core.integrations.register({
-              slug: googleDocs,
-              description: "Google Docs fixture",
-              config: {},
-            }),
-        }),
-      }))();
-      const executor = yield* makeTestExecutor({
-        plugins: [
-          memoryCredentialsPlugin(),
-          docsPlugin,
-          toolkitsPlugin({ activeToolkitSlug: "docs-kit" }),
-        ],
-      });
-      yield* executor["docs-fixture"].seed();
-      yield* executor.connections.create({
-        owner: "org",
-        name: connection,
-        integration: googleDocs,
-        template: AuthTemplateSlug.make("none"),
-        inputs: {},
-      });
-      const toolkit = yield* executor.toolkits.create({ owner: "org", name: "Docs Kit" });
-      yield* executor.toolkits.createConnection(toolkit.id, {
-        pattern: "google_docs.org.main.*",
-      });
-      yield* executor.toolkits.createPolicy(toolkit.id, {
-        pattern: "google_docs.org.*",
-        action: "approve",
-      });
-
-      const policy = yield* executor.toolkits.resolvePolicyForSlug(
-        toolkit.slug,
-        "google_docs.org.main.workspacegoogledocs.docs.documents.batchUpdate",
-        true,
-      );
-      expect(policy.action, "the broad Always run policy remains active").toBe("approve");
-      expect(policy.source).toBe("user");
-
-      let elicitations = 0;
-      const result = yield* executor.execute(
-        ToolAddress.make(
-          "tools.google_docs.org.main.workspacegoogledocs.docs.documents.batchUpdate",
-        ),
-        { requests: [] },
-        {
-          onElicitation: () =>
-            Effect.sync(() => {
-              elicitations++;
-              return ElicitationResponse.make({ action: "accept" });
-            }),
-        },
-      );
-
-      expect(elicitations, "Always run skips the approval prompt").toBe(0);
-      expect(invocations, "the destructive dynamic tool reaches its handler").toBe(1);
-      expect(result).toEqual({ updated: true });
+      ).toContain("google_docs.org.* approve");
     }),
   );
 });

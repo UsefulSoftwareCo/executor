@@ -186,8 +186,6 @@ const legacyConnectionPolicyIds = (
       .filter(
         (policy) =>
           isLegacyConnectionPolicy(policy) &&
-          // A persisted connection beneath this root means the row can be an explicit policy,
-          // not the policy-only connection record used by older toolkit data.
           !connections.some((connection) => matchPattern(policy.pattern, connection.pattern)),
       )
       .map((policy) => policy.id),
