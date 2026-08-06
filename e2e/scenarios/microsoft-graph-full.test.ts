@@ -25,18 +25,25 @@ type ToolView = {
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 const MICROSOFT_FILES_PRESET_ID = "files";
+const MICROSOFT_FILES_SPEC_URL = `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`;
 const MICROSOFT_FILES_DELEGATED_SCOPES = [
   "offline_access",
   "User.Read",
   "Files.ReadWrite.All",
   "Sites.ReadWrite.All",
 ] as const;
+const MICROSOFT_FILES_AUTH_TEMPLATE = microsoftCatalog
+  .filter((preset) => preset.id === `microsoft-${MICROSOFT_FILES_PRESET_ID}`)
+  .flatMap((preset) => preset.authTemplate ?? [])
+  .flatMap((template) =>
+    template.kind === "oauth2" ? [{ ...template, scopes: [...template.scopes] }] : [],
+  );
 
-// Adding a catalog service extracts only that service's Microsoft Graph subtree
-// and persists a binding per operation. This is the regression guard for both
-// former worker pressure sites: the add streams compile and persist, and
-// tools/list serves from persisted bindings plus the content-addressed defs blob
-// without re-parsing the Graph spec.
+// The real add-integration flow previews the selected catalog service before it
+// submits the add request. The preview parses the extracted Microsoft Graph
+// spec, then the add must still stream-compile and persist one binding per
+// operation. This guards that sequence as well as tools/list serving from the
+// persisted bindings and content-addressed defs blob without re-parsing Graph.
 scenario(
   "Microsoft Graph: the files catalog service adds and serves without re-parsing the spec",
   { timeout: 300_000 },
@@ -51,18 +58,33 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Add path, first former OOM site: the Graph spec is fetched and
-        // stream-compiled into one persisted binding per selected operation.
+        // Match AddOpenApiIntegration: analyze the URL first, then submit the
+        // preset's explicit auth template and empty base-URL override. Supplying
+        // both keeps addSpec on the streaming persistence path instead of having
+        // it derive defaults by previewing the spec again inside the add call.
+        const preview = yield* client.openapi.previewSpec({
+          payload: {
+            spec: MICROSOFT_FILES_SPEC_URL,
+            specFormat: "microsoft-graph",
+          },
+        });
+        expect(
+          preview.operationCount,
+          "previewing the Microsoft files service parses its focused Graph subtree",
+        ).toBeGreaterThan(10);
+
         const added = yield* client.openapi.addSpec({
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+              url: MICROSOFT_FILES_SPEC_URL,
             },
             slug: integration,
             name: "Microsoft Graph Files",
+            baseUrl: "",
             family: "microsoft",
             specFormat: "microsoft-graph",
+            authenticationTemplate: MICROSOFT_FILES_AUTH_TEMPLATE,
           },
         });
         expect(added.slug, "the Microsoft files integration keeps the requested slug").toBe(
@@ -72,6 +94,10 @@ scenario(
           added.toolCount,
           "adding the files catalog service extracts a focused Graph operation subtree",
         ).toBeGreaterThan(10);
+        expect(
+          preview.operationCount,
+          "preview and streaming persistence apply the same Microsoft workload filter",
+        ).toBe(added.toolCount);
 
         const config = yield* client.openapi.getConfig({ params: { slug: integration } });
         const delegatedScopes = config?.authenticationTemplate?.flatMap((template) =>
