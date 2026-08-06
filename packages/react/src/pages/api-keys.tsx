@@ -233,6 +233,7 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
   // stays mounted for Radix's exit animation (see CreateKeyDialogBody).
   const [openCount, setOpenCount] = useState(0);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<ApiKeySummary | null>(null);
 
   const handleCreate = async (name: string): Promise<CreatedKey | null> => {
     const exit = await doCreate({ payload: { name }, reactivityKeys: apiKeyWriteKeys });
@@ -312,7 +313,11 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
                   </p>
                 </div>
               ) : (
-                <KeyTable keys={value.apiKeys} revokingId={revokingId} onRevoke={handleRevoke} />
+                <KeyTable
+                  keys={value.apiKeys}
+                  revokingId={revokingId}
+                  onRevoke={(key) => setConfirmRevoke(key)}
+                />
               ),
           })
         )}
@@ -331,6 +336,42 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
             onCreate={handleCreate}
             onCopy={(kind) => trackEvent("api_key_copied", { kind })}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* A personal key revoke breaks any script or tool using it, so it asks
+          first — same as the org-key revoke. */}
+      <Dialog
+        open={confirmRevoke !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmRevoke(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">Revoke API key</DialogTitle>
+            <DialogDescription className="text-sm leading-relaxed">
+              {confirmRevoke
+                ? `Revoke ${confirmRevoke.name}? Any script or tool authenticating with it loses access immediately. This cannot be undone.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (confirmRevoke) {
+                  void handleRevoke(confirmRevoke);
+                  setConfirmRevoke(null);
+                }
+              }}
+            >
+              Revoke key
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </PageContainer>
@@ -492,8 +533,7 @@ function OrgApiKeysSectionBody() {
         </DialogContent>
       </Dialog>
 
-      {/* Revoking an org key breaks every backend using it, so it is the one
-          revoke on this page that asks first. */}
+      {/* Revoking an org key breaks every backend using it, so it asks first. */}
       <Dialog
         open={confirmRevoke !== null}
         onOpenChange={(open) => {
