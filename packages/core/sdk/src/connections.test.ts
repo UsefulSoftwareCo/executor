@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Result, Schema } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Result, Schema } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -419,6 +419,74 @@ describe("connections.refresh", () => {
 });
 
 describe("tool catalog sync safety", () => {
+  it.effect("single-flights concurrent refreshes of the same stale connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refreshStarted = yield* Deferred.make<void>();
+        const releaseRefresh = yield* Deferred.make<void>();
+        let resolutions = 0;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          resolveTools: () =>
+            Effect.gen(function* () {
+              resolutions += 1;
+              if (resolutions > 1) {
+                yield* Deferred.succeed(refreshStarted, undefined);
+                yield* Deferred.await(releaseRefresh);
+              }
+              return {
+                tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+
+        const readsFiber = yield* Effect.forkChild(
+          Effect.all(
+            [
+              executor.tools.list({ integration: INTEG }),
+              executor.tools.list({ integration: INTEG }),
+            ],
+            { concurrency: "unbounded" },
+          ),
+        );
+        yield* Deferred.await(refreshStarted);
+        yield* Deferred.succeed(releaseRefresh, undefined);
+        const reads = yield* Fiber.join(readsFiber);
+
+        expect(reads).toHaveLength(2);
+        expect(resolutions).toBe(2);
+      }),
+    ),
+  );
+
   it.effect(
     "background sync preserves a nonzero remote catalog when a plugin returns authoritative empty",
     () =>

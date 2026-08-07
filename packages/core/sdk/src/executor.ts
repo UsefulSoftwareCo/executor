@@ -1,4 +1,4 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import { Deferred, Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -2552,10 +2552,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const syncHealthReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
 
-    const produceConnectionTools = (
+    const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
-      mode: "explicit" | "background" = "explicit",
+      mode: () => "explicit" | "background",
     ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
@@ -2677,7 +2677,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         if (
-          mode === "background" &&
+          mode() === "background" &&
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
@@ -2755,6 +2755,38 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tool.annotations,
           ),
         );
+      });
+
+    type ToolProductionError = IntegrationNotFoundError | StorageFailure;
+    interface ToolProductionInFlight {
+      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      mode: "explicit" | "background";
+    }
+    const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
+    const produceConnectionTools = (
+      integrationRow: IntegrationRow,
+      ref: ConnectionRef,
+      requestedMode: "explicit" | "background" = "explicit",
+    ): Effect.Effect<readonly Tool[], ToolProductionError> =>
+      Effect.suspend(() => {
+        const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
+        const existing = toolProductionInFlight.get(key);
+        if (existing) {
+          if (requestedMode === "explicit") existing.mode = "explicit";
+          return Deferred.await(existing.deferred);
+        }
+
+        const entry: ToolProductionInFlight = {
+          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          mode: requestedMode,
+        };
+        toolProductionInFlight.set(key, entry);
+        const run = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
+          Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
+        );
+        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(entry.deferred)));
       });
 
     // ------------------------------------------------------------------

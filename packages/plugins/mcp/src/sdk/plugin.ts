@@ -1249,20 +1249,28 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
-
-        if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+        if (Result.isFailure(built)) {
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: built.failure.message,
+          };
         }
-        return { tools: manifest.manifest.tools.map(toToolDef) };
+
+        const discovered = yield* discoverTools(built.success).pipe(
+          Effect.result,
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
+        if (Result.isFailure(discovered)) {
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: discovered.failure.message,
+          };
+        }
+        return { tools: discovered.success.tools.map(toToolDef) };
       }).pipe(
         Effect.withSpan("mcp.plugin.resolve_tools", {
           attributes: { "mcp.connection.name": String(connection.name) },
