@@ -1,4 +1,4 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import { Effect, Exit, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -17,6 +17,16 @@ import {
 } from "./fuma-runtime";
 import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartitions } from "./blob";
 import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
+import {
+  clampToolCallLimit,
+  rowToToolCall,
+  toolCallArgKeys,
+  toolCallOutcome,
+  TOOL_CALL_LOG_WRITE_TIMEOUT,
+  type ListToolCallsInput,
+  type PruneToolCallsInput,
+  type ToolCall,
+} from "./tool-call-log";
 import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
@@ -394,6 +404,19 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
    */
   readonly admin?: ExecutorAdmin;
   /** Saved generative-UI artifacts, visible to the bound owner scope. */
+  /**
+   * The audit trail: one row per tool call that reached `execute`, including
+   * the calls a policy blocked and the approvals a caller declined.
+   */
+  readonly toolCalls: {
+    /** Newest first, filtered and capped — the log is unbounded. */
+    readonly list: (
+      input?: ListToolCallsInput,
+    ) => Effect.Effect<readonly ToolCall[], StorageFailure>;
+    /** Drop rows older than `before`. Retention is the host's policy to set. */
+    readonly prune: (input: PruneToolCallsInput) => Effect.Effect<void, StorageFailure>;
+  };
+
   readonly artifacts: {
     /** Newest first, without the JSX source — lists stay light. */
     readonly list: () => Effect.Effect<readonly ArtifactSummary[], StorageFailure>;
@@ -4046,6 +4069,142 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
+    // Tool call log — the audit trail, one row per call through `execute`.
+    // ------------------------------------------------------------------
+
+    /**
+     * Record a settled tool call.
+     *
+     * Wrapped around the whole of `execute`, so it sees every ending a call
+     * can have: the ones that reached the upstream service, the ones a policy
+     * stopped, and the ones a human declined. The two latter kinds leave no
+     * other trace anywhere — they never produce an HTTP request to observe.
+     *
+     * Writing the row must never change the outcome of the call it describes.
+     * A failed write is swallowed (and logged), because an audit trail that
+     * can take the gateway down with it is worse than one with a gap in it.
+     */
+    const recordToolCall = (
+      address: ToolAddress,
+      args: unknown,
+      policy: () => EffectivePolicy | null,
+    ) => {
+      const startedAt = Date.now();
+      return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        Effect.onExit(effect, (exit) =>
+          writeToolCallRow({
+            address,
+            args,
+            policy: policy(),
+            exit,
+            durationMs: Date.now() - startedAt,
+          }).pipe(
+            // A sick database must not become a sick gateway. The insert is
+            // awaited — a forked write would be interrupted when a per-request
+            // host tears the executor down, and a silently missing row is the
+            // one thing an audit log may not do — but it is awaited under a
+            // hard cap, so the worst a stalled write can cost a tool call is
+            // this timeout rather than the driver's own.
+            Effect.timeout(TOOL_CALL_LOG_WRITE_TIMEOUT),
+            // Never let the audit write decide the call's fate — including a
+            // defect. The row is the record OF the call, not part of it; a
+            // gap in the log beats taking the gateway down with it.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("tool call log: row not written", cause).pipe(
+                Effect.annotateLogs({ address: String(address) }),
+              ),
+            ),
+          ),
+        );
+    };
+
+    const writeToolCallRow = ({
+      address,
+      args,
+      policy,
+      exit,
+      durationMs,
+    }: {
+      readonly address: ToolAddress;
+      readonly args: unknown;
+      readonly policy: EffectivePolicy | null;
+      readonly exit: Exit.Exit<unknown, unknown>;
+      readonly durationMs: number;
+    }): Effect.Effect<void, StorageFailure> =>
+      Effect.gen(function* () {
+        const parsed = parseToolAddress(String(address));
+        // A call is logged under the owner tier it targeted, so an org
+        // connection's calls stay visible org-wide and a user's stay personal.
+        // A static tool has no owner in its address; it belongs to whoever ran
+        // it, falling back to the org scope for a subject-less executor.
+        const tier: Owner = parsed ? parsed.owner : subject == null ? "org" : "user";
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(tier),
+          catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
+        });
+        const outcome = toolCallOutcome(exit);
+        yield* core.create("tool_call_log", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          id: `tcl_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+          address: String(address),
+          integration: parsed ? String(parsed.integration) : null,
+          connection: parsed ? String(parsed.connection) : null,
+          tool: parsed ? String(parsed.tool) : null,
+          outcome: outcome.outcome,
+          error_code: outcome.errorCode,
+          error_message: outcome.errorMessage,
+          policy_action: policy?.action ?? null,
+          policy_pattern: policy?.pattern ?? null,
+          duration_ms: durationMs,
+          arg_keys: toolCallArgKeys(args),
+          created_at: new Date(),
+        });
+      });
+
+    const toolCallLogList = (
+      input?: ListToolCallsInput,
+    ): Effect.Effect<readonly ToolCall[], StorageFailure> =>
+      core
+        .findMany("tool_call_log", {
+          where: toolCallLogWhere(input),
+          // Newest first; `id` breaks ties so two calls landing in the same
+          // millisecond keep a stable order between reads.
+          orderBy: [
+            ["created_at", "desc"],
+            ["id", "desc"],
+          ],
+          limit: clampToolCallLimit(input?.limit),
+        })
+        .pipe(Effect.map((rows) => rows.map(rowToToolCall)));
+
+    /**
+     * Drop rows older than `before`.
+     *
+     * Retention is the host's call, not this package's: a self-hosted box and a
+     * regulated tenant want different windows, and an audit log that quietly
+     * deletes itself on a default nobody chose is worse than one that grows.
+     * So the executor exposes the operation and never schedules it.
+     */
+    const toolCallLogPrune = (input: PruneToolCallsInput): Effect.Effect<void, StorageFailure> =>
+      core.deleteMany("tool_call_log", {
+        where: (b: AnyCb) => b("created_at", "<", input.before),
+      });
+
+    const toolCallLogWhere = (input?: ListToolCallsInput): CoreWhere | undefined => {
+      const clauses: readonly ((b: AnyCb) => Condition)[] = [
+        ...(input?.integration ? [(b: AnyCb) => b("integration", "=", input.integration!)] : []),
+        ...(input?.connection ? [(b: AnyCb) => b("connection", "=", input.connection!)] : []),
+        ...(input?.outcome ? [(b: AnyCb) => b("outcome", "=", input.outcome!)] : []),
+        ...(input?.since ? [(b: AnyCb) => b("created_at", ">=", input.since!)] : []),
+      ];
+      if (clauses.length === 0) return undefined;
+      return (b: AnyCb) =>
+        clauses.length === 1 ? clauses[0]!(b) : b.and(...clauses.map((clause) => clause(b)));
+    };
+
+    // ------------------------------------------------------------------
     // Artifacts — saved generative-UI components, owner-scoped.
     // ------------------------------------------------------------------
 
@@ -4295,6 +4454,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       options?: InvokeOptions,
     ): Effect.Effect<unknown, ExecuteError> => {
       const handler = pickHandler(options);
+      // The policy that governed this call, filled in as soon as it resolves.
+      // Per-call state: `execute` is re-entered for every invocation, so this
+      // binding is never shared between concurrent calls.
+      let governingPolicy: EffectivePolicy | null = null;
       return Effect.gen(function* () {
         // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
         const formatInvocationCauseMessage = (cause: unknown): string => {
@@ -4335,6 +4498,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             policyRules,
             staticEntry.tool.annotations?.requiresApproval,
           );
+          governingPolicy = policy;
           if (policy.action === "block") {
             return yield* new ToolBlockedError({
               address,
@@ -4388,6 +4552,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           policyRules,
           annotations?.requiresApproval,
         );
+        governingPolicy = policy;
         if (policy.action === "block") {
           return yield* new ToolBlockedError({
             address,
@@ -4519,6 +4684,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ...(subject != null ? { "executor.subject": subject } : {}),
           },
         }),
+        // The durable counterpart to that span: one row per call, readable
+        // from the app itself. Spans only exist where an OTel exporter is
+        // configured, and never answer "which connection did this agent use
+        // last week" — which is the question an audit asks.
+        recordToolCall(address, args, () => governingPolicy),
       );
     };
 
@@ -4944,6 +5114,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         resolve: policiesResolve,
       },
       ...(admin ? { admin } : {}),
+      toolCalls: { list: toolCallLogList, prune: toolCallLogPrune },
       artifacts: {
         list: artifactsList,
         get: artifactsGet,

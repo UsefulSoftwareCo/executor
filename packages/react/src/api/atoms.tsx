@@ -151,6 +151,24 @@ export const pausedExecutionAtom = (executionId: string) =>
     timeToLive: "5 seconds",
   });
 
+// ---------------------------------------------------------------------------
+// Tool call log — the audit trail. Read-only, so there is no mutation atom and
+// no optimistic wrapper: rows appear because calls happened.
+// ---------------------------------------------------------------------------
+
+/**
+ * The most recent calls this owner scope may see.
+ *
+ * Short TTL on purpose: this is the page someone opens while an agent is
+ * running, to watch what it just did.
+ */
+export const toolCallsAtom = ExecutorApiClient.query("toolCalls", "list", {
+  // No filters: the page shows the whole recent log and the endpoint applies
+  // its own default page size.
+  query: {},
+  timeToLive: "5 seconds",
+});
+
 export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
   timeToLive: "30 seconds",
   reactivityKeys: [ReactivityKey.artifacts],

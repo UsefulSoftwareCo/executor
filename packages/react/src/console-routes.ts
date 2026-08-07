@@ -38,6 +38,7 @@ export const CONSOLE_ROUTE_PATHS = [
   "/integrations/$namespace",
   "/integrations/add/$pluginKey",
   "/policies",
+  "/activity",
   "/secrets",
   "/tools",
   "/users",
@@ -79,6 +80,9 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
       route("/integrations/add/$pluginKey", file("integrations.add.$pluginKey.tsx")),
     ],
     ["/policies", route("/policies", file("policies.tsx"))],
+    // The tool call log. Every host that runs tools has one, so it is part of
+    // the shared contract rather than a per-host page.
+    ["/activity", route("/activity", file("activity.tsx"))],
     ["/secrets", route("/secrets", file("secrets.tsx"))],
     ["/tools", route("/tools", file("tools.tsx"))],
     // The admin users view. Hosts that don't serve `/admin/users*` (local /

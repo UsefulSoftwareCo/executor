@@ -143,6 +143,7 @@ export {
   nullableTextColumn,
   textColumn,
   TOOL_POLICY_ACTIONS,
+  TOOL_CALL_OUTCOMES,
   type CoreSchema,
   type IntegrationRow,
   type SubjectRow,
@@ -154,6 +155,8 @@ export {
   type DefinitionRow,
   type ToolPolicyRow,
   type ArtifactRow,
+  type ToolCallLogRow,
+  type ToolCallOutcome,
   type PluginStorageRow,
   type BlobRow,
   type ToolPolicyAction,
@@ -208,6 +211,24 @@ export {
   type SetArtifactPreviewInput,
 } from "./artifact";
 export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
+
+// Tool call log — the audit trail behind `executor.toolCalls`.
+export {
+  clampToolCallLimit,
+  rowToToolCall,
+  toolCallArgKeys,
+  toolCallOutcome,
+  TOOL_CALL_ARG_KEY_LIMIT,
+  TOOL_CALL_ARG_KEY_MAX_LENGTH,
+  TOOL_CALL_LOG_WRITE_TIMEOUT,
+  TOOL_CALL_LIST_DEFAULT_LIMIT,
+  TOOL_CALL_LIST_MAX_LIMIT,
+  TOOL_CALL_MESSAGE_LIMIT,
+  type ListToolCallsInput,
+  type PruneToolCallsInput,
+  type ToolCall,
+  type ToolCallOutcomeSummary,
+} from "./tool-call-log";
 
 // Elicitation.
 export {
