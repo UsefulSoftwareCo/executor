@@ -36,6 +36,7 @@ import {
   OAuth2Flows,
   OAuth2Preset,
   SecurityScheme,
+  parsePreviewSpecText,
   previewSpecText,
   type SpecPreview,
 } from "./preview";
@@ -718,6 +719,7 @@ export const openApiPlugin = definePlugin<
       const enrichPreviewWithDiscoveredOAuth = (input: {
         readonly specText: string;
         readonly preview: SpecPreview;
+        readonly keepPathItem?: ConvertedSpec["keepPathItem"];
         readonly specUrl?: string;
         readonly baseUrl?: string;
       }): Effect.Effect<SpecPreview, OpenApiParseError | OpenApiExtractionError> =>
@@ -734,7 +736,7 @@ export const openApiPlugin = definePlugin<
             );
             if (!oauth.ok) continue;
 
-            const doc = yield* parse(input.specText);
+            const doc = yield* parsePreviewSpecText(input.specText, input.keepPathItem);
             const declaredScopes = collectDeclaredSecurityScopes(
               doc,
               nonOAuthSecuritySchemeNames(input.preview),
@@ -800,11 +802,12 @@ export const openApiPlugin = definePlugin<
           const needsDerivedAuth = config.authenticationTemplate == null;
           const preview =
             needsDerivedBaseUrl || needsDerivedAuth
-              ? yield* previewSpecText(resolved.specText).pipe(
+              ? yield* previewSpecText(resolved.specText, resolved.keepPathItem).pipe(
                   Effect.flatMap((rawPreview) =>
                     enrichPreviewWithDiscoveredOAuth({
                       specText: resolved.specText,
                       preview: rawPreview,
+                      keepPathItem: resolved.keepPathItem,
                       specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
                       baseUrl: explicitBaseUrl,
                     }),
@@ -1091,10 +1094,11 @@ export const openApiPlugin = definePlugin<
               },
               httpClientLayer,
             );
-            const preview = yield* previewSpecText(resolved.specText);
+            const preview = yield* previewSpecText(resolved.specText, resolved.keepPathItem);
             return yield* enrichPreviewWithDiscoveredOAuth({
               specText: resolved.specText,
               preview,
+              keepPathItem: resolved.keepPathItem,
               specUrl: resolved.specUrl ?? (spec.kind === "url" ? spec.url : undefined),
             });
           }),

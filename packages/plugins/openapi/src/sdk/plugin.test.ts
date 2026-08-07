@@ -38,6 +38,7 @@ import {
 } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
+import type { SpecFormatAdapter } from "./spec-format";
 import { type AuthenticationInput } from "./types";
 import {
   addOpenApiTestConnection,
@@ -112,6 +113,56 @@ const testApiSpecText = () => {
 };
 
 const MICROSOFT_GRAPH_V1_OPERATION_COUNT = 16_548;
+
+const FILTERED_PREVIEW_SPEC_TEXT = `openapi: 3.0.0
+info:
+  title: Filtered preview
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /kept:
+    get:
+      operationId: kept.get
+      tags:
+        - selected
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeptResponse"
+  /discarded:
+    get:
+      operationId: discarded.get
+      tags:
+        - unselected
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    KeptResponse:
+      type: object
+      properties:
+        id:
+          type: string
+    UnusedResponse:
+      type: object
+      properties:
+        ignored:
+          type: string
+`;
+
+const filteredPreviewAdapter: SpecFormatAdapter = {
+  id: "filtered-preview",
+  fetch: () =>
+    Effect.succeed({
+      specText: FILTERED_PREVIEW_SPEC_TEXT,
+      keepPathItem: (path, pathItem) => (path === "/kept" ? pathItem : null),
+    }),
+};
 
 const microsoftGraphScaleSpecText = () => {
   const paths: Record<string, unknown> = {};
@@ -385,6 +436,34 @@ describe("OpenAPI Plugin", () => {
         expect(preview.servers).toBeDefined();
       }),
     ),
+  );
+
+  it.effect("previewSpec preserves a format adapter's streaming path filter", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [
+            openApiPlugin({ specFormats: [filteredPreviewAdapter] }),
+            memoryCredentialsPlugin(),
+          ] as const,
+        }),
+      );
+
+      const preview = yield* executor.openapi.previewSpec({
+        spec: "https://spec.example.test/openapi.yaml",
+        specFormat: filteredPreviewAdapter.id,
+      });
+
+      expect(preview.operationCount).toBe(1);
+      expect(preview.operations.map((operation) => operation.path)).toEqual(["/kept"]);
+      expect(preview.tags).toEqual(["selected"]);
+      expect(preview.healthCheckCandidates).toEqual([
+        expect.objectContaining({
+          operation: "selected.keptGet",
+          responseFields: [{ path: "id", type: "string" }],
+        }),
+      ]);
+    }),
   );
 
   it.effect("previewSpec discovers OAuth metadata from a URL-hosted bearer spec", () =>

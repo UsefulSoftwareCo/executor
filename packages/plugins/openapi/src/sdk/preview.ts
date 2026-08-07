@@ -9,6 +9,16 @@ import {
 
 import { parse, resolveSpecText, type ParsedDocument } from "./parse";
 import { extract } from "./extract";
+import { OpenApiExtractionError } from "./errors";
+import {
+  collectReferencedSchemas,
+  indexSchemas,
+  parseEntry,
+  parseHead,
+  parseSmallComponents,
+  structuralSplit,
+  type KeepPathItem,
+} from "./split";
 import { compileToolDefinitions } from "./definitions";
 import { normalizeOpenApiRefs } from "./backing";
 import { DocResolver } from "./openapi-utils";
@@ -520,10 +530,65 @@ const buildPreviewHealthCheckCandidates = (
 // Public API
 // ---------------------------------------------------------------------------
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * Parse the document shape needed by preview. Format adapters that provide a
+ * path filter also opt into the structural path: each path-item is parsed in
+ * isolation, filtered immediately, and only schemas reachable from the kept
+ * workload are materialized. This keeps preview on the same bounded-memory
+ * path as streaming persistence instead of parsing the adapter's full source.
+ */
+export const parsePreviewSpecText = Effect.fn("OpenApi.parsePreviewSpecText")(function* (
+  specText: string,
+  keepPathItem?: KeepPathItem,
+) {
+  if (!keepPathItem) return yield* parse(specText);
+
+  const structure = structuralSplit(specText);
+  if (!structure) {
+    return yield* new OpenApiExtractionError({
+      message:
+        "OpenAPI spec is not in the streamable block-YAML profile (no top-level `paths:` block); cannot stream-preview this adapted spec.",
+    });
+  }
+
+  const paths: Record<string, Record<string, unknown>> = {};
+  for (const range of structure.pathItems) {
+    const entry = parseEntry(structure.text, range, 2);
+    if (!entry) continue;
+    const [path, rawPathItem] = entry;
+    if (!isRecord(rawPathItem)) continue;
+    const kept = keepPathItem(path, rawPathItem);
+    if (kept) paths[path] = kept;
+  }
+
+  const smallComponents = parseSmallComponents(structure);
+  const schemas = collectReferencedSchemas(structure, indexSchemas(structure), [
+    ...Object.values(paths),
+    smallComponents,
+  ]);
+
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: the structural parser builds the OpenAPI document subset preview consumes; parseHead/parseSmallComponents deliberately return generic records.
+  return {
+    ...parseHead(structure),
+    paths,
+    components: {
+      ...smallComponents,
+      schemas,
+    },
+  } as unknown as ParsedDocument;
+});
+
 /** Preview already-resolved spec text — extract metadata without registering
- *  anything and without any HTTP dependency. */
-export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (specText: string) {
-  const doc: ParsedDocument = yield* parse(specText);
+ *  anything and without any HTTP dependency. When a format adapter supplied a
+ *  path filter, preview structurally reduces the source before extraction. */
+export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (
+  specText: string,
+  keepPathItem?: KeepPathItem,
+) {
+  const doc = yield* parsePreviewSpecText(specText, keepPathItem);
   const result = yield* extract(doc);
 
   const resolver = new DocResolver(doc);
