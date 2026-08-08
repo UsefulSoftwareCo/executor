@@ -137,8 +137,13 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             },
           };
         }
+        // Borrow the running server's DB handle: this process already holds the
+        // data dir's exclusive ownership lock, so opening it a second time here
+        // fails against ourselves. The toolkit executor differs only in its
+        // plugin set, and the borrowed handle stays open when it disposes.
         const handle = await createExecutorHandle({
           activeToolkitSlug: resource.slug,
+          borrowedDb: (await getExecutorBundle()).db,
         });
         const toolkitEngine = withExecutionAnalytics(
           createExecutionEngine({

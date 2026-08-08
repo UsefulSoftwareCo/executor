@@ -21,11 +21,11 @@ import { expect } from "@effect/vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Effect } from "effect";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Subprocess } from "bun";
 
 import { scenario } from "../src/scenario";
 
@@ -34,7 +34,10 @@ const testScope = join(repoRoot, "apps/local");
 // Generous: a dev-mode daemon boots a Vite dev server, slow under machine load.
 const readyTimeoutMs = 150_000;
 
-type DaemonProc = Subprocess<"ignore", "pipe", "pipe">;
+// vitest runs this suite under NODE, not bun, so the daemon is spawned with
+// node:child_process (the rest of the e2e harness does the same). `Bun.spawn`
+// here threw `ReferenceError: Bun is not defined` on every run.
+type DaemonProc = ChildProcessWithoutNullStreams;
 
 const waitForDaemonReady = (
   proc: DaemonProc,
@@ -44,50 +47,38 @@ const waitForDaemonReady = (
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let settled = false;
-    const decoder = new TextDecoder();
-    const stdout = proc.stdout.getReader();
-    const stderr = proc.stderr.getReader();
     const deadline = setTimeout(() => {
       if (settled) return;
       settled = true;
       // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: captured daemon stderr
       rejectReady(new Error(`daemon did not announce ready: ${stderrBuffer}`));
     }, readyTimeoutMs);
-    void (async () => {
-      while (true) {
-        const { value, done } = await stderr.read();
-        if (done) return;
-        stderrBuffer += decoder.decode(value);
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderrBuffer += chunk.toString();
+    });
+    proc.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBuffer += chunk.toString();
+      const match = /Daemon ready on http:\/\/(?:\[[^\]]+\]|[^:\s]+):(\d+)/.exec(stdoutBuffer);
+      if (match) {
+        settled = true;
+        clearTimeout(deadline);
+        resolveReady({ port: Number(match[1]), stderr: () => stderrBuffer });
       }
-    })();
-    void (async () => {
-      while (true) {
-        const { value, done } = await stdout.read();
-        if (done) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(deadline);
-            // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: captured daemon stderr
-            rejectReady(new Error(`daemon stdout closed before ready: ${stderrBuffer}`));
-          }
-          return;
-        }
-        stdoutBuffer += decoder.decode(value);
-        const match = /Daemon ready on http:\/\/(?:\[[^\]]+\]|[^:\s]+):(\d+)/.exec(stdoutBuffer);
-        if (match) {
-          settled = true;
-          clearTimeout(deadline);
-          resolveReady({ port: Number(match[1]), stderr: () => stderrBuffer });
-          return;
-        }
-      }
-    })();
+    });
+    proc.stdout.on("close", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: captured daemon stderr
+      rejectReady(new Error(`daemon stdout closed before ready: ${stderrBuffer}`));
+    });
   });
 
 const spawnDaemon = (dataDir: string): DaemonProc =>
-  Bun.spawn(
+  spawn(
+    "bun",
     [
-      "bun",
       "run",
       "dev:cli",
       "daemon",
@@ -103,17 +94,20 @@ const spawnDaemon = (dataDir: string): DaemonProc =>
     {
       cwd: repoRoot,
       env: { ...process.env, EXECUTOR_DATA_DIR: dataDir },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
     },
-  );
+  ) as DaemonProc;
+
+const exited = (proc: DaemonProc): Promise<void> =>
+  proc.exitCode !== null || proc.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((resolve) => proc.once("exit", () => resolve()));
 
 const stopProc = async (proc: DaemonProc): Promise<void> => {
-  if (proc.exitCode !== null) return;
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
   proc.kill("SIGTERM");
-  await Promise.race([proc.exited, Bun.sleep(3000)]);
-  if (proc.exitCode === null) proc.kill("SIGKILL");
+  await Promise.race([exited(proc), new Promise<void>((resolve) => setTimeout(resolve, 3000))]);
+  if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
 };
 
 const startForegroundDaemon = (dataDir: string) =>
@@ -322,7 +316,12 @@ scenario(
     );
 
     daemon.proc.kill("SIGKILL");
-    yield* Effect.promise(() => Promise.race([daemon.proc.exited, Bun.sleep(3000)]));
+    yield* Effect.promise(() =>
+      Promise.race([
+        exited(daemon.proc),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ]),
+    );
 
     // The next call must settle (reject) quickly — a 10s bound well under the
     // scenario timeout catches a hang.
@@ -332,7 +331,7 @@ scenario(
           .callTool({ name: "execute", arguments: { code: "return 3" } })
           .then(() => "resolved" as const)
           .catch(() => "rejected" as const),
-        Bun.sleep(10_000).then(() => "timeout" as const),
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 10_000)),
       ]),
     );
     // eslint-disable-next-line no-console
