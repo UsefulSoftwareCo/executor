@@ -73,6 +73,8 @@ export {
   ToolNotFoundError,
   ToolInvocationError,
   ToolBlockedError,
+  AuthorizationDeniedError,
+  AuthorizationProviderError,
   NoHandlerError,
   PluginNotLoadedError,
   ConnectionNotFoundError,
@@ -82,3 +84,13 @@ export {
   IntegrationRemovalNotAllowedError,
   type ExecutorError,
 } from "./errors";
+
+export type {
+  AuthorizationOperation,
+  AuthorizationIdentity,
+  AuthorizationToolRef,
+  AuthorizationRequest,
+  AuthorizationOutcome,
+  AuthorizationDecision,
+  AuthorizationProvider,
+} from "./authorization";

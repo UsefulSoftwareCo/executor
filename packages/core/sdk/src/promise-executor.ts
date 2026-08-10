@@ -25,6 +25,7 @@ import type { ElicitationContext, ElicitationResponse } from "./elicitation";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 import { Subject, Tenant } from "./ids";
 import type { AnyPlugin } from "./plugin";
+import type { AuthorizationProvider } from "./authorization";
 import type { CredentialProvider } from "./provider";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,11 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * an options arg.
    */
   readonly onElicitation: PromiseOnElicitation;
+  /**
+   * Optional universal authorization seam. Effect-native; bring from
+   * `@executor-js/sdk/core`. Absent = exact prior execute behavior.
+   */
+  readonly authorizationProvider?: AuthorizationProvider;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +219,9 @@ export const createExecutor = async <const TPlugins extends readonly AnyPlugin[]
     plugins,
     ...(config.providers ? { providers: config.providers } : {}),
     onElicitation: toEffectOnElicitation(config.onElicitation),
+    ...(config.authorizationProvider
+      ? { authorizationProvider: config.authorizationProvider }
+      : {}),
     ...(db ? { db } : {}),
   };
 

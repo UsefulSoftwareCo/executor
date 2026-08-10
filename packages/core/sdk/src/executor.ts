@@ -63,8 +63,15 @@ import {
   type SaveArtifactInput,
   type SetArtifactPreviewInput,
 } from "./artifact";
+import type {
+  AuthorizationDecision,
+  AuthorizationProvider,
+  AuthorizationToolRef,
+} from "./authorization";
 import {
   ArtifactNotFoundError,
+  AuthorizationDeniedError,
+  AuthorizationProviderError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
@@ -609,6 +616,13 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * `"accept-all"` for tests / non-interactive hosts, or a handler.
    */
   readonly onElicitation: OnElicitation;
+  /**
+   * Optional universal authorization seam. When omitted, execute is unchanged
+   * (coarse tool_policy + annotations only). When set, core consults it after
+   * hard-block resolution and before credential resolution / plugin invoke.
+   * Nested `ctx.execute` re-enters the same path. Failures and `deny` fail closed.
+   */
+  readonly authorizationProvider?: AuthorizationProvider;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   /**
    * Fetch API implementation for dependencies that cannot consume `httpClientLayer`.
@@ -4213,7 +4227,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const approvalRequired = (
       annotations: ToolAnnotations | undefined,
       policy: EffectivePolicy,
+      forceApproval = false,
     ): boolean => {
+      if (forceApproval) return true;
       if (policy.action === "approve") return false;
       return policy.action === "require_approval" || annotations?.requiresApproval === true;
     };
@@ -4224,10 +4240,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       args: unknown,
       policy: EffectivePolicy,
       handler: ElicitationHandler,
+      forceApproval = false,
     ) =>
       Effect.gen(function* () {
-        if (!approvalRequired(annotations, policy)) return;
-        const policyForcesApproval = policy.action === "require_approval";
+        if (!approvalRequired(annotations, policy, forceApproval)) return;
+        const policyForcesApproval = policy.action === "require_approval" || forceApproval;
         const message = annotations?.approvalDescription
           ? annotations.approvalDescription
           : policyForcesApproval && policy.pattern
@@ -4245,6 +4262,60 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
       });
+
+    // Optional AuthorizationProvider: after hard block, before credentials /
+    // plugin invoke. Absent provider is a no-op (exact prior behavior).
+    const consultAuthorizationProvider = (
+      address: ToolAddress,
+      tool: AuthorizationToolRef,
+      args: unknown,
+      policy: EffectivePolicy,
+    ): Effect.Effect<
+      { readonly forceApproval: boolean; readonly decision: AuthorizationDecision | null },
+      AuthorizationDeniedError | AuthorizationProviderError
+    > => {
+      const provider = config.authorizationProvider;
+      if (!provider) {
+        return Effect.succeed({ forceApproval: false, decision: null });
+      }
+      return provider
+        .authorize({
+          identity: {
+            tenant: ownerBinding.tenant,
+            subject: ownerBinding.subject,
+          },
+          operation: "tool.execute",
+          tool,
+          args,
+          policy,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new AuthorizationProviderError({
+                address,
+                message: "Authorization provider failed",
+                cause,
+              }),
+          ),
+          Effect.flatMap((decision) => {
+            if (decision.outcome === "deny") {
+              return Effect.fail(
+                new AuthorizationDeniedError({
+                  address,
+                  decisionId: decision.decisionId,
+                  policyRevision: decision.policyRevision,
+                  reason: decision.reason,
+                }),
+              );
+            }
+            return Effect.succeed({
+              forceApproval: decision.outcome === "require_approval",
+              decision,
+            });
+          }),
+        );
+    };
 
     // ------------------------------------------------------------------
     // execute — the invoke path.
@@ -4341,7 +4412,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               pattern: policy.pattern ?? "*",
             });
           }
-          yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
+          const authz = yield* consultAuthorizationProvider(
+            address,
+            {
+              address,
+              integration: staticEntry.integration.id,
+              owner: staticToolOwner(),
+              connection: String(staticToolConnection(staticEntry.integration)),
+              plugin: staticEntry.pluginId,
+              name: staticEntry.tool.name,
+            },
+            args,
+            policy,
+          );
+          yield* enforceApproval(
+            staticEntry.tool.annotations,
+            address,
+            args,
+            policy,
+            handler,
+            authz.forceApproval,
+          );
           return yield* wrapInvocationError(
             staticEntry.tool.handler({
               ctx: staticEntry.ctx,
@@ -4395,6 +4486,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
+        const authz = yield* consultAuthorizationProvider(
+          address,
+          {
+            address,
+            integration: String(parsed.integration),
+            owner: String(parsed.owner),
+            connection: String(parsed.connection),
+            plugin: row.plugin_id,
+            name: String(parsed.tool),
+          },
+          args,
+          policy,
+        );
+
         const runtime = runtimes.get(row.plugin_id);
         if (!runtime) {
           return yield* new PluginNotLoadedError({
@@ -4441,12 +4546,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // body) must be rejected here, not after the user grants an approval
         // that then goes to waste. Non-pausing calls skip this — invokeTool
         // raises the identical failure moments later without the extra pass.
-        if (approvalRequired(resolvedAnnotations, policy) && runtime.plugin.validateToolArgs) {
+        if (
+          approvalRequired(resolvedAnnotations, policy, authz.forceApproval) &&
+          runtime.plugin.validateToolArgs
+        ) {
           yield* runtime.plugin
             .validateToolArgs({ ctx: runtime.ctx, toolRow: row, args })
             .pipe(wrapInvocationError);
         }
-        yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
+        yield* enforceApproval(
+          resolvedAnnotations,
+          address,
+          args,
+          policy,
+          handler,
+          authz.forceApproval,
+        );
 
         // Resolve every named credential input (`variable → value`); `value` is
         // the primary `token` for single-input + OAuth callers.

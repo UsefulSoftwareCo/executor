@@ -123,6 +123,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly redirectUri?: string | null;
   readonly oauthCallbackStateOrgSlug?: string;
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
+  readonly authorizationProvider?: ExecutorConfig<TPlugins>["authorizationProvider"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -161,6 +162,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",
     onIntegrationChange: options?.onIntegrationChange,
+    authorizationProvider: options?.authorizationProvider,
     ...(redirectUri != null ? { redirectUri } : {}),
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
   };

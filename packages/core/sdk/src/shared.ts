@@ -54,6 +54,8 @@ export {
   ToolNotFoundError,
   ToolInvocationError,
   ToolBlockedError,
+  AuthorizationDeniedError,
+  AuthorizationProviderError,
   PluginNotLoadedError,
   NoHandlerError,
   IntegrationNotFoundError,
@@ -69,6 +71,16 @@ export {
   type ExecutorError,
   type UserActionableError,
 } from "./errors";
+
+export type {
+  AuthorizationOperation,
+  AuthorizationIdentity,
+  AuthorizationToolRef,
+  AuthorizationRequest,
+  AuthorizationOutcome,
+  AuthorizationDecision,
+  AuthorizationProvider,
+} from "./authorization";
 
 // Elicitation wire schemas.
 export {

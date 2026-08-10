@@ -80,6 +80,33 @@ export class ToolBlockedError extends Schema.TaggedErrorClass<ToolBlockedError>(
   }
 }
 
+/** Tool invocation was rejected by an `AuthorizationProvider` with outcome
+ *  `deny`. Fail-closed; not bypassable via invoke options. */
+export class AuthorizationDeniedError extends Schema.TaggedErrorClass<AuthorizationDeniedError>()(
+  "AuthorizationDeniedError",
+  {
+    address: ToolAddress,
+    decisionId: Schema.String,
+    policyRevision: Schema.String,
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Authorization denied (${this.decisionId}): ${this.reason}`;
+  }
+}
+
+/** The configured `AuthorizationProvider` failed. Fail-closed: the call does
+ *  not proceed to credentials or plugin invoke. */
+export class AuthorizationProviderError extends Schema.TaggedErrorClass<AuthorizationProviderError>()(
+  "AuthorizationProviderError",
+  {
+    address: ToolAddress,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
+  },
+) {}
+
 /** Tool row exists but its owning plugin isn't loaded in this executor config. */
 export class PluginNotLoadedError extends Schema.TaggedErrorClass<PluginNotLoadedError>()(
   "PluginNotLoadedError",
@@ -221,6 +248,8 @@ export type ExecuteError =
   | ToolNotFoundError
   | ToolInvocationError
   | ToolBlockedError
+  | AuthorizationDeniedError
+  | AuthorizationProviderError
   | PluginNotLoadedError
   | NoHandlerError
   | ConnectionNotFoundError

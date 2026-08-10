@@ -64,6 +64,8 @@ export {
   ToolNotFoundError,
   ToolInvocationError,
   ToolBlockedError,
+  AuthorizationDeniedError,
+  AuthorizationProviderError,
   NoHandlerError,
   PluginNotLoadedError,
   IntegrationNotFoundError,
@@ -78,6 +80,17 @@ export {
   type ExecutorError,
   type UserActionableError,
 } from "./errors";
+
+// Universal authorization seam (optional provider; absent = prior behavior).
+export type {
+  AuthorizationOperation,
+  AuthorizationIdentity,
+  AuthorizationToolRef,
+  AuthorizationRequest,
+  AuthorizationOutcome,
+  AuthorizationDecision,
+  AuthorizationProvider,
+} from "./authorization";
 
 // Integration / connection / tool domain contracts.
 export type {

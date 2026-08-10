@@ -6,7 +6,8 @@
 // hosted HTTP client, build the `[userOrgScope, orgScope]` scope stack (P1), and
 // call `createExecutor({...})` with a byte-identical option shape. The ONLY real
 // differences were the DB source/lifetime, the plugin instances, and two host
-// config scalars (`allowLocalNetwork`, `webBaseUrl`).
+// config values (`allowLocalNetwork`, `webBaseUrl`, and optional horizontal
+// authorization provider).
 //
 // `makeScopedExecutor` owns that common body. The per-host knobs are injected
 // through three Effect seams:
@@ -17,8 +18,9 @@
 //     so both lifetimes are preserved by the Layer the host supplies.
 //   - `PluginsProvider` — the plugin array. Cloud injects per-request WorkOS
 //     credentials; self-host returns the plain plugin list.
-//   - `HostConfig` — `allowLocalNetwork` (drives the hosted HTTP client guard)
-//     and `webBaseUrl` (the core-tools elicitation base URL).
+//   - `HostConfig` — `allowLocalNetwork` (drives the hosted HTTP client guard),
+//     `webBaseUrl` (the core-tools elicitation base URL), and an optional
+//     provider-neutral authorization provider threaded to `createExecutor`.
 //
 // This is host-composition machinery: it lives in `@executor-js/api/server`
 // (the host surface), not in `@executor-js/sdk` (the plugin-author contract).
@@ -52,7 +54,7 @@ import {
 import { DbProvider } from "./executor-fuma-db";
 
 // ---------------------------------------------------------------------------
-// HostConfig seam — the two host scalars that vary the `createExecutor` options.
+// HostConfig seam — host values that vary the `createExecutor` options.
 // ---------------------------------------------------------------------------
 
 export interface HostConfigShape {
@@ -97,6 +99,12 @@ export interface HostConfigShape {
    * Hosts that record product analytics supply it; omitted -> no observation.
    */
   readonly onIntegrationChange?: ExecutorConfig["onIntegrationChange"];
+  /**
+   * Optional horizontal authorization PEP provider. The shared host layer only
+   * threads this provider-neutral seam into `createExecutor`; concrete PDP
+   * adapters belong to the host/product composition, not @executor-js/api.
+   */
+  readonly authorizationProvider?: ExecutorConfig["authorizationProvider"];
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -284,6 +292,7 @@ export const makeScopedExecutor = <
       httpClientLayer,
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
+      authorizationProvider: config.authorizationProvider,
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
