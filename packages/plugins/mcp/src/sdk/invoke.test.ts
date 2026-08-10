@@ -2,9 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  SdkErrorCode,
+  SdkHttpError,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/client";
 import { ElicitationResponse } from "@executor-js/sdk";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
@@ -22,6 +26,8 @@ const rejectingConnector = (cause: unknown): McpConnector =>
       // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client rejects to exercise invocation error wrapping
       callTool: () => Promise.reject(cause),
     } as unknown as McpConnection["client"],
+    protocolEra: () => "legacy",
+    setToolListChangedHandler: () => undefined,
     close: () => Promise.resolve(),
   });
 
@@ -108,14 +114,16 @@ const invocationRejectionCases = [
     name: "wraps callTool rejection with a stable message and status",
     toolId: "blocked",
     transport: "streamable-http",
-    cause: new StreamableHTTPError(401, "token=do-not-leak"),
+    cause: new SdkHttpError(SdkErrorCode.ClientHttpAuthentication, "token=do-not-leak", {
+      status: 401,
+    }),
     expectedStatus: 401 as number | undefined,
   },
   {
     name: "does not treat MCP protocol error codes as HTTP statuses",
     toolId: "protocol_error",
     transport: "streamable-http",
-    cause: new McpError(401, "application-level do-not-leak"),
+    cause: new ProtocolError(401 as ProtocolErrorCode, "application-level do-not-leak"),
     expectedStatus: undefined,
   },
   {

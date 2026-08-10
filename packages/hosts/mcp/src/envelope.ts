@@ -1,5 +1,6 @@
 import { Effect, Match, Predicate } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { isLegacyRequest } from "@modelcontextprotocol/server";
 
 import {
   defaultMcpResource,
@@ -75,7 +76,7 @@ const corsPreflightResponse = (): Response =>
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, mcp-method, mcp-name",
       "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
@@ -145,6 +146,42 @@ const jsonRpcResponse = (
   challenge === undefined
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
+
+const withMcpCors = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", "mcp-session-id, WWW-Authenticate");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+/** Reject DNS-rebinding and cross-origin browser requests before credentials
+ * are evaluated. Non-browser clients normally send no Origin and are accepted. */
+export const validateMcpRequestAuthority = (request: Request): Response | null => {
+  const url = new URL(request.url);
+  const host = request.headers.get("host");
+  if (host && host.toLowerCase() !== url.host.toLowerCase()) {
+    return jsonRpcResponse(421, -32600, "Host header does not match request URL");
+  }
+  const origin = request.headers.get("origin");
+  if (!origin) return null;
+  if (!URL.canParse(origin) || new URL(origin).origin !== url.origin) {
+    return jsonRpcResponse(403, -32600, "Origin is not allowed");
+  }
+  return null;
+};
+
+/** Classify conservatively: an unreadable or malformed request never enters
+ * the modern stateless adapter by accident. The selected transport will render
+ * the protocol error on its own path. */
+export const isLegacyMcpRequest = (request: Request): Promise<boolean> =>
+  isLegacyRequest(request).then(
+    (legacy) => legacy,
+    () => true,
+  );
 
 /**
  * Reconstruct a WHATWG `Request` from the Effect HTTP request. Prefer the
@@ -233,6 +270,9 @@ const mcpDispatch = (resource: McpResource) =>
       return fromWebResponse(jsonRpcResponse(405, -32001, "Method not allowed"));
     }
 
+    const authorityRejection = validateMcpRequestAuthority(request);
+    if (authorityRejection) return fromWebResponse(authorityRejection);
+
     const sessionId = request.headers.get("mcp-session-id");
 
     // Authenticate (and, for session-aware providers, authorize) on EVERY
@@ -244,6 +284,30 @@ const mcpDispatch = (resource: McpResource) =>
       return fromWebResponse(renderAuthError(auth, request, outcome));
     }
     const principal = outcome.principal;
+
+    // Era classification MUST happen before any legacy session-id rules. A
+    // modern request is a complete exchange and neither requires nor creates
+    // an `mcp-session-id`; the existing session store remains untouched for
+    // claim-less 2025-era traffic.
+    const legacy = yield* Effect.promise(() => isLegacyMcpRequest(request));
+    if (!legacy) {
+      if (!store.dispatchModern) {
+        return fromWebResponse(
+          jsonRpcErrorBody(
+            400,
+            -32022,
+            "Unsupported protocol version: this host has not enabled MCP 2026-07-28",
+          ),
+        );
+      }
+      const modern = yield* store.dispatchModern({
+        request,
+        principal,
+        resource,
+        method: request.method,
+      });
+      return fromWebResponse(withMcpCors(modern));
+    }
 
     // No session id: per the streamable-HTTP transport contract, only POST opens
     // a session. A GET needs an existing id (400); a DELETE on nothing is a

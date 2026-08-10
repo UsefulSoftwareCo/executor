@@ -1,7 +1,9 @@
+import { SdkHttpError } from "@modelcontextprotocol/client";
+
 // ---------------------------------------------------------------------------
-// Extract the HTTP status from an MCP SDK transport error. The SDK surfaces
-// transport failures two ways: a `StreamableHTTPError` subclass carrying a
-// numeric `code`, and an SSE POST failure whose message embeds `(HTTP nnn)`.
+// Extract the HTTP status from an MCP SDK transport error. The v2 SDK exposes
+// it on `SdkHttpError.status`; legacy SSE POST failures still encode the status
+// in their message.
 // Shared by the invoke path (classifies tool-call failures) and the connect
 // path (so a 401/403 during the handshake reaches the liveness health check).
 // ---------------------------------------------------------------------------
@@ -9,8 +11,6 @@
 import { Option, Schema } from "effect";
 
 import { insufficientScopeFromEmbeddedJson } from "@executor-js/sdk/core";
-import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-
 const SsePostErrorCause = Schema.Struct({ message: Schema.String });
 const decodeSsePostErrorCause = Schema.decodeUnknownOption(SsePostErrorCause);
 
@@ -28,9 +28,9 @@ const statusFromSsePostError = (cause: unknown): number | undefined =>
 
 const statusFromStreamableHttpError = (cause: unknown): number | undefined => {
   // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK exposes transport HTTP failures as this Error subclass; protocol errors can carry the same numeric code
-  if (!(cause instanceof StreamableHTTPError)) return undefined;
-  const code = cause.code;
-  return code !== undefined && code >= 100 && code <= 599 ? code : undefined;
+  if (!(cause instanceof SdkHttpError)) return undefined;
+  const status = cause.status;
+  return status >= 100 && status <= 599 ? status : undefined;
 };
 
 export const httpStatusFromCause = (cause: unknown): number | undefined =>
@@ -42,8 +42,8 @@ export const httpStatusFromCause = (cause: unknown): number | undefined =>
 // StreamableHTTP transport consumes the insufficient_scope challenge ITSELF:
 // it re-runs auth requesting the broader scope, and only when that upscoped
 // retry still 403s does it throw — with the fixed message matched below
-// (verified against @modelcontextprotocol/sdk streamableHttp.js; re-verify on
-// SDK bumps). Both paths mean the same thing: the grant does not cover the
+// (verified against @modelcontextprotocol/client v2; re-verify on SDK bumps).
+// Both paths mean the same thing: the grant does not cover the
 // operation, and re-running the identical flow cannot help. Strict matching
 // (exact serialized field forms via the shared core detector, or the SDK's
 // exact upscoping message) — a miss stays on the generic auth path.

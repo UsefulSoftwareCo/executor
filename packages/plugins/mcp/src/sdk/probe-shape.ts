@@ -36,6 +36,26 @@
 
 import { Data, Duration, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/client";
+
+const MODERN_PROTOCOL_VERSION = "2026-07-28";
+
+const DISCOVER_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "server/discover",
+  params: {
+    _meta: {
+      [PROTOCOL_VERSION_META_KEY]: MODERN_PROTOCOL_VERSION,
+      [CLIENT_INFO_META_KEY]: { name: "executor-probe", version: "0" },
+      [CLIENT_CAPABILITIES_META_KEY]: {},
+    },
+  },
+});
 
 /** MCP initialize request body used as the shape probe. Any real MCP
  *  server either answers it (unauth-OK server) or returns the spec-
@@ -93,6 +113,20 @@ const isJsonRpcEnvelope = (body: string): boolean => {
   if (!obj) return false;
   if (obj.jsonrpc !== "2.0") return false;
   return "result" in obj || "error" in obj || "method" in obj;
+};
+
+const isDiscoverResultEnvelope = (body: string): boolean => {
+  const envelope = asObject(body);
+  if (!envelope || envelope.jsonrpc !== "2.0") return false;
+  const result = envelope.result;
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return false;
+  const supportedVersions = (result as Record<string, unknown>).supportedVersions;
+  return (
+    Array.isArray(supportedVersions) &&
+    supportedVersions.some(
+      (version) => typeof version === "string" && version >= MODERN_PROTOCOL_VERSION,
+    )
+  );
 };
 
 /** Quick check that a body parses as an RFC 6750 OAuth Bearer error
@@ -267,6 +301,7 @@ export const probeMcpEndpointShape = (
           readonly text: Effect.Effect<string, unknown>;
         },
         method: "GET" | "POST",
+        expected: "discover" | "initialize",
       ): Effect.Effect<McpShapeProbeResult | null> =>
         Effect.gen(function* () {
           const contentType = readHeader(response.headers, "content-type") ?? "";
@@ -354,7 +389,10 @@ export const probeMcpEndpointShape = (
             // JSON-RPC envelope so we don't accept HTML/REST 200 responses.
             if (isSse) return { kind: "mcp", requiresAuth: false } as const;
             const body = yield* readBody(response);
-            if (!isJsonRpcEnvelope(body)) {
+            if (
+              expected === "discover" ? !isDiscoverResultEnvelope(body) : !isJsonRpcEnvelope(body)
+            ) {
+              if (expected === "discover") return null;
               return {
                 kind: "not-mcp",
                 category: "wrong-shape",
@@ -372,6 +410,25 @@ export const probeMcpEndpointShape = (
         url.searchParams.set(key, value);
       }
 
+      let discoverRequest = HttpClientRequest.post(url.toString()).pipe(
+        HttpClientRequest.setHeader("content-type", "application/json"),
+        HttpClientRequest.setHeader("accept", "application/json, text/event-stream"),
+        HttpClientRequest.bodyText(DISCOVER_BODY, "application/json"),
+      );
+      for (const [name, value] of Object.entries(options.headers ?? {})) {
+        discoverRequest = HttpClientRequest.setHeader(discoverRequest, name, value);
+      }
+      discoverRequest = discoverRequest.pipe(
+        HttpClientRequest.setHeader("mcp-protocol-version", MODERN_PROTOCOL_VERSION),
+        HttpClientRequest.setHeader("mcp-method", "server/discover"),
+      );
+
+      const discoverResponse = yield* client
+        .execute(discoverRequest)
+        .pipe(Effect.timeout(Duration.millis(timeoutMs)));
+      const discoverResult = yield* classify(discoverResponse, "POST", "discover");
+      if (discoverResult) return discoverResult;
+
       let postRequest = HttpClientRequest.post(url.toString()).pipe(
         HttpClientRequest.setHeader("content-type", "application/json"),
         HttpClientRequest.setHeader("accept", "application/json, text/event-stream"),
@@ -385,7 +442,7 @@ export const probeMcpEndpointShape = (
         .execute(postRequest)
         .pipe(Effect.timeout(Duration.millis(timeoutMs)));
 
-      const postResult = yield* classify(postResponse, "POST");
+      const postResult = yield* classify(postResponse, "POST", "initialize");
       if (postResult) return postResult;
 
       if ([404, 405, 406, 415].includes(postResponse.status)) {
@@ -398,7 +455,7 @@ export const probeMcpEndpointShape = (
         const getResponse = yield* client
           .execute(getRequest)
           .pipe(Effect.timeout(Duration.millis(timeoutMs)));
-        const getResult = yield* classify(getResponse, "GET");
+        const getResult = yield* classify(getResponse, "GET", "initialize");
         if (getResult) return getResult;
       }
 

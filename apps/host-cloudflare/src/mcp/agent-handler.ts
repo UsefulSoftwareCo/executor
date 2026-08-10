@@ -4,6 +4,9 @@ import {
   McpAuthProvider,
   jsonRpcErrorBody,
   defaultMcpResource,
+  isLegacyMcpRequest,
+  mcpResourceKey,
+  validateMcpRequestAuthority,
   type AuthOutcome,
   type Principal,
 } from "@executor-js/host-mcp";
@@ -27,7 +30,7 @@ const corsPreflightResponse = (): Response =>
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, mcp-method, mcp-name",
       "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
@@ -41,6 +44,17 @@ const jsonRpcResponse = (
   challenge === undefined
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
+
+const withCors = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", "mcp-session-id, WWW-Authenticate");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
 
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
@@ -95,9 +109,15 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     binding: "MCP_SESSION",
     transport: "streamable-http",
   });
+  const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
+    if (!ALLOWED_METHODS.has(request.method)) {
+      return jsonRpcResponse(405, -32001, "Method not allowed");
+    }
+    const authorityRejection = validateMcpRequestAuthority(request);
+    if (authorityRejection) return authorityRejection;
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
@@ -112,6 +132,26 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
         );
       }
       return renderAuthError(auth, request, outcome);
+    }
+
+    if (!(await isLegacyMcpRequest(request))) {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return jsonRpcResponse(503, -32022, "MCP 2026-07-28 support is disabled");
+      }
+      const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+      const flowId = JSON.stringify([
+        "modern",
+        outcome.principal.accountId,
+        outcome.principal.organizationId,
+        mcpResourceKey(defaultMcpResource),
+      ]);
+      const response = await mcpSessionStub(env.MCP_SESSION, flowId).handleModernRequest(
+        request,
+        outcome.principal,
+        props.session,
+        props.propagation,
+      );
+      return withCors(response);
     }
 
     if (!sessionId && request.method === "DELETE") {

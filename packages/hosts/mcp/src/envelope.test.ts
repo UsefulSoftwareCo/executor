@@ -176,6 +176,73 @@ describe("McpServingRoutes envelope", () => {
     expect(response.status).toBe(403);
     expect(await Effect.runPromise(Ref.get(disposed))).toEqual([]);
   });
+
+  it("classifies modern traffic before legacy session rules and dispatches statelessly", async () => {
+    const calls = await Effect.runPromise(Ref.make<readonly string[]>([]));
+    const ModernStoreLive = Layer.succeed(McpSessionStore)({
+      dispatch: (): Effect.Effect<McpDispatchResult> =>
+        Effect.die("legacy dispatch should not run"),
+      dispatchModern: ({ request }) =>
+        Ref.update(calls, (all) => [...all, request.headers.get("mcp-session-id") ?? "none"]).pipe(
+          Effect.as(
+            new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                result: { resultType: "complete", supportedVersions: ["2026-07-28"] },
+              }),
+              { status: 200 },
+            ),
+          ),
+        ),
+      dispose: () => Effect.void,
+    });
+    const handler = buildHandler(ModernStoreLive, McpErrorReporterNoop);
+    const response = await handler(
+      new Request("https://host.test/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer x",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "server/discover",
+          "mcp-name": "server",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "server/discover",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(await Effect.runPromise(Ref.get(calls))).toEqual(["none"]);
+  });
+
+  it("rejects mismatched Host and cross-origin browser requests before dispatch", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const badHost = await handler(
+      new Request("https://host.test/mcp", { method: "GET", headers: { host: "evil.test" } }),
+    );
+    expect(badHost.status).toBe(421);
+
+    const badOrigin = await handler(
+      new Request("https://host.test/mcp", {
+        method: "GET",
+        headers: { origin: "https://evil.test" },
+      }),
+    );
+    expect(badOrigin.status).toBe(403);
+  });
 });
 
 it("dispatches toolkit MCP routes with the parsed toolkit resource", async () => {

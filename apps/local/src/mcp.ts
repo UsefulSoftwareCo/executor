@@ -1,10 +1,11 @@
-import { Effect, type Cause } from "effect";
+import { Data, Effect, type Cause } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import {
   defaultMcpResource,
+  isLegacyMcpRequest,
   jsonRpcErrorBody,
   mcpResourceKey,
   type McpResource,
@@ -21,6 +22,7 @@ import {
   readElicitationMode,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
+import { makeModernMcpDispatcher } from "@executor-js/host-mcp/modern-tool-server";
 import {
   formatPausedExecution,
   type ExecutionEngine,
@@ -30,6 +32,8 @@ import {
 import { startIntegrationsRefresh } from "./integrations";
 
 type AnyExecutionEngine = ExecutionEngine<Cause.YieldableError>;
+
+class ModernMcpEngineUnavailable extends Data.TaggedError("ModernMcpEngineUnavailable")<{}> {}
 
 // ---------------------------------------------------------------------------
 // Streamable HTTP handler
@@ -51,6 +55,8 @@ export interface LocalMcpServerConfig {
 
 export interface LocalMcpRequestHandlerConfig {
   readonly defaultConfig: ExecutorMcpServerConfig;
+  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
+  readonly modernEnabled?: boolean;
   readonly createConfigForResource?: (
     resource: McpResource,
   ) => Promise<LocalMcpServerConfig> | LocalMcpServerConfig;
@@ -150,6 +156,35 @@ export const createMcpRequestHandler = (
     return handlerConfig.createConfigForResource(resource);
   };
 
+  const modern = makeModernMcpDispatcher((principal, options) =>
+    Effect.promise(async () => {
+      const resourceConfig = await configForResource(options?.resource ?? defaultMcpResource);
+      const engine = engineFromConfig(resourceConfig.config);
+      return { resourceConfig, engine };
+    }).pipe(
+      Effect.flatMap(({ resourceConfig, engine }) => {
+        if (!engine) return Effect.fail(new ModernMcpEngineUnavailable());
+        return engine.getDescription.pipe(
+          Effect.map((description) => ({
+            engine,
+            description,
+            ...(resourceConfig.close ? { close: resourceConfig.close } : {}),
+          })),
+        );
+      }),
+    ),
+  );
+
+  const localPrincipal = {
+    accountId: "local",
+    organizationId: "local",
+    organizationName: "Local",
+    email: "local@executor.invalid",
+    name: "Local",
+    avatarUrl: null,
+    roles: [] as string[],
+  };
+
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
     const s = servers.get(id);
@@ -168,6 +203,12 @@ export const createMcpRequestHandler = (
     handleRequest: async (request) => {
       const resource = resourceFromRequest(request);
       if (!resource) return jsonError(404, -32001, "MCP resource not found");
+      if (!(await isLegacyMcpRequest(request))) {
+        if (handlerConfig.modernEnabled === false) {
+          return jsonError(503, -32022, "MCP 2026-07-28 support is disabled");
+        }
+        return Effect.runPromise(modern.dispatch(request, localPrincipal, resource));
+      }
       const sessionId = request.headers.get("mcp-session-id");
 
       if (sessionId) {
@@ -284,6 +325,7 @@ export const createMcpRequestHandler = (
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
+      await modern.close();
     },
   };
 };

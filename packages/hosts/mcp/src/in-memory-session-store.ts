@@ -16,6 +16,7 @@ import {
   type InProcessBrowserApprovalStore,
 } from "./browser-approval-store";
 import { jsonRpcErrorBody } from "./envelope";
+import { makeModernMcpDispatcher } from "./modern-tool-server";
 import {
   McpSessionStore,
   defaultMcpResource,
@@ -155,13 +156,27 @@ export const makeInMemoryMcpSessionStore = (
   // proxy) it is preferred over the request URL — whose host would be the
   // internal bind address (127.0.0.1:PORT), unreachable for the user. Omit it on
   // loopback hosts (local/desktop), where the request URL is already correct.
-  options: { readonly webBaseUrl?: string } = {},
+  options: { readonly webBaseUrl?: string; readonly modernEnabled?: boolean } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
+  const modern = makeModernMcpDispatcher((principal, modernOptions) =>
+    buildServer(principal, {
+      resource: modernOptions?.resource,
+      elicitationMode: { mode: "model" },
+      artifactsEnabled: false,
+    }).pipe(
+      Effect.flatMap(({ mcpServer, engine }) =>
+        engine.getDescription.pipe(
+          Effect.map((description) => ({ engine, description })),
+          Effect.ensuring(Effect.promise(() => ignoreClose(() => mcpServer.close()))),
+        ),
+      ),
+    ),
+  );
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
@@ -293,6 +308,12 @@ export const makeInMemoryMcpSessionStore = (
       sessionId
         ? forward(sessionId, principal, resource, request)
         : create(principal, resource ?? defaultMcpResource, request),
+    ...(options.modernEnabled === false
+      ? {}
+      : {
+          dispatchModern: ({ request, principal, resource }) =>
+            modern.dispatch(request, principal, resource),
+        }),
     dispose: (sessionId) =>
       Effect.promise(() => dispose(sessionId, { transport: true, server: true })),
   };
@@ -379,6 +400,7 @@ export const makeInMemoryMcpSessionStore = (
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
+      await modern.close();
     },
   };
 };

@@ -671,7 +671,7 @@ const formatResumeApprovalRequired = (input: {
   },
 });
 
-const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
+export const formatMcpExecutionFailure = (cause: Cause.Cause<unknown>): McpToolResult => {
   const correlationId = newCorrelationId();
   const defect = Cause.findDefect(cause);
   const nativeElicitationFailed =
@@ -784,7 +784,7 @@ const fallbackOutcomeResult = (
 // The catalog is per-session: a connection that opted out of artifacts never
 // sees the artifact skills, so the index cannot advertise a how-to for tools it
 // does not have, and fetching one by name misses like any unknown skill.
-const skillsResult = (
+export const skillsResult = (
   name: string | undefined,
   executeInventory: string,
   catalog: readonly Skill[],
@@ -1164,7 +1164,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const runToolEffect = <EffE>(effect: Effect.Effect<McpToolResult, EffE>) =>
       Effect.runPromiseWith(context)(
         anchor(effect).pipe(
-          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause))),
+          Effect.catchCause((cause) => Effect.succeed(formatMcpExecutionFailure(cause))),
         ),
       );
 

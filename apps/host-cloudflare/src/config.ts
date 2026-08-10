@@ -56,6 +56,8 @@ export interface CloudflareEnv {
    * behind Access, or the instance is wide open.
    */
   readonly ENABLE_DEV_AUTH?: string;
+  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
+  readonly MCP_2026_07_28_ENABLED?: string;
 }
 
 export interface CloudflareConfig {

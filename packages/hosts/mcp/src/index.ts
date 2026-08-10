@@ -40,5 +40,7 @@ export {
   McpServingRoutes,
   McpDiscoveryRoutes,
   jsonRpcErrorBody,
+  isLegacyMcpRequest,
+  validateMcpRequestAuthority,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
 } from "./envelope";

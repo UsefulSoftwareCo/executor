@@ -21,7 +21,7 @@ const closeQuietly = (connection: McpConnection): Effect.Effect<void> =>
 const isMcpInvocationError = (error: unknown): error is McpInvocationError =>
   Predicate.isTagged(error, "McpInvocationError");
 
-const isDeadConnectionFailure = (error: unknown): boolean => {
+const isDeadConnectionFailure = (connection: McpConnection, error: unknown): boolean => {
   if (Predicate.isTagged(error, "McpConnectionError")) return true;
   if (!isMcpInvocationError(error)) return false;
   return (
@@ -34,16 +34,16 @@ const isDeadConnectionFailure = (error: unknown): boolean => {
     // freshly minted token can only reach the server over a NEW session. Drop
     // it so the retry dials with the new credential.
     error.status === 401 ||
-    error.status === 404 ||
+    (error.status === 404 && connection.protocolEra() !== "modern") ||
     error.status === 408
   );
 };
 
-const shouldDropConnection = <A, E>(exit: Exit.Exit<A, E>): boolean => {
+const shouldDropConnection = <A, E>(connection: McpConnection, exit: Exit.Exit<A, E>): boolean => {
   if (Exit.isSuccess(exit)) return false;
   const failures = exit.cause.reasons.filter(Cause.isFailReason);
   if (failures.length === 0) return true;
-  return failures.some((failure) => isDeadConnectionFailure(failure.error));
+  return failures.some((failure) => isDeadConnectionFailure(connection, failure.error));
 };
 
 /** A per-plugin-instance pool that gives each invocation an exclusive MCP
@@ -92,7 +92,7 @@ export const createMcpConnectionPool = (): McpConnectionPool => {
 
   const release = <A, E>(key: string, lease: ConnectionLease, exit: Exit.Exit<A, E>) =>
     Effect.gen(function* () {
-      if (shouldDropConnection(exit)) {
+      if (shouldDropConnection(lease.connection, exit)) {
         yield* closeQuietly(lease.connection);
         return;
       }
@@ -107,11 +107,15 @@ export const createMcpConnectionPool = (): McpConnectionPool => {
 
   const withConnection: McpConnectionPool["withConnection"] = (key, connector, use) => {
     let reused = false;
+    let reusedEra: ReturnType<McpConnection["protocolEra"]>;
     const run = (forceFresh: boolean) =>
       Effect.acquireUseRelease(
         acquire(key, connector, forceFresh),
         (lease) => {
-          if (!forceFresh) reused = lease.reused;
+          if (!forceFresh) {
+            reused = lease.reused;
+            reusedEra = lease.connection.protocolEra();
+          }
           return use(lease.connection);
         },
         (lease, exit) => release(key, lease, exit),
@@ -119,7 +123,7 @@ export const createMcpConnectionPool = (): McpConnectionPool => {
 
     return run(false).pipe(
       Effect.catch((error) =>
-        reused && isMcpInvocationError(error) && error.status === 404
+        reused && reusedEra !== "modern" && isMcpInvocationError(error) && error.status === 404
           ? run(true)
           : Effect.fail(error),
       ),

@@ -1,9 +1,7 @@
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
-
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import * as z from "zod/v4";
+import { CallToolResultSchema } from "@modelcontextprotocol/core";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 
 import {
   authToolFailure,
@@ -392,11 +390,13 @@ type JsonSchemaObject = Record<string, unknown> & {
   readonly properties?: Record<string, unknown>;
 };
 
-const McpCallToolResultJsonSchema = z.toJSONSchema(CallToolResultSchema) as JsonSchemaObject;
+const McpCallToolResultJsonSchema = CallToolResultSchema.toJSONSchema() as JsonSchemaObject;
 
 const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
-  const defaultStructuredContentSchema =
-    McpCallToolResultJsonSchema.properties?.structuredContent ?? {};
+  const defaultStructuredContentSchema = {
+    type: "object",
+    additionalProperties: true,
+  };
 
   return {
     ...McpCallToolResultJsonSchema,

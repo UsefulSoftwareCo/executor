@@ -9,6 +9,10 @@ import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
@@ -387,6 +391,58 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       result?: { structuredContent?: { result?: number } };
     }>(call);
     expect(result.result?.structuredContent?.result).toBe(42);
+  }, 60_000);
+
+  it("discovers, lists, and executes over stateless MCP 2026-07-28", async () => {
+    const transport = new ModernStreamableHTTPClientTransport(
+      new URL("/mcp", `http://${worker.address}:${worker.port}`),
+    );
+    const client = new ModernClient(
+      { name: "cloudflare-modern-test", version: "1" },
+      {
+        capabilities: { elicitation: { form: {}, url: {} } },
+        versionNegotiation: { mode: "auto" },
+      },
+    );
+
+    await client.connect(transport);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test cleanup boundary: the network client must close when an assertion fails.
+    try {
+      expect(client.getProtocolEra()).toBe("modern");
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["execute", "skills"]);
+      expect(transport.sessionId).toBeUndefined();
+
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "export default 6 * 7" },
+      });
+      expect(result.structuredContent).toMatchObject({ status: "completed", result: 42 });
+      expect(transport.sessionId).toBeUndefined();
+
+      let receivedElicitation = false;
+      client.setRequestHandler("elicitation/create", () => {
+        receivedElicitation = true;
+        return { action: "accept", content: {} };
+      });
+      const resumed = await client.callTool({
+        name: "execute",
+        arguments: {
+          code: [
+            "return await tools.executor.coreTools.policies.create({",
+            '  owner: "org",',
+            `  pattern: "modern-input-required-${runId}.*",`,
+            '  action: "require_approval"',
+            "});",
+          ].join("\n"),
+        },
+      });
+      expect(receivedElicitation).toBe(true);
+      expect(resumed.isError).toBeFalsy();
+      expect(transport.sessionId).toBeUndefined();
+    } finally {
+      await client.close();
+    }
   }, 60_000);
 
   it("delivers native elicitation on the approval-gated tool call stream", async () => {

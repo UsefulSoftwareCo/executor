@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, Option, Schema } from "effect";
+import { Cause, Data, Deferred, Effect, Exit, Option, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import type { Connection, ConnectionContext } from "agents";
 import { McpAgent } from "agents/mcp";
@@ -18,7 +18,16 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+import {
+  defaultMcpResource,
+  mcpResourceKey,
+  type McpResource,
+  type Principal,
+} from "@executor-js/host-mcp";
+import {
+  makeModernMcpDispatcher,
+  type ModernMcpDispatcher,
+} from "@executor-js/host-mcp/modern-tool-server";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import type {
@@ -137,11 +146,14 @@ const LAST_ACTIVITY_KEY = "last-activity-ms";
 const PARTYSERVER_NAME_KEY = "__ps_name";
 /** The agents SDK's durable "condemned" marker (`_cf_scheduleDestroy`). */
 const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
+const MODERN_REQUEST_STATE_KEY = "modern-request-state-key";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
 const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
+
+class ModernMcpRuntimeUnavailable extends Data.TaggedError("ModernMcpRuntimeUnavailable")<{}> {}
 
 type JsonRpcRequestId = string | number;
 const JsonRpcRequestWithId = Schema.Struct({
@@ -235,6 +247,7 @@ export abstract class McpAgentSessionDOBase<
   private approvalResponses = new Map<string, ResumeResponse>();
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
   private pendingApprovalLeases = new Map<string, PendingApprovalLease>();
+  private modernDispatcher: ModernMcpDispatcher | null = null;
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
@@ -623,6 +636,11 @@ export abstract class McpAgentSessionDOBase<
     const self = this;
     return Effect.gen(function* () {
       yield* self.releaseAllPendingApprovalLeases();
+      if (self.modernDispatcher) {
+        const modern = self.modernDispatcher;
+        self.modernDispatcher = null;
+        yield* Effect.promise(() => modern.close()).pipe(Effect.ignore);
+      }
       if (options.closeStreams ?? true) {
         yield* Effect.sync(() => self.closeActiveStreams());
       }
@@ -655,6 +673,117 @@ export abstract class McpAgentSessionDOBase<
       );
       return self.initialized && !!self.engine;
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
+  }
+
+  private ensureModernOwner(
+    principal: Principal,
+    token: McpSessionInit,
+  ): Effect.Effect<SessionMeta | "forbidden"> {
+    const self = this;
+    return Effect.gen(function* () {
+      let sessionMeta = yield* self.loadSessionMeta();
+      if (sessionMeta) {
+        if (
+          sessionMeta.userId !== principal.accountId ||
+          sessionMeta.organizationId !== principal.organizationId ||
+          mcpResourceKey(sessionMeta.resource) !== mcpResourceKey(token.resource)
+        ) {
+          return "forbidden" as const;
+        }
+      } else {
+        sessionMeta = yield* self.resolveAndStoreSessionMeta(token);
+      }
+
+      yield* Effect.promise(() => self.markActivity());
+      return sessionMeta;
+    });
+  }
+
+  private ensureModernRuntime(
+    principal: Principal,
+    token: McpSessionInit,
+  ): Effect.Effect<"ok" | "forbidden"> {
+    const self = this;
+    return Effect.gen(function* () {
+      const sessionMeta = yield* self.ensureModernOwner(principal, token);
+      if (sessionMeta === "forbidden") return "forbidden" as const;
+      if (!self.initialized || !self.engine) {
+        const dbHandle = yield* self.openSessionDbHandle();
+        const built = yield* self.buildRuntime(sessionMeta, dbHandle);
+        self.dbHandle = dbHandle;
+        self.server = built.mcpServer;
+        self.engine = built.engine;
+        self.initialized = true;
+      }
+      return "ok" as const;
+    });
+  }
+
+  /** Serve one modern stateless HTTP exchange inside an owner/resource-keyed
+   * Durable Object. The live engine stays here across MRTR rounds; signed
+   * requestState is only the client-carried continuation pointer. */
+  async handleModernRequest(
+    request: Request,
+    principal: Principal,
+    token: McpSessionInit,
+    incoming?: IncomingTraceHeaders,
+  ): Promise<Response> {
+    const self = this;
+    const program = Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
+      const access = yield* self.ensureModernOwner(principal, token);
+      if (access === "forbidden") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32003, message: "Modern MCP flow belongs to another principal" },
+          }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        );
+      }
+
+      if (!self.modernDispatcher) {
+        let key = yield* Effect.promise(() =>
+          self.ctx.storage.get<Uint8Array>(MODERN_REQUEST_STATE_KEY),
+        );
+        if (!key) {
+          key = crypto.getRandomValues(new Uint8Array(32));
+          yield* Effect.promise(() => self.ctx.storage.put(MODERN_REQUEST_STATE_KEY, key));
+        }
+        self.modernDispatcher = makeModernMcpDispatcher(
+          () =>
+            self.ensureModernRuntime(principal, token).pipe(
+              Effect.flatMap((runtimeAccess) => {
+                if (runtimeAccess === "forbidden" || !self.engine) {
+                  return Effect.fail(new ModernMcpRuntimeUnavailable());
+                }
+                return self.engine.getDescription.pipe(
+                  Effect.map((description) => ({ engine: self.engine!, description })),
+                );
+              }),
+            ),
+          {
+            requestStateKey: key,
+            onExecutionPaused: (executionId) =>
+              Effect.runPromise(
+                self.startPendingApprovalLease(executionId, {
+                  ttlMs: PAUSED_APPROVAL_TIMEOUT_MS,
+                  expiresAt: new Date(Date.now() + PAUSED_APPROVAL_TIMEOUT_MS).toISOString(),
+                }),
+              ),
+            onResumeStarted: (executionId) =>
+              Effect.runPromise(self.beginPendingApprovalResume(executionId)),
+            onResumeSettled: (executionId) =>
+              Effect.runPromise(self.finishPendingApprovalResume(executionId)),
+          },
+        );
+      }
+      return yield* self.modernDispatcher.dispatch(request, principal, token.resource);
+    }).pipe(Effect.withSpan("McpSessionDO.handleModernRequest"), (effect) =>
+      self.withSpanFlush(effect),
+    );
+    return Effect.runPromise(self.withTelemetry(program, incoming));
   }
 
   private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {

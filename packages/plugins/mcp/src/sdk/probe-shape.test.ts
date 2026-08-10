@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Ref } from "effect";
+import { Effect, Ref, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
@@ -13,6 +13,13 @@ interface CapturedProbeRequest {
 }
 
 type ProbeHandler = (request: CapturedProbeRequest) => HttpServerResponse.HttpServerResponse;
+
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const decodeProbe = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({ id: Schema.optional(Schema.Unknown), method: Schema.optional(Schema.String) }),
+  ),
+);
 
 const serveProbeEndpoint = (handler: ProbeHandler) =>
   Effect.gen(function* () {
@@ -50,6 +57,81 @@ const withServer = <A, E>(handler: ProbeHandler, use: (endpoint: string) => Effe
   );
 
 describe("probeMcpEndpointShape", () => {
+  it.effect("probes server/discover with the modern per-request envelope first", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          const body = decodeProbe(request.body);
+          if (body.method !== "server/discover") {
+            return HttpServerResponse.empty({ status: 500 });
+          }
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              resultType: "complete",
+              supportedVersions: ["2026-07-28"],
+              capabilities: { tools: {} },
+            },
+          });
+        });
+
+        const result = yield* probeMcpEndpointShape(server.endpoint);
+        const requests = yield* server.requests;
+
+        expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.headers["mcp-protocol-version"]).toBe("2026-07-28");
+        expect(requests[0]?.headers["mcp-method"]).toBe("server/discover");
+        expect(decodeJson(requests[0]?.body ?? "{}")).toMatchObject({
+          method: "server/discover",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": { name: "executor-probe", version: "0" },
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect("falls back to legacy initialize when discover is unsupported", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          const body = decodeProbe(request.body);
+          if (body.method === "server/discover") {
+            return HttpServerResponse.jsonUnsafe({
+              jsonrpc: "2.0",
+              id: body.id,
+              error: { code: -32601, message: "Method not found" },
+            });
+          }
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              serverInfo: { name: "legacy", version: "0" },
+            },
+          });
+        });
+
+        const result = yield* probeMcpEndpointShape(server.endpoint);
+        const requests = yield* server.requests;
+
+        expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+        expect(requests.map((request) => decodeProbe(request.body).method)).toEqual([
+          "server/discover",
+          "initialize",
+        ]);
+      }),
+    ),
+  );
+
   it.effect("classifies 2xx as unauth-OK MCP", () =>
     withServer(
       () =>

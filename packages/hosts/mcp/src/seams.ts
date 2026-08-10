@@ -256,6 +256,14 @@ export class McpSessionStore extends Context.Service<
      */
     readonly dispatch: (input: McpDispatchInput) => Effect.Effect<McpDispatchResult>;
     /**
+     * Serve one stateless 2026-07-28 request. Optional during staged rollout:
+     * hosts that have not installed the modern adapter receive an explicit
+     * unsupported-protocol response while their legacy sessions continue to work.
+     */
+    readonly dispatchModern?: (
+      input: Omit<McpDispatchInput, "sessionId">,
+    ) => Effect.Effect<Response>;
+    /**
      * Tear down a session by id (idempotent).
      *
      * `request` carries the inbound `Request` SO a cross-isolate store (cloud's

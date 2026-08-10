@@ -48,7 +48,7 @@ export const makeSelfHostMcpSessionStore = (
           selfHostAnalytics.record(`artifact_${action}`, { via: "agent" }),
       },
     ),
-    { webBaseUrl },
+    { webBaseUrl, modernEnabled: process.env.MCP_2026_07_28_ENABLED !== "false" },
   );
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */

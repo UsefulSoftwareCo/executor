@@ -1,3 +1,5 @@
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+
 // ---------------------------------------------------------------------------
 // Stdio transport factory — loaded only on demand
 // ---------------------------------------------------------------------------
@@ -12,9 +14,6 @@
 // in `connection.ts`. Remote-only consumers (cloud/marketing) never execute
 // the import and therefore never touch `node:child_process`.
 // ---------------------------------------------------------------------------
-
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-
 export type StdioTransportConfig = {
   readonly command: string;
   readonly args?: ReadonlyArray<string>;

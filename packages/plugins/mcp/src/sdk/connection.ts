@@ -1,14 +1,15 @@
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
+import {
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import type { FetchLike, OAuthClientProvider, ProtocolEra } from "@modelcontextprotocol/client";
 import { Effect, Layer, Predicate, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 // NOTE: `StdioClientTransport` is NOT imported eagerly. The upstream module
-// (`@modelcontextprotocol/sdk/client/stdio.js`) touches `node:child_process`
+// (`@modelcontextprotocol/client/stdio`) touches `node:child_process`
 // at evaluation time, which crashes workerd (incl. vitest-pool-workers) at
 // SIGSEGV on module instantiation. Cloud callers set
 // `dangerouslyAllowStdioMCP: false` and never reach the stdio branch below;
@@ -30,6 +31,8 @@ import { detectInsufficientScope } from "@executor-js/sdk/core";
 
 export type McpConnection = {
   readonly client: Client;
+  readonly protocolEra: () => ProtocolEra | undefined;
+  readonly setToolListChangedHandler: (handler: (() => void) | undefined) => void;
   readonly close: () => Promise<void>;
 };
 
@@ -201,18 +204,36 @@ const fetchFromHttpClientLayer = (
 // MCP plugin runs inside a Cloudflare Worker (executor.sh). The
 // cfworker validator does not use code generation and works in every
 // runtime we ship to.
-const createClient = (): Client =>
-  new Client(
+const createClient = (): Pick<McpConnection, "client" | "setToolListChangedHandler"> => {
+  let onToolListChanged: (() => void) | undefined;
+  const client = new Client(
     { name: "executor-mcp", version: "0.1.0" },
     {
       capabilities: { elicitation: { form: {}, url: {} } },
       jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+      versionNegotiation: { mode: "auto" },
+      listChanged: {
+        tools: {
+          autoRefresh: false,
+          onChanged: () => onToolListChanged?.(),
+        },
+      },
     },
   );
+  return {
+    client,
+    setToolListChangedHandler: (handler) => {
+      onToolListChanged = handler;
+    },
+  };
+};
 
-const connectionFromClient = (client: Client): McpConnection => ({
-  client,
-  close: () => client.close(),
+const connectionFromClient = (
+  built: Pick<McpConnection, "client" | "setToolListChangedHandler">,
+): McpConnection => ({
+  ...built,
+  protocolEra: () => built.client.getProtocolEra(),
+  close: () => built.client.close(),
 });
 
 const connectionFailure = (
@@ -249,7 +270,8 @@ const connectClient = (input: {
   createTransport: () => Parameters<Client["connect"]>[0];
 }): Effect.Effect<McpConnection, McpConnectionError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
-    const client = createClient();
+    const built = createClient();
+    const client = built.client;
     const transportInstance = input.createTransport();
 
     yield* Effect.tryPromise({
@@ -262,7 +284,7 @@ const connectClient = (input: {
       }),
     );
 
-    return connectionFromClient(client);
+    return connectionFromClient(built);
   });
 
 // ---------------------------------------------------------------------------

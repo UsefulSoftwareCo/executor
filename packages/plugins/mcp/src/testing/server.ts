@@ -160,11 +160,11 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             onsessioninitialized: (sid) => {
+              sessions += 1;
               transports.set(sid, transport);
             },
           });
           allTransports.add(transport);
-          sessions += 1;
 
           const mcpServer = factory();
           yield* Effect.tryPromise({

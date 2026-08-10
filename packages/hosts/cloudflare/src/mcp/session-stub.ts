@@ -6,7 +6,9 @@ import type {
   McpSessionApprovalResult,
   McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
+  McpSessionInit,
 } from "./agent-session-durable-object";
+import type { Principal } from "@executor-js/host-mcp";
 import { mcpSessionDurableObjectName } from "./execution-owner-directory";
 
 export interface McpSessionNamespace<Id> {
@@ -15,6 +17,12 @@ export interface McpSessionNamespace<Id> {
 }
 
 export interface McpSessionStub {
+  readonly handleModernRequest: (
+    request: Request,
+    principal: Principal,
+    token: McpSessionInit,
+    incoming?: IncomingTraceHeaders,
+  ) => Promise<Response>;
   readonly validateMcpSessionOwner: (
     identity: McpApprovalOwner,
   ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;

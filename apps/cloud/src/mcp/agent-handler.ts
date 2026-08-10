@@ -5,6 +5,9 @@ import {
   McpAuthProvider,
   jsonRpcErrorBody,
   defaultMcpResource,
+  isLegacyMcpRequest,
+  mcpResourceKey,
+  validateMcpRequestAuthority,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
   type McpResource,
@@ -31,7 +34,7 @@ const corsPreflightResponse = (): Response =>
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, mcp-method, mcp-name",
       "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
@@ -45,6 +48,17 @@ const jsonRpcResponse = (
   challenge === undefined
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
+
+const withCors = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", "mcp-session-id, WWW-Authenticate");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
 
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
@@ -167,6 +181,8 @@ export const makeCloudMcpAgentHandler = () => {
     if (!ALLOWED_METHODS.has(request.method)) {
       return jsonRpcResponse(405, -32001, "Method not allowed");
     }
+    const authorityRejection = validateMcpRequestAuthority(request);
+    if (authorityRejection) return authorityRejection;
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await runTraced(request, authenticate(request));
@@ -186,6 +202,30 @@ export const makeCloudMcpAgentHandler = () => {
         );
       }
       return renderAuthError(auth, request, outcome);
+    }
+
+    const resource = resourceFromPath(request);
+    if (!(await isLegacyMcpRequest(request))) {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return jsonRpcResponse(503, -32022, "MCP 2026-07-28 support is disabled");
+      }
+      const props = await runTraced(
+        request,
+        propsForPrincipal(request, outcome.principal, resource),
+      );
+      const flowId = JSON.stringify([
+        "modern",
+        outcome.principal.accountId,
+        outcome.principal.organizationId,
+        mcpResourceKey(resource),
+      ]);
+      const response = await mcpSessionStub(env.MCP_SESSION, flowId).handleModernRequest(
+        request,
+        outcome.principal,
+        props.session,
+        props.propagation,
+      );
+      return wrapMcpSseResponse(request, env, withCors(response));
     }
 
     if (!sessionId && request.method === "DELETE") {
@@ -217,7 +257,6 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const resource = resourceFromPath(request);
     const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withVerifiedIdentityHeaders(

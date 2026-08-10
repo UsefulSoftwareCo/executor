@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 
 import { mintInviteCode } from "../testing/mint-invite";
 
@@ -85,6 +89,37 @@ test("an authenticated MCP client initializes, lists tools, and executes code", 
   );
   expect(call.status).toBe(200);
   expect(JSON.stringify(await call.json())).toContain("42");
+});
+
+test("an authenticated MCP 2026-07-28 client discovers, lists, and executes statelessly", async () => {
+  const token = await signUp("modern@mcp.test");
+  const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } },
+    fetch: (url, init) =>
+      handler(url instanceof Request ? new Request(url, init) : new Request(url.toString(), init)),
+  });
+  const client = new ModernClient(
+    { name: "selfhost-modern-test", version: "1" },
+    { versionNegotiation: { mode: "auto" } },
+  );
+
+  await client.connect(transport);
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test cleanup boundary: the client must close when an assertion fails.
+  try {
+    expect(client.getProtocolEra()).toBe("modern");
+    const tools = await client.listTools();
+    expect(tools.tools.map((tool) => tool.name)).toEqual(["execute", "skills"]);
+    expect(transport.sessionId).toBeUndefined();
+
+    const result = await client.callTool({
+      name: "execute",
+      arguments: { code: "export default 6 * 7" },
+    });
+    expect(result.structuredContent).toMatchObject({ status: "completed", result: 42 });
+    expect(transport.sessionId).toBeUndefined();
+  } finally {
+    await client.close();
+  }
 });
 
 test("an MCP session cannot be reused by another user, and unauth is rejected", async () => {
