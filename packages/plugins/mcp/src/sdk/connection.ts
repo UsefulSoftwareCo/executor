@@ -1,6 +1,6 @@
 import type { Client, FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
-import { Effect, Layer, Predicate, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Effect, Layer, Option, Predicate, Schema, Stream } from "effect";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
 
 // NOTE: nothing from `@modelcontextprotocol/client` is imported eagerly —
 // value access goes through `loadMcpClientSdk` (see client-module.ts for the
@@ -16,10 +16,11 @@ import { loadMcpClientSdk, type McpClientSdk } from "./client-module";
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import {
   McpConnectionError,
+  McpConnectionFailureKind,
   McpInsufficientScopeError,
   McpOAuthReauthorizationRequired,
 } from "./errors";
-import { httpStatusFromCause } from "./http-status";
+import { connectionHttpStatusFromCause, isStreamableHttpProtocolError } from "./http-status";
 import { detectInsufficientScope } from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,84 @@ const headersFrom = (headers: HeadersInit | undefined): Headers =>
 const recordFromHeaders = (headers: Headers): Record<string, string> =>
   Object.fromEntries(headers.entries());
 
+const ExternalTransportCause = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+});
+const decodeExternalTransportCause = Schema.decodeUnknownOption(ExternalTransportCause);
+
+const TLS_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+const DNS_ERROR_CODES = new Set(["EAI_AGAIN", "ENOTFOUND"]);
+const TIMEOUT_ERROR_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
+const PROTOCOL_HTTP_STATUSES = new Set([400, 404, 405, 406, 415, 422, 501]);
+
+const CONNECTION_FAILURE_MESSAGES: Record<McpConnectionFailureKind, string> = {
+  tls: "MCP HTTPS connection failed: TLS certificate verification failed. Check the server certificate and Executor's CA trust configuration.",
+  dns: "MCP connection failed: the server hostname could not be resolved.",
+  timeout: "MCP connection failed: the server did not respond before the connection timed out.",
+  connection_refused: "MCP connection failed: the server refused the connection.",
+  network: "MCP connection failed before transport negotiation completed.",
+  http: "MCP server rejected the HTTP connection.",
+  protocol: "MCP server does not support the requested transport.",
+};
+
+const CONNECTION_ATTEMPT_SUMMARIES: Partial<Record<McpConnectionFailureKind, string>> = {
+  tls: "TLS certificate verification failed",
+  dns: "hostname resolution failed",
+  timeout: "connection timed out",
+  connection_refused: "connection refused",
+  protocol: "unsupported protocol response",
+};
+
+class McpHttpTransportError extends Schema.TaggedErrorClass<McpHttpTransportError>()(
+  "McpHttpTransportError",
+  {
+    failureKind: McpConnectionFailureKind,
+    cause: Schema.Defect,
+  },
+) {}
+const decodeMcpHttpTransportError = Schema.decodeUnknownOption(McpHttpTransportError);
+
+const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
+  const codes = new Set<string>();
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decoded = decodeExternalTransportCause(current);
+    if (Option.isNone(decoded)) break;
+    if (decoded.value.code !== undefined) codes.add(decoded.value.code);
+    if (decoded.value.cause === undefined) break;
+    current = decoded.value.cause;
+  }
+  return codes;
+};
+
+const classifyHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpConnectionFailureKind => {
+  if (!Predicate.isTagged(failure.reason, "TransportError")) return "network";
+  const codes = externalTransportCodes(failure.reason.cause);
+  if ([...codes].some((code) => TLS_ERROR_CODES.has(code))) return "tls";
+  if ([...codes].some((code) => DNS_ERROR_CODES.has(code))) return "dns";
+  if ([...codes].some((code) => TIMEOUT_ERROR_CODES.has(code))) return "timeout";
+  if (codes.has("ECONNREFUSED")) return "connection_refused";
+  return "network";
+};
+
+const normalizeHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpHttpTransportError =>
+  new McpHttpTransportError({
+    failureKind: classifyHttpClientFailure(failure),
+    cause: failure,
+  });
+
 const applyBody = async (
   request: HttpClientRequest.HttpClientRequest,
   headers: Headers,
@@ -145,7 +224,7 @@ const fetchFromHttpClientLayer = (
         status: response.status,
         headers: responseHeaders,
       });
-    }).pipe(Effect.provide(httpClientLayer));
+    }).pipe(Effect.mapError(normalizeHttpClientFailure), Effect.provide(httpClientLayer));
     // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
     // HERE, below the SDK: with an authProvider the SDK would consume the
     // challenge and re-run auth ("upscoping"), which our static-token
@@ -232,16 +311,49 @@ const connectionFailure = (
       insufficientScope: true,
     });
   }
+  const httpTransportError = decodeMcpHttpTransportError(cause);
+  if (Option.isSome(httpTransportError)) {
+    return new McpConnectionError({
+      transport,
+      message: CONNECTION_FAILURE_MESSAGES[httpTransportError.value.failureKind],
+      failureKind: httpTransportError.value.failureKind,
+    });
+  }
   // Carry the handshake HTTP status structurally (and in the message for
   // humans) so the liveness health check can classify a rejected credential
   // as expired rather than a generic connection failure.
-  const status = httpStatusFromCause(cause);
+  const status = connectionHttpStatusFromCause(cause);
+  const failureKind: McpConnectionFailureKind =
+    isStreamableHttpProtocolError(cause) ||
+    (status !== undefined && PROTOCOL_HTTP_STATUSES.has(status))
+      ? "protocol"
+      : status === undefined
+        ? "network"
+        : "http";
   return new McpConnectionError({
     transport,
     message: status === undefined ? message : `${message} (HTTP ${status})`,
+    failureKind,
     ...(status === undefined ? {} : { httpStatus: status }),
   });
 };
+
+const connectionAttemptSummary = (failure: McpConnectionError): string => {
+  if (failure.httpStatus !== undefined) return `HTTP ${failure.httpStatus}`;
+  return failure.failureKind === undefined
+    ? "connection failed"
+    : (CONNECTION_ATTEMPT_SUMMARIES[failure.failureKind] ?? "connection failed");
+};
+
+const autoTransportFailure = (
+  streamableHttp: McpConnectionError,
+  sse: McpConnectionError,
+): McpConnectionError =>
+  new McpConnectionError({
+    transport: "auto",
+    failureKind: "protocol",
+    message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
+  });
 
 const connectClient = (input: {
   transport: string;
@@ -377,10 +489,18 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) => {
-      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
-      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
-      return connectSse;
+    Effect.catchTags({
+      McpOAuthReauthorizationRequired: Effect.fail,
+      McpConnectionError: (error) => {
+        if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
+        if (error.failureKind !== "protocol") return Effect.fail(error);
+        return connectSse.pipe(
+          Effect.catchTags({
+            McpOAuthReauthorizationRequired: Effect.fail,
+            McpConnectionError: (sseError) => Effect.fail(autoTransportFailure(error, sseError)),
+          }),
+        );
+      },
     }),
   );
 };
