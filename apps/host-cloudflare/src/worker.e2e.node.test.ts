@@ -445,6 +445,40 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     }
   }, 60_000);
 
+  it("falls back to legacy MCP when modern support is rolled back", async () => {
+    const rollbackWorker = await unstable_dev(resolve(dir, "worker.ts"), {
+      config: resolve(dir, "../wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      experimental: { disableExperimentalWarning: true },
+      vars: {
+        EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
+        ENABLE_DEV_AUTH: "true",
+        MCP_2026_07_28_ENABLED: "false",
+      },
+    });
+    const transport = new ModernStreamableHTTPClientTransport(
+      new URL("/mcp", `http://${rollbackWorker.address}:${rollbackWorker.port}`),
+    );
+    const client = new ModernClient(
+      { name: "cloudflare-rollback-test", version: "1" },
+      { versionNegotiation: { mode: "auto" } },
+    );
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test cleanup boundary: both the network client and temporary worker must close on failure.
+    try {
+      await client.connect(transport);
+      expect(client.getProtocolEra()).toBe("legacy");
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toContain("execute");
+      expect(transport.sessionId).toBeTruthy();
+    } finally {
+      await client.close();
+      await rollbackWorker.stop();
+    }
+  }, 120_000);
+
   it("delivers native elicitation on the approval-gated tool call stream", async () => {
     const client = new Client(
       { name: "native-elicitation-test", version: "1.0.0" },

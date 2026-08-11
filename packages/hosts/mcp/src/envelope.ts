@@ -158,18 +158,14 @@ const withMcpCors = (response: Response): Response => {
   });
 };
 
-/** Reject DNS-rebinding and cross-origin browser requests before credentials
- * are evaluated. Non-browser clients normally send no Origin and are accepted. */
+/** Reject DNS-rebinding attempts before credentials are evaluated. Origin is
+ * intentionally not restricted here: this envelope advertises wildcard CORS,
+ * and hosts with a narrower browser policy enforce it at their own boundary. */
 export const validateMcpRequestAuthority = (request: Request): Response | null => {
   const url = new URL(request.url);
   const host = request.headers.get("host");
   if (host && host.toLowerCase() !== url.host.toLowerCase()) {
     return jsonRpcResponse(421, -32600, "Host header does not match request URL");
-  }
-  const origin = request.headers.get("origin");
-  if (!origin) return null;
-  if (!URL.canParse(origin) || new URL(origin).origin !== url.origin) {
-    return jsonRpcResponse(403, -32600, "Origin is not allowed");
   }
   return null;
 };

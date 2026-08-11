@@ -207,7 +207,7 @@ export const makeCloudMcpAgentHandler = () => {
     const resource = resourceFromPath(request);
     if (!(await isLegacyMcpRequest(request))) {
       if (env.MCP_2026_07_28_ENABLED === "false") {
-        return jsonRpcResponse(503, -32022, "MCP 2026-07-28 support is disabled");
+        return jsonRpcResponse(400, -32022, "MCP 2026-07-28 support is disabled");
       }
       const props = await runTraced(
         request,

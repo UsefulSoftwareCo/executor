@@ -4,12 +4,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
-import { defaultMcpResource } from "@executor-js/host-mcp";
+import { defaultMcpResource, type Principal } from "@executor-js/host-mcp";
+import type { ModernMcpDispatcher } from "@executor-js/host-mcp/modern-tool-server";
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
 
 import {
   McpAgentSessionDOBase,
   type McpApprovalOwner,
+  type McpSessionInit,
   type McpSessionModelResumeResult,
   type SessionMeta,
 } from "./agent-session-durable-object";
@@ -80,21 +82,34 @@ class MemoryStorage {
 }
 
 type HarnessSession = {
+  activeModernRequestCount: number;
   alarm: () => Promise<void>;
+  beginModernRequest: () => Promise<() => void>;
+  closeRuntime: () => Effect.Effect<void>;
   ctx: MemoryStorage;
   dbHandle: { readonly end: () => void } | null;
   engine: ExecutionEngine<Cause.YieldableError> | null;
   getConnections?: () => Iterable<unknown>;
   getSessionId: () => string;
+  handleModernRequest: (
+    request: Request,
+    principal: Principal,
+    token: McpSessionInit,
+  ) => Promise<Response>;
   initialized: boolean;
   lastActivityMs: number;
   maxPausedSessionIdleMs: () => number;
+  modernDispatcher: ModernMcpDispatcher | null;
+  modernDispatcherPromise: Promise<ModernMcpDispatcher> | null;
+  modernRequestDrainWaiters: Set<() => void>;
   onStart: () => Promise<void>;
   pendingApprovalLeases: Map<string, never>;
   props: Record<string, unknown>;
   runMcpAgentOnStart: () => Promise<void>;
+  runningExecutionCount: () => Promise<number>;
+  runtimeClosePromise: Promise<void> | null;
   server?: McpServer;
-  sessionMeta: SessionMeta;
+  sessionMeta: SessionMeta | null;
   sessionTimeoutMs: () => number;
   resumeExecutionForModel: (
     executionId: string,
@@ -143,6 +158,34 @@ const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: ()
   return { promise, resolve };
 };
 
+class GatedModernStorage extends MemoryStorage {
+  readonly readEntered = makeDeferred();
+  readonly releaseRead = makeDeferred();
+  modernKeyReads = 0;
+
+  override async get<T>(key: string): Promise<T | undefined> {
+    if (key === "modern-request-state-key") {
+      this.modernKeyReads += 1;
+      this.readEntered.resolve();
+      await this.releaseRead.promise;
+    }
+    return super.get<T>(key);
+  }
+}
+
+class GatedSessionMetaStorage extends MemoryStorage {
+  readonly readEntered = makeDeferred();
+  readonly releaseRead = makeDeferred();
+
+  override async get<T>(key: string): Promise<T | undefined> {
+    if (key === "session-meta") {
+      this.readEntered.resolve();
+      await this.releaseRead.promise;
+    }
+    return super.get<T>(key);
+  }
+}
+
 type ResumeCall = {
   readonly executionId: string;
   readonly response: ResumeResponse;
@@ -181,7 +224,9 @@ const approval = {
   content: { approved: true },
 } satisfies ResumeResponse;
 
-const makeHarnessSession = async (): Promise<HarnessSession> => {
+const makeHarnessSession = async (
+  storage: MemoryStorage = new MemoryStorage(),
+): Promise<HarnessSession> => {
   const sessionId = "session-reconnect";
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
@@ -189,11 +234,11 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
     userId: "user-1",
     resource: defaultMcpResource,
   };
-  const storage = new MemoryStorage();
   const server = makeServer();
   await server.connect(new StaleCloseTransport());
 
   const session = Object.create(McpAgentSessionDOBase.prototype) as HarnessSession;
+  session.activeModernRequestCount = 0;
   session.ctx = storage;
   session.dbHandle = { end: () => undefined };
   session.engine = makeEngine().engine;
@@ -201,6 +246,9 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   session.initialized = true;
   session.lastActivityMs = Date.now() - 10;
   session.maxPausedSessionIdleMs = () => 1_000;
+  session.modernDispatcher = null;
+  session.modernDispatcherPromise = null;
+  session.modernRequestDrainWaiters = new Set();
   session.pendingApprovalLeases = new Map<string, never>();
   session.props = {};
   session.server = server;
@@ -213,9 +261,59 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
     session.engine = makeEngine().engine;
     session.initialized = true;
   };
+  session.runtimeClosePromise = null;
 
   return session;
 };
+
+describe("McpAgentSessionDOBase modern dispatcher initialization", () => {
+  type ModernDispatcherHarness = {
+    ctx: MemoryStorage;
+    modernDispatcher: ModernMcpDispatcher | null;
+    modernDispatcherPromise: Promise<ModernMcpDispatcher> | null;
+    runtimeClosePromise: Promise<void> | null;
+    ensureModernDispatcher: (
+      principal: Principal,
+      token: McpSessionInit,
+    ) => Promise<ModernMcpDispatcher>;
+  };
+
+  it("single-flights concurrent first requests onto one dispatcher", async () => {
+    const storage = new GatedModernStorage();
+    const session = Object.create(McpAgentSessionDOBase.prototype) as ModernDispatcherHarness;
+    session.ctx = storage;
+    session.modernDispatcher = null;
+    session.modernDispatcherPromise = null;
+    session.runtimeClosePromise = null;
+    const principal: Principal = {
+      accountId: "user-1",
+      organizationId: "org-1",
+      organizationName: "Org 1",
+      email: "user-1@example.com",
+      name: "User 1",
+      avatarUrl: null,
+      roles: [],
+    };
+    const token: McpSessionInit = {
+      organizationId: "org-1",
+      userId: "user-1",
+      elicitationMode: "native",
+      resource: defaultMcpResource,
+    };
+
+    const first = session.ensureModernDispatcher(principal, token);
+    await storage.readEntered.promise;
+    const second = session.ensureModernDispatcher(principal, token);
+    expect(storage.modernKeyReads).toBe(1);
+
+    storage.releaseRead.resolve();
+    const [firstDispatcher, secondDispatcher] = await Promise.all([first, second]);
+    expect(firstDispatcher).toBe(secondDispatcher);
+    expect(session.modernDispatcher).toBe(firstDispatcher);
+    expect(session.modernDispatcherPromise).toBeNull();
+    await firstDispatcher.close();
+  });
+});
 
 // The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
 // in the rebuilt server's memory. These pin the storage round-trip that lets a
@@ -308,6 +406,91 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
 });
 
 describe("McpAgentSessionDOBase transport restore", () => {
+  it("re-checks a modern request lease before acting on an idle alarm snapshot", async () => {
+    const session = await makeHarnessSession();
+    session.lastActivityMs = Date.now() - 2_000;
+    session.sessionTimeoutMs = () => 1_000;
+    const originalEngine = session.engine;
+    const countSnapshotEntered = makeDeferred();
+    const releaseCountSnapshot = makeDeferred();
+    session.runningExecutionCount = async () => {
+      countSnapshotEntered.resolve();
+      await releaseCountSnapshot.promise;
+      return 0;
+    };
+
+    const alarm = session.alarm();
+    await countSnapshotEntered.promise;
+    const releaseRequest = await session.beginModernRequest();
+    releaseCountSnapshot.resolve();
+
+    await alarm;
+    expect(session.initialized).toBe(true);
+    expect(session.engine).toBe(originalEngine);
+    expect(session.ctx.alarm).toBeGreaterThan(Date.now());
+    releaseRequest();
+  });
+
+  it("lets a leased full modern request finish when shutdown starts before dispatcher init", async () => {
+    const storage = new GatedSessionMetaStorage();
+    const session = await makeHarnessSession(storage);
+    const sessionMeta = session.sessionMeta;
+    expect(sessionMeta).not.toBeNull();
+    await storage.put("session-meta", sessionMeta);
+    session.sessionMeta = null;
+    const principal: Principal = {
+      accountId: "user-1",
+      organizationId: "org-1",
+      organizationName: "Org 1",
+      email: "user-1@example.com",
+      name: "User 1",
+      avatarUrl: null,
+      roles: [],
+    };
+    const token: McpSessionInit = {
+      organizationId: "org-1",
+      userId: "user-1",
+      elicitationMode: "native",
+      resource: defaultMcpResource,
+    };
+    const request = session.handleModernRequest(
+      new Request("https://executor.test/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "mcp-method": "server/discover",
+          "mcp-name": "server",
+          "mcp-protocol-version": "2026-07-28",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "server/discover",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        }),
+      }),
+      principal,
+      token,
+    );
+    await storage.readEntered.promise;
+    const close = Effect.runPromise(session.closeRuntime());
+    await Promise.resolve();
+    expect(session.runtimeClosePromise).not.toBeNull();
+
+    storage.releaseRead.resolve();
+    const [response] = await Promise.all([request, close]);
+    expect(response.status).toBe(200);
+    expect(session.runtimeClosePromise).toBeNull();
+    expect(session.initialized).toBe(false);
+    expect(session.modernDispatcher).toBeNull();
+  });
+
   it("preserves hibernated response streams when a cold isolate starts", async () => {
     const session = await makeHarnessSession();
     let closeCalls = 0;

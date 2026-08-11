@@ -205,7 +205,7 @@ export const createMcpRequestHandler = (
       if (!resource) return jsonError(404, -32001, "MCP resource not found");
       if (!(await isLegacyMcpRequest(request))) {
         if (handlerConfig.modernEnabled === false) {
-          return jsonError(503, -32022, "MCP 2026-07-28 support is disabled");
+          return jsonError(400, -32022, "MCP 2026-07-28 support is disabled");
         }
         return Effect.runPromise(modern.dispatch(request, localPrincipal, resource));
       }

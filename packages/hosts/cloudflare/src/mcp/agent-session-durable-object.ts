@@ -248,6 +248,10 @@ export abstract class McpAgentSessionDOBase<
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
   private pendingApprovalLeases = new Map<string, PendingApprovalLease>();
   private modernDispatcher: ModernMcpDispatcher | null = null;
+  private modernDispatcherPromise: Promise<ModernMcpDispatcher> | null = null;
+  private activeModernRequestCount = 0;
+  private modernRequestDrainWaiters = new Set<() => void>();
+  private runtimeClosePromise: Promise<void> | null = null;
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
@@ -441,7 +445,7 @@ export abstract class McpAgentSessionDOBase<
     for (const requestIds of rows.values()) {
       if (Array.isArray(requestIds)) count += requestIds.length;
     }
-    return count;
+    return count + this.activeModernRequestCount;
   }
 
   private closeActiveStreams(): void {
@@ -632,14 +636,42 @@ export abstract class McpAgentSessionDOBase<
       : built;
   }
 
-  private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
+  private waitForModernRequestsToDrain(): Promise<void> {
+    if (this.activeModernRequestCount === 0) return Promise.resolve();
+    return new Promise((resolve) => this.modernRequestDrainWaiters.add(resolve));
+  }
+
+  private async beginModernRequest(): Promise<() => void> {
+    while (this.runtimeClosePromise) await this.runtimeClosePromise;
+    this.activeModernRequestCount += 1;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.activeModernRequestCount -= 1;
+      if (this.activeModernRequestCount !== 0) return;
+      const waiters = [...this.modernRequestDrainWaiters];
+      this.modernRequestDrainWaiters.clear();
+      for (const resolve of waiters) resolve();
+    };
+  }
+
+  private closeRuntimeNow(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
+      yield* Effect.promise(() => self.waitForModernRequestsToDrain());
       yield* self.releaseAllPendingApprovalLeases();
-      if (self.modernDispatcher) {
-        const modern = self.modernDispatcher;
-        self.modernDispatcher = null;
-        yield* Effect.promise(() => modern.close()).pipe(Effect.ignore);
+      const modern = self.modernDispatcher;
+      const pendingModern = self.modernDispatcherPromise;
+      let initializedModern = modern;
+      if (pendingModern) {
+        const completed = yield* Effect.exit(Effect.promise(() => pendingModern));
+        if (Exit.isSuccess(completed)) initializedModern ??= completed.value;
+      }
+      self.modernDispatcher = null;
+      self.modernDispatcherPromise = null;
+      if (initializedModern) {
+        yield* Effect.promise(() => initializedModern.close()).pipe(Effect.ignore);
       }
       if (options.closeStreams ?? true) {
         yield* Effect.sync(() => self.closeActiveStreams());
@@ -658,6 +690,32 @@ export abstract class McpAgentSessionDOBase<
       }
       self.initialized = false;
     });
+  }
+
+  private startRuntimeClose(options: { readonly closeStreams?: boolean }): Promise<void> {
+    if (this.runtimeClosePromise) return this.runtimeClosePromise;
+    const self = this;
+    let resolveClose: () => void = () => undefined;
+    let rejectClose: (reason?: unknown) => void = () => undefined;
+    const closing = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
+    });
+    self.runtimeClosePromise = closing;
+    void Effect.runPromise(self.closeRuntimeNow(options)).then(resolveClose, rejectClose);
+    void closing.then(
+      () => {
+        if (self.runtimeClosePromise === closing) self.runtimeClosePromise = null;
+      },
+      () => {
+        if (self.runtimeClosePromise === closing) self.runtimeClosePromise = null;
+      },
+    );
+    return closing;
+  }
+
+  private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
+    return Effect.promise(() => this.startRuntimeClose(options));
   }
 
   private ensureRuntimeForApproval(): Effect.Effect<boolean> {
@@ -719,6 +777,65 @@ export abstract class McpAgentSessionDOBase<
     });
   }
 
+  /** Single-flight dispatcher construction so concurrent first requests share
+   * the same continuation maps and the runtime build de-duplication they own. */
+  private async ensureModernDispatcher(
+    principal: Principal,
+    token: McpSessionInit,
+  ): Promise<ModernMcpDispatcher> {
+    if (this.modernDispatcher) return this.modernDispatcher;
+    if (this.modernDispatcherPromise) return this.modernDispatcherPromise;
+
+    const self = this;
+    const starting = (async () => {
+      let key = await self.ctx.storage.get<Uint8Array>(MODERN_REQUEST_STATE_KEY);
+      if (!key) {
+        key = crypto.getRandomValues(new Uint8Array(32));
+        await self.ctx.storage.put(MODERN_REQUEST_STATE_KEY, key);
+      }
+      return makeModernMcpDispatcher(
+        () =>
+          self.ensureModernRuntime(principal, token).pipe(
+            Effect.flatMap((runtimeAccess) => {
+              if (runtimeAccess === "forbidden" || !self.engine) {
+                return Effect.fail(new ModernMcpRuntimeUnavailable());
+              }
+              return self.engine.getDescription.pipe(
+                Effect.map((description) => ({ engine: self.engine!, description })),
+              );
+            }),
+          ),
+        {
+          requestStateKey: key,
+          onExecutionPaused: (executionId) =>
+            Effect.runPromise(
+              self.startPendingApprovalLease(executionId, {
+                ttlMs: PAUSED_APPROVAL_TIMEOUT_MS,
+                expiresAt: new Date(Date.now() + PAUSED_APPROVAL_TIMEOUT_MS).toISOString(),
+              }),
+            ),
+          onResumeStarted: (executionId) =>
+            Effect.runPromise(self.beginPendingApprovalResume(executionId)),
+          onResumeSettled: (executionId) =>
+            Effect.runPromise(self.finishPendingApprovalResume(executionId)),
+        },
+      );
+    })();
+    self.modernDispatcherPromise = starting;
+    void starting.then(
+      (dispatcher) => {
+        if (self.modernDispatcherPromise === starting) {
+          self.modernDispatcher = dispatcher;
+          self.modernDispatcherPromise = null;
+        }
+      },
+      () => {
+        if (self.modernDispatcherPromise === starting) self.modernDispatcherPromise = null;
+      },
+    );
+    return starting;
+  }
+
   /** Serve one modern stateless HTTP exchange inside an owner/resource-keyed
    * Durable Object. The live engine stays here across MRTR rounds; signed
    * requestState is only the client-carried continuation pointer. */
@@ -729,6 +846,7 @@ export abstract class McpAgentSessionDOBase<
     incoming?: IncomingTraceHeaders,
   ): Promise<Response> {
     const self = this;
+    const releaseModernRequest = await self.beginModernRequest();
     const program = Effect.gen(function* () {
       yield* self.prepareErrorCaptureScope();
       const access = yield* self.ensureModernOwner(principal, token);
@@ -743,47 +861,12 @@ export abstract class McpAgentSessionDOBase<
         );
       }
 
-      if (!self.modernDispatcher) {
-        let key = yield* Effect.promise(() =>
-          self.ctx.storage.get<Uint8Array>(MODERN_REQUEST_STATE_KEY),
-        );
-        if (!key) {
-          key = crypto.getRandomValues(new Uint8Array(32));
-          yield* Effect.promise(() => self.ctx.storage.put(MODERN_REQUEST_STATE_KEY, key));
-        }
-        self.modernDispatcher = makeModernMcpDispatcher(
-          () =>
-            self.ensureModernRuntime(principal, token).pipe(
-              Effect.flatMap((runtimeAccess) => {
-                if (runtimeAccess === "forbidden" || !self.engine) {
-                  return Effect.fail(new ModernMcpRuntimeUnavailable());
-                }
-                return self.engine.getDescription.pipe(
-                  Effect.map((description) => ({ engine: self.engine!, description })),
-                );
-              }),
-            ),
-          {
-            requestStateKey: key,
-            onExecutionPaused: (executionId) =>
-              Effect.runPromise(
-                self.startPendingApprovalLease(executionId, {
-                  ttlMs: PAUSED_APPROVAL_TIMEOUT_MS,
-                  expiresAt: new Date(Date.now() + PAUSED_APPROVAL_TIMEOUT_MS).toISOString(),
-                }),
-              ),
-            onResumeStarted: (executionId) =>
-              Effect.runPromise(self.beginPendingApprovalResume(executionId)),
-            onResumeSettled: (executionId) =>
-              Effect.runPromise(self.finishPendingApprovalResume(executionId)),
-          },
-        );
-      }
-      return yield* self.modernDispatcher.dispatch(request, principal, token.resource);
+      const dispatcher = yield* Effect.promise(() => self.ensureModernDispatcher(principal, token));
+      return yield* dispatcher.dispatch(request, principal, token.resource);
     }).pipe(Effect.withSpan("McpSessionDO.handleModernRequest"), (effect) =>
       self.withSpanFlush(effect),
     );
-    return Effect.runPromise(self.withTelemetry(program, incoming));
+    return Effect.runPromise(self.withTelemetry(program, incoming)).finally(releaseModernRequest);
   }
 
   private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
@@ -1112,6 +1195,14 @@ export abstract class McpAgentSessionDOBase<
       // closed by the SSE writer's terminal failure path, so they stop
       // extending the lease once the bridge observes the failure.
       await this.ctx.storage.setAlarm(Date.now() + decision.leaseMs);
+      return;
+    }
+
+    // The alarm snapshot spans durable-storage awaits. A modern request may
+    // start or finish `markActivity` after an earlier count/read, so re-check
+    // the in-memory lease and activity immediately before destructive cleanup.
+    if (this.activeModernRequestCount > 0 || this.lastActivityMs > lastActivityMs) {
+      await this.ctx.storage.setAlarm(Date.now() + this.sessionTimeoutMs());
       return;
     }
 

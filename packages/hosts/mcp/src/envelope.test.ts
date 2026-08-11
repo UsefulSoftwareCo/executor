@@ -207,6 +207,7 @@ describe("McpServingRoutes envelope", () => {
           "mcp-protocol-version": "2026-07-28",
           "mcp-method": "server/discover",
           "mcp-name": "server",
+          origin: "https://claude.ai",
         },
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -228,20 +229,28 @@ describe("McpServingRoutes envelope", () => {
     expect(await Effect.runPromise(Ref.get(calls))).toEqual(["none"]);
   });
 
-  it("rejects mismatched Host and cross-origin browser requests before dispatch", async () => {
+  it("rejects a mismatched Host before dispatch", async () => {
     const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
     const badHost = await handler(
       new Request("https://host.test/mcp", { method: "GET", headers: { host: "evil.test" } }),
     );
     expect(badHost.status).toBe(421);
+  });
 
-    const badOrigin = await handler(
+  it("permits cross-origin legacy browser requests to reach dispatch", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const response = await handler(
       new Request("https://host.test/mcp", {
-        method: "GET",
-        headers: { origin: "https://evil.test" },
+        method: "POST",
+        headers: {
+          authorization: "Bearer x",
+          "content-type": "application/json",
+          origin: "https://claude.ai",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
       }),
     );
-    expect(badOrigin.status).toBe(403);
+    expect(response.status).toBe(200);
   });
 });
 
