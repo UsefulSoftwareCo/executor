@@ -75,6 +75,7 @@
     "@effect/vitest": "catalog:",
     "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "bun-types": "catalog:",

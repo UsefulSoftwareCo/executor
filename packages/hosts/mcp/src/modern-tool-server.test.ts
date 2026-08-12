@@ -112,6 +112,50 @@ describe("modern MCP dispatcher", () => {
     });
   });
 
+  it("single-flights concurrent calls while the principal workspace is building", async () => {
+    let builds = 0;
+    const engine = stubEngine({
+      executeWithPause: (code) => Effect.succeed(completed(`ran:${code}`)),
+    });
+    const dispatcher = makeModernMcpDispatcher(() =>
+      Effect.promise(async () => {
+        builds += 1;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        return { engine, description: "test" };
+      }),
+    );
+
+    await withClient(dispatcher, async (client) => {
+      const [first, second] = await Promise.all([
+        client.callTool({ name: "execute", arguments: { code: "return 1" } }),
+        client.callTool({ name: "execute", arguments: { code: "return 2" } }),
+      ]);
+      expect(first.structuredContent).toMatchObject({ result: "ran:return 1" });
+      expect(second.structuredContent).toMatchObject({ result: "ran:return 2" });
+      expect(builds).toBe(1);
+    });
+  });
+
+  it("closes a built execution workspace when the dispatcher shuts down", async () => {
+    let closes = 0;
+    const dispatcher = makeModernMcpDispatcher(() =>
+      Effect.succeed({
+        engine: stubEngine(),
+        description: "test",
+        close: () => {
+          closes += 1;
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    await withClient(dispatcher, async (client) => {
+      await client.callTool({ name: "execute", arguments: { code: "return 1" } });
+      expect(closes).toBe(0);
+    });
+    expect(closes).toBe(1);
+  });
+
   it("round-trips elicitation through signed requestState and resumes once", async () => {
     const request = FormElicitation.make({
       message: "Approve the action?",

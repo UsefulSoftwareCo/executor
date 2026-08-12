@@ -420,6 +420,20 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       expect(result.structuredContent).toMatchObject({ status: "completed", result: 42 });
       expect(transport.sessionId).toBeUndefined();
 
+      const [left, right] = await Promise.all([
+        client.callTool({
+          name: "execute",
+          arguments: { code: 'export default "left"' },
+        }),
+        client.callTool({
+          name: "execute",
+          arguments: { code: 'export default "right"' },
+        }),
+      ]);
+      expect(left.structuredContent).toMatchObject({ status: "completed", result: "left" });
+      expect(right.structuredContent).toMatchObject({ status: "completed", result: "right" });
+      expect(transport.sessionId).toBeUndefined();
+
       let receivedElicitation = false;
       client.setRequestHandler("elicitation/create", () => {
         receivedElicitation = true;
