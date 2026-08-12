@@ -48,7 +48,12 @@ export const makeMcpBuildServer =
         principal.accountId,
         principal.organizationId,
         principal.organizationName,
-        { mcpResource: options?.resource },
+        {
+          mcpResource: options?.resource,
+          // A plain member binds with workspace writes denied; an admin — or
+          // a host with no role model (`orgRole` absent) — binds allowed.
+          orgWrites: principal.orgRole === "member" ? "denied" : "allowed",
+        },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));
       // Read inside the provided boundary: `webBaseUrl` is a host seam, and
       // hosts that can't know their public URL at boot leave it unset — in

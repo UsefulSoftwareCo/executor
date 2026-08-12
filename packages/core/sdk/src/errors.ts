@@ -142,6 +142,32 @@ export class IntegrationRemovalNotAllowedError extends Schema.TaggedErrorClass<I
   }
 }
 
+/** A workspace-level mutation (an `owner: "org"` row, or the tenant-shared
+ *  integration catalog) was attempted on an executor bound with
+ *  `orgWrites: "denied"` — a member who may USE workspace resources but not
+ *  configure them. Reads, tool execution, and operational writes (token
+ *  refresh, catalog re-sync) are unaffected; only the user-intent settings
+ *  surfaces raise this. */
+export class OrgWriteDeniedError
+  extends Schema.TaggedErrorClass<OrgWriteDeniedError>()(
+    "OrgWriteDeniedError",
+    {},
+    { httpApiStatus: 403 },
+  )
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "org_write_denied";
+
+  override get message(): string {
+    return "Workspace-level changes require a workspace admin.";
+  }
+
+  get userMessage(): string {
+    return this.message;
+  }
+}
+
 export class ConnectionNotFoundError extends Schema.TaggedErrorClass<ConnectionNotFoundError>()(
   "ConnectionNotFoundError",
   {

@@ -72,6 +72,7 @@ import {
   InvalidConnectionInputError,
   IntegrationRemovalNotAllowedError,
   NoHandlerError,
+  OrgWriteDeniedError,
   PluginNotLoadedError,
   ToolBlockedError,
   ToolInvocationError,
@@ -277,10 +278,13 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly update: (
       slug: IntegrationSlug,
       patch: { readonly name?: string; readonly description?: string },
-    ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
+    ) => Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly remove: (
       slug: IntegrationSlug,
-    ) => Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure>;
+    ) => Effect.Effect<
+      void,
+      IntegrationRemovalNotAllowedError | OrgWriteDeniedError | StorageFailure
+    >;
     readonly detect: (
       url: string,
     ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
@@ -305,7 +309,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       readonly set: (
         slug: IntegrationSlug,
         spec: HealthCheckSpec | null,
-      ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
+      ) => Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure>;
     };
   };
 
@@ -317,6 +321,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       | IntegrationNotFoundError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
+      | OrgWriteDeniedError
       | StorageFailure
     >;
     readonly list: (filter?: {
@@ -329,10 +334,10 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly update: (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
-    ) => Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly remove: (
       ref: ConnectionRef,
-    ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<void, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly refresh: (
       ref: ConnectionRef,
     ) => Effect.Effect<
@@ -379,9 +384,15 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 
   readonly policies: {
     readonly list: () => Effect.Effect<readonly ToolPolicy[], StorageFailure>;
-    readonly create: (input: CreateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-    readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-    readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
+    readonly create: (
+      input: CreateToolPolicyInput,
+    ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+    readonly update: (
+      input: UpdateToolPolicyInput,
+    ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+    readonly remove: (
+      input: RemoveToolPolicyInput,
+    ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
     readonly resolve: (address: ToolAddress) => Effect.Effect<EffectivePolicy, StorageFailure>;
   };
 
@@ -671,6 +682,24 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * every subject's connection rows, credential item ids included.
    */
   readonly platformView?: boolean;
+  /**
+   * Whether this binding may CONFIGURE workspace-level state: `owner: "org"`
+   * rows (shared connections, org tool policies, org OAuth clients) and the
+   * tenant-shared integration catalog. Hosts derive it from the acting
+   * member's role — admins bind `"allowed"`, plain members `"denied"`.
+   * Defaults to `"allowed"` for hosts with no role model (local's single
+   * user, the CLI, tests).
+   *
+   * `"denied"` gates only the USER-INTENT settings surfaces (`policies`,
+   * `connections` create/update/remove, `integrations` update/remove/
+   * healthCheck, OAuth client CRUD and org connect flows, new-integration
+   * registration). Members still USE workspace resources: reads, tool
+   * execution over org connections, and the operational writes those imply
+   * (token refresh, tool-catalog re-sync) are deliberately untouched — which
+   * is why this is a surface gate, not a storage-policy axis like
+   * `platformView`'s blanket `writes: "denied"`.
+   */
+  readonly orgWrites?: "allowed" | "denied";
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -1575,6 +1604,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           )
         : Effect.void;
 
+    // Workspace-settings gate (`ExecutorConfig.orgWrites`). Called at the top
+    // of every user-intent workspace-level mutation: with an explicit owner it
+    // refuses only `"org"` targets; with no owner it guards a tenant-shared
+    // surface (the integration catalog) outright. Deliberately NOT wired into
+    // the storage owner policy — operational org-row writes (token refresh,
+    // tool-catalog re-sync) must keep working for a denied member.
+    const guardOrgWrite = (owner?: Owner): Effect.Effect<void, OrgWriteDeniedError> =>
+      config.orgWrites === "denied" && (owner === undefined || owner === "org")
+        ? Effect.fail(new OrgWriteDeniedError())
+        : Effect.void;
+
     // Built-in core-tools plugin: agent-facing static tools over the v2 surface.
     const plugins: readonly AnyPlugin[] = config.coreTools
       ? ([
@@ -2308,7 +2348,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationsRegister = (
       pluginId: string,
       input: RegisterIntegrationInput,
-    ): Effect.Effect<void, StorageFailure> =>
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
       transaction(
         Effect.gen(function* () {
           const now = new Date();
@@ -2329,6 +2369,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
             return false;
           }
+          // A NEW catalog row is always user intent (the add-integration
+          // flows); the replace arm above stays open so config rewrites and
+          // legacy healing keep converging under any member's binding.
+          yield* guardOrgWrite();
           yield* core.create("integration", {
             tenant,
             slug: String(input.slug),
@@ -2359,8 +2403,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         readonly description?: string;
         readonly config?: IntegrationConfig;
       },
-    ): Effect.Effect<void, StorageFailure> =>
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
+        yield* guardOrgWrite();
         const now = new Date();
         const set: Record<string, unknown> = { updated_at: now };
         if (patch.name !== undefined) set.name = patch.name;
@@ -2382,7 +2427,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationsUpdatePublic = (
       slug: IntegrationSlug,
       patch: { readonly name?: string; readonly description?: string },
-    ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
         const existing = yield* findIntegrationRow(slug);
         if (!existing) return yield* new IntegrationNotFoundError({ slug });
@@ -2391,9 +2436,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const integrationsRemove = (
       slug: IntegrationSlug,
-    ): Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure> =>
+    ): Effect.Effect<
+      void,
+      IntegrationRemovalNotAllowedError | OrgWriteDeniedError | StorageFailure
+    > =>
       transaction(
         Effect.gen(function* () {
+          yield* guardOrgWrite();
           const existing = yield* findIntegrationRow(slug);
           if (!existing) return null;
           if (!existing.can_remove) {
@@ -2481,8 +2530,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationSetHealthCheck = (
       slug: IntegrationSlug,
       spec: HealthCheckSpec | null,
-    ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
+        yield* guardOrgWrite();
         const row = yield* findIntegrationRow(slug);
         if (!row) return yield* new IntegrationNotFoundError({ slug });
         yield* core.updateMany("integration", {
@@ -2722,9 +2772,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       | IntegrationNotFoundError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
+      | OrgWriteDeniedError
       | StorageFailure
     > =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
         const name = connectionIdentifier(String(input.name));
         // Typed (not StorageError) so the HTTP edge can answer 400 with the
         // reason instead of an opaque 500 — callers can act on it.
@@ -3081,8 +3133,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const connectionsUpdate = (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
-    ): Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure> =>
+    ): Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(ref.owner);
         const row = yield* findConnectionRow(ref);
         if (!row) {
           return yield* new ConnectionNotFoundError({
@@ -3109,9 +3162,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const connectionsRemove = (
       ref: ConnectionRef,
-    ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
+    ): Effect.Effect<void, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       transaction(
         Effect.gen(function* () {
+          yield* guardOrgWrite(ref.owner);
           const row = yield* findConnectionRow(ref);
           if (!row) {
             return yield* new ConnectionNotFoundError({
@@ -3939,8 +3993,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const policiesCreate = (
       input: CreateToolPolicyInput,
-    ): Effect.Effect<ToolPolicy, StorageFailure> =>
+    ): Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
         if (!isValidPattern(input.pattern)) {
           return yield* new StorageError({
             message: `Invalid tool policy pattern: ${input.pattern}`,
@@ -3986,8 +4041,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const policiesUpdate = (
       input: UpdateToolPolicyInput,
-    ): Effect.Effect<ToolPolicy, StorageFailure> =>
+    ): Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
         if (input.pattern !== undefined && !isValidPattern(input.pattern)) {
           return yield* new StorageError({
             message: `Invalid tool policy pattern: ${input.pattern}`,
@@ -4011,10 +4067,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
       });
 
-    const policiesRemove = (input: RemoveToolPolicyInput): Effect.Effect<void, StorageFailure> =>
-      core.deleteMany("tool_policy", {
-        where: (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id)),
-      });
+    const policiesRemove = (
+      input: RemoveToolPolicyInput,
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
+      guardOrgWrite(input.owner).pipe(
+        Effect.andThen(
+          core.deleteMany("tool_policy", {
+            where: (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id)),
+          }),
+        ),
+      );
 
     const policiesResolve = (
       address: ToolAddress,
@@ -4532,6 +4594,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       tenant,
       subject,
       ownedKeys: (owner: Owner) => ownedKeys(owner),
+      guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
       connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),

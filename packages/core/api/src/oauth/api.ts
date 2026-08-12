@@ -27,6 +27,7 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   OAuthState,
+  OrgWriteDeniedError,
   Owner,
   ProviderKey,
 } from "@executor-js/sdk/shared";
@@ -259,14 +260,14 @@ export const OAuthApi = HttpApiGroup.make("oauth")
     HttpApiEndpoint.post("createClient", "/oauth/clients", {
       payload: CreateClientPayload,
       success: CreateClientResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("registerDynamic", "/oauth/clients/register-dynamic", {
       payload: RegisterDynamicPayload,
       success: RegisterDynamicResponse,
-      error: [InternalError, OAuthRegisterDynamic],
+      error: [InternalError, OAuthRegisterDynamic, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -280,14 +281,14 @@ export const OAuthApi = HttpApiGroup.make("oauth")
       params: RemoveClientParams,
       payload: RemoveClientPayload,
       success: RemoveClientResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("start", "/oauth/start", {
       payload: StartPayload,
       success: StartResponse,
-      error: [InternalError, OAuthStart],
+      error: [InternalError, OAuthStart, OrgWriteDeniedError],
     }),
   )
   .add(

@@ -18,6 +18,7 @@ import {
   type IntegrationConfig,
   type IntegrationPreset,
   type IntegrationRecord,
+  type OrgWriteDeniedError,
   type PluginCtx,
   type StorageFailure,
 } from "@executor-js/sdk/core";
@@ -165,6 +166,7 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationAlreadyExistsError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
   /** Re-resolve the integration's spec (from its stored source URL, or the
@@ -180,9 +182,10 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationNotFoundError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
-  readonly removeSpec: (slug: string) => Effect.Effect<void, StorageFailure>;
+  readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
   /** Read the integration's full opaque config, including its
    *  `authenticationTemplate`. Returns null when the integration is absent. */
@@ -194,7 +197,7 @@ export interface OpenApiPluginExtension {
   readonly configure: (
     slug: string,
     input: OpenApiConfigureInput,
-  ) => Effect.Effect<readonly Authentication[], StorageFailure>;
+  ) => Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,7 +1143,7 @@ export const openApiPlugin = definePlugin<
         configure: (
           slug: string,
           input: OpenApiConfigureInput,
-        ): Effect.Effect<readonly Authentication[], StorageFailure> =>
+        ): Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure> =>
           ctx.transaction(
             Effect.gen(function* () {
               const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));

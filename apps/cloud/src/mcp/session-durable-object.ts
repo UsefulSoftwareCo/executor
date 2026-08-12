@@ -58,7 +58,7 @@ import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execu
 // `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
-import { resolveOrganization } from "../auth/organization";
+import { authorizeOrganization } from "../auth/organization";
 import {
   DbService,
   combinedSchema,
@@ -214,7 +214,13 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
     const dbHandle = makeEphemeralDb();
     return Effect.gen(function* () {
-      const org = yield* resolveOrganization(token.organizationId);
+      // Membership was already verified by the worker's per-request auth; this
+      // re-check is where the session learns the member's WORKSPACE ROLE, so
+      // the executor it builds can bind `orgWrites` (a member may use org
+      // connections but not configure workspace-level state). The role is
+      // baked into the persisted meta: a demotion applies from the next
+      // session init, not mid-session.
+      const org = yield* authorizeOrganization(token.userId, token.organizationId);
       if (!org) {
         return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
       }
@@ -223,6 +229,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         organizationName: org.name,
         organizationSlug: org.slug,
         userId: token.userId,
+        orgRole: org.memberRole,
         resource: token.resource,
         elicitationMode: token.elicitationMode,
         artifactsEnabled: token.artifactsEnabled,
@@ -253,7 +260,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource },
+        {
+          mcpResource: sessionMeta.resource,
+          orgWrites: sessionMeta.orgRole === "member" ? "denied" : "allowed",
+        },
       ).pipe(
         // The metered stack tracks each execution to Autumn. It requires
         // `AutumnService | DbService`; `AutumnService.Default` is provided here

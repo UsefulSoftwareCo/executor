@@ -48,6 +48,17 @@ export interface Principal {
   readonly name: string | null;
   readonly avatarUrl: string | null;
   readonly roles: readonly string[];
+  /**
+   * The member's NORMALIZED workspace role, when the host resolves one:
+   * `"admin"` may configure workspace-level state (org-owned rows, the
+   * integration catalog), `"member"` may only use it. Cloud maps its WorkOS
+   * membership role (`admin` / `member`); self-host maps Better Auth's org
+   * membership role (`owner` and `admin` → `"admin"`). ABSENT means the host
+   * has no role model (local's single user, test fakes) and the middleware
+   * binds the executor with workspace writes allowed — hosts that DO
+   * distinguish roles must always set it.
+   */
+  readonly orgRole?: "admin" | "member";
 }
 
 /**

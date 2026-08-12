@@ -48,6 +48,11 @@ export const Principal = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   avatarUrl: Schema.NullOr(Schema.String),
   roles: Schema.Array(Schema.String),
+  /** The member's normalized workspace role, when the auth provider resolves
+   *  one (mirrors `Principal.orgRole` in `@executor-js/api/server`). `"member"`
+   *  binds the session executor with workspace writes denied; `"admin"` — or
+   *  absent, for hosts with no role model — binds allowed. */
+  orgRole: Schema.optional(Schema.Literals(["admin", "member"])),
 });
 
 export type Principal = Schema.Schema.Type<typeof Principal>;

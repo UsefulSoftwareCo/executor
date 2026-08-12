@@ -100,6 +100,14 @@ export interface SessionMeta {
    * Pins browser-handoff URLs to the right org's console. */
   readonly organizationSlug?: string;
   readonly userId: string;
+  /**
+   * The member's normalized workspace role at session-meta resolution time.
+   * `"member"` binds the session executor with workspace writes denied
+   * (`orgWrites: "denied"`); `"admin"` binds allowed. Absent means the host
+   * has no role model (host-cf's single-tenant Access principal) — or the
+   * session was persisted before the field existed — and behaves as allowed.
+   */
+  readonly orgRole?: "admin" | "member";
   readonly elicitationMode?: McpElicitationMode;
   /** Whether the session serves artifacts (carried from {@link McpSessionInit}).
    *  Absent — including for sessions persisted before the flag existed — means

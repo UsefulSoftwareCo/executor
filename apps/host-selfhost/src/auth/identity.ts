@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 
 import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
 
+import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth } from "./better-auth";
 
 // ---------------------------------------------------------------------------
@@ -49,13 +50,18 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             let resolved = yield* Effect.promise(() =>
               auth.api.getSession({ headers: request.headers }),
             );
+            // The credential shape that resolved the session — the SAME headers
+            // are what the membership-role lookup below must present.
+            let sessionHeaders: Headers | Record<string, string> = request.headers;
             if (!resolved) {
               const token = bearerToken(request.headers);
               if (token) {
+                const apiKeyHeaders = { "x-api-key": token };
                 resolved = yield* Effect.tryPromise({
-                  try: () => auth.api.getSession({ headers: { "x-api-key": token } }),
+                  try: () => auth.api.getSession({ headers: apiKeyHeaders }),
                   catch: () => "api-key session lookup failed",
                 }).pipe(Effect.orElseSucceed(() => null));
+                sessionHeaders = apiKeyHeaders;
               }
             }
             // No session resolved from any credential shape -> unauthenticated.
@@ -66,6 +72,21 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // session hook; API-key-minted sessions carry no active org, so we
             // default to the seeded org rather than rejecting with NoOrganization.
             const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
+            // The workspace role, resolved against the INSTANCE org exactly as
+            // the admin gate does (require-admin.ts): the explicit
+            // `organizationId` query keeps a caller-controlled active org from
+            // answering for an org they own elsewhere. FAIL CLOSED to "member"
+            // — an infra fault demotes rather than escalates.
+            const membership = yield* Effect.tryPromise(() =>
+              auth.api.getActiveMemberRole({
+                headers: sessionHeaders,
+                query: { organizationId: resolvedOrganizationId },
+              }),
+            ).pipe(Effect.orElseSucceed(() => null));
+            const orgRole =
+              membership && isPrivileged(membership.role)
+                ? ("admin" as const)
+                : ("member" as const);
             return {
               kind: "member" as const,
               accountId: resolved.user.id,
@@ -79,6 +100,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                 .split(",")
                 .map((role) => role.trim())
                 .filter((role) => role.length > 0),
+              orgRole,
             };
           }),
       });

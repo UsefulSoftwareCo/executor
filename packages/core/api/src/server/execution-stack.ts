@@ -112,7 +112,12 @@ export const makeExecutionStack = <
   accountId: string,
   organizationId: string,
   organizationName: string,
-  options?: { readonly mcpResource?: McpResource },
+  options?: {
+    readonly mcpResource?: McpResource;
+    /** Workspace-settings permission for this binding (see
+     *  `ExecutorConfig.orgWrites`), derived from the acting member's role. */
+    readonly orgWrites?: "allowed" | "denied";
+  },
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
   StorageFailure,
@@ -123,7 +128,10 @@ export const makeExecutionStack = <
       accountId,
       organizationId,
       organizationName,
-      { plugins: { mcpResource: options?.mcpResource } },
+      {
+        plugins: { mcpResource: options?.mcpResource },
+        ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+      },
     ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
     const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(
       Effect.withSpan("executor.stack.code_executor"),
