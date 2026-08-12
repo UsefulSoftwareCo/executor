@@ -42,8 +42,8 @@ const TINY_SPEC = JSON.stringify({
   },
 });
 
-const signUp = async (email: string): Promise<string> => {
-  const inviteCode = await mintInviteCode(handler);
+const signUp = async (email: string, role: "admin" | "member" = "member"): Promise<string> => {
+  const inviteCode = await mintInviteCode(handler, role);
   const res = await handler(
     new Request(`${BASE}/api/auth/sign-up/email`, {
       method: "POST",
@@ -136,7 +136,9 @@ const runCode = async (token: string, code: string) => {
 };
 
 test("multiple accounts share one org but isolate per-user connections", async () => {
-  const alice = await signUp("alice@multi.test");
+  // Workspace-level setup (the catalog, org-shared connections) is admin-only,
+  // so Alice joins as an admin; Bob stays a plain member.
+  const alice = await signUp("alice@multi.test", "admin");
   const bob = await signUp("bob@multi.test");
 
   // Same single org for both members.
@@ -146,6 +148,21 @@ test("multiple accounts share one org but isolate per-user connections", async (
 
   // The integration is tenant-scoped; register it once.
   expect((await addIntegration(alice, "tiny")).status).toBe(200);
+
+  // A plain member cannot register integrations or mint workspace-shared
+  // connections — 403 from the executor's workspace-write gate.
+  expect((await addIntegration(bob, "tiny2")).status).toBe(403);
+  expect(
+    (
+      await createConnection(bob, {
+        owner: "org",
+        name: "bob-shared",
+        integration: "tiny",
+        template: "bearer",
+        value: "bob-token",
+      })
+    ).status,
+  ).toBe(403);
 
   // Alice attaches a USER-owned connection (private to her) and an ORG-owned
   // connection (shared across the tenant).

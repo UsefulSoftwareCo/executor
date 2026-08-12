@@ -1,6 +1,10 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { InternalError, IntegrationAlreadyExistsError } from "@executor-js/sdk/shared";
+import {
+  InternalError,
+  IntegrationAlreadyExistsError,
+  OrgWriteDeniedError,
+} from "@executor-js/sdk/shared";
 
 import { GraphqlIntrospectionError, GraphqlExtractionError } from "../sdk/errors";
 import { GraphqlAuthMethod, GraphqlAuthMethodInput } from "../sdk/types";
@@ -87,6 +91,7 @@ const GraphqlErrors = [
   IntrospectionError,
   ExtractionError,
   IntegrationAlreadyExistsError,
+  OrgWriteDeniedError,
 ] as const;
 
 export const GraphqlGroup = HttpApiGroup.make("graphql")

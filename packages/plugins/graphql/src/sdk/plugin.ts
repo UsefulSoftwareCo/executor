@@ -19,6 +19,7 @@ import {
   type HealthCheckResult,
   type IntegrationConfig,
   type IntegrationRecord,
+  type OrgWriteDeniedError,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
@@ -1020,7 +1021,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
   const configureAuthMethods = (
     slug: string,
     input: GraphqlConfigureAuthInput,
-  ): Effect.Effect<readonly GraphqlAuthMethod[], StorageFailure> =>
+  ): Effect.Effect<readonly GraphqlAuthMethod[], OrgWriteDeniedError | StorageFailure> =>
     ctx.transaction(
       Effect.gen(function* () {
         const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));

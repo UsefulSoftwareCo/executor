@@ -19,6 +19,7 @@ import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
 import type { Connection } from "./connection";
+import type { OrgWriteDeniedError } from "./errors";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
 import { StorageError } from "./fuma-runtime";
 import {
@@ -186,6 +187,10 @@ export interface OAuthServiceDeps {
     readonly owner: Owner;
     readonly subject: string;
   };
+  /** Workspace-settings gate from the executor binding
+   *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
+   *  user-intent client/connect surfaces. */
+  readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */
   readonly mintOAuthConnection: (
@@ -800,7 +805,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const createClient = (
     input: CreateOAuthClientInput,
-  ): Effect.Effect<OAuthClientSlug, StorageFailure> =>
+  ): Effect.Effect<OAuthClientSlug, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
       // The `first-party:` namespace is reserved for config-declared apps — a
       // stored row under it would be shadowed by (or worse, impersonate) the
@@ -811,6 +816,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      yield* deps.guardOrgWrite(input.owner);
       yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
@@ -894,7 +900,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // the next token refresh, prompting a reconnect (graceful degradation; this
   // op never cascades into connections).
   // -----------------------------------------------------------------------
-  const removeClient = (owner: Owner, slug: OAuthClientSlug): Effect.Effect<void, StorageFailure> =>
+  const removeClient = (
+    owner: Owner,
+    slug: OAuthClientSlug,
+  ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
       // Config-declared apps have no row to remove; removing one is an env
       // change on the host, not a storage operation. Fail loudly rather than
@@ -905,6 +914,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      yield* deps.guardOrgWrite(owner);
       yield* deps.fuma
         .use("oauth_client.delete", (db) =>
           looseDb(db).deleteMany("oauth_client", {
@@ -1092,7 +1102,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
   const registerDynamicClient = (
     input: RegisterDynamicClientInput,
-  ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
+  ): Effect.Effect<
+    OAuthClientSlug,
+    OAuthRegisterDynamicError | OrgWriteDeniedError | StorageFailure
+  > =>
     Effect.gen(function* () {
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
       // Resolved before the reuse decision: a persisted client registered with
@@ -1297,8 +1310,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const start = (
     input: OAuthStartInput,
-  ): Effect.Effect<ConnectResult, OAuthStartError | StorageFailure> =>
+  ): Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
+      // Gate BEFORE any session row or upstream exchange: minting a Workspace
+      // connection (including a reconnect that would replace its credential)
+      // is a workspace-level change.
+      yield* deps.guardOrgWrite(input.owner);
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>

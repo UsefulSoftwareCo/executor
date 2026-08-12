@@ -22,6 +22,7 @@ import {
   IntegrationSlug,
   InternalError,
   InvalidConnectionInputError,
+  OrgWriteDeniedError,
   OAuthClientSlug,
   Owner,
   ProviderItemId,
@@ -195,6 +196,7 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
         IntegrationNotFound,
         CredentialProviderNotRegistered,
         InvalidConnectionInput,
+        OrgWriteDeniedError,
       ],
     }),
   )
@@ -210,14 +212,14 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
       params: ConnectionParams,
       payload: UpdateConnectionPayload,
       success: ConnectionResponse,
-      error: [InternalError, ConnectionNotFound],
+      error: [InternalError, ConnectionNotFound, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/connections/:owner/:integration/:name", {
       params: ConnectionParams,
       success: Schema.Struct({ removed: Schema.Boolean }),
-      error: [InternalError, ConnectionNotFound],
+      error: [InternalError, ConnectionNotFound, OrgWriteDeniedError],
     }),
   )
   .add(
