@@ -46,14 +46,15 @@ import { AccountCaller, workosAccountProvider } from "./workos-account-service";
 // Long-lived `WorkOSClient | AutumnService` come from the surrounding context
 // (Autumn provided by `makeAccountApiLive` for the seat-gate); the per-request
 // `UserStoreService` is supplied by the combined `rsLive` layer.
-// `ApiKeyService.WorkOS` is built here on top of the boot `WorkOSClient`.
+// The production app supplies the same boot-scoped `ApiKeyService` used by
+// bearer authentication, so revoking an org key evicts its cached validation.
 const AccountProviderMiddleware = HttpRouter.middleware<{ provides: AccountProvider }>()(
   Effect.gen(function* () {
     // Long-lived services only (built once at boot). `UserStoreService` and
     // `DbService` are NOT grabbed here — they come per request from the combined
     // `requestScopedMiddleware(rsLive)` layer, which folds them into this
     // middleware's body context (so they drop out of `requires`).
-    const longLived = yield* Effect.context<WorkOSClient | AutumnService>();
+    const longLived = yield* Effect.context<WorkOSClient | ApiKeyService | AutumnService>();
     const workos = yield* WorkOSClient;
     return (httpEffect) =>
       Effect.gen(function* () {
@@ -75,10 +76,7 @@ const AccountProviderMiddleware = HttpRouter.middleware<{ provides: AccountProvi
         // the combined request-scoped layer.
         const accountProvider = yield* Effect.provide(
           AccountProvider.asEffect(),
-          workosAccountProvider.pipe(
-            Layer.provide(ApiKeyService.WorkOS),
-            Layer.provide(Layer.succeed(AccountCaller)({ session })),
-          ),
+          workosAccountProvider.pipe(Layer.provide(Layer.succeed(AccountCaller)({ session }))),
         );
         return yield* Effect.provideService(httpEffect, AccountProvider, accountProvider);
       }).pipe(Effect.provideContext(longLived));
@@ -109,5 +107,12 @@ export const makeAccountApiLive = (rsLive: Layer.Layer<DbService | UserStoreServ
   const accountMiddleware = AccountProviderMiddleware.combine(
     requestScopedMiddleware(rsLive),
   ).layer;
-  return makeAccountApiLayer(accountMiddleware).pipe(Layer.provideMerge(AutumnService.Default));
+  return makeAccountApiLayer(accountMiddleware).pipe(
+    // The legacy standalone router has no unified boot control plane. Its
+    // self-contained layer still supplies the API-key service here; production
+    // uses `workosAccountMiddleware` above and therefore shares the boot-scoped
+    // service with bearer authentication.
+    Layer.provide(ApiKeyService.WorkOS),
+    Layer.provideMerge(AutumnService.Default),
+  );
 };

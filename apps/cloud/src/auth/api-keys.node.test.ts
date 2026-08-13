@@ -1,19 +1,20 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { ApiKeyService } from "./api-keys";
+import { ApiKeyService, ApiKeyValidationError, makeApiKeyValidator } from "./api-keys";
+import { WorkOSError } from "./errors";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
 
+const stubWorkOSService = (overrides: Partial<WorkOSClientService>) =>
+  new Proxy({} as WorkOSClientService, {
+    get: (_target, prop) => {
+      if (prop in overrides) return overrides[prop as keyof WorkOSClientService];
+      return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
+    },
+  });
+
 const stubWorkOS = (overrides: Partial<WorkOSClientService>) =>
-  Layer.succeed(
-    WorkOSClient,
-    new Proxy({} as WorkOSClientService, {
-      get: (_target, prop) => {
-        if (prop in overrides) return overrides[prop as keyof WorkOSClientService];
-        return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
-      },
-    }),
-  );
+  Layer.succeed(WorkOSClient, stubWorkOSService(overrides));
 
 const validate = (response: unknown) =>
   Effect.gen(function* () {
@@ -28,6 +29,181 @@ const validate = (response: unknown) =>
   );
 
 describe("ApiKeyService.WorkOS", () => {
+  it.effect("reuses a recent positive validation", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.succeed({
+              apiKey: {
+                id: "api_key_shared",
+                owner: { type: "organization", id: "org_123" },
+              },
+            });
+          },
+        }),
+      );
+
+      const first = yield* validate("shared_secret");
+      const second = yield* validate("shared_secret");
+
+      expect(first).toEqual(second);
+      expect(calls).toBe(1);
+    }),
+  );
+
+  it.effect("coalesces concurrent validation of the same key", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.yieldNow.pipe(
+              Effect.as({
+                apiKey: {
+                  id: "api_key_shared",
+                  owner: { type: "organization", id: "org_123" },
+                },
+              }),
+            );
+          },
+        }),
+      );
+
+      const results = yield* Effect.all([validate("shared_secret"), validate("shared_secret")], {
+        concurrency: "unbounded",
+      });
+
+      expect(results[0]).toEqual(results[1]);
+      expect(calls).toBe(1);
+    }),
+  );
+
+  it.effect("does not cache invalid keys", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.succeed({ apiKey: null });
+          },
+        }),
+      );
+
+      expect(yield* validate("invalid_secret")).toBeNull();
+      expect(yield* validate("invalid_secret")).toBeNull();
+      expect(calls).toBe(2);
+    }),
+  );
+
+  it.effect("does not cache user-owned keys", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.succeed({
+              apiKey: {
+                id: "api_key_user",
+                owner: {
+                  type: "user",
+                  id: "user_123",
+                  organizationId: "org_123",
+                },
+              },
+            });
+          },
+        }),
+      );
+
+      yield* validate("user_secret");
+      yield* validate("user_secret");
+      expect(calls).toBe(2);
+    }),
+  );
+
+  it.effect("does not cache WorkOS failures", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.fail(new WorkOSError({ status: 503 }));
+          },
+        }),
+      );
+
+      const first = yield* Effect.flip(validate("unavailable_secret"));
+      const second = yield* Effect.flip(validate("unavailable_secret"));
+
+      expect(first).toBeInstanceOf(ApiKeyValidationError);
+      expect(second).toBeInstanceOf(ApiKeyValidationError);
+      expect(calls).toBe(2);
+    }),
+  );
+
+  it.effect("revalidates a positive key after the short TTL", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      let nowMs = 1_000;
+      const { validate } = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.succeed({
+              apiKey: {
+                id: "api_key_shared",
+                owner: { type: "organization", id: "org_123" },
+              },
+            });
+          },
+        }),
+        { now: () => nowMs, ttlMs: 10 },
+      );
+
+      yield* validate("shared_secret");
+      nowMs += 9;
+      yield* validate("shared_secret");
+      expect(calls).toBe(1);
+
+      nowMs += 1;
+      yield* validate("shared_secret");
+      expect(calls).toBe(2);
+    }),
+  );
+
+  it.effect("invalidates a cached key when it is revoked locally", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const validator = makeApiKeyValidator(
+        stubWorkOSService({
+          validateApiKey: () => {
+            calls += 1;
+            return Effect.succeed({
+              apiKey: {
+                id: "api_key_shared",
+                owner: { type: "organization", id: "org_123" },
+              },
+            });
+          },
+        }),
+      );
+
+      yield* validator.validate("shared_secret");
+      yield* validator.validate("shared_secret");
+      validator.invalidate("api_key_shared");
+      yield* validator.validate("shared_secret");
+
+      expect(calls).toBe(2);
+    }),
+  );
+
   it.effect("accepts user-owned keys with camel-case organization id", () =>
     Effect.gen(function* () {
       const principal = yield* validate({
