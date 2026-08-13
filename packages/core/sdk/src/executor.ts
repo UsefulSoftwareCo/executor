@@ -492,15 +492,14 @@ export interface AdminListSubjectsOptions {
 /**
  * Page size applied when a caller names none. Every admin list is BOUNDED:
  * `listSubjects()` with no arguments is the obvious call, and unbounded it
- * returns every subject in the tenant — which `listSubjectsWithConnections`
- * then turns into one sequential connection query PER SUBJECT, inside a single
- * request, over a per-request socket on cloud. A default is what keeps the
- * no-args call honest; a caller who wants more asks for more, up to
- * {@link ADMIN_MAX_PAGE_SIZE}.
+ * returns every subject in the tenant — an unbounded row count to build,
+ * serialize, and ship, and an unbounded `in` predicate for the joined read to
+ * carry. A default is what keeps the no-args call honest; a caller who wants
+ * more asks for more, up to {@link ADMIN_MAX_PAGE_SIZE}.
  *
  * 100 rather than the maximum: large enough that no realistic operator UI pages
- * twice for a first screen, small enough that the joined read's fan-out stays a
- * bounded cost even at its worst.
+ * twice for a first screen, small enough that one response stays a bounded
+ * amount of work even at its worst.
  */
 export const ADMIN_DEFAULT_PAGE_SIZE = 100;
 
@@ -557,12 +556,12 @@ export interface ExecutorAdmin {
   readonly listSubjectConnections: (
     externalId: string,
   ) => Effect.Effect<readonly AdminConnection[], StorageFailure>;
-  /** `listSubjects` joined with each subject's connections — one connection
-   *  query per subject IN THE PAGE, sequentially. The paging bound is what
-   *  makes that fan-out affordable: it is capped at
-   *  {@link ADMIN_DEFAULT_PAGE_SIZE} round trips by default and
-   *  {@link ADMIN_MAX_PAGE_SIZE} at worst, never "every subject in the
-   *  tenant". */
+  /** `listSubjects` joined with each subject's connections in TWO queries —
+   *  the page of subjects, then one batched connection read over that page.
+   *  The cost does not scale with page size, so {@link ADMIN_DEFAULT_PAGE_SIZE}
+   *  and {@link ADMIN_MAX_PAGE_SIZE} bound the ROWS returned rather than the
+   *  round trips taken. A subject with no connections reports an empty array;
+   *  it is never dropped from the page. */
   readonly listSubjectsWithConnections: (
     options?: AdminListSubjectsOptions,
   ) => Effect.Effect<readonly AdminSubjectWithConnections[], StorageFailure>;
@@ -4835,16 +4834,57 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           })
           .pipe(Effect.map((rows) => rows.map(rowToAdminConnection)));
 
+      // ONE connection query for the whole page, not one per subject. The
+      // per-subject form was an N+1: a default page issued 100 sequential
+      // `findMany`s over a per-request socket, which on cloud cost ~1.4s of a
+      // ~2.4s response. Cost is now two queries regardless of page size.
+      //
+      // The `in` predicate carries the SAME `owner: "user"` clause the keyed
+      // read does, so org rows (whose `subject` is the empty-string sentinel)
+      // stay excluded, and the tenant policy scopes both reads identically.
+      //
+      // Ordering is preserved WITHOUT a per-subject sort: the query orders by
+      // `(integration, name)` across the page, and grouping walks those rows
+      // in order, so each subject's bucket comes out in the same order the
+      // per-subject query produced. Subjects with no connections still report
+      // an empty array rather than dropping out of the page.
       const listSubjectsWithConnections = (
         options?: AdminListSubjectsOptions,
       ): Effect.Effect<readonly AdminSubjectWithConnections[], StorageFailure> =>
         Effect.gen(function* () {
           const subjects = yield* listSubjects(options);
-          return yield* Effect.forEach(subjects, (entry) =>
-            listSubjectConnections(entry.externalId).pipe(
-              Effect.map((connections) => ({ ...entry, connections })),
-            ),
-          );
+          // No page, no connection query — `in ([])` is a query that cannot
+          // match, so issuing it would be pure latency.
+          if (subjects.length === 0) return [];
+
+          const rows = yield* platformCore.findMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                b("owner", "=", "user"),
+                b(
+                  "subject",
+                  "in",
+                  subjects.map((entry) => entry.externalId),
+                ),
+              ),
+            orderBy: [
+              ["integration", "asc"],
+              ["name", "asc"],
+            ],
+          });
+
+          const bySubject = new Map<string, AdminConnection[]>();
+          for (const row of rows) {
+            const connection = rowToAdminConnection(row);
+            const bucket = bySubject.get(row.subject);
+            if (bucket) bucket.push(connection);
+            else bySubject.set(row.subject, [connection]);
+          }
+
+          return subjects.map((entry) => ({
+            ...entry,
+            connections: bySubject.get(entry.externalId) ?? [],
+          }));
         });
 
       // Absent subject short-circuits: no connection query is issued for a
