@@ -17,6 +17,8 @@
 //      (the Clear affordance), and Clear really removes the rule.
 //   5. The rules materialize as manageable rows on /policies and persist
 //      server-side with exactly the owner/pattern/action the UI promised.
+//   6. A manually-authored `**.get*` rule matches generated tool names across
+//      groups without catching a sibling `delete*` tool.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -32,10 +34,10 @@ const api = composePluginApi([openApiHttpPlugin()] as const);
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
 
-/** Two tagged groups so the tree renders a `records` category (two leaves)
- *  next to an unrelated `checks` category the rules must not touch. Tag →
- *  group segment, operationId → leaf segment: `records.list`,
- *  `records.create`, `checks.ping`. Never contacted over the network. */
+/** Tagged groups render `records` category rules alongside generated
+ *  `users.getV1User` / `users.deleteV1User` names for wildcard coverage and
+ *  an unrelated `checks` category the rules must not touch. Tag → group
+ *  segment and operationId → leaf segment. Never contacted over the network. */
 const recordsSpec = JSON.stringify({
   openapi: "3.0.3",
   info: { title: "Records API", version: "1.0.0" },
@@ -60,6 +62,20 @@ const recordsSpec = JSON.stringify({
         tags: ["checks"],
         summary: "Ping",
         responses: { "200": { description: "ok" } },
+      },
+    },
+    "/users/{id}": {
+      get: {
+        operationId: "getV1User",
+        tags: ["users"],
+        summary: "Get a user",
+        responses: { "200": { description: "ok" } },
+      },
+      delete: {
+        operationId: "deleteV1User",
+        tags: ["users"],
+        summary: "Delete a user",
+        responses: { "204": { description: "deleted" } },
       },
     },
   },
@@ -87,6 +103,7 @@ scenario(
     const leafPattern = `${integration}.*.*.records.create`;
     const categoryPattern = `${integration}.*.*.records.*`;
     const listLeafPattern = `${integration}.*.*.records.list`;
+    const getNamePattern = `${integration}.*.*.**.get*`;
 
     // Selfhost scenarios share one workspace — remove everything this one
     // made (policies, connections, the integration) even on failure.
@@ -292,19 +309,49 @@ scenario(
           await page.getByText(leafPattern, { exact: true }).waitFor();
           await page.getByText(categoryPattern, { exact: true }).waitFor();
         });
+
+        await step("Require approval for every generated get-prefixed tool", async () => {
+          await page.getByLabel("Pattern").fill(getNamePattern);
+          await page.getByRole("button", { name: "Add policy" }).click();
+          await page.getByText(getNamePattern, { exact: true }).waitFor();
+        });
+
+        await step(
+          "The name wildcard matches get tools without catching delete tools",
+          async () => {
+            await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
+            await page.getByRole("tab", { name: "Tools" }).click();
+            await closedGroup(alpha, integration).click();
+            await closedGroup(alpha, "users").click();
+            await leafIndicator(
+              alpha,
+              "getV1User",
+              `Require approval (matched ${getNamePattern})`,
+            ).waitFor();
+            await leafIndicator(
+              alpha,
+              "deleteV1User",
+              "Plugin default: Require approval",
+            ).waitFor();
+          },
+        );
       });
 
-      // Server-side truth, on a fresh read: exactly the two authored rules,
+      // Server-side truth, on a fresh read: exactly the three authored rules,
       // org-owned, with the more specific leaf rule placed above the later
-      // category rule so it keeps precedence.
+      // category and tool-name wildcard rules so it keeps precedence.
       const policies = yield* client.policies.list();
       const mine = policies
         .filter((p) => p.pattern.startsWith(`${integration}.`))
         .sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0));
       expect(
         mine.map((p) => `${p.owner} ${p.pattern} ${p.action}`),
-        "the UI-authored rules persisted with the leaf rule above the category rule",
-      ).toEqual([`org ${leafPattern} block`, `org ${categoryPattern} require_approval`]);
+        "the UI-authored rules persisted in specificity order",
+      ).toEqual([
+        `org ${leafPattern} block`,
+        `org ${categoryPattern} require_approval`,
+        `org ${getNamePattern} require_approval`,
+      ]);
     }).pipe(Effect.ensuring(cleanup));
   }),
 );

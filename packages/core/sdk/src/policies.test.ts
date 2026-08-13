@@ -17,6 +17,8 @@ import {
   effectivePolicyFromSorted,
   isValidPattern,
   matchPattern,
+  patternSpecificity,
+  positionForNewPattern,
   resolveToolPolicy,
 } from "./policies";
 import { definePlugin, tool } from "./plugin";
@@ -73,6 +75,25 @@ describe("matchPattern", () => {
     expect(matchPattern("github.user.alice.repos.*", "github.user.alice.repos.list")).toBe(true);
     expect(matchPattern("github.user.alice.repos.*", "github.user.bob.repos.list")).toBe(false);
   });
+
+  it("matches trailing wildcards within a tool-name segment", () => {
+    expect(matchPattern("github.*.*.users.get*", "github.org.acme.users.getV1User")).toBe(true);
+    expect(matchPattern("github.*.*.users.get*", "github.org.acme.users.get")).toBe(true);
+    expect(matchPattern("github.*.*.users.get*", "github.org.acme.users.listV1Users")).toBe(false);
+    // A tool-name wildcard never consumes a dot. Use `**` when the number of
+    // structured tool-name segments is intentionally variable.
+    expect(matchPattern("github.*.*.get*", "github.org.acme.users.getV1User")).toBe(false);
+  });
+
+  it("matches globstars across zero or more structured tool-name segments", () => {
+    expect(matchPattern("github.*.*.**.get*", "github.org.acme.getV1User")).toBe(true);
+    expect(matchPattern("github.*.*.**.get*", "github.org.acme.users.getV1User")).toBe(true);
+    expect(matchPattern("github.*.*.**.get*", "github.org.acme.v1.users.getV1User")).toBe(true);
+    expect(matchPattern("github.*.*.**.get*", "github.org.acme.v1.users.deleteV1User")).toBe(false);
+    expect(matchPattern("github.*.*.users.**.get*", "github.org.acme.users.v1.getV1User")).toBe(
+      true,
+    );
+  });
 });
 
 describe("isValidPattern", () => {
@@ -91,6 +112,12 @@ describe("isValidPattern", () => {
     expect(isValidPattern("github.user.alice.repos.*")).toBe(true);
   });
 
+  it("accepts tool-name prefixes and globstars", () => {
+    expect(isValidPattern("github.*.*.users.get*")).toBe(true);
+    expect(isValidPattern("github.*.*.**.get*")).toBe(true);
+    expect(isValidPattern("github.*.*.users.**.delete*")).toBe(true);
+  });
+
   it("accepts the universal pattern", () => {
     expect(isValidPattern("*")).toBe(true);
   });
@@ -101,8 +128,38 @@ describe("isValidPattern", () => {
     expect(isValidPattern("a.")).toBe(false);
     expect(isValidPattern("a..b")).toBe(false);
     expect(isValidPattern("*.a")).toBe(false); // leading * still rejected
-    expect(isValidPattern("a*")).toBe(false); // partial wildcard
-    expect(isValidPattern("a.b*")).toBe(false); // partial wildcard
+    expect(isValidPattern("**")).toBe(false); // globstars must remain integration-scoped
+    expect(isValidPattern("**.get*")).toBe(false);
+    expect(isValidPattern("a*")).toBe(false); // integration wildcards must remain segment-wide
+    expect(isValidPattern("*a")).toBe(false); // wildcard prefixes are ambiguous
+    expect(isValidPattern("a.b*c")).toBe(false); // only a trailing wildcard is supported
+    expect(isValidPattern("a.get*.b")).toBe(false); // only the final tool-name segment is partial
+    expect(isValidPattern("a.b**")).toBe(false); // globstar must be a complete segment
+    expect(isValidPattern("a.***.b")).toBe(false);
+  });
+});
+
+describe("pattern specificity", () => {
+  it("orders exact tools above name wildcards above broad integration rules", () => {
+    expect(patternSpecificity("github.*.*.users.getV1User")).toBeGreaterThan(
+      patternSpecificity("github.*.*.**.get*"),
+    );
+    expect(patternSpecificity("github.*.*.**.get*")).toBeGreaterThan(
+      patternSpecificity("github.*"),
+    );
+    expect(patternSpecificity("github.*")).toBeGreaterThan(patternSpecificity("*"));
+  });
+
+  it("places a name wildcard below an existing exact tool rule", () => {
+    const exactPosition = "a0";
+    const wildcardPosition = positionForNewPattern("github.*.*.**.get*", [
+      {
+        id: "exact",
+        pattern: "github.*.*.users.getV1User",
+        position: exactPosition,
+      },
+    ]);
+    expect(wildcardPosition > exactPosition).toBe(true);
   });
 });
 
@@ -151,6 +208,19 @@ describe("resolveToolPolicy", () => {
     expect(result?.action).toBe("approve");
     expect(result?.pattern).toBe("vercel.dns.create");
     expect(result?.policyId).toBe("a");
+  });
+
+  it("resolves a generated tool-name prefix rule", () => {
+    const result = resolveToolPolicy(
+      "github.org.acme.users.getV1User",
+      [
+        ROW("get-tools", "github.*.*.**.get*", "require_approval", "a0"),
+        ROW("all-github", "github.*", "approve", "a1"),
+      ],
+      flatRank,
+    );
+    expect(result?.action).toBe("require_approval");
+    expect(result?.pattern).toBe("github.*.*.**.get*");
   });
 
   it("falls through to the broader rule when the specific rule is below it", () => {

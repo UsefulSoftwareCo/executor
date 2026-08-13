@@ -133,17 +133,16 @@ function AddPolicyForm(props: {
         </Label>
         <Input
           id="policy-pattern"
-          placeholder="vercel.dns.* or *"
+          placeholder="my-api.*.*.**.get*"
           value={pattern}
           onChange={(e) => setPattern(e.target.value)}
           className="font-mono text-sm"
         />
         <p className="text-xs text-muted-foreground">
-          Exact tool id, trailing wildcard, or <code className="font-mono">*</code> for every tool.
-          Examples: <code className="font-mono">*</code>,{" "}
-          <code className="font-mono">vercel.*</code>,{" "}
-          <code className="font-mono">vercel.dns.*</code>,{" "}
-          <code className="font-mono">vercel.dns.create</code>.
+          Use <code className="font-mono">get*</code> for a tool-name prefix and{" "}
+          <code className="font-mono">**</code> across generated tool groups. Examples:{" "}
+          <code className="font-mono">*</code>, <code className="font-mono">vercel.*</code>,{" "}
+          <code className="font-mono">my-api.*.*.**.get*</code>.
         </p>
       </div>
       <div className="flex flex-col gap-1">
