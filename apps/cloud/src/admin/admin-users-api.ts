@@ -25,6 +25,7 @@
 // every query by that tenant.
 // ---------------------------------------------------------------------------
 
+import { env } from "cloudflare:workers";
 import { HttpRouter } from "effect/unstable/http";
 import { Context, Effect, Layer, Option } from "effect";
 
@@ -188,24 +189,16 @@ const identityDirectory =
 /**
  * Cloud's REVERSE directory lookup: email → the WorkOS `user_...` id.
  *
- * WHY THE MEMBER LIST AND NOT A SERVER-SIDE EMAIL QUERY. WorkOS's SDK does
- * expose `listUsers({ email })`, which would be one indexed call instead of a
- * scan — but the pinned `@executor-js/emulate` WorkOS emulator serves no
- * list-users route at all. Its route table was read directly from the shipped
- * bundle: under `/user_management` it has only `users/:id`,
- * `organization_memberships`, the auth/session routes, and invitations. Taking
- * the `listUsers` path would therefore 404 in every cloud e2e run and could
- * only be exercised in production — so the lookup is built on the SAME
- * membership read the forward join already makes, which the emulator does
- * serve.
+ * Production asks WorkOS for the email AND organization in one request. Both
+ * filters matter: email makes the lookup indexed rather than one `getUser`
+ * request per member, while organization keeps the reverse lookup bound to the
+ * same tenant as the platform view.
  *
- * THE TRADEOFF is an in-memory scan of the org's members, bounded by org size
- * and capped by the identity fan-out below. That is acceptable at the sizes
- * this plane serves, and it has a real correctness advantage: the membership
- * list is the authority on who belongs to THIS org, so a resolver built on it
- * cannot return a user from another tenant, which a bare `listUsers({ email })`
- * could. If org sizes ever make the scan hurt, the fix is a server-side query
- * gated on emulator support, not a cache.
+ * The pinned `@executor-js/emulate` WorkOS emulator has no list-users route.
+ * `WORKOS_API_URL` is the explicit test/dev emulator override, so that path
+ * retains the membership scan until the emulator supports the production
+ * query. The fallback still starts from the tenant's membership list and can
+ * never return a user from another organization.
  *
  * CASING: WorkOS preserves whatever casing an email was created with (and the
  * emulator compares byte-exact), so the directory value is normalized here
@@ -216,12 +209,17 @@ export const emailResolver =
   (email) =>
     Effect.gen(function* () {
       const workos = yield* WorkOSClient;
+
+      if (!env.WORKOS_API_URL) {
+        const users = yield* workos.listUsers({ email, organizationId });
+        return users.data[0]?.id ?? null;
+      }
+
       const memberships = yield* workos.listOrgMembers(organizationId);
       const userIds = memberships.data.map((membership) => membership.userId);
 
-      // Short-circuits on the first match: `Effect.findFirst` stops fetching
-      // once a user's email matches, so the common case costs far fewer reads
-      // than the member count.
+      // Emulator compatibility only. Short-circuit once the normalized email
+      // matches so the fallback makes as few unsupported-detail reads as it can.
       const match = yield* Effect.findFirst(userIds, (userId) =>
         workos.getUser(userId).pipe(
           Effect.map((user) => normalizeAdminUserEmail(user.email ?? "") === email),
