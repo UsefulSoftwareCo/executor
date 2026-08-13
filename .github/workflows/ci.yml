@@ -318,11 +318,16 @@ jobs:
       # scenario boots its own `executor web`). Run just the stdio MCP scenario
       # here: it is the auto-connect / env-as-secret regression guard, and
       # running it alone avoids the boot-resource accumulation and the
-      # pre-existing browser flakiness of the rest of the local suite. Expanding
+      # pre-existing browser flakiness of the rest of the local suite. The CLI
+      # protocol scenario also guards modern `server/discover` forwarding and
+      # legacy `initialize` compatibility through the real stdio bridge. Expanding
       # to the full `local` project (bun run test:local) is a follow-up once
       # those are stabilized.
-      - name: Run the stdio MCP scenario
-        run: bunx vitest run --project local local/stdio-mcp.test.ts
+      - name: Run the stdio MCP scenarios
+        run: >-
+          bunx vitest run --project local
+          local/stdio-mcp.test.ts
+          local/cli-mcp-protocol.test.ts
         working-directory: e2e
 
   desktop-smoke:
