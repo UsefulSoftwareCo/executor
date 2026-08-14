@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Ref } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { Effect, Layer, Predicate, Ref } from "effect";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpServerResponse,
+} from "effect/unstable/http";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { probeMcpEndpointShape } from "./probe-shape";
@@ -318,6 +324,91 @@ describe("probeMcpEndpointShape", () => {
           expect(result).toMatchObject({ kind: "not-mcp", category: "wrong-shape" });
         }),
     ),
+  );
+
+  it.effect("falls through a wrong-shape legacy GET retry to modern server discovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          if (request.body.includes('"method":"server/discover"')) {
+            return HttpServerResponse.jsonUnsafe({
+              jsonrpc: "2.0",
+              id: 2,
+              error: { code: -32601, message: "Method not found" },
+            });
+          }
+          if (request.method === "GET") {
+            return HttpServerResponse.jsonUnsafe({ error: "legacy SSE is unsupported" });
+          }
+          return HttpServerResponse.empty({ status: 405 });
+        });
+
+        const result = yield* probeMcpEndpointShape(server.endpoint);
+        expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+
+        const requests = yield* server.requests;
+        expect(requests).toHaveLength(3);
+        expect(requests[0]?.body).toContain('"protocolVersion":"2025-11-25"');
+        expect(requests[1]?.method).toBe("GET");
+        expect(requests[2]?.body).toBe(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "server/discover",
+            params: {
+              _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
+            },
+          }),
+        );
+        expect(requests[2]?.headers["mcp-protocol-version"]).toBe("2026-07-28");
+      }),
+    ),
+  );
+
+  it.effect("keeps the initialize verdict when the discover fallback fails at the transport", () =>
+    Effect.gen(function* () {
+      const bodyText = (request: HttpClientRequest.HttpClientRequest): string =>
+        Predicate.isTagged(request.body, "Uint8Array")
+          ? new TextDecoder().decode(request.body.body)
+          : "";
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make(
+          (
+            request: HttpClientRequest.HttpClientRequest,
+          ): Effect.Effect<
+            HttpClientResponse.HttpClientResponse,
+            HttpClientError.HttpClientError
+          > =>
+            bodyText(request).includes('"method":"server/discover"')
+              ? Effect.fail(
+                  new HttpClientError.HttpClientError({
+                    reason: new HttpClientError.TransportError({
+                      request,
+                      description: "connection reset by peer",
+                    }),
+                  }),
+                )
+              : Effect.succeed(
+                  HttpClientResponse.fromWeb(
+                    request,
+                    new Response("<html>not mcp</html>", {
+                      status: 200,
+                      headers: { "content-type": "text/html" },
+                    }),
+                  ),
+                ),
+        ),
+      );
+
+      const result = yield* probeMcpEndpointShape("https://internal.example/mcp", {
+        httpClientLayer,
+      });
+      expect(result).toEqual({
+        kind: "not-mcp",
+        category: "wrong-shape",
+        reason: "2xx POST body is not a JSON-RPC envelope",
+      });
+    }),
   );
 
   it.effect("rejects 2xx with HTML body as wrong-shape", () =>

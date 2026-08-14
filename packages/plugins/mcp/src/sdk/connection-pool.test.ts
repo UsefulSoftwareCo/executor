@@ -7,6 +7,10 @@ import { createMcpConnectionPool } from "./connection-pool";
 import { invokeMcpTool } from "./invoke";
 import { makeEchoMcpServer, serveMcpServer } from "../testing";
 
+// The public v1 fixture creates one throwaway transport for v2's rejected
+// server/discover probe, then one initialized legacy session per real dial.
+const V1_FIXTURE_TRANSPORTS_PER_DIAL = 2;
+
 const acceptAll: Elicit = () =>
   Effect.succeed(ElicitationResponse.make({ action: "accept", content: { approved: true } }));
 
@@ -54,7 +58,7 @@ describe("MCP connection pool", () => {
 
         expect(first).toMatchObject({ content: [{ type: "text", text: "first" }] });
         expect(second).toMatchObject({ content: [{ type: "text", text: "second" }] });
-        expect(server.sessionCount()).toBe(1);
+        expect(server.sessionCount()).toBe(V1_FIXTURE_TRANSPORTS_PER_DIAL);
         yield* pool.close();
       }),
     ),
@@ -88,7 +92,7 @@ describe("MCP connection pool", () => {
           expect.objectContaining({ content: [{ type: "text", text: "left" }] }),
           expect.objectContaining({ content: [{ type: "text", text: "right" }] }),
         ]);
-        expect(server.sessionCount()).toBe(2);
+        expect(server.sessionCount()).toBe(2 * V1_FIXTURE_TRANSPORTS_PER_DIAL);
         yield* pool.close();
       }),
     ),
@@ -115,7 +119,7 @@ describe("MCP connection pool", () => {
         });
 
         expect(after).toMatchObject({ content: [{ type: "text", text: "after" }] });
-        expect(server.sessionCount()).toBe(2);
+        expect(server.sessionCount()).toBe(2 * V1_FIXTURE_TRANSPORTS_PER_DIAL);
         yield* pool.close();
       }),
     ),
@@ -148,7 +152,7 @@ describe("MCP connection pool", () => {
         });
 
         expect(after).toMatchObject({ content: [{ type: "text", text: "after" }] });
-        expect(server.sessionCount()).toBe(2);
+        expect(server.sessionCount()).toBe(2 * V1_FIXTURE_TRANSPORTS_PER_DIAL);
         yield* pool.close();
       }),
     ),
@@ -188,8 +192,8 @@ describe("MCP connection pool", () => {
         });
 
         expect(after).toMatchObject({ content: [{ type: "text", text: "after" }] });
-        // A second session was dialled rather than the dead one being reused.
-        expect(server.sessionCount()).toBe(2);
+        // A second connection was dialled rather than the dead one being reused.
+        expect(server.sessionCount()).toBe(2 * V1_FIXTURE_TRANSPORTS_PER_DIAL);
         yield* pool.close();
       }),
     ),

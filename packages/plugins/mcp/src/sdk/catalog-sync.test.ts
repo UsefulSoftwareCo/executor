@@ -182,6 +182,13 @@ const decodeJsonRpcRequest = Schema.decodeUnknownOption(Schema.fromJsonString(Js
 const jsonRpcResult = (request: JsonRpcRequest, result: unknown) =>
   HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: request.id ?? null, result });
 
+const jsonRpcMethodNotFound = (request: JsonRpcRequest) =>
+  HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: request.id ?? null,
+    error: { code: -32601, message: "Method not found" },
+  });
+
 const pageTool = (name: string) => ({
   name,
   description: `Tool ${name}`,
@@ -199,6 +206,7 @@ const servePaginatedListServer = () =>
       return Option.match(decodeJsonRpcRequest(body), {
         onNone: () => HttpServerResponse.text("Invalid JSON-RPC fixture request", { status: 400 }),
         onSome: (rpc) => {
+          if (rpc.method === "server/discover") return jsonRpcMethodNotFound(rpc);
           if (rpc.method === "initialize") {
             return jsonRpcResult(rpc, {
               protocolVersion: "2025-06-18",
