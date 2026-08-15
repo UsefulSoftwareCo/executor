@@ -11,18 +11,19 @@ import {
   type StorageFailure,
 } from "@executor-js/sdk";
 
-import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
-import { requireInstanceAdmin } from "./require-admin";
-import { SelfHostDb, SelfHostDbProvider, type SelfHostDbHandle } from "../db/self-host-db";
-import { SelfHostHostConfig, SelfHostPluginsProvider } from "../execution";
-import type { SelfHostPlugins } from "../plugins";
 import {
   AccessGroupsError,
   AccessGroupsForbidden,
   AccessGroupsHttpApi,
   AccessGroupsNotFound,
   AccessGroupsUnauthorized,
-} from "./access-groups-api";
+} from "@executor-js/api";
+
+import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
+import { requireInstanceAdmin } from "./require-admin";
+import { SelfHostDb, SelfHostDbProvider, type SelfHostDbHandle } from "../db/self-host-db";
+import { SelfHostHostConfig, SelfHostPluginsProvider } from "../execution";
+import type { SelfHostPlugins } from "../plugins";
 
 // ---------------------------------------------------------------------------
 // Handlers for the self-host access-groups API. Every route is gated by the

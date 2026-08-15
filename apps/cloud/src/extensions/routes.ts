@@ -24,7 +24,7 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
-import { AccountApi, AdminUsersApi } from "@executor-js/api";
+import { AccessGroupsApi, AccessGroupsHttpApi, AccountApi, AdminUsersApi } from "@executor-js/api";
 import { requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
@@ -39,6 +39,7 @@ import { makeCloudAdminUsersRoutes } from "../admin/admin-users-api";
 import { OrgApi, OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
+import { AccessGroupsHandlers } from "../access-groups/handlers";
 import { AutumnService } from "../extensions/billing/service";
 import { DbService } from "../db/db";
 import { ProtectedCloudApi } from "../api/layers";
@@ -59,6 +60,7 @@ const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi)
   .add(OrgApi)
   .add(AccountApi)
   .add(AdminUsersApi)
+  .add(AccessGroupsApi)
   .prefix("/api");
 
 const spec = OpenApi.fromApi(CloudOpenApi);
@@ -110,10 +112,20 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
   // org key (or an admin session) and builds a subject-less platform view.
   const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, { router: apiPrefixedRouter });
 
+  // Admin-only access-group management (`/api/admin/access-groups*`). Same
+  // org-session auth middleware as the domains plane; the WorkOS admin-role
+  // gate and the per-request scoped executor live in the handlers.
+  const AccessGroupsRoutes = HttpApiBuilder.layer(AccessGroupsHttpApi).pipe(
+    Layer.provide(AccessGroupsHandlers),
+    Layer.provide(orgAuthMiddleware(rsLive)),
+    Layer.provide(apiPrefixedRouter),
+  );
+
   return [
     SessionRoutes,
     OrgRoutes,
     AdminUsersRoutes,
+    AccessGroupsRoutes,
     DocsRoutes,
     BillingRoutes,
     ApiErrorLoggingLive,

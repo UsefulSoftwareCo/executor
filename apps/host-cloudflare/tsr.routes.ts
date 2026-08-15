@@ -15,5 +15,8 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 // Cloudflare Access, which has no in-app role to gate on), so the page would
 // only ever render its denied state.
 export const routes = rootRoute("__root.tsx", [
-  ...consoleRoutes({ dir: "../../../../packages/react/src/routes", exclude: ["/users"] }),
+  ...consoleRoutes({
+    dir: "../../../../packages/react/src/routes",
+    exclude: ["/users", "/access-groups"],
+  }),
 ]);

@@ -1,20 +1,31 @@
+// ---------------------------------------------------------------------------
+// Access Groups HTTP API — the ADMIN-ONLY management surface for connection /
+// toolkit access groups, served identically by both hosts at `/admin/*`
+// (mirroring the admin-users plane), so ONE shared client works everywhere.
+//
+// Deliberately NOT part of the shared `ExecutorApi`: that surface's trust
+// model is "any org member", and group management (who may see which org
+// connection) must not ride it. Auth is applied by each host's own admin
+// middleware (cloud: WorkOS admin-role session; self-host: a Better Auth
+// owner/admin), same as the admin-users plane — this contract carries no
+// provider-specific auth scheme.
+//
+// Enforcement itself lives in the executor core (a restricted connection or
+// toolkit is invisible and uninvokable for non-members, with no existence
+// oracle); these endpoints only edit the group rows.
+// ---------------------------------------------------------------------------
+
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
 // ---------------------------------------------------------------------------
-// Self-host access-groups API — ADMIN-ONLY management of connection access
-// groups, mounted beside the invite-code admin routes under /api/admin/*.
-//
-// Every route is gated by the shared `requireInstanceAdmin` (require-admin.ts),
-// which authorizes against the INSTANCE's own organization — the same
-// escalation defense the other admin planes use. Deliberately NOT part of the
-// shared `ExecutorApi` (whose trust model is "any org member"). Enforcement
-// lives in the executor core; these endpoints only edit the group rows.
-//
-// Browser-safe: schemas + the HttpApi value only (no server imports), so the
-// web client can build a typed AtomHttpApi from it.
+// Errors
 // ---------------------------------------------------------------------------
 
+/** Rule violations from the engine (empty name, group still referenced,
+ *  unknown group/toolkit) and storage failures, rendered with the engine's
+ *  message — this is an admin plane, where the message IS the actionable
+ *  content. */
 export class AccessGroupsError extends Schema.TaggedErrorClass<AccessGroupsError>()(
   "AccessGroupsError",
   { message: Schema.String },
@@ -39,6 +50,10 @@ export class AccessGroupsNotFound extends Schema.TaggedErrorClass<AccessGroupsNo
   { httpApiStatus: 404 },
 ) {}
 
+// ---------------------------------------------------------------------------
+// Wire shapes
+// ---------------------------------------------------------------------------
+
 export const AccessGroupItem = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -48,8 +63,10 @@ export const AccessGroupItem = Schema.Struct({
 
 export const AccessGroupMemberItem = Schema.Struct({
   groupId: Schema.String,
-  /** The member's Better Auth `user.id` — the same principal id the subject
-   *  table records. */
+  /** The member's host-auth principal id (cloud: the WorkOS `user_...`;
+   *  self-host: the Better Auth `user.id`) — the same id `/admin/users`
+   *  reports as `externalId` and `/account/members` reports as the account
+   *  id. Opaque; the console joins it to a display identity client-side. */
   subject: Schema.String,
   createdAt: Schema.String,
 });
@@ -82,15 +99,15 @@ export const ToolkitRestrictionsResponse = Schema.Struct({
   restrictions: Schema.Array(ToolkitRestrictionItem),
 });
 
-export const SuccessResponse = Schema.Struct({
+export const AccessGroupsSuccessResponse = Schema.Struct({
   success: Schema.Boolean,
 });
 
-export const GroupNameBody = Schema.Struct({
+export const AccessGroupNameBody = Schema.Struct({
   name: Schema.String,
 });
 
-export const AddMemberBody = Schema.Struct({
+export const AccessGroupAddMemberBody = Schema.Struct({
   subject: Schema.String,
 });
 
@@ -117,9 +134,10 @@ const ERRORS = [
   AccessGroupsNotFound,
 ];
 
-// Paths are `/admin/*` (no `/api`): the server mounts this on the same
-// `/api`-prefixed router as the core API — symmetric with the invite plane.
-export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
+// Paths are `/admin/*` (no `/api`): each host mounts this on its
+// `/api`-prefixed router and the client prepends the API base — symmetric
+// with the admin-users plane.
+export class AccessGroupsApi extends HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.get("listGroups", "/admin/access-groups", {
       success: AccessGroupsResponse,
@@ -128,7 +146,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   )
   .add(
     HttpApiEndpoint.post("createGroup", "/admin/access-groups", {
-      payload: GroupNameBody,
+      payload: AccessGroupNameBody,
       success: AccessGroupItem,
       error: ERRORS,
     }),
@@ -136,7 +154,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.post("renameGroup", "/admin/access-groups/:groupId", {
       params: GroupParams,
-      payload: GroupNameBody,
+      payload: AccessGroupNameBody,
       success: AccessGroupItem,
       error: ERRORS,
     }),
@@ -144,7 +162,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.delete("deleteGroup", "/admin/access-groups/:groupId", {
       params: GroupParams,
-      success: SuccessResponse,
+      success: AccessGroupsSuccessResponse,
       error: ERRORS,
     }),
   )
@@ -158,7 +176,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.post("addMember", "/admin/access-groups/:groupId/members", {
       params: GroupParams,
-      payload: AddMemberBody,
+      payload: AccessGroupAddMemberBody,
       success: AccessGroupMemberItem,
       error: ERRORS,
     }),
@@ -166,7 +184,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.delete("removeMember", "/admin/access-groups/:groupId/members/:subject", {
       params: MemberParams,
-      success: SuccessResponse,
+      success: AccessGroupsSuccessResponse,
       error: ERRORS,
     }),
   )
@@ -179,7 +197,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.post("restrictConnection", "/admin/access-group-restrictions", {
       payload: RestrictConnectionBody,
-      success: SuccessResponse,
+      success: AccessGroupsSuccessResponse,
       error: ERRORS,
     }),
   )
@@ -189,7 +207,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
       "/admin/access-group-restrictions/:integration/:name",
       {
         params: RestrictionParams,
-        success: SuccessResponse,
+        success: AccessGroupsSuccessResponse,
         error: ERRORS,
       },
     ),
@@ -203,7 +221,7 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
   .add(
     HttpApiEndpoint.post("restrictToolkit", "/admin/access-group-toolkit-restrictions", {
       payload: RestrictToolkitBody,
-      success: SuccessResponse,
+      success: AccessGroupsSuccessResponse,
       error: ERRORS,
     }),
   )
@@ -213,14 +231,12 @@ export const AccessGroupsApi = HttpApiGroup.make("accessGroups")
       "/admin/access-group-toolkit-restrictions/:toolkitId",
       {
         params: ToolkitParams,
-        success: SuccessResponse,
+        success: AccessGroupsSuccessResponse,
         error: ERRORS,
       },
     ),
-  );
+  ) {}
 
-/** Standalone HttpApi wrapping the access-groups group — mounted server-side
- *  as an extension route layer, consumable by a typed web client. */
-export const AccessGroupsHttpApi = HttpApi.make("executor-self-host-access-groups").add(
-  AccessGroupsApi,
-);
+/** Standalone HttpApi wrapping the group — mounted server-side by each host's
+ *  admin layer, consumed client-side by the shared console client. */
+export const AccessGroupsHttpApi = HttpApi.make("accessGroups").add(AccessGroupsApi);

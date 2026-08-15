@@ -45,6 +45,11 @@ export const ReactivityKey = {
    *  writes), so nothing invalidates it — it exists so the pages refresh
    *  together and so a future lifecycle mutation has a key to publish. */
   adminUsers: "admin:users",
+  /** Access groups — the admin-only group/membership/restriction plane. One
+   *  key for the whole surface: the lists are small and interdependent (a
+   *  restriction names a group; deletion is refused while referenced), so
+   *  refreshing them together is the correct default. */
+  accessGroups: "admin:access-groups",
 } as const;
 
 /** Mutations that add/remove/refresh an integration also affect tool listings. */

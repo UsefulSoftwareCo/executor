@@ -2,8 +2,8 @@ import { describe, it, expect } from "@effect/vitest";
 import { Data, Effect, Layer, Predicate } from "effect";
 
 import { AuthContext } from "@executor-js/api/server";
+import { AccessGroupsForbidden } from "@executor-js/api";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
-import { AccessGroupsForbidden } from "./api";
 
 // ---------------------------------------------------------------------------
 // Access-groups handler guard. Every endpoint in the group runs behind the

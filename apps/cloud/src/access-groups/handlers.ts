@@ -10,15 +10,16 @@ import {
   type StorageFailure,
 } from "@executor-js/sdk";
 
-import { WorkOSClient } from "../auth/workos";
-import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
-import type { CloudPlugins } from "../plugins";
 import {
   AccessGroupsError,
   AccessGroupsForbidden,
   AccessGroupsHttpApi,
   AccessGroupsNotFound,
-} from "./api";
+} from "@executor-js/api";
+
+import { WorkOSClient } from "../auth/workos";
+import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
+import type { CloudPlugins } from "../plugins";
 
 // ---------------------------------------------------------------------------
 // Cloud access-groups handlers. Every route is gated by the SAME WorkOS
@@ -38,7 +39,11 @@ const requireAdmin = Effect.gen(function* () {
   // WorkOS. Refuse rather than assert.
   if (auth.accountId === null) return yield* new AccessGroupsForbidden();
   const workos = yield* WorkOSClient;
-  const membership = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
+  // Fail CLOSED on a membership-read failure — the shared contract carries no
+  // WorkOS error vocabulary, and an unreadable membership is not an admin.
+  const membership = yield* workos
+    .getUserOrgMembership(auth.organizationId, auth.accountId)
+    .pipe(Effect.catchCause(() => Effect.succeed(null)));
   if (!membership || membership.role?.slug !== "admin") {
     return yield* new AccessGroupsForbidden();
   }

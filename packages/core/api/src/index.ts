@@ -78,6 +78,27 @@ export {
   AdminUsersWithConnectionsResponse,
 } from "./admin/api";
 export {
+  AccessGroupsApi,
+  AccessGroupsHttpApi,
+  AccessGroupsError,
+  AccessGroupsForbidden,
+  AccessGroupsUnauthorized,
+  AccessGroupsNotFound,
+  AccessGroupItem,
+  AccessGroupMemberItem,
+  AccessGroupRestrictionItem,
+  ToolkitRestrictionItem,
+  AccessGroupsResponse,
+  AccessGroupMembersResponse,
+  AccessGroupRestrictionsResponse,
+  ToolkitRestrictionsResponse,
+  AccessGroupsSuccessResponse,
+  AccessGroupNameBody,
+  AccessGroupAddMemberBody,
+  RestrictConnectionBody,
+  RestrictToolkitBody,
+} from "./admin/access-groups-api";
+export {
   RESERVED_ORG_SLUGS,
   generateOrgSlug,
   isValidOrgSlug,

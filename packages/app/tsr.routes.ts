@@ -15,7 +15,7 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 export const routes = rootRoute("__root.tsx", [
   ...consoleRoutes({
     dir: "../../../react/src/routes",
-    exclude: ["/secrets", "/users"],
+    exclude: ["/secrets", "/users", "/access-groups"],
     orgScoped: [physical("", "app")],
   }),
 ]);

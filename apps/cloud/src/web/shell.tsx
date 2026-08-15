@@ -30,7 +30,10 @@ const navItems = [
 // tenant-wide admin plane, which cloud gates on an admin-role membership — so
 // a plain member is not shown a link that would only refuse them. The page
 // still renders its own denied state if one arrives by URL.
-const adminNavItems = [{ to: "/users", label: "Users" }];
+const adminNavItems = [
+  { to: "/users", label: "Users" },
+  { to: "/access-groups", label: "Access groups" },
+];
 
 // A top-level form POST, not fetch: the logout response 302s through the
 // WorkOS logout endpoint (ending the hosted AuthKit session) before landing

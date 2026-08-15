@@ -16,7 +16,7 @@ import { WorkerTelemetryLive } from "../observability/telemetry";
 import { OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
-import { AccessGroupsHttpApi } from "../access-groups/api";
+import { AccessGroupsHttpApi } from "@executor-js/api";
 import { AccessGroupsHandlers } from "../access-groups/handlers";
 import { ErrorCaptureLive } from "../observability";
 
