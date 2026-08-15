@@ -55,6 +55,12 @@ export const AccessGroupRestrictionItem = Schema.Struct({
   group: Schema.String,
 });
 
+export const ToolkitRestrictionItem = Schema.Struct({
+  toolkitId: Schema.String,
+  slug: Schema.String,
+  group: Schema.String,
+});
+
 export const AccessGroupsResponse = Schema.Struct({
   groups: Schema.Array(AccessGroupItem),
 });
@@ -65,6 +71,10 @@ export const AccessGroupMembersResponse = Schema.Struct({
 
 export const AccessGroupRestrictionsResponse = Schema.Struct({
   restrictions: Schema.Array(AccessGroupRestrictionItem),
+});
+
+export const ToolkitRestrictionsResponse = Schema.Struct({
+  restrictions: Schema.Array(ToolkitRestrictionItem),
 });
 
 export const SuccessResponse = Schema.Struct({
@@ -85,9 +95,15 @@ export const RestrictConnectionBody = Schema.Struct({
   group: Schema.String,
 });
 
+export const RestrictToolkitBody = Schema.Struct({
+  toolkitId: Schema.String,
+  group: Schema.String,
+});
+
 const GroupParams = { groupId: Schema.String };
 const MemberParams = { groupId: Schema.String, subject: Schema.String };
 const RestrictionParams = { integration: Schema.String, name: Schema.String };
+const ToolkitParams = { toolkitId: Schema.String };
 
 const ERRORS = [WorkOSError, AccessGroupsForbidden, AccessGroupsNotFound, AccessGroupsError];
 
@@ -161,6 +177,30 @@ export class AccessGroupsApi extends HttpApiGroup.make("accessGroups")
       "/org/access-group-restrictions/:integration/:name",
       {
         params: RestrictionParams,
+        success: SuccessResponse,
+        error: ERRORS,
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("listToolkitRestrictions", "/org/access-group-toolkit-restrictions", {
+      success: ToolkitRestrictionsResponse,
+      error: ERRORS,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("restrictToolkit", "/org/access-group-toolkit-restrictions", {
+      payload: RestrictToolkitBody,
+      success: SuccessResponse,
+      error: ERRORS,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete(
+      "unrestrictToolkit",
+      "/org/access-group-toolkit-restrictions/:toolkitId",
+      {
+        params: ToolkitParams,
         success: SuccessResponse,
         error: ERRORS,
       },

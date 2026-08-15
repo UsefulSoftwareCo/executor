@@ -165,6 +165,95 @@ describe("toolkitsPlugin", () => {
     ),
   );
 
+  it.effect("a toolkit granted to a group exists only for its members", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dataDir = mkdtempSync(join(tmpdir(), "toolkit-grant-"));
+        const tenant = "shared-tenant";
+        const plugins = [toolkitsPlugin(), githubFixturePlugin()] as const;
+
+        const admin = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "admin",
+          dataDir,
+        });
+        yield* seedGithubConnection(admin.executor);
+        const toolkit = yield* admin.executor.toolkits.create({ owner: "org", name: "Deploy Kit" });
+        yield* admin.executor.toolkits.createConnection(toolkit.id, {
+          pattern: "github.org.main.*",
+        });
+        const group = yield* admin.executor.accessGroups.create({ name: "finance" });
+        yield* admin.executor.accessGroups.addMember({ id: group.id, subject: "member-a" });
+        yield* admin.executor.toolkits.setAccessGroup(toolkit.id, group.id);
+
+        const member = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "member-a",
+          dataDir,
+        });
+        const outsider = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "member-b",
+          dataDir,
+        });
+
+        // The member's view is unchanged; the toolkit does not exist for the
+        // outsider — not in the list, and its id answers not-found.
+        expect((yield* member.executor.toolkits.list()).map((item) => item.slug)).toEqual([
+          "deploy-kit",
+        ]);
+        expect(yield* outsider.executor.toolkits.list()).toEqual([]);
+        const hidden = yield* Effect.flip(outsider.executor.toolkits.listPolicies(toolkit.id));
+        expect(Predicate.isTagged("ToolkitError")(hidden)).toBe(true);
+
+        // The slug resolves to nothing for the outsider, so a toolkit MCP
+        // session on it blocks everything — identical to an unknown slug.
+        expect(yield* outsider.executor.toolkits.policyRulesForSlug("deploy-kit")).toEqual([]);
+        const resolved = yield* outsider.executor.toolkits.resolvePolicyForSlug(
+          "deploy-kit",
+          "github.org.main.list",
+        );
+        expect(resolved.action).toBe("block");
+        const memberResolved = yield* member.executor.toolkits.resolvePolicyForSlug(
+          "deploy-kit",
+          "github.org.main.list",
+        );
+        expect(memberResolved.action).not.toBe("block");
+
+        // The management surface stays unfiltered: the admin (not a member)
+        // still sees and can clear the grant; membership edits apply live.
+        expect(yield* admin.executor.toolkits.listRestrictedToolkits()).toEqual([
+          { toolkitId: toolkit.id, slug: "deploy-kit", group: group.id },
+        ]);
+        expect(yield* admin.executor.toolkits.list()).toEqual([]);
+        yield* admin.executor.toolkits.setAccessGroup(toolkit.id, null);
+        expect((yield* outsider.executor.toolkits.list()).map((item) => item.slug)).toEqual([
+          "deploy-kit",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("rejects granting a personal toolkit or an unknown toolkit", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin(), githubFixturePlugin()] as const,
+      });
+      const personal = yield* executor.toolkits.create({ owner: "user", name: "Mine" });
+      const personalError = yield* Effect.flip(
+        executor.toolkits.setAccessGroup(personal.id, "grp_x"),
+      );
+      expect(Predicate.isTagged("ToolkitError")(personalError)).toBe(true);
+      const unknownError = yield* Effect.flip(
+        executor.toolkits.setAccessGroup("tk_missing", "grp_x"),
+      );
+      expect(Predicate.isTagged("ToolkitError")(unknownError)).toBe(true);
+    }),
+  );
+
   it.effect("rejects duplicate visible slugs", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

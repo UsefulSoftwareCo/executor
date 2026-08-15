@@ -5102,6 +5102,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             update: (input) => policiesUpdate(input),
             remove: (input) => policiesRemove(input),
           },
+          accessGroups: {
+            visibleGroupIds: () => loadSubjectGroupIds(),
+          },
         },
         connections: {
           create: (input) => connectionsCreate(input),

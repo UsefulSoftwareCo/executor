@@ -15,6 +15,7 @@ import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import { requireInstanceAdmin } from "./require-admin";
 import { SelfHostDb, SelfHostDbProvider, type SelfHostDbHandle } from "../db/self-host-db";
 import { SelfHostHostConfig, SelfHostPluginsProvider } from "../execution";
+import type { SelfHostPlugins } from "../plugins";
 import {
   AccessGroupsError,
   AccessGroupsForbidden,
@@ -61,17 +62,64 @@ const renderEngineErrors = <A, R>(
     ),
   );
 
+/** Render toolkit-extension failures: the extension's rule violations
+ *  (unknown toolkit, non-org toolkit) all surface as `ToolkitError` with an
+ *  actionable message — this is an admin plane, so the message rides through
+ *  as a 400. */
+const renderToolkitErrors = <A, R>(
+  effect: Effect.Effect<
+    A,
+    { readonly _tag: "ToolkitError"; readonly message: string } | StorageFailure,
+    R
+  >,
+): Effect.Effect<A, AccessGroupsError, R> =>
+  effect.pipe(
+    Effect.catchTag("ToolkitError", (error) =>
+      Effect.fail(new AccessGroupsError({ message: error.message })),
+    ),
+    Effect.catchTag("StorageError", (error) =>
+      Effect.fail(new AccessGroupsError({ message: error.message })),
+    ),
+    Effect.catchTag("UniqueViolationError", () =>
+      Effect.fail(new AccessGroupsError({ message: "Storage conflict" })),
+    ),
+  );
+
 /** Authorize, then run `body` against a writable executor bound to the admin
- *  caller; the executor is always closed. */
-const withAdminExecutor = <A, E>(body: (executor: Executor) => Effect.Effect<A, E>) =>
+ *  caller; the executor is always closed. Typed with the host plugin tuple so
+ *  the toolkits extension is reachable. */
+const withAdminExecutor = <A, E>(
+  body: (executor: Executor<SelfHostPlugins>) => Effect.Effect<A, E>,
+) =>
   Effect.gen(function* () {
     const member = yield* requireAdmin(yield* requestHeaders);
     const { organizationId } = yield* BetterAuth;
-    const executor = yield* makeScopedExecutor(member.userId, organizationId, "").pipe(
+    const executor = yield* makeScopedExecutor<SelfHostPlugins>(
+      member.userId,
+      organizationId,
+      "",
+    ).pipe(
       Effect.mapError(() => new AccessGroupsError({ message: "Failed to open the executor" })),
     );
     return yield* Effect.ensuring(body(executor), executor.close().pipe(Effect.ignore));
   });
+
+/** The toolkit grant names a group that must exist — this plane owns that
+ *  referential check (the toolkits plugin cannot read the group tables). */
+const requireGroupExists = (executor: Executor<SelfHostPlugins>, group: string) =>
+  executor.accessGroups.list().pipe(
+    Effect.catchTag("StorageError", (error) =>
+      Effect.fail(new AccessGroupsError({ message: error.message })),
+    ),
+    Effect.catchTag("UniqueViolationError", () =>
+      Effect.fail(new AccessGroupsError({ message: "Storage conflict" })),
+    ),
+    Effect.flatMap((groups) =>
+      groups.some((candidate) => String(candidate.id) === group)
+        ? Effect.void
+        : Effect.fail(new AccessGroupsError({ message: `Access group not found: ${group}` })),
+    ),
+  );
 
 const groupToWire = (group: {
   readonly id: string;
@@ -127,10 +175,25 @@ export const AccessGroupsHandlers = HttpApiBuilder.group(
       )
       .handle("deleteGroup", ({ params }) =>
         withAdminExecutor((executor) =>
-          renderEngineErrors(
-            executor.accessGroups
-              .remove({ id: params.groupId })
-              .pipe(Effect.map(() => ({ success: true }))),
+          // The engine refuses deletion while a CONNECTION references the
+          // group; toolkit grants live in plugin storage the engine cannot
+          // see, so this plane holds the same no-dangling-reference line for
+          // them (a dangling grant would hide the toolkit from everyone).
+          renderToolkitErrors(executor.toolkits.listRestrictedToolkits()).pipe(
+            Effect.flatMap((grants) => {
+              const grant = grants.find((candidate) => candidate.group === params.groupId);
+              return grant
+                ? Effect.fail(
+                    new AccessGroupsError({
+                      message: `Access group ${params.groupId} still restricts toolkit ${grant.slug}; remove that grant before deleting the group.`,
+                    }),
+                  )
+                : renderEngineErrors(
+                    executor.accessGroups
+                      .remove({ id: params.groupId })
+                      .pipe(Effect.map(() => ({ success: true }))),
+                  );
+            }),
           ),
         ),
       )
@@ -197,6 +260,37 @@ export const AccessGroupsHandlers = HttpApiBuilder.group(
                 integration: IntegrationSlug.make(params.integration),
                 name: ConnectionName.make(params.name),
               })
+              .pipe(Effect.map(() => ({ success: true }))),
+          ),
+        ),
+      )
+      .handle("listToolkitRestrictions", () =>
+        withAdminExecutor((executor) =>
+          renderToolkitErrors(
+            executor.toolkits
+              .listRestrictedToolkits()
+              .pipe(Effect.map((restrictions) => ({ restrictions }))),
+          ),
+        ),
+      )
+      .handle("restrictToolkit", ({ payload }) =>
+        withAdminExecutor((executor) =>
+          requireGroupExists(executor, payload.group).pipe(
+            Effect.andThen(
+              renderToolkitErrors(
+                executor.toolkits
+                  .setAccessGroup(payload.toolkitId, payload.group)
+                  .pipe(Effect.map(() => ({ success: true }))),
+              ),
+            ),
+          ),
+        ),
+      )
+      .handle("unrestrictToolkit", ({ params }) =>
+        withAdminExecutor((executor) =>
+          renderToolkitErrors(
+            executor.toolkits
+              .setAccessGroup(params.toolkitId, null)
               .pipe(Effect.map(() => ({ success: true }))),
           ),
         ),

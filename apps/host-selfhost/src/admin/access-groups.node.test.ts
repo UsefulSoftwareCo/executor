@@ -137,6 +137,74 @@ test("only the instance admin can manage access groups", async () => {
   });
   expect(missing.status).toBe(404);
 
+  // Toolkit grants ride the same gate: member is refused, admin round-trips
+  // against a real toolkit created through the product API.
+  expect(
+    (
+      await request("/api/admin/access-group-toolkit-restrictions", {
+        method: "POST",
+        token: memberToken,
+        body: { toolkitId: "tk_x", group: group.id },
+      })
+    ).status,
+  ).toBe(403);
+
+  const createdToolkit = await request("/api/toolkits", {
+    method: "POST",
+    token: adminToken,
+    body: { owner: "org", name: "Deploy Kit" },
+  });
+  expect(createdToolkit.status).toBe(200);
+  const toolkit = (await createdToolkit.json()) as { id: string; slug: string };
+
+  const granted = await request("/api/admin/access-group-toolkit-restrictions", {
+    method: "POST",
+    token: adminToken,
+    body: { toolkitId: toolkit.id, group: group.id },
+  });
+  expect(granted.status).toBe(200);
+
+  const toolkitRestrictions = await request("/api/admin/access-group-toolkit-restrictions", {
+    token: adminToken,
+  });
+  expect(((await toolkitRestrictions.json()) as { restrictions: unknown[] }).restrictions).toEqual([
+    { toolkitId: toolkit.id, slug: toolkit.slug, group: group.id },
+  ]);
+
+  // Granting to a missing group or a missing toolkit is a 400 with the
+  // engine's message, not a silent success.
+  expect(
+    (
+      await request("/api/admin/access-group-toolkit-restrictions", {
+        method: "POST",
+        token: adminToken,
+        body: { toolkitId: toolkit.id, group: "grp_missing" },
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await request("/api/admin/access-group-toolkit-restrictions", {
+        method: "POST",
+        token: adminToken,
+        body: { toolkitId: "tk_missing", group: group.id },
+      })
+    ).status,
+  ).toBe(400);
+
+  // Deleting the group while a toolkit still references it is refused — a
+  // dangling grant would hide the toolkit from everyone.
+  expect(
+    (await request(`/api/admin/access-groups/${group.id}`, { method: "DELETE", token: adminToken }))
+      .status,
+  ).toBe(400);
+
+  const ungranted = await request(`/api/admin/access-group-toolkit-restrictions/${toolkit.id}`, {
+    method: "DELETE",
+    token: adminToken,
+  });
+  expect(ungranted.status).toBe(200);
+
   const removed = await request(`/api/admin/access-groups/${group.id}`, {
     method: "DELETE",
     token: adminToken,
