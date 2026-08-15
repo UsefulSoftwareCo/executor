@@ -432,8 +432,45 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       yield* storage.policies.remove({ owner: toolkit.owner, key: policyId });
     });
 
+  // Access-group visibility: a toolkit's connection patterns can name org
+  // connections restricted to a group the caller is not in, and for that
+  // caller the connection must not exist — the pattern text itself would be
+  // an existence oracle. A literal `<integration>.org.<connection>` prefix
+  // that doesn't resolve through the (already group-gated) connections list
+  // is dropped from the LIST response. Wildcarded segments and `user`-owner
+  // patterns pass: they carry no one org connection's identity (user
+  // patterns resolve per-viewer). Enforcement itself lives in core — a
+  // hidden connection's tools never list or invoke through a toolkit
+  // session — so this filter is display hygiene, not the boundary.
+  const literalOrgPatternKey = (pattern: string): string | null => {
+    const [integration, owner, connection] = pattern.split(".");
+    if (!integration || !connection || owner !== "org") return null;
+    if (integration === "*" || connection === "*") return null;
+    return `${integration}.${connection}`;
+  };
+
+  const filterVisibleConnectionPatterns = (
+    records: readonly ToolkitConnectionRecord[],
+  ): Effect.Effect<readonly ToolkitConnectionRecord[], StorageFailure> =>
+    Effect.gen(function* () {
+      if (!records.some((record) => literalOrgPatternKey(record.pattern) !== null)) {
+        return records;
+      }
+      const visible = yield* ctx.connections.list({ owner: "org" });
+      const visibleKeys = new Set(
+        visible.map((connection) => `${connection.integration}.${connection.name}`),
+      );
+      return records.filter((record) => {
+        const key = literalOrgPatternKey(record.pattern);
+        return key === null || visibleKeys.has(key);
+      });
+    });
+
   const listConnections = (toolkitId: string) =>
-    requireToolkit(toolkitId).pipe(Effect.flatMap(() => listConnectionsForRecord(toolkitId)));
+    requireToolkit(toolkitId).pipe(
+      Effect.flatMap(() => listConnectionsForRecord(toolkitId)),
+      Effect.flatMap(filterVisibleConnectionPatterns),
+    );
 
   const createConnection = (
     toolkitId: string,

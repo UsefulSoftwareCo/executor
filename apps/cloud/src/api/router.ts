@@ -13,6 +13,7 @@ import { ApiErrorLoggingLive } from "../observability/error-logging";
 import {
   BootSharedServices,
   RequestScopedServicesLive,
+  makeAccessGroupsApiLive,
   makeOrgApiLive,
   makeNonProtectedApiLive,
 } from "./layers";
@@ -36,6 +37,7 @@ export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStore
   return Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
     makeOrgApiLive(requestScopedLive),
+    makeAccessGroupsApiLive(requestScopedLive),
     makeAccountApiLive(requestScopedLive),
     CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),

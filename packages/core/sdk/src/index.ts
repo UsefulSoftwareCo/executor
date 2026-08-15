@@ -52,6 +52,7 @@ export {
   ToolName,
   ElicitationId,
   PolicyId,
+  AccessGroupId,
   ArtifactId,
   Tenant,
   Subject,
@@ -147,6 +148,8 @@ export {
   type IntegrationRow,
   type SubjectRow,
   type ConnectionRow,
+  type AccessGroupRow,
+  type AccessGroupMemberRow,
   type OAuthClientRow,
   type OAuthSessionRow,
   type ToolRow,
@@ -191,6 +194,21 @@ export {
   type EffectivePolicy,
   type PolicySource,
 } from "./policies";
+
+// Access groups — named audiences gating org-owned connections.
+export {
+  rowToAccessGroup,
+  rowToAccessGroupMember,
+  type AccessGroup,
+  type AccessGroupMember,
+  type AccessGroupMemberInput,
+  type CreateAccessGroupInput,
+  type RemoveAccessGroupInput,
+  type RestrictConnectionInput,
+  type RestrictedConnection,
+  type UnrestrictConnectionInput,
+  type UpdateAccessGroupInput,
+} from "./access-groups";
 
 // Artifacts — saved generative-UI components.
 export {

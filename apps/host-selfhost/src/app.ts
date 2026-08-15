@@ -15,6 +15,7 @@ import { resolveAuthProviders } from "./auth";
 import { selfHostDataMigrations } from "./db/data-migrations";
 import { makeSelfHostAdminApiLayer } from "./admin/handlers";
 import { makeSelfHostAdminUsersApiLayer } from "./admin/admin-users-api";
+import { makeSelfHostAccessGroupsApiLayer } from "./admin/access-groups-handlers";
 import { makeSelfHostSystemApiLayer } from "./system/handlers";
 import { selfHostAccountMiddleware } from "./account";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "./config";
@@ -133,6 +134,9 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // who uses this instance and what they've connected. Owner/admin-gated,
         // same as the invite routes above.
         makeSelfHostAdminUsersApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        // Admin-only access-group management (/api/admin/access-groups*):
+        // which org connections are restricted to which member groups.
+        makeSelfHostAccessGroupsApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
