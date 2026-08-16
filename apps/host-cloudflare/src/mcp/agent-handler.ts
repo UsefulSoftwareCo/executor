@@ -7,7 +7,7 @@ import {
   type AuthOutcome,
   type Principal,
 } from "@executor-js/host-mcp";
-import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server-v2";
+import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,

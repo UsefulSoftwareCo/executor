@@ -44,7 +44,7 @@ export {
 //   - McpSessionStore  -> `selfHostMcpSessions`: in-process Map. The store owns
 //                         dispatch (create + forward + ownership) and builds its
 //                         engine internally over the shared SelfHostDb.
-//   - McpModernServerBuilder -> one stateless SDK v2 server per request over
+//   - McpModernServerBuilder -> one stateless MCP server per request over
 //                         the same scoped execution stack and tool config.
 //   - McpErrorReporter -> `selfHostMcpReporter`: route 500 defects through the
 //                         host's console capture.
@@ -58,7 +58,7 @@ export interface SelfHostMcpSeams {
   readonly auth: Layer.Layer<McpAuthProvider, never, IdentityProvider>;
   /** The in-process session store seam (dispatch + lifetime). */
   readonly sessions: Layer.Layer<McpSessionStore>;
-  /** Stateless SDK v2 server construction for modern requests. */
+  /** Stateless MCP server construction for modern requests. */
   readonly modern: Layer.Layer<McpModernServerBuilder>;
   /** Route 500 defects through the host's console `ErrorCapture`. */
   readonly reporter: Layer.Layer<McpErrorReporter>;

@@ -31,7 +31,7 @@ import {
 } from "./index";
 import type { ExecutionEngine } from "@executor-js/execution";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "./mcp-apps";
-import { buildMcpServerV2 } from "./tool-server-v2";
+import { buildMcpServer } from "./tool-server";
 
 const DISCOVERY_PATH = "/.well-known/oauth-protected-resource" as const;
 
@@ -60,7 +60,7 @@ const testEngine: ExecutionEngine = {
 const ModernBuilderLive = Layer.succeed(McpModernServerBuilder)({
   build: (_principal, options) => {
     const { resource: _resource, ...requestOptions } = options;
-    return buildMcpServerV2({ engine: testEngine, ...requestOptions });
+    return buildMcpServer({ engine: testEngine, ...requestOptions });
   },
 });
 
@@ -175,7 +175,7 @@ describe("McpServingRoutes envelope", () => {
       build: (_principal, options) => {
         const { resource: _resource, ...requestOptions } = options;
         return Ref.set(appsEnabled, options.appsEnabled).pipe(
-          Effect.flatMap(() => buildMcpServerV2({ engine: testEngine, ...requestOptions })),
+          Effect.flatMap(() => buildMcpServer({ engine: testEngine, ...requestOptions })),
         );
       },
     });

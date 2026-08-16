@@ -58,9 +58,8 @@ export {
 } from "./server/execution-stack";
 export {
   makeMcpBuildServer,
-  makeMcpBuildServerV2,
   makeConsoleMcpErrorReporter,
-  type McpBuildServerV2,
+  type McpBuildServer,
   type McpExecutionStackLayer,
 } from "./server/mcp-build";
 // Host-composition seams re-homed out of `@executor-js/sdk` (the plugin-author

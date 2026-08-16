@@ -19,7 +19,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 //   2. McpSessionStore — owns the serving session lifecycle: create + forward +
 //      ownership, end to end, via a single `dispatch`. The store builds/forwards
 //      the transport and returns the transport `Response`.
-//   3. McpModernServerBuilder — builds one stateless SDK v2 server for each
+//   3. McpModernServerBuilder — builds one stateless MCP server for each
 //      authenticated modern request. The envelope owns handler/bus lifetime.
 //
 // There is deliberately NO envelope-level engine seam. Both server builders
@@ -273,7 +273,7 @@ export class McpSessionStore extends Context.Service<
 >()("@executor-js/host-mcp/McpSessionStore") {}
 
 // ===========================================================================
-// SEAM 3 — McpModernServerBuilder: one stateless SDK v2 server per request.
+// SEAM 3 — McpModernServerBuilder: one stateless MCP server per request.
 // ===========================================================================
 
 /** Request-scoped inputs the envelope adds to a host's modern server config. */
@@ -289,7 +289,7 @@ export interface McpModernServerBuildOptions {
 }
 
 /**
- * Build one stateless SDK v2 server for an authenticated modern request.
+ * Build one stateless MCP server for an authenticated modern request.
  *
  * The envelope owns the cached `createMcpHandler` and its subscriptions bus;
  * providers own execution-stack construction and tool configuration here.

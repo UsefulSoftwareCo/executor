@@ -1,9 +1,8 @@
 /**
- * Temporary MCP Apps server helpers for the v2 MCP SDK.
+ * Temporary MCP Apps server helpers for the current MCP SDK.
  *
  * This is a wire-compatible local copy of the helpers currently published by
- * `@modelcontextprotocol/ext-apps/server`. The upstream package still targets
- * the v1 SDK; remove this module once
+ * the upstream ext-apps server package. Remove this module once
  * https://github.com/modelcontextprotocol/ext-apps/issues/702 is resolved.
  */
 import type {

@@ -22,8 +22,12 @@ import {
   type ResumeResponse,
 } from "@executor-js/execution";
 import {
+  appsEnabledForClientCapabilities,
+  clientCapabilitiesFromRequestBody,
   PAUSED_APPROVAL_TIMEOUT_MS,
   formatMcpExecutionOutcome,
+  mcpRequestStatePrincipal,
+  requestBodyFromRequest,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
@@ -33,13 +37,6 @@ import {
   mcpResourceKey,
   type McpResource,
 } from "@executor-js/host-mcp";
-import {
-  appsEnabledForClientCapabilities,
-  clientCapabilitiesFromRequestBody,
-  mcpRequestStatePrincipal,
-  requestBodyFromRequest,
-} from "@executor-js/host-mcp/tool-server-v2";
-
 import {
   readArtifactsEnabled,
   readElicitationMode,
@@ -149,7 +146,7 @@ export interface SessionMeta {
    * unknown, which behaves as disabled until the next `initialize`.
    */
   readonly appsEnabled?: boolean;
-  /** Creation time of this v2 session, retained across isolate eviction. */
+  /** Creation time of this session, retained across isolate eviction. */
   readonly createdAtMs?: number;
 }
 
@@ -160,14 +157,14 @@ export interface BuiltMcpServer {
   readonly modernRuntime?: BuiltModernMcpRuntime;
 }
 
-/** Request-specific inputs added to a DO-local SDK v2 server. */
+/** Request-specific inputs added to a DO-local MCP server. */
 export interface ModernMcpServerRequestOptions {
   readonly appsEnabled: boolean;
   readonly requestStateSigningKey: Uint8Array | string;
   readonly requestStatePrincipal: string;
 }
 
-/** Long-lived DO execution runtime shared by per-request SDK v2 servers. */
+/** Long-lived DO execution runtime shared by per-request MCP servers. */
 export interface BuiltModernMcpRuntime {
   readonly engine: ExecutionEngine<Cause.YieldableError>;
   readonly buildServer: (
@@ -186,8 +183,8 @@ type ModernRuntimeAccess =
 
 class ModernMcpRuntimeNotConfigured extends Data.TaggedError("ModernMcpRuntimeNotConfigured") {}
 
-const LEGACY_V2_SESSION_META_KEY = "executor:mcp:v2:session-meta";
-const LEGACY_V2_LAST_ACTIVITY_KEY = "executor:mcp:v2:last-activity-ms";
+const LEGACY_AGENT_SESSION_META_KEY = "executor:mcp:v2:session-meta";
+const LEGACY_AGENT_LAST_ACTIVITY_KEY = "executor:mcp:v2:last-activity-ms";
 const MODERN_SESSION_META_KEY = "session-meta";
 const MODERN_LAST_ACTIVITY_KEY = "last-activity-ms";
 const MODERN_SESSION_KEY = "modern-session";
@@ -313,7 +310,7 @@ export abstract class McpAgentSessionDOBase<
     dbHandle: TDbHandle,
   ): Effect.Effect<BuiltMcpServer>;
 
-  /** Build the engine and per-request SDK v2 server factory for a modern-only DO. */
+  /** Build the engine and per-request MCP server factory for a modern-only DO. */
   protected buildModernMcpRuntime(
     _sessionMeta: SessionMeta,
     _dbHandle: TDbHandle,
@@ -448,7 +445,7 @@ export abstract class McpAgentSessionDOBase<
     return Effect.promise(async () => {
       if (this.sessionMeta) return this.sessionMeta;
 
-      const legacy = await this.ctx.storage.get<SessionMeta>(LEGACY_V2_SESSION_META_KEY);
+      const legacy = await this.ctx.storage.get<SessionMeta>(LEGACY_AGENT_SESSION_META_KEY);
       if (legacy) {
         this.runtimeKind = "legacy";
         this.sessionMeta = { ...legacy, resource: legacy.resource ?? defaultMcpResource };
@@ -475,14 +472,14 @@ export abstract class McpAgentSessionDOBase<
   private async saveSessionMeta(sessionMeta: SessionMeta): Promise<void> {
     this.sessionMeta = sessionMeta;
     const key =
-      this.runtimeKind === "modern" ? MODERN_SESSION_META_KEY : LEGACY_V2_SESSION_META_KEY;
+      this.runtimeKind === "modern" ? MODERN_SESSION_META_KEY : LEGACY_AGENT_SESSION_META_KEY;
     await this.ctx.storage.put(key, sessionMeta);
   }
 
   /**
    * Persist the MCP-Apps support negotiated at `initialize`, so a later cold
    * restore can rebuild the server with it. Subclasses hand this to
-   * `createExecutorMcpServer` as `onAppsEnabledChange`.
+   * `buildMcpServer` as `onAppsEnabledChange`.
    *
    * A no-op before meta exists: `initialize` always follows `init`, so there is
    * nothing to merge into and nothing worth failing the session over.
@@ -504,7 +501,7 @@ export abstract class McpAgentSessionDOBase<
   private async markActivity(now = Date.now()): Promise<void> {
     this.lastActivityMs = now;
     const key =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_V2_LAST_ACTIVITY_KEY;
+      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
     await Promise.all([
       this.ctx.storage.put(key, now),
       this.ctx.storage.setAlarm(now + this.sessionTimeoutMs()),
@@ -514,7 +511,7 @@ export abstract class McpAgentSessionDOBase<
   private async loadLastActivity(): Promise<number> {
     if (this.lastActivityMs > 0) return this.lastActivityMs;
     const key =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_V2_LAST_ACTIVITY_KEY;
+      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
     const stored = await this.ctx.storage.get<number>(key);
     this.lastActivityMs = stored ?? 0;
     return this.lastActivityMs;
@@ -546,7 +543,7 @@ export abstract class McpAgentSessionDOBase<
         Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
         Effect.ignore(
           Effect.tryPromise(() =>
-            this.ctx.storage.delete([LEGACY_V2_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
+            this.ctx.storage.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
           ),
         ),
       ]),
@@ -571,7 +568,7 @@ export abstract class McpAgentSessionDOBase<
         Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
         Effect.ignore(
           Effect.tryPromise(() =>
-            this.ctx.storage.delete([LEGACY_V2_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
+            this.ctx.storage.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
           ),
         ),
       ]),
@@ -891,7 +888,7 @@ export abstract class McpAgentSessionDOBase<
 
   private restoreTransportSession(transport: WebStandardStreamableHTTPServerTransport): void {
     transport.sessionId = this.sessionId;
-    // SAFETY: SDK v2 exposes `sessionId` but not a public cold-restore setter.
+    // SAFETY: the SDK exposes `sessionId` but not a public cold-restore setter.
     // The installed transport's only additional session-validation bit is the
     // runtime `_initialized` boolean. Restoring just those transport fields
     // intentionally leaves McpServer client capabilities absent, so the
@@ -993,7 +990,7 @@ export abstract class McpAgentSessionDOBase<
     transport: WebStandardStreamableHTTPServerTransport,
     requestId: RequestId,
   ): string | null {
-    // SAFETY: SDK v2 currently has no public hook exposing the per-POST stream
+    // SAFETY: the SDK currently has no public hook exposing the per-POST stream
     // ID. The installed transport stores the exact request-id → stream-id map
     // used by replay. Reading it lets the legacy compatibility prime share the
     // same replay stream as the eventual result without changing SDK code.

@@ -701,12 +701,9 @@
       "name": "@executor-js/host-mcp",
       "version": "1.4.4",
       "dependencies": {
-        "@cfworker/json-schema": "^4.1.1",
         "@executor-js/execution": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@modelcontextprotocol/core": "2.0.0",
-        "@modelcontextprotocol/ext-apps": "^1.7.4",
-        "@modelcontextprotocol/sdk": "^1.29.0",
         "@modelcontextprotocol/server": "2.0.0",
         "effect": "catalog:",
         "zod": "4.3.6",
@@ -714,6 +711,7 @@
       "devDependencies": {
         "@effect/vitest": "catalog:",
         "@modelcontextprotocol/client": "2.0.0",
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
         "vitest": "catalog:",

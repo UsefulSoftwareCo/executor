@@ -23,10 +23,11 @@ import postgres, { type Sql } from "postgres";
 
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
+  buildMcpServer,
+  mcpRequestStatePrincipal,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
 import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
@@ -232,7 +233,7 @@ const makeCloudModernRuntime = (
 ): BuiltModernMcpRuntime => ({
   engine: runtime.engine,
   buildServer: (options) =>
-    buildMcpServerV2({
+    buildMcpServer({
       engine: runtime.engine,
       description: runtime.description,
       artifacts: runtime.executor.artifacts,
@@ -270,7 +271,7 @@ const closeModernServerWithDb = <Server extends { close: () => Promise<void> }>(
   return server;
 };
 
-/** Build one worker-side stateless SDK v2 server over a fresh cloud runtime. */
+/** Build one worker-side stateless MCP server over a fresh cloud runtime. */
 export const makeCloudModernMcpServerBuilder = (
   session: McpSessionInit,
 ): McpModernServerBuilder["Service"] => ({
@@ -366,7 +367,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         parentSpan: () => self.currentParentSpan(),
       });
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
-      const mcpServer = yield* buildMcpServerV2({
+      const mcpServer = yield* buildMcpServer({
         engine,
         description,
         artifacts: executor.artifacts,
@@ -411,7 +412,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
                   }),
               }
             : { mode: sessionElicitationMode },
-      }).pipe(Effect.withSpan("McpSessionDOSqlite.buildMcpServerV2"));
+      }).pipe(Effect.withSpan("McpSessionDOSqlite.buildMcpServer"));
       return { mcpServer, engine, modernRuntime } satisfies BuiltMcpServer;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),

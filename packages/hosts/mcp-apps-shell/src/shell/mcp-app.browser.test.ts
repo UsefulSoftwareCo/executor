@@ -38,7 +38,7 @@ import { chromium, type Browser, type Frame, type Page } from "playwright-core";
 import { createServer as createViteServer } from "vite";
 import type * as Cause from "effect/Cause";
 
-import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
+import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
 
 import { loadMcpAppsShellHtml } from "../shell-html";
 
@@ -1241,8 +1241,12 @@ const startMcpHarnessForEngine = async <E extends Cause.YieldableError>(
   engine: ExecutionEngine<E>,
 ): Promise<McpHarness> => {
   const mcpServer = await Effect.runPromise(
-    createExecutorMcpServer({
+    buildMcpServer({
       engine,
+      appsEnabled: false,
+      requestStateSigningKey: new Uint8Array(32).fill(19),
+      requestStatePrincipal: "mcp-app-browser-test-principal",
+      sessionful: true,
       loadAppShellHtml: loadMcpAppsShellHtml,
       artifacts: makeInMemoryArtifacts(),
       // Artifacts are opt-in per connection; this harness drives the artifact

@@ -16,11 +16,11 @@ import {
 } from "@executor-js/host-mcp";
 import {
   appsEnabledForClientCapabilities,
-  buildMcpServerV2,
+  buildMcpServer,
   clientCapabilitiesFromRequest,
   requestBodyFromRequest,
-  type ExecutorMcpServerConfig,
-} from "@executor-js/host-mcp/tool-server-v2";
+  type ExecutorMcpToolConfig,
+} from "@executor-js/host-mcp/tool-server";
 import {
   approvalUrlForRequest,
   decodeResumeResponse,
@@ -53,12 +53,12 @@ export type McpRequestHandler = {
 };
 
 export interface LocalMcpServerConfig {
-  readonly config: ExecutorMcpServerConfig;
+  readonly config: ExecutorMcpToolConfig;
   readonly close?: () => Promise<void>;
 }
 
 export interface LocalMcpRequestHandlerConfig {
-  readonly defaultConfig: ExecutorMcpServerConfig;
+  readonly defaultConfig: ExecutorMcpToolConfig;
   readonly createConfigForResource?: (
     resource: McpResource,
   ) => Promise<LocalMcpServerConfig> | LocalMcpServerConfig;
@@ -121,15 +121,15 @@ const resourceFromRequest = (request: Request): McpResource | null => {
   return { kind: "toolkit", slug: decodeURIComponent(match[1]) };
 };
 
-const engineFromConfig = (config: ExecutorMcpServerConfig): AnyExecutionEngine | null =>
+const engineFromConfig = (config: ExecutorMcpToolConfig): AnyExecutionEngine | null =>
   "engine" in config ? config.engine : null;
 
 const normalizeHandlerConfig = (
-  input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
+  input: ExecutorMcpToolConfig | LocalMcpRequestHandlerConfig,
 ): LocalMcpRequestHandlerConfig => ("defaultConfig" in input ? input : { defaultConfig: input });
 
 export const createMcpRequestHandler = (
-  input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
+  input: ExecutorMcpToolConfig | LocalMcpRequestHandlerConfig,
 ): McpRequestHandler => {
   const handlerConfig = normalizeHandlerConfig(input);
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -193,7 +193,7 @@ export const createMcpRequestHandler = (
           Effect.gen(function* () {
             const resourceConfig = yield* Effect.promise(() => configForResource(resource));
             const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
-            const server = yield* buildMcpServerV2({
+            const server = yield* buildMcpServer({
               ...resourceConfig.config,
               artifactsEnabled: readArtifactsEnabled(request),
               appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
@@ -277,7 +277,7 @@ export const createMcpRequestHandler = (
         const elicitationMode = readElicitationMode(request);
         resourceConfig = await configForResource(resource);
         created = await Effect.runPromise(
-          buildMcpServerV2({
+          buildMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
@@ -360,13 +360,13 @@ export const createMcpRequestHandler = (
 // Stdio transport
 // ---------------------------------------------------------------------------
 
-export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
+export const runMcpStdioServer = async (config: ExecutorMcpToolConfig): Promise<void> => {
   startIntegrationsRefresh();
 
   const requestStateSigningKey = crypto.getRandomValues(new Uint8Array(32));
   const stdio = serveStdio(() =>
     Effect.runPromise(
-      buildMcpServerV2({
+      buildMcpServer({
         ...config,
         appsEnabled: config.restoredAppsEnabled ?? false,
         requestStateSigningKey,

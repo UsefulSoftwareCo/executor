@@ -7,7 +7,7 @@
 //
 // The executor tool assemblies (execute/resume tools, elicitation and browser
 // approval bridges, Zod input schemas) are a different center of gravity. They
-// live behind the `tool-server` and `tool-server-v2` subpaths so this serving
+// live behind the `tool-server` subpath so this serving
 // surface stays small and dependency-light.
 // ---------------------------------------------------------------------------
 

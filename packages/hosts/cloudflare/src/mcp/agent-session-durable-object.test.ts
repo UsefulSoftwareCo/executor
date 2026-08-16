@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import type { ExecutionEngine } from "@executor-js/execution";
 import { defaultMcpResource } from "@executor-js/host-mcp";
-import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServer, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server";
 
 import { withVerifiedIdentityHeaders } from "./do-headers";
 import {
@@ -208,7 +208,7 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, { readonly en
 
   protected override buildMcpServer(sessionMeta: SessionMeta): Effect.Effect<BuiltMcpServer> {
     const elicitationMode = sessionMeta.elicitationMode ?? "model";
-    return buildMcpServerV2({
+    return buildMcpServer({
       engine: this.sessionEngine,
       appsEnabled: false,
       restoredAppsEnabled: sessionMeta.appsEnabled,
@@ -256,7 +256,7 @@ const makeClientHarness = (state = new MemoryDurableObjectState()) => {
   };
 };
 
-describe("McpAgentSessionDOBase SDK v2 session serving", () => {
+describe("McpAgentSessionDOBase session serving", () => {
   it("serves and reuses a legacy v1 SDK client through the Durable Object", async () => {
     const harness = makeClientHarness();
     await harness.client.connect(harness.transport);
@@ -392,7 +392,7 @@ describe("McpAgentSessionDOBase SDK v2 session serving", () => {
     expect(replayBody).toContain(`id: ${replayEventId.slice(0, replayEventId.lastIndexOf(":"))}:`);
   });
 
-  it("persists v2 metadata and rejects a different principal", async () => {
+  it("persists session metadata and rejects a different principal", async () => {
     const harness = makeClientHarness();
     await harness.client.connect(harness.transport);
 
@@ -419,7 +419,7 @@ describe("McpAgentSessionDOBase SDK v2 session serving", () => {
     }
   });
 
-  it("returns a clean 404 for storage created by the pre-v2 Agent stack", async () => {
+  it("returns a clean 404 for storage created by the retired Agent stack", async () => {
     const state = new MemoryDurableObjectState();
     await state.storage.put("session-meta", {
       organizationId: ORGANIZATION_ID,

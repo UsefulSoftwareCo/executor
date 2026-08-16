@@ -3,13 +3,15 @@ import { Effect, Layer } from "effect";
 import {
   McpErrorReporter,
   type McpModernServerBuilder,
+  type McpModernServerBuildOptions,
   type Principal,
 } from "@executor-js/host-mcp";
 import {
   McpEngineBuildError,
-  type McpBuildServer,
+  type McpBuildServer as McpSessionBuildServer,
+  type McpBuildServerOptions as McpSessionBuildOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
-import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
 import {
   artifactUrlFor,
   type ArtifactSmokeRenderResult,
@@ -23,9 +25,8 @@ import { HostConfig, PluginsProvider, RequestOrgSlug } from "./scoped-executor";
 // ---------------------------------------------------------------------------
 // Shared in-process MCP host helpers.
 //
-// Neutral hosts build both sessionful legacy connections and stateless modern
-// requests from the same SDK v2 assembly over a scoped execution stack. The
-// Cloudflare Durable Object path remains a separate v1-backed composition root.
+// Neutral hosts build both sessionful legacy-wire connections and stateless
+// modern requests from the same assembly over a scoped execution stack.
 // ---------------------------------------------------------------------------
 
 /** The five execution-stack seams a host fully provides (no residual). */
@@ -33,14 +34,35 @@ export type McpExecutionStackLayer = Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator
 >;
 
+type McpSessionBuildEffect = ReturnType<McpSessionBuildServer>;
+type McpModernBuildEffect = ReturnType<McpModernServerBuilder["Service"]["build"]>;
+
+/** A single build seam accepted by both the session store and modern envelope. */
+export interface McpBuildServer {
+  /** Build a connection-lifetime server and retain its engine for session-owned approvals. */
+  (principal: Principal, options: McpSessionBuildOptions): McpSessionBuildEffect;
+  /** Build a stateless server for one modern request. */
+  (principal: Principal, options: McpModernServerBuildOptions): McpModernBuildEffect;
+}
+
 /**
- * Build the per-session MCP server factory over a host's execution stack:
- * `makeExecutionStack` → engine → `buildMcpServerV2`. Hosts differ only
- * in the injected stack layer (libSQL vs D1, etc.).
+ * Build the unified MCP server factory over a host's execution stack.
+ * Session callers receive the server plus its approval-owning engine; modern
+ * request callers receive the server directly.
  */
-export const makeMcpBuildServer =
-  (executionStack: McpExecutionStackLayer, hostOptions?: McpBuildHostOptions): McpBuildServer =>
-  (principal: Principal, options) => {
+export const makeMcpBuildServer = (
+  executionStack: McpExecutionStackLayer,
+  hostOptions?: McpBuildHostOptions,
+): McpBuildServer => {
+  function build(principal: Principal, options: McpSessionBuildOptions): McpSessionBuildEffect;
+  function build(principal: Principal, options: McpModernServerBuildOptions): McpModernBuildEffect;
+  function build(
+    principal: Principal,
+    options: McpSessionBuildOptions | McpModernServerBuildOptions,
+  ): Effect.Effect<
+    Effect.Success<McpSessionBuildEffect> | Effect.Success<McpModernBuildEffect>,
+    Effect.Error<McpSessionBuildEffect> | Effect.Error<McpModernBuildEffect>
+  > {
     const { resource, ...serverOptions } = options;
     return Effect.gen(function* () {
       const { engine, executor } = yield* makeExecutionStack(
@@ -50,20 +72,17 @@ export const makeMcpBuildServer =
         { mcpResource: resource },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));
       // Read inside the provided boundary: `webBaseUrl` is a host seam, and
-      // hosts that can't know their public URL at boot leave it unset — in
-      // which case artifacts still persist but carry no deep link.
+      // hosts that cannot know their public URL at boot leave it unset.
       const hostConfig = yield* HostConfig;
       return { engine, executor, webBaseUrl: hostConfig.webBaseUrl };
     }).pipe(
-      // Pin browser-handoff URLs to the principal's org slug when present;
-      // absent slug leaves the service unprovided and the URL stays bare.
       principal.organizationSlug !== undefined
         ? Effect.provideService(RequestOrgSlug, { slug: principal.organizationSlug })
         : (effect) => effect,
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap(({ engine, executor, webBaseUrl }) =>
-        buildMcpServerV2({
+        buildMcpServer({
           engine,
           artifacts: executor.artifacts,
           connections: executor.connections,
@@ -74,68 +93,20 @@ export const makeMcpBuildServer =
             ? { smokeRenderArtifact: hostOptions.smokeRenderArtifact }
             : {}),
           ...(hostOptions?.onArtifactUsage ? { onArtifactUsage: hostOptions.onArtifactUsage } : {}),
-          // Same org pinning as `RequestOrgSlug` above: self-host serves its
-          // console under `/<org-slug>` (`default` when unconfigured), so the
-          // deep link carries the principal's slug rather than relying on the
-          // browser's active org to canonicalize a bare path after landing.
           ...(webBaseUrl
             ? { artifactUrl: artifactUrlFor(webBaseUrl, principal.organizationSlug) }
             : {}),
           ...serverOptions,
         }).pipe(
           Effect.withSpan("mcp.server.create"),
-          Effect.map((mcpServer) => ({ mcpServer, engine })),
+          Effect.map((mcpServer) => ("sessionful" in options ? { mcpServer, engine } : mcpServer)),
         ),
       ),
     );
-  };
+  }
 
-/** Build function consumed by the neutral envelope's modern-server seam. */
-export type McpBuildServerV2 = McpModernServerBuilder["Service"]["build"];
-
-/**
- * Build the per-request SDK v2 server factory over the same execution stack
- * and host configuration used by {@link makeMcpBuildServer}.
- */
-export const makeMcpBuildServerV2 =
-  (executionStack: McpExecutionStackLayer, hostOptions?: McpBuildHostOptions): McpBuildServerV2 =>
-  (principal, options) => {
-    const { resource, ...requestOptions } = options;
-    return Effect.gen(function* () {
-      const { engine, executor } = yield* makeExecutionStack(
-        principal.accountId,
-        principal.organizationId,
-        principal.organizationName,
-        { mcpResource: resource },
-      ).pipe(Effect.withSpan("mcp.execution_stack.build"));
-      const hostConfig = yield* HostConfig;
-      return { engine, executor, webBaseUrl: hostConfig.webBaseUrl };
-    }).pipe(
-      principal.organizationSlug !== undefined
-        ? Effect.provideService(RequestOrgSlug, { slug: principal.organizationSlug })
-        : (effect) => effect,
-      Effect.provide(executionStack),
-      Effect.mapError((cause) => new McpEngineBuildError({ cause })),
-      Effect.flatMap(({ engine, executor, webBaseUrl }) =>
-        buildMcpServerV2({
-          engine,
-          artifacts: executor.artifacts,
-          connections: executor.connections,
-          ...(hostOptions?.loadAppShellHtml
-            ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
-            : {}),
-          ...(hostOptions?.smokeRenderArtifact
-            ? { smokeRenderArtifact: hostOptions.smokeRenderArtifact }
-            : {}),
-          ...(hostOptions?.onArtifactUsage ? { onArtifactUsage: hostOptions.onArtifactUsage } : {}),
-          ...(webBaseUrl
-            ? { artifactUrl: artifactUrlFor(webBaseUrl, principal.organizationSlug) }
-            : {}),
-          ...requestOptions,
-        }).pipe(Effect.withSpan("mcp.server.create")),
-      ),
-    );
-  };
+  return build;
+};
 
 /** Per-host (not per-session) MCP wiring. Kept separate from
  *  `McpBuildServerOptions`, which the session store fills in per request. */

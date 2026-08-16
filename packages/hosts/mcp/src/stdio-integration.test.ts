@@ -95,7 +95,7 @@ describe("MCP stdio integration", () => {
   );
 
   it.effect(
-    "serves a modern-pinned client over the same v2 stdio entry",
+    "serves a modern-pinned client over the same stdio entry",
     () =>
       Effect.gen(function* () {
         const transport = new ModernStdioClientTransport(stdioServer);

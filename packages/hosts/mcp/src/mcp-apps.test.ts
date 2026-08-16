@@ -35,7 +35,7 @@ const withClient = async (
   }
 };
 
-describe("vendored MCP Apps v2 helpers", () => {
+describe("vendored MCP Apps helpers", () => {
   it("mirrors nested resourceUri metadata to the legacy key and preserves visibility", async () => {
     await withClient(
       (server) => {

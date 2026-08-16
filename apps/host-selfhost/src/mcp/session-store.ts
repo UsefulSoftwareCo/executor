@@ -1,10 +1,6 @@
 import { Layer } from "effect";
 
-import {
-  makeConsoleMcpErrorReporter,
-  makeMcpBuildServer,
-  makeMcpBuildServerV2,
-} from "@executor-js/api/server";
+import { makeConsoleMcpErrorReporter, makeMcpBuildServer } from "@executor-js/api/server";
 import { McpModernServerBuilder, type McpErrorReporter } from "@executor-js/host-mcp";
 import {
   inMemoryMcpSessionsLayer,
@@ -24,7 +20,7 @@ import { SelfHostExecutionStackLayer } from "../execution";
 // / `makeConsoleMcpErrorReporter` in `@executor-js/api/server`). Self-host
 // supplies only its fully-provided execution-stack layer (QuickJS over the
 // long-lived `SelfHostDb`) and its `ErrorCapture`; the builder creates the
-// connection-lifetime SDK v2 assembly used by the shared store.
+// connection-lifetime assembly used by the shared store.
 // ---------------------------------------------------------------------------
 
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
@@ -55,12 +51,12 @@ export const makeSelfHostMcpSessionStore = (
     { webBaseUrl },
   );
 
-/** Build the stateless SDK v2 server seam over the same self-host stack/config. */
+/** Build the stateless MCP server seam over the same self-host stack/config. */
 export const makeSelfHostMcpModernServerBuilder = (
   db: SelfHostDbHandle,
 ): Layer.Layer<McpModernServerBuilder> =>
   Layer.succeed(McpModernServerBuilder)({
-    build: makeMcpBuildServerV2(
+    build: makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
       {
         loadAppShellHtml: loadMcpAppsShellHtml,

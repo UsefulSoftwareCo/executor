@@ -24,7 +24,7 @@ import {
   clientCapabilitiesFromRequest,
   mcpRequestStatePrincipal,
   requestBodyFromRequest,
-} from "./tool-server-v2";
+} from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // Provider-neutral MCP serving envelope.

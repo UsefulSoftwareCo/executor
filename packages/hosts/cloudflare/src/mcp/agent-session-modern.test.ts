@@ -9,7 +9,7 @@ import type {
 } from "@executor-js/execution";
 import { defaultMcpResource } from "@executor-js/host-mcp";
 import { PAUSED_APPROVAL_TIMEOUT_MS } from "@executor-js/host-mcp/tool-server";
-import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
 import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
 import {
@@ -234,7 +234,7 @@ const makeHarness = () => {
     Effect.succeed({
       engine,
       buildServer: (options: ModernMcpServerRequestOptions) =>
-        buildMcpServerV2({
+        buildMcpServer({
           engine,
           elicitationMode: { mode: "native" },
           pausedExecutionHooks: session.modernPausedExecutionHooks,

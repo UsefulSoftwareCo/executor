@@ -28,7 +28,7 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import { mcpRequestStatePrincipal, type BrowserApprovalStore } from "./tool-server-v2";
+import { mcpRequestStatePrincipal, type BrowserApprovalStore } from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -77,9 +77,9 @@ export interface McpBuildServerOptions {
    *  with `?artifacts=false`; opted out, the built server registers none of
    *  the artifact tools, resource, or skills. */
   readonly artifactsEnabled?: boolean;
-  /** The sessionful v2 assembly starts disabled and replaces this from initialize. */
+  /** The sessionful assembly starts disabled and replaces this from initialize. */
   readonly appsEnabled: false;
-  /** Process-lifetime HMAC key for the v2 legacy-shim continuation state. */
+  /** Process-lifetime HMAC key for legacy-shim continuation state. */
   readonly requestStateSigningKey: Uint8Array;
   /** Stable authenticated owner bound into continuation state. */
   readonly requestStatePrincipal: string;
@@ -280,7 +280,7 @@ export const makeInMemoryMcpSessionStore = (
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
-            // Native mode needs an open SSE response for the v2 legacy shim's
+            // Native mode needs an open SSE response for the legacy shim's
             // server→client elicitation request. Other modes preserve the
             // store's existing single-JSON response behavior.
             enableJsonResponse: readElicitationMode(request) !== "native",

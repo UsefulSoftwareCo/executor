@@ -14,7 +14,7 @@ import {
 } from "./in-memory-session-store";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "./mcp-apps";
 import { defaultMcpResource, type Principal } from "./seams";
-import { buildMcpServerV2 } from "./tool-server-v2";
+import { buildMcpServer } from "./tool-server";
 
 const TEST_PRINCIPAL: Principal = {
   accountId: "acct_test",
@@ -71,7 +71,7 @@ const makeElicitingEngine = (): {
 };
 
 describe("in-memory MCP session store", () => {
-  it("preserves native elicitation mode and supplies the v2 session inputs", async () => {
+  it("preserves native elicitation mode and supplies the session inputs", async () => {
     let buildOptions: McpBuildServerOptions | undefined;
     const sessions = makeInMemoryMcpSessionStore((_principal, options) => {
       buildOptions = options;
@@ -112,10 +112,10 @@ describe("in-memory MCP session store", () => {
     expect(buildOptions?.requestStateSigningKey).toBeInstanceOf(Uint8Array);
   });
 
-  it("serves a legacy client through v2 with live Apps capabilities, elicitation, and reuse", async () => {
+  it("serves a legacy client with live Apps capabilities, elicitation, and reuse", async () => {
     const { engine, resumedWith } = makeElicitingEngine();
     const sessions = makeInMemoryMcpSessionStore((_principal, options) =>
-      buildMcpServerV2({
+      buildMcpServer({
         engine,
         ...options,
         loadAppShellHtml: async () => "<html></html>",

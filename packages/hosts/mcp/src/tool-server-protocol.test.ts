@@ -16,14 +16,14 @@ import { Effect } from "effect";
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
 import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
-import { appsEnabledForClientCapabilities, buildMcpServerV2 } from "./tool-server-v2";
+import { appsEnabledForClientCapabilities, buildMcpServer } from "./tool-server";
 import { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./mcp-apps";
 
 const REQUEST_STATE_KEY = new Uint8Array(32).fill(7);
 const TOOL_ADDRESS = ToolAddress.make("tools.test.org.main.echo");
 const APP_URI = "ui://executor/shell.html";
 
-type TestV2Config = {
+type TestServerConfig = {
   readonly engine: ExecutionEngine;
   readonly appsEnabled: boolean;
   readonly elicitationMode?: { readonly mode: "model" } | { readonly mode: "native" };
@@ -52,14 +52,14 @@ const makeStubEngine = (
 });
 
 const withClient = async (
-  config: TestV2Config,
+  config: TestServerConfig,
   run: (client: Client) => Promise<void>,
   options?: { readonly manualInputRequired?: boolean },
 ) => {
   const handler = createMcpHandler(
     () =>
       Effect.runPromise(
-        buildMcpServerV2({
+        buildMcpServer({
           ...config,
           requestStateSigningKey: REQUEST_STATE_KEY,
           requestStatePrincipal: config.requestStatePrincipal?.() ?? "principal-test",
@@ -74,7 +74,7 @@ const withClient = async (
       ),
   });
   const client = new Client(
-    { name: "executor-v2-test", version: "1.0.0" },
+    { name: "executor-protocol-test", version: "1.0.0" },
     {
       capabilities: { elicitation: { form: {} } },
       versionNegotiation: { mode: { pin: "2026-07-28" } },
@@ -101,7 +101,7 @@ const manualToolCall = (
   });
 };
 
-describe("SDK v2 Executor MCP assembly", () => {
+describe("Executor MCP protocol assembly", () => {
   it("lists Executor tools and executes code end to end over the modern HTTP entry", async () => {
     await withClient({ engine: makeStubEngine(), appsEnabled: false }, async (client) => {
       const names = (await client.listTools()).tools.map(({ name }) => name);

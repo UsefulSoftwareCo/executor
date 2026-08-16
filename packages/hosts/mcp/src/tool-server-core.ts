@@ -218,7 +218,7 @@ export type McpConnectionsPort = {
   readonly list: () => Effect.Effect<readonly BindableConnection[], unknown>;
 };
 
-export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
+export type ExecutorMcpToolConfig<E extends Cause.YieldableError = Cause.YieldableError> =
   | (ExecutionEngineConfig<E> & SharedMcpServerConfig)
   | ({ readonly engine: ExecutionEngine<E> } & SharedMcpServerConfig)
   | (ExecutionEngineConfig<E> & SharedMcpServerConfig & { readonly stateless: true })
@@ -260,19 +260,19 @@ export type ResumeFallbackOutcome =
       readonly status: "execution_not_found";
     };
 
-/** Request identity normalized across the v1 and v2 SDK callback contexts. */
+/** Request identity normalized from an MCP SDK callback context. */
 export type McpRequestJoinKeys = {
   readonly requestId: string | number;
   readonly sessionId?: string | undefined;
 };
 
-/** 2026-07-28 input-required result returned only by the v2 assembly. */
+/** 2026-07-28 input-required result returned by the MCP assembly. */
 export type McpInputRequiredResult = InputRequiredResult;
 
-/** Result shape shared by both assemblies; v1 never produces the second arm. */
+/** Result shape produced by Executor MCP handlers. */
 export type McpHandlerResult = McpToolResult | McpInputRequiredResult;
 
-/** Enable/disable controls returned by both MCP SDKs for registered tools. */
+/** Enable/disable controls returned by the MCP SDK for registered tools. */
 export type RegisteredMcpTool = {
   readonly enable: () => void;
   readonly disable: () => void;
@@ -338,7 +338,6 @@ export type NativeExecutionServices<
  */
 export type ExecutorMcpAssembly<Server, RequestContext extends McpRequestJoinKeys> = {
   readonly server: Server;
-  readonly era: "v1" | "v2";
   readonly initialAppsEnabled: boolean;
   readonly getClientCapabilities: () => unknown | null;
   readonly getElicitationSupport: () => { readonly form: boolean; readonly url: boolean };
@@ -1003,12 +1002,12 @@ const parseJsonContent = (raw: string): Record<string, unknown> | undefined => {
 // ---------------------------------------------------------------------------
 
 /** Assemble the shared Executor tools through one SDK-specific adapter. */
-export const createExecutorMcpServerAssembly = <
+export const buildExecutorMcpTools = <
   E extends Cause.YieldableError,
   Server,
   RequestContext extends McpRequestJoinKeys,
 >(
-  config: ExecutorMcpServerConfig<E>,
+  config: ExecutorMcpToolConfig<E>,
   createAssembly: () => ExecutorMcpAssembly<Server, RequestContext>,
 ): Effect.Effect<Server> =>
   Effect.gen(function* () {
@@ -2159,17 +2158,6 @@ export const createExecutorMcpServerAssembly = <
         );
       }
 
-      if (assembly.era === "v1") {
-        console.error(
-          "[executor] MCP session mode",
-          JSON.stringify({
-            clientCapabilities,
-            elicitationSupport: assembly.getElicitationSupport(),
-            elicitationMode: elicitationMode.mode,
-            resumeEnabled: elicitationMode.mode !== "native",
-          }),
-        );
-      }
       debugLog("tool.visibility", {
         clientCapabilities: clientCapabilities ?? null,
         elicitationSupport: assembly.getElicitationSupport(),

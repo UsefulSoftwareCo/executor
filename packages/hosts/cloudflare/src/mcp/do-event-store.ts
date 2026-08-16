@@ -47,7 +47,7 @@ const logStoreWarning = (event: string, fields: Record<string, unknown>): void =
 };
 
 /**
- * SDK v2 replay storage backed by one MCP session Durable Object's KV store.
+ * MCP replay storage backed by one session Durable Object's KV store.
  *
  * Writes are deliberately best-effort: storage limits or outages never escape
  * into the transport's send path. Every call still returns a monotonic event

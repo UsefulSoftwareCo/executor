@@ -2,10 +2,11 @@ import { Data, Effect } from "effect";
 
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
+  buildMcpServer,
+  mcpRequestStatePrincipal,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
 import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
@@ -101,7 +102,7 @@ const makeCloudflareModernRuntime = (
   return {
     engine: runtime.engine,
     buildServer: (options) =>
-      buildMcpServerV2({
+      buildMcpServer({
         engine: runtime.engine,
         description: runtime.description,
         artifacts: runtime.executor.artifacts,
@@ -137,7 +138,7 @@ const closeModernServerWithDb = <Server extends { close: () => Promise<void> }>(
   return server;
 };
 
-/** Build the worker-side SDK v2 server over a fresh D1 execution runtime. */
+/** Build the worker-side MCP server over a fresh D1 execution runtime. */
 export const makeCloudflareModernMcpServerBuilder = (
   env: CloudflareEnv,
   config: CloudflareConfig,
@@ -268,7 +269,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       // only offered when this deployment knows its own public URL. Without one
       // the artifact is still saved, and the tool says so.
       const artifactOrigin = sessionMeta.webOrigin ?? config.webBaseUrl;
-      const mcpServer = yield* buildMcpServerV2({
+      const mcpServer = yield* buildMcpServer({
         engine,
         description,
         artifacts: executor.artifacts,

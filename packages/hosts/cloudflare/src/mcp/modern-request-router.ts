@@ -18,7 +18,7 @@ import {
   clientCapabilitiesFromRequestBody,
   mcpRequestStatePrincipal,
   verifyNativeRequestState,
-} from "@executor-js/host-mcp/tool-server-v2";
+} from "@executor-js/host-mcp/tool-server";
 
 import type { McpSessionProps } from "./agent-session-durable-object";
 import type { McpExecutionOwnerDirectory } from "./execution-owner-directory";

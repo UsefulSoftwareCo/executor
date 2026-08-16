@@ -8,7 +8,7 @@ import {
   type McpModernServerBuilder,
   type Principal,
 } from "@executor-js/host-mcp";
-import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServer, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server";
 
 import type { McpSessionProps } from "./agent-session-durable-object";
 import {
@@ -149,7 +149,7 @@ const makeBuilder = (builds: { count: number }): McpModernServerBuilder["Service
   build: (_principal, options) => {
     builds.count += 1;
     const { resource: _resource, ...requestOptions } = options;
-    return buildMcpServerV2({
+    return buildMcpServer({
       engine,
       elicitationMode: { mode: "native" },
       ...requestOptions,

@@ -148,7 +148,7 @@ export type McpProviders<RMcpAuth = never> = McpProviderBase<RMcpAuth> &
          * Owns the legacy serving-session lifecycle (in-process Map vs DO).
          */
         readonly sessions: Layer.Layer<McpSessionStore>;
-        /** Builds one stateless SDK v2 server for each modern request. */
+        /** Builds one stateless MCP server for each modern request. */
         readonly modern: Layer.Layer<McpModernServerBuilder>;
       }
     | {
