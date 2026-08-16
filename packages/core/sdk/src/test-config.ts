@@ -123,6 +123,36 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly redirectUri?: string | null;
   readonly oauthCallbackStateOrgSlug?: string;
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
+  /** Install a `deferToolSync` collector, so background tool-catalog work is
+   *  queued instead of run, and a test decides when it happens by yielding
+   *  `drainBackgroundTasks`.
+   *
+   *  OFF by default, which leaves `deferToolSync` absent and therefore every
+   *  deferred batch inline — the behaviour every existing suite was written
+   *  against, and the behaviour of a host with no background capability. */
+  readonly collectBackgroundTasks?: boolean;
+};
+
+/** The `deferToolSync` collector behind `collectBackgroundTasks`, plus its
+ *  drain.
+ *
+ *  Deterministic on purpose: tasks run in enqueue order, one at a time, only
+ *  when the drain is yielded. A background scheduler that ran them on a timer
+ *  would make every assertion about "what the read did NOT do" a race.
+ *
+ *  The drain takes the queue as it stands and runs that; work a drained task
+ *  enqueues in turn belongs to the next drain, so one drain always terminates. */
+const makeBackgroundTaskCollector = () => {
+  const pending: Effect.Effect<void>[] = [];
+  return {
+    deferToolSync: (task: Effect.Effect<void>) =>
+      Effect.sync(() => {
+        pending.push(task);
+      }),
+    drainBackgroundTasks: Effect.suspend(() =>
+      Effect.forEach(pending.splice(0), (task) => task, { discard: true }),
+    ),
+  };
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -130,6 +160,9 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
 ): Omit<ExecutorConfig<TPlugins>, "db"> & {
   readonly db: FumaDb;
   readonly testDb: TestFumaDb;
+  /** Run every background task queued so far. Always present, and empty unless
+   *  `collectBackgroundTasks` installed the collector. */
+  readonly drainBackgroundTasks: Effect.Effect<void>;
 } => {
   const tenant = options?.tenant ?? "test-tenant";
   const subject = options?.subject === undefined ? "test-subject" : options.subject;
@@ -151,7 +184,13 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
   const redirectUri =
     options?.redirectUri === undefined ? TEST_OAUTH_REDIRECT_URI : options.redirectUri;
 
+  const background = makeBackgroundTaskCollector();
+
   return {
+    drainBackgroundTasks: background.drainBackgroundTasks,
+    ...(options?.collectBackgroundTasks === true
+      ? { deferToolSync: background.deferToolSync }
+      : {}),
     tenant: Tenant.make(tenant),
     ...(subject != null ? { subject: Subject.make(subject) } : {}),
     db,
