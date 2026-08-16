@@ -1,4 +1,4 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import { Cause, Effect, Inspectable, Layer, Option, Predicate, Schema, Semaphore } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -686,13 +686,30 @@ type CatalogRefreshTrigger = "stale_marked" | "config_revised" | "expired";
 
 /** How much work a read's catalog refresh found and did, for the enclosing
  *  `executor.tools.list` span. `candidates` is what the stale scan returned —
- *  the number the scan's filter scoping exists to keep at zero. */
+ *  the number the scan's filter scoping exists to keep at zero. `failed`
+ *  counts refreshes that were swallowed to keep the read answerable, so a
+ *  connection stuck permanently stale is visible as a rate rather than only
+ *  as an absent `synced`. */
 interface CatalogRefreshSummary {
   readonly candidates: number;
   readonly synced: number;
+  readonly failed: number;
 }
 
-const NO_CATALOG_REFRESH: CatalogRefreshSummary = { candidates: 0, synced: 0 };
+const NO_CATALOG_REFRESH: CatalogRefreshSummary = { candidates: 0, synced: 0, failed: 0 };
+
+/** The error tags in a swallowed refresh cause, as a stable comma-joined set.
+ *  Tags only: this cause can carry an upstream HTTP request/response, so no
+ *  message, field or rendered cause from it may reach a log line. A defect
+ *  has no tag to report — its shape is arbitrary third-party throw data —
+ *  and reports as `Die`. */
+const causeErrorTags = <E extends { readonly _tag: string }>(cause: Cause.Cause<E>): string =>
+  Array.from(
+    new Set(
+      // oxlint-disable-next-line executor/no-manual-tag-check -- boundary: projects the tag out for telemetry rather than branching on it; catchTag/isTagged answer "is it THIS tag", and the log line needs whichever tag it actually was
+      cause.reasons.map((reason) => (Cause.isFailReason(reason) ? reason.error._tag : reason._tag)),
+    ),
+  ).join(",");
 
 // ---------------------------------------------------------------------------
 // collectTables — return the executor-owned Fuma table set. Plugins persist
@@ -1646,6 +1663,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
+    // INVARIANT: tool-catalog persists must not interleave.
+    //
+    // fumadb implements a SQLite transaction as raw BEGIN/COMMIT/ROLLBACK on
+    // the shared connection and hands the callback that same handle
+    // (`fumadb/adapters/drizzle/query.ts`), so concurrent persists do not get
+    // one transaction each. SQLite has no nested transaction: the second BEGIN
+    // fails with "cannot start a transaction within a transaction", and
+    // because that throw happens before the adapter's try block, the losing
+    // persist never runs its callback and never rolls back. It simply loses
+    // its entire rebuild while the connection keeps serving the catalog it
+    // already had — a silent no-op, since the caller's error is swallowed by
+    // the best-effort refresh above. Measured: five connections refreshed
+    // concurrently, four rebuilds dropped.
+    //
+    // Postgres checks out a connection per transaction and does not need this;
+    // the permit is cheap there and the invariant is not worth making
+    // dialect-conditional. D1 (`interactiveTransactions: false`) issues no
+    // BEGIN at all, so its statements auto-commit and the permit is what keeps
+    // one rebuild's delete-then-insert from splitting around another's.
+    //
+    // Held around the persist ONLY. `produceConnectionTools` runs its upstream
+    // `resolveTools` handshake (seconds) outside the permit, so the read
+    // refresh's concurrent fan-out keeps every bit of its overlap.
+    //
+    // Scope is this executor instance, which covers every persist a single
+    // read fans out. It does NOT cover two executors sharing one SQLite
+    // handle — self-host mints an executor per request over a long-lived
+    // handle — because the permit would have to be keyed by connection in
+    // module state to reach that far. Serializing a shared connection's
+    // transactions belongs to whoever owns the connection: the fix for the
+    // cross-request case is a mutex in the fumadb sqlite adapter, not here.
+    const catalogPersistLock = yield* Semaphore.make(1);
+    const withCatalogPersistLock = catalogPersistLock.withPermits(1);
+
     // Populated once, never mutated after startup.
     const staticTools = new Map<string, StaticTools>();
     const runtimes = new Map<string, PluginRuntime>();
@@ -2560,20 +2611,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // vs `tools_synced_at`) doesn't re-attempt this connection per read.
         // Successful syncs also clear stale sync-failure health records, while
         // preserving genuine health-check outcomes.
+        //
+        // Unlocked: every caller runs it inside a `withCatalogPersistLock`
+        // transaction below, and the permit is not reentrant.
         const stampSynced = (row: ConnectionRow | null) =>
           core.updateMany("connection", {
             where: connectionWhere,
             set: syncedSet(row),
           });
+        // Locked: the preserve branches stamp without a surrounding
+        // transaction, and a bare UPDATE issued while another fiber holds an
+        // open BEGIN on the shared SQLite connection is enrolled in that
+        // fiber's transaction — and lost with it if it rolls back.
         const stampSyncedWithHealth = (reason: string) =>
-          core.updateMany("connection", {
-            where: connectionWhere,
-            set: {
-              tools_synced_at: Date.now(),
-              last_health: toolSyncHealth(reason),
-              updated_at: new Date(),
-            },
-          });
+          withCatalogPersistLock(
+            core.updateMany("connection", {
+              where: connectionWhere,
+              set: {
+                tools_synced_at: Date.now(),
+                last_health: toolSyncHealth(reason),
+                updated_at: new Date(),
+              },
+            }),
+          );
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -2590,24 +2650,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
-          yield* transaction(
-            Effect.gen(function* () {
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow);
-            }),
+          yield* withCatalogPersistLock(
+            transaction(
+              Effect.gen(function* () {
+                yield* core.deleteMany("tool", { where });
+                yield* core.deleteMany("definition", { where });
+                yield* stampSynced(existingRow);
+              }),
+            ),
           );
           return [];
         }
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
-          yield* transaction(
-            Effect.gen(function* () {
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow);
-            }),
+          yield* withCatalogPersistLock(
+            transaction(
+              Effect.gen(function* () {
+                yield* core.deleteMany("tool", { where });
+                yield* core.deleteMany("definition", { where });
+                yield* stampSynced(existingRow);
+              }),
+            ),
           );
           return [];
         }
@@ -2696,14 +2760,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* transaction(
-          Effect.gen(function* () {
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
-            yield* stampSynced(existingRow);
-          }),
+        yield* withCatalogPersistLock(
+          transaction(
+            Effect.gen(function* () {
+              yield* core.deleteMany("tool", { where });
+              yield* core.deleteMany("definition", { where });
+              yield* core.createMany("tool", toolRows);
+              yield* core.createMany("definition", definitionRows);
+              yield* stampSynced(existingRow);
+            }),
+          ),
         );
 
         return result.tools.map((tool: ToolDef) =>
@@ -3736,12 +3802,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // channel, and a tools READ must not be failable by one
               // connection's misbehaving refresh. The stale-but-working
               // catalog stays in place and the next read retries.
+              //
+              // Warning, not debug: swallowing this is the whole point, so the
+              // log line is the only signal that a connection is serving a
+              // stale catalog. Enumerable fields only — a refresh runs on a
+              // live credential and its cause can embed the upstream request
+              // and response.
               Effect.catchCause((cause) =>
                 Effect.annotateCurrentSpan({ "executor.tools.sync.outcome": "fail" }).pipe(
                   Effect.andThen(
-                    Effect.logDebug("Tool catalog refresh failed").pipe(
-                      Effect.annotateLogs("cause", cause),
-                    ),
+                    Effect.logWarning("executor tool catalog refresh failed", {
+                      integration: String(ref.integration),
+                      connection: String(ref.name),
+                      trigger,
+                      errorTags: causeErrorTags(cause),
+                    }),
                   ),
                   Effect.as(false),
                 ),
@@ -3757,9 +3832,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           { concurrency: 4 },
         );
 
+        const synced = outcomes.filter((ok) => ok).length;
         return {
           candidates: connections.length,
-          synced: outcomes.filter((ok) => ok).length,
+          synced,
+          failed: outcomes.length - synced,
         };
       });
 
@@ -3815,6 +3892,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           "executor.tools.result_count": tools.length,
           "executor.tools.sync.candidates": refresh.candidates,
           "executor.tools.sync.synced": refresh.synced,
+          "executor.tools.sync.failed": refresh.failed,
         });
         return tools;
       }).pipe(

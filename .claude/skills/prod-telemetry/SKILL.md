@@ -41,14 +41,21 @@ join the same traces via traceparent).
   `.connection` (present only when the read was filtered),
   `executor.tools.result_count`, and the catalog-refresh counters
   `executor.tools.sync.candidates` (rows the stale scan returned) /
-  `executor.tools.sync.synced`. A slow tools read is almost always
-  `candidates` > 0: subtract the child span durations to confirm.
+  `executor.tools.sync.synced` / `executor.tools.sync.failed`. A slow tools
+  read is almost always `candidates` > 0: subtract the child span durations to
+  confirm. A connection stuck permanently stale shows up as `failed` > 0 on
+  every read for its scope — the refresh is best-effort and never fails the
+  read, so this counter and the `executor tool catalog refresh failed` warning
+  are the only signals it emits.
 - `executor.tools.sync` (child of the above, one per refreshed connection;
   older spans carry the previous name `executor.tools.sync_stale` and no
   trigger/outcome attrs) — `executor.integration`,
   `executor.connection`, `executor.tools.sync.trigger`
   (`stale_marked`/`config_revised`/`expired`) and
-  `executor.tools.sync.outcome` (`ok`/`fail`).
+  `executor.tools.sync.outcome` (`ok`/`fail`). The matching warning log carries
+  `integration`, `connection`, `trigger` and `errorTags` only: a refresh runs
+  on a live credential, so no cause or upstream message is logged and Axiom
+  will not have one to search.
 - `mcp.request` (outer) — `mcp.auth.organization_id`,
   `mcp.auth.account_id`, `mcp.tool.name`, CF edge fields (`cf.country`…),
   MCP client fingerprint (`mcp.client.name`…).
