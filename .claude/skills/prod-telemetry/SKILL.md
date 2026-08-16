@@ -41,18 +41,35 @@ join the same traces via traceparent).
   `.connection` (present only when the read was filtered),
   `executor.tools.result_count`, and the catalog-refresh counters
   `executor.tools.sync.candidates` (rows the stale scan returned) /
-  `executor.tools.sync.synced` / `executor.tools.sync.failed`. A slow tools
-  read is almost always `candidates` > 0: subtract the child span durations to
-  confirm. A connection stuck permanently stale shows up as `failed` > 0 on
-  every read for its scope — the refresh is best-effort and never fails the
-  read, so this counter and the `executor tool catalog refresh failed` warning
-  are the only signals it emits.
+  `executor.tools.sync.synced` / `executor.tools.sync.failed` /
+  `executor.tools.sync.skipped_claimed` / `.skipped_backoff` /
+  `.skipped_parked`. A slow tools read is almost always `candidates` > 0:
+  subtract the child span durations to confirm. A connection stuck permanently
+  stale shows up as `failed` > 0 on every read for its scope — the refresh is
+  best-effort and never fails the read, so this counter and the
+  `executor tool catalog refresh failed` warning are the only signals it emits.
+
+  The three `skipped_*` counters are how the sync lifecycle reports its work
+  avoidance, and they are the ones to watch after a rollout:
+  `skipped_parked` counts connections whose credential was refused (an `auth`
+  verdict, which no retry can fix), `skipped_backoff` counts ones inside their
+  failure ladder, and `skipped_claimed` counts refreshes another concurrent
+  read had already taken. `candidates` staying high while `synced` collapses
+  toward the skip counters is the intended shape — it means dead upstreams
+  stopped costing handshakes. `skipped_claimed` rising with request concurrency
+  for one integration is cross-isolate deduplication working.
+
 - `executor.tools.sync` (child of the above, one per refreshed connection;
   older spans carry the previous name `executor.tools.sync_stale` and no
   trigger/outcome attrs) — `executor.integration`,
   `executor.connection`, `executor.tools.sync.trigger`
-  (`stale_marked`/`config_revised`/`expired`) and
-  `executor.tools.sync.outcome` (`ok`/`fail`). The matching warning log carries
+  (`cold`/`stale_marked`/`config_revised`/`expired`),
+  `executor.tools.sync.claimed` (bool — false means another reader owned the
+  refresh and this one did nothing) and `executor.tools.sync.outcome`
+  (`ok`/`fail`). `cold` split out of `stale_marked` when `tools_stale_at`
+  landed: before that, a never-synced connection and one invalidated
+  mid-invocation were the same row, so spans predating it report every
+  never-synced connection as `stale_marked`. The matching warning log carries
   `integration`, `connection`, `trigger` and `errorTags` only: a refresh runs
   on a live credential, so no cause or upstream message is logged and Axiom
   will not have one to search.
