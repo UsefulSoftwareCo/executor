@@ -61,6 +61,13 @@ export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<
     // nothing to drain it before: the storage here is a D1 binding read
     // straight off `env`, with no pool and no close finalizer, so a detached
     // batch still has everything it needs after the response is written.
+    //
+    // BARE `runPromise`, unlike cloud's DO, which re-provides its tracer here.
+    // This app has no OTel and no Sentry anywhere — `observability.ts` is a
+    // console error capture and the request path itself runs on the runtime's
+    // default no-op tracer — so there is nothing to provide, and the deferred
+    // batch's spans are dropped exactly like the read's own. Give it the tracer
+    // the way the DO does the day host-cf gains one.
     deferToolSync: (task) => Effect.sync(() => waitUntil(Effect.runPromise(task))),
   });
 
