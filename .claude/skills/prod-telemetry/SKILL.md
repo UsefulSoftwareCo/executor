@@ -37,6 +37,18 @@ join the same traces via traceparent).
   `mcp.tool.integration`, same outcome attrs.
 - `plugin.openapi.invoke` — `plugin.openapi.method` / `path_template` /
   `base_url`, and since PR #992 `http.status_code`.
+- `executor.tools.list` — `executor.tools.filter.integration` / `.owner` /
+  `.connection` (present only when the read was filtered),
+  `executor.tools.result_count`, and the catalog-refresh counters
+  `executor.tools.sync.candidates` (rows the stale scan returned) /
+  `executor.tools.sync.synced`. A slow tools read is almost always
+  `candidates` > 0: subtract the child span durations to confirm.
+- `executor.tools.sync` (child of the above, one per refreshed connection;
+  older spans carry the previous name `executor.tools.sync_stale` and no
+  trigger/outcome attrs) — `executor.integration`,
+  `executor.connection`, `executor.tools.sync.trigger`
+  (`stale_marked`/`config_revised`/`expired`) and
+  `executor.tools.sync.outcome` (`ok`/`fail`).
 - `mcp.request` (outer) — `mcp.auth.organization_id`,
   `mcp.auth.account_id`, `mcp.tool.name`, CF edge fields (`cf.country`…),
   MCP client fingerprint (`mcp.client.name`…).
