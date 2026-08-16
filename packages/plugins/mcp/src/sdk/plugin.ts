@@ -25,6 +25,8 @@ import {
   type OAuthClientSummary,
   type Owner,
   type PluginCtx,
+  type ResolveToolsResult,
+  type ToolSyncErrorKind,
   type StaticToolSchema,
   type StorageFailure,
   type ToolAnnotations,
@@ -69,28 +71,25 @@ import {
 
 const MCP_PLUGIN_ID = "mcp" as const;
 
-/** Classify a failed liveness probe. The structural `httpStatus` carried on the
- *  connect error is the primary signal (401/403 = auth wall = expired); message
- *  substrings are only a fallback for causes with no status (OAuth
- *  re-authorization, servers whose auth rejection isn't an HTTP status).
- *  Anything else (server down, wrong transport) is degraded, not a credential
- *  problem. */
+/** Classify a failed liveness probe from the two STRUCTURAL signals the connect
+ *  error carries: `reauthorizationRequired`, which is an auth verdict with no
+ *  HTTP status of its own, and `httpStatus`, which the shared classifier turns
+ *  into expired vs degraded so "which statuses mean expired" lives in one
+ *  place. Anything else (server down, wrong transport) is degraded, not a
+ *  credential problem.
+ *
+ *  Deliberately no message matching. `resolveTools` reads the same two fields to
+ *  reach `auth`, and the previous substring branch made the two classifiers
+ *  disagree the moment either error string was reworded — an expired OAuth
+ *  credential would report as a retryable outage and the user would never be
+ *  told to reconnect. */
 const mcpLivenessFailureStatus = (failure: {
-  readonly message: string;
   readonly httpStatus?: number;
+  readonly reauthorizationRequired?: boolean;
 }): "expired" | "degraded" => {
-  if (failure.httpStatus !== undefined) {
-    // A failed connect can't be healthy; the shared classifier decides
-    // expired vs degraded so "which statuses mean expired" lives in one place.
-    const classified = classifyHttpStatus(failure.httpStatus);
-    return classified === "expired" ? "expired" : "degraded";
-  }
-  const lower = failure.message.toLowerCase();
-  const authWalled =
-    lower.includes("oauth re-authorization") ||
-    lower.includes("unauthorized") ||
-    lower.includes("forbidden");
-  return authWalled ? "expired" : "degraded";
+  if (failure.reauthorizationRequired === true) return "expired";
+  if (failure.httpStatus === undefined) return "degraded";
+  return classifyHttpStatus(failure.httpStatus) === "expired" ? "expired" : "degraded";
 };
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
@@ -1213,18 +1212,38 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // -----------------------------------------------------------------------
     resolveTools: ({ config, connection, template, getValues, httpClientLayer }) =>
       Effect.gen(function* () {
-        const parsed = parseMcpIntegrationConfig(config);
-        if (!parsed) return { tools: [] as readonly ToolDef[], incomplete: true };
+        // `kind` is null for a failure the plugin cannot honestly place in the
+        // closed set: core backs it off like any other, but never parks it.
+        const incomplete = (
+          kind: ToolSyncErrorKind | null,
+          reason: string,
+        ): ResolveToolsResult => ({
+          tools: [],
+          incomplete: true,
+          incompleteReason: reason,
+          ...(kind === null ? {} : { incompleteKind: kind }),
+        });
 
-        // Discovery tolerates unresolved credentials (an open server lists
-        // tools unauthenticated; a bad value just yields zero tools).
-        const values = yield* getValues().pipe(
-          Effect.orElseSucceed(() => ({}) as Record<string, string | null>),
-        );
+        const parsed = parseMcpIntegrationConfig(config);
+        if (!parsed) {
+          return incomplete("config", "The MCP integration config could not be read.");
+        }
+
+        // Discovery tolerates unresolved credentials (an open server lists tools
+        // unauthenticated; a bad value just yields zero tools) — but a secret
+        // STORE that cannot answer is a different fact. Dialing with a silently
+        // emptied value map produces a 401, which classifies as `auth`, which
+        // PARKS the connection until a human re-authorizes: a credential store
+        // blip would take working connections offline and blame the user's
+        // credential. Unclassified instead, so it retries.
+        const values = yield* getValues().pipe(Effect.result);
+        if (Result.isFailure(values)) {
+          return incomplete(null, "The connection's stored credential could not be read.");
+        }
 
         const built = yield* buildConnectorInput(
           parsed,
-          values,
+          values.success,
           template === null ? null : String(template),
           allowStdio,
           httpClientLayer,
@@ -1233,28 +1252,44 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
-
-        if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+        // A connector that could not even be built is a configuration problem
+        // (stdio disabled, no usable endpoint), never an upstream one — nothing
+        // was dialed.
+        if (Result.isFailure(built)) {
+          return incomplete("config", "The MCP server connection could not be prepared.");
         }
-        return { tools: manifest.manifest.tools.map(toToolDef) };
+
+        // The discovery failure is CLASSIFIED rather than discarded: core parks
+        // an `auth` verdict instead of re-dialing a server that will keep
+        // refusing the same credential, and 401 handshakes were the single
+        // largest source of wasted upstream dials. The reason stays generic —
+        // it reaches a stored health record, and a discovery cause can embed
+        // the upstream request and response.
+        const discovered = yield* discoverTools(built.success).pipe(
+          Effect.result,
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
+
+        if (Result.isFailure(discovered)) {
+          const failure = discovered.failure;
+          // The same two structural signals `mcpLivenessFailureStatus` reads, so
+          // the health verdict and the sync verdict cannot drift apart.
+          if (mcpLivenessFailureStatus(failure) === "expired") {
+            return incomplete("auth", "The MCP server rejected the credential.");
+          }
+          return failure.stage === "connect"
+            ? incomplete("unreachable", "The MCP server could not be reached.")
+            : incomplete("protocol", "The MCP server's tool listing could not be read.");
+        }
+
+        return { tools: discovered.success.tools.map(toToolDef) };
       }).pipe(
         Effect.withSpan("mcp.plugin.resolve_tools", {
           attributes: { "mcp.connection.name": String(connection.name) },
         }),
-      ) as Effect.Effect<
-        { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
-        StorageFailure
-      >,
+      ),
 
     invokeTool: ({ ctx, toolRow, credential, args, elicit }) =>
       Effect.gen(function* () {

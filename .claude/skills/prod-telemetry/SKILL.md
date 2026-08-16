@@ -41,18 +41,58 @@ join the same traces via traceparent).
   `.connection` (present only when the read was filtered),
   `executor.tools.result_count`, and the catalog-refresh counters
   `executor.tools.sync.candidates` (rows the stale scan returned) /
-  `executor.tools.sync.synced` / `executor.tools.sync.failed`. A slow tools
+  `executor.tools.sync.synced` / `.incomplete` / `.failed` / `.lost_claim` /
+  `.skipped_claimed` / `.skipped_backoff` / `.skipped_parked`. A slow tools
   read is almost always `candidates` > 0: subtract the child span durations to
-  confirm. A connection stuck permanently stale shows up as `failed` > 0 on
-  every read for its scope — the refresh is best-effort and never fails the
-  read, so this counter and the `executor tool catalog refresh failed` warning
-  are the only signals it emits.
+  confirm.
+
+  `candidates` is the one to alert on for scan cost: in steady state it is
+  ZERO. Every trigger is cleared by the listing that answers it, drift marks
+  included (`connection.tools_stale_token` is compare-and-set to NULL), so a
+  scope whose `candidates` never returns to 0 has connections that are due and
+  never resolving, not a busy fleet.
+
+  The four terminal counters partition every attempt, and the distinction that
+  matters when triaging is `incomplete` vs `failed`. `incomplete` is the PLUGIN
+  reporting bad news correctly — a refused credential, an unreachable server,
+  an unreadable spec — with the existing catalog kept and the retry ladder
+  advanced. `failed` is the refresh raising or dying before reaching any
+  verdict: the executor's own error channel, swallowed to keep the read
+  answerable, and the thing to page on. A connection stuck permanently stale
+  shows up as one or the other on every read for its scope; `failed` > 0 also
+  emits the `executor tool catalog refresh failed` warning, which is its only
+  other signal. `lost_claim` counts listings that completed and were then
+  discarded because another attempt had re-claimed the connection — wasted
+  upstream work that looks like success from every angle except the write.
+
+  The three `skipped_*` counters are how the sync lifecycle reports its work
+  avoidance, and they are the ones to watch after a rollout:
+  `skipped_parked` counts connections whose credential was refused (an `auth`
+  verdict) AND whose catalog is merely past its freshness window — the park
+  gates re-verification only, so a never-synced connection with the same
+  verdict reports `skipped_backoff` instead and keeps walking the ladder.
+  `skipped_backoff` counts ones inside their failure ladder, and
+  `skipped_claimed` counts refreshes another concurrent read had already taken.
+  `synced` collapsing toward the skip counters is the intended shape — it means
+  dead upstreams stopped costing handshakes. `skipped_claimed` rising with
+  request concurrency for one integration is cross-isolate deduplication
+  working.
+
 - `executor.tools.sync` (child of the above, one per refreshed connection;
   older spans carry the previous name `executor.tools.sync_stale` and no
   trigger/outcome attrs) — `executor.integration`,
   `executor.connection`, `executor.tools.sync.trigger`
-  (`stale_marked`/`config_revised`/`expired`) and
-  `executor.tools.sync.outcome` (`ok`/`fail`). The matching warning log carries
+  (`cold`/`stale_marked`/`config_revised`/`expired`),
+  `executor.tools.sync.claimed` (bool — false means another reader owned the
+  refresh and this one did nothing) and `executor.tools.sync.outcome`
+  (`synced`/`incomplete`/`lost_claim`/`fail`). Older spans report `ok` where a
+  current one reports `synced` or `incomplete`; that rename is the same
+  distinction as the counters above, so any query matching `outcome == "ok"`
+  needs both spellings to span the change. `cold` split out of `stale_marked`
+  when the drift mark became its own column: before that, a never-synced
+  connection and one invalidated mid-invocation were the same row, so spans
+  predating it report every never-synced connection as `stale_marked`. The
+  matching warning log carries
   `integration`, `connection`, `trigger` and `errorTags` only: a refresh runs
   on a live credential, so no cause or upstream message is logged and Axiom
   will not have one to search.

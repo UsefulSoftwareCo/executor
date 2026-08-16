@@ -27,6 +27,12 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
     message: Schema.String,
     /** HTTP status from the underlying connect failure, when known. */
     httpStatus: Schema.optional(Schema.Number),
+    /** The handshake demanded a fresh OAuth grant
+     *  (`McpOAuthReauthorizationRequired`), which no retry can satisfy.
+     *  Structural for the same reason `httpStatus` is: a reauthorization demand
+     *  carries no HTTP status of its own, and the catalog-sync classifier must
+     *  reach `auth` without matching on the message. */
+    reauthorizationRequired: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}
