@@ -897,6 +897,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             grant_types: ["authorization_code", "refresh_token"],
             response_types: ["code"],
             token_endpoint_auth_method: authMethod,
+            application_type: isLoopbackHttpUrl(flowRedirectUri) ? "native" : "web",
             scope: input.scopes.length > 0 ? input.scopes.join(" ") : undefined,
           },
         },
