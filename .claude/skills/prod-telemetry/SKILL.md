@@ -42,9 +42,9 @@ join the same traces via traceparent).
   `executor.tools.result_count`, and the catalog-refresh counters
   `executor.tools.sync.candidates` (rows the stale scan returned) /
   `executor.tools.sync.synced` / `.incomplete` / `.failed` / `.lost_claim` /
-  `.skipped_claimed` / `.skipped_backoff` / `.skipped_parked`. A slow tools
-  read is almost always `candidates` > 0: subtract the child span durations to
-  confirm.
+  `.skipped_claimed` / `.skipped_backoff` / `.skipped_parked` / `.deferred` /
+  `.deferred_overflow`. A slow tools read is almost always `candidates` > 0:
+  subtract the child span durations to confirm.
 
   `candidates` is the one to alert on for scan cost: in steady state it is
   ZERO. Every trigger is cleared by the listing that answers it, drift marks
@@ -78,9 +78,43 @@ join the same traces via traceparent).
   request concurrency for one integration is cross-isolate deduplication
   working.
 
-- `executor.tools.sync` (child of the above, one per refreshed connection;
-  older spans carry the previous name `executor.tools.sync_stale` and no
-  trigger/outcome attrs) — `executor.integration`,
+  `deferred` counts candidates handed to the host to list AFTER the read
+  answered — `expired` ones only, never an invalidation. It is deliberately not
+  part of the terminal partition: those listings have no outcome yet at the time
+  this span closes, and each reports its own on its own
+  `executor.tools.sync` span later. So on a host that defers, a read with
+  `deferred` > 0 and `synced` == 0 is the healthy shape, and `candidates` will
+  still be > 0 on the next read until the background batch lands. On a host that
+  does NOT defer (cloud's `/api/*` plane, which cannot — its postgres socket
+  closes before the response is written) the same work reports as `synced`
+  inline, so comparing the two planes' `synced` rates directly is a mistake.
+
+  `deferred_overflow` is what did not fit in the per-read batch cap (16). A
+  steady non-zero value means a scope is shedding refresh work every read and
+  converging slowly — it is never dropped, but the freshness window it is
+  effectively running at is `ttl x ceil(due / 16)`. There is no log line for
+  this; the counter is the only signal.
+
+- `executor.tools.sync.deferred` — one per read that deferred anything, wrapping
+  the whole background batch, with `executor.tools.sync.deferred` (the batch
+  size) on it. Its parentage is the HOST's choice, so do not join on it. In
+  cloud (the MCP session DO) it is a ROOT span in its own trace: the DO
+  re-provides the tracer so the batch is not hung under a `executor.tools.list`
+  span that closed before it, which would re-inflate the very read latency the
+  deferral removes. On a long-lived host that forks a fiber instead, it stays a
+  child of that list span and simply outlives it.
+
+  When triaging "the catalog is stale and nothing is re-listing", the absence of
+  this span on a host that reports `deferred` > 0 is the signal — the host
+  dropped the batch (an evicted isolate, a `waitUntil` that never ran). That
+  costs one freshness window and nothing else; it is not data loss. Search by
+  `executor.integration` on the child `executor.tools.sync` spans rather than by
+  trace, since cloud's batch has no trace in common with the read.
+
+- `executor.tools.sync` (child of `executor.tools.list` for an inline refresh
+  and of `executor.tools.sync.deferred` for a background one, one per refreshed
+  connection; older spans carry the previous name `executor.tools.sync_stale`
+  and no trigger/outcome attrs) — `executor.integration`,
   `executor.connection`, `executor.tools.sync.trigger`
   (`cold`/`stale_marked`/`config_revised`/`expired`),
   `executor.tools.sync.claimed` (bool — false means another reader owned the
