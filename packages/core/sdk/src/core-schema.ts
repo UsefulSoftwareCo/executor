@@ -229,8 +229,10 @@ export const coreTables = defineTables({
       // `tools/list_changed`, an unknown-tool rejection). Separate from
       // `tools_synced_at` so marking a catalog stale no longer destroys the
       // last-verified timestamp — "drifted" and "never synced" are different
-      // states with different diagnoses. Cleared by the next authoritative
-      // listing.
+      // states with different diagnoses. OUT-DATED by the next authoritative
+      // listing rather than cleared by it: the marking fiber and the listing
+      // fiber are different isolates, so a write that nulled this column would
+      // erase a drift signal that landed mid-listing.
       tools_stale_at: nullableBigintColumn("tools_stale_at"),
       // The refresh lease. Concurrent reads land in different Workers isolates
       // with no shared memory, so the row IS the coordination medium: a

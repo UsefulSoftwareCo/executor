@@ -603,7 +603,12 @@ export const resolveOpenApiBackedTools = ({
       incompleteKind: "config",
     });
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
-    if (!openApiConfig) return { tools: [], definitions: {} };
+    // Incomplete, never an authoritative empty catalog. Core reads an
+    // authoritative listing as the truth and DELETES every persisted tool row
+    // for the integration, and this plugin does not set `remoteToolCatalog`, so
+    // the nonzero-catalog guard that would otherwise catch it never runs — an
+    // unreadable config blob would wipe a working catalog.
+    if (!openApiConfig) return incomplete("The OpenAPI integration config could not be read.");
     if (openApiConfig.specHash != null) {
       const defsJson = yield* storage
         .getDefs(openApiConfig.specHash)

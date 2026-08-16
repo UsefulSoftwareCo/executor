@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Latch } from "effect";
+import { Duration, Effect, Fiber, Latch } from "effect";
 
 import { CONNECTION_CATALOG_SCAN_COLUMNS } from "./core-schema";
 import { createExecutor } from "./executor";
@@ -18,6 +18,22 @@ import type { ToolSyncErrorKind } from "./tool-sync-schedule";
 const INTEG_A = IntegrationSlug.make("alpha");
 const INTEG_B = IntegrationSlug.make("beta");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
+
+/** How long any latch in this file is allowed to hold a fiber. Far longer than
+ *  a passing run needs (the whole suite is milliseconds), and only ever reached
+ *  when the overlap a case is establishing never happened — a sequential
+ *  refresh fan-out, or a claim compare-and-set that stopped excluding. Reaching
+ *  it lets the fiber through so the case fails on its own assertion instead of
+ *  hanging the suite into an opaque timeout with no diff. */
+const LATCH_TIMEOUT_MS = 5000;
+
+const withLatchTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.timeoutOrElse({
+      duration: Duration.millis(LATCH_TIMEOUT_MS),
+      orElse: () => Effect.succeed(undefined),
+    }),
+  );
 
 /** A plugin owning two integrations that records every `resolveTools` it is
  *  asked for, as `<integration>/<connection>`. The recorded list IS the cost
@@ -50,7 +66,7 @@ const makeCountingPlugin = () => {
         peakInFlight = Math.max(peakInFlight, inFlight);
         entered.openUnsafe();
         if (holdUntil !== null && inFlight >= holdUntil) gate.openUnsafe();
-        yield* gate.await;
+        yield* withLatchTimeout(gate.await);
         inFlight -= 1;
         if (dying) return yield* Effect.die("resolveTools blew up");
         if (incompleteKind !== undefined) {
@@ -117,7 +133,7 @@ const makeCountingPlugin = () => {
     releaseResolves: () => gate.openUnsafe(),
     /** Resolves when a resolve has actually STARTED — the claim is taken by
      *  then, which is the state the contention cases need to observe. */
-    awaitResolveStarted: entered.await,
+    awaitResolveStarted: withLatchTimeout(entered.await),
   };
 };
 
@@ -147,13 +163,16 @@ const observeConnectionReads = (db: FumaDb) => {
         const value: unknown = Reflect.get(target, prop, receiver);
         if (typeof value !== "function") return value;
 
+        // Cast to the interface's OWN member types, never to a hand-written
+        // mirror: the recorder's contract is with `AbstractQuery`, and a
+        // re-declared signature is one that silently stops matching it.
         if (prop === "withContext") {
-          const withContext = value as (context: unknown) => FumaDb;
+          const withContext = value as NonNullable<FumaDb["withContext"]>;
           return (context: unknown) => wrap(Reflect.apply(withContext, inner, [context]));
         }
 
         if (prop === "transaction") {
-          const transaction = value as (run: (orm: FumaDb) => Promise<unknown>) => Promise<unknown>;
+          const transaction = value as FumaDb["transaction"];
           return (run: (orm: FumaDb) => Promise<unknown>) => {
             openTransactions += 1;
             peakOpenTransactions = Math.max(peakOpenTransactions, openTransactions);
@@ -166,10 +185,7 @@ const observeConnectionReads = (db: FumaDb) => {
         }
 
         if (prop !== "findMany") return value;
-        const findMany = value as (
-          table: string,
-          options?: { readonly select?: unknown },
-        ) => Promise<readonly unknown[]>;
+        const findMany = value as FumaDb["findMany"];
         return async (table: string, options?: { readonly select?: unknown }) => {
           const rows = await Reflect.apply(findMany, inner, [table, options]);
           if (table === "connection") {
@@ -187,9 +203,30 @@ const observeConnectionReads = (db: FumaDb) => {
   };
 };
 
-/** The projection the catalog-refresh scan is expected to ask for, as a plain
- *  array so a structural compare against the recorded `select` reads cleanly. */
-const SCAN_PROJECTION = [...CONNECTION_CATALOG_SCAN_COLUMNS];
+/** The projection the catalog-refresh scan is expected to ask for, written out
+ *  rather than re-exported from the production constant: comparing the
+ *  implementation to itself would catch only the `select` option being deleted,
+ *  never the failure the constant's own docstring names — someone adding
+ *  `value`, `oauth_state` or `last_health` to it so the every-read scan starts
+ *  pulling credential and health JSON. */
+const SCAN_PROJECTION = [
+  "owner",
+  "integration",
+  "name",
+  "tools_synced_at",
+  "tools_stale_at",
+  "tools_sync_claim_id",
+  "tools_sync_claim_at",
+  "tools_sync_failures",
+  "tools_sync_retry_at",
+  "tools_sync_error_kind",
+];
+
+describe("connection catalog scan projection", () => {
+  it("is the address plus the sync lifecycle, and nothing else", () => {
+    expect([...CONNECTION_CATALOG_SCAN_COLUMNS]).toEqual(SCAN_PROJECTION);
+  });
+});
 
 const makeHarness = () =>
   Effect.acquireRelease(
@@ -215,9 +252,13 @@ const makeHarness = () =>
             template: TEMPLATE,
             value: "secret-token",
           }),
-        /** Clear every connection's catalog stamp — the `stale_marked` trigger,
-         *  as `connections.markToolsStale` leaves it. */
-        markEveryCatalogStale: () =>
+        /** Clear every connection's catalog stamp, which is the `cold` trigger:
+         *  a row with no stamp and no drift mark has never synced. NOT the
+         *  drift trigger — `connections.markToolsStale` leaves `tools_synced_at`
+         *  alone and writes `tools_stale_at`, which is what
+         *  `executor.counting.markStale` drives. Used by the cases that only
+         *  need a connection to be due, whatever made it due. */
+        clearEveryCatalogStamp: () =>
           Effect.promise(() =>
             observed.db.updateMany("connection", {
               where: (b) => b.isNotNull("tools_synced_at"),
@@ -243,14 +284,24 @@ const makeHarness = () =>
           Effect.promise(() =>
             observed.db.findFirst("connection", { where: (b) => b("name", "=", name) }),
           ).pipe(
-            Effect.map((row) => ({
-              syncedAt: row?.tools_synced_at == null ? null : Number(row.tools_synced_at),
-              staleAt: row?.tools_stale_at == null ? null : Number(row.tools_stale_at),
-              failures: row?.tools_sync_failures == null ? 0 : Number(row.tools_sync_failures),
-              retryAt: row?.tools_sync_retry_at == null ? null : Number(row.tools_sync_retry_at),
-              errorKind: row?.tools_sync_error_kind ?? null,
-              claimId: row?.tools_sync_claim_id ?? null,
-            })),
+            Effect.flatMap((row) =>
+              // A missing row is a defect, not a state. Projecting it into a
+              // populated "clean" record is what would let `syncedAt` and
+              // `claimId` assert null against an implementation that DELETED
+              // the connection rather than one that correctly declined to
+              // stamp it.
+              row == null
+                ? Effect.die(`no connection row named ${name}`)
+                : Effect.succeed({
+                    syncedAt: row.tools_synced_at == null ? null : Number(row.tools_synced_at),
+                    staleAt: row.tools_stale_at == null ? null : Number(row.tools_stale_at),
+                    failures: row.tools_sync_failures == null ? 0 : Number(row.tools_sync_failures),
+                    retryAt:
+                      row.tools_sync_retry_at == null ? null : Number(row.tools_sync_retry_at),
+                    errorKind: row.tools_sync_error_kind ?? null,
+                    claimId: row.tools_sync_claim_id ?? null,
+                  }),
+            ),
           ),
         /** Re-claim a connection out from under whoever holds it, as a second
          *  Workers isolate does when it observes an expired lease. There is no
@@ -290,7 +341,7 @@ describe("tools read catalog refresh scope", () => {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
         yield* harness.connect(INTEG_B, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.resolved.length = 0;
 
         const alpha = yield* harness.executor.tools.list({ integration: INTEG_A });
@@ -336,7 +387,7 @@ describe("tools read catalog refresh scope", () => {
         yield* harness.connect(INTEG_A, "main");
         yield* harness.connect(INTEG_A, "second");
         yield* harness.connect(INTEG_B, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.resolved.length = 0;
         harness.connectionScans.length = 0;
 
@@ -347,8 +398,9 @@ describe("tools read catalog refresh scope", () => {
         });
 
         expect(harness.resolved).toEqual(["alpha/second"]);
-        // One row, and only the four columns the refresh actually reads: the
-        // scan runs on every read, so the projection is part of its cost.
+        // One row, and only the columns the refresh actually reads — the
+        // connection's address plus its sync lifecycle. The scan runs on every
+        // read, so the projection is part of its cost.
         expect(harness.connectionScans).toEqual([{ rows: 1, select: SCAN_PROJECTION }]);
         expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_deploy"]);
       }),
@@ -386,7 +438,7 @@ describe("tools read catalog refresh scope", () => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.startDying();
         harness.resolved.length = 0;
 
@@ -417,7 +469,7 @@ describe("tools read catalog refresh scope", () => {
         // Make the rebuild observably different from what `connect` already
         // persisted, so a refresh whose write never landed is visible.
         harness.renameToolsTo("redeploy");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.resolved.length = 0;
         // Arm the overlap latch only now: `connect` resolves one connection at
         // a time, and a latch waiting for a second in-flight resolve would
@@ -460,7 +512,9 @@ describe("tools read catalog refresh lifecycle", () => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
-        yield* harness.markEveryCatalogStale();
+        // Genuinely drifted, through the path a plugin actually uses: the
+        // connection keeps its stamp and carries a newer `tools_stale_at`.
+        yield* harness.executor.counting.markStale(INTEG_A, "main");
         harness.renameToolsTo("redeploy");
         harness.resolved.length = 0;
         harness.blockResolves();
@@ -497,7 +551,7 @@ describe("tools read catalog refresh lifecycle", () => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.renameToolsTo("redeploy");
         harness.resolved.length = 0;
         harness.blockResolves();
@@ -528,7 +582,7 @@ describe("tools read catalog refresh lifecycle", () => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.resolveIncompleteAs(null);
         harness.resolved.length = 0;
 
@@ -558,7 +612,7 @@ describe("tools read catalog refresh lifecycle", () => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.connect(INTEG_A, "main");
-        yield* harness.markEveryCatalogStale();
+        yield* harness.clearEveryCatalogStamp();
         harness.resolveIncompleteAs("auth");
         harness.resolved.length = 0;
 
@@ -591,6 +645,49 @@ describe("tools read catalog refresh lifecycle", () => {
     ),
   );
 
+  it.effect("keeps retrying a parked connection whose integration config was revised", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.backdateEveryCatalog();
+        // Editing the integration's config is how an `auth` verdict CAUSED by
+        // configuration is fixed (the key in the wrong place, the wrong token
+        // endpoint), and `integrations.update` is the one invalidation that
+        // does not clear the ladder. So this is the case where a park could
+        // swallow the repair outright.
+        yield* harness.executor.counting.revise(INTEG_A);
+        harness.resolveIncompleteAs("auth");
+        harness.resolved.length = 0;
+
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(harness.resolved).toEqual(["alpha/main"]);
+        expect((yield* harness.syncStateOf("main")).errorKind).toBe("auth");
+
+        // The park does NOT apply while the revision is outstanding — but the
+        // ladder still does, so a broken config costs one dial per rung rather
+        // than one per read.
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(harness.resolved).toEqual(["alpha/main"]);
+
+        // Past the rung, the fixed config is actually tried. Under a park that
+        // ignored the revision this read would never dial and the connection
+        // would serve its old catalog forever.
+        harness.resolveIncompleteAs(undefined);
+        harness.renameToolsTo("redeploy");
+        yield* harness.elapseEveryBackoff();
+
+        const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(harness.resolved).toEqual(["alpha/main", "alpha/main"]);
+        expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_redeploy"]);
+
+        const recovered = yield* harness.syncStateOf("main");
+        expect(recovered.errorKind).toBeNull();
+        expect(recovered.failures).toBe(0);
+      }),
+    ),
+  );
+
   it.effect("marking a catalog stale records the drift without erasing the stamp", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -615,8 +712,62 @@ describe("tools read catalog refresh lifecycle", () => {
 
         expect(harness.resolved).toEqual(["alpha/main"]);
         expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_redeploy"]);
-        // The re-list settled the drift.
-        expect((yield* harness.syncStateOf("main")).staleAt).toBeNull();
+
+        // The re-list settled the drift by OUT-DATING the mark, not by clearing
+        // it: the stamp is now at or past `tools_stale_at`, which is what
+        // `classifyToolSync` reads. Clearing the column instead is the lost
+        // update the case below is about.
+        const settled = yield* harness.syncStateOf("main");
+        expect(settled.staleAt).not.toBeNull();
+        expect(settled.syncedAt).not.toBeNull();
+        expect(Number(settled.syncedAt)).toBeGreaterThanOrEqual(Number(settled.staleAt));
+
+        // And the connection is genuinely done: the next read neither scans it
+        // as due nor dials it again.
+        harness.resolved.length = 0;
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(harness.resolved).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("keeps a drift signal that landed while the listing was in flight", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.executor.counting.markStale(INTEG_A, "main");
+        harness.renameToolsTo("redeploy");
+        harness.resolved.length = 0;
+        harness.blockResolves();
+
+        // A read is dialing, and parked inside `resolveTools`.
+        const listing = yield* Effect.forkChild(
+          harness.executor.tools.list({ integration: INTEG_A }),
+        );
+        yield* harness.awaitResolveStarted;
+
+        // The server sends `tools/list_changed` WHILE we are listing: a
+        // different fiber, no coordination with the one in flight, and it
+        // describes a tool set this listing cannot have seen.
+        yield* harness.executor.counting.markStale(INTEG_A, "main");
+
+        harness.releaseResolves();
+        yield* Fiber.join(listing);
+
+        // The mark survived the success write. Nulling `tools_stale_at` here is
+        // a lost update, and for a plugin with no remote catalog nothing else
+        // would ever re-list the connection.
+        const state = yield* harness.syncStateOf("main");
+        expect(state.staleAt).not.toBeNull();
+        expect(Number(state.staleAt)).toBeGreaterThanOrEqual(Number(state.syncedAt));
+
+        // Which is the fact that matters: the next read dials again.
+        harness.renameToolsTo("rerelease");
+        harness.resolved.length = 0;
+        const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(harness.resolved).toEqual(["alpha/main"]);
+        expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_rerelease"]);
       }),
     ),
   );

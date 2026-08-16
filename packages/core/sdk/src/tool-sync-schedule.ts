@@ -118,9 +118,18 @@ export const TOOL_SYNC_JITTER_MAX = 1.2;
  * Classify a connection's catalog. Total, and ordered by authority: an explicit
  * drift signal outranks a config revision, which outranks the clock.
  *
- * The stale comparison is `>=`, not `>`: `Date.now()` has millisecond
- * granularity, and a `tools/list_changed` notification arriving in the same
- * millisecond as the stamp it invalidates must not be swallowed.
+ * BOTH invalidation comparisons are inclusive of the stamp's own millisecond
+ * (`toolsStaleAt >= syncedAt`, `syncedAt <= configRevisedAt`). `Date.now()` has
+ * millisecond granularity and `tools_synced_at` records when the listing
+ * STARTED, so a signal landing in that millisecond describes a change the
+ * listing cannot have seen. Swallowing it would leave the connection serving a
+ * catalog that predates the change with no TTL backstop — a plugin without a
+ * remote catalog never reaches the `expired` branch below.
+ *
+ * This is also what resolves a drift mark: an authoritative listing does not
+ * clear `tools_stale_at`, it out-dates it. Clearing the column was a lost
+ * update, because the fiber that marked the drift and the fiber finishing the
+ * listing are different isolates with no coordination between them.
  */
 export const classifyToolSync = (candidate: ToolSyncCandidate, now: number): ToolSyncState => {
   const syncedAt = candidate.toolsSyncedAt;
@@ -130,7 +139,7 @@ export const classifyToolSync = (candidate: ToolSyncCandidate, now: number): Too
     return "stale_marked";
   }
   if (syncedAt === null) return "cold";
-  if (candidate.configRevisedAt !== null && syncedAt < candidate.configRevisedAt) {
+  if (candidate.configRevisedAt !== null && syncedAt <= candidate.configRevisedAt) {
     return "config_revised";
   }
   if (candidate.remoteToolCatalog && candidate.ttlMs !== null && syncedAt < now - candidate.ttlMs) {
@@ -164,7 +173,8 @@ export const isToolSyncBackedOff = (candidate: ToolSyncCandidate, now: number): 
 /** Whether the connection is parked: its credential is rejected, and no amount
  *  of retrying the same grant will change that. Cleared by the human-initiated
  *  paths that can actually fix it (explicit refresh, connection update, an
- *  OAuth re-mint, a healthy probe, a fresh drift signal). */
+ *  OAuth re-mint, a healthy probe, a fresh drift signal), and yielded to by
+ *  {@link decideToolSync} whenever an explicit invalidation is outstanding. */
 export const isToolSyncParked = (candidate: ToolSyncCandidate): boolean =>
   candidate.toolsSyncErrorKind === "auth";
 
@@ -181,10 +191,20 @@ export const isToolSyncParked = (candidate: ToolSyncCandidate): boolean =>
  * would reintroduce the divergence this exists to prevent.
  *
  * Ordered cheapest-and-most-final first, so the reason an operator sees on the
- * span is the one they would name. A live claim observed on the row is only a
- * pre-filter: the binding decision is the compare-and-set the caller runs
- * against the database, and two readers that both see a free claim here still
- * resolve to one refresh.
+ * span is the one they would name: fresh, then parked, then backoff, then
+ * claimed. A live claim observed on the row is only a pre-filter: the binding
+ * decision is the compare-and-set the caller runs against the database, and two
+ * readers that both see a free claim here still resolve to one refresh.
+ *
+ * The park yields to an EXPLICIT invalidation. `cold` and `expired` are the
+ * clock talking, and re-dialing a rejected credential because time passed is
+ * exactly the waste the park exists to stop; `stale_marked` and
+ * `config_revised` are somebody telling us the world changed. A config revision
+ * in particular is how an `auth` verdict caused by integration configuration
+ * (the key in the wrong place, the wrong token endpoint) gets FIXED, and
+ * `integrations.update` is the one invalidation path that does not clear the
+ * ladder, so swallowing it here would leave the repaired connection parked
+ * forever.
  */
 export type ToolSyncDecision =
   | { readonly kind: "skip"; readonly reason: ToolSyncSkip }
@@ -193,7 +213,8 @@ export type ToolSyncDecision =
 export const decideToolSync = (candidate: ToolSyncCandidate, now: number): ToolSyncDecision => {
   const state = classifyToolSync(candidate, now);
   if (state === "fresh") return { kind: "skip", reason: "fresh" };
-  if (isToolSyncParked(candidate)) return { kind: "skip", reason: "parked" };
+  const timeDriven = state === "cold" || state === "expired";
+  if (timeDriven && isToolSyncParked(candidate)) return { kind: "skip", reason: "parked" };
   if (isToolSyncBackedOff(candidate, now)) return { kind: "skip", reason: "backoff" };
   if (isToolSyncClaimLive(candidate, now)) return { kind: "skip", reason: "claimed" };
   return { kind: "refresh", trigger: state };
@@ -213,12 +234,13 @@ export const scheduleAfterSuccess = (now: number, ttlMs: number | null): number 
  * The earliest next attempt after a FAILED listing: `ttlMs × 2^(failures−1)`,
  * capped at {@link TOOL_SYNC_BACKOFF_CEILING_MS}, scaled by `jitter`.
  *
- * `failures` is the count INCLUDING the failure being recorded, so the first
- * failure waits one plain TTL; values below 1 are read as 1 rather than halving
- * the first delay. `jitter` belongs to the caller and is expected in
- * [{@link TOOL_SYNC_JITTER_MIN}, {@link TOOL_SYNC_JITTER_MAX}]; it is not
- * clamped here, because a call site that passes something else has a bug worth
- * seeing rather than silently correcting.
+ * `failures` is the count INCLUDING the failure being recorded, so it is `>= 1`
+ * and the first failure waits one plain TTL. Neither argument is clamped: a
+ * call site that passes the PRIOR count is indistinguishable from a correct one
+ * at the first rung and then runs the whole ladder one step short, permanently
+ * and invisibly, which is a bug worth seeing rather than laundering into a
+ * plausible delay. `jitter` belongs to the caller on the same terms and is
+ * expected in [{@link TOOL_SYNC_JITTER_MIN}, {@link TOOL_SYNC_JITTER_MAX}].
  *
  * Rounded: the result lands in a bigint column.
  */
@@ -228,6 +250,4 @@ export const scheduleAfterFailure = (
   failures: number,
   jitter: number,
 ): number =>
-  Math.round(
-    now + Math.min(TOOL_SYNC_BACKOFF_CEILING_MS, ttlMs * 2 ** (Math.max(1, failures) - 1)) * jitter,
-  );
+  Math.round(now + Math.min(TOOL_SYNC_BACKOFF_CEILING_MS, ttlMs * 2 ** (failures - 1)) * jitter);
