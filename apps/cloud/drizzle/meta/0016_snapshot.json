@@ -376,9 +376,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "tools_stale_at": {
-          "name": "tools_stale_at",
-          "type": "bigint",
+        "tools_stale_token": {
+          "name": "tools_stale_token",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

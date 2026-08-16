@@ -28,13 +28,17 @@ import {
 const NOW = 1_700_000_000_000;
 const TTL = 15 * 60 * 1000;
 
+/** A drift mark, as `connections.markToolsStale` writes it. Opaque: nothing
+ *  here may read structure out of it, and nothing may order two of them. */
+const STALE_TOKEN = "stale_m3k1x9q2";
+
 /** A row every case overrides into the state it is about. Neutral on purpose:
  *  naming it for one of the states under test (it started life as `fresh`)
  *  makes `classifyToolSync(fresh({ toolsSyncedAt: null }))` read as a
  *  contradiction with the assertion beside it. */
 const candidate = (overrides: Partial<ToolSyncCandidate> = {}): ToolSyncCandidate => ({
   toolsSyncedAt: NOW - 1000,
-  toolsStaleAt: null,
+  toolsStaleToken: null,
   toolsSyncClaimId: null,
   toolsSyncClaimAt: null,
   toolsSyncFailures: 0,
@@ -72,32 +76,42 @@ describe("classifyToolSync", () => {
 
   it("calls a connection with a drift mark stale_marked, keeping its stamp", () => {
     expect(
-      classifyToolSync(candidate({ toolsSyncedAt: NOW - 60_000, toolsStaleAt: NOW - 1000 }), NOW),
+      classifyToolSync(
+        candidate({ toolsSyncedAt: NOW - 60_000, toolsStaleToken: STALE_TOKEN }),
+        NOW,
+      ),
     ).toBe("stale_marked");
   });
 
-  it("still sees a drift mark that landed in the same millisecond as the stamp", () => {
-    // Date.now() has millisecond granularity, and a `tools/list_changed`
-    // arriving inside the millisecond it invalidates must not be swallowed.
-    expect(classifyToolSync(candidate({ toolsSyncedAt: NOW, toolsStaleAt: NOW }), NOW)).toBe(
-      "stale_marked",
-    );
+  it("reads the drift mark as presence, never against the stamp", () => {
+    // The whole point of the token encoding. `tools_stale_token` answers "was
+    // this catalog invalidated since the listing now finishing began", which is
+    // a version question; the earlier encoding asked it of a wall clock, and
+    // `Date.now()` has millisecond granularity, so a mark and a stamp landing in
+    // one millisecond tied. No stamp, however far ahead of the mark, resolves
+    // it — only the compare-and-set that nulls the column does.
+    for (const toolsSyncedAt of [null, 0, NOW - 60_000, NOW, NOW + 60_000]) {
+      expect(
+        classifyToolSync(candidate({ toolsSyncedAt, toolsStaleToken: STALE_TOKEN }), NOW),
+      ).toBe("stale_marked");
+    }
   });
 
-  it("leaves a drift mark the listing out-dated resolved", () => {
-    // An authoritative listing does not clear `tools_stale_at`, it stamps
-    // `tools_synced_at` past it. A mark older than the stamp is a settled
-    // drift, and the connection must not re-list forever because the column is
-    // still set.
+  it("leaves a connection whose drift mark was cleared resolved", () => {
+    // An authoritative listing clears the token it observed, and a cleared
+    // column is the only thing that settles a drift. This is also what keeps
+    // the read's scan at zero rows in steady state: nothing ever cleared the
+    // old timestamp column, so every connection that had ever drifted was
+    // re-selected on every read, forever.
     expect(
-      classifyToolSync(candidate({ toolsSyncedAt: NOW - 1000, toolsStaleAt: NOW - 2000 }), NOW),
+      classifyToolSync(candidate({ toolsSyncedAt: NOW - 1000, toolsStaleToken: null }), NOW),
     ).toBe("fresh");
   });
 
   it("calls a never-synced connection carrying a drift mark stale_marked, not cold", () => {
-    expect(classifyToolSync(candidate({ toolsSyncedAt: null, toolsStaleAt: NOW }), NOW)).toBe(
-      "stale_marked",
-    );
+    expect(
+      classifyToolSync(candidate({ toolsSyncedAt: null, toolsStaleToken: STALE_TOKEN }), NOW),
+    ).toBe("stale_marked");
   });
 
   it("calls a catalog older than its integration's config revision config_revised", () => {
@@ -150,7 +164,11 @@ describe("classifyToolSync", () => {
   it("ranks an explicit drift signal above a config revision and the clock", () => {
     expect(
       classifyToolSync(
-        candidate({ toolsSyncedAt: NOW - TTL - 1, toolsStaleAt: NOW, configRevisedAt: NOW - 1 }),
+        candidate({
+          toolsSyncedAt: NOW - TTL - 1,
+          toolsStaleToken: STALE_TOKEN,
+          configRevisedAt: NOW - 1,
+        }),
         NOW,
       ),
     ).toBe("stale_marked");
@@ -215,7 +233,7 @@ describe("isToolSyncBackedOff", () => {
     const drifted = candidate({
       toolsSyncFailures: 0,
       toolsSyncRetryAt: NOW + TTL,
-      toolsStaleAt: NOW,
+      toolsStaleToken: STALE_TOKEN,
     });
     expect(isToolSyncBackedOff(drifted, NOW)).toBe(false);
     expect(isSyncEligible(drifted, NOW)).toBe(true);
@@ -243,11 +261,11 @@ describe("decideToolSync", () => {
     expect(decideToolSync(candidate(), NOW)).toEqual({ kind: "skip", reason: "fresh" });
   });
 
-  it("skips a parked connection however overdue the clock says it is", () => {
+  it("skips a parked connection however far past its freshness window it is", () => {
     expect(
       decideToolSync(
         candidate({
-          toolsSyncedAt: null,
+          toolsSyncedAt: NOW - 30 * TTL,
           toolsSyncFailures: 9,
           toolsSyncErrorKind: "auth",
           toolsSyncRetryAt: NOW - 1,
@@ -312,7 +330,7 @@ describe("decideToolSync", () => {
       expect(
         decideToolSync(
           candidate({
-            toolsSyncedAt: null,
+            toolsSyncedAt: NOW - TTL - 1,
             toolsSyncErrorKind: "auth",
             toolsSyncFailures: 3,
             toolsSyncRetryAt: NOW + TTL,
@@ -320,6 +338,25 @@ describe("decideToolSync", () => {
           NOW,
         ),
       ).toEqual({ kind: "skip", reason: "parked" });
+    });
+
+    it("reports backoff, not parked, for a COLD connection with an auth verdict", () => {
+      // The park does not apply to `cold`, so the ladder is what holds this
+      // connection off — and the reason an operator sees has to say so, because
+      // the read fans the two into different counters and they mean opposite
+      // things: `skipped_parked` is waste permanently avoided, `skipped_backoff`
+      // is a retry that will happen.
+      expect(
+        decideToolSync(
+          candidate({
+            toolsSyncedAt: null,
+            toolsSyncErrorKind: "auth",
+            toolsSyncFailures: 3,
+            toolsSyncRetryAt: NOW + TTL,
+          }),
+          NOW,
+        ),
+      ).toEqual({ kind: "skip", reason: "backoff" });
     });
 
     it("reports backoff over a live claim", () => {
@@ -338,9 +375,10 @@ describe("decideToolSync", () => {
     });
   });
 
-  // The park answers "the clock alone is not a reason to re-dial a rejected
-  // credential". It is not an answer to somebody telling us the world changed.
-  describe("park yields to an explicit invalidation", () => {
+  // The park answers exactly one question: "is re-VERIFYING a catalog we can
+  // still serve worth dialing a credential that was refused". Every other
+  // trigger outranks it.
+  describe("park gates expired and nothing else", () => {
     it("refreshes a parked connection whose integration config was revised", () => {
       // This is the repair path: an `auth` verdict caused by integration
       // configuration is fixed by editing that configuration, and
@@ -361,21 +399,34 @@ describe("decideToolSync", () => {
     it("refreshes a parked connection that was marked stale", () => {
       expect(
         decideToolSync(
-          candidate({ toolsSyncedAt: NOW - 60_000, toolsStaleAt: NOW, toolsSyncErrorKind: "auth" }),
+          candidate({
+            toolsSyncedAt: NOW - 60_000,
+            toolsStaleToken: STALE_TOKEN,
+            toolsSyncErrorKind: "auth",
+          }),
           NOW,
         ),
       ).toEqual({ kind: "refresh", trigger: "stale_marked" });
     });
 
-    it("still parks when only the clock is asking", () => {
-      for (const overrides of [
-        { toolsSyncedAt: null },
-        { toolsSyncedAt: NOW - TTL - 1 },
-      ] as const) {
-        expect(
-          decideToolSync(candidate({ ...overrides, toolsSyncErrorKind: "auth" }), NOW),
-        ).toEqual({ kind: "skip", reason: "parked" });
-      }
+    it("refreshes a parked connection that has never synced at all", () => {
+      // A parked `cold` connection has NO catalog to serve, so parking it is
+      // not "keep serving what we have", it is "serve nothing until a human
+      // notices". The ladder still caps the cost at a few dials a day, and it
+      // is what lets a credential repaired upstream — where nothing in this
+      // system observes the repair — recover on its own.
+      expect(
+        decideToolSync(candidate({ toolsSyncedAt: null, toolsSyncErrorKind: "auth" }), NOW),
+      ).toEqual({ kind: "refresh", trigger: "cold" });
+    });
+
+    it("still parks when the clock is only asking for a re-verification", () => {
+      expect(
+        decideToolSync(
+          candidate({ toolsSyncedAt: NOW - TTL - 1, toolsSyncErrorKind: "auth" }),
+          NOW,
+        ),
+      ).toEqual({ kind: "skip", reason: "parked" });
     });
   });
 });

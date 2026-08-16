@@ -692,7 +692,7 @@ export const DEFAULT_TOOLS_SYNC_TTL_MS = 15 * 60 * 1000;
 
 /** What sent a connection through tool production, for the per-connection span.
  *  The read path reports the classified {@link ToolSyncState} verbatim (`cold`
- *  and `stale_marked` are finally distinguishable, now that `tools_stale_at`
+ *  and `stale_marked` are finally distinguishable, now that `tools_stale_token`
  *  records a drift without erasing the last-verified stamp); `explicit` is
  *  every human-initiated production — create, re-mint, `connections.refresh` —
  *  which answers to a caller and so skips the read path's gates entirely. */
@@ -710,33 +710,69 @@ interface ToolSyncAttempt {
 /** Production asked for by a caller who is waiting for the answer. */
 const EXPLICIT_TOOL_SYNC: ToolSyncAttempt = { trigger: "explicit", claim: null };
 
-/** What one attempt at producing a connection's tools ended up with.
+/**
+ * What one attempt at producing a connection's tools ended up with. Three
+ * outcomes rather than a boolean, because they are three genuinely different
+ * things to be told and only one of them is a sync:
  *
- * `lostClaim` is a distinct outcome rather than a flavour of success: the
- * listing completed, and then found another attempt had re-claimed the
- * connection and answered first, so nothing of it was persisted. Counting that
- * as a sync is how a fleet whose refreshes all lose their lease reports as
- * fully synced. `tools` is what the caller should answer with either way — the
- * persisted catalog when the claim was lost, the fresh listing when it held. */
+ * - `synced`     an AUTHORITATIVE listing landed: the catalog persisted is the
+ *                upstream's tool set, and the freshness stamp is honest. A
+ *                legitimate empty catalog (no credential bound, or a plugin
+ *                with no `resolveTools`) is one of these — "no tools" verified
+ *                is still verified.
+ * - `incomplete` the plugin reported it could not produce an authoritative
+ *                listing. The existing catalog was KEPT, the failure ladder
+ *                advanced, and nothing claimed freshness.
+ * - `lost_claim` the listing completed and then found another attempt had
+ *                re-claimed the connection and answered first, so nothing of it
+ *                was written at all.
+ *
+ * Collapsing `incomplete` into success is how a fleet of month-dead upstreams
+ * reports as fully synced; collapsing it into `lost_claim` would blame
+ * concurrency for a broken server.
+ *
+ * `tools` is what the caller should answer with in every case — the fresh
+ * listing when it was persisted, the persisted catalog otherwise.
+ */
+type ToolProductionOutcome = "synced" | "incomplete" | "lost_claim";
+
 interface ToolProduction {
   readonly tools: readonly Tool[];
-  readonly lostClaim: boolean;
+  readonly outcome: ToolProductionOutcome;
 }
 
-/** How much work a read's catalog refresh found and did, for the enclosing
- *  `executor.tools.list` span. `candidates` is what the stale scan returned —
- *  the number the scan's filter scoping exists to keep at zero. `failed`
- *  counts refreshes that were swallowed to keep the read answerable, so a
- *  connection stuck permanently stale is visible as a rate rather than only
- *  as an absent `synced`. `lostClaim` counts listings that completed and were
- *  then discarded because another attempt had re-claimed the connection —
- *  wasted upstream work, and the one outcome that looks like a success from
- *  every angle except the write. The three `skipped*` counts are the whole point of
- *  the lifecycle columns: a fleet whose reads are dominated by `skipped_parked`
- *  is one where dead credentials stopped costing handshakes. */
+/**
+ * How much work a read's catalog refresh found and did, for the enclosing
+ * `executor.tools.list` span. `candidates` is what the stale scan returned —
+ * the number the scan's filter scoping exists to keep at zero.
+ *
+ * The four terminal counters partition every listing that actually ran — a
+ * candidate that never won its claim is `skippedClaimed`, not a listing — and
+ * each says something the others cannot:
+ *
+ * - `synced`     an authoritative listing was persisted (see
+ *                {@link ToolProduction}).
+ * - `incomplete` the PLUGIN reported it could not produce a listing — a refused
+ *                credential, an unreachable server, an unreadable spec. The
+ *                catalog was kept and the ladder advanced.
+ * - `failed`     the refresh raised or died before reaching a verdict, and was
+ *                swallowed to keep the read answerable. This is the executor's
+ *                own error channel, not the upstream's — an `incomplete` is a
+ *                connection reporting bad news correctly, a `failed` is one
+ *                nobody has a verdict for.
+ * - `lostClaim`  the listing completed and was then discarded because another
+ *                attempt had re-claimed the connection — wasted upstream work,
+ *                and the one outcome that looks like a success from every angle
+ *                except the write.
+ *
+ * The three `skipped*` counts are the whole point of the lifecycle columns: a
+ * fleet whose reads are dominated by `skipped_parked` is one where dead
+ * credentials stopped costing handshakes.
+ */
 interface CatalogRefreshSummary {
   readonly candidates: number;
   readonly synced: number;
+  readonly incomplete: number;
   readonly failed: number;
   readonly lostClaim: number;
   readonly skippedClaimed: number;
@@ -747,6 +783,7 @@ interface CatalogRefreshSummary {
 const NO_CATALOG_REFRESH: CatalogRefreshSummary = {
   candidates: 0,
   synced: 0,
+  incomplete: 0,
   failed: 0,
   lostClaim: 0,
   skippedClaimed: 0,
@@ -772,6 +809,14 @@ const toolSyncJitter = (): number =>
  *  one connection inside one lease window, and it is never an address. */
 const toolSyncClaimNonce = (): string =>
   `sync_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
+/** A drift mark, as an opaque token. Generated exactly like the claim nonce and
+ *  for the same reason: it only has to be distinguishable from the value a
+ *  concurrent listing observed, which is what makes the clear a compare-and-set
+ *  rather than a timestamp comparison that ties inside one millisecond. Never
+ *  parsed, never ordered, never an address. */
+const toolsStaleToken = (): string =>
+  `stale_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
 /** The error tags in a swallowed refresh cause, as a stable comma-joined set.
  *  Tags only: this cause can carry an upstream HTTP request/response, so no
@@ -2669,10 +2714,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // The terminal outcome of a listing that did NOT produce an authoritative
     // catalog. `tools_synced_at` is deliberately untouched: stamping it here is
     // what made a month-dead server report as "synced 30s ago" and earn a fresh
-    // handshake every freshness window. Any drift signal (`tools_stale_at`)
+    // handshake every freshness window. Any drift signal (`tools_stale_token`)
     // also stands, because nothing resolved it — the retry ladder is the only
-    // thing holding the next attempt off, and an `auth` verdict parks the
-    // connection outright.
+    // thing holding the next attempt off, and an `auth` verdict parks a
+    // connection the clock is merely asking to re-verify.
     //
     // `priorFailures` is the CONSECUTIVE count already on the row, so the
     // `failures` derived here is `>= 1` — the contract `scheduleAfterFailure`
@@ -2814,6 +2859,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("name", "=", String(ref.name)),
           );
 
+        // The row as it stood when this listing began, read before anything is
+        // dialed. Two things come out of it: the failure count the ladder
+        // advances from, and the drift token this listing is answering.
+        const existingRow = yield* findConnectionRow(ref);
+        const failureSet = (kind: ToolSyncErrorKind | null, reason: string) =>
+          toolSyncFailureSet(Number(existingRow?.tools_sync_failures ?? 0), kind, reason);
+
+        // THE drift mark this listing observed, or null if there was none. It is
+        // a version token, not an instant: an authoritative listing clears the
+        // column only if this exact value is still in it, so a mark written
+        // while we were dialing carries a different token, survives the clear,
+        // and re-lists the connection on the next read.
+        const observedStaleToken =
+          existingRow?.tools_stale_token == null ? null : String(existingRow.tools_stale_token);
+
         // Does this attempt still own the connection? A read-path refresh takes
         // a lease before dialing, and a slow one can lose it: another reader
         // sees the lease expire, re-claims, re-lists and finishes first. The
@@ -2854,13 +2914,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // report an incomplete listing without classifying it.
         //
         // The stamp is the instant the listing STARTED, not the instant it
-        // landed, and `tools_stale_at` is deliberately NOT cleared. Clearing it
-        // was a lost update: `connections.markToolsStale` writes that column
-        // from another fiber (a `tools/list_changed` arriving mid-invocation),
-        // and a drift signal landing while we were dialing describes a tool set
-        // this listing never saw. `classifyToolSync` compares the two stamps
-        // instead, so a mark that predates the listing is out-dated by it and
-        // one that postdates it survives to re-list.
+        // landed. It records freshness and NOTHING else: resolving the drift
+        // mark is a separate compare-and-set inside `replaceCatalog`, so a
+        // signal that arrived mid-listing is not swallowed by a stamp that
+        // happens to sort after it.
         const successSet = (row: ConnectionRow | null) => {
           const recovering = Number(row?.tools_sync_failures ?? 0) > 0;
           return {
@@ -2874,18 +2931,47 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           };
         };
 
-        // Locked: these run inside a read's concurrent fan-out, and a bare
-        // UPDATE issued while another fiber holds an open BEGIN on the shared
-        // SQLite connection is enrolled in that fiber's transaction — and lost
-        // with it if it rolls back. The permit is NOT reentrant, so nothing
-        // reachable from here may take it again.
+        /** Record a NON-authoritative outcome, or report that the attempt lost
+         *  its lease and wrote nothing. Returns false in the latter case.
+         *
+         *  Locked: this runs inside a read's concurrent fan-out, and a bare
+         *  UPDATE issued while another fiber holds an open BEGIN on the shared
+         *  SQLite connection is enrolled in that fiber's transaction — and lost
+         *  with it if it rolls back. The permit is NOT reentrant, so nothing
+         *  reachable from here may take it again. Transactional for the same
+         *  reason as {@link replaceCatalog}: `holdsClaim` is only sound read
+         *  inside the transaction that acts on it. */
         const writeSyncOutcome = (
           set: Record<string, unknown>,
-        ): Effect.Effect<void, StorageFailure> =>
-          withCatalogPersistLock(core.updateMany("connection", { where: outcomeWhere, set }));
+        ): Effect.Effect<boolean, StorageFailure> =>
+          withCatalogPersistLock(
+            transaction(
+              Effect.gen(function* () {
+                if (!(yield* holdsClaim())) return false;
+                yield* core.updateMany("connection", { where: outcomeWhere, set });
+                return true;
+              }),
+            ),
+          );
 
-        /** Replace the persisted catalog and record the outcome together, or do
-         *  neither. Returns false when the attempt lost its lease. */
+        /** Replace the persisted catalog, record the outcome, and resolve the
+         *  drift mark this listing answered — all three together, or none of
+         *  them. Returns false when the attempt lost its lease.
+         *
+         *  Already holds the persist permit, which is not reentrant: nothing in
+         *  here may take it again.
+         *
+         *  INVARIANT on the drift clear: it is a compare-and-set against the
+         *  token observed when this listing STARTED, never an unconditional
+         *  null. `connections.markToolsStale` writes a fresh token from another
+         *  fiber (a `tools/list_changed` arriving mid-invocation), and a mark
+         *  that landed while we were dialing describes a tool set this listing
+         *  never saw — its token differs, the WHERE misses, and the drift
+         *  survives to re-list on the next read.
+         *
+         *  It fails CLOSED, and it converges: a clear that misses leaves the
+         *  connection drifted, so it re-lists, observes the token that is now
+         *  there, and clears it next time. */
         const replaceCatalog = (
           toolRows: readonly Record<string, unknown>[],
           definitionRows: readonly Record<string, unknown>[],
@@ -2900,18 +2986,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 yield* core.createMany("tool", toolRows);
                 yield* core.createMany("definition", definitionRows);
                 yield* core.updateMany("connection", { where: outcomeWhere, set });
+                if (observedStaleToken !== null) {
+                  // Keyed on the connection and the token, deliberately NOT on
+                  // `outcomeWhere`: the write above already released the lease
+                  // (`successSet` nulls `tools_sync_claim_id`), so a predicate
+                  // carrying this attempt's claim would match nothing from here
+                  // on. The lease was checked by `holdsClaim` at the top of this
+                  // transaction, which is where it belongs.
+                  yield* core.updateMany("connection", {
+                    where: (b: AnyCb) =>
+                      b.and(connectionWhere(b), b("tools_stale_token", "=", observedStaleToken)),
+                    set: { tools_stale_token: null },
+                  });
+                }
                 return true;
               }),
             ),
           );
 
         const persistedTools = (
-          lostClaim: boolean,
+          outcome: ToolProductionOutcome,
         ): Effect.Effect<ToolProduction, StorageFailure> =>
           core.findMany("tool", { where }).pipe(
             Effect.map((rows) => ({
               tools: rows.map((row) => rowToTool(row as ConnectionToolRow)),
-              lostClaim,
+              outcome,
             })),
           );
 
@@ -2923,9 +3022,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // carry their token outside `item_ids`; no-auth (`"none"` template)
         // connections legitimately bind nothing (an empty `item_ids` is their
         // canonical shape) — both are exempt.
-        const existingRow = yield* findConnectionRow(ref);
-        const failureSet = (kind: ToolSyncErrorKind | null, reason: string) =>
-          toolSyncFailureSet(Number(existingRow?.tools_sync_failures ?? 0), kind, reason);
         if (
           existingRow &&
           existingRow.oauth_client == null &&
@@ -2935,17 +3031,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // A legitimate clear IS an authoritative listing: the answer is "no
           // tools", verified as of now.
           if (yield* replaceCatalog([], [], successSet(existingRow))) {
-            return { tools: [], lostClaim: false };
+            return { tools: [], outcome: "synced" };
           }
-          return yield* persistedTools(true);
+          return yield* persistedTools("lost_claim");
         }
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
           if (yield* replaceCatalog([], [], successSet(existingRow))) {
-            return { tools: [], lostClaim: false };
+            return { tools: [], outcome: "synced" };
           }
-          return yield* persistedTools(true);
+          return yield* persistedTools("lost_claim");
         }
 
         const result: ResolveToolsResult = yield* runtime.plugin
@@ -2974,14 +3070,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // verdict parks the connection outright.
           const reason = syncHealthReason(result);
           const kind = result.incompleteKind ?? null;
-          yield* writeSyncOutcome(failureSet(kind, reason));
+          // An attempt that had already lost its lease wrote nothing at all —
+          // not the ladder, not the health detail — so it reports `lost_claim`.
+          // Reporting `incomplete` there would attribute a verdict to a row the
+          // winning attempt owns.
+          const recorded = yield* writeSyncOutcome(failureSet(kind, reason));
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
             errorKind: kind ?? "unclassified",
             integration: String(ref.integration),
             connection: String(ref.name),
           });
-          return yield* persistedTools(false);
+          return yield* persistedTools(recorded ? "incomplete" : "lost_claim");
         }
 
         if (
@@ -2997,16 +3097,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             // existed is far more often a broken server than a real change, and
             // the plugin said nothing about why. Unclassified, so it backs off
             // but never parks.
-            yield* writeSyncOutcome(failureSet(null, reason));
+            const recorded = yield* writeSyncOutcome(failureSet(null, reason));
             yield* Effect.logWarning("executor tool sync preserved nonzero catalog", {
               reason,
               integration: String(ref.integration),
               connection: String(ref.name),
               existingToolCount: keptRows.length,
             });
+            // Re-read on a lost lease: `keptRows` predates the write, and the
+            // attempt that owns the connection may have replaced the catalog
+            // since.
+            if (!recorded) return yield* persistedTools("lost_claim");
             return {
               tools: keptRows.map((row) => rowToTool(row as ConnectionToolRow)),
-              lostClaim: false,
+              outcome: "incomplete",
             };
           }
         }
@@ -3044,11 +3148,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // this catalog with a listing at least as recent as ours. Answer from
         // what is persisted rather than overwriting it.
         if (!(yield* replaceCatalog(toolRows, definitionRows, successSet(existingRow)))) {
-          return yield* persistedTools(true);
+          return yield* persistedTools("lost_claim");
         }
 
         return {
-          lostClaim: false,
+          outcome: "synced",
           tools: result.tools.map((tool: ToolDef) =>
             rowToTool(
               {
@@ -3835,16 +3939,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // catalog indistinguishable from one that had never synced. The drift also
     // un-parks — the server just told us its tool set moved, which is evidence
     // it is reachable and worth one more attempt.
+    //
+    // A FRESH token every time, unconditionally overwriting whatever was there.
+    // That is what makes a mark landing mid-listing survive: the listing clears
+    // the column only for the token it observed at its start, so overwriting
+    // with a new one is precisely how this signal outlives the listing that
+    // could not have seen it.
+    //
+    // Locked: this is a lifecycle write like every other, and it can run while
+    // a read's refresh fan-out holds an open BEGIN on the shared SQLite
+    // connection — where a bare UPDATE is enrolled in that transaction and lost
+    // with it if it rolls back. Losing THIS write loses a drift signal outright.
     const connectionsMarkToolsStale = (ref: ConnectionRef): Effect.Effect<void, StorageFailure> =>
-      core.updateMany("connection", {
-        where: (b: AnyCb) =>
-          b.and(
-            byOwner(ref.owner)(b),
-            b("integration", "=", String(ref.integration)),
-            b("name", "=", String(ref.name)),
-          ),
-        set: { tools_stale_at: Date.now(), ...TOOL_SYNC_LADDER_RESET },
-      });
+      withCatalogPersistLock(
+        core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(ref.owner)(b),
+              b("integration", "=", String(ref.integration)),
+              b("name", "=", String(ref.name)),
+            ),
+          set: { tools_stale_token: toolsStaleToken(), ...TOOL_SYNC_LADDER_RESET },
+        }),
+      );
 
     // ------------------------------------------------------------------
     // Active policy source.
@@ -3963,9 +4080,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // tool catalog is stale, scoped to that read's own filter — a read for one
     // integration never waits on another's upstream handshakes. Four triggers,
     // classified by `tool-sync-schedule`:
-    //  - cold: never synced at all (`tools_synced_at` and `tools_stale_at` both
-    //    NULL — a fresh row, or one a data migration reset);
-    //  - stale-marked: `tools_stale_at` postdates the catalog
+    //  - cold: never synced at all (`tools_synced_at` and `tools_stale_token`
+    //    both NULL — a fresh row, or one a data migration reset);
+    //  - stale-marked: `tools_stale_token` is set
     //    (`connections.markToolsStale` — an MCP `tools/list_changed`
     //    notification or unknown-tool rejection recorded the drift
     //    mid-invocation);
@@ -4032,14 +4149,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // `blob.getMany`). The two NULL/NOT-NULL arms always stand, so the OR
         // can never degenerate to a bare `false`.
         //
-        // The drift arm is `tools_stale_at IS NOT NULL` rather than a
-        // column-to-column comparison against `tools_synced_at`, which the query
-        // builder does not offer. A listing OUT-DATES a drift mark rather than
-        // clearing it (clearing it lost concurrent marks), so this arm
-        // over-selects every connection that has ever drifted and the per-row
-        // classifier discards the resolved ones. Deliberate: the alternative is
-        // the lost update, and the cost is one projected row per
-        // once-drifted connection.
+        // The drift arm is exactly `tools_stale_token IS NOT NULL`, and it is
+        // exact rather than an over-selection because an authoritative listing
+        // CLEARS the token by compare-and-set. That is what keeps the zero-rows
+        // steady state: encoding the mark as a timestamp nothing ever cleared
+        // made this arm re-select every once-drifted connection on every read,
+        // forever.
         //
         // The revision arm is `<=`, matching `classifyToolSync`: `tools_synced_at`
         // is the instant the listing STARTED, so a revision landing in that same
@@ -4054,7 +4169,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               filter?.connection === undefined ? true : b("name", "=", String(filter.connection)),
               b.or(
                 b.isNull("tools_synced_at"),
-                b.isNotNull("tools_stale_at"),
+                b.isNotNull("tools_stale_token"),
                 revisedSlugs.length === 0 || latestRevision === null
                   ? false
                   : b.and(
@@ -4090,7 +4205,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
           const candidate: ToolSyncCandidate = {
             toolsSyncedAt: asEpochMs(connection.tools_synced_at),
-            toolsStaleAt: asEpochMs(connection.tools_stale_at),
+            toolsStaleToken:
+              connection.tools_stale_token == null ? null : String(connection.tools_stale_token),
             toolsSyncClaimId:
               connection.tools_sync_claim_id == null
                 ? null
@@ -4144,17 +4260,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 trigger: state,
                 claim,
               }).pipe(
-                // `lost_claim` is its own outcome, not a flavour of `ok`: the
-                // listing ran, cost an upstream handshake, and was then thrown
-                // away because another attempt had re-claimed the connection.
-                // Reporting it as synced is how a fleet that persists nothing
-                // reads as fully healthy.
-                Effect.flatMap((produced) => {
-                  const outcome = produced.lostClaim ? ("lost_claim" as const) : ("ok" as const);
-                  return Effect.annotateCurrentSpan({
-                    "executor.tools.sync.outcome": outcome,
-                  }).pipe(Effect.as(outcome));
-                }),
+                // Reported verbatim: `synced`, `incomplete` and `lost_claim`
+                // are three different things to be told, and only the first is
+                // a sync. Folding the other two into it is how a fleet that
+                // persists nothing reads as fully healthy.
+                Effect.flatMap((produced) =>
+                  Effect.annotateCurrentSpan({
+                    "executor.tools.sync.outcome": produced.outcome,
+                  }).pipe(Effect.as(produced.outcome)),
+                ),
                 // catchCause, not catch: a plugin DEFECT is not in the error
                 // channel, and a tools READ must not be failable by one
                 // connection's misbehaving refresh. The stale-but-working
@@ -4225,7 +4339,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         return {
           candidates: connections.length,
-          synced: outcomes.filter((outcome) => outcome === "ok").length,
+          synced: outcomes.filter((outcome) => outcome === "synced").length,
+          incomplete: outcomes.filter((outcome) => outcome === "incomplete").length,
           failed: outcomes.filter((outcome) => outcome === "fail").length,
           lostClaim: outcomes.filter((outcome) => outcome === "lost_claim").length,
           skippedClaimed:
@@ -4287,6 +4402,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           "executor.tools.result_count": tools.length,
           "executor.tools.sync.candidates": refresh.candidates,
           "executor.tools.sync.synced": refresh.synced,
+          "executor.tools.sync.incomplete": refresh.incomplete,
           "executor.tools.sync.failed": refresh.failed,
           "executor.tools.sync.lost_claim": refresh.lostClaim,
           "executor.tools.sync.skipped_claimed": refresh.skippedClaimed,

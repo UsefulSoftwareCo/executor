@@ -46,11 +46,11 @@ export const isToolSyncErrorKind = (value: unknown): value is ToolSyncErrorKind 
  * Every non-`fresh` value is exactly the reason a read has to re-list, so this
  * doubles as the refresh trigger reported on the `executor.tools.sync` span.
  *
- * `cold` and `stale_marked` were one value before the `tools_stale_at` column
- * existed: `connections.markToolsStale` cleared `tools_synced_at`, which made a
- * connection that had never synced indistinguishable from one whose catalog was
- * invalidated mid-invocation, and destroyed the last-verified timestamp in the
- * process.
+ * `cold` and `stale_marked` were one value before the `tools_stale_token`
+ * column existed: `connections.markToolsStale` cleared `tools_synced_at`, which
+ * made a connection that had never synced indistinguishable from one whose
+ * catalog was invalidated mid-invocation, and destroyed the last-verified
+ * timestamp in the process.
  */
 export type ToolSyncState = "fresh" | "cold" | "stale_marked" | "config_revised" | "expired";
 
@@ -71,8 +71,11 @@ export interface ToolSyncCandidate {
   /** Epoch ms of the last AUTHORITATIVE listing. Never stamped by a failed or
    *  incomplete one — a month-dead server must not read as "synced 30s ago". */
   readonly toolsSyncedAt: number | null;
-  /** Epoch ms an event declared the persisted catalog drifted. */
-  readonly toolsStaleAt: number | null;
+  /** The outstanding drift mark, or null when there is none. An opaque token
+   *  (see `connection.tools_stale_token`) — its presence is the whole signal
+   *  and its value is only ever compared for equality, by the listing that
+   *  clears it. */
+  readonly toolsStaleToken: string | null;
   /** The nonce of the refresh attempt currently holding the write lease. */
   readonly toolsSyncClaimId: string | null;
   /** Epoch ms the claim was taken, against which the lease expires. */
@@ -118,26 +121,24 @@ export const TOOL_SYNC_JITTER_MAX = 1.2;
  * Classify a connection's catalog. Total, and ordered by authority: an explicit
  * drift signal outranks a config revision, which outranks the clock.
  *
- * BOTH invalidation comparisons are inclusive of the stamp's own millisecond
- * (`toolsStaleAt >= syncedAt`, `syncedAt <= configRevisedAt`). `Date.now()` has
- * millisecond granularity and `tools_synced_at` records when the listing
- * STARTED, so a signal landing in that millisecond describes a change the
- * listing cannot have seen. Swallowing it would leave the connection serving a
- * catalog that predates the change with no TTL backstop — a plugin without a
- * remote catalog never reaches the `expired` branch below.
+ * A drift mark is read as PRESENCE, never as an instant: `tools_stale_token` is
+ * an opaque token, and the listing that resolves it clears it by
+ * compare-and-set on the token it observed. Comparing a drift TIMESTAMP against
+ * `tools_synced_at` instead is what made the two stamps landing in one
+ * millisecond ambiguous, and left the column set forever on every connection
+ * that had ever drifted.
  *
- * This is also what resolves a drift mark: an authoritative listing does not
- * clear `tools_stale_at`, it out-dates it. Clearing the column was a lost
- * update, because the fiber that marked the drift and the fiber finishing the
- * listing are different isolates with no coordination between them.
+ * The config-revision comparison stays inclusive of the stamp's own millisecond
+ * (`syncedAt <= configRevisedAt`). `Date.now()` has millisecond granularity and
+ * `tools_synced_at` records when the listing STARTED, so a revision landing in
+ * that millisecond describes a config the listing cannot have read. Swallowing
+ * it would leave the connection serving a catalog that predates the change with
+ * no TTL backstop — a plugin without a remote catalog never reaches the
+ * `expired` branch below.
  */
 export const classifyToolSync = (candidate: ToolSyncCandidate, now: number): ToolSyncState => {
   const syncedAt = candidate.toolsSyncedAt;
-  // A never-synced connection sorts before every stamp, which is why the
-  // comparisons below read through `?? 0` rather than special-casing null.
-  if (candidate.toolsStaleAt !== null && candidate.toolsStaleAt >= (syncedAt ?? 0)) {
-    return "stale_marked";
-  }
+  if (candidate.toolsStaleToken !== null) return "stale_marked";
   if (syncedAt === null) return "cold";
   if (candidate.configRevisedAt !== null && syncedAt <= candidate.configRevisedAt) {
     return "config_revised";
@@ -173,8 +174,8 @@ export const isToolSyncBackedOff = (candidate: ToolSyncCandidate, now: number): 
 /** Whether the connection is parked: its credential is rejected, and no amount
  *  of retrying the same grant will change that. Cleared by the human-initiated
  *  paths that can actually fix it (explicit refresh, connection update, an
- *  OAuth re-mint, a healthy probe, a fresh drift signal), and yielded to by
- *  {@link decideToolSync} whenever an explicit invalidation is outstanding. */
+ *  OAuth re-mint, a healthy probe, a fresh drift signal). {@link decideToolSync}
+ *  applies it to `expired` alone — every other refresh trigger outranks it. */
 export const isToolSyncParked = (candidate: ToolSyncCandidate): boolean =>
   candidate.toolsSyncErrorKind === "auth";
 
@@ -196,15 +197,25 @@ export const isToolSyncParked = (candidate: ToolSyncCandidate): boolean =>
  * decision is the compare-and-set the caller runs against the database, and two
  * readers that both see a free claim here still resolve to one refresh.
  *
- * The park yields to an EXPLICIT invalidation. `cold` and `expired` are the
- * clock talking, and re-dialing a rejected credential because time passed is
- * exactly the waste the park exists to stop; `stale_marked` and
- * `config_revised` are somebody telling us the world changed. A config revision
- * in particular is how an `auth` verdict caused by integration configuration
- * (the key in the wrong place, the wrong token endpoint) gets FIXED, and
- * `integrations.update` is the one invalidation path that does not clear the
- * ladder, so swallowing it here would leave the repaired connection parked
- * forever.
+ * The park gates `expired` and NOTHING else. `expired` is the only trigger that
+ * is purely the clock asking a connection which already has a working catalog
+ * to re-verify it, and re-dialing a rejected credential to re-verify a catalog
+ * we can still serve is exactly the waste the park exists to stop.
+ *
+ * `stale_marked` and `config_revised` are somebody telling us the world
+ * changed. A config revision in particular is how an `auth` verdict caused by
+ * integration configuration (the key in the wrong place, the wrong token
+ * endpoint) gets FIXED, and `integrations.update` is the one invalidation path
+ * that does not clear the ladder, so swallowing it would leave the repaired
+ * connection parked forever.
+ *
+ * `cold` is deliberately NOT parked, and that is a change from parking every
+ * clock-driven trigger. A parked connection that has never synced has no
+ * catalog to serve, so parking it is not "keep serving what we have", it is
+ * "serve nothing, forever, until a human notices". The retry ladder already
+ * caps a never-synced auth failure at roughly four dials a day, and letting the
+ * clock drive it back is what restores automatic recovery when the credential
+ * is repaired upstream — where nothing in this system observes the repair.
  */
 export type ToolSyncDecision =
   | { readonly kind: "skip"; readonly reason: ToolSyncSkip }
@@ -213,8 +224,7 @@ export type ToolSyncDecision =
 export const decideToolSync = (candidate: ToolSyncCandidate, now: number): ToolSyncDecision => {
   const state = classifyToolSync(candidate, now);
   if (state === "fresh") return { kind: "skip", reason: "fresh" };
-  const timeDriven = state === "cold" || state === "expired";
-  if (timeDriven && isToolSyncParked(candidate)) return { kind: "skip", reason: "parked" };
+  if (state === "expired" && isToolSyncParked(candidate)) return { kind: "skip", reason: "parked" };
   if (isToolSyncBackedOff(candidate, now)) return { kind: "skip", reason: "backoff" };
   if (isToolSyncClaimLive(candidate, now)) return { kind: "skip", reason: "claimed" };
   return { kind: "refresh", trigger: state };

@@ -237,7 +237,12 @@ export interface PluginCtx<TStore = unknown> {
      *  arrive mid-invocation — e.g. an MCP server sending
      *  `notifications/tools/list_changed` or rejecting a call as an unknown
      *  tool — where an inline `refresh` would block the caller. The last
-     *  verified sync time is preserved; the drift is recorded alongside it. */
+     *  verified sync time is preserved; the drift is recorded alongside it.
+     *
+     *  Safe to call at any point, including while a listing for the same
+     *  connection is in flight: the mark is recorded as a fresh token, and a
+     *  listing only resolves the token it observed when it started. A signal
+     *  that arrives mid-listing therefore survives it and re-lists. */
     readonly markToolsStale: (ref: ConnectionRef) => Effect.Effect<void, StorageFailure>;
     /** Resolve a connection's value through its provider (and OAuth refresh).
      *  null if the provider can't produce one. */

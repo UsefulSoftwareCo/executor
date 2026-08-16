@@ -225,15 +225,20 @@ export const coreTables = defineTables({
       // listing: a month-dead MCP server that reads as "synced 30s ago" is
       // re-dialed once per freshness window forever.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
-      // Epoch ms an event declared this catalog drifted (an MCP
-      // `tools/list_changed`, an unknown-tool rejection). Separate from
-      // `tools_synced_at` so marking a catalog stale no longer destroys the
-      // last-verified timestamp — "drifted" and "never synced" are different
-      // states with different diagnoses. OUT-DATED by the next authoritative
-      // listing rather than cleared by it: the marking fiber and the listing
-      // fiber are different isolates, so a write that nulled this column would
-      // erase a drift signal that landed mid-listing.
-      tools_stale_at: nullableBigintColumn("tools_stale_at"),
+      // Set when an event declares this catalog drifted (an MCP
+      // `tools/list_changed`, an unknown-tool rejection); null when there is no
+      // outstanding drift. Separate from `tools_synced_at` so marking a catalog
+      // stale no longer destroys the last-verified timestamp — "drifted" and
+      // "never synced" are different states with different diagnoses.
+      //
+      // An OPAQUE token, not a timestamp: it answers "was this catalog
+      // invalidated since the listing now finishing began", which is a version
+      // question, and a wall clock answers it only as precisely as it ticks. A
+      // listing captures the token it observed at its start and clears the
+      // column only if that same token is still there, so a mark that landed
+      // mid-listing carries a different token, survives the clear, and re-lists.
+      // Never compared for order.
+      tools_stale_token: nullableTextColumn("tools_stale_token"),
       // The refresh lease. Concurrent reads land in different Workers isolates
       // with no shared memory, so the row IS the coordination medium: a
       // refresh compare-and-sets its own nonce here before dialing, and the
@@ -497,7 +502,7 @@ export const CONNECTION_CATALOG_SCAN_COLUMNS = [
   "integration",
   "name",
   "tools_synced_at",
-  "tools_stale_at",
+  "tools_stale_token",
   "tools_sync_claim_id",
   "tools_sync_claim_at",
   "tools_sync_failures",

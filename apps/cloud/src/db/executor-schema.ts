@@ -61,7 +61,7 @@ export const connection = pgTable(
     description: text("description"),
     last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
-    tools_stale_at: bigint("tools_stale_at", { mode: "bigint" }),
+    tools_stale_token: text("tools_stale_token"),
     tools_sync_claim_id: text("tools_sync_claim_id"),
     tools_sync_claim_at: bigint("tools_sync_claim_at", { mode: "bigint" }),
     tools_sync_failures: bigint("tools_sync_failures", { mode: "bigint" }),
