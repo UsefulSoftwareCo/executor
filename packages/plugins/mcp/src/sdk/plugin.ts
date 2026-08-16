@@ -25,6 +25,8 @@ import {
   type OAuthClientSummary,
   type Owner,
   type PluginCtx,
+  type ResolveToolsResult,
+  type ToolSyncErrorKind,
   type StaticToolSchema,
   type StorageFailure,
   type ToolAnnotations,
@@ -1213,8 +1215,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // -----------------------------------------------------------------------
     resolveTools: ({ config, connection, template, getValues, httpClientLayer }) =>
       Effect.gen(function* () {
+        const incomplete = (kind: ToolSyncErrorKind, reason: string): ResolveToolsResult => ({
+          tools: [],
+          incomplete: true,
+          incompleteReason: reason,
+          incompleteKind: kind,
+        });
+
         const parsed = parseMcpIntegrationConfig(config);
-        if (!parsed) return { tools: [] as readonly ToolDef[], incomplete: true };
+        if (!parsed) {
+          return incomplete("config", "The MCP integration config could not be read.");
+        }
 
         // Discovery tolerates unresolved credentials (an open server lists
         // tools unauthenticated; a bad value just yields zero tools).
@@ -1233,28 +1244,44 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
-
-        if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+        // A connector that could not even be built is a configuration problem
+        // (stdio disabled, no usable endpoint), never an upstream one — nothing
+        // was dialed.
+        if (Result.isFailure(built)) {
+          return incomplete("config", "The MCP server connection could not be prepared.");
         }
-        return { tools: manifest.manifest.tools.map(toToolDef) };
+
+        // The discovery failure is CLASSIFIED rather than discarded: core parks
+        // an `auth` verdict instead of re-dialing a server that will keep
+        // refusing the same credential, and 401 handshakes were the single
+        // largest source of wasted upstream dials. The reason stays generic —
+        // it reaches a stored health record, and a discovery cause can embed
+        // the upstream request and response.
+        const discovered = yield* discoverTools(built.success).pipe(
+          Effect.result,
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
+
+        if (Result.isFailure(discovered)) {
+          const failure = discovered.failure;
+          const authWall =
+            failure.reauthorizationRequired === true ||
+            failure.httpStatus === 401 ||
+            failure.httpStatus === 403;
+          if (authWall) return incomplete("auth", "The MCP server rejected the credential.");
+          return failure.stage === "connect"
+            ? incomplete("unreachable", "The MCP server could not be reached.")
+            : incomplete("protocol", "The MCP server's tool listing could not be read.");
+        }
+
+        return { tools: discovered.success.tools.map(toToolDef) };
       }).pipe(
         Effect.withSpan("mcp.plugin.resolve_tools", {
           attributes: { "mcp.connection.name": String(connection.name) },
         }),
-      ) as Effect.Effect<
-        { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
-        StorageFailure
-      >,
+      ),
 
     invokeTool: ({ ctx, toolRow, credential, args, elicit }) =>
       Effect.gen(function* () {

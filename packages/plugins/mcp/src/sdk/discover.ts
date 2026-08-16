@@ -105,10 +105,18 @@ export const discoverTools = (
         const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
           ? failure.httpStatus
           : undefined;
+        // Same reason: a reauthorization demand is an auth verdict with no
+        // status code, and flattening it into a bare connect failure would make
+        // it indistinguishable from an unreachable server.
+        const reauthorizationRequired = Predicate.isTagged(
+          failure,
+          "McpOAuthReauthorizationRequired",
+        );
         return new McpToolDiscoveryError({
           stage: "connect",
           message: `Failed connecting to MCP server: ${failure.message}`,
           ...(httpStatus !== undefined ? { httpStatus } : {}),
+          ...(reauthorizationRequired ? { reauthorizationRequired } : {}),
         });
       }),
     );

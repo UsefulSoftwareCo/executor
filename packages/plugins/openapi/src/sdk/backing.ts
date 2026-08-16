@@ -590,11 +590,17 @@ export const resolveOpenApiBackedTools = ({
   readonly storage: OpenapiStore;
 }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
   Effect.gen(function* () {
+    // Always `config`: an OpenAPI catalog is derived entirely from the stored
+    // spec and its operation bindings, so nothing here can fail on a credential
+    // or an upstream. Every incomplete listing below means the integration's
+    // own persisted artifacts cannot produce a catalog, which is a fixable
+    // configuration state rather than something to keep re-dialing.
     const incomplete = (reason: string): ResolveToolsResult => ({
       tools: [],
       definitions: {},
       incomplete: true,
       incompleteReason: reason,
+      incompleteKind: "config",
     });
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
     if (!openApiConfig) return { tools: [], definitions: {} };
