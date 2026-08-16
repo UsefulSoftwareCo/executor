@@ -44,6 +44,18 @@ import {
   type ToolPolicyRow,
 } from "./core-schema";
 import {
+  TOOL_SYNC_CLAIM_LEASE_MS,
+  TOOL_SYNC_JITTER_MAX,
+  TOOL_SYNC_JITTER_MIN,
+  decideToolSync,
+  isToolSyncErrorKind,
+  scheduleAfterFailure,
+  scheduleAfterSuccess,
+  type ToolSyncCandidate,
+  type ToolSyncErrorKind,
+  type ToolSyncState,
+} from "./tool-sync-schedule";
+import {
   ElicitationDeclinedError,
   ElicitationResponse,
   FormElicitation,
@@ -678,25 +690,70 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
  *  `ExecutorConfig.toolsSyncTtlMs`). */
 export const DEFAULT_TOOLS_SYNC_TTL_MS = 15 * 60 * 1000;
 
-/** What sent a connection through a tools read's catalog refresh, for the
- *  per-connection span. NULL `tools_synced_at` reports as `stale_marked`: a
- *  never-synced connection and one cleared mid-invocation are the same row,
- *  and telling them apart needs a column that does not exist yet. */
-type CatalogRefreshTrigger = "stale_marked" | "config_revised" | "expired";
+/** What sent a connection through tool production, for the per-connection span.
+ *  The read path reports the classified {@link ToolSyncState} verbatim (`cold`
+ *  and `stale_marked` are finally distinguishable, now that `tools_stale_at`
+ *  records a drift without erasing the last-verified stamp); `explicit` is
+ *  every human-initiated production — create, re-mint, `connections.refresh` —
+ *  which answers to a caller and so skips the read path's gates entirely. */
+type ToolSyncTrigger = "explicit" | Exclude<ToolSyncState, "fresh">;
+
+/** One attempt at producing a connection's tools: why it is happening, and the
+ *  refresh claim it holds while it does. `claim` is null for `explicit`
+ *  production, which is authoritative by construction and does not coordinate
+ *  with anyone. */
+interface ToolSyncAttempt {
+  readonly trigger: ToolSyncTrigger;
+  readonly claim: string | null;
+}
+
+/** Production asked for by a caller who is waiting for the answer. */
+const EXPLICIT_TOOL_SYNC: ToolSyncAttempt = { trigger: "explicit", claim: null };
 
 /** How much work a read's catalog refresh found and did, for the enclosing
  *  `executor.tools.list` span. `candidates` is what the stale scan returned —
  *  the number the scan's filter scoping exists to keep at zero. `failed`
  *  counts refreshes that were swallowed to keep the read answerable, so a
  *  connection stuck permanently stale is visible as a rate rather than only
- *  as an absent `synced`. */
+ *  as an absent `synced`. The three `skipped*` counts are the whole point of
+ *  the lifecycle columns: a fleet whose reads are dominated by `skipped_parked`
+ *  is one where dead credentials stopped costing handshakes. */
 interface CatalogRefreshSummary {
   readonly candidates: number;
   readonly synced: number;
   readonly failed: number;
+  readonly skippedClaimed: number;
+  readonly skippedBackoff: number;
+  readonly skippedParked: number;
 }
 
-const NO_CATALOG_REFRESH: CatalogRefreshSummary = { candidates: 0, synced: 0, failed: 0 };
+const NO_CATALOG_REFRESH: CatalogRefreshSummary = {
+  candidates: 0,
+  synced: 0,
+  failed: 0,
+  skippedClaimed: 0,
+  skippedBackoff: 0,
+  skippedParked: 0,
+};
+
+/** A nullable bigint column as epoch milliseconds. The drivers hand these back
+ *  as `bigint` (Postgres) or `number` (sqlite/D1), and every comparison in the
+ *  sync lifecycle is arithmetic. Narrow rather than `unknown`: `Number()` turns
+ *  anything else into `NaN`, and a `NaN` stamp compares false against every
+ *  bound, which would silently classify a connection as fresh forever. */
+const asEpochMs = (value: bigint | number | null | undefined): number | null =>
+  value == null ? null : Number(value);
+
+/** A backoff jitter factor in [`TOOL_SYNC_JITTER_MIN`, `TOOL_SYNC_JITTER_MAX`].
+ *  The randomness lives here rather than in `tool-sync-schedule`, which stays a
+ *  pure module; `Math.random` is how this package sources it everywhere else. */
+const toolSyncJitter = (): number =>
+  TOOL_SYNC_JITTER_MIN + Math.random() * (TOOL_SYNC_JITTER_MAX - TOOL_SYNC_JITTER_MIN);
+
+/** A refresh claim nonce. Only has to be unique among the attempts racing for
+ *  one connection inside one lease window, and it is never an address. */
+const toolSyncClaimNonce = (): string =>
+  `sync_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
 /** The error tags in a swallowed refresh cause, as a stable comma-joined set.
  *  Tags only: this cause can carry an upstream HTTP request/response, so no
@@ -2563,21 +2620,151 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
-    const toolSyncHealthDetailPrefix = "Tool sync failing";
+    // How long a remote-catalog connection's persisted tools stay fresh
+    // (`ExecutorConfig.toolsSyncTtlMs`; `null` disables time-based re-sync).
+    const toolsSyncTtlMs =
+      config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
 
+    // The retry ladder's first rung. It follows the freshness window when there
+    // is a usable one, and falls back to the default otherwise: "don't re-dial
+    // a server that just refused us" is a separate concern from "re-list a live
+    // catalog periodically", and disabling the latter must not disable the
+    // former. A non-positive TTL is caught here as well as `null` — a zero
+    // window means "always expired", and multiplying the ladder by it would
+    // reinstate exactly the per-read re-dial this exists to stop.
+    const toolSyncBackoffBaseMs =
+      toolsSyncTtlMs === null || toolsSyncTtlMs <= 0 ? DEFAULT_TOOLS_SYNC_TTL_MS : toolsSyncTtlMs;
+
+    // Display only. The catalog's actual state lives in the sync columns, so
+    // nothing branches on this string any more — the previous mechanism keyed
+    // "is this a sync failure" off the prefix, which made a human-readable
+    // detail load-bearing and left `auth` indistinguishable from `unreachable`.
     const toolSyncHealth = (reason: string): HealthCheckResult => ({
       status: "degraded",
       checkedAt: Date.now(),
-      detail: `${toolSyncHealthDetailPrefix}: ${reason}`,
+      detail: `Tool sync failing: ${reason}`,
     });
 
     const syncHealthReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
 
+    // The terminal outcome of a listing that did NOT produce an authoritative
+    // catalog. `tools_synced_at` is deliberately untouched: stamping it here is
+    // what made a month-dead server report as "synced 30s ago" and earn a fresh
+    // handshake every freshness window. Any drift signal (`tools_stale_at`)
+    // also stands, because nothing resolved it — the retry ladder is the only
+    // thing holding the next attempt off, and an `auth` verdict parks the
+    // connection outright.
+    const toolSyncFailureSet = (
+      priorFailures: number,
+      kind: ToolSyncErrorKind | null,
+      reason: string,
+    ): Record<string, unknown> => {
+      const now = Date.now();
+      const failures = priorFailures + 1;
+      return {
+        tools_sync_failures: failures,
+        tools_sync_retry_at: scheduleAfterFailure(
+          now,
+          toolSyncBackoffBaseMs,
+          failures,
+          toolSyncJitter(),
+        ),
+        tools_sync_error_kind: kind,
+        tools_sync_claim_id: null,
+        tools_sync_claim_at: null,
+        last_health: toolSyncHealth(reason),
+        updated_at: new Date(),
+      };
+    };
+
+    /** The column resets that put a connection back at the start of the retry
+     *  ladder — failure count, next-attempt instant, and the error kind that
+     *  may have parked it. Applied by every path that can plausibly have fixed
+     *  the cause: an explicit refresh, a connection edit, an OAuth re-mint, a
+     *  healthy probe, and a fresh drift signal. Folded into those writes' own
+     *  `set` wherever they already issue one. */
+    const TOOL_SYNC_LADDER_RESET = {
+      tools_sync_failures: null,
+      tools_sync_retry_at: null,
+      tools_sync_error_kind: null,
+    } as const;
+
+    /** The standalone form, for the one caller with no write of its own to fold
+     *  into. Locked: it can run concurrently with a read's refresh fan-out, and
+     *  a bare UPDATE issued while another fiber holds an open BEGIN on the
+     *  shared SQLite connection is enrolled in that fiber's transaction. */
+    const resetToolSyncLadder = (ref: ConnectionRef): Effect.Effect<void, StorageFailure> =>
+      withCatalogPersistLock(
+        core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(ref.owner)(b),
+              b("integration", "=", String(ref.integration)),
+              b("name", "=", String(ref.name)),
+            ),
+          set: { ...TOOL_SYNC_LADDER_RESET },
+        }),
+      );
+
+    /**
+     * Take the refresh lease for a connection, or report that someone else
+     * holds it. Returns the claim nonce on success, `null` when the connection
+     * is already claimed.
+     *
+     * A compare-and-set, because there is no shared memory to coordinate
+     * through: concurrent `tools.list` calls land in different Workers isolates
+     * and the ROW is the only medium they share. The UPDATE's WHERE is the
+     * compare (the claim is free, or its lease has run out); the read-back is
+     * the verdict, because fumadb's `updateMany` returns void and reports no
+     * row count. That read-back is sound rather than a heuristic: under READ
+     * COMMITTED Postgres re-evaluates the predicate against the row version the
+     * concurrent writer committed, so exactly one of two racing UPDATEs can see
+     * a free claim, and sqlite/D1 serialize writes outright.
+     *
+     * Locked and outside any transaction: this write runs during the read's
+     * concurrent fan-out, where another fiber may hold an open BEGIN on the
+     * shared SQLite connection. The permit is not reentrant, so callers must
+     * hold nothing when they get here.
+     */
+    const claimConnectionForSync = (
+      ref: ConnectionRef,
+    ): Effect.Effect<string | null, StorageFailure> => {
+      const connectionWhere = (b: AnyCb) =>
+        b.and(
+          byOwner(ref.owner)(b),
+          b("integration", "=", String(ref.integration)),
+          b("name", "=", String(ref.name)),
+        );
+      return withCatalogPersistLock(
+        Effect.gen(function* () {
+          const nonce = toolSyncClaimNonce();
+          const now = Date.now();
+          yield* core.updateMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                connectionWhere(b),
+                b.or(
+                  b.isNull("tools_sync_claim_id"),
+                  b.isNull("tools_sync_claim_at"),
+                  b("tools_sync_claim_at", "<", now - TOOL_SYNC_CLAIM_LEASE_MS),
+                ),
+              ),
+            set: { tools_sync_claim_id: nonce, tools_sync_claim_at: now },
+          });
+          const readBack = yield* core.findFirst("connection", {
+            where: connectionWhere,
+            select: ["tools_sync_claim_id"],
+          });
+          return readBack?.tools_sync_claim_id === nonce ? nonce : null;
+        }),
+      );
+    };
+
     const produceConnectionTools = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
-      mode: "explicit" | "background" = "explicit",
+      attempt: ToolSyncAttempt = EXPLICIT_TOOL_SYNC,
     ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
@@ -2598,42 +2785,95 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("name", "=", String(ref.name)),
           );
-        const isToolSyncHealth = (health: HealthCheckResult | null): boolean =>
-          health?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
-        const syncedSet = (row: ConnectionRow | null) => {
-          const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
-          return isToolSyncHealth(health)
-            ? { tools_synced_at: Date.now(), last_health: null, updated_at: new Date() }
-            : { tools_synced_at: Date.now() };
-        };
-        // Every exit stamps the sync time — including the cleanup paths that
-        // produce zero tools — so the stale-catalog check (`config_revised_at`
-        // vs `tools_synced_at`) doesn't re-attempt this connection per read.
-        // Successful syncs also clear stale sync-failure health records, while
-        // preserving genuine health-check outcomes.
+
+        // Does this attempt still own the connection? A read-path refresh takes
+        // a lease before dialing, and a slow one can lose it: another reader
+        // sees the lease expire, re-claims, re-lists and finishes first. The
+        // late arrival must DISCARD its result rather than overwrite a newer
+        // catalog with an older listing. Explicit production holds no lease and
+        // is authoritative by construction.
         //
-        // Unlocked: every caller runs it inside a `withCatalogPersistLock`
-        // transaction below, and the permit is not reentrant.
-        const stampSynced = (row: ConnectionRow | null) =>
-          core.updateMany("connection", {
-            where: connectionWhere,
-            set: syncedSet(row),
-          });
-        // Locked: the preserve branches stamp without a surrounding
-        // transaction, and a bare UPDATE issued while another fiber holds an
-        // open BEGIN on the shared SQLite connection is enrolled in that
-        // fiber's transaction — and lost with it if it rolls back.
-        const stampSyncedWithHealth = (reason: string) =>
+        // Only ever read INSIDE the outcome's own transaction, where `core`
+        // resolves to the transaction handle: the tool rows it gates are
+        // deleted and reinserted, and no WHERE clause on the connection can
+        // condition those.
+        const holdsClaim = (): Effect.Effect<boolean, StorageFailure> =>
+          attempt.claim === null
+            ? Effect.succeed(true)
+            : core
+                .findFirst("connection", {
+                  where: connectionWhere,
+                  select: ["tools_sync_claim_id"],
+                })
+                .pipe(Effect.map((row) => row?.tools_sync_claim_id === attempt.claim));
+
+        // The terminal write carries the claim in its WHERE, which makes it a
+        // compare-and-set rather than a check-then-act. `withCatalogPersistLock`
+        // is an in-process semaphore and cannot see the other Workers isolate
+        // that re-claimed this connection while we were listing; the predicate
+        // can, and an update that no longer matches simply writes nothing.
+        const outcomeWhere = (b: AnyCb) =>
+          attempt.claim === null
+            ? connectionWhere(b)
+            : b.and(connectionWhere(b), b("tools_sync_claim_id", "=", attempt.claim));
+
+        // The terminal outcome of an authoritative listing, in ONE write: the
+        // catalog is verified as of now, whatever drift signal or failure ledger
+        // sent us here is settled, and the lease is released. `last_health` is
+        // cleared only when the previous outcome was a sync failure, so a
+        // genuine health-check verdict survives. The failure COUNT is what says
+        // so — `tools_sync_error_kind` is optional, since a plugin is allowed to
+        // report an incomplete listing without classifying it.
+        const successSet = (row: ConnectionRow | null) => {
+          const now = Date.now();
+          const recovering = Number(row?.tools_sync_failures ?? 0) > 0;
+          return {
+            tools_synced_at: now,
+            tools_stale_at: null,
+            tools_sync_failures: null,
+            tools_sync_retry_at: scheduleAfterSuccess(now, toolsSyncTtlMs),
+            tools_sync_error_kind: null,
+            tools_sync_claim_id: null,
+            tools_sync_claim_at: null,
+            ...(recovering ? { last_health: null, updated_at: new Date() } : {}),
+          };
+        };
+
+        // Locked: these run inside a read's concurrent fan-out, and a bare
+        // UPDATE issued while another fiber holds an open BEGIN on the shared
+        // SQLite connection is enrolled in that fiber's transaction — and lost
+        // with it if it rolls back. The permit is NOT reentrant, so nothing
+        // reachable from here may take it again.
+        const writeSyncOutcome = (
+          set: Record<string, unknown>,
+        ): Effect.Effect<void, StorageFailure> =>
+          withCatalogPersistLock(core.updateMany("connection", { where: outcomeWhere, set }));
+
+        /** Replace the persisted catalog and record the outcome together, or do
+         *  neither. Returns false when the attempt lost its lease. */
+        const replaceCatalog = (
+          toolRows: readonly Record<string, unknown>[],
+          definitionRows: readonly Record<string, unknown>[],
+          set: Record<string, unknown>,
+        ): Effect.Effect<boolean, StorageFailure> =>
           withCatalogPersistLock(
-            core.updateMany("connection", {
-              where: connectionWhere,
-              set: {
-                tools_synced_at: Date.now(),
-                last_health: toolSyncHealth(reason),
-                updated_at: new Date(),
-              },
-            }),
+            transaction(
+              Effect.gen(function* () {
+                if (!(yield* holdsClaim())) return false;
+                yield* core.deleteMany("tool", { where });
+                yield* core.deleteMany("definition", { where });
+                yield* core.createMany("tool", toolRows);
+                yield* core.createMany("definition", definitionRows);
+                yield* core.updateMany("connection", { where: outcomeWhere, set });
+                return true;
+              }),
+            ),
           );
+
+        const persistedTools = (): Effect.Effect<readonly Tool[], StorageFailure> =>
+          core
+            .findMany("tool", { where })
+            .pipe(Effect.map((rows) => rows.map((row) => rowToTool(row as ConnectionToolRow))));
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -2644,36 +2884,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // connections legitimately bind nothing (an empty `item_ids` is their
         // canonical shape) — both are exempt.
         const existingRow = yield* findConnectionRow(ref);
+        const failureSet = (kind: ToolSyncErrorKind | null, reason: string) =>
+          toolSyncFailureSet(Number(existingRow?.tools_sync_failures ?? 0), kind, reason);
         if (
           existingRow &&
           existingRow.oauth_client == null &&
           existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
-          yield* withCatalogPersistLock(
-            transaction(
-              Effect.gen(function* () {
-                yield* core.deleteMany("tool", { where });
-                yield* core.deleteMany("definition", { where });
-                yield* stampSynced(existingRow);
-              }),
-            ),
-          );
-          return [];
+          // A legitimate clear IS an authoritative listing: the answer is "no
+          // tools", verified as of now.
+          if (yield* replaceCatalog([], [], successSet(existingRow))) return [];
+          return yield* persistedTools();
         }
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
-          yield* withCatalogPersistLock(
-            transaction(
-              Effect.gen(function* () {
-                yield* core.deleteMany("tool", { where });
-                yield* core.deleteMany("definition", { where });
-                yield* stampSynced(existingRow);
-              }),
-            ),
-          );
-          return [];
+          if (yield* replaceCatalog([], [], successSet(existingRow))) return [];
+          return yield* persistedTools();
         }
 
         const result: ResolveToolsResult = yield* runtime.plugin
@@ -2697,22 +2925,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (result.incomplete === true) {
           // Non-authoritative listing (integration unreachable, auth not ready).
           // Keep the existing catalog — replacing it would wipe working tools
-          // over a transient outage — and stamp the sync time anyway so a down
-          // server isn't re-dialed on every read; the freshness TTL re-attempts
-          // later.
+          // over a transient outage — and record the failure WITHOUT claiming
+          // freshness. The retry ladder decides when to try again, and an `auth`
+          // verdict parks the connection outright.
           const reason = syncHealthReason(result);
-          yield* stampSyncedWithHealth(reason);
+          const kind = result.incompleteKind ?? null;
+          yield* writeSyncOutcome(failureSet(kind, reason));
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
+            errorKind: kind ?? "unclassified",
             integration: String(ref.integration),
             connection: String(ref.name),
           });
-          const keptRows = yield* core.findMany("tool", { where });
-          return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
+          return yield* persistedTools();
         }
 
         if (
-          mode === "background" &&
+          attempt.trigger !== "explicit" &&
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
@@ -2720,7 +2949,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (keptRows.length > 0) {
             const reason =
               "background tool sync produced an authoritative empty catalog for a connection with existing tools";
-            yield* stampSyncedWithHealth(reason);
+            // Treated as a failure, not a listing: an empty catalog where tools
+            // existed is far more often a broken server than a real change, and
+            // the plugin said nothing about why. Unclassified, so it backs off
+            // but never parks.
+            yield* writeSyncOutcome(failureSet(null, reason));
             yield* Effect.logWarning("executor tool sync preserved nonzero catalog", {
               reason,
               integration: String(ref.integration),
@@ -2760,17 +2993,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* withCatalogPersistLock(
-          transaction(
-            Effect.gen(function* () {
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* core.createMany("tool", toolRows);
-              yield* core.createMany("definition", definitionRows);
-              yield* stampSynced(existingRow);
-            }),
-          ),
-        );
+        // Lost the lease while listing: another attempt has already replaced
+        // this catalog with a listing at least as recent as ours. Answer from
+        // what is persisted rather than overwriting it.
+        if (!(yield* replaceCatalog(toolRows, definitionRows, successSet(existingRow)))) {
+          yield* Effect.annotateCurrentSpan({ "executor.tools.sync.claimed": false });
+          return yield* persistedTools();
+        }
 
         return result.tools.map((tool: ToolDef) =>
           rowToTool(
@@ -3048,8 +3277,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // A re-mint replaces the grant, so any persisted verdict describes
               // a credential that no longer exists. Clear it rather than let a
               // pre-reconnect "expired" outlive the reconnect; the next health
-              // check writes the verdict for the new grant.
+              // check writes the verdict for the new grant. The tool-sync
+              // ledger goes with it: a re-mint is precisely the act that fixes
+              // an `auth` park, so the connection must not stay parked on the
+              // old grant's rejections.
               last_health: null,
+              ...TOOL_SYNC_LADDER_RESET,
               updated_at: now,
             };
             if (existing) {
@@ -3174,7 +3407,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             name: ref.name,
           });
         }
-        const set: Record<string, unknown> = { updated_at: new Date() };
+        // An edit is a caller acting on the connection, which is the same
+        // signal an explicit refresh carries: restart the ladder rather than
+        // leave a parked connection parked on evidence that predates the edit.
+        const set: Record<string, unknown> = { updated_at: new Date(), ...TOOL_SYNC_LADDER_RESET };
         if (input.description !== undefined) set.description = input.description;
         if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
         yield* core.updateMany("connection", {
@@ -3256,6 +3492,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (!integrationRow) {
           return yield* new IntegrationNotFoundError({ slug: ref.integration });
         }
+        // An explicit refresh is a human saying "try again now". It bypasses
+        // both gates by construction (it never consults `isSyncEligible`) and
+        // restarts the ladder, so a connection parked on a since-fixed
+        // credential is not re-parked at rung five on its first fresh failure.
+        yield* resetToolSyncLadder(ref);
         return yield* produceConnectionTools(integrationRow, ref);
       });
 
@@ -3263,6 +3504,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // can still render the connection, just without a liveness verdict.
     const unknownHealth = (): HealthCheckResult => ({ status: "unknown", checkedAt: Date.now() });
 
+    // Only `connectionCheckHealth` persists a verdict, and a HEALTHY one is
+    // direct evidence that whatever parked this connection's tool sync is gone:
+    // the credential resolves and the upstream answers. Un-park in the same
+    // write, so the next read re-lists instead of waiting for a human.
     const persistHealthResult = (
       ref: ConnectionRef,
       result: HealthCheckResult,
@@ -3275,7 +3520,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               b("integration", "=", String(ref.integration)),
               b("name", "=", String(ref.name)),
             ),
-          set: { last_health: result, updated_at: new Date() },
+          set: {
+            last_health: result,
+            updated_at: new Date(),
+            ...(result.status === "healthy" ? TOOL_SYNC_LADDER_RESET : {}),
+          },
         })
         .pipe(Effect.ignore);
 
@@ -3525,10 +3774,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }),
       );
 
-    // Clear the sync stamp so the next tools read re-produces this connection's
-    // catalog. The deferred variant of `connectionsRefresh` for signals that
-    // arrive mid-invocation (an MCP `notifications/tools/list_changed`, an
+    // Record that this connection's catalog has drifted, so the next tools read
+    // re-produces it. The deferred variant of `connectionsRefresh` for signals
+    // that arrive mid-invocation (an MCP `notifications/tools/list_changed`, an
     // unknown-tool rejection) where re-listing inline would block the caller.
+    //
+    // `tools_synced_at` is left ALONE: clearing it used to be how this was
+    // recorded, which threw away the last-verified timestamp and made a drifted
+    // catalog indistinguishable from one that had never synced. The drift also
+    // un-parks — the server just told us its tool set moved, which is evidence
+    // it is reachable and worth one more attempt.
     const connectionsMarkToolsStale = (ref: ConnectionRef): Effect.Effect<void, StorageFailure> =>
       core.updateMany("connection", {
         where: (b: AnyCb) =>
@@ -3537,7 +3792,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("name", "=", String(ref.name)),
           ),
-        set: { tools_synced_at: null },
+        set: { tools_stale_at: Date.now(), ...TOOL_SYNC_LADDER_RESET },
       });
 
     // ------------------------------------------------------------------
@@ -3653,17 +3908,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       return true;
     };
 
-    // How long a remote-catalog connection's persisted tools stay fresh
-    // (`ExecutorConfig.toolsSyncTtlMs`; `null` disables time-based re-sync).
-    const toolsSyncTtlMs =
-      config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
-
     // Rebuild the connections a `tools.list` is about to read whose persisted
     // tool catalog is stale, scoped to that read's own filter — a read for one
-    // integration never waits on another's upstream handshakes. Three triggers:
-    //  - stale-marked: `tools_synced_at` is NULL (`connections.markToolsStale`
-    //    — an MCP `tools/list_changed` notification or unknown-tool rejection
-    //    cleared it mid-invocation);
+    // integration never waits on another's upstream handshakes. Four triggers,
+    // classified by `tool-sync-schedule`:
+    //  - cold: never synced at all (`tools_synced_at` and `tools_stale_at` both
+    //    NULL — a fresh row, or one a data migration reset);
+    //  - stale-marked: `tools_stale_at` postdates the catalog
+    //    (`connections.markToolsStale` — an MCP `tools/list_changed`
+    //    notification or unknown-tool rejection recorded the drift
+    //    mid-invocation);
     //  - config-revised: the integration's last tool-affecting config change
     //    postdates the connection's catalog. The change's author could only
     //    rewrite catalogs in their own partition (owner policy); every other
@@ -3671,8 +3925,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     //  - expired: the plugin lists a live remote catalog (an MCP server, whose
     //    tool set can change with no executor-visible signal) and the catalog
     //    is older than the freshness TTL.
+    // A due connection is then gated on `isSyncEligible` (park, backoff, an
+    // observed live claim) and finally on winning the claim itself, so a dead
+    // upstream costs one handshake per backoff window and concurrent reads cost
+    // one between them rather than one each.
     // Best-effort: a failed rebuild leaves the stale-but-working catalog in
-    // place and retries on the next read.
+    // place and the ladder schedules the retry.
     const refreshCatalogsForRead = (
       filter: ToolListFilter | undefined,
     ): Effect.Effect<CatalogRefreshSummary, StorageFailure> =>
@@ -3720,8 +3978,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         //
         // An empty slug list would compile to `IN ()`, which is a syntax error
         // on the SQL backends, so each arm folds to `false` instead (precedent:
-        // `blob.getMany`). The NULL-stamp arm always stands, so the OR can
-        // never degenerate to a bare `false`.
+        // `blob.getMany`). The two NULL/NOT-NULL arms always stand, so the OR
+        // can never degenerate to a bare `false`.
+        //
+        // The drift arm is `tools_stale_at IS NOT NULL` rather than a
+        // column-to-column comparison against `tools_synced_at`: an
+        // authoritative listing clears the mark, so a set `tools_stale_at` IS
+        // the unresolved drift, and the per-row classifier re-checks the
+        // ordering anyway.
         const connections = yield* core.findMany("connection", {
           where: (b: AnyCb) =>
             b.and(
@@ -3732,6 +3996,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               filter?.connection === undefined ? true : b("name", "=", String(filter.connection)),
               b.or(
                 b.isNull("tools_synced_at"),
+                b.isNotNull("tools_stale_at"),
                 revisedSlugs.length === 0 || latestRevision === null
                   ? false
                   : b.and(
@@ -3749,8 +4014,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const due: {
           readonly integrationRow: IntegrationRow;
           readonly ref: ConnectionRef;
-          readonly trigger: CatalogRefreshTrigger;
+          readonly state: Exclude<ToolSyncState, "fresh">;
+          readonly priorFailures: number;
         }[] = [];
+        let skippedClaimed = 0;
+        let skippedBackoff = 0;
+        let skippedParked = 0;
         for (const connection of connections) {
           const integrationRow = integrationBySlug.get(connection.integration);
           if (!integrationRow) continue;
@@ -3761,22 +4030,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // `produceConnectionTools` runs its clear-and-stamp cleanup path.)
           if (!runtime) continue;
 
-          const syncedAt =
-            connection.tools_synced_at == null ? null : Number(connection.tools_synced_at);
-          const revisedTime =
-            integrationRow.config_revised_at == null
-              ? null
-              : Number(integrationRow.config_revised_at);
+          const candidate: ToolSyncCandidate = {
+            toolsSyncedAt: asEpochMs(connection.tools_synced_at),
+            toolsStaleAt: asEpochMs(connection.tools_stale_at),
+            toolsSyncClaimId:
+              connection.tools_sync_claim_id == null
+                ? null
+                : String(connection.tools_sync_claim_id),
+            toolsSyncClaimAt: asEpochMs(connection.tools_sync_claim_at),
+            toolsSyncFailures: Number(connection.tools_sync_failures ?? 0),
+            toolsSyncRetryAt: asEpochMs(connection.tools_sync_retry_at),
+            // Plain text column: a value written by a newer build has to be
+            // parsed back into the closed set, not trusted.
+            toolsSyncErrorKind: isToolSyncErrorKind(connection.tools_sync_error_kind)
+              ? connection.tools_sync_error_kind
+              : null,
+            configRevisedAt: asEpochMs(integrationRow.config_revised_at),
+            remoteToolCatalog: runtime.plugin.remoteToolCatalog === true,
+            ttlMs: toolsSyncTtlMs,
+          };
 
-          const staleMarked = syncedAt === null;
-          const configRevised = revisedTime !== null && (syncedAt ?? 0) < revisedTime;
-          const expired =
-            cutoff !== null &&
-            runtime.plugin.remoteToolCatalog === true &&
-            syncedAt !== null &&
-            syncedAt < cutoff;
-          if (!staleMarked && !configRevised && !expired) continue;
-
+          const decision = decideToolSync(candidate, Date.now());
+          if (decision.kind === "skip") {
+            if (decision.reason === "parked") skippedParked += 1;
+            if (decision.reason === "backoff") skippedBackoff += 1;
+            if (decision.reason === "claimed") skippedClaimed += 1;
+            continue;
+          }
           due.push({
             integrationRow,
             ref: {
@@ -3784,7 +4064,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               integration: IntegrationSlug.make(connection.integration),
               name: ConnectionName.make(connection.name),
             },
-            trigger: staleMarked ? "stale_marked" : configRevised ? "config_revised" : "expired",
+            state: decision.trigger,
+            priorFailures: candidate.toolsSyncFailures,
           });
         }
 
@@ -3794,49 +4075,95 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // per connection.
         const outcomes = yield* Effect.forEach(
           due,
-          ({ integrationRow, ref, trigger }) =>
-            produceConnectionTools(integrationRow, ref, "background").pipe(
-              Effect.andThen(Effect.annotateCurrentSpan({ "executor.tools.sync.outcome": "ok" })),
-              Effect.as(true),
-              // catchCause, not catch: a plugin DEFECT is not in the error
-              // channel, and a tools READ must not be failable by one
-              // connection's misbehaving refresh. The stale-but-working
-              // catalog stays in place and the next read retries.
-              //
-              // Warning, not debug: swallowing this is the whole point, so the
-              // log line is the only signal that a connection is serving a
-              // stale catalog. Enumerable fields only — a refresh runs on a
-              // live credential and its cause can embed the upstream request
-              // and response.
-              Effect.catchCause((cause) =>
-                Effect.annotateCurrentSpan({ "executor.tools.sync.outcome": "fail" }).pipe(
-                  Effect.andThen(
-                    Effect.logWarning("executor tool catalog refresh failed", {
-                      integration: String(ref.integration),
-                      connection: String(ref.name),
-                      trigger,
-                      errorTags: causeErrorTags(cause),
-                    }),
-                  ),
-                  Effect.as(false),
+          ({ integrationRow, ref, state, priorFailures }) =>
+            Effect.gen(function* () {
+              const claim = yield* claimConnectionForSync(ref);
+              yield* Effect.annotateCurrentSpan({
+                "executor.tools.sync.claimed": claim !== null,
+              });
+              if (claim === null) return "skipped_claimed" as const;
+              return yield* produceConnectionTools(integrationRow, ref, {
+                trigger: state,
+                claim,
+              }).pipe(
+                Effect.andThen(Effect.annotateCurrentSpan({ "executor.tools.sync.outcome": "ok" })),
+                Effect.as("ok" as const),
+                // catchCause, not catch: a plugin DEFECT is not in the error
+                // channel, and a tools READ must not be failable by one
+                // connection's misbehaving refresh. The stale-but-working
+                // catalog stays in place and the next read retries.
+                //
+                // Warning, not debug: swallowing this is the whole point, so
+                // the log line is the only signal that a connection is serving
+                // a stale catalog. Enumerable fields only — a refresh runs on a
+                // live credential and its cause can embed the upstream request
+                // and response.
+                Effect.catchCause((cause) =>
+                  // Cancellation first: a `tools.list` abandoned by its caller
+                  // must not be recorded as an upstream failure, and writing a
+                  // retry schedule from an interrupted fiber would persist a
+                  // verdict nobody reached. Let it through untouched — the
+                  // lease expires on its own.
+                  Cause.hasInterrupts(cause)
+                    ? Effect.interrupt
+                    : Effect.gen(function* () {
+                        yield* Effect.annotateCurrentSpan({
+                          "executor.tools.sync.outcome": "fail",
+                        });
+                        // A genuine failure walks the retry ladder; a DEFECT
+                        // only releases the lease. The four error kinds describe
+                        // what an upstream did, and a bug in this process is
+                        // none of them — it is loud, repeated and fixable, so it
+                        // keeps retrying rather than quietly backing off under a
+                        // wrong label.
+                        yield* withCatalogPersistLock(
+                          core.updateMany("connection", {
+                            where: (b: AnyCb) =>
+                              b.and(
+                                byOwner(ref.owner)(b),
+                                b("integration", "=", String(ref.integration)),
+                                b("name", "=", String(ref.name)),
+                                b("tools_sync_claim_id", "=", claim),
+                              ),
+                            set: Cause.hasFails(cause)
+                              ? toolSyncFailureSet(
+                                  priorFailures,
+                                  null,
+                                  "the tool catalog refresh failed",
+                                )
+                              : { tools_sync_claim_id: null, tools_sync_claim_at: null },
+                          }),
+                        ).pipe(Effect.ignore);
+                        yield* Effect.logWarning("executor tool catalog refresh failed", {
+                          integration: String(ref.integration),
+                          connection: String(ref.name),
+                          trigger: state,
+                          errorTags: causeErrorTags(cause),
+                        });
+                        return "fail" as const;
+                      }),
                 ),
-              ),
+              );
+            }).pipe(
               Effect.withSpan("executor.tools.sync", {
                 attributes: {
                   "executor.integration": String(ref.integration),
                   "executor.connection": String(ref.name),
-                  "executor.tools.sync.trigger": trigger,
+                  "executor.tools.sync.trigger": state,
                 },
               }),
             ),
           { concurrency: 4 },
         );
 
-        const synced = outcomes.filter((ok) => ok).length;
         return {
           candidates: connections.length,
-          synced,
-          failed: outcomes.length - synced,
+          synced: outcomes.filter((outcome) => outcome === "ok").length,
+          failed: outcomes.filter((outcome) => outcome === "fail").length,
+          skippedClaimed:
+            skippedClaimed + outcomes.filter((outcome) => outcome === "skipped_claimed").length,
+          skippedBackoff,
+          skippedParked,
         };
       });
 
@@ -3893,6 +4220,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           "executor.tools.sync.candidates": refresh.candidates,
           "executor.tools.sync.synced": refresh.synced,
           "executor.tools.sync.failed": refresh.failed,
+          "executor.tools.sync.skipped_claimed": refresh.skippedClaimed,
+          "executor.tools.sync.skipped_backoff": refresh.skippedBackoff,
+          "executor.tools.sync.skipped_parked": refresh.skippedParked,
         });
         return tools;
       }).pipe(
