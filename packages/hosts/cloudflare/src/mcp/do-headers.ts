@@ -25,6 +25,21 @@ export type VerifiedTokenHeaders = {
   readonly organizationId: string;
 };
 
+/** Parsed worker-stamped identity and resource received by a session DO. */
+export type VerifiedMcpRequestHeaders = VerifiedTokenHeaders & {
+  readonly resourceKey: string;
+};
+
+/** Parse the complete worker-stamped modern identity header set. */
+export const verifiedMcpRequestHeaders = (request: Request): VerifiedMcpRequestHeaders | null => {
+  const accountId = request.headers.get(INTERNAL_ACCOUNT_ID_HEADER);
+  const organizationId = request.headers.get(INTERNAL_ORGANIZATION_ID_HEADER);
+  const resourceKey = request.headers.get(INTERNAL_RESOURCE_KEY_HEADER);
+  return accountId && organizationId && resourceKey
+    ? { accountId, organizationId, resourceKey }
+    : null;
+};
+
 // Worker and DO run in separate isolates with independent WebSdk tracer
 // providers. Neither one can see the other's OTEL context, so the DO used
 // to emit a brand-new root trace on every stub call. Ferry the worker span
@@ -89,7 +104,7 @@ export const withVerifiedIdentityHeaders = (
 export const withMcpResponseHeaders = (response: Response): Response => {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-expose-headers", "mcp-session-id");
+  headers.set("access-control-expose-headers", "mcp-session-id, mcp-protocol-version");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

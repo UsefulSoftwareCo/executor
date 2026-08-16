@@ -7,6 +7,7 @@ import {
   type AuthOutcome,
   type Principal,
 } from "@executor-js/host-mcp";
+import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server-v2";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,
@@ -14,23 +15,18 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import {
+  classifyMcpProtocolEra,
+  makeMcpModernRequestRouter,
+  mcpCorsPreflightResponse,
+  requireMcpRequestStateKey,
+} from "@executor-js/cloudflare/mcp/modern-request-router";
+import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
-import { McpSessionDO } from "./session-durable-object";
-
-const corsPreflightResponse = (): Response =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
-    },
-  });
+import { McpSessionDO, makeCloudflareModernMcpServerBuilder } from "./session-durable-object";
 
 const jsonRpcResponse = (
   status: number,
@@ -91,13 +87,16 @@ const propsForPrincipal = (
   });
 
 export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
+  const modern = makeMcpModernRequestRouter();
   const serve = McpSessionDO.serve("/mcp", {
     binding: "MCP_SESSION",
     transport: "streamable-http",
   });
 
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
-    if (request.method === "OPTIONS") return corsPreflightResponse();
+    if (request.method === "OPTIONS") {
+      return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
+    }
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
@@ -112,6 +111,32 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
         );
       }
       return renderAuthError(auth, request, outcome);
+    }
+
+    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+    const era = await classifyMcpProtocolEra(request, parsedBody);
+    if (era === "modern") {
+      const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+      (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
+      const forwarded = withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        defaultMcpResource,
+      );
+      return modern.fetch({
+        request: forwarded,
+        parsedBody,
+        principal: outcome.principal,
+        resource: defaultMcpResource,
+        props,
+        requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
+        builder: makeCloudflareModernMcpServerBuilder(env, config, props.session),
+        sessions: env.MCP_SESSION,
+        executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
+      });
     }
 
     if (!sessionId && request.method === "DELETE") {

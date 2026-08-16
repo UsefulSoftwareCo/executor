@@ -1,8 +1,14 @@
-import { Cause, Deferred, Effect, Exit, Option, Schema } from "effect";
+import { Cause, Data, Deferred, Effect, Exit, Option, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import type { Connection, ConnectionContext } from "agents";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  createMcpHandler,
+  type McpHttpHandler,
+  type McpRequestContext,
+  type McpServer as ModernMcpServer,
+} from "@modelcontextprotocol/server";
 
 import { RequestOrgSlug, RequestWebOrigin } from "@executor-js/api/server";
 import {
@@ -18,13 +24,28 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+import {
+  defaultMcpResource,
+  jsonRpcErrorBody,
+  mcpResourceKey,
+  type McpResource,
+} from "@executor-js/host-mcp";
+import {
+  appsEnabledForClientCapabilities,
+  clientCapabilitiesFromRequestBody,
+  mcpRequestStatePrincipal,
+} from "@executor-js/host-mcp/tool-server-v2";
 
-import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
-import type {
-  McpExecutionOwnerDirectory,
-  McpExecutionOwnerRecord,
-  McpExecutionOwnerRoute,
+import {
+  verifiedMcpRequestHeaders,
+  type IncomingPropagationHeaders,
+  type McpElicitationMode,
+} from "./do-headers";
+import {
+  modernMcpExecutionOwnerRoute,
+  type McpExecutionOwnerDirectory,
+  type McpExecutionOwnerRecord,
+  type McpExecutionOwnerRoute,
 } from "./execution-owner-directory";
 import {
   MAX_PAUSED_SESSION_IDLE_MS,
@@ -125,6 +146,23 @@ export interface SessionMeta {
 export interface BuiltMcpServer {
   readonly mcpServer: McpServer;
   readonly engine: ExecutionEngine<Cause.YieldableError>;
+  /** Modern per-request server factory sharing this legacy runtime's engine. */
+  readonly modernRuntime?: BuiltModernMcpRuntime;
+}
+
+/** Request-specific inputs added to a DO-local SDK v2 server. */
+export interface ModernMcpServerRequestOptions {
+  readonly appsEnabled: boolean;
+  readonly requestStateSigningKey: Uint8Array | string;
+  readonly requestStatePrincipal: string;
+}
+
+/** Long-lived DO execution runtime shared by per-request SDK v2 servers. */
+export interface BuiltModernMcpRuntime {
+  readonly engine: ExecutionEngine<Cause.YieldableError>;
+  readonly buildServer: (
+    options: ModernMcpServerRequestOptions,
+  ) => Effect.Effect<ModernMcpServer, Cause.YieldableError>;
 }
 
 export interface BrowserApprovalStore {
@@ -132,8 +170,15 @@ export interface BrowserApprovalStore {
   readonly waitForResponse: (executionId: string) => Effect.Effect<ResumeResponse | null>;
 }
 
+type ModernRuntimeAccess =
+  | { readonly status: "ok"; readonly runtime: BuiltModernMcpRuntime }
+  | { readonly status: "forbidden" };
+
+class ModernMcpRuntimeNotConfigured extends Data.TaggedError("ModernMcpRuntimeNotConfigured") {}
+
 const SESSION_META_KEY = "session-meta";
 const LAST_ACTIVITY_KEY = "last-activity-ms";
+const MODERN_SESSION_KEY = "modern-session";
 const PARTYSERVER_NAME_KEY = "__ps_name";
 /** The agents SDK's durable "condemned" marker (`_cf_scheduleDestroy`). */
 const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
@@ -229,6 +274,12 @@ export abstract class McpAgentSessionDOBase<
   private engine: ExecutionEngine<Cause.YieldableError> | null = null;
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
+  private modernRuntime: BuiltModernMcpRuntime | null = null;
+  private modernRuntimePromise: Promise<ModernRuntimeAccess> | null = null;
+  private modernHandler: McpHttpHandler | null = null;
+  private modernRunningRequestCount = 0;
+  private modernRequestBodies = new WeakMap<Request, unknown>();
+  private modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
   private initialized = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
@@ -244,6 +295,20 @@ export abstract class McpAgentSessionDOBase<
     sessionMeta: SessionMeta,
     dbHandle: TDbHandle,
   ): Effect.Effect<BuiltMcpServer>;
+
+  /** Build the engine and per-request SDK v2 server factory for a modern-only DO. */
+  protected buildModernMcpRuntime(
+    _sessionMeta: SessionMeta,
+    _dbHandle: TDbHandle,
+  ): Effect.Effect<BuiltModernMcpRuntime, Cause.YieldableError> {
+    return Effect.fail(new ModernMcpRuntimeNotConfigured());
+  }
+
+  /** Read and validate the deployment-provided modern request-state signing key. */
+  protected modernRequestStateSigningKey(): string {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- composition boundary: subclasses serving modern MCP must provide a shared deployment key
+    throw new Error("Modern MCP request-state signing is not configured");
+  }
 
   protected withTelemetry<A, E>(
     effect: Effect.Effect<A, E>,
@@ -293,6 +358,16 @@ export abstract class McpAgentSessionDOBase<
     return { sessionId: this.sessionId };
   }
 
+  private modernExecutionOwnerRoute(): McpExecutionOwnerRoute {
+    return this.ctx.id.name
+      ? this.executionOwnerRoute()
+      : modernMcpExecutionOwnerRoute(this.ctx.id.toString());
+  }
+
+  private runtimeOwnerId(): string {
+    return this.ctx.id.name ? this.sessionId : this.modernExecutionOwnerRoute().sessionId;
+  }
+
   protected sameExecutionOwnerRoute(a: McpExecutionOwnerRoute, b: McpExecutionOwnerRoute): boolean {
     return a.sessionId === b.sessionId;
   }
@@ -320,11 +395,28 @@ export abstract class McpAgentSessionDOBase<
   ): Effect.Effect<ResumeFallbackOutcome | null> =>
     this.resumeFromExecutionOwnerDirectory(executionId, response);
 
+  protected readonly modernModelResumeFallback = (
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<ResumeFallbackOutcome | null> =>
+    this.resumeFromExecutionOwnerDirectory(executionId, response, this.modernExecutionOwnerRoute());
+
   protected readonly pausedExecutionHooks: PausedExecutionHooks = {
     onExecutionPaused: (executionId, deadline) =>
       Effect.sync(() => {
         this.queuePendingApprovalLeaseStart(executionId, deadline);
       }),
+    onResumeStarted: (executionId) => this.beginPendingApprovalResume(executionId),
+    onResumeSettled: (executionId) => this.finishPendingApprovalResume(executionId),
+  };
+
+  /**
+   * Modern pause hooks await the directory write before the `input_required`
+   * result leaves the DO, so its signed continuation is immediately routable.
+   */
+  protected readonly modernPausedExecutionHooks: PausedExecutionHooks = {
+    onExecutionPaused: (executionId, deadline) =>
+      this.startPendingApprovalLease(executionId, deadline, this.modernExecutionOwnerRoute()),
     onResumeStarted: (executionId) => this.beginPendingApprovalResume(executionId),
     onResumeSettled: (executionId) => this.finishPendingApprovalResume(executionId),
   };
@@ -428,7 +520,7 @@ export abstract class McpAgentSessionDOBase<
     for (const requestIds of rows.values()) {
       if (Array.isArray(requestIds)) count += requestIds.length;
     }
-    return count;
+    return count + this.modernRunningRequestCount;
   }
 
   private closeActiveStreams(): void {
@@ -481,7 +573,7 @@ export abstract class McpAgentSessionDOBase<
     console.info(
       JSON.stringify({
         event: "mcp_session_idle_runtime_dispose",
-        sessionId: this.sessionId,
+        sessionId: this.runtimeOwnerId(),
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
       }),
@@ -540,7 +632,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_execution_owner_directory_error",
           operation: input.operation,
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.runtimeOwnerId(),
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
           cause: Cause.pretty(input.cause),
@@ -565,7 +657,7 @@ export abstract class McpAgentSessionDOBase<
         JSON.stringify({
           event: "mcp_model_resume_forward_error",
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.runtimeOwnerId(),
           ownerSessionId: input.owner.sessionId,
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
@@ -591,7 +683,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_model_resume_forward_error",
           reason: "timeout",
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.runtimeOwnerId(),
           ownerSessionId: input.owner.sessionId,
           timeoutMs: input.timeoutMs,
         }),
@@ -619,6 +711,120 @@ export abstract class McpAgentSessionDOBase<
       : built;
   }
 
+  private buildModernRuntime(sessionMeta: SessionMeta, dbHandle: TDbHandle) {
+    const built = sessionMeta.organizationSlug
+      ? this.buildModernMcpRuntime(sessionMeta, dbHandle).pipe(
+          Effect.provideService(RequestOrgSlug, { slug: sessionMeta.organizationSlug }),
+        )
+      : this.buildModernMcpRuntime(sessionMeta, dbHandle);
+    return sessionMeta.webOrigin
+      ? built.pipe(Effect.provideService(RequestWebOrigin, { origin: sessionMeta.webOrigin }))
+      : built;
+  }
+
+  private modernPropsOwnSession(sessionMeta: SessionMeta, props: McpSessionProps): boolean {
+    return (
+      props.session.userId === sessionMeta.userId &&
+      props.session.organizationId === sessionMeta.organizationId &&
+      mcpResourceKey(props.session.resource) === mcpResourceKey(sessionMeta.resource)
+    );
+  }
+
+  private startModernRuntime(props: McpSessionProps): Promise<ModernRuntimeAccess> {
+    if (this.modernRuntimePromise) return this.modernRuntimePromise;
+
+    const self = this;
+    const program = Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
+      const stored = yield* self.loadSessionMeta();
+      if (stored && !self.modernPropsOwnSession(stored, props)) {
+        return { status: "forbidden" as const };
+      }
+      const sessionMeta = stored ?? (yield* self.resolveAndStoreSessionMeta(props.session));
+      if (self.modernRuntime && self.engine) {
+        yield* Effect.promise(() => self.markActivity());
+        return { status: "ok" as const, runtime: self.modernRuntime };
+      }
+
+      const dbHandle = self.dbHandle ?? (yield* self.openSessionDbHandle());
+      self.dbHandle = dbHandle;
+      const runtime = yield* self.buildModernRuntime(sessionMeta, dbHandle);
+      self.modernRuntime = runtime;
+      self.engine = runtime.engine;
+      yield* Effect.promise(() =>
+        Promise.all([self.ctx.storage.put(MODERN_SESSION_KEY, true), self.markActivity()]).then(
+          () => undefined,
+        ),
+      );
+      return { status: "ok" as const, runtime };
+    }).pipe(
+      Effect.tapCause((cause) =>
+        Effect.gen(function* () {
+          console.error("[mcp-session] modern runtime init failed:", Cause.pretty(cause));
+          yield* self.captureCauseEffect(cause);
+          yield* self.recordCauseOnSpan(cause);
+          yield* self.closeRuntime();
+        }),
+      ),
+      Effect.withSpan("McpSessionDO.startModernRuntime", {
+        attributes: { "mcp.auth.organization_id": props.session.organizationId },
+      }),
+      (effect) => self.withTelemetry(effect, props.propagation),
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object RPC methods can only reject their Promise
+      Effect.orDie,
+      (effect) => self.withSpanFlush(effect),
+    );
+
+    const starting = Effect.runPromise(program);
+    this.modernRuntimePromise = starting;
+    starting.then(
+      () => {
+        if (this.modernRuntimePromise === starting) this.modernRuntimePromise = null;
+      },
+      () => {
+        if (this.modernRuntimePromise === starting) this.modernRuntimePromise = null;
+      },
+    );
+    return starting;
+  }
+
+  private modernHandlerForRuntime(): McpHttpHandler {
+    if (this.modernHandler) return this.modernHandler;
+    const self = this;
+    this.modernHandler = createMcpHandler(
+      (context: McpRequestContext) => {
+        const request = context.requestInfo;
+        const runtime = self.modernRuntime;
+        const sessionMeta = self.sessionMeta;
+        if (!request || !runtime || !sessionMeta || !self.modernRequestBodies.has(request)) {
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise has no typed failure channel; absent DO request context is an SDK defect
+          return Effect.runPromise(Effect.die("Modern MCP Durable Object has no request runtime"));
+        }
+        const parsedBody = self.modernRequestBodies.get(request);
+        const propagation = self.modernRequestPropagation.get(request);
+        const capabilities = clientCapabilitiesFromRequestBody(parsedBody);
+        return Effect.runPromise(
+          runtime
+            .buildServer({
+              appsEnabled: appsEnabledForClientCapabilities(capabilities),
+              requestStateSigningKey: self.modernRequestStateSigningKey(),
+              requestStatePrincipal: mcpRequestStatePrincipal({
+                accountId: sessionMeta.userId,
+                organizationId: sessionMeta.organizationId,
+              }),
+            })
+            .pipe(
+              (effect) => self.withTelemetry(effect, propagation),
+              // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise can only reject
+              Effect.orDie,
+            ),
+        );
+      },
+      { legacy: "reject" },
+    );
+    return this.modernHandler;
+  }
+
   private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
@@ -631,8 +837,16 @@ export abstract class McpAgentSessionDOBase<
         delete (self as { server?: McpServer }).server;
         yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
       }
+      if (self.modernHandler) {
+        const handler = self.modernHandler;
+        self.modernHandler = null;
+        yield* Effect.promise(() => handler.close()).pipe(Effect.ignore);
+      }
       Reflect.set(self, "_transport", undefined);
       self.engine = null;
+      self.modernRuntime = null;
+      self.modernRequestBodies = new WeakMap<Request, unknown>();
+      self.modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
       if (self.dbHandle) {
         const dbHandle = self.dbHandle;
         self.dbHandle = null;
@@ -709,10 +923,11 @@ export abstract class McpAgentSessionDOBase<
       yield* self.prepareErrorCaptureScope();
       const sessionMeta = yield* self.resolveAndStoreSessionMeta(props.session);
       const dbHandle = yield* self.openSessionDbHandle();
-      const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
+      const { mcpServer, engine, modernRuntime } = yield* self.buildRuntime(sessionMeta, dbHandle);
       self.dbHandle = dbHandle;
       self.server = mcpServer;
       self.engine = engine;
+      self.modernRuntime = modernRuntime ?? null;
       self.initialized = true;
       yield* Effect.promise(() => self.markActivity()).pipe(
         Effect.withSpan("McpSessionDO.markActivity"),
@@ -745,6 +960,50 @@ export abstract class McpAgentSessionDOBase<
         (effect) => self.withSpanFlush(effect),
       ),
     );
+  }
+
+  /**
+   * Serve one authenticated modern request without entering the legacy
+   * `McpAgent` streamable-HTTP transport.
+   */
+  async serveModernMcp(
+    request: Request,
+    props: McpSessionProps,
+    parsedBody: unknown,
+  ): Promise<Response> {
+    this.modernRequestStateSigningKey();
+    const verified = verifiedMcpRequestHeaders(request);
+    if (
+      !verified ||
+      verified.accountId !== props.session.userId ||
+      verified.organizationId !== props.session.organizationId ||
+      verified.resourceKey !== mcpResourceKey(props.session.resource)
+    ) {
+      return jsonRpcErrorBody(403, -32003, "Invalid MCP Durable Object identity", {
+        cors: false,
+      });
+    }
+    const access = await this.startModernRuntime(props);
+    const sessionMeta = this.sessionMeta;
+    if (
+      access.status === "forbidden" ||
+      !sessionMeta ||
+      !this.modernPropsOwnSession(sessionMeta, props)
+    ) {
+      return jsonRpcErrorBody(403, -32003, "MCP session does not belong to the current bearer", {
+        cors: false,
+      });
+    }
+
+    this.modernRequestBodies.set(request, parsedBody);
+    this.modernRequestPropagation.set(request, props.propagation);
+    this.modernRunningRequestCount += 1;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the RPC must decrement its in-memory running lease on both handler resolution and rejection
+    try {
+      return await this.modernHandlerForRuntime().fetch(request, { parsedBody });
+    } finally {
+      this.modernRunningRequestCount = Math.max(0, this.modernRunningRequestCount - 1);
+    }
   }
 
   async validateMcpSessionOwner(
@@ -928,7 +1187,8 @@ export abstract class McpAgentSessionDOBase<
   }
 
   override async alarm(): Promise<void> {
-    if (!(await this.hasPartyServerName())) {
+    const isModernSession = (await this.ctx.storage.get<boolean>(MODERN_SESSION_KEY)) === true;
+    if (!isModernSession && !(await this.hasPartyServerName())) {
       await this.cleanupUnaddressableSessionAlarm();
       return;
     }
@@ -947,15 +1207,21 @@ export abstract class McpAgentSessionDOBase<
     });
 
     if (decision.kind === "idle_within_timeout") {
+      if (isModernSession) {
+        await this.ctx.storage.setAlarm(Date.now() + Math.max(1, this.sessionTimeoutMs() - idleMs));
+        return;
+      }
       await super.alarm();
       return;
     }
+
+    const ownerId = isModernSession ? this.modernExecutionOwnerRoute().sessionId : this.sessionId;
 
     if (decision.kind === "extend_paused_lease") {
       console.info(
         JSON.stringify(
           pausedLeaseExtensionLog({
-            sessionId: this.sessionId,
+            sessionId: ownerId,
             pausedExecutionCount,
             idleMs,
             leaseMs: decision.leaseMs,
@@ -970,7 +1236,7 @@ export abstract class McpAgentSessionDOBase<
       console.info(
         JSON.stringify(
           runningLeaseExtensionLog({
-            sessionId: this.sessionId,
+            sessionId: ownerId,
             runningExecutionCount,
             activeStreamCount,
             idleMs,
@@ -1030,6 +1296,7 @@ export abstract class McpAgentSessionDOBase<
   private writeExecutionOwnerEntry(
     executionId: string,
     deadline: PausedExecutionDeadline | undefined,
+    owner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<void> {
     const directory = this.executionOwnerDirectory();
     if (!directory || !deadline) return Effect.void;
@@ -1039,7 +1306,7 @@ export abstract class McpAgentSessionDOBase<
       if (!sessionMeta) return;
       const record: McpExecutionOwnerRecord = {
         executionId,
-        owner: self.executionOwnerRoute(),
+        owner,
         accountId: sessionMeta.userId,
         organizationId: sessionMeta.organizationId,
         expiresAt: deadline.expiresAt,
@@ -1082,6 +1349,7 @@ export abstract class McpAgentSessionDOBase<
   private resumeFromExecutionOwnerDirectory(
     executionId: string,
     response: ResumeResponse,
+    currentOwner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<ResumeFallbackOutcome | null> {
     const directory = this.executionOwnerDirectory();
     if (!directory) return Effect.succeed(null);
@@ -1108,7 +1376,7 @@ export abstract class McpAgentSessionDOBase<
         return { status: "execution_forbidden" } as const;
       }
 
-      if (self.sameExecutionOwnerRoute(record.owner, self.executionOwnerRoute())) {
+      if (self.sameExecutionOwnerRoute(record.owner, currentOwner)) {
         yield* self.deleteExecutionOwnerEntry(executionId);
         return { status: "execution_expired", ttlMs: record.ttlMs } as const;
       }
@@ -1155,6 +1423,7 @@ export abstract class McpAgentSessionDOBase<
   private startPendingApprovalLease(
     executionId: string,
     deadline: PausedExecutionDeadline | undefined,
+    owner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
@@ -1177,7 +1446,7 @@ export abstract class McpAgentSessionDOBase<
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);
       self.pendingApprovalLeases.set(executionId, { disposeKeepAlive, timeout, expiring: false });
-      yield* self.writeExecutionOwnerEntry(executionId, deadline);
+      yield* self.writeExecutionOwnerEntry(executionId, deadline, owner);
     }).pipe(
       Effect.withSpan("McpSessionDO.pending_approval_lease.start", {
         attributes: { "mcp.execution.id": executionId },
