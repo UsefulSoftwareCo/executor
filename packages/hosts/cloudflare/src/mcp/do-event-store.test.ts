@@ -113,6 +113,38 @@ describe("DurableObjectMcpEventStore", () => {
     expect(replayed).toEqual([second]);
   });
 
+  it("replays a marked POST stream on standalone recovery and clears it after acknowledgement", async () => {
+    const { storage, store } = makeStore();
+    await store.markStreamUndelivered("post-stream");
+    const prime = await store.storeEvent("post-stream", {
+      jsonrpc: "2.0",
+      method: "notifications/message",
+      params: { level: "debug", data: "prime" },
+    });
+    const result = await store.storeEvent("post-stream", {
+      jsonrpc: "2.0",
+      id: "call-1",
+      result: { content: [{ type: "text", text: "completed" }] },
+    });
+    const replayed: string[] = [];
+
+    const streamIds = await store.replayUndeliveredStreams({
+      send: (eventId) => {
+        replayed.push(eventId);
+        return Promise.resolve();
+      },
+    });
+
+    expect(streamIds).toEqual(["post-stream"]);
+    expect(replayed).toEqual([prime, result]);
+
+    await store.acknowledgeUndeliveredStreams(streamIds);
+    await expect(
+      store.replayUndeliveredStreams({ send: () => Promise.resolve() }),
+    ).resolves.toEqual([]);
+    expect(eventKeys(storage)).toEqual([]);
+  });
+
   it("evicts oldest events at the byte cap but never the newest", async () => {
     const { storage, store } = makeStore();
     const bigMessage = (marker: string) => ({

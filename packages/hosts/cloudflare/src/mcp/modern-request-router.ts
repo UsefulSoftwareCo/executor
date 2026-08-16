@@ -134,7 +134,10 @@ const toModernSessionStub = (stub: unknown): McpModernSessionStub =>
 const stubForOwner = <Id>(
   sessions: McpModernSessionNamespace<Id>,
   owner: { readonly sessionId: string },
-): McpModernSessionStub => toModernSessionStub(mcpSessionStubForOwner(sessions, owner));
+): McpModernSessionStub | null => {
+  const stub = mcpSessionStubForOwner(sessions, owner);
+  return stub ? toModernSessionStub(stub) : null;
+};
 
 const freshStub = <Id>(sessions: McpModernSessionNamespace<Id>): McpModernSessionStub =>
   toModernSessionStub(sessions.get(sessions.newUniqueId()));
@@ -240,7 +243,10 @@ export const makeMcpModernRequestRouter = (): McpModernRequestRouter => {
           jsonRpcErrorBody(403, -32003, "MCP execution does not belong to the current bearer"),
         );
       }
-      return withModernMcpCors(await serveDo(stubForOwner(input.sessions, owner.owner), input));
+      const ownerStub = stubForOwner(input.sessions, owner.owner);
+      return withModernMcpCors(
+        ownerStub ? await serveDo(ownerStub, input) : await serveWorker(input),
+      );
     },
     close: () =>
       Promise.all(Array.from(handlers.values(), (handler) => handler.close())).then(

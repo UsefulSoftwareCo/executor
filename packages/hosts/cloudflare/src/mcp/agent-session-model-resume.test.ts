@@ -425,11 +425,9 @@ describe("McpAgentSessionDOBase cross-session model resume", () => {
         response: ResumeResponse,
       ) =>
         Effect.promise(async () => {
-          return mcpSessionStub(sessionNamespace, owner.sessionId).resumeExecutionForModel(
-            executionId,
-            identity,
-            response,
-          );
+          const ownerSession = mcpSessionStub(sessionNamespace, owner.sessionId);
+          if (!ownerSession) return { status: "execution_expired" as const, ttlMs: 0 };
+          return ownerSession.resumeExecutionForModel(executionId, identity, response);
         }),
     );
 

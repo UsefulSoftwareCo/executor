@@ -99,11 +99,10 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
+        const session = mcpSessionStub(env.MCP_SESSION, sessionId);
         await Effect.runPromise(
           Effect.ignore(
-            Effect.tryPromise(() =>
-              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
-            ),
+            session ? Effect.tryPromise(() => session._cf_scheduleDestroy()) : Effect.void,
           ),
         );
       }
@@ -140,8 +139,12 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } });
     }
 
-    if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+    const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
+    if (sessionId && !existingSession) {
+      return jsonRpcResponse(404, -32001, "Session not found");
+    }
+    if (existingSession) {
+      const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
@@ -170,9 +173,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       ),
       propagation,
     );
-    const target = sessionId
-      ? mcpSessionStub(env.MCP_SESSION, sessionId)
-      : createMcpSessionStub(env.MCP_SESSION).stub;
+    const target = existingSession ?? createMcpSessionStub(env.MCP_SESSION).stub;
     return withMcpResponseHeaders(await target.fetch(forwarded));
   };
 };

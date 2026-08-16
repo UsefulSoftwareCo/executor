@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 import { Cause, Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -181,17 +181,28 @@ const engine: ExecutionEngine<Cause.YieldableError> = {
   getDescription: Effect.succeed("test Durable Object executor"),
 };
 
-class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, { readonly end: () => void }> {
+class HarnessSession extends McpAgentSessionDOBase<
+  Cloudflare.Env,
+  { readonly end: () => void | Promise<void> }
+> {
   constructor(
     ctx: DurableObjectState,
     env: Cloudflare.Env,
     private readonly sessionEngine: ExecutionEngine<Cause.YieldableError> = engine,
+    private readonly runtimeOptions: {
+      readonly end?: () => void | Promise<void>;
+      readonly sessionTimeoutMs?: number;
+    } = {},
   ) {
     super(ctx, env);
   }
 
-  protected override openSessionDb(): { readonly end: () => void } {
-    return { end: () => undefined };
+  protected override openSessionDb(): { readonly end: () => void | Promise<void> } {
+    return { end: this.runtimeOptions.end ?? (() => undefined) };
+  }
+
+  protected override sessionTimeoutMs(): number {
+    return this.runtimeOptions.sessionTimeoutMs ?? super.sessionTimeoutMs();
   }
 
   protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
@@ -257,6 +268,10 @@ const makeClientHarness = (state = new MemoryDurableObjectState()) => {
 };
 
 describe("McpAgentSessionDOBase SDK v2 session serving", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("serves and reuses a legacy v1 SDK client through the Durable Object", async () => {
     const harness = makeClientHarness();
     await harness.client.connect(harness.transport);
@@ -390,6 +405,120 @@ describe("McpAgentSessionDOBase SDK v2 session serving", () => {
     const replayBody = await replay.text();
     expect(replayBody).toContain("slow result");
     expect(replayBody).toContain(`id: ${replayEventId.slice(0, replayEventId.lastIndexOf(":"))}:`);
+
+    const standaloneReplay = await session.fetch(
+      verifiedRequest(
+        new Request("https://executor.test/mcp", {
+          method: "GET",
+          headers: {
+            accept: "text/event-stream",
+            "mcp-session-id": SESSION_ID,
+            "mcp-protocol-version": "2025-06-18",
+          },
+        }),
+      ),
+    );
+    const standaloneReplayBody = await standaloneReplay.text();
+    expect(standaloneReplayBody).toContain("slow result");
+    expect(standaloneReplayBody).toContain("event: message");
+    await state.flushWaitUntil();
+  });
+
+  it("restores once while an idle runtime generation is still closing", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let closeStarted = (): void => undefined;
+    const closing = new Promise<void>((resolve) => {
+      closeStarted = resolve;
+    });
+    let finishClose = (): void => undefined;
+    const closeGate = new Promise<void>((resolve) => {
+      finishClose = resolve;
+    });
+    let closeCount = 0;
+    const state = new MemoryDurableObjectState();
+    const session = new HarnessSession(state, {} as Cloudflare.Env, engine, {
+      sessionTimeoutMs: 10,
+      end: () => {
+        closeCount += 1;
+        if (closeCount !== 1) return;
+        closeStarted();
+        return closeGate;
+      },
+    });
+    const post = (body: unknown): Request =>
+      verifiedRequest(
+        new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+            "mcp-session-id": SESSION_ID,
+            "mcp-protocol-version": "2025-06-18",
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+
+    const initialize = await session.fetch(
+      verifiedRequest(
+        new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "initialize",
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "restore-race", version: "1.0.0" },
+            },
+          }),
+        }),
+      ),
+    );
+    await initialize.text();
+    await session.fetch(post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }));
+
+    now += 100;
+    const alarm = session.alarm();
+    await closing;
+
+    const get = session.fetch(
+      verifiedRequest(
+        new Request("https://executor.test/mcp", {
+          method: "GET",
+          headers: {
+            accept: "text/event-stream",
+            "mcp-session-id": SESSION_ID,
+            "mcp-protocol-version": "2025-06-18",
+          },
+        }),
+      ),
+    );
+    const list = session.fetch(
+      post({ jsonrpc: "2.0", id: "concurrent-list", method: "tools/list", params: {} }),
+    );
+
+    finishClose();
+    const [getResponse, listResponse] = await Promise.all([get, list]);
+    expect(getResponse.status).toBe(200);
+    await getResponse.body?.cancel();
+    expect(listResponse.status).toBe(200);
+    expect(await listResponse.text()).toContain("execute");
+    await alarm;
+    await expect(state.storage.get("executor:mcp:v2:last-activity-ms")).resolves.toBe(now);
+    await expect(state.storage.getAlarm()).resolves.toBe(now + 10);
+
+    const followUp = await session.fetch(
+      post({ jsonrpc: "2.0", id: "follow-up-list", method: "tools/list", params: {} }),
+    );
+    expect(followUp.status).toBe(200);
+    expect(await followUp.text()).toContain("execute");
   });
 
   it("persists v2 metadata and rejects a different principal", async () => {

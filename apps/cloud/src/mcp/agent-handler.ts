@@ -161,11 +161,10 @@ export const makeCloudMcpAgentHandler = () => {
       // / JWKS failure) and `Unauthorized` (retry with a fresh token) must leave
       // the session intact, so the condemn path is gated on `Forbidden` alone.
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
+        const session = mcpSessionStub(env.MCP_SESSION, sessionId);
         await Effect.runPromise(
           Effect.ignore(
-            Effect.tryPromise(() =>
-              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
-            ),
+            session ? Effect.tryPromise(() => session._cf_scheduleDestroy()) : Effect.void,
           ),
         );
       }
@@ -212,8 +211,12 @@ export const makeCloudMcpAgentHandler = () => {
       });
     }
 
-    if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+    const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
+    if (sessionId && !existingSession) {
+      return jsonRpcResponse(404, -32001, "Session not found");
+    }
+    if (existingSession) {
+      const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
@@ -244,9 +247,7 @@ export const makeCloudMcpAgentHandler = () => {
       ),
       propagation,
     );
-    const target = sessionId
-      ? mcpSessionStub(env.MCP_SESSION, sessionId)
-      : createMcpSessionStub(env.MCP_SESSION).stub;
+    const target = existingSession ?? createMcpSessionStub(env.MCP_SESSION).stub;
     let response: Response;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a condemned DO abort can reject its direct fetch
     try {

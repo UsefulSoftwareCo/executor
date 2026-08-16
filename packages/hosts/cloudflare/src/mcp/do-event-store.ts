@@ -1,6 +1,7 @@
 import type { EventId, EventStore, JSONRPCMessage, StreamId } from "@modelcontextprotocol/server";
 
 const EVENT_KEY_PREFIX = "executor:mcp:v2:event:";
+const UNDELIVERED_STREAM_KEY_PREFIX = "executor:mcp:v2:undelivered-stream:";
 const SEQUENCE_WIDTH = 16;
 const REPLAY_LIMIT = 1_000;
 const DELETE_CHUNK_SIZE = 128;
@@ -25,6 +26,9 @@ type StoredEntry = {
 };
 
 const eventPrefix = (streamId: StreamId): string => `${EVENT_KEY_PREFIX}${streamId}:`;
+
+const undeliveredStreamKey = (streamId: StreamId): string =>
+  `${UNDELIVERED_STREAM_KEY_PREFIX}${streamId}`;
 
 const eventIdFromKey = (key: string): EventId => key.slice(EVENT_KEY_PREFIX.length);
 
@@ -163,6 +167,81 @@ export class DurableObjectMcpEventStore implements EventStore {
   /** Resolve the stream encoded into an Executor event ID. */
   getStreamIdForEventId(eventId: EventId): Promise<StreamId | undefined> {
     return Promise.resolve(streamIdFromEventId(eventId));
+  }
+
+  /**
+   * Mark a tool-call stream as requiring at-least-once delivery confirmation.
+   *
+   * Direct workerd streaming cannot prove that a completed POST body reached
+   * the remote client, so the marker remains until a later standalone GET
+   * drains the stream and its response body completes.
+   */
+  async markStreamUndelivered(streamId: StreamId): Promise<void> {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- storage boundary: a marker failure cannot block the live tool request
+    try {
+      await this.storage.put(undeliveredStreamKey(streamId), true);
+    } catch {
+      logStoreWarning("mcp_event_store_put_failed", {
+        operation: "mark_undelivered",
+        streamId,
+      });
+    }
+  }
+
+  /** Replay every marked POST stream onto a standalone recovery response. */
+  async replayUndeliveredStreams({
+    send,
+  }: {
+    readonly send: (eventId: EventId, message: JSONRPCMessage) => Promise<void>;
+  }): Promise<readonly StreamId[]> {
+    const replayedStreamIds: StreamId[] = [];
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- storage/replay boundary: recovery is best-effort and leaves markers intact for a later GET
+    try {
+      const markers = await this.storage.list<boolean>({
+        prefix: UNDELIVERED_STREAM_KEY_PREFIX,
+        limit: REPLAY_LIMIT,
+      });
+      for (const key of markers.keys()) {
+        const streamId = key.slice(UNDELIVERED_STREAM_KEY_PREFIX.length);
+        let replayed = false;
+        const rows = await this.storage.list<JSONRPCMessage>({
+          prefix: eventPrefix(streamId),
+          limit: REPLAY_LIMIT,
+        });
+        for (const [eventKey, message] of rows) {
+          await send(eventIdFromKey(eventKey), message);
+          replayed = true;
+        }
+        if (replayed) replayedStreamIds.push(streamId);
+      }
+    } catch {
+      logStoreWarning("mcp_event_store_list_failed", {
+        operation: "replay_undelivered",
+      });
+    }
+    return replayedStreamIds;
+  }
+
+  /** Clear successfully drained recovery streams and their delivery markers. */
+  async acknowledgeUndeliveredStreams(streamIds: readonly StreamId[]): Promise<void> {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- storage boundary: acknowledgement cleanup is best-effort and duplicate replay is safe
+    try {
+      for (const streamId of streamIds) {
+        const rows = await this.storage.list<JSONRPCMessage>({
+          prefix: eventPrefix(streamId),
+          limit: REPLAY_LIMIT,
+        });
+        const keys = [undeliveredStreamKey(streamId), ...rows.keys()];
+        for (let index = 0; index < keys.length; index += DELETE_CHUNK_SIZE) {
+          await this.storage.delete(keys.slice(index, index + DELETE_CHUNK_SIZE));
+        }
+      }
+    } catch {
+      logStoreWarning("mcp_event_store_delete_failed", {
+        operation: "acknowledge_undelivered",
+        streamCount: streamIds.length,
+      });
+    }
   }
 
   /** Replay persisted events after the supplied ID, in storage-key order. */
