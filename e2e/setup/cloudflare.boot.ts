@@ -48,6 +48,8 @@ export const bootCloudflare = async (options: CloudflareBootOptions): Promise<Bo
           "--var",
           "EXECUTOR_SECRET_KEY:e2e-secret-key-0123456789abcdef0123456789abcdef",
           "--var",
+          "MCP_REQUEST_STATE_KEY:e2e-mcp-request-state-key-0123456789abcdef",
+          "--var",
           "ALLOW_LOCAL_NETWORK:true",
         ],
         cwd: cloudflareDir,

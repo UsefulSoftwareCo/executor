@@ -3,7 +3,7 @@
 // `server.ts`'s request dispatch.
 // ---------------------------------------------------------------------------
 //
-// PRODUCTION serves /mcp through `server.ts`'s hibernatable Agent bridge.
+// PRODUCTION serves /mcp through `server.ts`'s direct session DO dispatch.
 // Discovery docs flow through `app.ts`'s unified `ExecutorApp.make` handler
 // (the `auth` seam's discovery routes). This module exposes:
 //   - `classifyMcpPath`   — the "is this an MCP path?" predicate (`/mcp` + the
@@ -129,8 +129,8 @@ export const prepareMcpOrgScope = (request: Request): Request => {
   return rewritten;
 };
 
-// Production no longer mounts the /mcp transport here. `server.ts` intercepts MCP
-// transport requests for the hibernatable Agent bridge, while `ExecutorApp.make`
-// serves the OAuth discovery docs through the `auth` seam's discovery routes.
-// `classifyMcpPath` + `prepareMcpOrgScope` remain because `server.ts`'s request
-// dispatch uses them to recognize and normalize MCP paths.
+// Production no longer mounts the /mcp transport here. `server.ts` authenticates
+// and forwards transport requests directly to their session Durable Objects,
+// while `ExecutorApp.make` serves the OAuth discovery docs through the `auth`
+// seam's discovery routes. `classifyMcpPath` + `prepareMcpOrgScope` remain because
+// `server.ts`'s request dispatch uses them to recognize and normalize MCP paths.

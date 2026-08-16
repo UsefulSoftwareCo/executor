@@ -1,8 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-// oxlint-disable-next-line executor/no-vitest-import -- boundary: vi.mock must come from vitest itself for mock hoisting to resolve
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 import { Cause, Effect } from "effect";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { defaultMcpResource } from "@executor-js/host-mcp";
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
@@ -26,47 +24,12 @@ import {
 import {
   McpExecutionOwnerDirectoryDO,
   mcpExecutionOwnerDirectoryFromNamespace,
-  mcpSessionDurableObjectName,
   type McpExecutionOwnerDirectory,
   type McpExecutionOwnerDirectoryNamespace,
   type McpExecutionOwnerRecord,
   type McpExecutionOwnerRoute,
 } from "./execution-owner-directory";
 import { mcpSessionStub } from "./session-stub";
-
-vi.mock("agents/mcp", () => ({
-  McpAgent: class {
-    protected readonly ctx: DurableObjectState;
-
-    constructor(ctx: DurableObjectState) {
-      this.ctx = ctx;
-    }
-
-    getSessionId(): string {
-      return this.ctx.id.toString();
-    }
-
-    keepAlive(): Promise<() => void> {
-      return Promise.resolve(() => undefined);
-    }
-
-    getStreamRequestIds(): Promise<readonly (string | number)[]> {
-      return Promise.resolve([]);
-    }
-
-    onConnect(): Promise<void> {
-      return Promise.resolve();
-    }
-
-    alarm(): Promise<void> {
-      return Promise.resolve();
-    }
-
-    destroy(): Promise<void> {
-      return Promise.resolve();
-    }
-  },
-}));
 
 class FakeStorage implements DurableObjectStorage {
   private readonly values = new Map<string, unknown>();
@@ -366,7 +329,7 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
   }
 
   async storeSessionMeta(): Promise<void> {
-    await this.fakeState.storage.put("session-meta", this.meta);
+    await this.fakeState.storage.put("executor:mcp:v2:session-meta", this.meta);
   }
 
   async startPause(executionId: string): Promise<void> {
@@ -430,12 +393,6 @@ const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
 };
 
-describe("mcpSessionDurableObjectName", () => {
-  it("uses the Agents streamable-http durable object name", () => {
-    expect(mcpSessionDurableObjectName("session_123")).toBe("streamable-http:session_123");
-  });
-});
-
 describe("McpAgentSessionDOBase cross-session model resume", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -457,7 +414,7 @@ describe("McpAgentSessionDOBase cross-session model resume", () => {
     const requesterEngine = makeEngine(() => null);
     const sessions = new Map<string, HarnessSession>();
     const sessionNamespace = {
-      idFromName: (name: string) => name,
+      idFromString: (id: string) => id,
       get: (id: string) => sessions.get(id),
     };
     const forward = vi.fn(
@@ -487,7 +444,7 @@ describe("McpAgentSessionDOBase cross-session model resume", () => {
       directoryNamespace: namespace,
       forwardModelResumeToOwner: forward,
     });
-    sessions.set(mcpSessionDurableObjectName("session-a"), sessionA);
+    sessions.set("session-a", sessionA);
     await sessionA.storeSessionMeta();
     await sessionB.storeSessionMeta();
 

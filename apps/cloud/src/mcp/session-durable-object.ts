@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Cloud MCP Session Durable Object — the cloud binding of the shared
-// `McpAgentSessionDOBase` (@executor-js/cloudflare). Hibernatable transport
+// `McpAgentSessionDOBase` (@executor-js/cloudflare). Direct HTTP transport
 // serving, cold restore, the inactivity alarm, owner validation, browser
 // approval storage, and the per-request span bridge live in the base. Cloud
 // supplies ONLY its injected dependencies:
@@ -23,11 +23,10 @@ import postgres, { type Sql } from "postgres";
 
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
-  createExecutorMcpServer,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
 import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
@@ -367,7 +366,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         parentSpan: () => self.currentParentSpan(),
       });
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
-      const mcpServer = yield* createExecutorMcpServer({
+      const mcpServer = yield* buildMcpServerV2({
         engine,
         description,
         artifacts: executor.artifacts,
@@ -380,6 +379,13 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        appsEnabled: false,
+        sessionful: true,
+        requestStateSigningKey: self.modernRequestStateSigningKey(),
+        requestStatePrincipal: mcpRequestStatePrincipal({
+          accountId: sessionMeta.userId,
+          organizationId: sessionMeta.organizationId,
+        }),
         loadAppShellHtml,
         smokeRenderArtifact,
         artifactUrl: artifactUrlFor(
@@ -405,7 +411,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
                   }),
               }
             : { mode: sessionElicitationMode },
-      }).pipe(Effect.withSpan("McpSessionDOSqlite.createExecutorMcpServer"));
+      }).pipe(Effect.withSpan("McpSessionDOSqlite.buildMcpServerV2"));
       return { mcpServer, engine, modernRuntime } satisfies BuiltMcpServer;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),

@@ -40,12 +40,12 @@
       },
     ],
   },
-  // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
-  // stores state in SQLite. The original `McpSessionDO` was created on the
+  // The MCP session DO previously moved to a SQLite-backed class. The original
+  // `McpSessionDO` was created on the
   // key-value backend (`new_classes`) and cannot be converted in place. Cloudflare
   // also refuses to delete a class in the same deploy that moves its binding (it
   // validates the delete against the live binding), so v2 only CREATES the new
-  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moves to it.
+  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moved to it.
   // The old KV `McpSessionDO` is left orphaned (unbound, kept as a stub export in
   // server.ts so the migration stays valid); it can be deleted in a later deploy
   // now that nothing binds it. Session state is ephemeral, so nothing is lost.
