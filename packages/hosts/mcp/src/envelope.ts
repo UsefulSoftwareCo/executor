@@ -22,6 +22,7 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequest,
+  mcpRequestStatePrincipal,
   requestBodyFromRequest,
 } from "./tool-server-v2";
 
@@ -263,9 +264,6 @@ interface ModernMcpRouter {
   ) => Promise<Response>;
 }
 
-const requestStatePrincipal = (principal: Principal): string =>
-  `${principal.accountId}\u0000${principal.organizationId}`;
-
 /** Build the resource-keyed, process-lifetime modern handler cache. */
 const makeModernMcpRouter = (): ModernMcpRouter => {
   const handlers = new Map<string, McpHttpHandler>();
@@ -295,7 +293,7 @@ const makeModernMcpRouter = (): ModernMcpRouter => {
               resource,
               appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
               requestStateSigningKey: getSigningKey(),
-              requestStatePrincipal: requestStatePrincipal(inputs.principal),
+              requestStatePrincipal: mcpRequestStatePrincipal(inputs.principal),
             });
           }),
         );

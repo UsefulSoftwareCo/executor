@@ -7,11 +7,20 @@ import type {
   McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
 } from "./agent-session-durable-object";
-import { mcpSessionDurableObjectName } from "./execution-owner-directory";
+import {
+  modernMcpDurableObjectId,
+  mcpSessionDurableObjectName,
+  type McpExecutionOwnerRoute,
+} from "./execution-owner-directory";
 
 export interface McpSessionNamespace<Id> {
   readonly idFromName: (name: string) => Id;
   readonly get: (id: Id) => unknown;
+}
+
+/** Session namespace surface that can address both named legacy and unique modern DOs. */
+export interface McpOwnerSessionNamespace<Id> extends McpSessionNamespace<Id> {
+  readonly idFromString: (id: string) => Id;
 }
 
 export interface McpSessionStub {
@@ -46,3 +55,16 @@ export const mcpSessionStub = <Id>(
   namespace.get(
     namespace.idFromName(mcpSessionDurableObjectName(sessionId)),
   ) as unknown as McpSessionStub;
+
+/** Resolve an execution owner route to its legacy named or modern unique DO. */
+export const mcpSessionStubForOwner = <Id>(
+  namespace: McpOwnerSessionNamespace<Id>,
+  owner: McpExecutionOwnerRoute,
+): McpSessionStub => {
+  const modernId = modernMcpDurableObjectId(owner);
+  const id = modernId
+    ? namespace.idFromString(modernId)
+    : namespace.idFromName(mcpSessionDurableObjectName(owner.sessionId));
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers generates this RPC surface from the bound DO class.
+  return namespace.get(id) as unknown as McpSessionStub;
+};

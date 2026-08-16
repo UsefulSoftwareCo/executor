@@ -8,7 +8,7 @@
  * {@link appsEnabledForClientCapabilities} decision. Legacy routing remains a
  * separate host path.
  */
-import { Effect, Match, Option, Schema } from "effect";
+import { Data, Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import {
   acceptedContent,
@@ -48,9 +48,10 @@ import {
 
 const NATIVE_ELICITATION_RESPONSE_KEY = "elicitation";
 
-const NativeRequestState = Schema.Struct({ executionId: Schema.String });
-type NativeRequestState = typeof NativeRequestState.Type;
-const decodeNativeRequestState = Schema.decodeUnknownOption(NativeRequestState);
+const NativeRequestStateSchema = Schema.Struct({ executionId: Schema.String });
+/** Verified payload carried by a modern native-elicitation continuation. */
+export type NativeRequestState = typeof NativeRequestStateSchema.Type;
+const decodeNativeRequestState = Schema.decodeUnknownOption(NativeRequestStateSchema);
 
 type V2RequestContext = McpRequestJoinKeys & {
   readonly serverContext: ServerContext;
@@ -80,10 +81,53 @@ export const appsEnabledForClientCapabilities = (
   clientCapabilities: McpAppsClientCapabilities | null | undefined,
 ): boolean => Boolean(getUiCapability(clientCapabilities)?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
 
+/** Bind modern continuation state to the ownership identity used by MCP hosts. */
+export const mcpRequestStatePrincipal = (principal: {
+  readonly accountId: string;
+  readonly organizationId: string;
+}): string => `${principal.accountId}\u0000${principal.organizationId}`;
+
+const requestStateBinding = (method: string, principal: string): string =>
+  `${method}\u0000${principal}`;
+
+/** Route-level failure verifying untrusted modern continuation state. */
+export class McpRequestStateVerificationError extends Data.TaggedError(
+  "McpRequestStateVerificationError",
+)<{ readonly cause: unknown }> {}
+
+/**
+ * Verify and parse a modern continuation before a stateless worker uses its
+ * execution id for Durable Object routing.
+ */
+export const verifyNativeRequestState = (input: {
+  readonly state: string;
+  readonly method: string;
+  readonly requestStateSigningKey: Uint8Array | string;
+  readonly requestStatePrincipal: string;
+}): Effect.Effect<NativeRequestState, McpRequestStateVerificationError> => {
+  const codec = createRequestStateCodec<NativeRequestState>({
+    key: input.requestStateSigningKey,
+    bind: () => requestStateBinding(input.method, input.requestStatePrincipal),
+  });
+  return Effect.tryPromise({
+    // The route-level verifier has no handler context. Its codec binding is a
+    // closed value derived from the already-parsed method and principal, so the
+    // SDK callback never observes this inert placeholder.
+    try: async () => {
+      const decoded: unknown = await Reflect.apply(codec.verify, codec, [input.state, null]);
+      return Effect.runPromise(Schema.decodeUnknownEffect(NativeRequestStateSchema)(decoded));
+    },
+    catch: (cause) => new McpRequestStateVerificationError({ cause }),
+  });
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const clientCapabilitiesFromUnknown = (body: unknown): McpAppsClientCapabilities | null => {
+/** Parse the MCP Apps capability subset from an already-decoded modern body. */
+export const clientCapabilitiesFromRequestBody = (
+  body: unknown,
+): McpAppsClientCapabilities | null => {
   if (!isRecord(body)) return null;
   const params = body.params;
   if (!isRecord(params)) return null;
@@ -122,7 +166,7 @@ export const requestBodyFromRequest = (request: Request): Effect.Effect<unknown>
 export const clientCapabilitiesFromRequest = (
   request: Request,
 ): Effect.Effect<McpAppsClientCapabilities | null> =>
-  requestBodyFromRequest(request).pipe(Effect.map(clientCapabilitiesFromUnknown));
+  requestBodyFromRequest(request).pipe(Effect.map(clientCapabilitiesFromRequestBody));
 
 const requestJoinKeys = (context: ServerContext): V2RequestContext => ({
   requestId: context.mcpReq.id,
@@ -208,11 +252,11 @@ const createV2Assembly = <E extends Cause.YieldableError>(
     ...(config.requestStateTtlSeconds === undefined
       ? {}
       : { ttlSeconds: config.requestStateTtlSeconds }),
-    bind: (context) => `${context.mcpReq.method}\u0000${config.requestStatePrincipal}`,
+    bind: (context) => requestStateBinding(context.mcpReq.method, config.requestStatePrincipal),
   });
   const verifyRequestState = async (state: string, context: ServerContext) => {
     const decoded = await requestStateCodec.verify(state, context);
-    return Effect.runPromise(Schema.decodeUnknownEffect(NativeRequestState)(decoded));
+    return Effect.runPromise(Schema.decodeUnknownEffect(NativeRequestStateSchema)(decoded));
   };
   const server = new McpServer(
     { name: "executor", version: "1.0.0" },

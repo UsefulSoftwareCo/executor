@@ -9,6 +9,7 @@ import {
   type AuthOutcome,
   type McpResource,
 } from "@executor-js/host-mcp";
+import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server-v2";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,
@@ -16,25 +17,20 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import {
+  classifyMcpProtocolEra,
+  makeMcpModernRequestRouter,
+  mcpCorsPreflightResponse,
+  requireMcpRequestStateKey,
+} from "@executor-js/cloudflare/mcp/modern-request-router";
+import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
-import { McpSessionDOSqlite } from "./session-durable-object";
+import { McpSessionDOSqlite, makeCloudModernMcpServerBuilder } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
-
-const corsPreflightResponse = (): Response =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
-    },
-  });
 
 const jsonRpcResponse = (
   status: number,
@@ -141,6 +137,7 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
+  const modern = makeMcpModernRequestRouter();
   const serveOptions = {
     binding: "MCP_SESSION",
     transport: "streamable-http",
@@ -158,7 +155,9 @@ export const makeCloudMcpAgentHandler = () => {
   const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
   return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
-    if (request.method === "OPTIONS") return corsPreflightResponse();
+    if (request.method === "OPTIONS") {
+      return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
+    }
     // The old envelope (packages/hosts/mcp/src/envelope.ts) answered anything
     // outside GET/POST/DELETE/OPTIONS with a JSON-RPC 405; the agents SDK
     // handler only understands its own transport verbs and falls through to
@@ -186,6 +185,36 @@ export const makeCloudMcpAgentHandler = () => {
         );
       }
       return renderAuthError(auth, request, outcome);
+    }
+
+    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+    const era = await classifyMcpProtocolEra(request, parsedBody);
+    if (era === "modern") {
+      const resource = resourceFromPath(request);
+      const props = await runTraced(
+        request,
+        propsForPrincipal(request, outcome.principal, resource),
+      );
+      (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
+      const forwarded = withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      );
+      return modern.fetch({
+        request: forwarded,
+        parsedBody,
+        principal: outcome.principal,
+        resource,
+        props,
+        requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
+        builder: makeCloudModernMcpServerBuilder(props.session),
+        sessions: env.MCP_SESSION,
+        executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
+      });
     }
 
     if (!sessionId && request.method === "DELETE") {

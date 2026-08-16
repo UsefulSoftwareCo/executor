@@ -5,6 +5,21 @@ export type McpExecutionOwnerRoute = {
   readonly sessionId: string;
 };
 
+/** Prefix distinguishing a modern unique DO id from a legacy Agent session id. */
+export const MODERN_MCP_EXECUTION_OWNER_PREFIX = "modern:";
+
+/** Encode a unique modern session DO id in the existing owner route slot. */
+export const modernMcpExecutionOwnerRoute = (durableObjectId: string): McpExecutionOwnerRoute => ({
+  sessionId: `${MODERN_MCP_EXECUTION_OWNER_PREFIX}${durableObjectId}`,
+});
+
+/** Decode the unique DO id from a modern owner route, or return null for legacy owners. */
+export const modernMcpDurableObjectId = (route: McpExecutionOwnerRoute): string | null => {
+  if (!route.sessionId.startsWith(MODERN_MCP_EXECUTION_OWNER_PREFIX)) return null;
+  const id = route.sessionId.slice(MODERN_MCP_EXECUTION_OWNER_PREFIX.length);
+  return id.length > 0 ? id : null;
+};
+
 export type McpExecutionOwnerRecord = {
   readonly executionId: string;
   readonly owner: McpExecutionOwnerRoute;

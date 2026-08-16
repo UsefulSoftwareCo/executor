@@ -3,7 +3,11 @@ import { Data, Effect } from "effect";
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
   createExecutorMcpServer,
+  type PausedExecutionHooks,
+  type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
+import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
+import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
@@ -12,18 +16,20 @@ import type { ExecutorDbHandle } from "@executor-js/api/server";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
+  type BuiltModernMcpRuntime,
   type McpApprovalOwner,
   type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { requireMcpRequestStateKey } from "@executor-js/cloudflare/mcp/modern-request-router";
 import {
   mcpExecutionOwnerDirectoryFromNamespace,
   type McpExecutionOwnerDirectory,
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
-import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
-import type { ResumeResponse } from "@executor-js/execution";
+import { mcpSessionStubForOwner } from "@executor-js/cloudflare/mcp/session-stub";
+import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
 import { createD1ExecutorDb } from "../db/d1";
@@ -53,6 +59,124 @@ type CfSessionDbHandle = ExecutorDbHandle & { readonly end: () => Promise<void> 
 class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
   readonly cause: unknown;
 }> {}
+
+class CloudflareModernMcpBuildError extends Data.TaggedError("CloudflareModernMcpBuildError")<{
+  readonly cause: unknown;
+}> {}
+
+const makeCloudflareExecutionRuntime = (
+  sessionMeta: SessionMeta,
+  dbHandle: CfSessionDbHandle,
+  config: CloudflareConfig,
+) =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() => preloadQuickJs());
+    const { engine, executor } = yield* makeExecutionStack(
+      sessionMeta.userId,
+      sessionMeta.organizationId,
+      sessionMeta.organizationName,
+      { mcpResource: sessionMeta.resource },
+    ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
+    const description = yield* buildExecuteDescription(executor);
+    return { engine, executor, description };
+  });
+
+type CloudflareExecutionRuntime = Effect.Success<ReturnType<typeof makeCloudflareExecutionRuntime>>;
+
+type CloudflareModernLifecycle = {
+  readonly pausedExecutionHooks?: PausedExecutionHooks;
+  readonly resumeFallback?: (
+    executionId: string,
+    response: ResumeResponse,
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
+};
+
+const makeCloudflareModernRuntime = (
+  sessionMeta: SessionMeta,
+  runtime: CloudflareExecutionRuntime,
+  loadAppShellHtml: () => Promise<string>,
+  config: CloudflareConfig,
+  lifecycle: CloudflareModernLifecycle = {},
+): BuiltModernMcpRuntime => {
+  const artifactOrigin = sessionMeta.webOrigin ?? config.webBaseUrl;
+  return {
+    engine: runtime.engine,
+    buildServer: (options) =>
+      buildMcpServerV2({
+        engine: runtime.engine,
+        description: runtime.description,
+        artifacts: runtime.executor.artifacts,
+        connections: runtime.executor.connections,
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        loadAppShellHtml,
+        smokeRenderArtifact,
+        ...(artifactOrigin
+          ? { artifactUrl: artifactUrlFor(artifactOrigin, sessionMeta.organizationSlug) }
+          : {}),
+        elicitationMode: { mode: "native" },
+        ...(lifecycle.pausedExecutionHooks
+          ? {
+              pausedExecutionHooks: lifecycle.pausedExecutionHooks,
+              pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,
+            }
+          : {}),
+        ...(lifecycle.resumeFallback ? { resumeFallback: lifecycle.resumeFallback } : {}),
+        ...options,
+      }),
+  };
+};
+
+const closeModernServerWithDb = <Server extends { close: () => Promise<void> }>(
+  server: Server,
+  dbHandle: CfSessionDbHandle,
+): Server => {
+  const closeServer = server.close.bind(server);
+  server.close = () =>
+    Effect.runPromise(
+      Effect.promise(closeServer).pipe(Effect.ensuring(Effect.promise(() => dbHandle.end()))),
+    );
+  return server;
+};
+
+/** Build the worker-side SDK v2 server over a fresh D1 execution runtime. */
+export const makeCloudflareModernMcpServerBuilder = (
+  env: CloudflareEnv,
+  config: CloudflareConfig,
+  session: McpSessionInit,
+): McpModernServerBuilder["Service"] => ({
+  build: (principal: Principal, options) =>
+    Effect.promise(async () => {
+      const handle = await createD1ExecutorDb(env.DB, env.BLOBS);
+      return { ...handle, end: () => handle.close() } satisfies CfSessionDbHandle;
+    }).pipe(
+      Effect.flatMap((dbHandle) => {
+        const { resource, ...requestOptions } = options;
+        const sessionMeta: SessionMeta = {
+          organizationId: principal.organizationId,
+          organizationName: config.organizationName,
+          organizationSlug: config.organizationSlug,
+          userId: principal.accountId,
+          resource,
+          elicitationMode: session.elicitationMode,
+          artifactsEnabled: session.artifactsEnabled,
+          webOrigin: session.webOrigin,
+        };
+        return makeCloudflareExecutionRuntime(sessionMeta, dbHandle, config).pipe(
+          Effect.flatMap((runtime) =>
+            makeCloudflareModernRuntime(
+              sessionMeta,
+              runtime,
+              makeAssetsShellHtmlLoader({ assets: env.ASSETS }),
+              config,
+            ).buildServer(requestOptions),
+          ),
+          Effect.map((server) => closeModernServerWithDb(server, dbHandle)),
+          Effect.tapCause(() => Effect.promise(() => dbHandle.end())),
+          Effect.mapError((cause) => new CloudflareModernMcpBuildError({ cause })),
+        );
+      }),
+    ),
+});
 
 export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSessionDbHandle> {
   private readonly cfEnv: CloudflareEnv;
@@ -88,7 +212,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
     return Effect.tryPromise({
       try: () =>
-        mcpSessionStub(this.cfEnv.MCP_SESSION, owner.sessionId).resumeExecutionForModel(
+        mcpSessionStubForOwner(this.cfEnv.MCP_SESSION, owner).resumeExecutionForModel(
           executionId,
           identity,
           response,
@@ -123,15 +247,18 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     const config = this.cfConfig;
     const self = this;
     return Effect.gen(function* () {
-      // QuickJS-WASM must be loaded before the executor layer builds it (the
-      // default variant can't fetch its .wasm on Workers). Idempotent per isolate.
-      yield* Effect.promise(() => preloadQuickJs());
-      const { engine, executor } = yield* makeExecutionStack(
-        sessionMeta.userId,
-        sessionMeta.organizationId,
-        sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource },
-      ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
+      const runtime = yield* makeCloudflareExecutionRuntime(sessionMeta, dbHandle, config);
+      const { engine, executor, description } = runtime;
+      const modernRuntime = makeCloudflareModernRuntime(
+        sessionMeta,
+        runtime,
+        self.loadAppShellHtml,
+        config,
+        {
+          pausedExecutionHooks: self.modernPausedExecutionHooks,
+          resumeFallback: self.modernModelResumeFallback,
+        },
+      );
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into
       // the console resume page. The URL origin is the create request's origin
@@ -143,6 +270,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       const artifactOrigin = sessionMeta.webOrigin ?? config.webBaseUrl;
       const mcpServer = yield* createExecutorMcpServer({
         engine,
+        description,
         artifacts: executor.artifacts,
         connections: executor.connections,
         // Artifacts are on by default, opt-out per connection. A session
@@ -188,11 +316,33 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
               }
             : { mode: elicitationMode },
       });
-      return { mcpServer, engine } satisfies BuiltMcpServer;
+      return { mcpServer, engine, modernRuntime } satisfies BuiltMcpServer;
     }).pipe(
       Effect.withSpan("McpSessionDO.buildMcpServer"),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a runtime-build failure surfaces as the base's tapCause/cleanup defect
       Effect.orDie,
     );
+  }
+
+  protected override buildModernMcpRuntime(
+    sessionMeta: SessionMeta,
+    dbHandle: CfSessionDbHandle,
+  ): Effect.Effect<BuiltModernMcpRuntime> {
+    const self = this;
+    return makeCloudflareExecutionRuntime(sessionMeta, dbHandle, this.cfConfig).pipe(
+      Effect.map((runtime) =>
+        makeCloudflareModernRuntime(sessionMeta, runtime, self.loadAppShellHtml, self.cfConfig, {
+          pausedExecutionHooks: self.modernPausedExecutionHooks,
+          resumeFallback: self.modernModelResumeFallback,
+        }),
+      ),
+      Effect.withSpan("McpSessionDO.buildModernMcpRuntime"),
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: runtime-build failures surface through the base RPC cleanup path
+      Effect.orDie,
+    );
+  }
+
+  protected override modernRequestStateSigningKey(): string {
+    return requireMcpRequestStateKey(this.cfEnv.MCP_REQUEST_STATE_KEY);
   }
 }

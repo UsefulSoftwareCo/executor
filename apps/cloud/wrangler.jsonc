@@ -96,6 +96,10 @@
       "binding": "LOADER",
     },
   ],
+  // DEPLOYMENT PREREQUISITE: MCP 2026-07-28 requestState is shared between
+  // stateless Worker isolates and session DOs. Configure the same 32+ byte
+  // secret for both with `wrangler secret put MCP_REQUEST_STATE_KEY`.
+  // It must never be placed in `vars` or generated independently per isolate.
   "vars": {
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
     "VITE_PUBLIC_POSTHOG_KEY": "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL",
