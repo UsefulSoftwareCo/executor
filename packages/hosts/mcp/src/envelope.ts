@@ -22,6 +22,7 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequest,
+  mcpRequestStateBindingFromBody,
   mcpRequestStatePrincipal,
   requestBodyFromRequest,
 } from "./tool-server";
@@ -155,6 +156,10 @@ export const jsonRpcErrorBody = (
   });
 };
 
+/** Graceful rollback response that lets auto-negotiating v2 clients try legacy. */
+export const mcpModernDisabledResponse = (opts?: { readonly cors?: boolean }): Response =>
+  jsonRpcErrorBody(400, -32022, "MCP 2026-07-28 support is disabled", opts);
+
 /**
  * Advertised on transient-auth 503s (`Unavailable` outcomes) so clients back
  * off before retrying. Short: upstream auth-infra blips (JWKS fetch, IdP
@@ -252,6 +257,7 @@ const withModernMcpCors = (response: Response): Response => {
 
 interface ModernRequestInputs {
   readonly builder: McpModernServerBuilder["Service"];
+  readonly parsedBody: unknown;
   readonly principal: Principal;
 }
 
@@ -289,11 +295,20 @@ const makeModernMcpRouter = (): ModernMcpRouter => {
         return Effect.runPromise(
           Effect.gen(function* () {
             const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
+            const requestStatePrincipal = mcpRequestStatePrincipal(inputs.principal);
+            const requestStateBinding = yield* Effect.promise(() =>
+              mcpRequestStateBindingFromBody({
+                body: inputs.parsedBody,
+                principal: requestStatePrincipal,
+                resource,
+              }),
+            );
             return yield* inputs.builder.build(inputs.principal, {
               resource,
               appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
               requestStateSigningKey: getSigningKey(),
-              requestStatePrincipal: mcpRequestStatePrincipal(inputs.principal),
+              requestStatePrincipal,
+              ...(requestStateBinding === null ? {} : { requestStateBinding }),
             });
           }),
         );
@@ -306,8 +321,8 @@ const makeModernMcpRouter = (): ModernMcpRouter => {
 
   return {
     fetch: async (request, principal, resource, builder) => {
-      requestInputs.set(request, { builder, principal });
       const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+      requestInputs.set(request, { builder, parsedBody, principal });
       return handlerFor(resource).fetch(request, { parsedBody });
     },
   };
@@ -350,6 +365,9 @@ const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
 
     if (!(yield* Effect.promise(() => isLegacyRequest(request)))) {
       const builder = yield* McpModernServerBuilder;
+      if (builder.enabled === false) {
+        return fromWebResponse(mcpModernDisabledResponse());
+      }
       const response = yield* Effect.promise(() =>
         modern.fetch(request, principal, resource, builder),
       );

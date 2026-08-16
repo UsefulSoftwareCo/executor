@@ -54,8 +54,10 @@ export const makeSelfHostMcpSessionStore = (
 /** Build the stateless MCP server seam over the same self-host stack/config. */
 export const makeSelfHostMcpModernServerBuilder = (
   db: SelfHostDbHandle,
+  enabled = true,
 ): Layer.Layer<McpModernServerBuilder> =>
   Layer.succeed(McpModernServerBuilder)({
+    enabled,
     build: makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
       {

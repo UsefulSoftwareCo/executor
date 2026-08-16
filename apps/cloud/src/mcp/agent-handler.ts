@@ -4,6 +4,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  mcpModernDisabledResponse,
   defaultMcpResource,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
@@ -174,6 +175,9 @@ export const makeCloudMcpAgentHandler = () => {
     const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
     const era = await classifyMcpProtocolEra(request, parsedBody);
     if (era === "modern") {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return mcpModernDisabledResponse();
+      }
       const resource = resourceFromPath(request);
       const props = await runTraced(
         request,

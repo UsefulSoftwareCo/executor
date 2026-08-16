@@ -101,6 +101,9 @@
   // secret for both with `wrangler secret put MCP_REQUEST_STATE_KEY`.
   // It must never be placed in `vars` or generated independently per isolate.
   "vars": {
+    // MCP_2026_07_28_ENABLED is intentionally absent: unset enables modern
+    // inbound serving. Set the Worker var to "false" for emergency rollback;
+    // legacy serving remains available.
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
     "VITE_PUBLIC_POSTHOG_KEY": "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL",
     // Browser OTLP spans → same-origin, forwarded to Axiom by the worker

@@ -231,6 +231,27 @@ describe("McpServingRoutes envelope", () => {
     expect(response.headers.get("www-authenticate")).toBe(challenge);
   });
 
+  it("gracefully rejects modern discovery when inbound 2026-07-28 is disabled", async () => {
+    const DisabledModernBuilder = Layer.succeed(McpModernServerBuilder)({
+      enabled: false,
+      build: () => Effect.die("disabled modern builder should not run"),
+    });
+    const handler = buildHandler(
+      OkStoreLive,
+      McpErrorReporterNoop,
+      AuthProviderLive,
+      DisabledModernBuilder,
+    );
+
+    const response = await handler(modernRequest("https://host.test/mcp"));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32022, message: "MCP 2026-07-28 support is disabled" },
+      id: null,
+    });
+  });
+
   it("404s a modern request whose toolkit route is not served", async () => {
     const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
     const response = await handler(modernRequest("https://host.test/mcp/toolkits/unknown/extra"));

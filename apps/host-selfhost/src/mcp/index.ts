@@ -140,6 +140,7 @@ export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
   webBaseUrl?: string,
+  modernEnabled = true,
 ): SelfHostMcpSeams => {
   const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
@@ -148,7 +149,7 @@ export const makeSelfHostMcpSeams = (
   return {
     auth,
     sessions: selfHostMcpSessions(sessionStore),
-    modern: makeSelfHostMcpModernServerBuilder(dbHandle),
+    modern: makeSelfHostMcpModernServerBuilder(dbHandle, modernEnabled),
     reporter: selfHostMcpReporter,
     approvalHandler: makeApprovalHandler(sessionStore, betterAuth),
     close: sessionStore.close,

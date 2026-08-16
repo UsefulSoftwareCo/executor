@@ -6,9 +6,14 @@ import type { ExecutionEngine } from "@executor-js/execution";
 import {
   defaultMcpResource,
   type McpModernServerBuilder,
+  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
-import { buildMcpServer, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server";
+import {
+  buildMcpServer,
+  mcpRequestStateBindingFromBody,
+  mcpRequestStatePrincipal,
+} from "@executor-js/host-mcp/tool-server";
 
 import type { McpSessionProps } from "./agent-session-durable-object";
 import {
@@ -168,13 +173,14 @@ const dispatch = async (input: {
   readonly sessions: MemorySessions;
   readonly directory: MemoryDirectory;
   readonly builder: McpModernServerBuilder["Service"];
+  readonly resource?: McpResource;
 }) => {
   const request = modernRequest(input.body);
   return makeMcpModernRequestRouter().fetch({
     request,
     parsedBody: input.body,
     principal,
-    resource: defaultMcpResource,
+    resource: input.resource ?? defaultMcpResource,
     props,
     requestStateSigningKey: REQUEST_STATE_KEY,
     builder: input.builder,
@@ -183,12 +189,29 @@ const dispatch = async (input: {
   });
 };
 
-const mintRequestState = async (executionId: string, ttlSeconds = 60): Promise<string> => {
-  const binding = `tools/call\u0000${mcpRequestStatePrincipal(principal)}`;
+const mintRequestState = async (
+  executionId: string,
+  options: {
+    readonly code?: string;
+    readonly resource?: McpResource;
+    readonly ttlSeconds?: number;
+  } = {},
+): Promise<string> => {
+  const body = modernBody({
+    method: "tools/call",
+    name: "execute",
+    arguments: { code: options.code ?? "1 + 1" },
+  });
+  const binding = await mcpRequestStateBindingFromBody({
+    body,
+    principal: mcpRequestStatePrincipal(principal),
+    resource: options.resource ?? defaultMcpResource,
+  });
+  expect(binding).not.toBeNull();
   const codec = createRequestStateCodec<{ readonly executionId: string }>({
     key: REQUEST_STATE_KEY,
-    ttlSeconds,
-    bind: () => binding,
+    ttlSeconds: options.ttlSeconds ?? 60,
+    bind: () => binding ?? "",
   });
   const encoded: unknown = await Reflect.apply(codec.mint, codec, [{ executionId }, {}]);
   return typeof encoded === "string" ? encoded : "";
@@ -392,7 +415,7 @@ describe("modern Cloudflare MCP worker routing", () => {
     const valid = await mintRequestState("exec-invalid");
     const middle = Math.floor(valid.length / 2);
     const tampered = `${valid.slice(0, middle)}${valid[middle] === "A" ? "B" : "A"}${valid.slice(middle + 1)}`;
-    const expired = await mintRequestState("exec-expired", -1);
+    const expired = await mintRequestState("exec-expired", { ttlSeconds: -1 });
 
     for (const requestState of [tampered, expired]) {
       const sessions = new MemorySessions();
@@ -410,6 +433,45 @@ describe("modern Cloudflare MCP worker routing", () => {
 
       const body = await response.json();
       expect(body).toMatchObject({ error: { code: -32602 } });
+      expect(sessions.uniqueIds).toBe(0);
+      expect(sessions.forwarded).toEqual([]);
+    }
+  });
+
+  it("rejects continuation state when the resource or code digest binding changes", async () => {
+    const requestState = await mintRequestState("exec-bound");
+    const cases = [
+      {
+        body: modernBody({
+          method: "tools/call",
+          name: "execute",
+          arguments: { code: "different code" },
+          requestState,
+        }),
+        resource: defaultMcpResource,
+      },
+      {
+        body: modernBody({
+          method: "tools/call",
+          name: "execute",
+          arguments: { code: "1 + 1" },
+          requestState,
+        }),
+        resource: { kind: "toolkit", slug: "other" } as const,
+      },
+    ];
+
+    for (const { body, resource } of cases) {
+      const sessions = new MemorySessions();
+      const response = await dispatch({
+        body,
+        resource,
+        sessions,
+        directory: new MemoryDirectory(),
+        builder: makeBuilder({ count: 0 }),
+      });
+
+      expect(await response.json()).toMatchObject({ error: { code: -32602 } });
       expect(sessions.uniqueIds).toBe(0);
       expect(sessions.forwarded).toEqual([]);
     }

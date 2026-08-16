@@ -16,6 +16,7 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequestBody,
+  mcpRequestStateBindingFromBody,
   mcpRequestStatePrincipal,
   verifyNativeRequestState,
 } from "@executor-js/host-mcp/tool-server";
@@ -168,11 +169,22 @@ export const makeMcpModernRequestRouter = (): McpModernRequestRouter => {
         }
         const capabilities = clientCapabilitiesFromRequestBody(inputs.parsedBody);
         return Effect.runPromise(
-          inputs.builder.build(inputs.principal, {
-            resource,
-            appsEnabled: appsEnabledForClientCapabilities(capabilities),
-            requestStateSigningKey: inputs.requestStateSigningKey,
-            requestStatePrincipal: mcpRequestStatePrincipal(inputs.principal),
+          Effect.gen(function* () {
+            const requestStatePrincipal = mcpRequestStatePrincipal(inputs.principal);
+            const requestStateBinding = yield* Effect.promise(() =>
+              mcpRequestStateBindingFromBody({
+                body: inputs.parsedBody,
+                principal: requestStatePrincipal,
+                resource,
+              }),
+            );
+            return yield* inputs.builder.build(inputs.principal, {
+              resource,
+              appsEnabled: appsEnabledForClientCapabilities(capabilities),
+              requestStateSigningKey: inputs.requestStateSigningKey,
+              requestStatePrincipal,
+              ...(requestStateBinding === null ? {} : { requestStateBinding }),
+            });
           }),
         );
       },
@@ -214,7 +226,8 @@ export const makeMcpModernRequestRouter = (): McpModernRequestRouter => {
         const verified = await Effect.runPromiseExit(
           verifyNativeRequestState({
             state: call.params.requestState,
-            method: call.method,
+            body: input.parsedBody,
+            resource: input.resource,
             requestStateSigningKey: input.requestStateSigningKey,
             requestStatePrincipal: mcpRequestStatePrincipal(input.principal),
           }),

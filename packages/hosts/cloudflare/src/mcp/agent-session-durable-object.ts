@@ -24,6 +24,7 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequestBody,
+  mcpRequestStateBindingFromBody,
   PAUSED_APPROVAL_TIMEOUT_MS,
   formatMcpExecutionOutcome,
   mcpRequestStatePrincipal,
@@ -162,6 +163,7 @@ export interface ModernMcpServerRequestOptions {
   readonly appsEnabled: boolean;
   readonly requestStateSigningKey: Uint8Array | string;
   readonly requestStatePrincipal: string;
+  readonly requestStateBinding?: string;
 }
 
 /** Long-lived DO execution runtime shared by per-request MCP servers. */
@@ -579,29 +581,16 @@ export abstract class McpAgentSessionDOBase<
       }),
     );
     await Effect.runPromise(this.closeRuntime());
-<<<<<<< HEAD
-    await Effect.runPromise(
-      Effect.all([
-        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
-        Effect.ignore(
-          Effect.tryPromise(() =>
-            this.ctx.storage.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
-          ),
-        ),
-      ]),
-    );
-=======
     const activityKey =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_V2_LAST_ACTIVITY_KEY;
+      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
     const cleared = await this.ctx.storage.transaction(async (transaction) => {
       const current = await transaction.get<number>(activityKey);
       if (current !== input.lastActivityMs) return false;
-      await transaction.delete([LEGACY_V2_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]);
+      await transaction.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]);
       await transaction.deleteAlarm();
       return true;
     });
     if (cleared) this.lastActivityMs = 0;
->>>>>>> d62e666df (Fix session-id parsing, stranded-stream replay, priming, and restore races)
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -828,20 +817,29 @@ export abstract class McpAgentSessionDOBase<
         const propagation = self.modernRequestPropagation.get(request);
         const capabilities = clientCapabilitiesFromRequestBody(parsedBody);
         return Effect.runPromise(
-          runtime
-            .buildServer({
+          Effect.gen(function* () {
+            const requestStatePrincipal = mcpRequestStatePrincipal({
+              accountId: sessionMeta.userId,
+              organizationId: sessionMeta.organizationId,
+            });
+            const requestStateBinding = yield* Effect.promise(() =>
+              mcpRequestStateBindingFromBody({
+                body: parsedBody,
+                principal: requestStatePrincipal,
+                resource: sessionMeta.resource,
+              }),
+            );
+            return yield* runtime.buildServer({
               appsEnabled: appsEnabledForClientCapabilities(capabilities),
               requestStateSigningKey: self.modernRequestStateSigningKey(),
-              requestStatePrincipal: mcpRequestStatePrincipal({
-                accountId: sessionMeta.userId,
-                organizationId: sessionMeta.organizationId,
-              }),
-            })
-            .pipe(
-              (effect) => self.withTelemetry(effect, propagation),
-              // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise can only reject
-              Effect.orDie,
-            ),
+              requestStatePrincipal,
+              ...(requestStateBinding === null ? {} : { requestStateBinding }),
+            });
+          }).pipe(
+            (effect) => self.withTelemetry(effect, propagation),
+            // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise can only reject
+            Effect.orDie,
+          ),
         );
       },
       { legacy: "reject" },

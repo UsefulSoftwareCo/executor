@@ -51,4 +51,56 @@ describe("local modern MCP HTTP", () => {
       await mcp.close();
     }
   });
+
+  it("rejects a pinned modern client with the unsupported-version protocol error", async () => {
+    const mcp = createMcpRequestHandler({ defaultConfig: { engine }, modernEnabled: false });
+    const transport = new StreamableHTTPClientTransport(new URL("http://local.test/mcp"), {
+      fetch: (input, init) =>
+        mcp.handleRequest(
+          input instanceof Request ? new Request(input, init) : new Request(input.toString(), init),
+        ),
+    });
+    const client = new Client(
+      { name: "local-modern-disabled-test", version: "1.0.0" },
+      { capabilities: {}, versionNegotiation: { mode: { pin: "2026-07-28" } } },
+    );
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close a client whose pinned negotiation is expected to fail
+    try {
+      await expect(client.connect(transport)).rejects.toThrow(/version negotiation failed/i);
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
+  it("lets an auto-mode v2 client fall back to legacy when modern inbound is disabled", async () => {
+    const mcp = createMcpRequestHandler({ defaultConfig: { engine }, modernEnabled: false });
+    const transport = new StreamableHTTPClientTransport(new URL("http://local.test/mcp"), {
+      fetch: (input, init) =>
+        mcp.handleRequest(
+          input instanceof Request ? new Request(input, init) : new Request(input.toString(), init),
+        ),
+    });
+    const client = new Client(
+      { name: "local-auto-fallback-test", version: "1.0.0" },
+      { capabilities: {}, versionNegotiation: { mode: "auto" } },
+    );
+
+    await client.connect(transport);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the fallback client and local handler
+    try {
+      expect(client.getProtocolEra()).toBe("legacy");
+      expect((await client.listTools()).tools.map(({ name }) => name)).toContain("execute");
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "3 + 4" },
+      });
+      expect(result.content).toEqual([{ type: "text", text: "ran: 3 + 4" }]);
+      expect(transport.sessionId).toBeTruthy();
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
 });

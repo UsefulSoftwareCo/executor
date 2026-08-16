@@ -73,6 +73,9 @@
   // MCP key is a deployment prerequisite shared by Worker and session DOs;
   // never generate it independently per isolate.
   "vars": {
+    // MCP_2026_07_28_ENABLED is intentionally absent: unset enables modern
+    // inbound serving. Set the Worker var to "false" for emergency rollback;
+    // legacy serving remains available.
     "ACCESS_NAME_CLAIM": "name",
     "ACCESS_GROUPS_CLAIM": "groups",
     // Never preserve a production dev-auth override through keep_vars.

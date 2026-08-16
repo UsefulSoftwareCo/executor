@@ -14,9 +14,14 @@ import {
 import { Effect } from "effect";
 
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
+import { defaultMcpResource, type McpResource } from "./seams";
 import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
-import { appsEnabledForClientCapabilities, buildMcpServer } from "./tool-server";
+import {
+  appsEnabledForClientCapabilities,
+  buildMcpServer,
+  mcpRequestStateBindingFromBody,
+} from "./tool-server";
 import { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./mcp-apps";
 
 const REQUEST_STATE_KEY = new Uint8Array(32).fill(7);
@@ -30,6 +35,8 @@ type TestServerConfig = {
   readonly loadAppShellHtml?: () => Promise<string>;
   /** Evaluated per request, so a test can swap principals between rounds. */
   readonly requestStatePrincipal?: () => string;
+  /** Evaluated per request, so a test can swap resources between rounds. */
+  readonly requestStateResource?: () => McpResource;
 };
 
 const makeStubEngine = (
@@ -56,22 +63,37 @@ const withClient = async (
   run: (client: Client) => Promise<void>,
   options?: { readonly manualInputRequired?: boolean },
 ) => {
+  const requestBodies = new WeakMap<Request, unknown>();
   const handler = createMcpHandler(
-    () =>
+    (context) =>
       Effect.runPromise(
-        buildMcpServer({
-          ...config,
-          requestStateSigningKey: REQUEST_STATE_KEY,
-          requestStatePrincipal: config.requestStatePrincipal?.() ?? "principal-test",
+        Effect.gen(function* () {
+          const requestStatePrincipal = config.requestStatePrincipal?.() ?? "principal-test";
+          const requestStateResource = config.requestStateResource?.() ?? defaultMcpResource;
+          const requestStateBinding = yield* Effect.promise(() =>
+            mcpRequestStateBindingFromBody({
+              body: context.requestInfo ? requestBodies.get(context.requestInfo) : undefined,
+              principal: requestStatePrincipal,
+              resource: requestStateResource,
+            }),
+          );
+          return yield* buildMcpServer({
+            ...config,
+            requestStateSigningKey: REQUEST_STATE_KEY,
+            requestStatePrincipal,
+            ...(requestStateBinding === null ? {} : { requestStateBinding }),
+          });
         }),
       ),
     { legacy: "reject" },
   );
   const transport = new StreamableHTTPClientTransport(new URL("http://executor.test/mcp"), {
-    fetch: (input, init) =>
-      handler.fetch(
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init),
-      ),
+    fetch: async (input, init) => {
+      const request =
+        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      requestBodies.set(request, await request.clone().json());
+      return handler.fetch(request, { parsedBody: requestBodies.get(request) });
+    },
   });
   const client = new Client(
     { name: "executor-protocol-test", version: "1.0.0" },
@@ -271,7 +293,7 @@ describe("Executor MCP protocol assembly", () => {
     );
   });
 
-  it("rejects a requestState echoed by a different principal", async () => {
+  it("rejects a requestState echoed with a different principal, resource, or code", async () => {
     const request = FormElicitation.make({
       message: "Confirm",
       requestedSchema: {},
@@ -294,12 +316,14 @@ describe("Executor MCP protocol assembly", () => {
     });
 
     let principal = "user-a";
+    let resource: McpResource = defaultMcpResource;
     await withClient(
       {
         engine,
         appsEnabled: false,
         elicitationMode: { mode: "native" },
         requestStatePrincipal: () => principal,
+        requestStateResource: () => resource,
       },
       async (client) => {
         const first = await manualToolCall(client, {
@@ -314,6 +338,27 @@ describe("Executor MCP protocol assembly", () => {
           manualToolCall(client, {
             name: "execute",
             arguments: { code: "await tools.test.echo()" },
+            inputResponses: { elicitation: { action: "accept", content: {} } },
+            requestState: first.requestState,
+          }),
+        ).rejects.toMatchObject({ code: -32602 });
+
+        principal = "user-a";
+        resource = { kind: "toolkit", slug: "other" };
+        await expect(
+          manualToolCall(client, {
+            name: "execute",
+            arguments: { code: "await tools.test.echo()" },
+            inputResponses: { elicitation: { action: "accept", content: {} } },
+            requestState: first.requestState,
+          }),
+        ).rejects.toMatchObject({ code: -32602 });
+
+        resource = defaultMcpResource;
+        await expect(
+          manualToolCall(client, {
+            name: "execute",
+            arguments: { code: "await tools.test.different()" },
             inputResponses: { elicitation: { action: "accept", content: {} } },
             requestState: first.requestState,
           }),

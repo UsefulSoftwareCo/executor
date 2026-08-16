@@ -286,6 +286,8 @@ export interface McpModernServerBuildOptions {
   readonly requestStateSigningKey: Uint8Array | string;
   /** Stable authenticated-owner key bound into signed continuation state. */
   readonly requestStatePrincipal: string;
+  /** Closed resource/tool/code binding for this parsed modern request. */
+  readonly requestStateBinding?: string;
 }
 
 /**
@@ -297,6 +299,8 @@ export interface McpModernServerBuildOptions {
 export class McpModernServerBuilder extends Context.Service<
   McpModernServerBuilder,
   {
+    /** Inbound-only emergency switch. Unset means modern serving is enabled. */
+    readonly enabled?: boolean;
     readonly build: (
       principal: Principal,
       options: McpModernServerBuildOptions,

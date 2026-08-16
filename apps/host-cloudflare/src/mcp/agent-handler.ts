@@ -3,6 +3,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  mcpModernDisabledResponse,
   defaultMcpResource,
   type AuthOutcome,
   type Principal,
@@ -112,6 +113,9 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
     const era = await classifyMcpProtocolEra(request, parsedBody);
     if (era === "modern") {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return mcpModernDisabledResponse();
+      }
       const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
       (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
       const forwarded = withVerifiedIdentityHeaders(

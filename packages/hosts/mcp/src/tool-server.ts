@@ -22,6 +22,7 @@ import * as z from "zod/v4";
 
 import type { ElicitationRequest } from "@executor-js/sdk";
 
+import { mcpResourceKey, type McpResource } from "./seams";
 import {
   getUiCapability,
   EXTENSION_ID,
@@ -61,6 +62,15 @@ const NativeRequestStateSchema = Schema.Struct({ executionId: Schema.String });
 export type NativeRequestState = typeof NativeRequestStateSchema.Type;
 const decodeNativeRequestState = Schema.decodeUnknownOption(NativeRequestStateSchema);
 
+const NativeRequestStateCallSchema = Schema.Struct({
+  method: Schema.Literal("tools/call"),
+  params: Schema.Struct({
+    name: Schema.String,
+    arguments: Schema.Struct({ code: Schema.String }),
+  }),
+});
+const decodeNativeRequestStateCall = Schema.decodeUnknownOption(NativeRequestStateCallSchema);
+
 type McpServerRequestContext = McpRequestJoinKeys & {
   readonly serverContext: ServerContext;
 };
@@ -86,6 +96,8 @@ export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.Yield
      * influences authorization. Single-user hosts pass a constant.
      */
     readonly requestStatePrincipal: string;
+    /** Closed request binding derived before the modern server is constructed. */
+    readonly requestStateBinding?: string;
     /** Lifetime of signed continuation state in seconds; the SDK defaults to ten minutes. */
     readonly requestStateTtlSeconds?: number;
   };
@@ -101,13 +113,66 @@ export const mcpRequestStatePrincipal = (principal: {
   readonly organizationId: string;
 }): string => `${principal.accountId}\u0000${principal.organizationId}`;
 
-const requestStateBinding = (method: string, principal: string): string =>
-  `${method}\u0000${principal}`;
+/** Fields whose exact values bind one modern native-elicitation continuation. */
+export interface McpRequestStateBindingInput {
+  readonly principal: string;
+  readonly resource: McpResource;
+  readonly method: string;
+  readonly toolName: string;
+  readonly codeDigest: string;
+}
+
+/** Build the canonical NUL-separated modern continuation binding. */
+export const mcpRequestStateBinding = (input: McpRequestStateBindingInput): string =>
+  [
+    input.principal,
+    mcpResourceKey(input.resource),
+    input.method,
+    input.toolName,
+    input.codeDigest,
+  ].join("\u0000");
+
+/** Return the lowercase SHA-256 digest used to bind an execute code argument. */
+export const mcpCodeDigest = async (code: string): Promise<string> => {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code));
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+/** Derive a continuation binding from an already-parsed modern tools/call body. */
+export const mcpRequestStateBindingFromBody = async (input: {
+  readonly body: unknown;
+  readonly principal: string;
+  readonly resource: McpResource;
+}): Promise<string | null> => {
+  const call = decodeNativeRequestStateCall(input.body);
+  if (Option.isNone(call)) return null;
+  return mcpRequestStateBinding({
+    principal: input.principal,
+    resource: input.resource,
+    method: call.value.method,
+    toolName: call.value.params.name,
+    codeDigest: await mcpCodeDigest(call.value.params.arguments.code),
+  });
+};
 
 /** Route-level failure verifying untrusted modern continuation state. */
 export class McpRequestStateVerificationError extends Data.TaggedError(
   "McpRequestStateVerificationError",
 )<{ readonly cause: unknown }> {}
+
+class McpRequestStateBindingError extends Data.TaggedError("McpRequestStateBindingError")<{}> {}
+
+const requestStateBindingForContext = (
+  binding: string | undefined,
+  principal: string,
+  context: ServerContext,
+): Promise<string> => {
+  if (binding !== undefined) return Promise.resolve(binding);
+  if (context.mcpReq.envelope === undefined) {
+    return Promise.resolve(`${context.mcpReq.method}\u0000${principal}`);
+  }
+  return Effect.runPromise(Effect.fail(new McpRequestStateBindingError()));
+};
 
 /**
  * Verify and parse a modern continuation before a stateless worker uses its
@@ -115,25 +180,41 @@ export class McpRequestStateVerificationError extends Data.TaggedError(
  */
 export const verifyNativeRequestState = (input: {
   readonly state: string;
-  readonly method: string;
+  readonly body: unknown;
+  readonly resource: McpResource;
   readonly requestStateSigningKey: Uint8Array | string;
   readonly requestStatePrincipal: string;
-}): Effect.Effect<NativeRequestState, McpRequestStateVerificationError> => {
-  const codec = createRequestStateCodec<NativeRequestState>({
-    key: input.requestStateSigningKey,
-    bind: () => requestStateBinding(input.method, input.requestStatePrincipal),
+}): Effect.Effect<NativeRequestState, McpRequestStateVerificationError> =>
+  Effect.gen(function* () {
+    const binding = yield* Effect.tryPromise({
+      try: () =>
+        mcpRequestStateBindingFromBody({
+          body: input.body,
+          principal: input.requestStatePrincipal,
+          resource: input.resource,
+        }),
+      catch: (cause) => new McpRequestStateVerificationError({ cause }),
+    });
+    if (binding === null) {
+      return yield* new McpRequestStateVerificationError({
+        cause: "invalid request-state binding",
+      });
+    }
+    const codec = createRequestStateCodec<NativeRequestState>({
+      key: input.requestStateSigningKey,
+      bind: () => binding,
+    });
+    const decoded = yield* Effect.tryPromise({
+      // The route-level verifier has no handler context. Its codec binding is a
+      // closed value derived from the parsed call, resource, and principal, so
+      // the SDK callback never observes this inert placeholder.
+      try: () => Reflect.apply(codec.verify, codec, [input.state, null]) as Promise<unknown>,
+      catch: (cause) => new McpRequestStateVerificationError({ cause }),
+    });
+    return yield* Schema.decodeUnknownEffect(NativeRequestStateSchema)(decoded).pipe(
+      Effect.mapError((cause) => new McpRequestStateVerificationError({ cause })),
+    );
   });
-  return Effect.tryPromise({
-    // The route-level verifier has no handler context. Its codec binding is a
-    // closed value derived from the already-parsed method and principal, so the
-    // SDK callback never observes this inert placeholder.
-    try: async () => {
-      const decoded: unknown = await Reflect.apply(codec.verify, codec, [input.state, null]);
-      return Effect.runPromise(Schema.decodeUnknownEffect(NativeRequestStateSchema)(decoded));
-    },
-    catch: (cause) => new McpRequestStateVerificationError({ cause }),
-  });
-};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -285,15 +366,21 @@ const createMcpAssembly = <E extends Cause.YieldableError>(
   const initialAppsEnabled = sessionful
     ? (config.restoredAppsEnabled ?? config.appsEnabled)
     : config.appsEnabled;
-  const requestStateCodec = createRequestStateCodec<NativeRequestState>({
-    key: config.requestStateSigningKey,
-    ...(config.requestStateTtlSeconds === undefined
-      ? {}
-      : { ttlSeconds: config.requestStateTtlSeconds }),
-    bind: (context) => requestStateBinding(context.mcpReq.method, config.requestStatePrincipal),
-  });
+  const requestStateCodec = (binding: string) =>
+    createRequestStateCodec<NativeRequestState>({
+      key: config.requestStateSigningKey,
+      ...(config.requestStateTtlSeconds === undefined
+        ? {}
+        : { ttlSeconds: config.requestStateTtlSeconds }),
+      bind: () => binding,
+    });
   const verifyRequestState = async (state: string, context: ServerContext) => {
-    const decoded = await requestStateCodec.verify(state, context);
+    const binding = await requestStateBindingForContext(
+      config.requestStateBinding,
+      config.requestStatePrincipal,
+      context,
+    );
+    const decoded = await requestStateCodec(binding).verify(state, context);
     return Effect.runPromise(Schema.decodeUnknownEffect(NativeRequestStateSchema)(decoded));
   };
   const server = new McpServer(
@@ -353,7 +440,12 @@ const createMcpAssembly = <E extends Cause.YieldableError>(
       NativeExecutionServices<NativeE, McpServerRequestContext>["executionPaused"]
     >[0],
   ): Promise<InputRequiredResult> => {
-    const requestState = await requestStateCodec.mint(
+    const binding = await requestStateBindingForContext(
+      config.requestStateBinding,
+      config.requestStatePrincipal,
+      services.requestContext.serverContext,
+    );
+    const requestState = await requestStateCodec(binding).mint(
       { executionId: execution.id },
       services.requestContext.serverContext,
     );
