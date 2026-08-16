@@ -27,7 +27,7 @@ import {
 
 import { AutumnService } from "../extensions/billing/service";
 import type { DbService } from "../db/db";
-import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
+import { CloudExecutionSeamsLayer, makeCloudExecutionSeamsLayer } from "../engine/execution-stack";
 import { makeExecutionLimitGate } from "./execution-gate";
 import { makeCloudExecutionRateLimiter } from "./execution-rate-limit";
 import { withExecutionUsageTracking } from "./execution-usage";
@@ -75,3 +75,17 @@ export const CloudMeteredExecutionStackLayer: Layer.Layer<
   never,
   AutumnService | DbService
 > = Layer.merge(CloudExecutionSeamsLayer, CloudMeteringEngineDecorator);
+
+/**
+ * The same stack over a caller-supplied `HostConfig`. The MCP session DO builds
+ * one so it can defer tool-catalog refreshes to its own `ctx.waitUntil` — its
+ * database handle outlives any single request, where the HTTP plane's does not.
+ * Everything else is identical, decorator included.
+ */
+export const makeCloudMeteredExecutionStackLayer = (
+  hostConfig: Layer.Layer<HostConfig>,
+): Layer.Layer<
+  DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,
+  never,
+  AutumnService | DbService
+> => Layer.merge(makeCloudExecutionSeamsLayer(hostConfig), CloudMeteringEngineDecorator);
