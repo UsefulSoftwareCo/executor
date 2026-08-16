@@ -2,11 +2,10 @@ import { Data, Effect } from "effect";
 
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
-  createExecutorMcpServer,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
+import { buildMcpServerV2, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server-v2";
 import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
@@ -237,6 +236,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       resource: token.resource,
       elicitationMode: token.elicitationMode,
       artifactsEnabled: token.artifactsEnabled,
+      webOrigin: token.webOrigin,
     } satisfies SessionMeta);
   }
 
@@ -268,7 +268,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       // only offered when this deployment knows its own public URL. Without one
       // the artifact is still saved, and the tool says so.
       const artifactOrigin = sessionMeta.webOrigin ?? config.webBaseUrl;
-      const mcpServer = yield* createExecutorMcpServer({
+      const mcpServer = yield* buildMcpServerV2({
         engine,
         description,
         artifacts: executor.artifacts,
@@ -281,6 +281,13 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        appsEnabled: false,
+        sessionful: true,
+        requestStateSigningKey: self.modernRequestStateSigningKey(),
+        requestStatePrincipal: mcpRequestStatePrincipal({
+          accountId: sessionMeta.userId,
+          organizationId: sessionMeta.organizationId,
+        }),
         loadAppShellHtml: self.loadAppShellHtml,
         smokeRenderArtifact,
         ...(artifactOrigin

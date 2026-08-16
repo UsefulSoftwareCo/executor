@@ -349,7 +349,7 @@ describe("modern Cloudflare MCP worker routing", () => {
       builder: makeBuilder({ count: 0 }),
     });
 
-    expect(sessions.forwarded.map(({ id }) => id)).toEqual(["name:streamable-http:legacy-session"]);
+    expect(sessions.forwarded.map(({ id }) => id)).toEqual(["id:legacy-session"]);
   });
 
   it("rejects tampered and expired continuation state without touching a DO", async () => {

@@ -11,9 +11,8 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
-// handler. `/mcp` stays at this edge boundary because `McpAgent.serve()` needs
-// the Cloudflare `ExecutionContext` to pass authenticated session props into the
-// hibernatable Durable Object bridge.
+// handler. `/mcp` stays at this edge boundary so the Worker authenticates and
+// binds ownership before forwarding the request to its session Durable Object.
 // ---------------------------------------------------------------------------
 
 let handlerPromise: Promise<{

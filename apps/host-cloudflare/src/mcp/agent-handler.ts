@@ -12,6 +12,8 @@ import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
+  withMcpResponseHeaders,
+  withPropagationHeaders,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
@@ -22,11 +24,11 @@ import {
   requireMcpRequestStateKey,
 } from "@executor-js/cloudflare/mcp/modern-request-router";
 import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
-import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
-import { McpSessionDO, makeCloudflareModernMcpServerBuilder } from "./session-durable-object";
+import { makeCloudflareModernMcpServerBuilder } from "./session-durable-object";
 
 const jsonRpcResponse = (
   status: number,
@@ -76,8 +78,8 @@ const propsForPrincipal = (
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
-        // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
-        // bridge (see worker.ts), so the session always serves the default
+        // host-cloudflare only routes the bare `/mcp` endpoint to the session
+        // Durable Object (see worker.ts), so it always serves the default
         // resource.
         resource: defaultMcpResource,
         webOrigin: new URL(request.url).origin,
@@ -88,11 +90,6 @@ const propsForPrincipal = (
 
 export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
   const modern = makeMcpModernRequestRouter();
-  const serve = McpSessionDO.serve("/mcp", {
-    binding: "MCP_SESSION",
-    transport: "streamable-http",
-  });
-
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") {
       return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
@@ -161,16 +158,21 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
-    (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(
-      request,
-      {
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      },
-      defaultMcpResource,
+    const propagation = await Effect.runPromise(currentPropagationHeaders(request));
+    const forwarded = withPropagationHeaders(
+      withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        defaultMcpResource,
+      ),
+      propagation,
     );
-    return serve.fetch(forwarded, env, ctx);
+    const target = sessionId
+      ? mcpSessionStub(env.MCP_SESSION, sessionId)
+      : createMcpSessionStub(env.MCP_SESSION).stub;
+    return withMcpResponseHeaders(await target.fetch(forwarded));
   };
 };
