@@ -120,6 +120,8 @@ class MemorySessions implements McpModernSessionNamespace<string> {
   readonly forwarded: ForwardedRequest[] = [];
   uniqueIds = 0;
 
+  constructor(private readonly rejectStringIds = false) {}
+
   newUniqueId(): string {
     this.uniqueIds += 1;
     return `unique-${this.uniqueIds}`;
@@ -130,6 +132,10 @@ class MemorySessions implements McpModernSessionNamespace<string> {
   }
 
   idFromString(id: string): string {
+    if (this.rejectStringIds) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test boundary: model Cloudflare rejecting a foreign/checksum-invalid owner id
+      throw new Error("invalid Durable Object id");
+    }
     return `id:${id}`;
   }
 
@@ -350,6 +356,36 @@ describe("modern Cloudflare MCP worker routing", () => {
     });
 
     expect(sessions.forwarded.map(({ id }) => id)).toEqual(["id:legacy-session"]);
+  });
+
+  it("falls back to the worker when a persisted modern owner id is invalid", async () => {
+    const executionId = "exec-invalid-owner";
+    const directory = new MemoryDirectory();
+    directory.records.set(executionId, {
+      executionId,
+      owner: modernMcpExecutionOwnerRoute("foreign-do-id"),
+      accountId: principal.accountId,
+      organizationId: principal.organizationId,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ttlMs: 60_000,
+    });
+    const sessions = new MemorySessions(true);
+    const builds = { count: 0 };
+
+    const response = await dispatch({
+      body: modernBody({
+        method: "tools/call",
+        name: "resume",
+        arguments: { executionId, action: "accept" },
+      }),
+      sessions,
+      directory,
+      builder: makeBuilder(builds),
+    });
+
+    expect(await response.json()).toMatchObject({ error: { code: -32602 } });
+    expect(builds.count).toBe(1);
+    expect(sessions.forwarded).toEqual([]);
   });
 
   it("rejects tampered and expired continuation state without touching a DO", async () => {

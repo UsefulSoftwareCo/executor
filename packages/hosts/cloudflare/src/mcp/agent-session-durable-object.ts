@@ -256,6 +256,21 @@ const legacyPrimingFrame = (eventId: string): Uint8Array =>
     `event: mcp-priming\nid: ${eventId}\ndata: ${JSON.stringify(LEGACY_PRIMING_MESSAGE)}\n\n`,
   );
 
+const replayFrame = (eventId: string, message: JSONRPCMessage): Uint8Array =>
+  new TextEncoder().encode(`event: message\nid: ${eventId}\ndata: ${JSON.stringify(message)}\n\n`);
+
+const combineFrames = (frames: readonly Uint8Array[]): ArrayBuffer => {
+  const byteLength = frames.reduce((total, frame) => total + frame.byteLength, 0);
+  const buffer = new ArrayBuffer(byteLength);
+  const combined = new Uint8Array(buffer);
+  let offset = 0;
+  for (const frame of frames) {
+    combined.set(frame, offset);
+    offset += frame.byteLength;
+  }
+  return buffer;
+};
+
 const mcpResourceFromKey = (resourceKey: string): McpResource =>
   resourceKey.startsWith("toolkit:") && resourceKey.length > "toolkit:".length
     ? { kind: "toolkit", slug: resourceKey.slice("toolkit:".length) }
@@ -552,6 +567,7 @@ export abstract class McpAgentSessionDOBase<
 
   private async disposeIdleRuntime(input: {
     readonly idleMs: number;
+    readonly lastActivityMs: number;
     readonly pausedExecutionCount: number;
   }): Promise<void> {
     console.info(
@@ -563,6 +579,7 @@ export abstract class McpAgentSessionDOBase<
       }),
     );
     await Effect.runPromise(this.closeRuntime());
+<<<<<<< HEAD
     await Effect.runPromise(
       Effect.all([
         Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
@@ -573,6 +590,18 @@ export abstract class McpAgentSessionDOBase<
         ),
       ]),
     );
+=======
+    const activityKey =
+      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_V2_LAST_ACTIVITY_KEY;
+    const cleared = await this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<number>(activityKey);
+      if (current !== input.lastActivityMs) return false;
+      await transaction.delete([LEGACY_V2_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]);
+      await transaction.deleteAlarm();
+      return true;
+    });
+    if (cleared) this.lastActivityMs = 0;
+>>>>>>> d62e666df (Fix session-id parsing, stranded-stream replay, priming, and restore races)
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -823,34 +852,39 @@ export abstract class McpAgentSessionDOBase<
   private closeRuntime(): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      yield* self.releaseAllPendingApprovalLeases();
-      if (self.transport) {
-        const transport = self.transport;
-        self.transport = null;
-        yield* Effect.promise(() => transport.close()).pipe(Effect.ignore);
-      }
-      if (self.server) {
-        const server = self.server;
-        delete (self as { server?: McpServer }).server;
-        yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
-      }
-      if (self.modernHandler) {
-        const handler = self.modernHandler;
-        self.modernHandler = null;
-        yield* Effect.promise(() => handler.close()).pipe(Effect.ignore);
-      }
+      // Detach the complete generation before awaiting cleanup. A request that
+      // interleaves with a slow server/DB close must build a fresh generation,
+      // never observe initialized=true with a closing/null transport, and the
+      // old cleanup must never clear fields belonging to that fresh runtime.
+      const transport = self.transport;
+      const server = self.server;
+      const modernHandler = self.modernHandler;
+      const dbHandle = self.dbHandle;
+      self.transport = null;
+      delete (self as { server?: McpServer }).server;
+      self.modernHandler = null;
+      self.dbHandle = null;
       self.engine = null;
       self.modernRuntime = null;
       self.activeLegacyStreamCount = 0;
       self.legacyRunningRequestCount = 0;
       self.modernRequestBodies = new WeakMap<Request, unknown>();
       self.modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
-      if (self.dbHandle) {
-        const dbHandle = self.dbHandle;
-        self.dbHandle = null;
+      self.initialized = false;
+
+      yield* self.releaseAllPendingApprovalLeases();
+      if (transport) {
+        yield* Effect.promise(() => transport.close()).pipe(Effect.ignore);
+      }
+      if (server) {
+        yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
+      }
+      if (modernHandler) {
+        yield* Effect.promise(() => modernHandler.close()).pipe(Effect.ignore);
+      }
+      if (dbHandle) {
         yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
       }
-      self.initialized = false;
     });
   }
 
@@ -1000,6 +1034,69 @@ export abstract class McpAgentSessionDOBase<
     return typeof streamId === "string" ? streamId : null;
   }
 
+  private async supersedeReplayStream(
+    transport: WebStandardStreamableHTTPServerTransport,
+    lastEventId: string,
+  ): Promise<void> {
+    const streamId = await this.eventStore.getStreamIdForEventId(lastEventId);
+    if (!streamId) return;
+    // SAFETY: the installed SDK exposes closeSSEStream(requestId), but not the
+    // reverse request-id map needed to supersede a stale POST connection before
+    // replay. This is the same pinned map used by requestStreamId above.
+    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
+    if (!(mapping instanceof Map)) return;
+    for (const [requestId, mappedStreamId] of mapping) {
+      if (
+        mappedStreamId === streamId &&
+        (typeof requestId === "string" || typeof requestId === "number")
+      ) {
+        transport.closeSSEStream(requestId);
+        return;
+      }
+    }
+  }
+
+  private trackedLegacyResponse = (
+    response: Response,
+    options: { readonly initialFrame?: Uint8Array; readonly acknowledge?: readonly string[] } = {},
+  ): Response =>
+    rotateSseResponse(response, {
+      ...(options.initialFrame ? { initialFrame: options.initialFrame } : {}),
+      onOpen: () => {
+        this.activeLegacyStreamCount += 1;
+      },
+      onClose: (reason) => {
+        this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
+        if (reason === "complete" && options.acknowledge && options.acknowledge.length > 0) {
+          this.ctx.waitUntil(this.eventStore.acknowledgeUndeliveredStreams(options.acknowledge));
+        }
+      },
+    });
+
+  private async replayUndeliveredOnStandaloneGet(request: Request): Promise<Response | null> {
+    if (request.method !== "GET" || request.headers.has("last-event-id")) return null;
+    const frames: Uint8Array[] = [];
+    const streamIds = await this.eventStore.replayUndeliveredStreams({
+      send: (eventId, message) => {
+        frames.push(replayFrame(eventId, message));
+        return Promise.resolve();
+      },
+    });
+    if (frames.length === 0) return null;
+    return this.trackedLegacyResponse(
+      new Response(combineFrames(frames), {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+          "mcp-session-id": this.sessionId,
+        },
+      }),
+      { acknowledge: streamIds },
+    );
+  }
+
   private async serializedTransportRequest<A>(run: () => Promise<A>): Promise<A> {
     const previous = this.transportRequestTail;
     let release = (): void => undefined;
@@ -1019,25 +1116,34 @@ export abstract class McpAgentSessionDOBase<
     request: Request,
     parsedBody: unknown,
   ): Promise<Response> {
-    const transport = this.transport;
-    if (!transport) {
-      return jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
-    }
     return this.serializedTransportRequest(async () => {
+      const transport = this.transport;
+      if (!transport) {
+        return jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
+      }
+      if (request.method === "GET") {
+        const lastEventId = request.headers.get("last-event-id");
+        if (lastEventId) {
+          await this.supersedeReplayStream(transport, lastEventId);
+        } else {
+          // Latest-listener-wins. Client cancellation is not reliably relayed
+          // through every workerd/Vite streaming hop, so explicitly retire a
+          // stale standalone mapping before opening its replacement.
+          transport.closeStandaloneSSEStream();
+          const replay = await this.replayUndeliveredOnStandaloneGet(request);
+          if (replay) return replay;
+        }
+      }
       const toolCallIds = legacyToolCallRequestIds(parsedBody);
       const protocolVersion =
         request.headers.get("mcp-protocol-version") ?? DEFAULT_NEGOTIATED_PROTOCOL_VERSION;
       const needsLegacyPrime =
         toolCallIds.length > 0 && protocolVersion < LEGACY_PRIMING_PROTOCOL_VERSION;
       if (!needsLegacyPrime) {
-        return rotateSseResponse(await transport.handleRequest(request), {
-          onOpen: () => {
-            this.activeLegacyStreamCount += 1;
-          },
-          onClose: () => {
-            this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
-          },
-        });
+        const response = await transport.handleRequest(request);
+        const streamId = toolCallIds[0] ? this.requestStreamId(transport, toolCallIds[0]) : null;
+        if (streamId) await this.eventStore.markStreamUndelivered(streamId);
+        return this.trackedLegacyResponse(response);
       }
 
       const originalOnMessage = transport.onmessage;
@@ -1057,17 +1163,14 @@ export abstract class McpAgentSessionDOBase<
       const eventId = streamId
         ? await this.eventStore.storeEvent(streamId, LEGACY_PRIMING_MESSAGE)
         : null;
-      for (const item of queued) originalOnMessage?.(item.message, item.extra);
-
-      return rotateSseResponse(response, {
+      if (streamId) await this.eventStore.markStreamUndelivered(streamId);
+      const rotated = this.trackedLegacyResponse(response, {
         ...(eventId ? { initialFrame: legacyPrimingFrame(eventId) } : {}),
-        onOpen: () => {
-          this.activeLegacyStreamCount += 1;
-        },
-        onClose: () => {
-          this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
-        },
       });
+      // ReadableStream.start enqueues the priming frame synchronously while
+      // building `rotated`; only then may the server see the tools/call.
+      for (const item of queued) originalOnMessage?.(item.message, item.extra);
+      return rotated;
     });
   }
 
@@ -1444,7 +1547,7 @@ export abstract class McpAgentSessionDOBase<
       return;
     }
 
-    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount });
+    await this.disposeIdleRuntime({ idleMs, lastActivityMs, pausedExecutionCount });
   }
 
   private validateApprovalIdentity(

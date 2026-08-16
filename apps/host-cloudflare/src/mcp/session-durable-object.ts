@@ -210,13 +210,12 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     executionId: string,
     response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
+    const ownerSession = mcpSessionStubForOwner(this.cfEnv.MCP_SESSION, owner);
+    if (!ownerSession) {
+      return Effect.succeed({ status: "execution_expired", ttlMs: PAUSED_APPROVAL_TIMEOUT_MS });
+    }
     return Effect.tryPromise({
-      try: () =>
-        mcpSessionStubForOwner(this.cfEnv.MCP_SESSION, owner).resumeExecutionForModel(
-          executionId,
-          identity,
-          response,
-        ),
+      try: () => ownerSession.resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),
     });
   }

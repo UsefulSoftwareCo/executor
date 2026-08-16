@@ -49,9 +49,19 @@ export interface McpSessionStub {
 export const mcpSessionStub = <Id>(
   namespace: McpSessionNamespace<Id>,
   sessionId: string,
-): McpSessionStub =>
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers types expose only DurableObjectStub, but fetch and RPC methods are generated from the bound DO class.
-  namespace.get(namespace.idFromString(sessionId)) as unknown as McpSessionStub;
+): McpSessionStub | null => {
+  let id: Id;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- platform boundary: Cloudflare validates the namespace checksum only through throwing idFromString
+  try {
+    id = namespace.idFromString(sessionId);
+  } catch {
+    return null;
+  }
+  return (
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers types expose only DurableObjectStub, but fetch and RPC methods are generated from the bound DO class.
+    namespace.get(id) as unknown as McpSessionStub
+  );
+};
 
 /** Allocate one unique session DO and return its client-visible ID and stub. */
 export const createMcpSessionStub = <Id>(
@@ -69,9 +79,7 @@ export const createMcpSessionStub = <Id>(
 export const mcpSessionStubForOwner = <Id>(
   namespace: McpOwnerSessionNamespace<Id>,
   owner: McpExecutionOwnerRoute,
-): McpSessionStub => {
+): McpSessionStub | null => {
   const modernId = modernMcpDurableObjectId(owner);
-  const id = namespace.idFromString(modernId ?? owner.sessionId);
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: Workers generates this RPC surface from the bound DO class.
-  return namespace.get(id) as unknown as McpSessionStub;
+  return mcpSessionStub(namespace, modernId ?? owner.sessionId);
 };
