@@ -2,9 +2,19 @@
   "name": "@executor-js/host-cloudflare",
   "private": true,
   "type": "module",
+  "exports": {
+    "./package.json": "./package.json",
+    "./worker": "./src/worker.ts"
+  },
   "scripts": {
     "build": "vite build && node scripts/assert-shell-asset.mjs",
     "deploy": "vite build && node scripts/assert-shell-asset.mjs && wrangler deploy",
+    "deploy:alchemy": "bun run build && bun run --cwd ../host-cloudflare-alchemy deploy",
+    "deploy:alchemy:adopt": "bun run build && bun run --cwd ../host-cloudflare-alchemy deploy:adopt",
+    "deploy:alchemy:validation": "bun run build && bun run --cwd ../host-cloudflare-alchemy deploy:validation",
+    "plan:alchemy": "bun run build && bun run --cwd ../host-cloudflare-alchemy plan",
+    "plan:alchemy:adopt": "bun run build && bun run --cwd ../host-cloudflare-alchemy plan:adopt",
+    "plan:alchemy:validation": "bun run build && bun run --cwd ../host-cloudflare-alchemy plan:validation",
     "dev": "wrangler dev",
     "dev:web": "vite dev",
     "typecheck": "tsgo --noEmit",

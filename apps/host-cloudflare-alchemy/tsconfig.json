@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": ["alchemy.run.ts"],
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "declarationMap": false,
+    "types": ["bun"],
+    "rootDir": "."
+  }
+}
