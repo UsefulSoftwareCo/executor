@@ -13,6 +13,7 @@ import {
   authToolFailure,
   isUserActionableError,
   isToolResult,
+  IntegrationSlug,
   ToolResult,
   ToolAddress,
   parseToolAddress,
@@ -665,13 +666,17 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   });
 
   const emptyQuery = normalizeSearchText(query).length === 0;
-  const hasNamespace =
-    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0;
+  // The exact integration slug an empty-query enumeration reads under; null
+  // when the caller named no usable namespace.
+  const scope =
+    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0
+      ? IntegrationSlug.make(options.namespace.trim())
+      : null;
 
   // An empty query with no namespace stays empty: it carries neither a
   // ranking signal nor a scope, and listing the whole workspace "by default"
   // is exactly the arbitrary dump the ranked search refuses to be.
-  if (emptyQuery && !hasNamespace) {
+  if (emptyQuery && scope === null) {
     return {
       items: [],
       total: 0,
@@ -680,15 +685,26 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
-  const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ExecutionToolError({
-          message: "Failed to list tools for search",
-          cause,
-        }),
-    ),
-  );
+  // Enumeration's scope is an exact integration slug (see below), so it is the
+  // read's filter, not a post-read predicate: pushing it down lets the list
+  // narrow its own catalog refresh to that one integration instead of
+  // re-listing every stale connection in the workspace. Ranked search is
+  // deliberately NOT scoped here — `matchesNamespace` is token-prefix, so a
+  // scoped read would drop the prefix-sibling integrations it means to match.
+  const all = yield* executor.tools
+    .list({
+      includeAnnotations: false,
+      ...(emptyQuery && scope !== null ? { integration: scope } : {}),
+    })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionToolError({
+            message: "Failed to list tools for search",
+            cause,
+          }),
+      ),
+    );
   const searchable = all.map(toSearchableTool);
 
   // An empty query WITH a namespace is enumeration, not search: there is no
@@ -698,10 +714,11 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   // sweep in prefix-sibling integrations (namespace "google" matching
   // google_gmail and google_sheets), which would silently break the census
   // guarantee: `total` here must reconcile against
-  // `executor.integrations.list`'s per-integration toolCount.
+  // `executor.integrations.list`'s per-integration toolCount. That exact match
+  // is now the `integration` filter on the read above, so `searchable` is
+  // already the namespace's catalog and re-filtering it here would be a no-op.
   const ranked: readonly ToolDiscoveryResult[] = emptyQuery
     ? searchable
-        .filter((tool) => tool.integration === options?.namespace?.trim())
         .sort((left, right) => left.path.localeCompare(right.path))
         .map((tool) => ({
           path: tool.path,
