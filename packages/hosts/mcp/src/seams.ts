@@ -1,10 +1,11 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import type { Cause } from "effect";
+import type { McpServer } from "@modelcontextprotocol/server";
 
 // ---------------------------------------------------------------------------
 // Provider-neutral MCP serving seams.
 //
-// The shared MCP serving envelope (see `./envelope`) depends ONLY on these TWO
+// The shared MCP serving envelope (see `./envelope`) depends ONLY on these THREE
 // seams. Each product (self-host, cloud, local) provides its own Layer
 // satisfying the same tags; the envelope never changes. The seams are kept
 // deliberately small — anything provider-specific (Durable-Object trace
@@ -12,17 +13,18 @@ import type { Cause } from "effect";
 // per-org engine construction) is configured *inside* a provider's adapter and
 // never baked into the envelope.
 //
-// Two seams, deliberately:
+// Three seams, deliberately:
 //   1. McpAuthProvider — called on EVERY request. Authenticate AND authorize
 //      (it may read the `mcp-session-id` header to do session-aware org-authz).
 //   2. McpSessionStore — owns the serving session lifecycle: create + forward +
 //      ownership, end to end, via a single `dispatch`. The store builds/forwards
 //      the transport and returns the transport `Response`.
+//   3. McpModernServerBuilder — builds one stateless SDK v2 server for each
+//      authenticated modern request. The envelope owns handler/bus lifetime.
 //
-// There is deliberately NO envelope-level engine seam. Self-host's in-process
-// store builds its engine via an INTERNAL dependency (its Layer provides it);
-// cloud's Durable-Object store builds its engine inside the DO. The engine is a
-// store implementation detail, not an envelope seam.
+// There is deliberately NO envelope-level engine seam. Both server builders
+// remain host adapters; the envelope only chooses the protocol era and supplies
+// request/resource/auth context.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -271,7 +273,39 @@ export class McpSessionStore extends Context.Service<
 >()("@executor-js/host-mcp/McpSessionStore") {}
 
 // ===========================================================================
-// SEAM 3 (optional) — McpErrorReporter: observe a request-orchestration defect.
+// SEAM 3 — McpModernServerBuilder: one stateless SDK v2 server per request.
+// ===========================================================================
+
+/** Request-scoped inputs the envelope adds to a host's modern server config. */
+export interface McpModernServerBuildOptions {
+  /** The served endpoint whose capability policy the server must apply. */
+  readonly resource: McpResource;
+  /** Whether this request's client advertised MCP Apps HTML support. */
+  readonly appsEnabled: boolean;
+  /** Process-lifetime key used to sign opaque request continuation state. */
+  readonly requestStateSigningKey: Uint8Array | string;
+  /** Stable authenticated-owner key bound into signed continuation state. */
+  readonly requestStatePrincipal: string;
+}
+
+/**
+ * Build one stateless SDK v2 server for an authenticated modern request.
+ *
+ * The envelope owns the cached `createMcpHandler` and its subscriptions bus;
+ * providers own execution-stack construction and tool configuration here.
+ */
+export class McpModernServerBuilder extends Context.Service<
+  McpModernServerBuilder,
+  {
+    readonly build: (
+      principal: Principal,
+      options: McpModernServerBuildOptions,
+    ) => Effect.Effect<McpServer, Cause.YieldableError>;
+  }
+>()("@executor-js/host-mcp/McpModernServerBuilder") {}
+
+// ===========================================================================
+// SEAM 4 (optional) — McpErrorReporter: observe a request-orchestration defect.
 //
 // The envelope wraps the entire `/mcp` handling in a top-level `catchCause` and
 // renders a JSON-RPC 500 -32603 (the streamable-HTTP transport never sees the

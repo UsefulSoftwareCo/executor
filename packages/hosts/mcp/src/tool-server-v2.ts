@@ -1,18 +1,18 @@
 /**
  * Stateless MCP SDK v2 assembly for the 2026-07-28 protocol era.
  *
- * A later host PR will call {@link buildMcpServerV2} from a
- * `createMcpHandler` `McpServerFactory`, once per request. The factory's
- * `McpRequestContext.requestInfo` exposes the original HTTP request; the host
- * reads its modern `_meta` envelope, extracts `CLIENT_CAPABILITIES_META_KEY`,
- * and passes the request-scoped {@link appsEnabledForClientCapabilities}
- * decision here. This package deliberately does not replace existing v1 host
- * routing.
+ * Neutral hosts call {@link buildMcpServerV2} from a `createMcpHandler`
+ * `McpServerFactory`, once per request. The factory's
+ * `McpRequestContext.requestInfo` exposes the original HTTP request, which
+ * {@link clientCapabilitiesFromRequest} parses for the request-scoped
+ * {@link appsEnabledForClientCapabilities} decision. Legacy routing remains a
+ * separate host path.
  */
 import { Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import {
   acceptedContent,
+  CLIENT_CAPABILITIES_META_KEY,
   createRequestStateCodec,
   fromJsonSchema,
   inputRequired,
@@ -28,6 +28,7 @@ import type { ElicitationRequest } from "@executor-js/sdk";
 
 import {
   getUiCapability,
+  EXTENSION_ID,
   registerAppResource,
   registerAppTool,
   RESOURCE_MIME_TYPE,
@@ -79,14 +80,55 @@ export const appsEnabledForClientCapabilities = (
   clientCapabilities: McpAppsClientCapabilities | null | undefined,
 ): boolean => Boolean(getUiCapability(clientCapabilities)?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const clientCapabilitiesFromUnknown = (body: unknown): McpAppsClientCapabilities | null => {
+  if (!isRecord(body)) return null;
+  const params = body.params;
+  if (!isRecord(params)) return null;
+  const metadata = params._meta;
+  if (!isRecord(metadata)) return null;
+  const capabilities = metadata[CLIENT_CAPABILITIES_META_KEY];
+  if (!isRecord(capabilities)) return null;
+  const extensions = capabilities.extensions;
+  if (!isRecord(extensions)) return null;
+  const ui = extensions[EXTENSION_ID];
+  if (!isRecord(ui)) return null;
+  const mimeTypes = ui.mimeTypes;
+  if (mimeTypes === undefined) return { extensions: { [EXTENSION_ID]: {} } };
+  if (!Array.isArray(mimeTypes) || !mimeTypes.every((value) => typeof value === "string")) {
+    return null;
+  }
+  return { extensions: { [EXTENSION_ID]: { mimeTypes } } };
+};
+
+/** Parse a cloned HTTP request body without consuming the request itself. */
+export const requestBodyFromRequest = (request: Request): Effect.Effect<unknown> =>
+  Effect.tryPromise({
+    try: () => request.clone().json(),
+    catch: () => null,
+  }).pipe(
+    Effect.match({
+      onFailure: () => null,
+      onSuccess: (body) => body,
+    }),
+  );
+
+/**
+ * Parse the MCP Apps capability subset from a modern request's `_meta`
+ * envelope without consuming the request body used by the SDK handler.
+ */
+export const clientCapabilitiesFromRequest = (
+  request: Request,
+): Effect.Effect<McpAppsClientCapabilities | null> =>
+  requestBodyFromRequest(request).pipe(Effect.map(clientCapabilitiesFromUnknown));
+
 const requestJoinKeys = (context: ServerContext): V2RequestContext => ({
   requestId: context.mcpReq.id,
   ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
   serverContext: context,
 });
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const appToolMeta = (metadata: Record<string, unknown>): McpAppToolMeta | undefined => {
   const ui = metadata.ui;

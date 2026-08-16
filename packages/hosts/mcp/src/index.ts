@@ -16,6 +16,7 @@ export {
   Principal,
   McpAuthProvider,
   McpSessionStore,
+  McpModernServerBuilder,
   McpErrorReporter,
   McpErrorReporterNoop,
   defaultMcpResource,
@@ -33,6 +34,7 @@ export {
   type McpDiscoveryRoute,
   type McpDispatchInput,
   type McpDispatchResult,
+  type McpModernServerBuildOptions,
   type McpResource,
 } from "./seams";
 
