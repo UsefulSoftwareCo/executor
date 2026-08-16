@@ -155,6 +155,60 @@ describe("HttpRouter.toWebHandler request scoping", () => {
 });
 
 // ---------------------------------------------------------------------------
+// WHEN the per-request resource dies, relative to the response bytes.
+//
+// `requestScopedMiddleware` wraps the ROUTE HANDLER in `Effect.scoped`, and the
+// response is written later still, by `HttpEffect.toHandled`'s callback. So the
+// postgres socket is already closed by the time the client has anything. That
+// is why cloud's HTTP plane leaves `ExecutorConfig.deferToolSync` unset (see
+// `engine/execution-stack.ts`): there is no window on this plane that is both
+// after the response and before the socket closes, so `waitUntil` would only
+// ever hand a dead pool to the deferred batch.
+//
+// Pinned rather than assumed. If the request lifecycle is ever restructured so
+// the scope outlives the written response, this test fails and the deferral
+// becomes available — which is a thing to be told, not to rediscover.
+// ---------------------------------------------------------------------------
+
+describe("per-request resource lifetime vs the written response", () => {
+  it("releases the request-scoped resource before the response resolves", async () => {
+    const order: string[] = [];
+    const Tracked = Layer.effectDiscard(
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          order.push("acquire");
+        }),
+        () =>
+          Effect.sync(() => {
+            order.push("release");
+          }),
+      ),
+    );
+    const Route = HttpRouter.add(
+      "GET",
+      "/",
+      Effect.sync(() => {
+        order.push("handler");
+        return HttpServerResponse.jsonUnsafe({ ok: true });
+      }),
+    );
+    const handler = HttpRouter.toWebHandler(
+      Route.pipe(
+        Layer.provide(requestScopedMiddleware(Tracked).layer),
+        Layer.provideMerge(HttpServer.layerServices),
+      ),
+      { disableLogger: true },
+    ).handler;
+
+    const response = await handler(new Request("http://test.local/"));
+    order.push("response");
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["acquire", "handler", "release", "response"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Regression test against the prod handler factory. If anyone reverts
 // `makeApiLive` back to wiring `RequestScopedServicesLive` via
 // `Layer.provideMerge`, this test fails — the counter only increments

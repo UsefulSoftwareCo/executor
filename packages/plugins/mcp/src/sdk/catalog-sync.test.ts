@@ -39,12 +39,21 @@ const INTEG = IntegrationSlug.make("catalog_mcp");
 const CONNECTION = ConnectionName.make("main");
 const TEMPLATE = AuthTemplateSlug.make("none");
 
+const makeCatalogTestConfig = (options?: { readonly collectBackgroundTasks?: boolean }) =>
+  makeTestConfig({
+    plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+    collectBackgroundTasks: options?.collectBackgroundTasks,
+  });
+
 const makeCatalogTestExecutor = (
   serverUrl: string,
-  options?: { readonly toolsSyncTtlMs?: number | null },
+  options?: {
+    readonly toolsSyncTtlMs?: number | null;
+    readonly config?: ReturnType<typeof makeCatalogTestConfig>;
+  },
 ) =>
   createExecutor({
-    ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+    ...(options?.config ?? makeCatalogTestConfig()),
     ...(options?.toolsSyncTtlMs === undefined ? {} : { toolsSyncTtlMs: options.toolsSyncTtlMs }),
   }).pipe(
     Effect.tap((executor) =>
@@ -137,6 +146,38 @@ describe("MCP tool-catalog sync (end-to-end)", () => {
 
       // Server-side change with no notification and no executor signal at all.
       mutable.renameTool();
+
+      const refreshed = toolNames(yield* executor.tools.list());
+      expect(refreshed).toContain(mutable.renamedToolName);
+      expect(refreshed).not.toContain(mutable.initialToolName);
+    }),
+  );
+
+  it.effect("an expired catalog is re-listed in the background when a host can defer", () =>
+    Effect.gen(function* () {
+      const mutable = makeMutableCatalogMcpServer();
+      const server = yield* serveMcpServer(mutable.factory);
+      // The same instantly-stale executor as the case above, with the one
+      // difference that makes the read cheap: a host that can run work after
+      // it has answered.
+      const config = makeCatalogTestConfig({ collectBackgroundTasks: true });
+      const executor = yield* makeCatalogTestExecutor(server.url, {
+        toolsSyncTtlMs: 0,
+        config,
+      });
+
+      expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
+      const sessionsAfterFirstList = server.sessionCount();
+
+      mutable.renameTool();
+
+      // The expired read serves what it has and dials nothing: an old catalog
+      // is not a wrong one, and nothing has said it drifted.
+      expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
+      expect(server.sessionCount()).toBe(sessionsAfterFirstList);
+
+      // The work still happens — just not on the read's clock.
+      yield* config.drainBackgroundTasks;
 
       const refreshed = toolNames(yield* executor.tools.list());
       expect(refreshed).toContain(mutable.renamedToolName);

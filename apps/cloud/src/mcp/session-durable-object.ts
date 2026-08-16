@@ -46,7 +46,7 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
-// engine with `CloudMeteredExecutionStackLayer`, so every MCP execution is
+// engine with the metered execution stack, so every MCP execution is
 // tracked to Autumn (the MCP server is the primary execution surface, so leaving
 // it unmetered silently dropped the bulk of real usage). The billing service
 // (`AutumnService.Default`) is provided LOCALLY to the metered stack below, so
@@ -66,9 +66,9 @@ import {
   type DrizzleDb,
   type DbServiceShape,
 } from "../db/db";
-import { makeExecutionStack } from "../engine/execution-stack";
+import { makeCloudHostConfig, makeExecutionStack } from "../engine/execution-stack";
 import { preloadQuickJs } from "../quickjs";
-import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
+import { makeCloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import {
@@ -236,6 +236,66 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     );
   }
 
+  /**
+   * `ExecutorConfig.deferToolSync` for the MCP plane: a tools read's
+   * speculative catalog refresh runs after the read has answered, on this
+   * session's own database handle.
+   *
+   * Detached rather than drained before some closing scope: the handle this
+   * session's executor closes over is opened once in `openSessionDb` and lives
+   * as long as the DO does, so no request-scoped teardown takes it away.
+   * `ctx.waitUntil` only holds the invocation open long enough for the batch to
+   * finish, exactly as the pending-approval leases above do. The task carries no
+   * failure channel and swallows its own defects, so the only way `runPromise`
+   * rejects is a batch that was interrupted — which it deliberately does not
+   * swallow, and which is worth surfacing rather than hiding.
+   *
+   * The handle is NOT unreachable, though: the inactivity alarm's teardown
+   * (`closeRuntime`) ends that same handle with `sql.end({ timeout: 0 })`, which
+   * abandons an in-flight batch's queries rather than draining them. Contained
+   * rather than guarded against — a killed listing is one more swallowed refresh
+   * failure, it persists nothing partial, and the lease it holds self-heals
+   * within 60s (`TOOL_SYNC_CLAIM_LEASE_MS`), after which the connection is
+   * simply due again on the next read.
+   *
+   * `DoTelemetryLive` IS re-provided here, and this is the one place that is
+   * correct — see the prohibition on `makeSessionServices`. A bare `runPromise`
+   * carries no `Tracer` at all, so every `executor.tools.sync` span the batch
+   * emits would be silently dropped, and the background refresh would be the
+   * one part of this feature invisible in production. Providing it costs the
+   * link to the read's trace, which is the point: this work is deliberately not
+   * part of that request, and hanging it under a span that closed first would
+   * inflate exactly the tools-read latency the deferral exists to remove. The
+   * batch gets its own root trace instead. Flushed at the end because the read's
+   * own `flushTelemetry` has long since run by the time this finishes — as a
+   * finalizer, so an interrupted batch still ships the spans it recorded up to
+   * the cancellation, and bounded by the same `TELEMETRY_FLUSH_TIMEOUT_MS` for
+   * the same reason: an exporter that never settles must not hold the
+   * invocation open behind the work it is reporting on.
+   */
+  private readonly deferToolSync = (task: Effect.Effect<void>): Effect.Effect<void> =>
+    Effect.sync(() => {
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          task.pipe(
+            Effect.provide(DoTelemetryLive),
+            Effect.ensuring(
+              Effect.tryPromise({
+                try: () => flushTracerProvider(),
+                catch: () => undefined,
+              }).pipe(
+                Effect.ignore,
+                Effect.timeoutOrElse({
+                  duration: `${TELEMETRY_FLUSH_TIMEOUT_MS} millis`,
+                  orElse: () => Effect.void,
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+
   protected override buildMcpServer(
     sessionMeta: SessionMeta,
     dbHandle: CloudSessionDbHandle,
@@ -261,7 +321,11 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
         // billing service degrades to a no-op tracker, so this stays inert in
         // cloud dev/preview environments that run without a billing backend.
-        Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
+        Effect.provide(
+          makeCloudMeteredExecutionStackLayer(makeCloudHostConfig(self.deferToolSync)).pipe(
+            Layer.provide(AutumnService.Default),
+          ),
+        ),
         Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
       );
       // Build the description here so `executor.connections.list()` stays under

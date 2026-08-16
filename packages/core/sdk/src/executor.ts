@@ -665,6 +665,35 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly onIntegrationChange?: (event: IntegrationChangeEvent) => Effect.Effect<void>;
   /**
+   * Run `task` AFTER the operation that produced it has answered its caller.
+   *
+   * The read path hands the speculative half of its catalog refresh here: a TTL
+   * `expired` connection has a working catalog and no evidence at all that it
+   * drifted, so re-verifying it is worth doing soon and never worth making a
+   * read wait for. Invalidation triggers (`cold`, `stale_marked`,
+   * `config_revised`) do NOT come through here — the next read's correctness
+   * depends on them, so they stay inline.
+   *
+   * CONTRACT. `task` is already total (`Effect<void>`: no failure channel, and
+   * its own defects are caught and logged inside), so a host only has to
+   * schedule it. Scheduling MUST NOT fail the caller — this is invoked mid-read
+   * and a background-work outage is not a read failure. Dropping a task is
+   * SAFE: nothing was written, the connection's row is still due, and the cost
+   * is one freshness window before the next read re-offers it.
+   *
+   * ABSENT means run inline, and that is the correct semantics for a host with
+   * no background capability rather than a compatibility shim: the work still
+   * has to happen, and a host that cannot outlive its own response can only do
+   * it before answering.
+   *
+   * On Workers the implementation must guarantee execution with `waitUntil` (or
+   * `ctx.waitUntil`) — an isolate that is evicted the instant its response is
+   * written runs nothing else. It must also keep whatever database handle the
+   * task closes over alive until the task finishes: a request-scoped pool that
+   * closes with the request takes the deferred batch down with it.
+   */
+  readonly deferToolSync?: (task: Effect.Effect<void>) => Effect.Effect<void>;
+  /**
    * Opt into the PLATFORM VIEW: a read-only, tenant-wide `executor.admin`
    * surface that reads across every subject in the tenant (see
    * {@link ExecutorAdmin}). Default OFF — `admin` is simply absent, so the
@@ -740,6 +769,23 @@ interface ToolProduction {
   readonly outcome: ToolProductionOutcome;
 }
 
+/** A connection the read's scan found due, with everything one refresh attempt
+ *  needs: which integration owns it, which connection it is, what made it due,
+ *  and the failure count the retry ladder advances from. Named because the
+ *  inline path and the deferred batch both consume it, and they must not drift
+ *  into two shapes. */
+interface DueConnection {
+  readonly integrationRow: IntegrationRow;
+  readonly ref: ConnectionRef;
+  readonly state: Exclude<ToolSyncState, "fresh">;
+  readonly priorFailures: number;
+}
+
+/** What one refresh attempt did, as reported to the read's summary.
+ *  `skipped_claimed` is the compare-and-set losing, `fail` is the swallowed
+ *  error/defect path; the rest are {@link ToolProductionOutcome} verbatim. */
+type CatalogRefreshOutcome = ToolProductionOutcome | "fail" | "skipped_claimed";
+
 /**
  * How much work a read's catalog refresh found and did, for the enclosing
  * `executor.tools.list` span. `candidates` is what the stale scan returned —
@@ -767,6 +813,18 @@ interface ToolProduction {
  * The three `skipped*` counts are the whole point of the lifecycle columns: a
  * fleet whose reads are dominated by `skipped_parked` is one where dead
  * credentials stopped costing handshakes.
+ *
+ * `deferred` counts the candidates handed to `ExecutorConfig.deferToolSync`
+ * instead of being listed inline, and it is deliberately NOT folded into the
+ * four terminal counters: from the READ's point of view a deferred candidate
+ * has no outcome yet, and reporting one it did not observe is how a background
+ * batch that never ran would read as a fleet of healthy syncs. Each deferred
+ * listing still emits its own `executor.tools.sync` span with its own outcome
+ * when it eventually runs. A host with NO seam defers nothing — it lists the
+ * same batch inline, before answering — so there it is 0 and those listings sit
+ * in the terminal counters with every other one. `deferredOverflow` is what did
+ * not fit in the batch cap on either path, so a read that keeps shedding work
+ * says so rather than capping quietly.
  */
 interface CatalogRefreshSummary {
   readonly candidates: number;
@@ -777,6 +835,8 @@ interface CatalogRefreshSummary {
   readonly skippedClaimed: number;
   readonly skippedBackoff: number;
   readonly skippedParked: number;
+  readonly deferred: number;
+  readonly deferredOverflow: number;
 }
 
 const NO_CATALOG_REFRESH: CatalogRefreshSummary = {
@@ -788,7 +848,27 @@ const NO_CATALOG_REFRESH: CatalogRefreshSummary = {
   skippedClaimed: 0,
   skippedBackoff: 0,
   skippedParked: 0,
+  deferred: 0,
+  deferredOverflow: 0,
 };
+
+/**
+ * The most `expired` connections one read will hand to
+ * `ExecutorConfig.deferToolSync`.
+ *
+ * A cap rather than the whole due set, because the deferred batch is charged to
+ * the host's background budget, and on the tightest host that budget is a
+ * Workers `waitUntil` — bounded CPU, bounded wall clock, and shared with
+ * whatever else the request queued. Sixteen upstream listings at concurrency 4
+ * is four sequential handshakes deep, which fits that budget with room to spare
+ * while still draining a realistically wide workspace in a couple of reads.
+ *
+ * Nothing is lost by capping: an `expired` connection that does not fit is
+ * still due, still serving its existing catalog, and re-offered on the very
+ * next read. The overflow is counted on the read's span (never logged) so a
+ * deployment that permanently sheds work is visible instead of quietly slow.
+ */
+const TOOL_SYNC_DEFERRED_BATCH_MAX = 16;
 
 /** A nullable bigint column as epoch milliseconds. The drivers hand these back
  *  as `bigint` (Postgres) or `number` (sqlite/D1), and every comparison in the
@@ -2687,6 +2767,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolsSyncTtlMs =
       config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
 
+    // How the read path hands off its speculative `expired` listings
+    // (`ExecutorConfig.deferToolSync`), or absent on a host with no way to
+    // outlive its own response — which then does the work before answering, the
+    // honest behaviour rather than a fallback (see the config doc).
+    //
+    // Deliberately NOT collapsed into an identity function: an identity makes
+    // the two cases indistinguishable to the caller, and the read reported a
+    // batch it had just run to completion itself as `deferred` work with no
+    // outcome. The read path branches on it once, in `refreshExpiredBatch`.
+    const deferToolSync = config.deferToolSync;
+
     // The retry ladder's first rung. It follows the freshness window when there
     // is a usable one, and falls back to the default otherwise: "don't re-dial
     // a server that just refused us" is a separate concern from "re-list a live
@@ -4092,6 +4183,216 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       return true;
     };
 
+    /**
+     * ONE due connection: take the lease, list, record the outcome.
+     *
+     * The whole per-connection pipeline lives here rather than at the call site
+     * because it now has two call sites — the read's inline fan-out and the
+     * deferred `expired` batch — and they must be the SAME pipeline. A
+     * background refresh that claimed differently, or skipped a step of the
+     * failure accounting, would be a second implementation of the lifecycle
+     * PR 2 exists to keep single.
+     *
+     * The claim is taken HERE, inside the attempt, and that is what makes the
+     * pipeline safe to defer: an enqueue that never runs (an evicted isolate, a
+     * dropped `waitUntil`) has claimed nothing, so it strands no lease and the
+     * connection stays due.
+     */
+    const refreshOneConnection = ({
+      integrationRow,
+      ref,
+      state,
+      priorFailures,
+    }: DueConnection): Effect.Effect<CatalogRefreshOutcome, StorageFailure> =>
+      Effect.gen(function* () {
+        const claim = yield* claimConnectionForSync(ref);
+        yield* Effect.annotateCurrentSpan({
+          "executor.tools.sync.claimed": claim !== null,
+        });
+        if (claim === null) return "skipped_claimed" as const;
+        return yield* produceConnectionTools(integrationRow, ref, {
+          trigger: state,
+          claim,
+        }).pipe(
+          // Reported verbatim: `synced`, `incomplete` and `lost_claim`
+          // are three different things to be told, and only the first is
+          // a sync. Folding the other two into it is how a fleet that
+          // persists nothing reads as fully healthy.
+          Effect.flatMap((produced) =>
+            Effect.annotateCurrentSpan({
+              "executor.tools.sync.outcome": produced.outcome,
+            }).pipe(Effect.as(produced.outcome)),
+          ),
+          // catchCause, not catch: a plugin DEFECT is not in the error
+          // channel, and a tools READ must not be failable by one
+          // connection's misbehaving refresh. The stale-but-working
+          // catalog stays in place and the next read retries.
+          //
+          // Warning, not debug: swallowing this is the whole point, so
+          // the log line is the only signal that a connection is serving
+          // a stale catalog. Enumerable fields only — a refresh runs on a
+          // live credential and its cause can embed the upstream request
+          // and response.
+          Effect.catchCause((cause) =>
+            // Cancellation first: a `tools.list` abandoned by its caller
+            // must not be recorded as an upstream failure, and writing a
+            // retry schedule from an interrupted fiber would persist a
+            // verdict nobody reached. Let it through untouched — the
+            // lease expires on its own.
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.gen(function* () {
+                  yield* Effect.annotateCurrentSpan({
+                    "executor.tools.sync.outcome": "fail",
+                  });
+                  // A genuine failure walks the retry ladder; a DEFECT
+                  // only releases the lease. The four error kinds describe
+                  // what an upstream did, and a bug in this process is
+                  // none of them — it is loud, repeated and fixable, so it
+                  // keeps retrying rather than quietly backing off under a
+                  // wrong label.
+                  yield* withCatalogPersistLock(
+                    core.updateMany("connection", {
+                      where: (b: AnyCb) =>
+                        b.and(
+                          byOwner(ref.owner)(b),
+                          b("integration", "=", String(ref.integration)),
+                          b("name", "=", String(ref.name)),
+                          b("tools_sync_claim_id", "=", claim),
+                        ),
+                      set: Cause.hasFails(cause)
+                        ? toolSyncFailureSet(priorFailures, null, "the tool catalog refresh failed")
+                        : { tools_sync_claim_id: null, tools_sync_claim_at: null },
+                    }),
+                  ).pipe(Effect.ignore);
+                  yield* Effect.logWarning("executor tool catalog refresh failed", {
+                    integration: String(ref.integration),
+                    connection: String(ref.name),
+                    trigger: state,
+                    errorTags: causeErrorTags(cause),
+                  });
+                  return "fail" as const;
+                }),
+          ),
+        );
+      }).pipe(
+        Effect.withSpan("executor.tools.sync", {
+          attributes: {
+            "executor.integration": String(ref.integration),
+            "executor.connection": String(ref.name),
+            "executor.tools.sync.trigger": state,
+          },
+        }),
+      );
+
+    /**
+     * Bounded fan-out over a due set: these are independent upstream
+     * handshakes, and a sequential loop made a read cost the SUM of every
+     * candidate's round trip. The bound keeps a wide refresh from opening one
+     * socket per connection.
+     *
+     * The read's inline half, the deferred batch, and the same batch run inline
+     * on a host with no seam all go through here, so the three cannot drift in
+     * concurrency or in how outcomes are collected.
+     */
+    const refreshDueConnections = (
+      candidates: readonly DueConnection[],
+    ): Effect.Effect<readonly CatalogRefreshOutcome[], StorageFailure> =>
+      Effect.forEach(candidates, refreshOneConnection, { concurrency: 4 });
+
+    /**
+     * The `expired` half of a read's due set, as one task for
+     * `ExecutorConfig.deferToolSync`.
+     *
+     * ONE task for the whole batch, not one per connection: the cap, the
+     * concurrency bound and the host's background budget are all properties of
+     * the batch, and a host handed sixteen independent tasks would have to
+     * rediscover every one of them.
+     *
+     * Total by construction, INTERRUPTION EXCEPTED.
+     * `refreshOneConnection` already swallows its own failures and defects per
+     * connection; the storage channel that survives it (the claim's own write)
+     * is caught here, because a deferred task runs with no caller to report to
+     * and a rejected background fiber is an unhandled error on some hosts. A
+     * cancelled batch is the one thing that still comes back out — see the two
+     * handlers below — so a host that runs this to a promise must expect that
+     * promise to reject when its own runtime tears the batch down.
+     *
+     * LOCKING. This runs the same `withCatalogPersistLock` the inline path
+     * does, and the permit belongs to THIS executor instance — so it excludes
+     * this read's own inline refreshes and nothing else. A later request in the
+     * same isolate builds its own executor with its own semaphore, and the two
+     * can interleave here. That is by design and already the production case:
+     * the lease compare-and-set on the connection row, not the in-process
+     * permit, is what makes exactly one attempt authoritative. The permit's job
+     * is narrower — keeping two persists on ONE shared sqlite connection from
+     * splitting each other's delete-then-insert — and it still covers every
+     * persist a single executor issues, deferred ones included.
+     */
+    const deferredSyncTask = (batch: readonly DueConnection[]): Effect.Effect<void> => {
+      const logBatchFailure = <E extends { readonly _tag: string }>(cause: Cause.Cause<E>) =>
+        Effect.logWarning("executor deferred tool catalog refresh failed", {
+          errorTags: causeErrorTags(cause),
+        });
+      return refreshDueConnections(batch).pipe(
+        Effect.asVoid,
+        Effect.withSpan("executor.tools.sync.deferred", {
+          attributes: { "executor.tools.sync.deferred": batch.length },
+        }),
+        // The claim's own write is the one typed channel that survives
+        // `refreshOneConnection`, and it is caught FIRST so what reaches the
+        // cause handler below is defects and interrupts only.
+        Effect.catch((error) => logBatchFailure(Cause.fail(error))),
+        // catchCauseIf, not catchCause: v4's catchCause is an unfiltered
+        // handler over EVERY cause, interrupts included, and a caught
+        // self-interrupt is gone for good. It would swallow exactly the
+        // re-raise `refreshOneConnection` makes for an abandoned read — and
+        // because one child's interrupt takes its siblings down with it, the
+        // batch would report success having aborted fifteen live listings.
+        // Defects are still swallowed, for the reason above.
+        Effect.catchCauseIf((cause) => !Cause.hasInterrupts(cause), logBatchFailure),
+      );
+    };
+
+    /**
+     * The `expired` half of a read's due set, run wherever this host can run it.
+     *
+     * The two branches report DIFFERENT things, and that is the point. A seam
+     * takes the batch away unfinished, so the read has no outcomes to report
+     * and counts the handover instead (`deferred`). With no seam nothing is
+     * deferred at all: the batch runs here, on the read's own fiber, before the
+     * read answers — so its outcomes ARE the read's own and belong in the
+     * terminal partition like any other inline listing. Reporting those as
+     * `deferred` had an inline host reading as a fleet that syncs nothing.
+     *
+     * The no-seam branch is ordinary inline work in every respect, including a
+     * storage failure reaching the read: the invalidation half above already
+     * propagates one, and a claim this read could not write is the read's own
+     * failure, not a background outage.
+     */
+    const refreshExpiredBatch = (
+      batch: readonly DueConnection[],
+    ): Effect.Effect<readonly CatalogRefreshOutcome[], StorageFailure> =>
+      deferToolSync === undefined
+        ? refreshDueConnections(batch)
+        : deferToolSync(deferredSyncTask(batch)).pipe(
+            // Guarded like `onIntegrationChange`: this hook is a host's
+            // scheduling machinery, and a read must not become failable by it.
+            // Nothing is lost when it dies — the batch claimed nothing yet, so
+            // the connections are simply still due. Interrupts pass through for
+            // the same reason as in the task: a read abandoned mid-handover
+            // reached no verdict about the host's scheduler.
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterrupts(cause),
+              (cause) =>
+                Effect.logWarning("executor deferred tool catalog refresh was not scheduled", {
+                  deferred: batch.length,
+                  errorTags: causeErrorTags(cause),
+                }),
+            ),
+            Effect.as([]),
+          );
+
     // Rebuild the connections a `tools.list` is about to read whose persisted
     // tool catalog is stale, scoped to that read's own filter — a read for one
     // integration never waits on another's upstream handshakes. Four triggers,
@@ -4115,6 +4416,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // one between them rather than one each.
     // Best-effort: a failed rebuild leaves the stale-but-working catalog in
     // place and the ladder schedules the retry.
+    //
+    // Only the first three triggers are listed INLINE, before the read answers.
+    // They are somebody telling us the catalog changed, so the answer this read
+    // is about to give is wrong until they run. `expired` is the clock asking a
+    // working catalog to re-verify itself with no evidence of drift at all, and
+    // it goes to `ExecutorConfig.deferToolSync` — the read serves the catalog it
+    // has and the listing happens after. A connection that BOTH drifted and
+    // expired needs no special case: `classifyToolSync` ranks drift and config
+    // revisions above the clock, so it never classifies as `expired` and lands
+    // inline on its own.
     const refreshCatalogsForRead = (
       filter: ToolListFilter | undefined,
     ): Effect.Effect<CatalogRefreshSummary, StorageFailure> =>
@@ -4200,12 +4511,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           select: CONNECTION_CATALOG_SCAN_COLUMNS,
         });
 
-        const due: {
-          readonly integrationRow: IntegrationRow;
-          readonly ref: ConnectionRef;
-          readonly state: Exclude<ToolSyncState, "fresh">;
-          readonly priorFailures: number;
-        }[] = [];
+        const due: DueConnection[] = [];
         let skippedClaimed = 0;
         let skippedBackoff = 0;
         let skippedParked = 0;
@@ -4259,99 +4565,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Bounded fan-out: these are independent upstream handshakes, and a
-        // sequential loop made a read cost the SUM of every candidate's
-        // round trip. The bound keeps a wide refresh from opening one socket
-        // per connection.
-        const outcomes = yield* Effect.forEach(
-          due,
-          ({ integrationRow, ref, state, priorFailures }) =>
-            Effect.gen(function* () {
-              const claim = yield* claimConnectionForSync(ref);
-              yield* Effect.annotateCurrentSpan({
-                "executor.tools.sync.claimed": claim !== null,
-              });
-              if (claim === null) return "skipped_claimed" as const;
-              return yield* produceConnectionTools(integrationRow, ref, {
-                trigger: state,
-                claim,
-              }).pipe(
-                // Reported verbatim: `synced`, `incomplete` and `lost_claim`
-                // are three different things to be told, and only the first is
-                // a sync. Folding the other two into it is how a fleet that
-                // persists nothing reads as fully healthy.
-                Effect.flatMap((produced) =>
-                  Effect.annotateCurrentSpan({
-                    "executor.tools.sync.outcome": produced.outcome,
-                  }).pipe(Effect.as(produced.outcome)),
-                ),
-                // catchCause, not catch: a plugin DEFECT is not in the error
-                // channel, and a tools READ must not be failable by one
-                // connection's misbehaving refresh. The stale-but-working
-                // catalog stays in place and the next read retries.
-                //
-                // Warning, not debug: swallowing this is the whole point, so
-                // the log line is the only signal that a connection is serving
-                // a stale catalog. Enumerable fields only — a refresh runs on a
-                // live credential and its cause can embed the upstream request
-                // and response.
-                Effect.catchCause((cause) =>
-                  // Cancellation first: a `tools.list` abandoned by its caller
-                  // must not be recorded as an upstream failure, and writing a
-                  // retry schedule from an interrupted fiber would persist a
-                  // verdict nobody reached. Let it through untouched — the
-                  // lease expires on its own.
-                  Cause.hasInterrupts(cause)
-                    ? Effect.interrupt
-                    : Effect.gen(function* () {
-                        yield* Effect.annotateCurrentSpan({
-                          "executor.tools.sync.outcome": "fail",
-                        });
-                        // A genuine failure walks the retry ladder; a DEFECT
-                        // only releases the lease. The four error kinds describe
-                        // what an upstream did, and a bug in this process is
-                        // none of them — it is loud, repeated and fixable, so it
-                        // keeps retrying rather than quietly backing off under a
-                        // wrong label.
-                        yield* withCatalogPersistLock(
-                          core.updateMany("connection", {
-                            where: (b: AnyCb) =>
-                              b.and(
-                                byOwner(ref.owner)(b),
-                                b("integration", "=", String(ref.integration)),
-                                b("name", "=", String(ref.name)),
-                                b("tools_sync_claim_id", "=", claim),
-                              ),
-                            set: Cause.hasFails(cause)
-                              ? toolSyncFailureSet(
-                                  priorFailures,
-                                  null,
-                                  "the tool catalog refresh failed",
-                                )
-                              : { tools_sync_claim_id: null, tools_sync_claim_at: null },
-                          }),
-                        ).pipe(Effect.ignore);
-                        yield* Effect.logWarning("executor tool catalog refresh failed", {
-                          integration: String(ref.integration),
-                          connection: String(ref.name),
-                          trigger: state,
-                          errorTags: causeErrorTags(cause),
-                        });
-                        return "fail" as const;
-                      }),
-                ),
-              );
-            }).pipe(
-              Effect.withSpan("executor.tools.sync", {
-                attributes: {
-                  "executor.integration": String(ref.integration),
-                  "executor.connection": String(ref.name),
-                  "executor.tools.sync.trigger": state,
-                },
-              }),
-            ),
-          { concurrency: 4 },
+        const inlineOutcomes = yield* refreshDueConnections(
+          due.filter((candidate) => candidate.state !== "expired"),
         );
+
+        // The speculative half, taken up AFTER the invalidation-driven listings
+        // have run: on a host with no seam this is where the batch executes,
+        // and running it before the work a read's own correctness depends on
+        // would invert the priority for exactly the hosts that can least afford
+        // it.
+        const expired = due.filter((candidate) => candidate.state === "expired");
+        const batch = expired.slice(0, TOOL_SYNC_DEFERRED_BATCH_MAX);
+        const expiredOutcomes = batch.length === 0 ? [] : yield* refreshExpiredBatch(batch);
+        const outcomes = [...inlineOutcomes, ...expiredOutcomes];
 
         return {
           candidates: connections.length,
@@ -4363,6 +4589,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             skippedClaimed + outcomes.filter((outcome) => outcome === "skipped_claimed").length,
           skippedBackoff,
           skippedParked,
+          // Only work this read handed away unfinished. A no-seam host ran the
+          // same batch inline and its outcomes are in the counters above.
+          deferred: deferToolSync === undefined ? 0 : batch.length,
+          // Unchanged by which branch ran it: the cap sheds work either way,
+          // and a read that keeps shedding says so.
+          deferredOverflow: expired.length - batch.length,
         };
       });
 
@@ -4424,6 +4656,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           "executor.tools.sync.skipped_claimed": refresh.skippedClaimed,
           "executor.tools.sync.skipped_backoff": refresh.skippedBackoff,
           "executor.tools.sync.skipped_parked": refresh.skippedParked,
+          "executor.tools.sync.deferred": refresh.deferred,
+          "executor.tools.sync.deferred_overflow": refresh.deferredOverflow,
         });
         return tools;
       }).pipe(

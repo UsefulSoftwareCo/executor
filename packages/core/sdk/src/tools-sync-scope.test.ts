@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Duration, Effect, Fiber, Latch } from "effect";
+import { Cause, Duration, Effect, Exit, Fiber, Latch } from "effect";
 
 import { CONNECTION_CATALOG_SCAN_COLUMNS } from "./core-schema";
 import { DEFAULT_TOOLS_SYNC_TTL_MS, createExecutor } from "./executor";
@@ -47,6 +47,7 @@ const withLatchTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const makeCountingPlugin = () => {
   const resolved: string[] = [];
   let dying = false;
+  let cancelling = false;
   let toolSuffix = "deploy";
   let holdUntil: number | null = null;
   let inFlight = 0;
@@ -73,6 +74,7 @@ const makeCountingPlugin = () => {
         if (holdUntil !== null && inFlight >= holdUntil) gate.openUnsafe();
         yield* withLatchTimeout(gate.await);
         inFlight -= 1;
+        if (cancelling) return yield* Effect.interrupt;
         if (dying) return yield* Effect.die("resolveTools blew up");
         if (incompleteKind !== undefined) {
           return {
@@ -113,6 +115,11 @@ const makeCountingPlugin = () => {
     plugin,
     resolved,
     startDying: () => void (dying = true),
+    /** Make every resolve end in CANCELLATION rather than a failure or a
+     *  defect: a listing whose caller hung up mid-handshake. The distinction is
+     *  the whole point — an interrupt is the one cause the refresh must neither
+     *  record a verdict for nor swallow. */
+    startCancelling: () => void (cancelling = true),
     /** Change what the next resolve returns, so a rebuild that never landed is
      *  distinguishable from one that did. Without this every refresh rewrites
      *  the identical row and a persist that silently failed still looks
@@ -233,20 +240,33 @@ describe("connection catalog scan projection", () => {
   });
 });
 
-const makeHarness = () =>
+const makeHarness = (options?: {
+  /** Queue deferred tool-sync batches instead of running them, so a case can
+   *  assert what the read did NOT do and then drive the batch itself. */
+  readonly collectBackgroundTasks?: boolean;
+  /** Replace the seam outright, for the cases about the seam's own contract
+   *  rather than about what gets deferred. */
+  readonly deferToolSync?: (task: Effect.Effect<void>) => Effect.Effect<void>;
+}) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const counting = makeCountingPlugin();
       const config = makeTestConfig({
         plugins: [memoryCredentialsPlugin(), counting.plugin] as const,
+        collectBackgroundTasks: options?.collectBackgroundTasks,
       });
       const observed = observeConnectionReads(config.db);
-      const executor = yield* createExecutor({ ...config, db: observed.db });
+      const executor = yield* createExecutor({
+        ...config,
+        db: observed.db,
+        ...(options?.deferToolSync === undefined ? {} : { deferToolSync: options.deferToolSync }),
+      });
       yield* executor.counting.seed();
       return {
         ...counting,
         executor,
         testDb: config.testDb,
+        drainBackgroundTasks: config.drainBackgroundTasks,
         connectionScans: observed.connectionScans,
         peakOpenTransactions: observed.peakOpenTransactions,
         connect: (integration: IntegrationSlug, name: string) =>
@@ -879,6 +899,196 @@ describe("tools read catalog refresh lifecycle", () => {
         // The drift mark also stands: only an authoritative listing clears it,
         // and none of these four were one.
         expect(state.staleToken).not.toBeNull();
+      }),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Deferred refresh. A TTL `expired` catalog is one nothing has told us is
+// wrong — it works, it is merely old — so re-verifying it is background work.
+// Every other trigger is somebody reporting that the world changed, and the
+// answer this read is about to give is wrong until it runs. These cases pin
+// which half is which, and that the background half claims nothing until it
+// actually runs.
+// ---------------------------------------------------------------------------
+
+describe("tools read deferred catalog refresh", () => {
+  it.effect("serves the expired catalog without dialing, and refreshes on the drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.expireEveryCatalog();
+        // Make the deferred listing observably different from what is already
+        // persisted, so "the drain refreshed it" is distinguishable from "the
+        // drain did nothing and the old rows were fine".
+        harness.renameToolsTo("redeploy");
+        harness.resolved.length = 0;
+
+        const served = yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        // The read paid no upstream handshake and answered from the catalog it
+        // already had. This is the whole point of the layer.
+        expect(harness.resolved).toEqual([]);
+        expect(served.map((tool) => String(tool.name))).toEqual(["alpha_deploy"]);
+        // And it claimed nothing on the way past. The claim belongs to the
+        // attempt, so a batch that is enqueued and then never runs (an evicted
+        // isolate, a dropped `waitUntil`) strands no lease.
+        expect((yield* harness.syncStateOf("main")).claimId).toBeNull();
+
+        yield* harness.drainBackgroundTasks;
+
+        expect(harness.resolved).toEqual(["alpha/main"]);
+        const refreshed = yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(refreshed.map((tool) => String(tool.name))).toEqual(["alpha_redeploy"]);
+      }),
+    ),
+  );
+
+  it.effect("still dials a drifted connection inline, seam or no seam", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        yield* harness.connect(INTEG_A, "main");
+        // Drifted AND old: `classifyToolSync` ranks the drift signal above the
+        // clock, so this is an invalidation, not an expiry, and the read's own
+        // correctness depends on it.
+        yield* harness.expireEveryCatalog();
+        yield* harness.executor.counting.markStale(INTEG_A, "main");
+        harness.renameToolsTo("redeploy");
+        harness.resolved.length = 0;
+
+        const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        expect(harness.resolved).toEqual(["alpha/main"]);
+        expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_redeploy"]);
+      }),
+    ),
+  );
+
+  it.effect("caps one read's deferred batch and leaves the rest for the next read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        // One more than the cap, so the boundary is exercised rather than
+        // approached. The overflow count itself rides the read's span
+        // (`executor.tools.sync.deferred_overflow`); what is asserted here is
+        // the behaviour behind it — work is shed, never dropped.
+        const names = Array.from({ length: 17 }, (_, index) => `conn${index}`);
+        for (const name of names) yield* harness.connect(INTEG_A, name);
+        yield* harness.expireEveryCatalog();
+        harness.resolved.length = 0;
+
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+        yield* harness.drainBackgroundTasks;
+
+        expect(harness.resolved).toHaveLength(16);
+
+        // The seventeenth is still due — still serving its catalog, and picked
+        // up by the very next read.
+        const deferredFirst = new Set(harness.resolved);
+        harness.resolved.length = 0;
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+        yield* harness.drainBackgroundTasks;
+
+        const remaining = names
+          .map((name) => `alpha/${name}`)
+          .filter((address) => !deferredFirst.has(address));
+        expect(remaining).toHaveLength(1);
+        expect(harness.resolved).toContain(remaining[0]);
+      }),
+    ),
+  );
+
+  it.effect("skips a deferred connection whose lease was taken before the drain ran", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.expireEveryCatalog();
+        harness.renameToolsTo("redeploy");
+        harness.resolved.length = 0;
+
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        // Between the enqueue and the drain, another isolate claimed the
+        // connection and is listing it. The batch must lose the compare-and-set
+        // and stop there — not dial, not fail, not overwrite.
+        yield* harness.stealClaim("main");
+        yield* harness.drainBackgroundTasks;
+
+        expect(harness.resolved).toEqual([]);
+        const state = yield* harness.syncStateOf("main");
+        expect(state.claimId).toBe("another-isolate");
+        const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
+        expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_deploy"]);
+      }),
+    ),
+  );
+
+  it.effect("gives an interrupted batch back interrupted rather than as a clean drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.expireEveryCatalog();
+        harness.resolved.length = 0;
+
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        // The listing is cancelled once the batch is already in flight.
+        // `refreshOneConnection` re-raises that as an interrupt rather than
+        // writing a verdict nobody reached, and the batch must carry it out:
+        // one cancelled connection takes its concurrent siblings down with it,
+        // so a batch that swallowed the interrupt would report a clean drain
+        // over fifteen listings it had just aborted.
+        const before = yield* harness.syncStateOf("main");
+        harness.startCancelling();
+        const exit = yield* Effect.exit(harness.drainBackgroundTasks);
+
+        const drain = Exit.isSuccess(exit)
+          ? "reported success"
+          : Cause.hasInterrupts(exit.cause)
+            ? "interrupted"
+            : "failed";
+        expect(drain).toBe("interrupted");
+
+        // And it recorded no verdict on the way past: a cancelled refresh
+        // reached none, so the ladder stands exactly where the last real
+        // listing left it. Only the lease moved, and that expires on its own.
+        const after = yield* harness.syncStateOf("main");
+        expect({
+          failures: after.failures,
+          retryAt: after.retryAt,
+          errorKind: after.errorKind,
+        }).toEqual({
+          failures: before.failures,
+          retryAt: before.retryAt,
+          errorKind: before.errorKind,
+        });
+        expect(after.claimId).not.toBeNull();
+      }),
+    ),
+  );
+
+  it.effect("answers the read even when the host's defer hook dies", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          deferToolSync: () => Effect.die("the host's background queue exploded"),
+        });
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.expireEveryCatalog();
+        harness.resolved.length = 0;
+
+        const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        // Scheduling is the host's machinery, and a read is not failable by it.
+        // Nothing was claimed, so the connection is simply still due.
+        expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_deploy"]);
+        expect(harness.resolved).toEqual([]);
+        expect((yield* harness.syncStateOf("main")).claimId).toBeNull();
       }),
     ),
   );
