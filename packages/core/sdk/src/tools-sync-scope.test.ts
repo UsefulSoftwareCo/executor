@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Duration, Effect, Fiber, Latch } from "effect";
+import { Cause, Duration, Effect, Exit, Fiber, Latch } from "effect";
 
 import { CONNECTION_CATALOG_SCAN_COLUMNS } from "./core-schema";
 import { DEFAULT_TOOLS_SYNC_TTL_MS, createExecutor } from "./executor";
@@ -47,6 +47,7 @@ const withLatchTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const makeCountingPlugin = () => {
   const resolved: string[] = [];
   let dying = false;
+  let cancelling = false;
   let toolSuffix = "deploy";
   let holdUntil: number | null = null;
   let inFlight = 0;
@@ -73,6 +74,7 @@ const makeCountingPlugin = () => {
         if (holdUntil !== null && inFlight >= holdUntil) gate.openUnsafe();
         yield* withLatchTimeout(gate.await);
         inFlight -= 1;
+        if (cancelling) return yield* Effect.interrupt;
         if (dying) return yield* Effect.die("resolveTools blew up");
         if (incompleteKind !== undefined) {
           return {
@@ -113,6 +115,11 @@ const makeCountingPlugin = () => {
     plugin,
     resolved,
     startDying: () => void (dying = true),
+    /** Make every resolve end in CANCELLATION rather than a failure or a
+     *  defect: a listing whose caller hung up mid-handshake. The distinction is
+     *  the whole point — an interrupt is the one cause the refresh must neither
+     *  record a verdict for nor swallow. */
+    startCancelling: () => void (cancelling = true),
     /** Change what the next resolve returns, so a rebuild that never landed is
      *  distinguishable from one that did. Without this every refresh rewrites
      *  the identical row and a persist that silently failed still looks
@@ -1016,6 +1023,51 @@ describe("tools read deferred catalog refresh", () => {
         expect(state.claimId).toBe("another-isolate");
         const tools = yield* harness.executor.tools.list({ integration: INTEG_A });
         expect(tools.map((tool) => String(tool.name))).toEqual(["alpha_deploy"]);
+      }),
+    ),
+  );
+
+  it.effect("gives an interrupted batch back interrupted rather than as a clean drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ collectBackgroundTasks: true });
+        yield* harness.connect(INTEG_A, "main");
+        yield* harness.expireEveryCatalog();
+        harness.resolved.length = 0;
+
+        yield* harness.executor.tools.list({ integration: INTEG_A });
+
+        // The listing is cancelled once the batch is already in flight.
+        // `refreshOneConnection` re-raises that as an interrupt rather than
+        // writing a verdict nobody reached, and the batch must carry it out:
+        // one cancelled connection takes its concurrent siblings down with it,
+        // so a batch that swallowed the interrupt would report a clean drain
+        // over fifteen listings it had just aborted.
+        const before = yield* harness.syncStateOf("main");
+        harness.startCancelling();
+        const exit = yield* Effect.exit(harness.drainBackgroundTasks);
+
+        const drain = Exit.isSuccess(exit)
+          ? "reported success"
+          : Cause.hasInterrupts(exit.cause)
+            ? "interrupted"
+            : "failed";
+        expect(drain).toBe("interrupted");
+
+        // And it recorded no verdict on the way past: a cancelled refresh
+        // reached none, so the ladder stands exactly where the last real
+        // listing left it. Only the lease moved, and that expires on its own.
+        const after = yield* harness.syncStateOf("main");
+        expect({
+          failures: after.failures,
+          retryAt: after.retryAt,
+          errorKind: after.errorKind,
+        }).toEqual({
+          failures: before.failures,
+          retryAt: before.retryAt,
+          errorKind: before.errorKind,
+        });
+        expect(after.claimId).not.toBeNull();
       }),
     ),
   );

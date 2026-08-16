@@ -821,8 +821,11 @@ type CatalogRefreshOutcome = ToolProductionOutcome | "fail" | "skipped_claimed";
  * has no outcome yet, and reporting one it did not observe is how a background
  * batch that never ran would read as a fleet of healthy syncs. Each deferred
  * listing still emits its own `executor.tools.sync` span with its own outcome
- * when it eventually runs. `deferredOverflow` is what did not fit in the batch
- * cap, so a read that keeps shedding work says so rather than capping quietly.
+ * when it eventually runs. A host with NO seam defers nothing — it lists the
+ * same batch inline, before answering — so there it is 0 and those listings sit
+ * in the terminal counters with every other one. `deferredOverflow` is what did
+ * not fit in the batch cap on either path, so a read that keeps shedding work
+ * says so rather than capping quietly.
  */
 interface CatalogRefreshSummary {
   readonly candidates: number;
@@ -2766,11 +2769,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
 
     // How the read path hands off its speculative `expired` listings
-    // (`ExecutorConfig.deferToolSync`). Absent means the identity: a host with
-    // no way to outlive its own response has to do the work before answering,
-    // which is the honest behaviour rather than a fallback — see the config
-    // doc. It is resolved once here so the read path never branches on it.
-    const deferToolSync = config.deferToolSync ?? ((task: Effect.Effect<void>) => task);
+    // (`ExecutorConfig.deferToolSync`), or absent on a host with no way to
+    // outlive its own response — which then does the work before answering, the
+    // honest behaviour rather than a fallback (see the config doc).
+    //
+    // Deliberately NOT collapsed into an identity function: an identity makes
+    // the two cases indistinguishable to the caller, and the read reported a
+    // batch it had just run to completion itself as `deferred` work with no
+    // outcome. The read path branches on it once, in `refreshExpiredBatch`.
+    const deferToolSync = config.deferToolSync;
 
     // The retry ladder's first rung. It follows the freshness window when there
     // is a usable one, and falls back to the default otherwise: "don't re-dial
@@ -4280,6 +4287,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       );
 
     /**
+     * Bounded fan-out over a due set: these are independent upstream
+     * handshakes, and a sequential loop made a read cost the SUM of every
+     * candidate's round trip. The bound keeps a wide refresh from opening one
+     * socket per connection.
+     *
+     * The read's inline half, the deferred batch, and the same batch run inline
+     * on a host with no seam all go through here, so the three cannot drift in
+     * concurrency or in how outcomes are collected.
+     */
+    const refreshDueConnections = (
+      candidates: readonly DueConnection[],
+    ): Effect.Effect<readonly CatalogRefreshOutcome[], StorageFailure> =>
+      Effect.forEach(candidates, refreshOneConnection, { concurrency: 4 });
+
+    /**
      * The `expired` half of a read's due set, as one task for
      * `ExecutorConfig.deferToolSync`.
      *
@@ -4288,11 +4310,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      * the batch, and a host handed sixteen independent tasks would have to
      * rediscover every one of them.
      *
-     * Total by construction. `refreshOneConnection` already swallows its own
-     * failures and defects per connection; the storage channel that survives it
-     * (the claim's own write) is caught here, because a deferred task runs with
-     * no caller to report to and a rejected background fiber is an unhandled
-     * error on some hosts.
+     * Total by construction, INTERRUPTION EXCEPTED.
+     * `refreshOneConnection` already swallows its own failures and defects per
+     * connection; the storage channel that survives it (the claim's own write)
+     * is caught here, because a deferred task runs with no caller to report to
+     * and a rejected background fiber is an unhandled error on some hosts. A
+     * cancelled batch is the one thing that still comes back out — see the two
+     * handlers below — so a host that runs this to a promise must expect that
+     * promise to reject when its own runtime tears the batch down.
      *
      * LOCKING. This runs the same `withCatalogPersistLock` the inline path
      * does, and the permit belongs to THIS executor instance — so it excludes
@@ -4305,17 +4330,69 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      * splitting each other's delete-then-insert — and it still covers every
      * persist a single executor issues, deferred ones included.
      */
-    const deferredSyncTask = (batch: readonly DueConnection[]): Effect.Effect<void> =>
-      Effect.forEach(batch, refreshOneConnection, { concurrency: 4, discard: true }).pipe(
+    const deferredSyncTask = (batch: readonly DueConnection[]): Effect.Effect<void> => {
+      const logBatchFailure = <E extends { readonly _tag: string }>(cause: Cause.Cause<E>) =>
+        Effect.logWarning("executor deferred tool catalog refresh failed", {
+          errorTags: causeErrorTags(cause),
+        });
+      return refreshDueConnections(batch).pipe(
+        Effect.asVoid,
         Effect.withSpan("executor.tools.sync.deferred", {
           attributes: { "executor.tools.sync.deferred": batch.length },
         }),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("executor deferred tool catalog refresh failed", {
-            errorTags: causeErrorTags(cause),
-          }),
-        ),
+        // The claim's own write is the one typed channel that survives
+        // `refreshOneConnection`, and it is caught FIRST so what reaches the
+        // cause handler below is defects and interrupts only.
+        Effect.catch((error) => logBatchFailure(Cause.fail(error))),
+        // catchCauseIf, not catchCause: v4's catchCause is an unfiltered
+        // handler over EVERY cause, interrupts included, and a caught
+        // self-interrupt is gone for good. It would swallow exactly the
+        // re-raise `refreshOneConnection` makes for an abandoned read — and
+        // because one child's interrupt takes its siblings down with it, the
+        // batch would report success having aborted fifteen live listings.
+        // Defects are still swallowed, for the reason above.
+        Effect.catchCauseIf((cause) => !Cause.hasInterrupts(cause), logBatchFailure),
       );
+    };
+
+    /**
+     * The `expired` half of a read's due set, run wherever this host can run it.
+     *
+     * The two branches report DIFFERENT things, and that is the point. A seam
+     * takes the batch away unfinished, so the read has no outcomes to report
+     * and counts the handover instead (`deferred`). With no seam nothing is
+     * deferred at all: the batch runs here, on the read's own fiber, before the
+     * read answers — so its outcomes ARE the read's own and belong in the
+     * terminal partition like any other inline listing. Reporting those as
+     * `deferred` had an inline host reading as a fleet that syncs nothing.
+     *
+     * The no-seam branch is ordinary inline work in every respect, including a
+     * storage failure reaching the read: the invalidation half above already
+     * propagates one, and a claim this read could not write is the read's own
+     * failure, not a background outage.
+     */
+    const refreshExpiredBatch = (
+      batch: readonly DueConnection[],
+    ): Effect.Effect<readonly CatalogRefreshOutcome[], StorageFailure> =>
+      deferToolSync === undefined
+        ? refreshDueConnections(batch)
+        : deferToolSync(deferredSyncTask(batch)).pipe(
+            // Guarded like `onIntegrationChange`: this hook is a host's
+            // scheduling machinery, and a read must not become failable by it.
+            // Nothing is lost when it dies — the batch claimed nothing yet, so
+            // the connections are simply still due. Interrupts pass through for
+            // the same reason as in the task: a read abandoned mid-handover
+            // reached no verdict about the host's scheduler.
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterrupts(cause),
+              (cause) =>
+                Effect.logWarning("executor deferred tool catalog refresh was not scheduled", {
+                  deferred: batch.length,
+                  errorTags: causeErrorTags(cause),
+                }),
+            ),
+            Effect.as([]),
+          );
 
     // Rebuild the connections a `tools.list` is about to read whose persisted
     // tool catalog is stale, scoped to that read's own filter — a read for one
@@ -4489,37 +4566,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Bounded fan-out: these are independent upstream handshakes, and a
-        // sequential loop made a read cost the SUM of every candidate's
-        // round trip. The bound keeps a wide refresh from opening one socket
-        // per connection.
-        const outcomes = yield* Effect.forEach(
+        const inlineOutcomes = yield* refreshDueConnections(
           due.filter((candidate) => candidate.state !== "expired"),
-          refreshOneConnection,
-          { concurrency: 4 },
         );
 
-        // The speculative half, handed over AFTER the invalidation-driven
-        // listings have run: with no seam configured `deferToolSync` is the
-        // identity, so this is where the batch executes, and running it before
-        // the work a read's own correctness depends on would invert the
-        // priority for exactly the hosts that can least afford it.
+        // The speculative half, taken up AFTER the invalidation-driven listings
+        // have run: on a host with no seam this is where the batch executes,
+        // and running it before the work a read's own correctness depends on
+        // would invert the priority for exactly the hosts that can least afford
+        // it.
         const expired = due.filter((candidate) => candidate.state === "expired");
         const batch = expired.slice(0, TOOL_SYNC_DEFERRED_BATCH_MAX);
-        if (batch.length > 0) {
-          // Guarded like `onIntegrationChange`: this hook is a host's
-          // scheduling machinery, and a read must not become failable by it.
-          // Nothing is lost when it dies — the batch claimed nothing yet, so
-          // the connections are simply still due.
-          yield* deferToolSync(deferredSyncTask(batch)).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("executor deferred tool catalog refresh was not scheduled", {
-                deferred: batch.length,
-                errorTags: causeErrorTags(cause),
-              }),
-            ),
-          );
-        }
+        const expiredOutcomes = batch.length === 0 ? [] : yield* refreshExpiredBatch(batch);
+        const outcomes = [...inlineOutcomes, ...expiredOutcomes];
 
         return {
           candidates: connections.length,
@@ -4531,7 +4590,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             skippedClaimed + outcomes.filter((outcome) => outcome === "skipped_claimed").length,
           skippedBackoff,
           skippedParked,
-          deferred: batch.length,
+          // Only work this read handed away unfinished. A no-seam host ran the
+          // same batch inline and its outcomes are in the counters above.
+          deferred: deferToolSync === undefined ? 0 : batch.length,
+          // Unchanged by which branch ran it: the cap sheds work either way,
+          // and a read that keeps shedding says so.
           deferredOverflow: expired.length - batch.length,
         };
       });

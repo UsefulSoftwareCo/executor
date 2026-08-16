@@ -86,8 +86,9 @@ join the same traces via traceparent).
   `deferred` > 0 and `synced` == 0 is the healthy shape, and `candidates` will
   still be > 0 on the next read until the background batch lands. On a host that
   does NOT defer (cloud's `/api/*` plane, which cannot — its postgres socket
-  closes before the response is written) the same work reports as `synced`
-  inline, so comparing the two planes' `synced` rates directly is a mistake.
+  closes before the response is written) the same work runs inline and reports
+  as `synced`, with `deferred` flat at 0, so comparing the two planes' `synced`
+  rates directly is a mistake.
 
   `deferred_overflow` is what did not fit in the per-read batch cap (16). A
   steady non-zero value means a scope is shedding refresh work every read and
