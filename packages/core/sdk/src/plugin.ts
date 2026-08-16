@@ -242,7 +242,12 @@ export interface PluginCtx<TStore = unknown> {
      *  Safe to call at any point, including while a listing for the same
      *  connection is in flight: the mark is recorded as a fresh token, and a
      *  listing only resolves the token it observed when it started. A signal
-     *  that arrives mid-listing therefore survives it and re-lists. */
+     *  that arrives mid-listing therefore survives it and re-lists.
+     *
+     *  NOT from inside `ctx.transaction(...)`, though: the write takes a
+     *  non-reentrant executor permit, and on sqlite an open BEGIN blocking on
+     *  that permit can silently drop a concurrent catalog rebuild. Call it
+     *  before the transaction, or after it commits. */
     readonly markToolsStale: (ref: ConnectionRef) => Effect.Effect<void, StorageFailure>;
     /** Resolve a connection's value through its provider (and OAuth refresh).
      *  null if the provider can't produce one. */

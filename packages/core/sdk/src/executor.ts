@@ -2871,8 +2871,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // column only if this exact value is still in it, so a mark written
         // while we were dialing carries a different token, survives the clear,
         // and re-lists the connection on the next read.
-        const observedStaleToken =
-          existingRow?.tools_stale_token == null ? null : String(existingRow.tools_stale_token);
+        const observedStaleToken = existingRow?.tools_stale_token ?? null;
 
         // Does this attempt still own the connection? A read-path refresh takes
         // a lease before dialing, and a slow one can lose it: another reader
@@ -2957,6 +2956,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         /** Replace the persisted catalog, record the outcome, and resolve the
          *  drift mark this listing answered — all three together, or none of
          *  them. Returns false when the attempt lost its lease.
+         *
+         *  That atomicity is dialect-conditional: on D1
+         *  (`interactiveTransactions: false`) there is no transaction, the
+         *  statements auto-commit one by one, and an interrupted run can leave a
+         *  prefix of them applied. It still fails CLOSED, because the drift clear
+         *  is the LAST statement: any prefix short of the whole leaves the token
+         *  in place, so the connection stays drifted and re-lists.
          *
          *  Already holds the persist permit, which is not reentrant: nothing in
          *  here may take it again.
@@ -3075,11 +3081,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // Reporting `incomplete` there would attribute a verdict to a row the
           // winning attempt owns.
           const recorded = yield* writeSyncOutcome(failureSet(kind, reason));
+          // `recorded` rides along because the warning is emitted either way: a
+          // lost lease preserved the catalog too, but wrote no ladder entry. Without
+          // the field, a rate derived from these logs would count attempts the
+          // `incomplete` counter never saw.
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
             errorKind: kind ?? "unclassified",
             integration: String(ref.integration),
             connection: String(ref.name),
+            recorded,
           });
           return yield* persistedTools(recorded ? "incomplete" : "lost_claim");
         }
@@ -3098,11 +3109,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             // the plugin said nothing about why. Unclassified, so it backs off
             // but never parks.
             const recorded = yield* writeSyncOutcome(failureSet(null, reason));
+            // `recorded` for the same reason as above: the warning fires even when
+            // the lease was lost and nothing was written.
             yield* Effect.logWarning("executor tool sync preserved nonzero catalog", {
               reason,
               integration: String(ref.integration),
               connection: String(ref.name),
               existingToolCount: keptRows.length,
+              recorded,
             });
             // Re-read on a lost lease: `keptRows` predates the write, and the
             // attempt that owns the connection may have replaced the catalog
@@ -3946,10 +3960,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // with a new one is precisely how this signal outlives the listing that
     // could not have seen it.
     //
-    // Locked: this is a lifecycle write like every other, and it can run while
-    // a read's refresh fan-out holds an open BEGIN on the shared SQLite
-    // connection — where a bare UPDATE is enrolled in that transaction and lost
+    // Locked: the permit serializes this write against the catalog-persist
+    // transactions specifically — `replaceCatalog` and `writeSyncOutcome`, the
+    // only permit holders that open a BEGIN. On the shared SQLite connection a
+    // bare UPDATE issued while one of those is open is enrolled in it, and lost
     // with it if it rolls back. Losing THIS write loses a drift signal outright.
+    // The claim reaches no further: transactions in this file that do not take
+    // the permit are not serialized against this write.
     const connectionsMarkToolsStale = (ref: ConnectionRef): Effect.Effect<void, StorageFailure> =>
       withCatalogPersistLock(
         core.updateMany("connection", {

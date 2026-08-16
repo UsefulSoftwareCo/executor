@@ -310,7 +310,8 @@ const makeHarness = () =>
                 ? Effect.die(`no connection row named ${name}`)
                 : Effect.succeed({
                     syncedAt: row.tools_synced_at == null ? null : Number(row.tools_synced_at),
-                    staleToken: row.tools_stale_token ?? null,
+                    staleToken:
+                      row.tools_stale_token == null ? null : String(row.tools_stale_token),
                     failures: row.tools_sync_failures == null ? 0 : Number(row.tools_sync_failures),
                     retryAt:
                       row.tools_sync_retry_at == null ? null : Number(row.tools_sync_retry_at),
