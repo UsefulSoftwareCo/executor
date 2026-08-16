@@ -97,6 +97,15 @@ export interface HostConfigShape {
    * Hosts that record product analytics supply it; omitted -> no observation.
    */
   readonly onIntegrationChange?: ExecutorConfig["onIntegrationChange"];
+  /**
+   * Forwarded to `ExecutorConfig.deferToolSync`: how this host runs a tools
+   * read's speculative catalog refresh after the read has answered (see the sdk
+   * contract). A host with a background capability supplies it — a Workers
+   * `waitUntil`, a daemon fiber on a long-lived process. Omitted means the
+   * batch runs inline, which is the only thing a host with nowhere to put it
+   * can honestly do.
+   */
+  readonly deferToolSync?: ExecutorConfig["deferToolSync"];
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -284,6 +293,7 @@ export const makeScopedExecutor = <
       httpClientLayer,
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
+      deferToolSync: config.deferToolSync,
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
