@@ -51,6 +51,8 @@ const IntegrationsListOutput = Schema.Struct({
   integrations: Schema.Array(IntegrationOutput),
 });
 
+const IntegrationRemoveInput = Schema.Struct({ slug: Schema.String });
+
 const DetectInput = Schema.Struct({ url: Schema.String });
 const DetectOutput = Schema.Struct({
   results: Schema.Array(
@@ -331,6 +333,7 @@ const OAuthCancelInput = Schema.Struct({
 
 // Standard-schema versions for the tool() builder.
 const IntegrationsListOutputStd = schemaToStandard(IntegrationsListOutput);
+const IntegrationRemoveInputStd = schemaToStandard(IntegrationRemoveInput);
 const DetectInputStd = schemaToStandard(DetectInput);
 const DetectOutputStd = schemaToStandard(DetectOutput);
 const ConnectionsListInputStd = schemaToStandard(ConnectionsListInput);
@@ -558,6 +561,30 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 slug: r.slug,
               })),
             })),
+        }),
+        tool({
+          name: "integrations.remove",
+          description:
+            "Remove an integration from the workspace catalog by slug, dropping every connection under it and every tool those produced. `removed: false` means no catalog row matched: the slug was already gone, or it names a built-in namespace that is not catalog-backed. Integrations whose `canRemove` is false are refused.",
+          inputSchema: IntegrationRemoveInputStd,
+          outputSchema: RemovedOutputStd,
+          // Strictly more destructive than `connections.remove`, which is
+          // already approval-gated: this cascades to every connection under the
+          // integration and takes the catalog row with it, so re-adding means
+          // re-importing the definition, not just reconnecting an account.
+          annotations: { requiresApproval: true },
+          execute: (input: typeof IntegrationRemoveInput.Type, { ctx }) =>
+            Effect.gen(function* () {
+              const slug = IntegrationSlug.make(input.slug);
+              // `core.integrations.get` reads catalog ROWS only, so a built-in
+              // static namespace reports absent here. Checking first is what
+              // keeps `removed` honest — the underlying remove is a silent
+              // no-op for a slug it can't find.
+              const existing = yield* ctx.core.integrations.get(slug);
+              if (existing === null) return { removed: false };
+              yield* ctx.core.integrations.remove(slug);
+              return { removed: true };
+            }),
         }),
         tool({
           name: "connections.list",
