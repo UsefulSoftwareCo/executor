@@ -12,6 +12,14 @@
       "types": "./src/tool-server.ts",
       "default": "./src/tool-server.ts"
     },
+    "./tool-server-v2": {
+      "types": "./src/tool-server-v2.ts",
+      "default": "./src/tool-server-v2.ts"
+    },
+    "./mcp-apps": {
+      "types": "./src/mcp-apps.ts",
+      "default": "./src/mcp-apps.ts"
+    },
     "./create-artifact": {
       "types": "./src/create-artifact.ts",
       "default": "./src/create-artifact.ts"
@@ -47,13 +55,16 @@
     "@cfworker/json-schema": "^4.1.1",
     "@executor-js/execution": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "effect": "catalog:",
     "zod": "4.3.6"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
     "vitest": "catalog:"
