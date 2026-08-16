@@ -819,7 +819,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.clients.remove",
           description:
-            "Remove an owner-scoped OAuth client by owner and slug. Existing connections are not cascaded.",
+            "Remove an owner-scoped OAuth client by owner and slug. `removed: false` means no client matched that owner and slug — clients are keyed by BOTH, so the same slug can exist separately under `org` and `user`. Existing connections are not cascaded.",
           inputSchema: OAuthRemoveClientInputStd,
           outputSchema: RemovedOutputStd,
           // Removing a client breaks token refresh for every connection that
@@ -828,10 +828,22 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // `sources.bindings.remove`.
           annotations: { requiresApproval: true },
           execute: (input: typeof OAuthRemoveClientInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.oauth.removeClient(input.owner as Owner, OAuthClientSlug.make(input.slug)),
-              () => ({ removed: true }),
-            ),
+            Effect.gen(function* () {
+              const owner = input.owner as Owner;
+              const slug = OAuthClientSlug.make(input.slug);
+              // `removeClient` is idempotent by design at the storage layer, so
+              // on its own it cannot distinguish a real deletion from a typo'd
+              // slug or the wrong owner — and a caller sweeping a list of slugs
+              // under one hardcoded owner would read every no-op as success.
+              // Checking the visible set first is what keeps `removed` honest.
+              const clients = yield* ctx.oauth.listClients();
+              const matched = clients.some(
+                (client) => client.owner === owner && String(client.slug) === String(slug),
+              );
+              if (!matched) return { removed: false };
+              yield* ctx.oauth.removeClient(owner, slug);
+              return { removed: true };
+            }),
         }),
         tool({
           name: "oauth.probe",
