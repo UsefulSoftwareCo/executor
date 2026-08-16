@@ -23,8 +23,8 @@ import { SelfHostExecutionStackLayer } from "../execution";
 // ALL shared (`@executor-js/host-mcp/in-memory-session-store` + `makeMcpBuildServer`
 // / `makeConsoleMcpErrorReporter` in `@executor-js/api/server`). Self-host
 // supplies only its fully-provided execution-stack layer (QuickJS over the
-// long-lived `SelfHostDb`) and its `ErrorCapture`. The Cloudflare host wires the
-// identical seam with its own stack layer.
+// long-lived `SelfHostDb`) and its `ErrorCapture`; the builder creates the
+// connection-lifetime SDK v2 assembly used by the shared store.
 // ---------------------------------------------------------------------------
 
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";

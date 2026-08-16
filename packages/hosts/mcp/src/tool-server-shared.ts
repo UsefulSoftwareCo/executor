@@ -2152,7 +2152,7 @@ export const createExecutorMcpServerAssembly = <
       // persisting an absent-capability reading would make a downgrade durable
       // for every future restore of the session.
       const onAppsEnabledChange = config.onAppsEnabledChange;
-      if (assembly.era === "v1" && clientCapabilities && changed && onAppsEnabledChange) {
+      if (clientCapabilities && changed && onAppsEnabledChange) {
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: `oninitialized` is a sync SDK hook; persistence is fire-and-forget and its failure must not fail the session
         void Effect.runPromiseWith(context)(
           onAppsEnabledChange(negotiated).pipe(Effect.ignoreCause({ log: false })),

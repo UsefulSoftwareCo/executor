@@ -2,11 +2,11 @@ import { Effect, type Cause } from "effect";
 import {
   createMcpHandler,
   isLegacyRequest,
+  McpServer,
+  WebStandardStreamableHTTPServerTransport,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import {
   defaultMcpResource,
@@ -15,14 +15,11 @@ import {
   type McpResource,
 } from "@executor-js/host-mcp";
 import {
-  createExecutorMcpServer,
-  type ExecutorMcpServerConfig,
-} from "@executor-js/host-mcp/tool-server";
-import {
   appsEnabledForClientCapabilities,
   buildMcpServerV2,
   clientCapabilitiesFromRequest,
   requestBodyFromRequest,
+  type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server-v2";
 import {
   approvalUrlForRequest,
@@ -280,10 +277,14 @@ export const createMcpRequestHandler = (
         const elicitationMode = readElicitationMode(request);
         resourceConfig = await configForResource(resource);
         created = await Effect.runPromise(
-          createExecutorMcpServer({
+          buildMcpServerV2({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
+            appsEnabled: resourceConfig.config.restoredAppsEnabled ?? false,
+            requestStateSigningKey: signingKey(),
+            requestStatePrincipal: "local",
+            sessionful: true,
             elicitationMode:
               elicitationMode === "browser"
                 ? {
@@ -362,9 +363,18 @@ export const createMcpRequestHandler = (
 export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
-  // Deliberately v1-only in this release; modern stdio clients use their probe fallback policy.
-  const server = await Effect.runPromise(createExecutorMcpServer(config));
-  const transport = new StdioServerTransport();
+  const requestStateSigningKey = crypto.getRandomValues(new Uint8Array(32));
+  const stdio = serveStdio(() =>
+    Effect.runPromise(
+      buildMcpServerV2({
+        ...config,
+        appsEnabled: config.restoredAppsEnabled ?? false,
+        requestStateSigningKey,
+        requestStatePrincipal: "local",
+        sessionful: true,
+      }),
+    ),
+  );
 
   const waitForExit = () =>
     new Promise<void>((resolve) => {
@@ -383,10 +393,8 @@ export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promis
 
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: stdio server lifetime uses Promise-based SDK/process APIs and always closes resources
   try {
-    await server.connect(transport);
     await waitForExit();
   } finally {
-    await ignoreClose(() => transport.close());
-    await ignoreClose(() => server.close());
+    await ignoreClose(() => stdio.close());
   }
 };

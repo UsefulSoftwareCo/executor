@@ -8,9 +8,7 @@ import {
 import {
   McpEngineBuildError,
   type McpBuildServer,
-  type McpBuildServerOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
-import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
 import {
   artifactUrlFor,
@@ -25,14 +23,9 @@ import { HostConfig, PluginsProvider, RequestOrgSlug } from "./scoped-executor";
 // ---------------------------------------------------------------------------
 // Shared in-process MCP host helpers.
 //
-// Every host that serves MCP from one isolate (self-host, the Cloudflare QuickJS
-// host) builds its per-session McpServer the same way — assemble the scoped
-// engine via `makeExecutionStack`, wrap it with `createExecutorMcpServer` — and
-// reports orchestration defects through the same console `ErrorCapture` seam.
-// These two factories are the single home for that logic; a host supplies ONLY
-// its fully-provided execution-stack layer and its `ErrorCapture` layer. The
-// cross-isolate variant (cloud's Durable Object store) is the exception that
-// builds its engine inside the DO.
+// Neutral hosts build both sessionful legacy connections and stateless modern
+// requests from the same SDK v2 assembly over a scoped execution stack. The
+// Cloudflare Durable Object path remains a separate v1-backed composition root.
 // ---------------------------------------------------------------------------
 
 /** The five execution-stack seams a host fully provides (no residual). */
@@ -42,18 +35,19 @@ export type McpExecutionStackLayer = Layer.Layer<
 
 /**
  * Build the per-session MCP server factory over a host's execution stack:
- * `makeExecutionStack` → engine → `createExecutorMcpServer`. Hosts differ only
+ * `makeExecutionStack` → engine → `buildMcpServerV2`. Hosts differ only
  * in the injected stack layer (libSQL vs D1, etc.).
  */
 export const makeMcpBuildServer =
   (executionStack: McpExecutionStackLayer, hostOptions?: McpBuildHostOptions): McpBuildServer =>
-  (principal: Principal, options?: McpBuildServerOptions) =>
-    Effect.gen(function* () {
+  (principal: Principal, options) => {
+    const { resource, ...serverOptions } = options;
+    return Effect.gen(function* () {
       const { engine, executor } = yield* makeExecutionStack(
         principal.accountId,
         principal.organizationId,
         principal.organizationName,
-        { mcpResource: options?.resource },
+        { mcpResource: resource },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));
       // Read inside the provided boundary: `webBaseUrl` is a host seam, and
       // hosts that can't know their public URL at boot leave it unset — in
@@ -69,7 +63,7 @@ export const makeMcpBuildServer =
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap(({ engine, executor, webBaseUrl }) =>
-        createExecutorMcpServer({
+        buildMcpServerV2({
           engine,
           artifacts: executor.artifacts,
           connections: executor.connections,
@@ -87,13 +81,14 @@ export const makeMcpBuildServer =
           ...(webBaseUrl
             ? { artifactUrl: artifactUrlFor(webBaseUrl, principal.organizationSlug) }
             : {}),
-          ...(options ?? {}),
+          ...serverOptions,
         }).pipe(
           Effect.withSpan("mcp.server.create"),
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),
     );
+  };
 
 /** Build function consumed by the neutral envelope's modern-server seam. */
 export type McpBuildServerV2 = McpModernServerBuilder["Service"]["build"];

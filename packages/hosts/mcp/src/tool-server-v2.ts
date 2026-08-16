@@ -1,12 +1,8 @@
 /**
- * Stateless MCP SDK v2 assembly for the 2026-07-28 protocol era.
- *
- * Neutral hosts call {@link buildMcpServerV2} from a `createMcpHandler`
- * `McpServerFactory`, once per request. The factory's
- * `McpRequestContext.requestInfo` exposes the original HTTP request, which
- * {@link clientCapabilitiesFromRequest} parses for the request-scoped
- * {@link appsEnabledForClientCapabilities} decision. Legacy routing remains a
- * separate host path.
+ * MCP SDK v2 assembly shared by stateless modern requests and sessionful
+ * connections. Stateless callers supply request-scoped capability policy;
+ * sessionful callers register the full surface once and read negotiated client
+ * capabilities from the live server.
  */
 import { Data, Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
@@ -46,6 +42,8 @@ import {
   type NativeExecutionServices,
 } from "./tool-server-shared";
 
+export type { BrowserApprovalStore, ExecutorMcpServerConfig } from "./tool-server-shared";
+
 const NATIVE_ELICITATION_RESPONSE_KEY = "elicitation";
 
 const NativeRequestStateSchema = Schema.Struct({ executionId: Schema.String });
@@ -57,11 +55,17 @@ type V2RequestContext = McpRequestJoinKeys & {
   readonly serverContext: ServerContext;
 };
 
-/** Additional request-scoped inputs required by the SDK v2 assembly. */
+/** Additional serving inputs required by the SDK v2 assembly. */
 export type ExecutorMcpServerV2Config<E extends Cause.YieldableError = Cause.YieldableError> =
   ExecutorMcpServerConfig<E> & {
-    /** Whether this request's client can render MCP Apps resources. */
+    /** Initial/static MCP Apps policy. Sessionful servers replace it after initialize. */
     readonly appsEnabled: boolean;
+    /**
+     * Register a connection-lifetime server whose capability-dependent behavior
+     * follows the live initialize-negotiated state. Omitted for stateless modern
+     * request factories, which keep using {@link appsEnabled} as fixed policy.
+     */
+    readonly sessionful?: boolean;
     /** HMAC key used to sign opaque native-elicitation continuation state. */
     readonly requestStateSigningKey: Uint8Array | string;
     /**
@@ -124,16 +128,9 @@ export const verifyNativeRequestState = (input: {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Parse the MCP Apps capability subset from an already-decoded modern body. */
-export const clientCapabilitiesFromRequestBody = (
-  body: unknown,
+const appsClientCapabilitiesFromUnknown = (
+  capabilities: unknown,
 ): McpAppsClientCapabilities | null => {
-  if (!isRecord(body)) return null;
-  const params = body.params;
-  if (!isRecord(params)) return null;
-  const metadata = params._meta;
-  if (!isRecord(metadata)) return null;
-  const capabilities = metadata[CLIENT_CAPABILITIES_META_KEY];
   if (!isRecord(capabilities)) return null;
   const extensions = capabilities.extensions;
   if (!isRecord(extensions)) return null;
@@ -145,6 +142,33 @@ export const clientCapabilitiesFromRequestBody = (
     return null;
   }
   return { extensions: { [EXTENSION_ID]: { mimeTypes } } };
+};
+
+const elicitationSupportFromUnknown = (
+  capabilities: unknown,
+): { readonly form: boolean; readonly url: boolean } => {
+  if (!isRecord(capabilities) || !isRecord(capabilities.elicitation)) {
+    return { form: false, url: false };
+  }
+  const elicitation = capabilities.elicitation;
+  const hasExplicitModes = "form" in elicitation || "url" in elicitation;
+  return {
+    form: hasExplicitModes ? Boolean(elicitation.form) : true,
+    url: Boolean(elicitation.url),
+  };
+};
+
+/** Parse the MCP Apps capability subset from an already-decoded modern body. */
+export const clientCapabilitiesFromRequestBody = (
+  body: unknown,
+): McpAppsClientCapabilities | null => {
+  if (!isRecord(body)) return null;
+  const params = body.params;
+  if (!isRecord(params)) return null;
+  const metadata = params._meta;
+  if (!isRecord(metadata)) return null;
+  const capabilities = metadata[CLIENT_CAPABILITIES_META_KEY];
+  return appsClientCapabilitiesFromUnknown(capabilities);
 };
 
 /** Parse a cloned HTTP request body without consuming the request itself. */
@@ -247,6 +271,10 @@ const missingNativeExecution = (executionId: string): McpToolResult => ({
 const createV2Assembly = <E extends Cause.YieldableError>(
   config: ExecutorMcpServerV2Config<E>,
 ): ExecutorMcpAssembly<McpServer, V2RequestContext> => {
+  const sessionful = config.sessionful ?? false;
+  const initialAppsEnabled = sessionful
+    ? (config.restoredAppsEnabled ?? config.appsEnabled)
+    : config.appsEnabled;
   const requestStateCodec = createRequestStateCodec<NativeRequestState>({
     key: config.requestStateSigningKey,
     ...(config.requestStateTtlSeconds === undefined
@@ -286,7 +314,7 @@ const createV2Assembly = <E extends Cause.YieldableError>(
   ) => {
     const inputSchema = z.object(toolConfig.inputSchema);
     const metadata = normalizedAppMetadata(toolConfig._meta);
-    if (!config.appsEnabled && visibilityIncludes(metadata, "model")) {
+    if (!sessionful && !config.appsEnabled && visibilityIncludes(metadata, "model")) {
       const plainMetadata = withoutAppMetadata(metadata);
       return server.registerTool<z.ZodObject<z.ZodRawShape>, typeof inputSchema>(
         name,
@@ -330,15 +358,26 @@ const createV2Assembly = <E extends Cause.YieldableError>(
   return {
     server,
     era: "v2",
-    initialAppsEnabled: config.appsEnabled,
-    getClientCapabilities: () => null,
-    getElicitationSupport: () => ({ form: true, url: true }),
-    getUiCapability: () => (config.appsEnabled ? { mimeTypes: [RESOURCE_MIME_TYPE] } : undefined),
-    onInitialized: () => undefined,
+    initialAppsEnabled,
+    getClientCapabilities: () =>
+      sessionful ? (server.server.getClientCapabilities() ?? null) : null,
+    getElicitationSupport: () =>
+      sessionful
+        ? elicitationSupportFromUnknown(server.server.getClientCapabilities())
+        : { form: true, url: true },
+    getUiCapability: () =>
+      sessionful
+        ? getUiCapability(appsClientCapabilitiesFromUnknown(server.server.getClientCapabilities()))
+        : config.appsEnabled
+          ? { mimeTypes: [RESOURCE_MIME_TYPE] }
+          : undefined,
+    onInitialized: (callback) => {
+      if (sessionful) server.server.oninitialized = callback;
+    },
     registerTool,
     registerAppTool: registerApp,
     registerAppResource: (name, uri, resourceConfig, callback) => {
-      if (!config.appsEnabled) return;
+      if (!sessionful && !config.appsEnabled) return;
       registerAppResource(server, name, uri, resourceConfig, async () => {
         const result = await callback();
         return { contents: [...result.contents] };
@@ -402,10 +441,11 @@ const createV2Assembly = <E extends Cause.YieldableError>(
 };
 
 /**
- * Build one stateless SDK v2 Executor MCP server for a modern request.
+ * Build one SDK v2 Executor MCP server.
  *
- * Hosts must reuse the signing key across every request that can participate
- * in the same native-elicitation continuation flow.
+ * Stateless hosts must reuse the signing key across every request that can
+ * participate in the same native-elicitation continuation flow. Sessionful
+ * hosts keep one instance connected and may use a connection-lifetime key.
  */
 export const buildMcpServerV2 = <E extends Cause.YieldableError>(
   config: ExecutorMcpServerV2Config<E>,
