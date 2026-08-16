@@ -12,7 +12,7 @@ import {
 } from "@executor-js/api/server";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
-import { env } from "cloudflare:workers";
+import { env, waitUntil } from "cloudflare:workers";
 
 import type { CloudflareConfig } from "./config";
 import { makeCloudflarePlugins } from "./plugins";
@@ -56,6 +56,12 @@ export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    // A Worker, so a tools read's speculative catalog refresh needs `waitUntil`
+    // to survive the response at all. Unlike cloud's Hyperdrive plane there is
+    // nothing to drain it before: the storage here is a D1 binding read
+    // straight off `env`, with no pool and no close finalizer, so a detached
+    // batch still has everything it needs after the response is written.
+    deferToolSync: (task) => Effect.sync(() => waitUntil(Effect.runPromise(task))),
   });
 
 /**

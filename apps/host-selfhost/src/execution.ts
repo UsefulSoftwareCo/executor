@@ -1,4 +1,4 @@
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 
 import {
   CodeExecutorProvider,
@@ -60,6 +60,13 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
         event.kind === "added" ? "integration_added" : "integration_removed",
         { plugin_key: event.pluginKey },
       ),
+    // Self-host is one long-lived process over one long-lived libSQL handle, so
+    // a speculative catalog refresh just goes to a detached fiber: the handle
+    // it needs outlives every request, and there is no isolate to keep alive.
+    // Detached, not `forkScoped` — the request scope this is called from closes
+    // as soon as the response is written, which is precisely what the work has
+    // to outlive. The task is total by contract, so nothing escapes the fork.
+    deferToolSync: (task) => Effect.asVoid(Effect.forkDetach(task)),
   };
 });
 

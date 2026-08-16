@@ -201,6 +201,11 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
             event.kind === "added" ? "integration_added" : "integration_removed",
             { plugin_key: event.pluginKey },
           ),
+        // The daemon owns its sqlite handle for its whole lifetime, so a tools
+        // read's speculative catalog refresh goes to a detached fiber and the
+        // read answers without waiting on an MCP server's handshake. The task
+        // is total by contract, so nothing escapes the fork.
+        deferToolSync: (task) => Effect.asVoid(Effect.forkDetach(task)),
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
         // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
