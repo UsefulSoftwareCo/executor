@@ -46,11 +46,15 @@ export type McpTransport = typeof McpTransport.Type;
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider. MCP oauth carries no
 //            stored endpoints: metadata is discovered live at connect time.
+//            A non-empty scope list may be declared when a server does not
+//            expose scopes through protected-resource metadata; otherwise they
+//            are discovered too.
 // ---------------------------------------------------------------------------
 
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
 
@@ -114,7 +118,11 @@ export const mcpAuthMethodFromShorthand = (auth: McpAuthShorthand): McpAuthMetho
  *  `normalizeMcpAuthMethods` backfills it. */
 export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("none") }),
-  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("oauth2"),
+    scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+  }),
   // Credential methods are authored request-shaped — the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
   // variable("token")] }, queryParams: { … } }`. Stored configs and the

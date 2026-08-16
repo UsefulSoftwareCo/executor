@@ -653,9 +653,9 @@ const connectionPoolKey = (
 //   stdio                → []          (no remote connection to configure)
 //   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
-//                          (`discoveryUrl`). Endpoints/scopes are discovered
-//                          live at connect time, so they are NOT pre-resolved
-//                          here. We mark
+//                          (`discoveryUrl`). Endpoints are discovered live at
+//                          connect time. Scopes are discovered too unless the
+//                          method declares them explicitly. We mark
 //                          `supportsDynamicRegistration: true` because MCP
 //                          OAuth servers are expected to support RFC 7591 DCR;
 //                          the connect flow probes to confirm and falls back.
@@ -694,6 +694,7 @@ export const describeMcpAuthMethods = (
         // oauth2.
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
           supportsDynamicRegistration: true,
         },
       };

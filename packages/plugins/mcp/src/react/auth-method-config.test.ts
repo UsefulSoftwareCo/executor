@@ -13,14 +13,28 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     expect(mcpAuthMethodInputFromEditorValue({ kind: "none" })).toEqual({ kind: "none" });
   });
 
-  it("maps 'oauth' → { kind: 'oauth2' } (endpoints/scopes are resolved at connect time)", () => {
+  it("maps declared oauth scopes while provider endpoints remain discovered", () => {
     const value: AuthTemplateEditorValue = {
       kind: "oauth",
       authorizationUrl: "https://a.example.com/auth",
       tokenUrl: "https://a.example.com/token",
       scopes: ["mcp.read"],
     };
-    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "oauth2" });
+    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
+      kind: "oauth2",
+      scopes: ["mcp.read"],
+    });
+  });
+
+  it("omits an empty oauth scope list so the server metadata remains authoritative", () => {
+    expect(
+      mcpAuthMethodInputFromEditorValue({
+        kind: "oauth",
+        authorizationUrl: "",
+        tokenUrl: "",
+        scopes: [],
+      }),
+    ).toEqual({ kind: "oauth2" });
   });
 
   it("maps a header placement to an apikey method (prefix preserved)", () => {
@@ -121,6 +135,25 @@ describe("editorValueFromMcpAuthMethod", () => {
       scopes: [],
     });
   });
+
+  it("round-trips declared oauth2 scopes while endpoints remain discovered", () => {
+    const editor = editorValueFromMcpAuthMethod({
+      slug: "oauth2",
+      kind: "oauth2",
+      scopes: ["mcp"],
+    });
+
+    expect(editor).toEqual({
+      kind: "oauth",
+      authorizationUrl: "",
+      tokenUrl: "",
+      scopes: ["mcp"],
+    });
+    expect(mcpAuthMethodInputFromEditorValue(editor)).toEqual({
+      kind: "oauth2",
+      scopes: ["mcp"],
+    });
+  });
 });
 
 describe("authMethodsFromConfig", () => {
@@ -152,6 +185,19 @@ describe("authMethodsFromConfig", () => {
     ]);
     expect(methods[0]?.oauth?.discoveryUrl).toBe("https://mcp.example.com/mcp");
     expect(methods[0]?.oauth?.scopes).toBeUndefined();
+  });
+
+  it("carries declared oauth2 scopes through to the accounts hub", () => {
+    const methods = authMethodsFromConfig(
+      [{ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] }],
+      "https://mcp.example.com/mcp",
+    );
+
+    expect(methods[0]?.oauth).toEqual({
+      discoveryUrl: "https://mcp.example.com/mcp",
+      scopes: ["mcp"],
+      supportsDynamicRegistration: true,
+    });
   });
 
   it("carries multi-placement methods through to the hub", () => {
