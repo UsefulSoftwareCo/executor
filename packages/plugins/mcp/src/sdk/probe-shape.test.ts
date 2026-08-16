@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Predicate, Ref } from "effect";
+import { Effect, Layer, Ref } from "effect";
 import {
   HttpClient,
   HttpClientError,
@@ -365,39 +365,35 @@ describe("probeMcpEndpointShape", () => {
     ),
   );
 
+  // First request (initialize) answers 200 HTML; second (the discover
+  // fallback) dies at the transport. The endpoint already proved reachable,
+  // so the verdict must stay the initialize classification, not "unreachable".
   it.effect("keeps the initialize verdict when the discover fallback fails at the transport", () =>
     Effect.gen(function* () {
-      const bodyText = (request: HttpClientRequest.HttpClientRequest): string =>
-        Predicate.isTagged(request.body, "Uint8Array")
-          ? new TextDecoder().decode(request.body.body)
-          : "";
+      let requestCount = 0;
       const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
-        HttpClient.make(
-          (
-            request: HttpClientRequest.HttpClientRequest,
-          ): Effect.Effect<
-            HttpClientResponse.HttpClientResponse,
-            HttpClientError.HttpClientError
-          > =>
-            bodyText(request).includes('"method":"server/discover"')
-              ? Effect.fail(
-                  new HttpClientError.HttpClientError({
-                    reason: new HttpClientError.TransportError({
-                      request,
-                      description: "connection reset by peer",
-                    }),
-                  }),
-                )
-              : Effect.succeed(
-                  HttpClientResponse.fromWeb(
-                    request,
-                    new Response("<html>not mcp</html>", {
-                      status: 200,
-                      headers: { "content-type": "text/html" },
-                    }),
-                  ),
-                ),
-        ),
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          requestCount += 1;
+          if (requestCount > 1) {
+            return Effect.fail(
+              new HttpClientError.HttpClientError({
+                reason: new HttpClientError.TransportError({
+                  request,
+                  description: "connection reset by peer",
+                }),
+              }),
+            );
+          }
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("<html>not mcp</html>", {
+                status: 200,
+                headers: { "content-type": "text/html" },
+              }),
+            ),
+          );
+        }),
       );
 
       const result = yield* probeMcpEndpointShape("https://internal.example/mcp", {
@@ -408,6 +404,7 @@ describe("probeMcpEndpointShape", () => {
         category: "wrong-shape",
         reason: "2xx POST body is not a JSON-RPC envelope",
       });
+      expect(requestCount).toBe(2);
     }),
   );
 

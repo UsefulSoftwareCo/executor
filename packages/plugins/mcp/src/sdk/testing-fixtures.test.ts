@@ -49,9 +49,7 @@ layer(OAuthTestServer.layer(), { timeout: "15 seconds" })("MCP testing fixtures"
       expect(result).toMatchObject({
         content: [{ type: "text", text: "Hello Ada" }],
       });
-      // The v1 fixture creates a throwaway transport for the rejected modern
-      // discovery probe before the initialized legacy session.
-      expect(server.sessionCount()).toBe(2);
+      expect(server.sessionCount()).toBe(1);
 
       const requests = yield* server.requests;
       expect(

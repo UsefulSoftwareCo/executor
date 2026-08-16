@@ -55,20 +55,12 @@ const jsonRpcResult = (request: JsonRpcRequest, result: unknown) =>
     result,
   });
 
-const jsonRpcMethodNotFound = (request: JsonRpcRequest) =>
-  HttpServerResponse.jsonUnsafe({
-    jsonrpc: "2.0",
-    id: request.id ?? null,
-    error: { code: -32601, message: "Method not found" },
-  });
-
 // The call-tool fixtures share one JSON-RPC scaffold (handshake, tool listing,
 // unknown-method rejection); only the `tools/call` response varies. Each
 // scenario supplies that branch via a `CallToolResponder`.
 type CallToolResponder = (rpc: JsonRpcRequest) => ReturnType<typeof HttpServerResponse.text>;
 
 const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponder) => {
-  if (rpc.method === "server/discover") return jsonRpcMethodNotFound(rpc);
   if (rpc.method === "initialize") {
     return jsonRpcResult(rpc, {
       protocolVersion: "2025-06-18",
