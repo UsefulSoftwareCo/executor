@@ -110,7 +110,12 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // plane's decorator is wired in mcp/session-store.ts's stack layer).
         decorator: SelfHostAnalyticsEngineDecorator,
       },
-      mcp: { auth: mcp.auth, sessions: mcp.sessions, reporter: mcp.reporter },
+      mcp: {
+        auth: mcp.auth,
+        sessions: mcp.sessions,
+        modern: mcp.modern,
+        reporter: mcp.reporter,
+      },
       plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
       errorCapture: ErrorCaptureLive,
     },

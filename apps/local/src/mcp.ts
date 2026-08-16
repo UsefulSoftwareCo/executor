@@ -1,4 +1,9 @@
 import { Effect, type Cause } from "effect";
+import {
+  createMcpHandler,
+  isLegacyRequest,
+  type McpHttpHandler,
+} from "@modelcontextprotocol/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -13,6 +18,12 @@ import {
   createExecutorMcpServer,
   type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
+import {
+  appsEnabledForClientCapabilities,
+  buildMcpServerV2,
+  clientCapabilitiesFromRequest,
+  requestBodyFromRequest,
+} from "@executor-js/host-mcp/tool-server-v2";
 import {
   approvalUrlForRequest,
   decodeResumeResponse,
@@ -129,8 +140,13 @@ export const createMcpRequestHandler = (
   const resources = new Map<string, McpResource>();
   const sessionEngines = new Map<string, AnyExecutionEngine>();
   const sessionClosers = new Map<string, () => Promise<void>>();
+  const modernHandlers = new Map<string, McpHttpHandler>();
   const approvals = makeInProcessBrowserApprovalStore();
   const defaultEngine = engineFromConfig(handlerConfig.defaultConfig);
+  let requestStateSigningKey: Uint8Array | undefined;
+
+  const signingKey = (): Uint8Array =>
+    (requestStateSigningKey ??= crypto.getRandomValues(new Uint8Array(32)));
 
   const pausedDetail = (
     sessionId: string,
@@ -164,10 +180,58 @@ export const createMcpRequestHandler = (
     await ignoreClose(close);
   };
 
+  const modernHandlerFor = (resource: McpResource): McpHttpHandler => {
+    const key = mcpResourceKey(resource);
+    const cached = modernHandlers.get(key);
+    if (cached) return cached;
+
+    const handler = createMcpHandler(
+      (context) => {
+        const request = context.requestInfo;
+        if (!request) {
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party McpServerFactory Promise contract has no typed failure channel; missing documented request context is an SDK defect
+          return Effect.runPromise(Effect.die("Modern MCP request context has no request"));
+        }
+        return Effect.runPromise(
+          Effect.gen(function* () {
+            const resourceConfig = yield* Effect.promise(() => configForResource(resource));
+            const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
+            const server = yield* buildMcpServerV2({
+              ...resourceConfig.config,
+              artifactsEnabled: readArtifactsEnabled(request),
+              appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
+              requestStateSigningKey: signingKey(),
+              requestStatePrincipal: "local",
+            });
+            if (resourceConfig.close) {
+              const closeServer = server.close.bind(server);
+              const closeConfig = resourceConfig.close;
+              let closed = false;
+              server.close = async () => {
+                if (closed) return;
+                closed = true;
+                await ignoreClose(closeServer);
+                await ignoreClose(closeConfig);
+              };
+            }
+            return server;
+          }),
+        );
+      },
+      { legacy: "reject" },
+    );
+    modernHandlers.set(key, handler);
+    return handler;
+  };
+
   return {
     handleRequest: async (request) => {
       const resource = resourceFromRequest(request);
       if (!resource) return jsonError(404, -32001, "MCP resource not found");
+      if (!(await isLegacyRequest(request))) {
+        const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+        return modernHandlerFor(resource).fetch(request, { parsedBody });
+      }
       const sessionId = request.headers.get("mcp-session-id");
 
       if (sessionId) {
@@ -283,7 +347,10 @@ export const createMcpRequestHandler = (
 
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
-      await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
+      await Promise.all([
+        ...[...ids].map((id) => dispose(id, { transport: true, server: true })),
+        ...[...modernHandlers.values()].map((handler) => handler.close()),
+      ]);
     },
   };
 };
@@ -295,6 +362,7 @@ export const createMcpRequestHandler = (
 export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
+  // Deliberately v1-only in this release; modern stdio clients use their probe fallback policy.
   const server = await Effect.runPromise(createExecutorMcpServer(config));
   const transport = new StdioServerTransport();
 

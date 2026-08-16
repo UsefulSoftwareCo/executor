@@ -1,7 +1,11 @@
 import { Layer } from "effect";
 
-import { makeConsoleMcpErrorReporter, makeMcpBuildServer } from "@executor-js/api/server";
-import type { McpErrorReporter } from "@executor-js/host-mcp";
+import {
+  makeConsoleMcpErrorReporter,
+  makeMcpBuildServer,
+  makeMcpBuildServerV2,
+} from "@executor-js/api/server";
+import { McpModernServerBuilder, type McpErrorReporter } from "@executor-js/host-mcp";
 import {
   inMemoryMcpSessionsLayer,
   makeInMemoryMcpSessionStore,
@@ -50,6 +54,22 @@ export const makeSelfHostMcpSessionStore = (
     ),
     { webBaseUrl },
   );
+
+/** Build the stateless SDK v2 server seam over the same self-host stack/config. */
+export const makeSelfHostMcpModernServerBuilder = (
+  db: SelfHostDbHandle,
+): Layer.Layer<McpModernServerBuilder> =>
+  Layer.succeed(McpModernServerBuilder)({
+    build: makeMcpBuildServerV2(
+      SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
+      {
+        loadAppShellHtml: loadMcpAppsShellHtml,
+        smokeRenderArtifact,
+        onArtifactUsage: (action) =>
+          selfHostAnalytics.record(`artifact_${action}`, { via: "agent" }),
+      },
+    ),
+  });
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */
 export const selfHostMcpSessions = inMemoryMcpSessionsLayer;

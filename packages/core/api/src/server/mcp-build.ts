@@ -1,12 +1,17 @@
 import { Effect, Layer } from "effect";
 
-import { McpErrorReporter, type Principal } from "@executor-js/host-mcp";
+import {
+  McpErrorReporter,
+  type McpModernServerBuilder,
+  type Principal,
+} from "@executor-js/host-mcp";
 import {
   McpEngineBuildError,
   type McpBuildServer,
   type McpBuildServerOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
+import { buildMcpServerV2 } from "@executor-js/host-mcp/tool-server-v2";
 import {
   artifactUrlFor,
   type ArtifactSmokeRenderResult,
@@ -89,6 +94,53 @@ export const makeMcpBuildServer =
         ),
       ),
     );
+
+/** Build function consumed by the neutral envelope's modern-server seam. */
+export type McpBuildServerV2 = McpModernServerBuilder["Service"]["build"];
+
+/**
+ * Build the per-request SDK v2 server factory over the same execution stack
+ * and host configuration used by {@link makeMcpBuildServer}.
+ */
+export const makeMcpBuildServerV2 =
+  (executionStack: McpExecutionStackLayer, hostOptions?: McpBuildHostOptions): McpBuildServerV2 =>
+  (principal, options) => {
+    const { resource, ...requestOptions } = options;
+    return Effect.gen(function* () {
+      const { engine, executor } = yield* makeExecutionStack(
+        principal.accountId,
+        principal.organizationId,
+        principal.organizationName,
+        { mcpResource: resource },
+      ).pipe(Effect.withSpan("mcp.execution_stack.build"));
+      const hostConfig = yield* HostConfig;
+      return { engine, executor, webBaseUrl: hostConfig.webBaseUrl };
+    }).pipe(
+      principal.organizationSlug !== undefined
+        ? Effect.provideService(RequestOrgSlug, { slug: principal.organizationSlug })
+        : (effect) => effect,
+      Effect.provide(executionStack),
+      Effect.mapError((cause) => new McpEngineBuildError({ cause })),
+      Effect.flatMap(({ engine, executor, webBaseUrl }) =>
+        buildMcpServerV2({
+          engine,
+          artifacts: executor.artifacts,
+          connections: executor.connections,
+          ...(hostOptions?.loadAppShellHtml
+            ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
+            : {}),
+          ...(hostOptions?.smokeRenderArtifact
+            ? { smokeRenderArtifact: hostOptions.smokeRenderArtifact }
+            : {}),
+          ...(hostOptions?.onArtifactUsage ? { onArtifactUsage: hostOptions.onArtifactUsage } : {}),
+          ...(webBaseUrl
+            ? { artifactUrl: artifactUrlFor(webBaseUrl, principal.organizationSlug) }
+            : {}),
+          ...requestOptions,
+        }).pipe(Effect.withSpan("mcp.server.create")),
+      ),
+    );
+  };
 
 /** Per-host (not per-session) MCP wiring. Kept separate from
  *  `McpBuildServerOptions`, which the session store fills in per request. */
