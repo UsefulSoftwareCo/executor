@@ -251,7 +251,12 @@ describe("SDK v2 Executor MCP assembly", () => {
         expect(isInputRequiredResult(first)).toBe(true);
         if (!isInputRequiredResult(first) || !first.requestState) return;
 
-        const tampered = `${first.requestState.slice(0, -1)}x`;
+        // Corrupt an interior character: changing the final one can only touch
+        // discarded base64url padding bits, which lenient decoders (Bun) drop —
+        // the decoded bytes would be identical and the signature would verify.
+        const middle = Math.floor(first.requestState.length / 2);
+        const swapped = first.requestState[middle] === "A" ? "B" : "A";
+        const tampered = `${first.requestState.slice(0, middle)}${swapped}${first.requestState.slice(middle + 1)}`;
         await expect(
           manualToolCall(client, {
             name: "execute",
