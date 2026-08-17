@@ -245,6 +245,35 @@ export class DurableObjectMcpEventStore implements EventStore {
   }
 
   /** Replay persisted events after the supplied ID, in storage-key order. */
+  /**
+   * Whether the stream named by `lastEventId` still has stored events after
+   * it — i.e. whether a reconnect GET carrying this id has anything left to
+   * resume. EventSource clients echo the last id they saw on EVERY
+   * reconnect, so a drained id must route the connection to the standalone
+   * listener path instead of a resume (the transport closes a completed
+   * stream's resume immediately, which turns the echo into a reconnect
+   * loop).
+   */
+  async hasEventsAfter(lastEventId: EventId): Promise<boolean> {
+    const streamId = streamIdFromEventId(lastEventId);
+    if (!streamId) return false;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- storage boundary: on probe failure fall back to resume semantics
+    try {
+      const rows = await this.storage.list<JSONRPCMessage>({
+        prefix: eventPrefix(streamId),
+        startAfter: `${EVENT_KEY_PREFIX}${lastEventId}`,
+        limit: 1,
+      });
+      return rows.size > 0;
+    } catch {
+      logStoreWarning("mcp_event_store_list_failed", {
+        operation: "has_events_after",
+        streamId,
+      });
+      return true;
+    }
+  }
+
   async replayEventsAfter(
     lastEventId: EventId,
     { send }: { readonly send: (eventId: EventId, message: JSONRPCMessage) => Promise<void> },

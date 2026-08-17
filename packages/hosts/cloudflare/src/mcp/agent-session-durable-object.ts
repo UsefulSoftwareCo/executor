@@ -1215,26 +1215,37 @@ export abstract class McpAgentSessionDOBase<
       }
       if (request.method === "GET") {
         const lastEventId = request.headers.get("last-event-id");
-        if (lastEventId) {
+        const resumeHasPendingEvents =
+          lastEventId !== null && (await this.eventStore.hasEventsAfter(lastEventId));
+        if (lastEventId && resumeHasPendingEvents) {
           await this.supersedeReplayStream(transport, lastEventId);
         } else {
+          // Standalone listener path — taken for a bare GET AND for a GET
+          // whose Last-Event-ID stream is fully drained. EventSource clients
+          // echo their last id on every reconnect, so a drained id must not
+          // enter the transport's resume (it closes a completed stream's
+          // resume immediately, turning the echo into a reconnect loop).
+          let serveRequest = request;
+          if (lastEventId) {
+            const headers = new Headers(request.headers);
+            headers.delete("last-event-id");
+            serveRequest = new Request(request, { headers });
+          }
           // Latest-listener-wins. Client cancellation is not reliably relayed
           // through every workerd/Vite streaming hop, so explicitly retire a
           // stale standalone mapping before opening its replacement.
           transport.closeStandaloneSSEStream();
           const replay = await this.collectUndeliveredReplay();
-          if (replay) {
-            // Prepend the replay onto the transport's own long-lived
-            // standalone stream — the stream MUST stay open afterwards (see
-            // collectUndeliveredReplay). Acknowledgement moves to stream end:
-            // "complete"/"rotate" imply the client stayed attached long
-            // enough to have drained the prepended frames.
-            const response = await transport.handleRequest(request);
-            return this.trackedLegacyResponse(response, {
-              initialFrame: replay.frame,
-              acknowledge: replay.streamIds,
-            });
-          }
+          // Replayed responses ride as the opening frames of the transport's
+          // own long-lived standalone stream — the stream MUST stay open
+          // afterwards (see collectUndeliveredReplay). Acknowledgement moves
+          // to stream end: "complete"/"rotate" imply the client stayed
+          // attached long enough to have drained the prepended frames.
+          const response = await transport.handleRequest(serveRequest);
+          return this.trackedLegacyResponse(
+            response,
+            replay ? { initialFrame: replay.frame, acknowledge: replay.streamIds } : {},
+          );
         }
       }
       const toolCallIds = legacyToolCallRequestIds(parsedBody);
