@@ -5,20 +5,23 @@
 // it is a screenful of raw API JSON where the homepage should be. Reported
 // from the field as `{"_tag":"Unauthorized"}`.
 //
-// The endpoint sits behind SessionAuth, so a browser whose sealed session no
-// longer authenticates AT THE MOMENT OF THE CLICK gets the middleware's 401
-// instead of being signed out. Reaching that state needs nothing exotic: a
-// second open tab does it (sign out in one, the other's shell is still painted
-// but its cookie is gone), and an expired or upstream-revoked session lands on
-// the same branch. Signing out of a session that is already over is the one
-// request that must never fail — the user is asking for the state they are
-// already in.
+// The endpoint used to sit behind SessionAuth, so a browser whose sealed
+// session no longer authenticated AT THE MOMENT OF THE CLICK got the
+// middleware's 401 instead of being signed out. Reaching that state needs
+// nothing exotic: a second open tab does it (sign out in one, the other's
+// shell is still painted but its cookie is gone), and an expired or
+// upstream-revoked session lands on the same branch. Signing out of a session
+// that is already over is the one request that must never fail — the user is
+// asking for the state they are already in.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page } from "playwright";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+
+/** The display-only identity cookie the SSR gate mints (non-HttpOnly). */
+const HINT_COOKIE = "executor-auth-hint";
 
 /** First `Set-Cookie` header for `name`, as the raw header string. */
 const setCookieFor = (response: Response, name: string): string => {
@@ -52,10 +55,6 @@ scenario(
     yield* Api;
     const target = yield* Target;
 
-    // Two ways a real browser arrives here holding no live session: it never
-    // had one (the cookie was cleared, or sign-out is re-submitted from
-    // history), and it holds one that no longer authenticates (expired, or
-    // revoked upstream). Both POST the same form the shell posts.
     const signOut = (cookie?: string) =>
       Effect.promise(() =>
         fetch(new URL("/api/auth/logout", target.baseUrl), {
@@ -65,30 +64,48 @@ scenario(
         }),
       );
 
-    for (const [label, cookie] of [
-      ["no session cookie at all", undefined],
-      ["a session cookie that no longer authenticates", "wos-session=stale-sealed-session"],
-    ] as const) {
-      const response = yield* signOut(cookie);
-      const body = yield* Effect.promise(() => response.text());
+    // A session cookie that no longer authenticates — expired, or revoked
+    // upstream while the tab sat open. There is nothing to end at WorkOS, but
+    // this browser must still leave signed out: a stale session cookie left in
+    // place keeps routing / into the app instead of marketing.
+    const stale = yield* signOut("wos-session=stale-sealed-session");
+    const staleBody = yield* Effect.promise(() => stale.text());
 
-      // The response IS the page the user reads. This is the reported symptom.
-      expect(body, `sign-out with ${label} never renders an API error envelope`).not.toContain(
-        "_tag",
-      );
-      expect(response.status, `sign-out with ${label} sends the browser onward`).toBe(302);
-      expect(
-        new URL(response.headers.get("location") ?? "", target.baseUrl).pathname,
-        `sign-out with ${label} lands the browser home`,
-      ).toBe("/");
-      // Nothing to end upstream without a session, but the browser must still
-      // leave with its cookies dropped — a stale session cookie left in place
-      // keeps routing / into the app instead of marketing.
-      expect(
-        setCookieFor(response, "wos-session"),
-        `sign-out with ${label} still clears the session cookie`,
-      ).toContain("Max-Age=0");
-    }
+    // The response IS the page the user reads. This is the reported symptom.
+    expect(staleBody, "sign-out never renders an API error envelope").not.toContain("_tag");
+    expect(stale.status, "sign-out sends the browser onward").toBe(302);
+    expect(
+      new URL(stale.headers.get("location") ?? "", target.baseUrl).pathname,
+      "sign-out lands the browser home",
+    ).toBe("/");
+    expect(setCookieFor(stale, "wos-session"), "the dead session cookie is dropped").toContain(
+      "Max-Age=0",
+    );
+    expect(
+      setCookieFor(stale, HINT_COOKIE),
+      "the auth hint never outlives the session it describes",
+    ).toContain("Max-Age=0");
+
+    // A POST carrying no cookies at all is what a CROSS-SITE form reaching
+    // this endpoint looks like: both cookies are SameSite=Lax, so another
+    // origin's POST arrives bare. Signing out is public, so it must answer
+    // such a request without touching this browser's session — otherwise any
+    // site could sign our users out.
+    const bare = yield* signOut();
+    const bareBody = yield* Effect.promise(() => bare.text());
+
+    expect(bareBody, "a session-less sign-out renders no error envelope either").not.toContain(
+      "_tag",
+    );
+    expect(bare.status, "it is sent home like any other sign-out").toBe(302);
+    expect(
+      new URL(bare.headers.get("location") ?? "", target.baseUrl).pathname,
+      "it lands home",
+    ).toBe("/");
+    expect(
+      bare.headers.getSetCookie(),
+      "a request that presented no session cannot expire anyone else's",
+    ).toEqual([]);
   }),
 );
 
