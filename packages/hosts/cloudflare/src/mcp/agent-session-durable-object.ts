@@ -1148,14 +1148,36 @@ export abstract class McpAgentSessionDOBase<
       },
       onClose: (reason) => {
         this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
-        if (reason === "complete" && options.acknowledge && options.acknowledge.length > 0) {
+        // "complete": the source body drained to its natural end. "rotate":
+        // the client stayed attached for the whole max-age window, so the
+        // initial replay frames were drained long before. Both count as
+        // delivered. "cancel"/"error" leave the streams replayable for the
+        // client's reconnect GET.
+        if (
+          (reason === "complete" || reason === "rotate") &&
+          options.acknowledge &&
+          options.acknowledge.length > 0
+        ) {
           this.ctx.waitUntil(this.eventStore.acknowledgeUndeliveredStreams(options.acknowledge));
         }
       },
     });
 
-  private async replayUndeliveredOnStandaloneGet(request: Request): Promise<Response | null> {
-    if (request.method !== "GET" || request.headers.has("last-event-id")) return null;
+  /**
+   * Collect every undelivered stream's events as one SSE frame block, for
+   * prepending onto the standalone GET stream. Returning a FINITE response
+   * here instead (the pre-2026-08-17 behavior) was catastrophic: the client's
+   * standalone listener closed the moment the replay flushed, and because
+   * every POST marks its stream undelivered until acknowledged, an active
+   * session ALWAYS had something to replay — so every listener GET became a
+   * ~3s reconnect short-poll. Fleet-wide, that reconnect storm multiplied
+   * /mcp volume ~15x, drove the worker into memory-limit kills, and (by
+   * recycling isolates) pushed homepage TTFB from ~15ms to ~3s.
+   */
+  private async collectUndeliveredReplay(): Promise<{
+    readonly frame: Uint8Array;
+    readonly streamIds: readonly string[];
+  } | null> {
     const frames: Uint8Array[] = [];
     const streamIds = await this.eventStore.replayUndeliveredStreams({
       send: (eventId, message) => {
@@ -1164,18 +1186,7 @@ export abstract class McpAgentSessionDOBase<
       },
     });
     if (frames.length === 0) return null;
-    return this.trackedLegacyResponse(
-      new Response(combineFrames(frames), {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-          "x-accel-buffering": "no",
-          "mcp-session-id": this.sessionId,
-        },
-      }),
-      { acknowledge: streamIds },
-    );
+    return { frame: new Uint8Array(combineFrames(frames)), streamIds };
   }
 
   private async serializedTransportRequest<A>(run: () => Promise<A>): Promise<A> {
@@ -1211,8 +1222,19 @@ export abstract class McpAgentSessionDOBase<
           // through every workerd/Vite streaming hop, so explicitly retire a
           // stale standalone mapping before opening its replacement.
           transport.closeStandaloneSSEStream();
-          const replay = await this.replayUndeliveredOnStandaloneGet(request);
-          if (replay) return replay;
+          const replay = await this.collectUndeliveredReplay();
+          if (replay) {
+            // Prepend the replay onto the transport's own long-lived
+            // standalone stream — the stream MUST stay open afterwards (see
+            // collectUndeliveredReplay). Acknowledgement moves to stream end:
+            // "complete"/"rotate" imply the client stayed attached long
+            // enough to have drained the prepended frames.
+            const response = await transport.handleRequest(request);
+            return this.trackedLegacyResponse(response, {
+              initialFrame: replay.frame,
+              acknowledge: replay.streamIds,
+            });
+          }
         }
       }
       const toolCallIds = legacyToolCallRequestIds(parsedBody);

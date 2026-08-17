@@ -418,9 +418,21 @@ describe("McpAgentSessionDOBase session serving", () => {
         }),
       ),
     );
-    const standaloneReplayBody = await standaloneReplay.text();
+    // The standalone listener replays undelivered responses as its opening
+    // frames and then STAYS OPEN (a close-after-replay here put every active
+    // client into a permanent reconnect loop), so read incrementally instead
+    // of draining to EOF.
+    const standaloneReader = standaloneReplay.body?.getReader();
+    const decoder = new TextDecoder();
+    let standaloneReplayBody = "";
+    while (!standaloneReplayBody.includes("slow result")) {
+      const next = await standaloneReader?.read();
+      if (!next || next.done) break;
+      standaloneReplayBody += decoder.decode(next.value, { stream: true });
+    }
     expect(standaloneReplayBody).toContain("slow result");
     expect(standaloneReplayBody).toContain("event: message");
+    await standaloneReader?.cancel("test complete");
     await state.flushWaitUntil();
   });
 
