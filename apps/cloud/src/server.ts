@@ -172,11 +172,18 @@ const cloudflareHandler: ExportedHandler<Env> = {
             const response = await mcpAgentHandler(new Request(forwarded, { headers }), env, ctx);
             span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
             if (response.status >= 500) {
-              span.setStatus({ code: SpanStatusCode.ERROR });
+              span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
             }
             return response;
           } catch (err) {
-            span.setStatus({ code: SpanStatusCode.ERROR });
+            // Record the exception itself, not just the status bit: without it
+            // these spans are ERROR with zero diagnostic content.
+            // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- adapter boundary: Cloudflare's fetch callback throws untyped; normalized only for the OTel span record, the original error is rethrown below
+            const cause = err instanceof Error ? err : String(err);
+            span.recordException(cause);
+            // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: same normalization as the recordException line above
+            const message = typeof cause === "string" ? cause : cause.message;
+            span.setStatus({ code: SpanStatusCode.ERROR, message });
             // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
             throw err;
           } finally {
@@ -237,11 +244,18 @@ const cloudflareHandler: ExportedHandler<Env> = {
           const response = await fetchHandler(request, env, ctx);
           span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
           if (response.status >= 500) {
-            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
           }
           return response;
         } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR });
+          // Record the exception itself, not just the status bit: without it
+          // these spans are ERROR with zero diagnostic content.
+          // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- adapter boundary: Cloudflare's fetch callback throws untyped; normalized only for the OTel span record, the original error is rethrown below
+          const cause = err instanceof Error ? err : String(err);
+          span.recordException(cause);
+          // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: same normalization as the recordException line above
+          const message = typeof cause === "string" ? cause : cause.message;
+          span.setStatus({ code: SpanStatusCode.ERROR, message });
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
           throw err;
         } finally {
