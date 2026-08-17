@@ -1,4 +1,4 @@
-import { Effect, Predicate } from "effect";
+import { Effect, Layer, Predicate } from "effect";
 
 import {
   McpAuthProvider,
@@ -6,6 +6,7 @@ import {
   mcpModernDisabledResponse,
   defaultMcpResource,
   type AuthOutcome,
+  type McpModernServerBuilder,
   type Principal,
 } from "@executor-js/host-mcp";
 import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
@@ -29,7 +30,51 @@ import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mc
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
-import { makeCloudflareModernMcpServerBuilder } from "./session-durable-object";
+
+const DEAD_SESSION_CACHE_TTL_MS = 5 * 60 * 1_000;
+const DEAD_SESSION_CACHE_MAX_ENTRIES = 4_096;
+const deadSessionExpiries = new Map<string, number>();
+const timedOutSessionIds = new Set<string>();
+
+type DeadSessionReason = "not_found" | "timed_out";
+
+const isDeadSessionCached = (sessionId: string, now = Date.now()): boolean => {
+  const expiry = deadSessionExpiries.get(sessionId);
+  if (expiry === undefined) return false;
+  if (expiry > now) return true;
+  deadSessionExpiries.delete(sessionId);
+  timedOutSessionIds.delete(sessionId);
+  return false;
+};
+
+const cacheDeadSession = (sessionId: string, reason: DeadSessionReason, now = Date.now()): void => {
+  deadSessionExpiries.delete(sessionId);
+  if (deadSessionExpiries.size >= DEAD_SESSION_CACHE_MAX_ENTRIES) {
+    const oldestSessionId = deadSessionExpiries.keys().next().value;
+    if (oldestSessionId !== undefined) {
+      deadSessionExpiries.delete(oldestSessionId);
+      timedOutSessionIds.delete(oldestSessionId);
+    }
+  }
+  deadSessionExpiries.set(sessionId, now + DEAD_SESSION_CACHE_TTL_MS);
+  if (reason === "timed_out") timedOutSessionIds.add(sessionId);
+  else timedOutSessionIds.delete(sessionId);
+};
+
+const cachedDeadSessionMessage = (sessionId: string): string =>
+  timedOutSessionIds.has(sessionId) ? "Session timed out, please reconnect" : "Session not found";
+
+/** Test-only access to reset and verify the isolate-local dead-session cache. */
+export const cloudflareDeadSessionCacheForTest = {
+  clear: (): void => {
+    deadSessionExpiries.clear();
+    timedOutSessionIds.clear();
+  },
+  remember: (sessionId: string, now?: number): void =>
+    cacheDeadSession(sessionId, "not_found", now),
+  has: isDeadSessionCached,
+  size: (): number => deadSessionExpiries.size,
+};
 
 const jsonRpcResponse = (
   status: number,
@@ -79,12 +124,12 @@ const renderAuthError = (
   return jsonRpcResponse(503, -32001, outcome.message);
 };
 
-const authenticate = (request: Request, config: CloudflareConfig) =>
+const authenticate = (request: Request, authProvider: Layer.Layer<McpAuthProvider>) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(cloudflareAccessMcpAuth(config)));
+  }).pipe(Effect.provide(authProvider));
 
 const propsForPrincipal = (
   request: Request,
@@ -108,7 +153,21 @@ const propsForPrincipal = (
     };
   });
 
-export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
+interface CloudflareMcpAgentHandlerOptions {
+  readonly makeModernServerBuilder: (
+    env: CloudflareEnv,
+    config: CloudflareConfig,
+    session: McpSessionProps["session"],
+  ) => McpModernServerBuilder["Service"];
+  readonly authProvider?: Layer.Layer<McpAuthProvider>;
+}
+
+/** Build the standalone Cloudflare worker's authenticated MCP request handler. */
+export const makeCloudflareMcpAgentHandler = (
+  config: CloudflareConfig,
+  options: CloudflareMcpAgentHandlerOptions,
+) => {
+  const authProvider = options.authProvider ?? cloudflareAccessMcpAuth(config);
   const modern = makeMcpModernRequestRouter();
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") {
@@ -116,7 +175,18 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     }
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
+    if (sessionId && isDeadSessionCached(sessionId)) {
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const { auth, outcome } = yield* authenticate(request, authProvider);
+          return Predicate.isTagged(outcome, "Authenticated")
+            ? deadSessionResponse(request.method, cachedDeadSessionMessage(sessionId))
+            : renderAuthError(auth, request, outcome);
+        }).pipe(Effect.withTracerEnabled(false)),
+      );
+    }
+
+    const { auth, outcome } = await Effect.runPromise(authenticate(request, authProvider));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
         const session = mcpSessionStub(env.MCP_SESSION, sessionId);
@@ -152,7 +222,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
         resource: defaultMcpResource,
         props,
         requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
-        builder: makeCloudflareModernMcpServerBuilder(env, config, props.session),
+        builder: options.makeModernServerBuilder(env, config, props.session),
         sessions: env.MCP_SESSION,
         executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
       });
@@ -166,17 +236,19 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     if (sessionId && !existingSession) {
       return deadSessionResponse(request.method, "Session not found");
     }
-    if (existingSession) {
+    if (existingSession && sessionId) {
       const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
       if (owner === "not_found") {
+        cacheDeadSession(sessionId, "not_found");
         return deadSessionResponse(request.method, "Session not found");
       }
       if (owner === "terminated") {
         // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
         // yet; the terminated id must read as dead immediately.
+        cacheDeadSession(sessionId, "timed_out");
         return deadSessionResponse(request.method, "Session timed out, please reconnect");
       }
       if (owner === "forbidden") {
