@@ -55,6 +55,10 @@ export interface ListToolCallsInput {
   /** Only calls at or after this instant. */
   readonly since?: Date;
   readonly limit?: number;
+  /** Rows to skip, for paging. The log is append-only at the top, so a page
+   *  can shift while being browsed; fine for eyeballing, use `since` for
+   *  programmatic sweeps. */
+  readonly offset?: number;
 }
 
 export interface PruneToolCallsInput {

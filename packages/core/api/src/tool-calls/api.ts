@@ -54,6 +54,11 @@ const ListToolCallsQuery = Schema.Struct({
       Schema.isBetween({ minimum: 1, maximum: TOOL_CALL_LIST_MAX_LIMIT }),
     ),
   ),
+  // Paging. Bounded like every other numeric input: an unbounded offset is a
+  // cheap way to make the database walk the whole partition.
+  offset: Schema.optional(
+    Schema.FiniteFromString.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+  ),
 });
 
 export const ToolCallsApi = HttpApiGroup.make("toolCalls").add(

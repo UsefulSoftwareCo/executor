@@ -156,18 +156,23 @@ export const pausedExecutionAtom = (executionId: string) =>
 // no optimistic wrapper: rows appear because calls happened.
 // ---------------------------------------------------------------------------
 
+/** The Activity page size. One extra row is fetched to know whether a next
+ *  page exists — same trick as `ADMIN_USERS_PAGE_SIZE`. */
+export const TOOL_CALLS_PAGE_SIZE = 25;
+
 /**
- * The most recent calls this owner scope may see.
+ * One page of the tool call log, newest first.
  *
  * Short TTL on purpose: this is the page someone opens while an agent is
- * running, to watch what it just did.
+ * running, to watch what it just did. `Atom.family` keys on the offset so
+ * paging back is instant while the front page stays fresh.
  */
-export const toolCallsAtom = ExecutorApiClient.query("toolCalls", "list", {
-  // No filters: the page shows the whole recent log and the endpoint applies
-  // its own default page size.
-  query: {},
-  timeToLive: "5 seconds",
-});
+export const toolCallsPageAtom = Atom.family((offset: number) =>
+  ExecutorApiClient.query("toolCalls", "list", {
+    query: { limit: TOOL_CALLS_PAGE_SIZE + 1, ...(offset > 0 ? { offset } : {}) },
+    timeToLive: "5 seconds",
+  }),
+);
 
 export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
   timeToLive: "30 seconds",

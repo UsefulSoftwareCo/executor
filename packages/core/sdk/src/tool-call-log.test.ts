@@ -329,6 +329,14 @@ describe("executor.toolCalls", () => {
 
       const limited = yield* executor.toolCalls.list({ limit: 2 });
       expect(limited).toHaveLength(2);
+
+      // Paging: offset skips from the top of the same newest-first order, and
+      // the pages tile the list without overlap.
+      const firstPage = yield* executor.toolCalls.list({ limit: 2 });
+      const secondPage = yield* executor.toolCalls.list({ limit: 2, offset: 2 });
+      expect(secondPage).toHaveLength(1);
+      const seen = new Set([...firstPage, ...secondPage].map((c) => c.id));
+      expect(seen.size).toBe(3);
     }),
   );
 });

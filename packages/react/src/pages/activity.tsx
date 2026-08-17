@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { toolCallsAtom } from "../api/atoms";
+import { TOOL_CALLS_PAGE_SIZE, toolCallsPageAtom } from "../api/atoms";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/empty";
@@ -9,6 +10,7 @@ import { ErrorState } from "../components/error-state";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/table";
+import { pageNumber, splitPage } from "../lib/admin-users-display";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // ---------------------------------------------------------------------------
@@ -66,8 +68,9 @@ const detailOf = (call: ToolCallRow): string | null => call.errorCode ?? call.er
 
 export function ActivityPage() {
   useExecutorDocumentTitle("Activity");
-  const calls = useAtomValue(toolCallsAtom);
-  const refresh = useAtomRefresh(toolCallsAtom);
+  const [offset, setOffset] = useState(0);
+  const calls = useAtomValue(toolCallsPageAtom(offset));
+  const refresh = useAtomRefresh(toolCallsPageAtom(offset));
 
   return (
     <PageContainer>
@@ -85,20 +88,67 @@ export function ActivityPage() {
         onFailure: () => (
           <ErrorState message="Could not load the activity log." onRetry={refresh} />
         ),
-        onSuccess: (success) => <ActivityTable calls={success.value as readonly ToolCallRow[]} />,
+        onSuccess: (success) => {
+          // One row past the page size answers "is there a next page" without
+          // a count query — same trick as Admin · Users.
+          const { rows, hasNext } = splitPage(
+            success.value as readonly ToolCallRow[],
+            TOOL_CALLS_PAGE_SIZE,
+          );
+          return (
+            <>
+              <ActivityTable calls={rows} onFirstPage={offset === 0} />
+              {(hasNext || offset > 0) && (
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                    Page {pageNumber(offset, TOOL_CALLS_PAGE_SIZE)}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={offset === 0}
+                      onClick={() => setOffset(Math.max(0, offset - TOOL_CALLS_PAGE_SIZE))}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!hasNext}
+                      onClick={() => setOffset(offset + TOOL_CALLS_PAGE_SIZE)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        },
       })}
     </PageContainer>
   );
 }
 
-function ActivityTable({ calls }: { readonly calls: readonly ToolCallRow[] }) {
+function ActivityTable({
+  calls,
+  onFirstPage,
+}: {
+  readonly calls: readonly ToolCallRow[];
+  readonly onFirstPage: boolean;
+}) {
   if (calls.length === 0) {
+    // Past the end only happens when the last row of a page is pruned while
+    // browsing; the pager above still offers Previous to walk back.
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No calls yet</EmptyTitle>
+          <EmptyTitle>{onFirstPage ? "No calls yet" : "No calls on this page"}</EmptyTitle>
           <EmptyDescription>
-            Once an agent runs a tool through this executor, every call shows up here.
+            {onFirstPage
+              ? "Once an agent runs a tool through this executor, every call shows up here."
+              : "Go back a page to see recorded calls."}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>

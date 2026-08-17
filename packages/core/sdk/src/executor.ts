@@ -4176,6 +4176,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ["id", "desc"],
           ],
           limit: clampToolCallLimit(input?.limit),
+          ...(input?.offset && input.offset > 0 ? { offset: Math.floor(input.offset) } : {}),
         })
         .pipe(Effect.map((rows) => rows.map(rowToToolCall)));
 

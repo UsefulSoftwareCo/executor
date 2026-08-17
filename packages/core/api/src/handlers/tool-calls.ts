@@ -35,6 +35,7 @@ export const ToolCallsHandlers = HttpApiBuilder.group(ExecutorApi, "toolCalls", 
           // Epoch ms on the wire; the executor filters on a Date.
           since: query.since === undefined ? undefined : new Date(query.since),
           limit: query.limit,
+          offset: query.offset,
         });
         return calls.map(toResponse);
       }),
