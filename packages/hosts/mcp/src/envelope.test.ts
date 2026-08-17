@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Cause, Effect, Layer, Ref } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
@@ -19,13 +20,18 @@ import {
   McpAuthProvider,
   McpErrorReporter,
   McpErrorReporterNoop,
+  McpModernServerBuilder,
   McpServingRoutes,
   McpDiscoveryRoutes,
   McpSessionStore,
+  unauthorized,
   type McpResource,
   type McpDispatchResult,
   type Principal,
 } from "./index";
+import type { ExecutionEngine } from "@executor-js/execution";
+import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "./mcp-apps";
+import { buildMcpServer } from "./tool-server";
 
 const DISCOVERY_PATH = "/.well-known/oauth-protected-resource" as const;
 
@@ -38,6 +44,25 @@ const TEST_PRINCIPAL: Principal = {
   avatarUrl: null,
   roles: ["user"],
 };
+
+const testEngine: ExecutionEngine = {
+  execute: (code) => Effect.succeed({ result: `ran: ${code}` }),
+  executeWithPause: (code) =>
+    Effect.succeed({ status: "completed", result: { result: `ran: ${code}` } }),
+  resume: () => Effect.succeed(null),
+  isExecutionSettled: () => Effect.succeed(false),
+  getPausedExecution: () => Effect.succeed(null),
+  pausedExecutionCount: () => Effect.succeed(0),
+  hasPausedExecutions: () => Effect.succeed(false),
+  getDescription: Effect.succeed("envelope test executor"),
+};
+
+const ModernBuilderLive = Layer.succeed(McpModernServerBuilder)({
+  build: (_principal, options) => {
+    const { resource: _resource, ...requestOptions } = options;
+    return buildMcpServer({ engine: testEngine, ...requestOptions });
+  },
+});
 
 /** An auth provider that authenticates everything (so dispatch is reached). */
 const AuthProviderLive = Layer.succeed(McpAuthProvider)({
@@ -68,8 +93,9 @@ const buildHandler = (
   store: Layer.Layer<McpSessionStore>,
   reporter: Layer.Layer<McpErrorReporter>,
   authProvider: Layer.Layer<McpAuthProvider> = AuthProviderLive,
+  modernBuilder: Layer.Layer<McpModernServerBuilder> = ModernBuilderLive,
 ): ((request: Request) => Promise<Response>) => {
-  const Seams = Layer.mergeAll(authProvider, store, reporter);
+  const Seams = Layer.mergeAll(authProvider, store, modernBuilder, reporter);
   const RouteLive = McpServingRoutes.pipe(
     HttpRouter.provideRequest(Seams),
     Layer.provide(authProvider),
@@ -114,7 +140,122 @@ describe("McpServingRoutes envelope", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, DELETE, OPTIONS");
-    expect(response.headers.get("access-control-allow-headers") ?? "").toContain("authorization");
+    const allowedHeaders = response.headers.get("access-control-allow-headers") ?? "";
+    expect(allowedHeaders).toContain("authorization");
+    expect(allowedHeaders).toContain("mcp-method");
+    expect(allowedHeaders).toContain("mcp-name");
+  });
+
+  it("echoes requested preflight headers so dynamic Mcp-Param names pass", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const requested = "content-type, authorization, mcp-protocol-version, mcp-param-search";
+    const response = await handler(
+      new Request("https://host.test/mcp", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://claude.ai",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": requested,
+        },
+      }),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-headers")).toBe(requested);
+  });
+
+  it("serves modern list/call traffic without dispatching a legacy session", async () => {
+    const legacyDispatches = await Effect.runPromise(Ref.make(0));
+    const appsEnabled = await Effect.runPromise(Ref.make(false));
+    const RecordingStoreLive = Layer.succeed(McpSessionStore)({
+      dispatch: () =>
+        Ref.update(legacyDispatches, (count) => count + 1).pipe(Effect.as("not-found")),
+      dispose: () => Effect.void,
+    });
+    const RecordingModernBuilder = Layer.succeed(McpModernServerBuilder)({
+      build: (_principal, options) => {
+        const { resource: _resource, ...requestOptions } = options;
+        return Ref.set(appsEnabled, options.appsEnabled).pipe(
+          Effect.flatMap(() => buildMcpServer({ engine: testEngine, ...requestOptions })),
+        );
+      },
+    });
+    const handler = buildHandler(
+      RecordingStoreLive,
+      McpErrorReporterNoop,
+      AuthProviderLive,
+      RecordingModernBuilder,
+    );
+    const transport = new StreamableHTTPClientTransport(new URL("https://host.test/mcp"), {
+      fetch: (input, init) =>
+        handler(
+          input instanceof Request ? new Request(input, init) : new Request(input.toString(), init),
+        ),
+    });
+    const client = new Client(
+      { name: "envelope-modern-test", version: "1.0.0" },
+      {
+        capabilities: {
+          extensions: { [EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } },
+        },
+        versionNegotiation: { mode: { pin: "2026-07-28" } },
+      },
+    );
+
+    await client.connect(transport);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the in-process modern client
+    try {
+      expect((await client.listTools()).tools.map(({ name }) => name)).toContain("execute");
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "1 + 1" },
+      });
+      expect(result.content).toEqual([{ type: "text", text: "ran: 1 + 1" }]);
+      expect(await Effect.runPromise(Ref.get(legacyDispatches))).toBe(0);
+      expect(await Effect.runPromise(Ref.get(appsEnabled))).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("returns the existing 401 challenge before routing a modern request", async () => {
+    const challenge = 'Bearer resource_metadata="https://host.test/custom-metadata"';
+    const UnauthorizedAuthProviderLive = Layer.succeed(McpAuthProvider)({
+      discoveryRoutes: [],
+      resourceMetadataUrl: () => "https://host.test/custom-metadata",
+      authenticate: () => Effect.succeed(unauthorized(challenge)),
+    });
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop, UnauthorizedAuthProviderLive);
+    const response = await handler(modernRequest("https://host.test/mcp"));
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe(challenge);
+  });
+
+  it("gracefully rejects modern discovery when inbound 2026-07-28 is disabled", async () => {
+    const DisabledModernBuilder = Layer.succeed(McpModernServerBuilder)({
+      enabled: false,
+      build: () => Effect.die("disabled modern builder should not run"),
+    });
+    const handler = buildHandler(
+      OkStoreLive,
+      McpErrorReporterNoop,
+      AuthProviderLive,
+      DisabledModernBuilder,
+    );
+
+    const response = await handler(modernRequest("https://host.test/mcp"));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32022, message: "MCP 2026-07-28 support is disabled" },
+      id: null,
+    });
+  });
+
+  it("404s a modern request whose toolkit route is not served", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const response = await handler(modernRequest("https://host.test/mcp/toolkits/unknown/extra"));
+    expect(response.status).toBe(404);
   });
 
   it("renders 500 -32603 + CORS and fires the reporter on an orchestration defect", async () => {
@@ -177,6 +318,27 @@ describe("McpServingRoutes envelope", () => {
     expect(await Effect.runPromise(Ref.get(disposed))).toEqual([]);
   });
 });
+
+const modernRequest = (url: string): Request =>
+  new Request(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "mcp-protocol-version": "2026-07-28",
+      "mcp-method": "server/discover",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "server/discover",
+      params: {
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      },
+    }),
+  });
 
 it("dispatches toolkit MCP routes with the parsed toolkit resource", async () => {
   const seen = await Effect.runPromise(Ref.make<McpResource | null>(null));

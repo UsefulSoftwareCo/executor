@@ -4,37 +4,36 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  mcpModernDisabledResponse,
   defaultMcpResource,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
   type McpResource,
 } from "@executor-js/host-mcp";
+import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
+  withMcpResponseHeaders,
+  withPropagationHeaders,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
-import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import {
+  classifyMcpProtocolEra,
+  makeMcpModernRequestRouter,
+  mcpCorsPreflightResponse,
+  requireMcpRequestStateKey,
+} from "@executor-js/cloudflare/mcp/modern-request-router";
+import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
+import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
-import { McpSessionDOSqlite } from "./session-durable-object";
+import { makeCloudModernMcpServerBuilder } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
-
-const corsPreflightResponse = (): Response =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
-    },
-  });
 
 const jsonRpcResponse = (
   status: number,
@@ -86,7 +85,7 @@ const authenticate = (request: Request) =>
     return { auth, outcome };
   }).pipe(Effect.provide(cloudMcpAuth));
 
-// The pre-Agents envelope ran the MCP auth path inside the Effect app, whose
+// The earlier shared envelope ran the MCP auth path inside the Effect app, whose
 // HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
 // span (client fingerprint, rpc method, auth outcome) exported from. This
 // handler dispatches from the raw worker entry instead, so a bare
@@ -141,29 +140,15 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
-  const serveOptions = {
-    binding: "MCP_SESSION",
-    transport: "streamable-http",
-  } as const;
-  // The agents SDK builds an exact-match `URLPattern` from the path handed to
-  // `serve` (see `createStreamingHttpHandler` in `agents/dist/mcp/index.js`) —
-  // a single `/mcp` handler never matches `/mcp/toolkits/<slug>` and falls
-  // through to its own internal 404. A second `serve` mounted on the
-  // parameterized path picks it up (`URLPattern` supports `:slug` segments);
-  // the auth/ownership/props logic above is unchanged and shared, only the
-  // final dispatch target differs.
-  const serve = McpSessionDOSqlite.serve("/mcp", serveOptions);
-  const serveToolkit = McpSessionDOSqlite.serve("/mcp/toolkits/:slug", serveOptions);
-
+  const modern = makeMcpModernRequestRouter();
   const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
   return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
-    if (request.method === "OPTIONS") return corsPreflightResponse();
-    // The old envelope (packages/hosts/mcp/src/envelope.ts) answered anything
-    // outside GET/POST/DELETE/OPTIONS with a JSON-RPC 405; the agents SDK
-    // handler only understands its own transport verbs and falls through to
-    // a bare 404. Reject before authenticating so PUT/PATCH/etc never reach
-    // the session engine.
+    if (request.method === "OPTIONS") {
+      return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
+    }
+    // Preserve the old envelope's JSON-RPC 405 before authenticating, so
+    // unsupported methods never reach the session engine.
     if (!ALLOWED_METHODS.has(request.method)) {
       return jsonRpcResponse(405, -32001, "Method not allowed");
     }
@@ -177,15 +162,47 @@ export const makeCloudMcpAgentHandler = () => {
       // / JWKS failure) and `Unauthorized` (retry with a fresh token) must leave
       // the session intact, so the condemn path is gated on `Forbidden` alone.
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
+        const session = mcpSessionStub(env.MCP_SESSION, sessionId);
         await Effect.runPromise(
           Effect.ignore(
-            Effect.tryPromise(() =>
-              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
-            ),
+            session ? Effect.tryPromise(() => session._cf_scheduleDestroy()) : Effect.void,
           ),
         );
       }
       return renderAuthError(auth, request, outcome);
+    }
+
+    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+    const era = await classifyMcpProtocolEra(request, parsedBody);
+    if (era === "modern") {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return mcpModernDisabledResponse();
+      }
+      const resource = resourceFromPath(request);
+      const props = await runTraced(
+        request,
+        propsForPrincipal(request, outcome.principal, resource),
+      );
+      (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
+      const forwarded = withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      );
+      return modern.fetch({
+        request: forwarded,
+        parsedBody,
+        principal: outcome.principal,
+        resource,
+        props,
+        requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
+        builder: makeCloudModernMcpServerBuilder(props.session),
+        sessions: env.MCP_SESSION,
+        executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
+      });
     }
 
     if (!sessionId && request.method === "DELETE") {
@@ -198,8 +215,12 @@ export const makeCloudMcpAgentHandler = () => {
       });
     }
 
-    if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+    const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
+    if (sessionId && !existingSession) {
+      return jsonRpcResponse(404, -32001, "Session not found");
+    }
+    if (existingSession) {
+      const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
@@ -218,27 +239,29 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     const resource = resourceFromPath(request);
-    const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
-    (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(
-      request,
-      {
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      },
-      resource,
+    const propagation = await runTraced(request, currentPropagationHeaders(request));
+    const forwarded = withPropagationHeaders(
+      withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      ),
+      propagation,
     );
-    const target = resource.kind === "toolkit" ? serveToolkit : serve;
+    const target = existingSession ?? createMcpSessionStub(env.MCP_SESSION).stub;
     let response: Response;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the agents SDK aborts the isolate (throws) instead of returning a response for a condemned session
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a condemned DO abort can reject its direct fetch
     try {
-      response = await target.fetch(forwarded, env, ctx);
+      response = await target.fetch(forwarded);
     } catch (error) {
       // `_cf_scheduleDestroy` (called above via DELETE) marks the DO
-      // condemned and schedules its alarm; the alarm's `destroy()` then
+      // condemned and schedules its alarm; the alarm's storage wipe then
       // `ctx.abort("destroyed")`s the isolate. A request that lands after the
       // alarm has already fired — same DO, same tick budget as the DELETE in
-      // tests — throws that abort reason out of `serve.fetch` instead of the
+      // tests — throws that abort reason out of `stub.fetch` instead of the
       // DO ever getting to answer. Map it to the old envelope's reconnect
       // error for a dead session (e2e/cloud/mcp-protocol.test.ts expects the
       // client to be told to reconnect, matching a timed-out session).
@@ -249,11 +272,6 @@ export const makeCloudMcpAgentHandler = () => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
       throw error;
     }
-    // The agents SDK answers a bare DELETE with 204; the old envelope's
-    // contract (see above) was 200 — rewrite for consistency.
-    if (request.method === "DELETE" && response.status === 204) {
-      return new Response(null, { status: 200, headers: response.headers });
-    }
-    return wrapMcpSseResponse(request, env, response);
+    return withMcpResponseHeaders(wrapMcpSseResponse(request, env, response));
   };
 };

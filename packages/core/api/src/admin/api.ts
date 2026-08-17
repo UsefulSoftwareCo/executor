@@ -247,8 +247,15 @@ const AdminUserIdentifierParams = { identifier: Schema.String };
 // `email` is an exact-match FILTER on the fixed list shape (the response is
 // still a `users` array, empty when nothing matches), which is how every other
 // list here uses query params. It selects a specific principal rather than
-// narrowing a scan, so paging over a filtered result is not meaningful — it is
-// still honored so the endpoint has one set of semantics, not two.
+// narrowing a scan, so the read resolves the address to an id and reads THAT
+// id — it does not page the tenant and keep the row that matches.
+//
+// FILTER, THEN PAGE, in that order. The window therefore applies to the
+// selected row rather than to the scan it would once have been found in: with
+// a filter present a response is one row at `offset: 0` and empty beyond it.
+// Paging is applied rather than ignored so the endpoint keeps one set of
+// semantics, not two — but on a filter that names a single principal it can
+// only ever include or exclude that principal.
 //
 // Carried as a plain string: the trim + lower-case normalization lives at the
 // handler seam (`normalizeEmail`), which is also where the single-user path

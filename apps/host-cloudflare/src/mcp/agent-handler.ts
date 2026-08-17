@@ -3,34 +3,33 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  mcpModernDisabledResponse,
   defaultMcpResource,
   type AuthOutcome,
   type Principal,
 } from "@executor-js/host-mcp";
+import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
+  withMcpResponseHeaders,
+  withPropagationHeaders,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
-import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import {
+  classifyMcpProtocolEra,
+  makeMcpModernRequestRouter,
+  mcpCorsPreflightResponse,
+  requireMcpRequestStateKey,
+} from "@executor-js/cloudflare/mcp/modern-request-router";
+import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
+import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
-import { McpSessionDO } from "./session-durable-object";
-
-const corsPreflightResponse = (): Response =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
-    },
-  });
+import { makeCloudflareModernMcpServerBuilder } from "./session-durable-object";
 
 const jsonRpcResponse = (
   status: number,
@@ -80,8 +79,8 @@ const propsForPrincipal = (
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
-        // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
-        // bridge (see worker.ts), so the session always serves the default
+        // host-cloudflare only routes the bare `/mcp` endpoint to the session
+        // Durable Object (see worker.ts), so it always serves the default
         // resource.
         resource: defaultMcpResource,
         webOrigin: new URL(request.url).origin,
@@ -91,35 +90,65 @@ const propsForPrincipal = (
   });
 
 export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
-  const serve = McpSessionDO.serve("/mcp", {
-    binding: "MCP_SESSION",
-    transport: "streamable-http",
-  });
-
+  const modern = makeMcpModernRequestRouter();
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
-    if (request.method === "OPTIONS") return corsPreflightResponse();
+    if (request.method === "OPTIONS") {
+      return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
+    }
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
+        const session = mcpSessionStub(env.MCP_SESSION, sessionId);
         await Effect.runPromise(
           Effect.ignore(
-            Effect.tryPromise(() =>
-              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
-            ),
+            session ? Effect.tryPromise(() => session._cf_scheduleDestroy()) : Effect.void,
           ),
         );
       }
       return renderAuthError(auth, request, outcome);
     }
 
+    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+    const era = await classifyMcpProtocolEra(request, parsedBody);
+    if (era === "modern") {
+      if (env.MCP_2026_07_28_ENABLED === "false") {
+        return mcpModernDisabledResponse();
+      }
+      const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+      (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
+      const forwarded = withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        defaultMcpResource,
+      );
+      return modern.fetch({
+        request: forwarded,
+        parsedBody,
+        principal: outcome.principal,
+        resource: defaultMcpResource,
+        props,
+        requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
+        builder: makeCloudflareModernMcpServerBuilder(env, config, props.session),
+        sessions: env.MCP_SESSION,
+        executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
+      });
+    }
+
     if (!sessionId && request.method === "DELETE") {
       return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } });
     }
 
-    if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+    const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
+    if (sessionId && !existingSession) {
+      return jsonRpcResponse(404, -32001, "Session not found");
+    }
+    if (existingSession) {
+      const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
@@ -136,16 +165,19 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
-    (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(
-      request,
-      {
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      },
-      defaultMcpResource,
+    const propagation = await Effect.runPromise(currentPropagationHeaders(request));
+    const forwarded = withPropagationHeaders(
+      withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        defaultMcpResource,
+      ),
+      propagation,
     );
-    return serve.fetch(forwarded, env, ctx);
+    const target = existingSession ?? createMcpSessionStub(env.MCP_SESSION).stub;
+    return withMcpResponseHeaders(await target.fetch(forwarded));
   };
 };

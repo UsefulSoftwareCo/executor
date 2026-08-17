@@ -598,6 +598,17 @@ const make = Effect.gen(function* () {
     /** Get a user by ID. */
     getUser: (userId: string) => use((wos) => wos.userManagement.getUser(userId)),
 
+    /** List users matching an email within one organization. */
+    listUsers: (params: { email: string; organizationId: string }) =>
+      use(async (wos) =>
+        collectWorkOSList(
+          await wos.userManagement.listUsers({
+            email: params.email,
+            organizationId: params.organizationId,
+          }),
+        ),
+      ),
+
     /** Send an organization invitation. */
     sendInvitation: (params: { email: string; organizationId: string; roleSlug?: string }) =>
       use((wos) =>

@@ -23,6 +23,10 @@
     "./mcp/session-stub": {
       "types": "./src/mcp/session-stub.ts",
       "default": "./src/mcp/session-stub.ts"
+    },
+    "./mcp/modern-request-router": {
+      "types": "./src/mcp/modern-request-router.ts",
+      "default": "./src/mcp/modern-request-router.ts"
     }
   },
   "scripts": {
@@ -36,7 +40,7 @@
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.17.3",
+    "@modelcontextprotocol/server": "2.0.0",
     "effect": "catalog:"
   },
   "devDependencies": {

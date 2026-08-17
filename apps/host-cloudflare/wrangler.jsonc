@@ -67,10 +67,15 @@
   ],
   // Cloudflare Access is the entire auth layer. ACCESS_TEAM_DOMAIN, ACCESS_AUD,
   // and ADMIN_EMAILS are installation-specific live vars, set after the first
-  // deploy and preserved by keep_vars. EXECUTOR_SECRET_KEY (the at-rest
-  // secret-encryption key) is a SECRET, set it with
-  // `wrangler secret put EXECUTOR_SECRET_KEY`, never in vars.
+  // deploy and preserved by keep_vars. EXECUTOR_SECRET_KEY (at-rest encryption)
+  // and MCP_REQUEST_STATE_KEY (MCP 2026-07-28 continuation signing, 32+ bytes)
+  // are SECRETS, set with `wrangler secret put <NAME>`, never in vars. The
+  // MCP key is a deployment prerequisite shared by Worker and session DOs;
+  // never generate it independently per isolate.
   "vars": {
+    // MCP_2026_07_28_ENABLED is intentionally absent: unset enables modern
+    // inbound serving. Set the Worker var to "false" for emergency rollback;
+    // legacy serving remains available.
     "ACCESS_NAME_CLAIM": "name",
     "ACCESS_GROUPS_CLAIM": "groups",
     // Never preserve a production dev-auth override through keep_vars.

@@ -38,6 +38,7 @@ const memoryProvider = (): CredentialProvider => {
 };
 
 const INTEG = IntegrationSlug.make("demo");
+const PINNED = IntegrationSlug.make("demo-pinned");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const CONN = ConnectionName.make("main");
 
@@ -93,6 +94,15 @@ const demoPlugin = definePlugin(() => ({
         slug: INTEG,
         description: "Demo",
         config: {},
+      }),
+    /** A catalog row the host pins in place (`canRemove: false`), the shape
+     *  `integrations.remove` has to refuse rather than drop. */
+    seedPinned: () =>
+      ctx.core.integrations.register({
+        slug: PINNED,
+        description: "Demo (pinned)",
+        config: {},
+        canRemove: false,
       }),
     storagePut: (owner: "org" | "user", key: string, value: string) =>
       ctx.storage.put(owner, key, value),
@@ -344,6 +354,66 @@ describe("createExecutor", () => {
 
       const out = yield* executor.execute(addr("run"), {});
       expect(out).toEqual({ ran: "run" });
+    }),
+  );
+
+  it.effect("removes catalog integrations through the built-in Executor tools", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.demo.seed();
+      yield* executor.demo.seedPinned();
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: String(CONN),
+          integration: String(INTEG),
+          template: String(TEMPLATE),
+          from: { provider: "memory", id: "secret-token" },
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const remove = ToolAddress.make("executor.coreTools.integrations.remove");
+
+      // Removing the integration cascades to the connections under it.
+      const removed = yield* executor.execute(
+        remove,
+        { slug: String(INTEG) },
+        { onElicitation: "accept-all" },
+      );
+      expect(removed).toEqual({ removed: true });
+      const listed = yield* executor.integrations.list();
+      expect(listed.map((integration) => String(integration.slug))).not.toContain(String(INTEG));
+      expect(yield* executor.connections.list()).toHaveLength(0);
+
+      // An already-absent slug and a built-in namespace both report honestly
+      // instead of claiming a removal that never happened.
+      expect(
+        yield* executor.execute(remove, { slug: String(INTEG) }, { onElicitation: "accept-all" }),
+      ).toEqual({ removed: false });
+      expect(
+        yield* executor.execute(remove, { slug: "executor" }, { onElicitation: "accept-all" }),
+      ).toEqual({ removed: false });
+
+      // A pinned integration is refused, and survives the attempt.
+      const refused = yield* Effect.result(
+        executor.execute(remove, { slug: String(PINNED) }, { onElicitation: "accept-all" }),
+      );
+      expect(Result.isFailure(refused)).toBe(true);
+      if (!Result.isFailure(refused)) return;
+      expect(Predicate.isTagged(refused.failure, "ToolInvocationError")).toBe(true);
+      expect(
+        Predicate.isTagged(
+          (refused.failure as { readonly cause?: unknown }).cause,
+          "IntegrationRemovalNotAllowedError",
+        ),
+      ).toBe(true);
+      const afterRefusal = yield* executor.integrations.list();
+      expect(afterRefusal.map((integration) => String(integration.slug))).toContain(String(PINNED));
     }),
   );
 

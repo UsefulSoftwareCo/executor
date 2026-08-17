@@ -46,7 +46,7 @@
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
     "@libsql/client": "catalog:",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/server": "2.0.0",
     "@tanstack/react-router": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
@@ -55,6 +55,8 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@rhyssul/portless": "^0.13.0",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",

@@ -23,11 +23,7 @@ const run = (label: string, cmd: string, args: ReadonlyArray<string>) => {
 // apps' vite dev servers fail without in a fresh worktree.
 run("dependencies (+ prepare builds)", "bun", ["install"]);
 
-// Assert load-bearing patched dependencies actually installed in patched form.
-// A bun cache edge case can leave a stale, unpatched dist in node_modules even
-// though the lockfile records the patch (bun reports "no changes"). That would
-// silently drop the agents MCP transport hang fix; fail here so a fresh
-// checkout or worktree surfaces it immediately instead of at deploy time.
+// Catch patched-dependency entries whose checked-in patch file was removed.
 run("verify patched deps", "bun", ["run", "scripts/check-patched-deps.ts"]);
 
 // e2e browser scenarios need Playwright's chromium; the cache is shared
