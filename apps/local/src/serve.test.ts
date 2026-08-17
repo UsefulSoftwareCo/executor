@@ -85,6 +85,31 @@ describe("startServer static/SPA routing (unauthenticated)", () => {
 });
 
 describe("startServer startup cleanup", () => {
+  it("opens a toolkit MCP session without reacquiring database ownership", async () => {
+    server = await startServer({ port: 0, clientDir, authToken: TOKEN });
+    const response = await fetch(`http://127.0.0.1:${server.port}/mcp/toolkits/missing-toolkit`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "local-toolkit-test", version: "1.0.0" },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+
   it("releases the owned DB when a default-handler server stops", async () => {
     server = await startServer({ port: 0, clientDir, authToken: TOKEN });
     await server.stop();

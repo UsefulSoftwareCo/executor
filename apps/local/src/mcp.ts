@@ -140,8 +140,8 @@ export const createMcpRequestHandler = (
   const servers = new Map<string, McpServer>();
   const resources = new Map<string, McpResource>();
   const sessionEngines = new Map<string, AnyExecutionEngine>();
-  const sessionClosers = new Map<string, () => Promise<void>>();
   const modernHandlers = new Map<string, McpHttpHandler>();
+  const resourceConfigs = new Map<string, Promise<LocalMcpServerConfig>>();
   const modernRequestBodies = new WeakMap<Request, unknown>();
   const approvals = makeInProcessBrowserApprovalStore();
   const defaultEngine = engineFromConfig(handlerConfig.defaultConfig);
@@ -165,21 +165,45 @@ export const createMcpRequestHandler = (
 
   const configForResource = async (resource: McpResource): Promise<LocalMcpServerConfig> => {
     if (!handlerConfig.createConfigForResource) return { config: handlerConfig.defaultConfig };
-    return handlerConfig.createConfigForResource(resource);
+    const key = mcpResourceKey(resource);
+    const cached = resourceConfigs.get(key);
+    if (cached) return cached;
+
+    const pending = Promise.resolve(handlerConfig.createConfigForResource(resource));
+    resourceConfigs.set(key, pending);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve the Promise factory's original rejection while evicting its cache entry
+    try {
+      return await pending;
+    } catch (error) {
+      if (resourceConfigs.get(key) === pending) resourceConfigs.delete(key);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: callers already map this factory rejection to the MCP protocol error response
+      throw error;
+    }
+  };
+
+  const closeResourceConfigs = async (): Promise<void> => {
+    const pending = [...resourceConfigs.values()];
+    resourceConfigs.clear();
+    const configs = await Promise.all(
+      pending.map((config) =>
+        config.then(
+          (value) => value,
+          () => null,
+        ),
+      ),
+    );
+    await Promise.all(configs.map((config) => ignoreClose(config?.close)));
   };
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
     const s = servers.get(id);
-    const close = sessionClosers.get(id);
     transports.delete(id);
     servers.delete(id);
     resources.delete(id);
     sessionEngines.delete(id);
-    sessionClosers.delete(id);
     if (opts.transport) await ignoreClose(t ? () => t.close() : undefined);
     if (opts.server) await ignoreClose(s ? () => s.close() : undefined);
-    await ignoreClose(close);
   };
 
   const modernHandlerFor = (resource: McpResource): McpHttpHandler => {
@@ -214,17 +238,6 @@ export const createMcpRequestHandler = (
               requestStatePrincipal: "local",
               ...(requestStateBinding === null ? {} : { requestStateBinding }),
             });
-            if (resourceConfig.close) {
-              const closeServer = server.close.bind(server);
-              const closeConfig = resourceConfig.close;
-              let closed = false;
-              server.close = async () => {
-                if (closed) return;
-                closed = true;
-                await ignoreClose(closeServer);
-                await ignoreClose(closeConfig);
-              };
-            }
             return server;
           }),
         );
@@ -280,7 +293,6 @@ export const createMcpRequestHandler = (
           resources.set(sid, resource);
           const engine = resourceConfig ? engineFromConfig(resourceConfig.config) : null;
           if (engine) sessionEngines.set(sid, engine);
-          if (resourceConfig?.close) sessionClosers.set(sid, resourceConfig.close);
         },
         onsessionclosed: (sid) => void dispose(sid, { server: true }),
       });
@@ -320,7 +332,6 @@ export const createMcpRequestHandler = (
           await ignoreClose(() => transport.close());
           const server = created;
           await ignoreClose(server ? () => server.close() : undefined);
-          await ignoreClose(resourceConfig?.close);
         }
         return response;
       } catch (error) {
@@ -329,7 +340,6 @@ export const createMcpRequestHandler = (
           await ignoreClose(() => transport.close());
           const server = created;
           await ignoreClose(server ? () => server.close() : undefined);
-          await ignoreClose(resourceConfig?.close);
         }
         return jsonError(500, -32603, "Internal server error");
       }
@@ -370,6 +380,7 @@ export const createMcpRequestHandler = (
         ...[...ids].map((id) => dispose(id, { transport: true, server: true })),
         ...[...modernHandlers.values()].map((handler) => handler.close()),
       ]);
+      await closeResourceConfigs();
     },
   };
 };

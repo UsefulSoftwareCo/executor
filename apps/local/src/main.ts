@@ -8,7 +8,7 @@ import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
-import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
+import { createScopedExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             },
           };
         }
-        const handle = await createExecutorHandle({
+        const handle = await createScopedExecutorHandle({
           activeToolkitSlug: resource.slug,
         });
         const toolkitEngine = withExecutionAnalytics(

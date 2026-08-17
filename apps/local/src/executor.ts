@@ -11,6 +11,7 @@ import {
   runSqliteDataMigrations,
   type AnyPlugin,
   type Executor,
+  type FumaDb,
 } from "@executor-js/sdk";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
@@ -92,6 +93,7 @@ const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
   readonly plugins: LocalPlugins;
+  readonly db: FumaDb;
   /** Where this daemon's web UI is reachable, resolved once at boot. Surfaced
    *  so callers building user-facing links (MCP artifact deep links) use the
    *  same origin the executor itself was configured with. */
@@ -142,6 +144,42 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
+const createExecutorBundleForDb = (db: FumaDb, cwd: string, plugins: LocalPlugins) =>
+  Effect.gen(function* () {
+    const tenantId = makeTenantId(cwd);
+    // webBaseUrl is where the executor's web UI listens - same port as the
+    // daemon API since the daemon serves both. Mirrors serve.ts's port
+    // resolution so a custom $PORT flows through. EXECUTOR_WEB_BASE_URL
+    // overrides entirely for deployments where the UI is on a different host.
+    const webBaseUrl =
+      process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`;
+
+    const executor = yield* createExecutor({
+      tenant: Tenant.make(tenantId),
+      subject: Subject.make(LOCAL_SUBJECT),
+      db,
+      plugins,
+      onIntegrationChange: (event) =>
+        localAnalytics.record(
+          event.kind === "added" ? "integration_added" : "integration_removed",
+          { plugin_key: event.pluginKey },
+        ),
+      onElicitation: "accept-all",
+      oauthEndpointUrlPolicy: { allowHttp: true },
+      // EXPLICIT OAuth callback - the daemon serves the v2 `/api/oauth/callback`
+      // route on the same origin as the web UI. Derived from `webBaseUrl`
+      // (loopback localhost is correct + intended for the local CLI, but it
+      // is wired explicitly here rather than relying on a hidden default).
+      redirectUri: new URL("/api/oauth/callback", webBaseUrl).toString(),
+      // Built-in agent-facing tools (integrations / connections / policies).
+      coreTools: {
+        webBaseUrl,
+      },
+    });
+
+    return { executor, plugins, db, webBaseUrl };
+  });
+
 const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
   const storage = resolveStorage();
 
@@ -184,35 +222,8 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
         ),
       );
 
-      // webBaseUrl is where the executor's web UI listens — same port as the
-      // daemon API since the daemon serves both. Mirrors serve.ts's port
-      // resolution so a custom $PORT flows through. EXECUTOR_WEB_BASE_URL
-      // overrides entirely for deployments where the UI is on a different host.
-      const webBaseUrl =
-        process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`;
-
-      const executor = yield* createExecutor({
-        tenant: Tenant.make(tenantId),
-        subject: Subject.make(LOCAL_SUBJECT),
-        db: sqlite.db,
-        plugins,
-        onIntegrationChange: (event) =>
-          localAnalytics.record(
-            event.kind === "added" ? "integration_added" : "integration_removed",
-            { plugin_key: event.pluginKey },
-          ),
-        onElicitation: "accept-all",
-        oauthEndpointUrlPolicy: { allowHttp: true },
-        // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
-        // route on the same origin as the web UI. Derived from `webBaseUrl`
-        // (loopback localhost is correct + intended for the local CLI, but it
-        // is wired explicitly here rather than relying on a hidden default).
-        redirectUri: new URL("/api/oauth/callback", webBaseUrl).toString(),
-        // Built-in agent-facing tools (integrations / connections / policies).
-        coreTools: {
-          webBaseUrl,
-        },
-      });
+      const bundle = yield* createExecutorBundleForDb(sqlite.db, cwd, plugins);
+      const executor = bundle.executor;
 
       if (migration.migrated) {
         console.warn(
@@ -243,7 +254,7 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
           );
       }
 
-      return { executor, plugins, webBaseUrl };
+      return bundle;
     }),
   );
 };
@@ -257,6 +268,7 @@ export const createExecutorHandle = async (options: LocalExecutorOptions = {}) =
     executor: bundle.executor,
     plugins: bundle.plugins,
     webBaseUrl: bundle.webBaseUrl,
+    db: bundle.db,
     dispose: async () => {
       await Effect.runPromise(Effect.ignore(bundle.executor.close()));
       await ignorePromiseFailure("disposeRuntime", () => runtime.dispose());
@@ -309,6 +321,20 @@ const loadSharedHandle = (): Promise<ExecutorHandle> => {
 
 export const getExecutor = () => loadSharedHandle().then((handle) => handle.executor);
 export const getExecutorBundle = () => loadSharedHandle();
+
+export const createScopedExecutorHandle = async (options: LocalExecutorOptions = {}) => {
+  const shared = await getExecutorBundle();
+  const { cwd, plugins } = await Effect.runPromise(loadLocalPlugins(options));
+  const bundle = await Effect.runPromise(createExecutorBundleForDb(shared.db, cwd, plugins));
+
+  return {
+    executor: bundle.executor,
+    plugins: bundle.plugins,
+    dispose: async () => {
+      await Effect.runPromise(Effect.ignore(bundle.executor.close()));
+    },
+  };
+};
 
 export const disposeExecutor = async (): Promise<void> => {
   const currentHandlePromise = sharedHandlePromise;

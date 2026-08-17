@@ -19,6 +19,57 @@ const engine: ExecutionEngine = {
 };
 
 describe("local modern MCP HTTP", () => {
+  it("shares a toolkit resource config across clients until handler shutdown", async () => {
+    let createCalls = 0;
+    let closeCalls = 0;
+    const mcp = createMcpRequestHandler({
+      defaultConfig: { engine },
+      createConfigForResource: () => {
+        createCalls += 1;
+        return {
+          config: { engine },
+          close: async () => {
+            closeCalls += 1;
+          },
+        };
+      },
+    });
+    const connectClient = async () => {
+      const transport = new StreamableHTTPClientTransport(
+        new URL("http://local.test/mcp/toolkits/shared-toolkit"),
+        {
+          fetch: (input, init) =>
+            mcp.handleRequest(
+              input instanceof Request
+                ? new Request(input, init)
+                : new Request(input.toString(), init),
+            ),
+        },
+      );
+      const client = new Client(
+        { name: "local-modern-toolkit-test", version: "1.0.0" },
+        { capabilities: {}, versionNegotiation: { mode: { pin: "2026-07-28" } } },
+      );
+      await client.connect(transport);
+      return client;
+    };
+
+    const first = await connectClient();
+    const second = await connectClient();
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close both clients and the shared local handler
+    try {
+      await first.close();
+      await second.close();
+      expect(createCalls).toBe(1);
+      expect(closeCalls).toBe(0);
+    } finally {
+      await first.close();
+      await second.close();
+      await mcp.close();
+    }
+    expect(closeCalls).toBe(1);
+  });
+
   it("discovers, lists tools, and executes without creating a legacy session", async () => {
     const mcp = createMcpRequestHandler({ engine });
     const sessionHeaders: Array<string | null> = [];
