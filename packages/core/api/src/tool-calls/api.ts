@@ -59,6 +59,9 @@ const ListToolCallsQuery = Schema.Struct({
   offset: Schema.optional(
     Schema.FiniteFromString.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
   ),
+  /** Substring match on the address. Bounded: nobody types 200 characters of
+   *  tool address, and an unbounded pattern is free load on the database. */
+  search: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
 });
 
 export const ToolCallsApi = HttpApiGroup.make("toolCalls").add(

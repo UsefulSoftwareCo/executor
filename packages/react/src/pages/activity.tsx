@@ -1,12 +1,19 @@
-import { useState } from "react";
+import { useDeferredValue, useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { TOOL_CALLS_PAGE_SIZE, toolCallsPageAtom } from "../api/atoms";
+import {
+  TOOL_CALLS_PAGE_SIZE,
+  toolCallsPageAtom,
+  toolCallsPageKey,
+  type ToolCallOutcomeFilter,
+} from "../api/atoms";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/empty";
 import { ErrorState } from "../components/error-state";
+import { FilterTabs } from "../components/filter-tabs";
+import { Input } from "../components/input";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/table";
@@ -66,11 +73,34 @@ const formatWhen = (epochMs: number): string =>
 /** The upstream code says more than the message; fall back to the message. */
 const detailOf = (call: ToolCallRow): string | null => call.errorCode ?? call.errorMessage ?? null;
 
+const OUTCOME_TABS: readonly { label: string; value: ToolCallOutcomeFilter }[] = [
+  { label: "All", value: "all" },
+  { label: "Ok", value: "ok" },
+  { label: "Failed", value: "fail" },
+  { label: "Blocked", value: "blocked" },
+  { label: "Declined", value: "declined" },
+  { label: "Error", value: "error" },
+];
+
 export function ActivityPage() {
   useExecutorDocumentTitle("Activity");
   const [offset, setOffset] = useState(0);
-  const calls = useAtomValue(toolCallsPageAtom(offset));
-  const refresh = useAtomRefresh(toolCallsPageAtom(offset));
+  const [outcome, setOutcome] = useState<ToolCallOutcomeFilter>("all");
+  const [search, setSearch] = useState("");
+  // Defer the query, not the keystroke: the input stays snappy while the
+  // request only fires for the settled value.
+  const deferredSearch = useDeferredValue(search.trim());
+  const key = toolCallsPageKey({ offset, outcome, search: deferredSearch });
+  const calls = useAtomValue(toolCallsPageAtom(key));
+  const refresh = useAtomRefresh(toolCallsPageAtom(key));
+
+  const setFilter = (next: { outcome?: ToolCallOutcomeFilter; search?: string }) => {
+    // A new filter is a new list; page 1 is the only offset that means
+    // anything in it.
+    setOffset(0);
+    if (next.outcome !== undefined) setOutcome(next.outcome);
+    if (next.search !== undefined) setSearch(next.search);
+  };
 
   return (
     <PageContainer>
@@ -83,6 +113,20 @@ export function ActivityPage() {
           </Button>
         }
       />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <FilterTabs
+          tabs={[...OUTCOME_TABS]}
+          value={outcome}
+          onChange={(value) => setFilter({ outcome: value })}
+        />
+        <Input
+          type="text"
+          value={search}
+          onChange={(e) => setFilter({ search: (e.target as HTMLInputElement).value })}
+          placeholder="Search by tool address…"
+          className="w-full sm:w-64"
+        />
+      </div>
       {AsyncResult.match(calls, {
         onInitial: () => <Skeleton className="h-64 w-full" />,
         onFailure: () => (
@@ -97,7 +141,11 @@ export function ActivityPage() {
           );
           return (
             <>
-              <ActivityTable calls={rows} onFirstPage={offset === 0} />
+              <ActivityTable
+                calls={rows}
+                onFirstPage={offset === 0}
+                filtered={outcome !== "all" || deferredSearch !== ""}
+              />
               {(hasNext || offset > 0) && (
                 <div className="mt-4 flex items-center justify-between">
                   <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -134,22 +182,30 @@ export function ActivityPage() {
 function ActivityTable({
   calls,
   onFirstPage,
+  filtered,
 }: {
   readonly calls: readonly ToolCallRow[];
   readonly onFirstPage: boolean;
+  readonly filtered: boolean;
 }) {
   if (calls.length === 0) {
-    // Past the end only happens when the last row of a page is pruned while
-    // browsing; the pager above still offers Previous to walk back.
+    // Three empty states, three different truths: nothing recorded yet, a
+    // filter that matches nothing, or a page past the end after pruning.
+    const title = filtered
+      ? "No matching calls"
+      : onFirstPage
+        ? "No calls yet"
+        : "No calls on this page";
+    const description = filtered
+      ? "No recorded call matches these filters."
+      : onFirstPage
+        ? "Once an agent runs a tool through this executor, every call shows up here."
+        : "Go back a page to see recorded calls.";
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>{onFirstPage ? "No calls yet" : "No calls on this page"}</EmptyTitle>
-          <EmptyDescription>
-            {onFirstPage
-              ? "Once an agent runs a tool through this executor, every call shows up here."
-              : "Go back a page to see recorded calls."}
-          </EmptyDescription>
+          <EmptyTitle>{title}</EmptyTitle>
+          <EmptyDescription>{description}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );

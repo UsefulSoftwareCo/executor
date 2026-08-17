@@ -160,19 +160,42 @@ export const pausedExecutionAtom = (executionId: string) =>
  *  page exists — same trick as `ADMIN_USERS_PAGE_SIZE`. */
 export const TOOL_CALLS_PAGE_SIZE = 25;
 
+export type ToolCallOutcomeFilter = "all" | "ok" | "fail" | "blocked" | "declined" | "error";
+
+export interface ToolCallsPageKey {
+  readonly offset: number;
+  readonly outcome: ToolCallOutcomeFilter;
+  readonly search: string;
+}
+
 /**
  * One page of the tool call log, newest first.
  *
  * Short TTL on purpose: this is the page someone opens while an agent is
- * running, to watch what it just did. `Atom.family` keys on the offset so
- * paging back is instant while the front page stays fresh.
+ * running, to watch what it just did. `Atom.family` needs a primitive key, so
+ * the filter set travels as `offset|outcome|search` — paging back within the
+ * same filters is then instant while the front page stays fresh. Split on the
+ * first two pipes only: the search text is free-form and may contain one.
  */
-export const toolCallsPageAtom = Atom.family((offset: number) =>
-  ExecutorApiClient.query("toolCalls", "list", {
-    query: { limit: TOOL_CALLS_PAGE_SIZE + 1, ...(offset > 0 ? { offset } : {}) },
+export const toolCallsPageAtom = Atom.family((key: string) => {
+  const firstPipe = key.indexOf("|");
+  const secondPipe = key.indexOf("|", firstPipe + 1);
+  const offset = Number(key.slice(0, firstPipe)) || 0;
+  const outcome = key.slice(firstPipe + 1, secondPipe) as ToolCallOutcomeFilter;
+  const search = key.slice(secondPipe + 1);
+  return ExecutorApiClient.query("toolCalls", "list", {
+    query: {
+      limit: TOOL_CALLS_PAGE_SIZE + 1,
+      ...(offset > 0 ? { offset } : {}),
+      ...(outcome !== "all" ? { outcome } : {}),
+      ...(search !== "" ? { search } : {}),
+    },
     timeToLive: "5 seconds",
-  }),
-);
+  });
+});
+
+export const toolCallsPageKey = (key: ToolCallsPageKey): string =>
+  `${key.offset}|${key.outcome}|${key.search}`;
 
 export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
   timeToLive: "30 seconds",

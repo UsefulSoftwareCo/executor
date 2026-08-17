@@ -59,6 +59,9 @@ export interface ListToolCallsInput {
    *  can shift while being browsed; fine for eyeballing, use `since` for
    *  programmatic sweeps. */
   readonly offset?: number;
+  /** Substring match on the address as called — the one free-text field a row
+   *  has that is safe to search: this file wrote it, not an upstream. */
+  readonly search?: string;
 }
 
 export interface PruneToolCallsInput {

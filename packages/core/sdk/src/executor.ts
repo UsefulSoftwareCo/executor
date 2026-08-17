@@ -4196,6 +4196,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolCallLogWhere = (input?: ListToolCallsInput): CoreWhere | undefined => {
       const clauses: readonly ((b: AnyCb) => Condition)[] = [
         ...(input?.integration ? [(b: AnyCb) => b("integration", "=", input.integration!)] : []),
+        // `%`/`_` in the query are LIKE wildcards; harmless here — the match
+        // never leaves the caller's own owner partition.
+        ...(input?.search ? [(b: AnyCb) => b("address", "contains", input.search!)] : []),
         ...(input?.connection ? [(b: AnyCb) => b("connection", "=", input.connection!)] : []),
         ...(input?.outcome ? [(b: AnyCb) => b("outcome", "=", input.outcome!)] : []),
         ...(input?.since ? [(b: AnyCb) => b("created_at", ">=", input.since!)] : []),

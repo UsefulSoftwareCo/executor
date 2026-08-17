@@ -337,6 +337,19 @@ describe("executor.toolCalls", () => {
       expect(secondPage).toHaveLength(1);
       const seen = new Set([...firstPage, ...secondPage].map((c) => c.id));
       expect(seen.size).toBe(3);
+
+      // Search: substring on the address, composable with the other filters.
+      const byAddress = yield* executor.toolCalls.list({ search: "missing" });
+      expect(byAddress).toHaveLength(1);
+      expect(byAddress[0]?.tool).toBe("missing");
+      const byPartial = yield* executor.toolCalls.list({ search: "github.org" });
+      expect(byPartial).toHaveLength(3);
+      const searchAndOutcome = yield* executor.toolCalls.list({
+        search: "github.org",
+        outcome: "ok",
+      });
+      expect(searchAndOutcome).toHaveLength(2);
+      expect(yield* executor.toolCalls.list({ search: "no-such-address" })).toEqual([]);
     }),
   );
 });

@@ -36,6 +36,7 @@ export const ToolCallsHandlers = HttpApiBuilder.group(ExecutorApi, "toolCalls", 
           since: query.since === undefined ? undefined : new Date(query.since),
           limit: query.limit,
           offset: query.offset,
+          search: query.search,
         });
         return calls.map(toResponse);
       }),
