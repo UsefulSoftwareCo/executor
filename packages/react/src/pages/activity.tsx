@@ -1,8 +1,12 @@
 import { useDeferredValue, useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import * as Option from "effect/Option";
+import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import type { Integration } from "@executor-js/sdk";
 
 import {
+  integrationsOptimisticAtom,
   TOOL_CALLS_PAGE_SIZE,
   toolCallsPageAtom,
   toolCallsPageKey,
@@ -14,6 +18,14 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { ErrorState } from "../components/error-state";
 import { FilterTabs } from "../components/filter-tabs";
 import { Input } from "../components/input";
+import { IntegrationFavicon, integrationPresetIconUrl } from "../components/integration-favicon";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/select";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/table";
@@ -82,23 +94,57 @@ const OUTCOME_TABS: readonly { label: string; value: ToolCallOutcomeFilter }[] =
   { label: "Error", value: "error" },
 ];
 
+/** The catalog as dropdown entries: slug, display name and brand mark. The
+ *  same favicon pipeline the Integrations page uses, so the marks match. */
+const useIntegrationOptions = () => {
+  const catalog = useAtomValue(integrationsOptimisticAtom);
+  const integrationPlugins = useIntegrationPlugins();
+  const integrations = Option.getOrElse(
+    AsyncResult.value(catalog),
+    (): readonly Integration[] => [],
+  );
+  return integrations.map((row) => {
+    const slug = String(row.slug);
+    const name = row.name || slug;
+    return {
+      slug,
+      name,
+      icon: integrationPresetIconUrl(
+        { id: slug, kind: row.kind, name, url: row.displayUrl },
+        integrationPlugins,
+      ),
+      url: row.displayUrl,
+    };
+  });
+};
+
+/** Sentinel for "no integration filter" — Select cannot carry an empty value. */
+const ALL_INTEGRATIONS = "__all__";
+
 export function ActivityPage() {
   useExecutorDocumentTitle("Activity");
   const [offset, setOffset] = useState(0);
   const [outcome, setOutcome] = useState<ToolCallOutcomeFilter>("all");
+  const [integration, setIntegration] = useState("");
   const [search, setSearch] = useState("");
+  const integrationOptions = useIntegrationOptions();
   // Defer the query, not the keystroke: the input stays snappy while the
   // request only fires for the settled value.
   const deferredSearch = useDeferredValue(search.trim());
-  const key = toolCallsPageKey({ offset, outcome, search: deferredSearch });
+  const key = toolCallsPageKey({ offset, outcome, integration, search: deferredSearch });
   const calls = useAtomValue(toolCallsPageAtom(key));
   const refresh = useAtomRefresh(toolCallsPageAtom(key));
 
-  const setFilter = (next: { outcome?: ToolCallOutcomeFilter; search?: string }) => {
+  const setFilter = (next: {
+    outcome?: ToolCallOutcomeFilter;
+    integration?: string;
+    search?: string;
+  }) => {
     // A new filter is a new list; page 1 is the only offset that means
     // anything in it.
     setOffset(0);
     if (next.outcome !== undefined) setOutcome(next.outcome);
+    if (next.integration !== undefined) setIntegration(next.integration);
     if (next.search !== undefined) setSearch(next.search);
   };
 
@@ -119,13 +165,41 @@ export function ActivityPage() {
           value={outcome}
           onChange={(value) => setFilter({ outcome: value })}
         />
-        <Input
-          type="text"
-          value={search}
-          onChange={(e) => setFilter({ search: (e.target as HTMLInputElement).value })}
-          placeholder="Search by tool address…"
-          className="w-full sm:w-64"
-        />
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <Select
+            value={integration === "" ? ALL_INTEGRATIONS : integration}
+            onValueChange={(value) =>
+              setFilter({ integration: value === ALL_INTEGRATIONS ? "" : value })
+            }
+          >
+            <SelectTrigger className="w-full sm:w-48">
+              <SelectValue placeholder="All integrations" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_INTEGRATIONS}>All integrations</SelectItem>
+              {integrationOptions.map((option) => (
+                <SelectItem key={option.slug} value={option.slug}>
+                  <span className="flex items-center gap-2">
+                    <IntegrationFavicon
+                      icon={option.icon}
+                      integrationId={option.slug}
+                      url={option.url}
+                      size={16}
+                    />
+                    {option.name}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            type="text"
+            value={search}
+            onChange={(e) => setFilter({ search: (e.target as HTMLInputElement).value })}
+            placeholder="Search by tool address…"
+            className="w-full sm:w-64"
+          />
+        </div>
       </div>
       {AsyncResult.match(calls, {
         onInitial: () => <Skeleton className="h-64 w-full" />,
@@ -144,7 +218,7 @@ export function ActivityPage() {
               <ActivityTable
                 calls={rows}
                 onFirstPage={offset === 0}
-                filtered={outcome !== "all" || deferredSearch !== ""}
+                filtered={outcome !== "all" || integration !== "" || deferredSearch !== ""}
               />
               {(hasNext || offset > 0) && (
                 <div className="mt-4 flex items-center justify-between">

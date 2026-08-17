@@ -165,6 +165,8 @@ export type ToolCallOutcomeFilter = "all" | "ok" | "fail" | "blocked" | "decline
 export interface ToolCallsPageKey {
   readonly offset: number;
   readonly outcome: ToolCallOutcomeFilter;
+  /** Integration slug, or "" for all. */
+  readonly integration: string;
   readonly search: string;
 }
 
@@ -175,19 +177,22 @@ export interface ToolCallsPageKey {
  * running, to watch what it just did. `Atom.family` needs a primitive key, so
  * the filter set travels as `offset|outcome|search` — paging back within the
  * same filters is then instant while the front page stays fresh. Split on the
- * first two pipes only: the search text is free-form and may contain one.
+ * first three pipes only: the search text is free-form and may contain one.
  */
 export const toolCallsPageAtom = Atom.family((key: string) => {
   const firstPipe = key.indexOf("|");
   const secondPipe = key.indexOf("|", firstPipe + 1);
+  const thirdPipe = key.indexOf("|", secondPipe + 1);
   const offset = Number(key.slice(0, firstPipe)) || 0;
   const outcome = key.slice(firstPipe + 1, secondPipe) as ToolCallOutcomeFilter;
-  const search = key.slice(secondPipe + 1);
+  const integration = key.slice(secondPipe + 1, thirdPipe);
+  const search = key.slice(thirdPipe + 1);
   return ExecutorApiClient.query("toolCalls", "list", {
     query: {
       limit: TOOL_CALLS_PAGE_SIZE + 1,
       ...(offset > 0 ? { offset } : {}),
       ...(outcome !== "all" ? { outcome } : {}),
+      ...(integration !== "" ? { integration } : {}),
       ...(search !== "" ? { search } : {}),
     },
     timeToLive: "5 seconds",
@@ -195,7 +200,7 @@ export const toolCallsPageAtom = Atom.family((key: string) => {
 });
 
 export const toolCallsPageKey = (key: ToolCallsPageKey): string =>
-  `${key.offset}|${key.outcome}|${key.search}`;
+  `${key.offset}|${key.outcome}|${key.integration}|${key.search}`;
 
 export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
   timeToLive: "30 seconds",
