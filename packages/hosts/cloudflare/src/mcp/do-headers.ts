@@ -52,6 +52,33 @@ export type IncomingPropagationHeaders = {
   readonly baggage?: string;
 };
 
+// W3C traceparent grammar, owned here beside the producer that stamps the
+// header (`currentPropagationHeaders`) so producer and consumers cannot
+// drift. The worker edge's richer parser (apps/cloud, which also carries
+// tracestate into the OTel API) delegates its grammar to this one.
+const TRACEPARENT_PATTERN = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+
+export type ParsedTraceparent = {
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly traceFlags: number;
+};
+
+export const parseTraceparentHeader = (
+  traceparent: string | null | undefined,
+): ParsedTraceparent | null => {
+  if (!traceparent) return null;
+  const match = TRACEPARENT_PATTERN.exec(traceparent);
+  if (!match) return null;
+  // SAFETY: the pattern has exactly four capture groups, so a match always
+  // fills indices 1-4.
+  return {
+    traceId: match[2]!,
+    spanId: match[3]!,
+    traceFlags: parseInt(match[4]!, 16),
+  };
+};
+
 // `currentParentSpan`, not `currentSpan`: the worker's MCP handler joins the
 // edge `http.server` span via `OtelTracer.withSpanContext`, which provides an
 // ExternalSpan as the fiber's ParentSpan without opening an Effect-local span.

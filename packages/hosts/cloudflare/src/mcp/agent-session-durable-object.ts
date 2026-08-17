@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { Cause, Data, Deferred, Effect, Option, Schema } from "effect";
-import type * as Tracer from "effect/Tracer";
+import * as Tracer from "effect/Tracer";
 import {
   createMcpHandler,
   DEFAULT_NEGOTIATED_PROTOCOL_VERSION,
@@ -39,6 +39,7 @@ import {
   type McpResource,
 } from "@executor-js/host-mcp";
 import {
+  parseTraceparentHeader,
   readArtifactsEnabled,
   readElicitationMode,
   verifiedMcpRequestHeaders,
@@ -301,6 +302,15 @@ export abstract class McpAgentSessionDOBase<
   private modernRunningRequestCount = 0;
   private modernRequestBodies = new WeakMap<Request, unknown>();
   private modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
+  // Trace context of the most recently entered MCP request, kept for
+  // `currentParentSpan`. Deliberately not cleared when the request settles:
+  // deferred SDK callbacks fire after the response resolves, and parenting
+  // them under the latest request is right far more often than falling back
+  // to the session's construction-time span. Concurrent requests on one DO
+  // can mis-parent to each other's trace (last writer wins); threading a
+  // per-request context through the MCP SDK's callback surface is the
+  // rejected-for-now alternative.
+  private lastIncomingTrace: IncomingTraceHeaders | undefined;
   private legacyRunningRequestCount = 0;
   private activeLegacyStreamCount = 0;
   private keepAliveCount = 0;
@@ -369,8 +379,20 @@ export abstract class McpAgentSessionDOBase<
     return this.ctx.id.toString();
   }
 
+  // Parent for spans opened by deferred MCP SDK callbacks (tool handlers run
+  // through `runToolEffect`, which otherwise inherits the Effect context
+  // captured when the server was BUILT). The legacy sessionful runtime builds
+  // its server once per session and reuses it across every request, so
+  // without this the whole tool execution tree parents under the long-closed
+  // session-construction span instead of the request that triggered it.
   protected currentParentSpan(): Tracer.AnySpan | undefined {
-    return undefined;
+    const parsed = parseTraceparentHeader(this.lastIncomingTrace?.traceparent);
+    if (!parsed) return undefined;
+    return Tracer.externalSpan({
+      traceId: parsed.traceId,
+      spanId: parsed.spanId,
+      sampled: (parsed.traceFlags & 1) === 1,
+    });
   }
 
   protected sessionTimeoutMs(): number {
@@ -1201,6 +1223,11 @@ export abstract class McpAgentSessionDOBase<
         cors: false,
       });
     }
+    this.lastIncomingTrace = {
+      traceparent: request.headers.get("traceparent") ?? undefined,
+      tracestate: request.headers.get("tracestate") ?? undefined,
+      baggage: request.headers.get("baggage") ?? undefined,
+    };
     if ((await this.ctx.storage.get<boolean>(DESTROY_PENDING_KEY)) === true) {
       return jsonRpcErrorBody(404, -32001, "Session timed out, please reconnect", {
         cors: false,
@@ -1284,6 +1311,7 @@ export abstract class McpAgentSessionDOBase<
 
     this.modernRequestBodies.set(request, parsedBody);
     this.modernRequestPropagation.set(request, props.propagation);
+    this.lastIncomingTrace = props.propagation;
     this.modernRunningRequestCount += 1;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the RPC must decrement its in-memory running lease on both handler resolution and rejection
     try {
