@@ -238,11 +238,29 @@ const renderAuthError = (
     Match.exhaustive,
   );
 
-/** Render a non-`Response` {@link McpDispatchResult} discriminant. */
-const renderDispatchError = (lookup: "not-found" | "forbidden"): Response =>
-  lookup === "not-found"
-    ? jsonRpcResponse(404, -32001, "Session not found")
-    : jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
+/**
+ * Render a non-`Response` {@link McpDispatchResult} discriminant. A dead
+ * session answers by method: POST/DELETE keep the 404 that drives client
+ * re-initialization; a standalone GET gets 405, which the v1 SDK reads as
+ * "no SSE stream offered" and stops retrying — breaking pre-cutover
+ * reconnect loops whose GET-404 path never re-initialized.
+ */
+const renderDispatchError = (lookup: "not-found" | "forbidden", method: string): Response => {
+  if (lookup === "forbidden") {
+    return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
+  }
+  if (method === "GET") {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Session not found" },
+        id: null,
+      }),
+      { status: 405, headers: { "content-type": "application/json", allow: "POST, DELETE" } },
+    );
+  }
+  return jsonRpcResponse(404, -32001, "Session not found");
+};
 
 const withModernMcpCors = (response: Response): Response => {
   const headers = new Headers(response.headers);
@@ -398,7 +416,9 @@ const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
       sessionId,
       method: request.method,
     });
-    return fromWebResponse(result instanceof Response ? result : renderDispatchError(result));
+    return fromWebResponse(
+      result instanceof Response ? result : renderDispatchError(result, request.method),
+    );
   });
 
 /**

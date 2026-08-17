@@ -285,6 +285,24 @@ type QueuedTransportMessage = {
   readonly extra?: MessageExtraInfo;
 };
 
+/**
+ * Dead-session answer by method: POST/DELETE keep the 404 that drives client
+ * re-initialization; a standalone GET gets 405, which the v1 SDK reads as
+ * "no SSE stream offered" and stops retrying — breaking the reconnect loops
+ * of pre-cutover deployments whose GET-404 path never re-initialized.
+ */
+const deadSessionDoResponse = (method: string): Response =>
+  method === "GET"
+    ? new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Session not found" },
+          id: null,
+        }),
+        { status: 405, headers: { "content-type": "application/json", allow: "POST, DELETE" } },
+      )
+    : jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
+
 export abstract class McpAgentSessionDOBase<
   Env extends Cloudflare.Env = Cloudflare.Env,
   TDbHandle extends SessionDbHandle = SessionDbHandle,
@@ -1117,7 +1135,7 @@ export abstract class McpAgentSessionDOBase<
     return this.serializedTransportRequest(async () => {
       const transport = this.transport;
       if (!transport) {
-        return jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
+        return deadSessionDoResponse(request.method);
       }
       if (request.method === "GET") {
         const lastEventId = request.headers.get("last-event-id");
@@ -1212,7 +1230,7 @@ export abstract class McpAgentSessionDOBase<
     if (!stored) {
       if (!isInitializeBody(parsedBody)) {
         return request.headers.has("mcp-session-id")
-          ? jsonRpcErrorBody(404, -32001, "Session not found", { cors: false })
+          ? deadSessionDoResponse(request.method)
           : jsonRpcErrorBody(400, -32000, "Bad Request: Server not initialized", {
               cors: false,
             });

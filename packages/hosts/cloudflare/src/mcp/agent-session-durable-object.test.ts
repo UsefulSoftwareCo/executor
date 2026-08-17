@@ -576,4 +576,32 @@ describe("McpAgentSessionDOBase session serving", () => {
       error: { code: -32001, message: "Session not found" },
     });
   });
+
+  it("answers a dead-session standalone GET with 405 so old clients stop retrying", async () => {
+    const state = new MemoryDurableObjectState();
+    await state.storage.put("session-meta", {
+      organizationId: ORGANIZATION_ID,
+      organizationName: "Old Agent Org",
+      userId: ACCOUNT_ID,
+      resource: defaultMcpResource,
+    } satisfies SessionMeta);
+    const session = new HarnessSession(state, {} as Cloudflare.Env);
+    const request = verifiedRequest(
+      new Request("https://executor.test/mcp", {
+        method: "GET",
+        headers: {
+          accept: "text/event-stream",
+          "mcp-session-id": SESSION_ID,
+        },
+      }),
+    );
+
+    const response = await session.fetch(request);
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST, DELETE");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: -32001, message: "Session not found" },
+    });
+  });
 });

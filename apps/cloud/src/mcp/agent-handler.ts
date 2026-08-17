@@ -45,6 +45,25 @@ const jsonRpcResponse = (
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
 
+/**
+ * A dead session id answers by request method. POST/DELETE keep the 404 that
+ * tells a compliant client to re-initialize. A standalone GET gets 405: the
+ * v1 SDK treats that as "no SSE stream offered" and stops retrying quietly,
+ * which breaks the reconnect loops of pre-cutover always-on deployments —
+ * their GET-404 path never re-initialized, it just retried forever.
+ */
+const deadSessionResponse = (method: string, message: string): Response =>
+  method === "GET"
+    ? new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message }, id: null }), {
+        status: 405,
+        headers: {
+          "content-type": "application/json",
+          allow: "POST, DELETE",
+          "access-control-allow-origin": "*",
+        },
+      })
+    : jsonRpcResponse(404, -32001, message);
+
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
   request: Request,
@@ -217,7 +236,7 @@ export const makeCloudMcpAgentHandler = () => {
 
     const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
     if (sessionId && !existingSession) {
-      return jsonRpcResponse(404, -32001, "Session not found");
+      return deadSessionResponse(request.method, "Session not found");
     }
     if (existingSession) {
       const owner = await existingSession.validateMcpSessionOwner({
@@ -225,13 +244,13 @@ export const makeCloudMcpAgentHandler = () => {
         organizationId: outcome.principal.organizationId,
       });
       if (owner === "not_found") {
-        return jsonRpcResponse(404, -32001, "Session not found");
+        return deadSessionResponse(request.method, "Session not found");
       }
       if (owner === "terminated") {
         // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
         // yet. Same envelope as the post-destroy race below: the client must
         // treat the id as dead and reconnect.
-        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+        return deadSessionResponse(request.method, "Session timed out, please reconnect");
       }
       if (owner === "forbidden") {
         return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
@@ -267,7 +286,7 @@ export const makeCloudMcpAgentHandler = () => {
       // client to be told to reconnect, matching a timed-out session).
       // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message IS the signal
       if (Predicate.isError(error) && error.message === "destroyed") {
-        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+        return deadSessionResponse(request.method, "Session timed out, please reconnect");
       }
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
       throw error;
