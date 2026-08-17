@@ -338,9 +338,12 @@ const make = Effect.gen(function* () {
   // exception had one (all its typed exceptions do), so consumers can tell a
   // definitive WorkOS denial (401/403/404 — fail closed) from a transient
   // failure (429/5xx/network — retryable).
-  const use = <A>(fn: (wos: WorkOS) => Promise<A>) =>
+  // `op` names the SDK call (mirroring its `namespace.method` path) so every
+  // span reads `workos.<operation>` instead of one undifferentiated "workos"
+  // bucket, and failures log which call actually failed.
+  const use = <A>(op: string, fn: (wos: WorkOS) => Promise<A>) =>
     withServiceLogging(
-      "workos",
+      `workos.${op}`,
       workosErrorFromFailure,
       tryPromiseService(() => fn(workos)),
     );
@@ -376,7 +379,7 @@ const make = Effect.gen(function* () {
       if (isLocalSessionInvalidCookie(local)) return null;
 
       // Try refreshing
-      const refreshed = yield* use(() => session.refresh()).pipe(
+      const refreshed = yield* use("session.refresh", () => session.refresh()).pipe(
         Effect.orElseSucceed(() => ({ authenticated: false as const })),
       );
 
@@ -405,7 +408,7 @@ const make = Effect.gen(function* () {
       }),
 
     authenticateWithCode: (code: string) =>
-      use((wos) =>
+      use("userManagement.authenticateWithCode", (wos) =>
         wos.userManagement.authenticateWithCode({
           code,
           clientId,
@@ -415,11 +418,13 @@ const make = Effect.gen(function* () {
 
     /** Create a new organization in WorkOS. */
     createOrganization: (name: string) =>
-      use((wos) => wos.organizations.createOrganization({ name })),
+      use("organizations.createOrganization", (wos) =>
+        wos.organizations.createOrganization({ name }),
+      ),
 
     /** Add a user to an organization. */
     createMembership: (organizationId: string, userId: string, roleSlug?: string) =>
-      use((wos) =>
+      use("userManagement.createOrganizationMembership", (wos) =>
         wos.userManagement.createOrganizationMembership({
           organizationId,
           userId,
@@ -429,7 +434,7 @@ const make = Effect.gen(function* () {
 
     /** List organization memberships for a user. */
     listUserMemberships: (userId: string) =>
-      use(async (wos) =>
+      use("userManagement.listOrganizationMemberships", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listOrganizationMemberships({
             userId,
@@ -448,7 +453,7 @@ const make = Effect.gen(function* () {
           sessionData,
           cookiePassword,
         });
-        const refreshed = yield* use(() =>
+        const refreshed = yield* use("session.refresh", () =>
           session.refresh(organizationId ? { organizationId } : undefined),
         );
         if (!refreshed.authenticated || !("sealedSession" in refreshed)) return null;
@@ -517,10 +522,13 @@ const make = Effect.gen(function* () {
      * auth/api-keys.ts.
      */
     validateApiKey: (value: string) =>
-      use((wos) => wos.apiKeys.validateApiKey({ value }) as Promise<unknown>),
+      use(
+        "apiKeys.validateApiKey",
+        (wos) => wos.apiKeys.validateApiKey({ value }) as Promise<unknown>,
+      ),
 
     listUserApiKeys: (userId: string, organizationId: string) =>
-      use(async (wos) => {
+      use("userManagement.listUserApiKeys", async (wos) => {
         const raw = wos as RawWorkOS;
         return collectRawWorkOSList(async (after) => {
           const response = await raw.get(`/user_management/users/${userId}/api_keys`, {
@@ -535,7 +543,7 @@ const make = Effect.gen(function* () {
       }),
 
     createUserApiKey: (params: { userId: string; organizationId: string; name: string }) =>
-      use(async (wos) => {
+      use("userManagement.createUserApiKey", async (wos) => {
         const raw = wos as RawWorkOS;
         const response = await raw.post(`/user_management/users/${params.userId}/api_keys`, {
           name: params.name,
@@ -552,7 +560,7 @@ const make = Effect.gen(function* () {
      * other key response.
      */
     listOrgApiKeys: (organizationId: string) =>
-      use(async (wos) =>
+      use("organizations.listOrganizationApiKeys", async (wos) =>
         collectWorkOSList(await wos.organizations.listOrganizationApiKeys({ organizationId })),
       ),
 
@@ -564,6 +572,7 @@ const make = Effect.gen(function* () {
      */
     createOrgApiKey: (params: { organizationId: string; name: string }) =>
       use(
+        "organizations.createOrganizationApiKey",
         (wos) =>
           wos.organizations.createOrganizationApiKey({
             organizationId: params.organizationId,
@@ -571,11 +580,12 @@ const make = Effect.gen(function* () {
           }) as Promise<unknown>,
       ),
 
-    deleteApiKey: (id: string) => use((wos) => wos.apiKeys.deleteApiKey(id)),
+    deleteApiKey: (id: string) =>
+      use("apiKeys.deleteApiKey", (wos) => wos.apiKeys.deleteApiKey(id)),
 
     /** List organization memberships with user details. */
     listOrgMembers: (organizationId: string) =>
-      use(async (wos) =>
+      use("userManagement.listOrganizationMemberships", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listOrganizationMemberships({
             organizationId,
@@ -586,7 +596,7 @@ const make = Effect.gen(function* () {
 
     /** Get a user's membership in an organization. */
     getUserOrgMembership: (organizationId: string, userId: string) =>
-      use(async (wos) => {
+      use("userManagement.listOrganizationMemberships", async (wos) => {
         const response = await wos.userManagement.listOrganizationMemberships({
           organizationId,
           userId,
@@ -596,11 +606,12 @@ const make = Effect.gen(function* () {
       }),
 
     /** Get a user by ID. */
-    getUser: (userId: string) => use((wos) => wos.userManagement.getUser(userId)),
+    getUser: (userId: string) =>
+      use("userManagement.getUser", (wos) => wos.userManagement.getUser(userId)),
 
     /** List users matching an email within one organization. */
     listUsers: (params: { email: string; organizationId: string }) =>
-      use(async (wos) =>
+      use("userManagement.listUsers", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listUsers({
             email: params.email,
@@ -611,7 +622,7 @@ const make = Effect.gen(function* () {
 
     /** Send an organization invitation. */
     sendInvitation: (params: { email: string; organizationId: string; roleSlug?: string }) =>
-      use((wos) =>
+      use("userManagement.sendInvitation", (wos) =>
         wos.userManagement.sendInvitation({
           email: params.email,
           organizationId: params.organizationId,
@@ -625,7 +636,7 @@ const make = Effect.gen(function* () {
      * API level, so we filter after.
      */
     listPendingInvitations: (organizationId: string) =>
-      use(async (wos) =>
+      use("userManagement.listInvitations", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listInvitations({
             organizationId,
@@ -640,7 +651,7 @@ const make = Effect.gen(function* () {
 
     /** List invitations for an email address (across all orgs). */
     listInvitationsByEmail: (email: string) =>
-      use(async (wos) =>
+      use("userManagement.listInvitations", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listInvitations({
             email,
@@ -650,19 +661,25 @@ const make = Effect.gen(function* () {
 
     /** Accept an invitation; returns the (now accepted) invitation. */
     acceptInvitation: (invitationId: string) =>
-      use((wos) => wos.userManagement.acceptInvitation(invitationId)),
+      use("userManagement.acceptInvitation", (wos) =>
+        wos.userManagement.acceptInvitation(invitationId),
+      ),
 
     /** Remove an organization membership. */
     deleteOrgMembership: (membershipId: string) =>
-      use((wos) => wos.userManagement.deleteOrganizationMembership(membershipId)),
+      use("userManagement.deleteOrganizationMembership", (wos) =>
+        wos.userManagement.deleteOrganizationMembership(membershipId),
+      ),
 
     /** Get the role for a membership. */
     getOrgMembership: (membershipId: string) =>
-      use((wos) => wos.userManagement.getOrganizationMembership(membershipId)),
+      use("userManagement.getOrganizationMembership", (wos) =>
+        wos.userManagement.getOrganizationMembership(membershipId),
+      ),
 
     /** Update a membership's role. */
     updateOrgMembershipRole: (membershipId: string, roleSlug: string) =>
-      use((wos) =>
+      use("userManagement.updateOrganizationMembership", (wos) =>
         wos.userManagement.updateOrganizationMembership(membershipId, {
           roleSlug,
         }),
@@ -670,15 +687,19 @@ const make = Effect.gen(function* () {
 
     /** List available roles for an organization. */
     listOrgRoles: (organizationId: string) =>
-      use((wos) => wos.organizations.listOrganizationRoles({ organizationId })),
+      use("organizations.listOrganizationRoles", (wos) =>
+        wos.organizations.listOrganizationRoles({ organizationId }),
+      ),
 
     /** Get an organization (includes domains). */
     getOrganization: (organizationId: string) =>
-      use((wos) => wos.organizations.getOrganization(organizationId)),
+      use("organizations.getOrganization", (wos) =>
+        wos.organizations.getOrganization(organizationId),
+      ),
 
     /** Update an organization. */
     updateOrganization: (organizationId: string, name: string) =>
-      use((wos) =>
+      use("organizations.updateOrganization", (wos) =>
         wos.organizations.updateOrganization({
           organization: organizationId,
           name,
@@ -690,11 +711,13 @@ const make = Effect.gen(function* () {
      * invitations, and domains go with it, so every member loses access.
      */
     deleteOrganization: (organizationId: string) =>
-      use((wos) => wos.organizations.deleteOrganization(organizationId)),
+      use("organizations.deleteOrganization", (wos) =>
+        wos.organizations.deleteOrganization(organizationId),
+      ),
 
     /** Generate an Admin Portal link for domain verification. */
     generateDomainVerificationPortalLink: (organizationId: string, returnUrl: string) =>
-      use((wos) =>
+      use("portal.generateLink", (wos) =>
         wos.portal.generateLink({
           organization: organizationId,
           intent: GeneratePortalLinkIntent.DomainVerification,
@@ -704,11 +727,11 @@ const make = Effect.gen(function* () {
 
     /** Get a domain by ID. */
     getOrganizationDomain: (domainId: string) =>
-      use((wos) => wos.organizationDomains.get(domainId)),
+      use("organizationDomains.get", (wos) => wos.organizationDomains.get(domainId)),
 
     /** Delete a domain claim. */
     deleteOrganizationDomain: (domainId: string) =>
-      use((wos) => wos.organizationDomains.delete(domainId)),
+      use("organizationDomains.delete", (wos) => wos.organizationDomains.delete(domainId)),
   };
 });
 
@@ -717,9 +740,10 @@ export type WorkOSClientService = Effect.Success<typeof make>;
 export class WorkOSClient extends Context.Service<WorkOSClient, WorkOSClientService>()(
   "@executor-js/cloud/WorkOSClient",
 ) {
-  static Default = Layer.effect(this)(make).pipe(
-    Layer.withSpan("WorkOSClient", { attributes: { module: "WorkOSClient" } }),
-  );
+  // Deliberately unspanned: client construction is synchronous and ran per
+  // layer build, which produced one of the highest-volume zero-duration span
+  // names in the whole trace corpus while telling us nothing.
+  static Default = Layer.effect(this)(make);
 }
 
 // The boot-scoped WorkOS client root — the one neutral service the stateless

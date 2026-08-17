@@ -153,7 +153,7 @@ const organizationDisplay = async (
 ): Promise<{ name: string; slug: string }> => {
   const exit = await getRuntime().runPromiseExit(
     Effect.flatMap(UserStoreService.asEffect(), (users) =>
-      users.use((store) => store.getOrganization(organizationId)),
+      users.use("getOrganization", (store) => store.getOrganization(organizationId)),
     ).pipe(Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer()))),
   );
   return Exit.isSuccess(exit)

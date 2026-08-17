@@ -202,7 +202,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           const result = yield* workos.authenticateWithCode(query.code);
 
           // Mirror the account locally
-          yield* users.use((s) => s.ensureAccount(result.user.id));
+          yield* users.use("ensureAccount", (s) => s.ensureAccount(result.user.id));
 
           let sealedSession = result.sealedSession;
 
@@ -420,7 +420,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const org = yield* workos.createOrganization(name);
           yield* workos.createMembership(org.id, session.accountId, "admin");
           // `upsertOrganization` mints the slug at insert — no separate heal step.
-          const mirrored = yield* users.use((s) =>
+          const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
           );
 
@@ -474,7 +474,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           // The typed confirmation must match the org's current name — the same
           // label the settings page shows. Trimmed on both sides.
-          const org = yield* users.use((s) => s.getOrganization(organizationId));
+          const org = yield* users.use("getOrganization", (s) => s.getOrganization(organizationId));
           if (!org || payload.confirmName.trim() !== org.name.trim()) {
             return yield* new OrganizationDeletionForbidden();
           }
@@ -492,7 +492,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // everyone (unreachable) but its secrets/tenant rows linger orphaned —
           // alert loudly so that window gets swept, then surface the failure.
           yield* users
-            .use((s) => s.deleteOrganizationCascade(organizationId))
+            .use("deleteOrganizationCascade", (s) => s.deleteOrganizationCascade(organizationId))
             .pipe(
               Effect.tapError((error) =>
                 Effect.logError(
@@ -593,7 +593,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // Mirror the org locally so domain tables can FK against it; the
           // upsert mints the slug at insert — no separate heal step.
           const org = yield* workos.getOrganization(invitation.organizationId);
-          const mirrored = yield* users.use((s) =>
+          const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
           );
 

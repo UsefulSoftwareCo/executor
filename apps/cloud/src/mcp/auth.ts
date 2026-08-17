@@ -204,7 +204,9 @@ const resolveOrgSelector = (selector: string) =>
     ? Effect.succeed(selector)
     : Effect.gen(function* () {
         const users = yield* UserStoreService;
-        const org = yield* users.use((s) => s.getOrganizationBySlug(selector));
+        const org = yield* users.use("getOrganizationBySlug", (s) =>
+          s.getOrganizationBySlug(selector),
+        );
         return org?.id ?? null;
       });
 
