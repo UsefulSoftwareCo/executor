@@ -3,13 +3,9 @@
 //
 // On the production domain (`executor.sh`), marketing paths and the
 // unauthenticated landing page are served by the separate `executor-marketing`
-// worker (bound as `env.MARKETING`). In local dev that worker isn't running, so
-// unauthenticated visits fall through to the cloud app's routes (the sign-in
-// page).
+// worker. This module deliberately has no TanStack Start or cloud application
+// imports: the Worker entry calls it before loading the Start server graph.
 // ---------------------------------------------------------------------------
-
-import { env } from "cloudflare:workers";
-import { createMiddleware } from "@tanstack/react-start";
 
 import { parseCookie } from "../auth/cookies";
 
@@ -27,33 +23,25 @@ const MARKETING_PATHS = [
   "/pattern-graph-paper.svg",
 ];
 
-export const isMarketingPath = (pathname: string) =>
+const SESSION_COOKIE = "wos-session";
+
+/** Whether an exact pathname belongs to the public marketing worker. */
+export const isMarketingPath = (pathname: string): boolean =>
   MARKETING_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
-const getMarketingWorker = () => env.MARKETING as { fetch: typeof fetch } | undefined;
+/**
+ * Project a production request onto the marketing service-binding request.
+ * Returns `null` when the cloud application owns the request instead.
+ */
+export const marketingProxyRequest = (request: Request): Request | null => {
+  const url = new URL(request.url);
+  if (url.hostname !== "executor.sh") return null;
 
-export const marketingMiddleware = createMiddleware({ type: "request" }).server(
-  async ({ pathname, request, next }) => {
-    // Only proxy to the marketing worker on the production domain. In local
-    // dev we don't run `executor-marketing`, so unauthenticated visits fall
-    // through to the cloud app's routes (which show the sign-in page).
-    const host = new URL(request.url).hostname;
-    if (host !== "executor.sh") return next();
+  const shouldProxy =
+    isMarketingPath(url.pathname) ||
+    (url.pathname === "/" && !parseCookie(request.headers.get("cookie"), SESSION_COOKIE));
+  if (!shouldProxy) return null;
 
-    const shouldProxyToMarketing =
-      isMarketingPath(pathname) ||
-      (pathname === "/" && !parseCookie(request.headers.get("cookie"), "wos-session"));
-
-    if (!shouldProxyToMarketing) return next();
-
-    const marketing = getMarketingWorker();
-    if (!marketing) return next();
-
-    const url = new URL(request.url);
-    // Rewrite /home to / so marketing worker serves its homepage
-    if (pathname === "/home") {
-      url.pathname = "/";
-    }
-    return marketing.fetch(new Request(url, request));
-  },
-);
+  if (url.pathname === "/home") url.pathname = "/";
+  return new Request(url, request);
+};

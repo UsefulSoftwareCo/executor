@@ -10,7 +10,6 @@ import { loginPath } from "./auth/return-to";
 import { prepareMcpOrgScope } from "./mcp/mount";
 import {
   docsProxyMiddleware,
-  marketingMiddleware,
   openAiAppsChallengeMiddleware,
   posthogProxyMiddleware,
   sentryTunnelMiddleware,
@@ -89,20 +88,19 @@ const appRequestMiddleware = createMiddleware({ type: "request" }).server(
   },
 );
 
-// The edge concerns (marketing proxy, docs proxy, sentry tunnel, posthog proxy)
-// live in `./edge`; they run before the app's own dispatch. Ordering is
-// load-bearing: marketing first (production landing/page proxy), then the docs
-// proxy and analytics tunnels, then the unified app plane (api + mcp), and last
-// the SSR auth gate — it only sees document requests nothing above claimed, so
-// signed-out visitors are redirected to /login before the SPA (and its
-// app-shell skeleton) is served. The docs proxy sits among the edges (not after
-// the auth gate) because `/docs` is public and must skip the sign-in redirect;
-// its path is disjoint from every other matcher, so its slot is not otherwise
-// load-bearing.
+// The remaining edge concerns (docs proxy, sentry tunnel, posthog proxy) live
+// in `./edge`; they run before the app's own dispatch. Marketing is handled in
+// server.ts before this module is loaded. Ordering here is load-bearing: public
+// challenges and docs, then analytics tunnels, then the unified app plane (api
+// + mcp), and last the SSR auth gate — it only sees document requests nothing
+// above claimed, so signed-out visitors are redirected to /login before the SPA
+// (and its app-shell skeleton) is served. The docs proxy sits among the edges
+// (not after the auth gate) because `/docs` is public and must skip the sign-in
+// redirect; its path is disjoint from every other matcher, so its slot is not
+// otherwise load-bearing.
 export const startInstance = createStart(() => ({
   requestMiddleware: [
     openAiAppsChallengeMiddleware,
-    marketingMiddleware,
     docsProxyMiddleware,
     sentryTunnelMiddleware,
     posthogProxyMiddleware,

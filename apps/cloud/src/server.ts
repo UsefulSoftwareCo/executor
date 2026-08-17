@@ -12,6 +12,7 @@ import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
 import { isAppOwnedPath } from "./app-paths";
+import { marketingProxyRequest } from "./edge/marketing";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
@@ -175,6 +176,14 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    // Public pages must not enter TanStack Start: its first-request dynamic
+    // import loads the entire React + Effect server graph and can take seconds
+    // on a cold isolate. Classify and service-bind marketing at the Worker
+    // entry, before telemetry or fetchHandler touches that graph.
+    const marketingRequest = marketingProxyRequest(request);
+    const marketing: Fetcher | undefined = env.MARKETING;
+    if (marketingRequest && marketing) return marketing.fetch(marketingRequest);
+
     // Browser OTLP ingress — before the server span opens: exporter traffic
     // must never trace itself (the browser already excludes /v1/traces from
     // its own tracing for the same reason).
