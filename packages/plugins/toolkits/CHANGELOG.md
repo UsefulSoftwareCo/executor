@@ -1,5 +1,14 @@
 # @executor-js/plugin-toolkits
 
+## 1.5.33
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/react@1.4.61
+
 ## 1.5.32
 
 ### Patch Changes

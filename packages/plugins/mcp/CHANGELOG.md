@@ -1,5 +1,17 @@
 # @executor-js/plugin-mcp
 
+## 1.5.41
+
+### Patch Changes
+
+- [#1617](https://github.com/UsefulSoftwareCo/executor/pull/1617) [`a9b33d2`](https://github.com/UsefulSoftwareCo/executor/commit/a9b33d25c32fbb4a292b7e8963e22392f862a16f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Support MCP spec 2026-07-28 end to end. The MCP client negotiates the protocol era automatically (`server/discover` probe with legacy fallback), so integrations hosted on modern-only MCP servers connect without the server enabling legacy compatibility. Executor-hosted MCP endpoints serve both eras, and the `executor mcp` stdio bridge passes either era through to the daemon.
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/config@1.5.41
+  - @executor-js/react@1.4.61
+
 ## 1.5.40
 
 ### Patch Changes
