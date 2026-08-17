@@ -207,6 +207,16 @@ export const claimPorts = async (claims: ReadonlyArray<PortClaim>): Promise<Clai
     return {
       ports,
       release: async () => {
+        // Values published by this claim are not operator pins. Clear them
+        // when the acquisition is released so a failed `claimAndBoot` attempt
+        // can genuinely probe and claim again instead of treating its own
+        // stale E2E_* value as an explicit override on every retry.
+        for (const claim of unpinned) {
+          const published = ports[claim.envVar];
+          if (published !== undefined && process.env[claim.envVar] === String(published)) {
+            delete process.env[claim.envVar];
+          }
+        }
         const held = heldLocks.get(block);
         if (!held) return;
         heldLocks.delete(block);
@@ -238,8 +248,9 @@ export const isAddrInUse = (error: unknown): boolean => {
  * ephemeral) an outbound socket can still grab a just-released probe port before
  * the service binds it. When that happens the boot throws EADDRINUSE; we release
  * the block (freeing its lock so `claimPorts` walks past it) and re-claim + retry
- * up to `maxAttempts` times. Any non-EADDRINUSE boot failure — or exhausting the
- * retries — releases and rethrows, so a genuinely broken boot still surfaces.
+ * up to `maxAttempts` times. Callers may also classify another idempotent
+ * acquisition failure with `retryWhen` (for example, a bounded Vite readiness
+ * timeout). Unclassified failures and exhausted retries surface unchanged.
  *
  * `boot` receives the freshly claimed ports and must return its teardown; the
  * returned `teardown` chains the caller's teardown then releases the block.
@@ -247,7 +258,12 @@ export const isAddrInUse = (error: unknown): boolean => {
 export const claimAndBoot = async <T>(
   claims: ReadonlyArray<PortClaim>,
   boot: (ports: Record<string, number>) => Promise<{ teardown: () => Promise<void>; value: T }>,
-  options: { readonly maxAttempts?: number; readonly label?: string } = {},
+  options: {
+    readonly maxAttempts?: number;
+    readonly label?: string;
+    /** Additional acquisition failures that are safe to retry from scratch. */
+    readonly retryWhen?: (error: unknown) => boolean;
+  } = {},
 ): Promise<{ ports: Record<string, number>; teardown: () => Promise<void>; value: T }> => {
   const maxAttempts = options.maxAttempts ?? 3;
   const label = options.label ?? "boot";
@@ -267,13 +283,15 @@ export const claimAndBoot = async <T>(
     } catch (error) {
       await release();
       lastError = error;
-      if (!isAddrInUse(error) || attempt === maxAttempts) throw error;
+      const retryable = isAddrInUse(error) || options.retryWhen?.(error) === true;
+      if (!retryable || attempt === maxAttempts) throw error;
       const collided = claims
         .map((claim) => ports[claim.envVar])
         .filter((port): port is number => port !== undefined)
         .join(", ");
+      const reason = isAddrInUse(error) ? `hit EADDRINUSE on port(s) ${collided}` : String(error);
       console.warn(
-        `[e2e] ${label} hit EADDRINUSE on port(s) ${collided} (attempt ${attempt}/${maxAttempts}); re-claiming a fresh block and retrying`,
+        `[e2e] ${label} acquisition failed (${reason}, attempt ${attempt}/${maxAttempts}); re-claiming a fresh block and retrying`,
       );
     }
   }

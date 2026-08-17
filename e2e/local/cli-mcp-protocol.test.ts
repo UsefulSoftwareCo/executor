@@ -11,12 +11,13 @@ import { StdioClientTransport as ModernStdioClientTransport } from "@modelcontex
 import { Client as LegacyClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport as LegacyStdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Effect } from "effect";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scenario } from "../src/scenario";
+import { stopAutoSpawnedDaemon } from "./daemon-process";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const testScope = join(repoRoot, "apps/local");
@@ -33,28 +34,14 @@ const bridgeCommand = (dataDir: string) => ({
   stderr: "pipe" as const,
 });
 
-const stopAutoSpawnedDaemon = (dataDir: string): void => {
-  // The bridge is transient, while its auto-started daemon is detached. Reap
-  // that owner before deleting this scenario's private data directory.
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- cleanup tolerates a bridge that failed before writing its manifest
-  try {
-    const manifest = JSON.parse(
-      readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
-    ) as { readonly pid?: number };
-    if (manifest.pid) process.kill(manifest.pid, "SIGTERM");
-  } catch {
-    // No manifest means there is no auto-started daemon to stop.
-  }
-};
-
 const withTempData = Effect.acquireRelease(
   Effect.sync(() => {
     const root = mkdtempSync(join(tmpdir(), "executor-mcp-protocol-"));
     return { root, dataDir: join(root, "data") };
   }),
   ({ root, dataDir }) =>
-    Effect.sync(() => {
-      stopAutoSpawnedDaemon(dataDir);
+    Effect.promise(async () => {
+      await stopAutoSpawnedDaemon(dataDir);
       rmSync(root, { recursive: true, force: true });
     }),
 );

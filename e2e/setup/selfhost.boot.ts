@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bootProcesses, waitForHttp, type BootedProcesses } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp, type BootedProcesses } from "./boot";
 
 export const selfhostDir = fileURLToPath(new URL("../../apps/host-selfhost/", import.meta.url));
 
@@ -68,7 +68,9 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
     // Probe via `localhost`, not 127.0.0.1 — without --host, vite binds the
     // resolver's first answer for localhost (::1 on macOS), so the IPv4
     // loopback literal never answers.
-    await waitForHttp(`http://localhost:${options.port}`);
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`http://localhost:${options.port}`, { signal }),
+    );
   } catch (error) {
     await procs.teardown();
     throw error;

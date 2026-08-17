@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 // Vendored fork import (same pattern as mcporter).
 import { createEmulator } from "@executor-js/emulate";
 
-import { bootProcesses, waitForHttp } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
 import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
 
@@ -168,9 +168,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
 
   try {
     const local = `http://127.0.0.1:${options.cloudPort}`;
-    await waitForHttp(local);
+    await waitForBoot(procs, (signal) => waitForHttp(local, { signal }));
     // The API plane is ready when login actually redirects to AuthKit.
-    await waitForHttp(`${local}/api/auth/login`, { expectRedirect: true });
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`${local}/api/auth/login`, { expectRedirect: true, signal }),
+    );
   } catch (error) {
     await teardown();
     throw error;

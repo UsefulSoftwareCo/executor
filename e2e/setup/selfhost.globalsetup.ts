@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 
 import { claimAndBoot } from "../src/ports";
 import { SELFHOST_ADMIN } from "../targets/selfhost";
-import { waitForHttp } from "./boot";
+import { isBootReadinessTimeout, waitForHttp } from "./boot";
 import { E2E_SANDBOX_TIMEOUT_MS, SANDBOX_TIMEOUT_ENV } from "./sandbox-timeout";
 import { bootSelfhost } from "./selfhost.boot";
 import { RUNS_DIR } from "../src/scenario";
@@ -53,7 +53,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
       });
       return { teardown: procs.teardown, value: procs };
     },
-    { label: "selfhost" },
+    { label: "selfhost", retryWhen: isBootReadinessTimeout },
   );
   return teardown;
 }

@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scenario } from "../src/scenario";
+import { stopAutoSpawnedDaemon } from "./daemon-process";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const testScope = join(repoRoot, "apps/local");
@@ -95,6 +96,7 @@ const spawnDaemon = (dataDir: string): DaemonProc =>
       cwd: repoRoot,
       env: { ...process.env, EXECUTOR_DATA_DIR: dataDir },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     },
   ) as DaemonProc;
 
@@ -105,9 +107,12 @@ const exited = (proc: DaemonProc): Promise<void> =>
 
 const stopProc = async (proc: DaemonProc): Promise<void> => {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
-  proc.kill("SIGTERM");
+  if (proc.pid) process.kill(-proc.pid, "SIGTERM");
   await Promise.race([exited(proc), new Promise<void>((resolve) => setTimeout(resolve, 3000))]);
-  if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+  if (proc.exitCode === null && proc.signalCode === null && proc.pid) {
+    process.kill(-proc.pid, "SIGKILL");
+    await exited(proc);
+  }
 };
 
 const startForegroundDaemon = (dataDir: string) =>
@@ -181,28 +186,14 @@ const runOneClient = async (
   }
 };
 
-/** `executor mcp` now ensures a DURABLE (detached) daemon and bridges to it, so a
- * cold-start scenario leaves that daemon running. Stop it before removing the
- * data dir so the test never leaks an orphan daemon. */
-const stopAutoSpawnedDaemon = (dataDir: string): void => {
-  try {
-    const manifest = JSON.parse(
-      readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
-    ) as { pid?: number };
-    if (manifest.pid) process.kill(manifest.pid, "SIGTERM");
-  } catch {
-    // no manifest (no daemon spawned) — nothing to stop.
-  }
-};
-
 const withTempData = Effect.acquireRelease(
   Effect.sync(() => {
     const root = mkdtempSync(join(tmpdir(), "executor-mcp-stress-"));
     return join(root, "data");
   }),
   (dataDir) =>
-    Effect.sync(() => {
-      stopAutoSpawnedDaemon(dataDir);
+    Effect.promise(async () => {
+      await stopAutoSpawnedDaemon(dataDir);
       rmSync(join(dataDir, ".."), { recursive: true, force: true });
     }),
 );
@@ -315,7 +306,7 @@ scenario(
       "2",
     );
 
-    daemon.proc.kill("SIGKILL");
+    if (daemon.proc.pid) process.kill(-daemon.proc.pid, "SIGKILL");
     yield* Effect.promise(() =>
       Promise.race([
         exited(daemon.proc),
