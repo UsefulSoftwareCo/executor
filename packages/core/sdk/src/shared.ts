@@ -46,7 +46,18 @@ export type {
   UpdateConnectionInput,
   ValidateConnectionInput,
 } from "./connection";
-export type { CredentialProvider, ProviderEntry } from "./provider";
+export {
+  MAX_REFRESH_GRANT_EXPIRES_IN_SECONDS,
+  RefreshGrantRejected,
+  isRefreshGrantRejectionCode,
+} from "./provider";
+export type {
+  CredentialProvider,
+  ProviderEntry,
+  RefreshGrantInput,
+  RefreshGrantRejectionCode,
+  RefreshGrantResult,
+} from "./provider";
 export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 
 // Tagged errors (Schema-based — browser-safe).

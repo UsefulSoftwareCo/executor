@@ -102,7 +102,18 @@ export type {
 export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 
 // Credential providers.
-export type { CredentialProvider, ProviderEntry } from "./provider";
+export {
+  MAX_REFRESH_GRANT_EXPIRES_IN_SECONDS,
+  RefreshGrantRejected,
+  isRefreshGrantRejectionCode,
+} from "./provider";
+export type {
+  CredentialProvider,
+  ProviderEntry,
+  RefreshGrantInput,
+  RefreshGrantRejectionCode,
+  RefreshGrantResult,
+} from "./provider";
 
 // Public projections / detection.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";
