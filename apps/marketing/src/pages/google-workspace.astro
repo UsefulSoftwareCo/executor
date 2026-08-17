@@ -1,0 +1,193 @@
+---
+const services = [
+  {
+    name: "Google Calendar",
+    description:
+      "Read calendars and events, and create, update, or remove events when you ask an agent to manage your schedule.",
+  },
+  {
+    name: "Gmail",
+    description:
+      "Read, search, compose, send, label, archive, or move messages to trash when you ask an agent to work with your email.",
+  },
+  {
+    name: "Google Sheets",
+    description:
+      "Read spreadsheet data and update cells, ranges, or worksheets when you ask an agent to work with a spreadsheet.",
+  },
+] as const;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="index, follow" />
+    <meta
+      name="description"
+      content="Executor connects AI agents to Google Calendar, Gmail, and Google Sheets with your permission."
+    />
+    <link rel="canonical" href="https://executor.sh/google-workspace" />
+    <title>Executor</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #161616;
+        background: #f7f6f1;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        line-height: 1.6;
+      }
+
+      a {
+        color: #174ea6;
+      }
+
+      header,
+      main,
+      footer {
+        width: min(760px, calc(100% - 40px));
+        margin-inline: auto;
+      }
+
+      header {
+        padding: 72px 0 38px;
+        border-bottom: 1px solid #d8d6cd;
+      }
+
+      .brand {
+        margin: 0 0 24px;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(48px, 10vw, 76px);
+        line-height: 1;
+        letter-spacing: -0.055em;
+      }
+
+      .purpose {
+        max-width: 680px;
+        margin: 28px 0 0;
+        font-size: 20px;
+        line-height: 1.55;
+      }
+
+      section {
+        padding: 42px 0;
+        border-bottom: 1px solid #d8d6cd;
+      }
+
+      h2 {
+        margin: 0 0 16px;
+        font-size: 25px;
+        letter-spacing: -0.025em;
+      }
+
+      h3 {
+        margin: 0 0 5px;
+        font-size: 18px;
+      }
+
+      p {
+        margin: 0 0 18px;
+      }
+
+      ul {
+        display: grid;
+        gap: 22px;
+        margin: 26px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      li p {
+        margin: 0;
+      }
+
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 30px 0 64px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p class="brand">Useful Software Company</p>
+      <h1>Executor</h1>
+      <p class="purpose">
+        Executor is an integration platform and MCP gateway for AI agents. Executor lets you
+        securely connect Google Calendar, Gmail, and Google Sheets so an agent can read your
+        Google data and take only the actions you request.
+      </p>
+    </header>
+
+    <main>
+      <section aria-labelledby="purpose-heading">
+        <h2 id="purpose-heading">Why Executor requests access to Google data</h2>
+        <p>
+          You choose which Google service to connect. Executor requests the permissions needed
+          to provide that connection and uses the resulting Google data to carry out your
+          instructions. Connecting Google does not give Executor permission to act on its own.
+        </p>
+        <ul>
+          {
+            services.map((service) => (
+              <li>
+                <h3>{service.name}</h3>
+                <p>{service.description}</p>
+              </li>
+            ))
+          }
+        </ul>
+      </section>
+
+      <section aria-labelledby="control-heading">
+        <h2 id="control-heading">You control the connection</h2>
+        <p>
+          Executor exposes specific Google actions and their inputs. You can allow an action,
+          require approval, or block it through the policies you configure in Executor. You can
+          remove a connection in Executor or revoke it from your
+          <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.
+        </p>
+      </section>
+
+      <section aria-labelledby="privacy-heading">
+        <h2 id="privacy-heading">Privacy and Google API data</h2>
+        <p>
+          Executor does not sell Google user data. Executor uses Google data only to provide and
+          improve the user-facing integration features you request, as described in the
+          <a href="https://executor.sh/privacy">Executor Privacy Policy</a>.
+        </p>
+        <p>
+          Executor's use and transfer of information received from Google APIs adheres to the
+          <a href="https://developers.google.com/terms/api-services-user-data-policy"
+            >Google API Services User Data Policy</a
+          >, including the Limited Use requirements.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Executor · Useful Software Company</span>
+      <span><a href="https://executor.sh/privacy">Privacy Policy</a> · <a href="https://executor.sh/terms">Terms of Service</a></span>
+    </footer>
+  </body>
+</html>

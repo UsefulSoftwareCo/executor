@@ -15,6 +15,7 @@ const MARKETING_PATHS = [
   "/privacy",
   "/terms",
   "/google-oauth",
+  "/google-workspace",
   "/blog",
   "/llms.txt",
   "/api/detect",

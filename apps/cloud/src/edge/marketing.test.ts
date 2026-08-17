@@ -13,6 +13,7 @@ describe("isMarketingPath", () => {
     "/privacy",
     "/terms",
     "/google-oauth",
+    "/google-workspace",
     "/blog",
     "/blog/",
     "/blog/some-post",
