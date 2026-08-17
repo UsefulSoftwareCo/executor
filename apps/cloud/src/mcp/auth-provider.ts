@@ -21,8 +21,9 @@
 //       clearExistingSession.
 //   - verified + org allowed -> Authenticated(principal)
 //
-// The rich `mcp.request.annotate` client-fingerprint span (cloud-specific, no
-// envelope seam) is emitted from here so telemetry parity is preserved.
+// The rich client-fingerprint annotations (cloud-specific, no envelope seam)
+// are stamped onto the `mcp.request` span from here so telemetry parity is
+// preserved.
 //
 // The OAuth endpoints (/authorize, /token, /register) are NOT cloud's — they
 // live at WorkOS/AuthKit (external); only the two discovery docs are mounted.

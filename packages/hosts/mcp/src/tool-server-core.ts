@@ -1105,9 +1105,7 @@ export const buildExecutorMcpTools = <
         ),
       );
 
-    const assembly = yield* Effect.sync(createAssembly).pipe(
-      Effect.withSpan("mcp.host.create_server"),
-    );
+    const assembly = yield* Effect.sync(createAssembly);
     const server = assembly.server;
 
     const executeWithNativeElicitation = (
@@ -1433,10 +1431,6 @@ export const buildExecutorMcpTools = <
         },
         ({ code }, extra) => runToolEffect(executeCode(code, extra)),
       ),
-    ).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "execute" },
-      }),
     );
 
     yield* Effect.sync(() =>
@@ -1458,10 +1452,6 @@ export const buildExecutorMcpTools = <
         ({ name }) =>
           runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog))),
       ),
-    ).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "skills" },
-      }),
     );
 
     yield* Effect.sync(() => {
@@ -1509,11 +1499,7 @@ export const buildExecutorMcpTools = <
         },
         ({ executionId }, extra) => runToolEffect(resumeAfterBrowserApproval(executionId, extra)),
       );
-    }).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "resume" },
-      }),
-    );
+    });
 
     // --- artifacts / MCP Apps ---
     //
@@ -1892,11 +1878,7 @@ export const buildExecutorMcpTools = <
             ],
           }),
         );
-      }).pipe(
-        Effect.withSpan("mcp.host.register_resource", {
-          attributes: { "mcp.resource.uri": MCP_APPS_SHELL_RESOURCE_URI },
-        }),
-      );
+      });
 
       yield* Effect.sync(() =>
         assembly.registerAppTool(
@@ -1952,10 +1934,6 @@ export const buildExecutorMcpTools = <
           ({ code, title, description, connections, artifactId }) =>
             runToolEffect(createArtifact({ code, title, description, connections, artifactId })),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "create-artifact" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2017,10 +1995,6 @@ export const buildExecutorMcpTools = <
           ({ artifactId, edits, connections, title, description }) =>
             runToolEffect(editArtifact({ artifactId, edits, connections, title, description })),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "edit-artifact" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2035,10 +2009,6 @@ export const buildExecutorMcpTools = <
           },
           () => runToolEffect(listArtifacts()),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "list-artifacts" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2059,10 +2029,6 @@ export const buildExecutorMcpTools = <
           },
           ({ id }) => runToolEffect(showArtifact(id)),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "show-artifact" },
-        }),
       );
 
       yield* Effect.sync(() => {
@@ -2113,11 +2079,7 @@ export const buildExecutorMcpTools = <
               resumeExecution(executionId, action, parseJsonContent(rawContent), extra),
             ),
         );
-      }).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "execute-action" },
-        }),
-      );
+      });
     }
 
     // Client capabilities only exist after `initialize`, and `tools/list` is

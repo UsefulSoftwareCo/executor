@@ -221,13 +221,9 @@ export const makeScopedExecutor = <
   options?: { readonly plugins?: PluginsProviderContext },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
-    const { db, blobs } = yield* DbProvider.asEffect().pipe(
-      Effect.withSpan("executor.stack.db_provider"),
-    );
-    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect().pipe(
-      Effect.withSpan("executor.stack.plugins_provider"),
-    );
-    const config = yield* HostConfig.asEffect().pipe(Effect.withSpan("executor.stack.host_config"));
+    const { db, blobs } = yield* DbProvider.asEffect();
+    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect();
+    const config = yield* HostConfig.asEffect();
     // Explicit config wins; otherwise fall back to the request origin if a host
     // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
     // non-request callers — `coreTools.webBaseUrl` is optional and only the
@@ -263,9 +259,7 @@ export const makeScopedExecutor = <
       oauthCallbackPath: config.oauthCallbackPath,
     });
 
-    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins)).pipe(
-      Effect.withSpan("executor.plugins.init"),
-    );
+    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins));
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
     };
@@ -292,7 +286,7 @@ export const makeScopedExecutor = <
         orgSlug,
         includeProviders: config.exposeCredentialProviders ?? true,
       },
-    }).pipe(Effect.withSpan("executor.stack.create_executor"));
+    });
     // Record the sighting. THIS is the seam every HTTP request and MCP session
     // on every host passes through, so it is where the `subject` table gets
     // populated: a principal earns a row the first time it authenticates,

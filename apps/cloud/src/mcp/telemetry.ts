@@ -254,5 +254,4 @@ export const annotateMcpRequest = (
     };
 
     yield* Effect.annotateCurrentSpan(attrs);
-    yield* Effect.annotateCurrentSpan(attrs).pipe(Effect.withSpan("mcp.request.annotate"));
   });
