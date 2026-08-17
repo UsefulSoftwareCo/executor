@@ -250,7 +250,7 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 
 export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]>> = {
   "google-calendar": ["https://www.googleapis.com/auth/calendar"],
-  "google-gmail": ["https://mail.google.com/"],
+  "google-gmail": ["https://www.googleapis.com/auth/gmail.modify"],
   "google-sheets": ["https://www.googleapis.com/auth/spreadsheets"],
   "google-drive": ["https://www.googleapis.com/auth/drive"],
   "google-docs": ["https://www.googleapis.com/auth/documents"],

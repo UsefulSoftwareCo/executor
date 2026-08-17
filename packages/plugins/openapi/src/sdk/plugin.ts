@@ -646,7 +646,13 @@ export const openApiPlugin = definePlugin<
   const resolveSpecForInput = (
     config: Pick<
       OpenApiSpecConfig,
-      "spec" | "specFormat" | "specOverrides" | "headers" | "queryParams" | "baseUrl"
+      | "spec"
+      | "specFormat"
+      | "specOverrides"
+      | "headers"
+      | "queryParams"
+      | "baseUrl"
+      | "authenticationTemplate"
     >,
     httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   ): Effect.Effect<
@@ -670,6 +676,13 @@ export const openApiPlugin = definePlugin<
             ...(config.headers ? { headers: config.headers } : {}),
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
           },
+          ...(config.authenticationTemplate
+            ? {
+                consentScopes: config.authenticationTemplate.flatMap((template) =>
+                  "kind" in template && template.kind === "oauth2" ? template.scopes : [],
+                ),
+              }
+            : {}),
           httpClientLayer,
         });
         return yield* applyOverridesToResolvedSpec(resolved, config.specOverrides);

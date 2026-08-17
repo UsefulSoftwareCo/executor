@@ -89,13 +89,14 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
  */
 export const CLOUD_MOUNT_PREFIX = "/api" as const;
 
-// Initial Google launch boundary. Calendar + Sheets are sensitive scopes but
-// not restricted Workspace scopes; Gmail and account-wide Drive remain absent
-// until their separate verification/security work is complete. The same scope
-// source builds the catalog auth templates, preventing config drift.
+// Initial Google launch boundary. Gmail uses gmail.modify for read, send, and
+// trash operations while immediate permanent deletion remains absent until the
+// broader mail.google.com scope is approved. Account-wide Drive remains absent.
+// The same scope source builds the catalog auth templates, preventing drift.
 const GOOGLE_FIRST_PARTY_ALLOWED_SCOPES: readonly string[] = [
   ...new Set([
     ...googleCatalogOAuthScopesForPreset("google-calendar"),
+    ...googleCatalogOAuthScopesForPreset("google-gmail"),
     ...googleCatalogOAuthScopesForPreset("google-sheets"),
   ]),
 ];

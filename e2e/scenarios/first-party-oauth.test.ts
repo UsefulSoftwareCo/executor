@@ -168,7 +168,7 @@ scenario(
 );
 
 scenario(
-  "First-party OAuth · Google offers Calendar and Sheets but refuses Gmail scopes",
+  "First-party OAuth · Google offers Gmail modify but refuses full Gmail and Drive scopes",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -184,6 +184,7 @@ scenario(
       expect(google?.origin.kind).toBe("first_party");
       if (google?.origin.kind !== "first_party") return;
       expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/calendar");
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/gmail.modify");
       expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/spreadsheets");
       expect(google.origin.allowedScopes).not.toContain("https://mail.google.com/");
       expect(google.origin.allowedScopes).not.toContain("https://www.googleapis.com/auth/drive");
@@ -229,9 +230,40 @@ scenario(
             "openid",
             "email",
             "profile",
-            "https://mail.google.com/",
+            "https://www.googleapis.com/auth/gmail.modify",
           ]),
           slug: gmail,
+        },
+      });
+      const gmailStarted = yield* client.oauth.start({
+        payload: {
+          client: OAuthClientSlug.make("first-party:google"),
+          clientOwner: "org",
+          owner: "org",
+          name: ConnectionName.make("gmail"),
+          integration: gmail,
+          template: AuthTemplateSlug.make("oauth"),
+        },
+      });
+      expect(gmailStarted.status).toBe("redirect");
+      const gmailAuthorizationUrl =
+        gmailStarted.status === "redirect" ? gmailStarted.authorizationUrl : "";
+      expect(
+        new Set(new URL(gmailAuthorizationUrl).searchParams.get("scope")?.split(" ") ?? []),
+      ).toEqual(
+        new Set(["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.modify"]),
+      );
+
+      const fullGmail = IntegrationSlug.make(unique("google_gmail_full"));
+      yield* client.openapi.addSpec({
+        payload: {
+          ...googleShapedIntegrationSpec([
+            "openid",
+            "email",
+            "profile",
+            "https://mail.google.com/",
+          ]),
+          slug: fullGmail,
         },
       });
       const blocked = yield* client.oauth
@@ -240,8 +272,8 @@ scenario(
             client: OAuthClientSlug.make("first-party:google"),
             clientOwner: "org",
             owner: "org",
-            name: ConnectionName.make("gmail"),
-            integration: gmail,
+            name: ConnectionName.make("gmail-full"),
+            integration: fullGmail,
             template: AuthTemplateSlug.make("oauth"),
           },
         })

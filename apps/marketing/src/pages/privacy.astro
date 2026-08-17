@@ -57,10 +57,15 @@ import LegalLayout from "../components/LegalLayout.astro";
   <p>
     If you connect a Google Workspace service, Executor uses the permissions you grant to perform the actions you
     request through that integration. Depending on the service and permissions you choose, this may include accessing
-    or modifying Google Calendar events, Google Sheets spreadsheets, or other Google Workspace content. Executor stores
-    OAuth credentials and connection metadata so the integration can continue working, and processes Google Workspace
-    content when carrying out your requested tool calls and returning their results to you or the agent you directed to
-    make the call.
+    or modifying Google Calendar events, Google Sheets spreadsheets, Gmail messages, drafts, threads, attachments,
+    labels, or other Google Workspace content. For Gmail, this can include reading and searching email, composing and
+    sending messages, and organizing or moving messages to Trash when you request those actions.
+  </p>
+  <p>
+    Executor stores OAuth credentials and connection metadata so the integration can continue working. It processes
+    Google Workspace content only while carrying out your requested tool calls and returning their results to you or
+    the agent you directed to make the call. That content can appear in the resulting agent session or in another
+    service when you explicitly direct Executor to send it there.
   </p>
   <p>
     We do not use Google Workspace API data for advertising or to train generalized artificial-intelligence or
@@ -71,6 +76,11 @@ import LegalLayout from "../components/LegalLayout.astro";
     Executor&apos;s use and transfer of information received from Google Workspace APIs adheres to the
     <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
     including its Limited Use requirements.
+  </p>
+  <p>
+    You can stop Executor&apos;s access by deleting the Google connection in Executor or revoking Executor from your
+    Google Account permissions. To request deletion of your Executor account, stored OAuth credentials, connection
+    metadata, or other personal information, email <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
   </p>
 
   <h3>Website inputs and support communications</h3>

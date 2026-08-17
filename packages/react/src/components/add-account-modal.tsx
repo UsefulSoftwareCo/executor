@@ -1565,6 +1565,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     [...oauthApps, ...oauthNearApps, ...oauthOtherApps].find(
       (c: OAuthClientOption) => String(c.slug) === selectedApp,
     ) ?? null;
+  const isBuiltInGoogleClient =
+    chosenClient?.origin.kind === "first_party" &&
+    String(chosenClient.slug) === "first-party:google";
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
@@ -2880,6 +2883,22 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   />
                 </div>
               )}
+
+              {isBuiltInGoogleClient && showPlaceStep ? (
+                <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                  Executor uses the Google data you authorize only to perform the actions you
+                  request. Read the{` `}
+                  <a
+                    href="https://executor.sh/privacy"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    privacy policy
+                  </a>
+                  .
+                </p>
+              ) : null}
             </div>
 
             {continueError ? (
