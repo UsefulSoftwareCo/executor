@@ -1152,6 +1152,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // First-party apps are deployment-owned, outside the owner lattice
       // entirely, so the rule does not apply to them.
       const firstPartyFlow = isFirstPartyOAuthClientSlug(String(input.client));
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.client_first_party": firstPartyFlow,
+      });
       if (!firstPartyFlow && input.owner === "org" && input.clientOwner === "user") {
         return yield* new OAuthStartError({
           message: "A Workspace connection must use a Workspace app.",
@@ -1404,6 +1407,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         "executor.connection": String(session.name),
         "executor.template": String(session.template),
         "executor.oauth.client": String(session.clientSlug),
+        "executor.oauth.client_first_party": isFirstPartyOAuthClientSlug(
+          String(session.clientSlug),
+        ),
       });
 
       // Expired sessions are not redeemable — drop + treat as not found.

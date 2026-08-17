@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
+import type * as Tracer from "effect/Tracer";
 
 import {
   AuthTemplateSlug,
@@ -28,6 +29,37 @@ import { serveOAuthTestServer } from "./testing/oauth-test-server";
 const INTEG = IntegrationSlug.make("acme");
 const TEMPLATE = AuthTemplateSlug.make("oauth");
 const FIRST_PARTY = firstPartyOAuthClientSlug("acme");
+
+const makeRecordingTracer = (spans: Map<string, Map<string, unknown>>): Tracer.Tracer => ({
+  span: (options) => {
+    const attributes = new Map<string, unknown>();
+    spans.set(options.name, attributes);
+    let status: Tracer.SpanStatus = { _tag: "Started", startTime: options.startTime };
+    return {
+      _tag: "Span",
+      name: options.name,
+      spanId: "0000000000000001",
+      traceId: "00000000000000000000000000000001",
+      parent: options.parent,
+      annotations: options.annotations,
+      get status() {
+        return status;
+      },
+      attributes,
+      links: options.links,
+      sampled: options.sampled,
+      kind: options.kind,
+      end: (endTime, exit) => {
+        status = { _tag: "Ended", startTime: options.startTime, endTime, exit };
+      },
+      attribute: (key, value) => {
+        attributes.set(key, value);
+      },
+      event: () => undefined,
+      addLinks: () => undefined,
+    };
+  },
+});
 
 const oauthPlugin = definePlugin(() => ({
   id: "acme" as const,
@@ -81,8 +113,9 @@ const firstPartyClientFor = (server: {
 describe("first-party oauth clients", () => {
   it.effect(
     "start → complete through a config-declared client mints an executable connection",
-    () =>
-      Effect.scoped(
+    () => {
+      const spans = new Map<string, Map<string, unknown>>();
+      return Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
           const { executor } = yield* makeTestWorkspaceHarness({
@@ -101,6 +134,9 @@ describe("first-party oauth clients", () => {
             template: TEMPLATE,
           });
           expect(started.status).toBe("redirect");
+          expect(
+            spans.get("test.oauth.first_party")?.get("executor.oauth.client_first_party"),
+          ).toBe(true);
           if (started.status !== "redirect") return;
 
           const callback = yield* server.completeAuthorizationCodeFlow({
@@ -111,6 +147,9 @@ describe("first-party oauth clients", () => {
             code: callback.code,
           });
           expect(String(connection.address)).toBe("tools.acme.org.mainAccount");
+          expect(
+            spans.get("executor.oauth.complete")?.get("executor.oauth.client_first_party"),
+          ).toBe(true);
 
           const out = (yield* executor.execute(
             ToolAddress.make("tools.acme.org.mainAccount.whoami"),
@@ -119,7 +158,11 @@ describe("first-party oauth clients", () => {
           expect(out.token).toMatch(/^at_/);
           expect(yield* server.acceptsAccessToken(out.token)).toBe(true);
         }),
-      ),
+      ).pipe(
+        Effect.withSpan("test.oauth.first_party"),
+        Effect.withTracer(makeRecordingTracer(spans)),
+      );
+    },
   );
 
   it.effect("refresh resolves the config-declared client (no oauth_client row exists)", () =>
