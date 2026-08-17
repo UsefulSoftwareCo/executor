@@ -67,6 +67,8 @@ declare global {
       FIRST_PARTY_GITHUB_TOKEN_URL?: string;
       FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
       FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_SLACK_CLIENT_ID?: string;
+      FIRST_PARTY_SLACK_CLIENT_SECRET?: string;
 
       // Billing
       AUTUMN_SECRET_KEY?: string;

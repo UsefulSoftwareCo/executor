@@ -220,7 +220,11 @@ describe("first-party oauth clients", () => {
         const { executor } = yield* makeTestWorkspaceHarness({
           plugins,
           firstPartyOAuthClients: [
-            { ...firstPartyClientFor(server), allowedScopes: ["openid", "read"] },
+            {
+              ...firstPartyClientFor(server),
+              resource: server.resourceUrl,
+              allowedScopes: ["openid", "read"],
+            },
           ],
         });
         yield* executor.acme.seed();
@@ -244,6 +248,7 @@ describe("first-party oauth clients", () => {
           allowedScopes: ["openid", "read"],
         });
         expect(firstParty.clientId).toBe("test-client");
+        expect(firstParty.resource).toBe(server.resourceUrl);
         expect("clientSecret" in firstParty).toBe(false);
       }),
     ),

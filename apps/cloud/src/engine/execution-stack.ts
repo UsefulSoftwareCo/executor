@@ -43,8 +43,13 @@ import {
   collectTables,
 } from "@executor-js/api/server";
 import { googleCatalogOAuthScopesForPreset } from "@executor-js/plugin-openapi/providers/google";
+import { slackMcpUserScopes } from "@executor-js/react/lib/slack-mcp-oauth";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
-import type { AnyPlugin, FirstPartyOAuthClientConfig } from "@executor-js/sdk";
+import {
+  IntegrationSlug,
+  type AnyPlugin,
+  type FirstPartyOAuthClientConfig,
+} from "@executor-js/sdk";
 
 import executorConfig from "../../executor.config";
 import { DbService } from "../db/db";
@@ -133,6 +138,20 @@ const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] =
           clientId: env.FIRST_PARTY_GOOGLE_CLIENT_ID,
           clientSecret: env.FIRST_PARTY_GOOGLE_CLIENT_SECRET,
           allowedScopes: GOOGLE_FIRST_PARTY_ALLOWED_SCOPES,
+        },
+      ]
+    : []),
+  ...(env.FIRST_PARTY_SLACK_CLIENT_ID && env.FIRST_PARTY_SLACK_CLIENT_SECRET
+    ? [
+        {
+          name: "slack",
+          authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+          tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+          resource: "https://mcp.slack.com",
+          clientId: env.FIRST_PARTY_SLACK_CLIENT_ID,
+          clientSecret: env.FIRST_PARTY_SLACK_CLIENT_SECRET,
+          integrations: [IntegrationSlug.make("slack")],
+          allowedScopes: slackMcpUserScopes,
         },
       ]
     : []),

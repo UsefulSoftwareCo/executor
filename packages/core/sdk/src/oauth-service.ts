@@ -513,7 +513,7 @@ export const loadedFirstPartyClient = (
   readonly grant: OAuthGrant;
   readonly clientId: string;
   readonly clientSecret: string;
-  readonly resource: null;
+  readonly resource: string | null;
 } => ({
   slug: String(firstPartyOAuthClientSlug(config.name)),
   authorizationUrl: config.authorizationUrl,
@@ -521,7 +521,7 @@ export const loadedFirstPartyClient = (
   grant: "authorization_code",
   clientId: config.clientId,
   clientSecret: config.clientSecret,
-  resource: null,
+  resource: config.resource ?? null,
 });
 
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
@@ -1026,7 +1026,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         grant: "authorization_code",
         authorizationUrl: config.authorizationUrl,
         tokenUrl: config.tokenUrl,
-        resource: null,
+        resource: config.resource ?? null,
         clientId: config.clientId,
         origin: {
           kind: "first_party",
@@ -1213,25 +1213,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
           ),
         );
+      const firstParty = firstPartyFlow ? firstPartyBySlug.get(String(input.client)) : undefined;
       const requestedScopes =
         scopePolicy.kind === "discover"
-          ? yield* discoverScopesForResource(client.resource).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OAuthStartError({
-                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
-                    message: `Failed to discover OAuth scopes: ${cause.message}`,
-                  }),
-              ),
-            )
+          ? yield* (() => {
+              const discovered = discoverScopesForResource(client.resource).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OAuthStartError({
+                      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                      message: `Failed to discover OAuth scopes: ${cause.message}`,
+                    }),
+                ),
+              );
+              if (firstParty?.allowedScopes === undefined) return discovered;
+              const allowed = new Set(firstParty.allowedScopes);
+              return discovered.pipe(
+                Effect.map((scopes) => scopes.filter((scope) => allowed.has(scope))),
+              );
+            })()
           : dedupeScopes(scopePolicy.scopes);
 
       // An explicitly scope-limited first-party app is an authorization
-      // boundary, not picker decoration. Endpoint matching can associate one
-      // Google client with every Google API, so enforce the complete requested
-      // set here before persisting an OAuth session or redirecting the browser.
+      // boundary, not picker decoration. Endpoint matching and provider
+      // discovery can surface capabilities outside the registered app, so
+      // enforce the complete requested set before persisting or redirecting.
       if (firstPartyFlow) {
-        const firstParty = firstPartyBySlug.get(String(input.client));
         if (
           firstParty !== undefined &&
           !firstPartyOAuthClientAllowsScopes(firstParty, requestedScopes)

@@ -122,13 +122,19 @@ export interface FirstPartyOAuthClientConfig {
   readonly clientId: string;
   /** Literal secret from host env. Empty string for a public/PKCE client. */
   readonly clientSecret: string;
+  /** RFC 8707 protected resource for MCP-style providers. Required when the
+   *  integration discovers its OAuth scopes from resource metadata. */
+  readonly resource?: string | null;
   /** Integrations this app is intended for, used by pickers to rank it as the
    *  exact-match default for those integrations. Endpoint-host matching still
    *  applies when omitted. */
   readonly integrations?: readonly IntegrationSlug[];
   /** OAuth scopes this deployment permits the app to request. Omit to allow
-   *  every scope declared by a matching integration. When present, OAuth start
-   *  and completion fail unless every requested scope belongs to this set. */
+   *  every scope declared by a matching integration. For declared scopes,
+   *  start and completion fail unless every requested scope belongs to this
+   *  set. For MCP-style discovery, the provider's advertised scope catalog is
+   *  capped to this set because it may include capabilities the registered app
+   *  was not approved for. */
   readonly allowedScopes?: readonly string[];
 }
 
