@@ -293,6 +293,29 @@ describe("selectClientsForEndpoints", () => {
     ]);
   });
 
+  it("hides a scope-limited first-party app from another API on the same provider", () => {
+    const firstParty = app("first-party:google", {
+      owner: "org",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      origin: {
+        kind: "first_party",
+        allowedScopes: ["openid", "email", "https://www.googleapis.com/auth/calendar"],
+      },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      integration: IntegrationSlug.make("renamed_gmail"),
+      scopes: ["openid", "email", "https://mail.google.com/"],
+    });
+
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+    expect(result.nearMatches).toEqual([]);
+    expect(result.unmatched).toEqual([]);
+  });
+
   it("intent-matches a first-party app to its declared integrations even without endpoints", () => {
     const integration = IntegrationSlug.make("github_rest");
     const firstParty = app("first-party:github", {

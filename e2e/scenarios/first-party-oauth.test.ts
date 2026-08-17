@@ -62,12 +62,45 @@ const githubShapedIntegrationSpec = {
   ],
 } as const;
 
+const googleShapedIntegrationSpec = (scopes: readonly string[]) => ({
+  spec: {
+    kind: "blob" as const,
+    value: JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Google-shaped API", version: "1.0.0" },
+      paths: {
+        "/resource": {
+          get: {
+            operationId: "getResource",
+            tags: ["default"],
+            responses: { "200": { description: "a Google resource" } },
+          },
+        },
+      },
+    }),
+  },
+  baseUrl: "https://www.googleapis.com",
+  authenticationTemplate: [
+    {
+      slug: "oauth",
+      kind: "oauth2" as const,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      scopes,
+    },
+  ],
+});
+
 scenario(
   "First-party OAuth · the host-declared GitHub app is listed and drives the authorize redirect",
   {},
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
+      // First-party registrations are a cloud-host capability. This scenario
+      // intentionally does not apply to self-host, whose operator supplies
+      // their own OAuth apps through its existing registration flow.
+      if (target.name !== "cloud") return;
       const { client: makeApiClient } = yield* Api;
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
@@ -130,6 +163,90 @@ scenario(
       expect(survivors[0]?.clientId, "the impostor never shadowed the host's app").toBe(
         "e2e-first-party-github",
       );
+    }),
+  ),
+);
+
+scenario(
+  "First-party OAuth · Google offers Calendar and Sheets but refuses Gmail scopes",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      if (target.name !== "cloud") return;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+
+      const clients = yield* client.oauth.listClients();
+      const google = clients.find((candidate) => String(candidate.slug) === "first-party:google");
+      expect(google, "the env-declared first-party Google app is listed").toBeDefined();
+      expect(google?.origin.kind).toBe("first_party");
+      if (google?.origin.kind !== "first_party") return;
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/calendar");
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/spreadsheets");
+      expect(google.origin.allowedScopes).not.toContain("https://mail.google.com/");
+      expect(google.origin.allowedScopes).not.toContain("https://www.googleapis.com/auth/drive");
+
+      const calendar = IntegrationSlug.make(unique("google_calendar"));
+      yield* client.openapi.addSpec({
+        payload: {
+          ...googleShapedIntegrationSpec([
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/calendar",
+          ]),
+          slug: calendar,
+        },
+      });
+      const started = yield* client.oauth.start({
+        payload: {
+          client: OAuthClientSlug.make("first-party:google"),
+          clientOwner: "org",
+          owner: "org",
+          name: ConnectionName.make("calendar"),
+          integration: calendar,
+          template: AuthTemplateSlug.make("oauth"),
+        },
+      });
+      expect(started.status).toBe("redirect");
+      const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
+      const authorize = new URL(authorizationUrl);
+      expect(authorize.origin + authorize.pathname).toBe(
+        "https://accounts.google.com/o/oauth2/v2/auth",
+      );
+      expect(authorize.searchParams.get("client_id")).toBe("e2e-first-party-google");
+      expect(authorize.searchParams.get("access_type")).toBe("offline");
+      expect(new Set(authorize.searchParams.get("scope")?.split(" ") ?? [])).toEqual(
+        new Set(["openid", "email", "profile", "https://www.googleapis.com/auth/calendar"]),
+      );
+
+      const gmail = IntegrationSlug.make(unique("google_gmail"));
+      yield* client.openapi.addSpec({
+        payload: {
+          ...googleShapedIntegrationSpec([
+            "openid",
+            "email",
+            "profile",
+            "https://mail.google.com/",
+          ]),
+          slug: gmail,
+        },
+      });
+      const blocked = yield* client.oauth
+        .start({
+          payload: {
+            client: OAuthClientSlug.make("first-party:google"),
+            clientOwner: "org",
+            owner: "org",
+            name: ConnectionName.make("gmail"),
+            integration: gmail,
+            template: AuthTemplateSlug.make("oauth"),
+          },
+        })
+        .pipe(Effect.flip);
+      expect(blocked).toBeDefined();
     }),
   ),
 );

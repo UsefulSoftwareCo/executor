@@ -123,10 +123,12 @@ const OAuthClientSummaryResponse = Schema.Struct({
     }),
     /** Host-operated app declared in executor config — every org connects
      *  through it; nothing to paste. `integrations` ranks it as the default
-     *  for those integrations in the picker. */
+     *  for those integrations; `allowedScopes` is the host-enforced scope
+     *  boundary the picker mirrors before offering it. */
     Schema.Struct({
       kind: Schema.Literal("first_party"),
       integrations: Schema.optional(Schema.Array(IntegrationSlug)),
+      allowedScopes: Schema.optional(Schema.Array(Schema.String)),
     }),
   ]),
 });

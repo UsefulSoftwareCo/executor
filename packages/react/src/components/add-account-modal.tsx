@@ -1516,6 +1516,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // unrelated provider's app.
     tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
     authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
+    scopes: method?.oauth?.scopes,
     // Recorded intent: a manual app registered from THIS integration's dialog is
     // a tier-1 match regardless of host.
     integration,

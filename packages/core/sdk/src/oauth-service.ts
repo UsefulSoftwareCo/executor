@@ -36,6 +36,7 @@ import {
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
   OAuthStartError,
+  firstPartyOAuthClientAllowsScopes,
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
   type ConnectResult,
@@ -1027,7 +1028,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         tokenUrl: config.tokenUrl,
         resource: null,
         clientId: config.clientId,
-        origin: { kind: "first_party", integrations: config.integrations ?? [] },
+        origin: {
+          kind: "first_party",
+          ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
+          ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
+        },
       }),
     );
     return deps.fuma
@@ -1218,6 +1223,22 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             )
           : dedupeScopes(scopePolicy.scopes);
 
+      // An explicitly scope-limited first-party app is an authorization
+      // boundary, not picker decoration. Endpoint matching can associate one
+      // Google client with every Google API, so enforce the complete requested
+      // set here before persisting an OAuth session or redirecting the browser.
+      if (firstPartyFlow) {
+        const firstParty = firstPartyBySlug.get(String(input.client));
+        if (
+          firstParty !== undefined &&
+          !firstPartyOAuthClientAllowsScopes(firstParty, requestedScopes)
+        ) {
+          return yield* new OAuthStartError({
+            message: `The built-in OAuth app is not enabled for integration ${input.integration}.`,
+          });
+        }
+      }
+
       // client_credentials: exchange immediately and mint the connection.
       if (client.grant === "client_credentials") {
         const token = yield* exchangeClientCredentials({
@@ -1398,6 +1419,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           message: `OAuth client not found: ${session.clientSlug}`,
           restartRequired: true,
         });
+      }
+      if (isFirstPartyOAuthClientSlug(String(session.clientSlug))) {
+        const firstParty = firstPartyBySlug.get(String(session.clientSlug));
+        if (
+          firstParty !== undefined &&
+          firstParty.allowedScopes !== undefined &&
+          (session.requestedScopes === null ||
+            !firstPartyOAuthClientAllowsScopes(firstParty, session.requestedScopes))
+        ) {
+          return yield* new OAuthCompleteError({
+            message: `The built-in OAuth app is no longer enabled for integration ${session.integration}; restart the flow.`,
+            restartRequired: true,
+          });
+        }
       }
 
       // The PKCE verifier is minted by `start` for every authorization_code

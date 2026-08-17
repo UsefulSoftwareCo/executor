@@ -42,6 +42,7 @@ import {
   PluginsProvider,
   collectTables,
 } from "@executor-js/api/server";
+import { googleCatalogOAuthScopesForPreset } from "@executor-js/plugin-openapi/providers/google";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 import type { AnyPlugin, FirstPartyOAuthClientConfig } from "@executor-js/sdk";
 
@@ -88,6 +89,17 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
  */
 export const CLOUD_MOUNT_PREFIX = "/api" as const;
 
+// Initial Google launch boundary. Calendar + Sheets are sensitive scopes but
+// not restricted Workspace scopes; Gmail and account-wide Drive remain absent
+// until their separate verification/security work is complete. The same scope
+// source builds the catalog auth templates, preventing config drift.
+const GOOGLE_FIRST_PARTY_ALLOWED_SCOPES: readonly string[] = [
+  ...new Set([
+    ...googleCatalogOAuthScopesForPreset("google-calendar"),
+    ...googleCatalogOAuthScopesForPreset("google-sheets"),
+  ]),
+];
+
 // Executor-owned provider apps, enabled per provider by setting BOTH env vars
 // (id + secret). Each provider-side registration must list
 // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback` as its callback; the org slug
@@ -119,6 +131,7 @@ const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] =
           tokenUrl: "https://oauth2.googleapis.com/token",
           clientId: env.FIRST_PARTY_GOOGLE_CLIENT_ID,
           clientSecret: env.FIRST_PARTY_GOOGLE_CLIENT_SECRET,
+          allowedScopes: GOOGLE_FIRST_PARTY_ALLOWED_SCOPES,
         },
       ]
     : []),

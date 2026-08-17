@@ -104,6 +104,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // complete authorize → token dance instead of stopping at github.com.
     FIRST_PARTY_GITHUB_AUTHORIZE_URL: process.env.FIRST_PARTY_GITHUB_AUTHORIZE_URL,
     FIRST_PARTY_GITHUB_TOKEN_URL: process.env.FIRST_PARTY_GITHUB_TOKEN_URL,
+    // Fake Google registration for redirect-only first-party coverage. The
+    // scenario never visits Google or exchanges a code; it proves cloud env,
+    // scope policy, and authorization URL construction end to end.
+    FIRST_PARTY_GOOGLE_CLIENT_ID: "e2e-first-party-google",
+    FIRST_PARTY_GOOGLE_CLIENT_SECRET: "e2e-first-party-google-secret",
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real
     // executions — but see execution-limits.ts: it must stay above every other

@@ -88,6 +88,10 @@ export type OAuthClientOrigin =
        *  one Google app deliberately backs gmail, calendar, drive, …. */
       readonly kind: "first_party";
       readonly integrations?: readonly IntegrationSlug[];
+      /** OAuth scopes this deployment permits the app to request. Omitted means
+       *  the provider app is unrestricted; present means every requested scope
+       *  must be in this set. This is public policy metadata, not a secret. */
+      readonly allowedScopes?: readonly string[];
     };
 
 /** Slug namespace separating config-declared first-party apps from stored
@@ -122,7 +126,23 @@ export interface FirstPartyOAuthClientConfig {
    *  exact-match default for those integrations. Endpoint-host matching still
    *  applies when omitted. */
   readonly integrations?: readonly IntegrationSlug[];
+  /** OAuth scopes this deployment permits the app to request. Omit to allow
+   *  every scope declared by a matching integration. When present, OAuth start
+   *  and completion fail unless every requested scope belongs to this set. */
+  readonly allowedScopes?: readonly string[];
 }
+
+/** Whether a first-party app may request an integration's complete OAuth scope
+ *  set. An omitted policy preserves provider-wide clients; an explicit policy
+ *  is fail-closed and requires every requested scope to be listed. */
+export const firstPartyOAuthClientAllowsScopes = (
+  config: Pick<FirstPartyOAuthClientConfig, "allowedScopes">,
+  requestedScopes: readonly string[],
+): boolean => {
+  if (config.allowedScopes === undefined) return true;
+  const allowed = new Set(config.allowedScopes);
+  return requestedScopes.every((scope) => allowed.has(scope));
+};
 
 export type CreateOAuthClientInput = OAuthClient & {
   /** Stored-row origins only — `first_party` is config-declared, never created

@@ -53,6 +53,19 @@ export const isDcrClient = (app: OAuthClientOption): boolean =>
 export const isFirstPartyClient = (app: OAuthClientOption): boolean =>
   app.origin.kind === "first_party";
 
+/** Mirror the host's first-party scope boundary in the picker. The server is
+ *  authoritative; this prevents offering a built-in app for a flow it will
+ *  reject. An explicit policy with unknown scopes fails closed. */
+const firstPartyClientAllowsScopes = (
+  app: OAuthClientOption,
+  requestedScopes: readonly string[] | undefined,
+): boolean => {
+  if (app.origin.kind !== "first_party" || app.origin.allowedScopes === undefined) return true;
+  if (requestedScopes === undefined) return false;
+  const allowed = new Set(app.origin.allowedScopes);
+  return requestedScopes.every((scope) => allowed.has(scope));
+};
+
 const hostOf = (url: string): string | undefined => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input; treat as "no host"
   try {
@@ -162,6 +175,9 @@ export function selectClientsForEndpoints(
     /** The integration whose picker this is. A manual app stamped with this
      *  integration (recorded intent) is a tier-1 match regardless of host. */
     readonly integration?: IntegrationSlug;
+    /** Complete scope set declared by the selected OAuth auth method. Used to
+     *  hide scope-limited first-party apps that the host will reject. */
+    readonly scopes?: readonly string[];
     /** When set, an integration that targets a SPECIFIC server (MCP, whose
      *  endpoints are discovered at connect) must match by endpoint — absent
      *  endpoints mean NO match (show the register CTA), never "every app
@@ -175,7 +191,9 @@ export function selectClientsForEndpoints(
   readonly endpointMatched: boolean;
 } {
   // DCR clients are plumbing, never picker options.
-  const manual = all.filter((app) => !isDcrClient(app));
+  const manual = all.filter(
+    (app) => !isDcrClient(app) && firstPartyClientAllowsScopes(app, endpoints.scopes),
+  );
 
   const intent = endpoints.integration;
   const matchesIntent = (app: OAuthClientOption): boolean => {
@@ -262,6 +280,7 @@ export function useOAuthClientsForIntegration(opts: {
   readonly tokenUrl?: string;
   readonly authorizationUrl?: string;
   readonly integration?: IntegrationSlug;
+  readonly scopes?: readonly string[];
   readonly requireEndpointMatch?: boolean;
 }): UseOAuthClientsResult {
   // Read the optimistic list so a just-registered/edited/removed app paints
@@ -283,9 +302,17 @@ export function useOAuthClientsForIntegration(opts: {
         tokenUrl: opts.tokenUrl,
         authorizationUrl: opts.authorizationUrl,
         integration: opts.integration,
+        scopes: opts.scopes,
         requireEndpointMatch: opts.requireEndpointMatch,
       }),
-    [all, opts.tokenUrl, opts.authorizationUrl, opts.integration, opts.requireEndpointMatch],
+    [
+      all,
+      opts.tokenUrl,
+      opts.authorizationUrl,
+      opts.integration,
+      opts.scopes,
+      opts.requireEndpointMatch,
+    ],
   );
 
   if (!loaded) {

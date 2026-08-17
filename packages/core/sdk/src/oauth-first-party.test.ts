@@ -176,7 +176,9 @@ describe("first-party oauth clients", () => {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
           plugins,
-          firstPartyOAuthClients: [firstPartyClientFor(server)],
+          firstPartyOAuthClients: [
+            { ...firstPartyClientFor(server), allowedScopes: ["openid", "read"] },
+          ],
         });
         yield* executor.acme.seed();
 
@@ -193,9 +195,41 @@ describe("first-party oauth clients", () => {
         const clients = yield* executor.oauth.listClients();
         expect(clients.map((c) => String(c.slug))).toEqual(["first-party:acme", "byo-app"]);
         const firstParty = clients[0]!;
-        expect(firstParty.origin).toEqual({ kind: "first_party", integrations: [INTEG] });
+        expect(firstParty.origin).toEqual({
+          kind: "first_party",
+          integrations: [INTEG],
+          allowedScopes: ["openid", "read"],
+        });
         expect(firstParty.clientId).toBe("test-client");
         expect("clientSecret" in firstParty).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("a scope-limited first-party app rejects an integration outside its policy", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read", "write"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [{ ...firstPartyClientFor(server), allowedScopes: ["read"] }],
+        });
+        yield* executor.acme.seed(["write"]);
+
+        const error = yield* executor.oauth
+          .start({
+            owner: "org",
+            client: FIRST_PARTY,
+            clientOwner: "org",
+            name: ConnectionName.make("blocked"),
+            integration: INTEG,
+            template: TEMPLATE,
+          })
+          .pipe(Effect.flip);
+
+        expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
+        const startError = error as OAuthStartError;
+        expect(startError.message).toContain("not enabled for integration acme");
       }),
     ),
   );
