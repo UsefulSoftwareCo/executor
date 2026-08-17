@@ -173,51 +173,8 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
   traceRequest: traceCloudMcpRequest,
 });
 
-// ---------------------------------------------------------------------------
-// Start server-graph warmup
-//
-// TanStack Start's server entry loads the router and start instance behind a
-// dynamic import on the first Start-handled request per isolate
-// (start-server-core's `loadEntries`). That graph is the whole app bundle
-// (React SSR + the Effect app), so the request that pays the load stalls for
-// seconds on production metal. Under heavy MCP traffic the worker spreads
-// across enough isolates that nearly every page/asset request IS such a first
-// request — the 2026-08-16 session-reset reconnect storm took the homepage
-// p50 from ~15ms to ~2.6s exactly this way.
-//
-// So: on each isolate's first fetch, kick the same imports off in the
-// background. MCP traffic then pre-warms an isolate long before a page
-// request reaches it. The specifiers are the virtual module ids the Start
-// vite plugin registers for `loadEntries`' own imports, so both resolve to
-// the same chunk and `loadEntries`' cache finds it already evaluated.
-//
-// Deliberately NOT at module scope: a full warmup there trips workerd's
-// global-scope I/O restriction, and DO-only isolates should not carry the
-// SSR graph in memory.
-// ---------------------------------------------------------------------------
-let startGraphWarm = false;
-let startGraphWarmupStarted = false;
-const warmStartGraph = () => {
-  if (startGraphWarmupStarted) return;
-  startGraphWarmupStarted = true;
-  // oxlint-disable-next-line executor/no-promise-catch -- adapter boundary; fire-and-forget warmup outside any Effect runtime
-  void Promise.all([import("#tanstack-router-entry"), import("#tanstack-start-entry")])
-    .then(() => {
-      startGraphWarm = true;
-    })
-    .catch(() => {
-      // Advisory only — the request path still loads the graph lazily.
-      startGraphWarmupStarted = false;
-    });
-};
-
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
-    warmStartGraph();
-    // Captured before any await: whether the Start graph was already
-    // evaluated when this request arrived (stamped on the page span below —
-    // a cold graph is the known multi-second page-latency mode).
-    const startGraphWasWarm = startGraphWarm;
     // Browser OTLP ingress — before the server span opens: exporter traffic
     // must never trace itself (the browser already excludes /v1/traces from
     // its own tracing for the same reason).
@@ -277,7 +234,6 @@ const cloudflareHandler: ExportedHandler<Env> = {
         span.setAttribute(ATTR_URL_FULL, request.url);
         span.setAttribute(ATTR_URL_PATH, url.pathname);
         span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
-        span.setAttribute("executor.start_graph.warm", startGraphWasWarm);
         // Adapter boundary: Cloudflare's fetch handler is a Promise-based
         // callback and the OTel span lifecycle needs to observe both the
         // resolved response and any thrown error before `span.end()`. Sentry's
