@@ -92,13 +92,20 @@ export const CLOUD_MOUNT_PREFIX = "/api" as const;
 // (id + secret). Each provider-side registration must list
 // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback` as its callback; the org slug
 // travels inside OAuth `state`, so the single static callback serves every org.
+//
+// The endpoint URLs default to the real provider; the `_AUTHORIZE_URL` /
+// `_TOKEN_URL` overrides exist so tests and dev instances can point the app at
+// an emulated provider (`@executor-js/emulate`) and run the complete flow.
+// Production leaves them unset.
 const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] => [
   ...(env.FIRST_PARTY_GITHUB_CLIENT_ID && env.FIRST_PARTY_GITHUB_CLIENT_SECRET
     ? [
         {
           name: "github",
-          authorizationUrl: "https://github.com/login/oauth/authorize",
-          tokenUrl: "https://github.com/login/oauth/access_token",
+          authorizationUrl:
+            env.FIRST_PARTY_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize",
+          tokenUrl:
+            env.FIRST_PARTY_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
           clientId: env.FIRST_PARTY_GITHUB_CLIENT_ID,
           clientSecret: env.FIRST_PARTY_GITHUB_CLIENT_SECRET,
         },

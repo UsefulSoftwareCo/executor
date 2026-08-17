@@ -99,6 +99,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // authorize REDIRECT only (client id + callback), never visits github.com.
     FIRST_PARTY_GITHUB_CLIENT_ID: "e2e-first-party-github",
     FIRST_PARTY_GITHUB_CLIENT_SECRET: "e2e-first-party-github-secret",
+    // Optional endpoint overrides pass through so a dev instance (`cli up
+    // cloud`) can point the first-party app at an emulated GitHub and run the
+    // complete authorize → token dance instead of stopping at github.com.
+    FIRST_PARTY_GITHUB_AUTHORIZE_URL: process.env.FIRST_PARTY_GITHUB_AUTHORIZE_URL,
+    FIRST_PARTY_GITHUB_TOKEN_URL: process.env.FIRST_PARTY_GITHUB_TOKEN_URL,
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real
     // executions — but see execution-limits.ts: it must stay above every other
