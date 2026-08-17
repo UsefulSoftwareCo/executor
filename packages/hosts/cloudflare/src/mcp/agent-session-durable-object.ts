@@ -1115,6 +1115,27 @@ export abstract class McpAgentSessionDOBase<
     return typeof streamId === "string" ? streamId : null;
   }
 
+  /**
+   * Whether the stream named by `lastEventId` still has a request awaiting
+   * its response. SAFETY: reads the transport's pinned
+   * `_requestToStreamMapping` for the same reason `requestStreamId` and
+   * `supersedeReplayStream` do — the SDK exposes no public pending-request
+   * probe.
+   */
+  private async lastEventIdStreamHasPendingRequest(
+    transport: WebStandardStreamableHTTPServerTransport,
+    lastEventId: string,
+  ): Promise<boolean> {
+    const streamId = await this.eventStore.getStreamIdForEventId(lastEventId);
+    if (!streamId) return false;
+    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
+    if (!(mapping instanceof Map)) return false;
+    for (const mappedStreamId of mapping.values()) {
+      if (mappedStreamId === streamId) return true;
+    }
+    return false;
+  }
+
   private async supersedeReplayStream(
     transport: WebStandardStreamableHTTPServerTransport,
     lastEventId: string,
@@ -1215,9 +1236,16 @@ export abstract class McpAgentSessionDOBase<
       }
       if (request.method === "GET") {
         const lastEventId = request.headers.get("last-event-id");
-        const resumeHasPendingEvents =
-          lastEventId !== null && (await this.eventStore.hasEventsAfter(lastEventId));
-        if (lastEventId && resumeHasPendingEvents) {
+        // A reconnect id is only "drained" when the stream has no stored
+        // events after it AND no request still in flight on it. An in-flight
+        // tool call has produced no events past the priming frame yet, but
+        // its POST stream must still be resumed so the eventual result lands
+        // on this connection (the severed-POST recovery contract).
+        const resumable =
+          lastEventId !== null &&
+          ((await this.eventStore.hasEventsAfter(lastEventId)) ||
+            (await this.lastEventIdStreamHasPendingRequest(transport, lastEventId)));
+        if (lastEventId && resumable) {
           await this.supersedeReplayStream(transport, lastEventId);
         } else {
           // Standalone listener path — taken for a bare GET AND for a GET
