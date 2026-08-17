@@ -14,6 +14,7 @@ const MARKETING_PATHS = [
   "/setup",
   "/privacy",
   "/terms",
+  "/about-executor",
   "/google-oauth",
   "/google-workspace",
   "/blog",
