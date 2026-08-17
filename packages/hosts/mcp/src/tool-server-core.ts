@@ -196,6 +196,30 @@ type SharedMcpServerConfig = {
    * restore. Best-effort: failures are swallowed and never affect the session.
    */
   readonly onAppsEnabledChange?: (appsEnabled: boolean) => Effect.Effect<void>;
+  /**
+   * The client identity self-reported at a previous `initialize` (or in a
+   * modern request's `_meta`), restored for the same reason as
+   * {@link restoredAppsEnabled}. Feeds only the `mcp.client.*` span
+   * attributes on execution spans, never behavior or security decisions.
+   */
+  readonly restoredClientInfo?: McpClientInfo;
+  /**
+   * Called when `initialize` reports the client identity, so the host can
+   * persist it for {@link restoredClientInfo} on a later cold restore.
+   * Best-effort: failures are swallowed and never affect the session.
+   */
+  readonly onClientInfoChange?: (clientInfo: McpClientInfo) => Effect.Effect<void>;
+};
+
+/**
+ * Client software identity as self-reported over MCP (`clientInfo` at
+ * `initialize`, `_meta` on modern requests). Display and telemetry vocabulary
+ * only: the spec forbids relying on it for behavior or security.
+ */
+export type McpClientInfo = {
+  readonly name: string;
+  readonly version?: string;
+  readonly title?: string;
 };
 
 /**
@@ -340,6 +364,8 @@ export type ExecutorMcpAssembly<Server, RequestContext extends McpRequestJoinKey
   readonly server: Server;
   readonly initialAppsEnabled: boolean;
   readonly getClientCapabilities: () => unknown | null;
+  /** The live `initialize`-reported client identity, when the SDK has one. */
+  readonly getClientInfo: () => McpClientInfo | null;
   readonly getElicitationSupport: () => { readonly form: boolean; readonly url: boolean };
   readonly getUiCapability: () => { readonly mimeTypes?: readonly string[] } | undefined;
   readonly onInitialized: (callback: () => void) => void;
@@ -782,6 +808,21 @@ const joinKeyAttributes = (joinKeys: McpRequestJoinKeys): Record<string, unknown
   "mcp.request.session_id": joinKeys.sessionId ?? "",
 });
 
+// Client identity uses the same `mcp.client.*` vocabulary as the cloud
+// worker's `initialize` fingerprint (`annotateMcpRequest`), so execution spans
+// segment by client directly instead of through a session join that `initialize`
+// (which has no session id yet) cannot satisfy. Absent means no key at all, not
+// an empty string, when no `initialize` was seen and nothing was restored:
+// unknown is real state here, unlike the always-present session key above.
+const clientInfoAttributes = (clientInfo: McpClientInfo | null): Record<string, unknown> =>
+  clientInfo === null
+    ? {}
+    : {
+        "mcp.client.name": clientInfo.name,
+        ...(clientInfo.version !== undefined ? { "mcp.client.version": clientInfo.version } : {}),
+        ...(clientInfo.title !== undefined ? { "mcp.client.title": clientInfo.title } : {}),
+      };
+
 const startMarker = (name: string, attributes: Record<string, unknown>): Effect.Effect<void> =>
   Effect.void.pipe(Effect.withSpan(name, { attributes }));
 
@@ -1110,6 +1151,15 @@ export const buildExecutorMcpTools = <
     );
     const server = assembly.server;
 
+    // Seeded from the host's persisted copy; a live `initialize` on this
+    // instance replaces it via `syncClientInfo` below. Read lazily at each
+    // tool call so spans always carry the newest identity.
+    let clientInfo: McpClientInfo | null = config.restoredClientInfo ?? null;
+    const requestSpanAttributes = (joinKeys: McpRequestJoinKeys): Record<string, unknown> => ({
+      ...joinKeyAttributes(joinKeys),
+      ...clientInfoAttributes(clientInfo),
+    });
+
     const executeWithNativeElicitation = (
       code: string,
       extra: RequestContext,
@@ -1179,7 +1229,7 @@ export const buildExecutorMcpTools = <
             "mcp.execute.code_length": code.length,
           },
         }),
-        Effect.annotateSpans(joinKeyAttributes(extra)),
+        Effect.annotateSpans(requestSpanAttributes(extra)),
       );
 
     /** What the caller could bind an unresolved role to. Best effort: the
@@ -1340,7 +1390,7 @@ export const buildExecutorMcpTools = <
             "mcp.execute.execution_id": executionId,
           },
         }),
-        Effect.annotateSpans(joinKeyAttributes(extra)),
+        Effect.annotateSpans(requestSpanAttributes(extra)),
       );
 
     const requireUserResumeApproval = (executionId: string): Effect.Effect<McpToolResult> =>
@@ -1419,7 +1469,7 @@ export const buildExecutorMcpTools = <
             "mcp.execute.execution_id": executionId,
           },
         }),
-        Effect.annotateSpans(joinKeyAttributes(extra)),
+        Effect.annotateSpans(requestSpanAttributes(extra)),
       );
 
     // --- tools ---
@@ -2169,9 +2219,35 @@ export const buildExecutorMcpTools = <
       });
     };
 
+    // Client identity arrives with the same `initialize` that carries the
+    // capabilities above. An absent live value (cold restore, construction
+    // time) is not evidence the client changed, so the restored value stands,
+    // the same asymmetry `syncToolAvailability` documents for capabilities.
+    const syncClientInfo = () => {
+      const live = assembly.getClientInfo();
+      if (live === null) return;
+      const changed =
+        live.name !== clientInfo?.name ||
+        live.version !== clientInfo?.version ||
+        live.title !== clientInfo?.title;
+      if (!changed) return;
+      clientInfo = live;
+      const onClientInfoChange = config.onClientInfoChange;
+      if (onClientInfoChange) {
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: `oninitialized` is a sync SDK hook; persistence is fire-and-forget and its failure must not fail the session
+        void Effect.runPromiseWith(context)(
+          onClientInfoChange(live).pipe(Effect.ignoreCause({ log: false })),
+        );
+      }
+    };
+
     yield* Effect.sync(() => {
       syncToolAvailability();
-      assembly.onInitialized(syncToolAvailability);
+      syncClientInfo();
+      assembly.onInitialized(() => {
+        syncToolAvailability();
+        syncClientInfo();
+      });
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
 
     return server;

@@ -379,6 +379,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        // Same restore contract for the client identity that keys the
+        // `mcp.client.*` span attribution on execution spans.
+        ...(sessionMeta.clientInfo ? { restoredClientInfo: sessionMeta.clientInfo } : {}),
+        onClientInfoChange: (clientInfo) => self.persistClientInfo(clientInfo),
         appsEnabled: false,
         sessionful: true,
         requestStateSigningKey: self.modernRequestStateSigningKey(),

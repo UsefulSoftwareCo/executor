@@ -24,11 +24,13 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequestBody,
+  clientInfoFromRequestBody,
   mcpRequestStateBindingFromBody,
   PAUSED_APPROVAL_TIMEOUT_MS,
   formatMcpExecutionOutcome,
   mcpRequestStatePrincipal,
   requestBodyFromRequest,
+  type McpClientInfo,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
@@ -147,6 +149,14 @@ export interface SessionMeta {
    * unknown, which behaves as disabled until the next `initialize`.
    */
   readonly appsEnabled?: boolean;
+  /**
+   * The client identity (`clientInfo`) self-reported at `initialize` or in a
+   * modern request's `_meta`. Persisted for the same reason as
+   * {@link appsEnabled}: a cold-restored server never sees an `initialize`,
+   * and without this the execution spans' `mcp.client.*` attribution vanishes
+   * mid-conversation. Telemetry/display only, never behavior.
+   */
+  readonly clientInfo?: McpClientInfo;
   /** Creation time of this session, retained across isolate eviction. */
   readonly createdAtMs?: number;
 }
@@ -164,6 +174,8 @@ export interface ModernMcpServerRequestOptions {
   readonly requestStateSigningKey: Uint8Array | string;
   readonly requestStatePrincipal: string;
   readonly requestStateBinding?: string;
+  /** Client identity for span attribution: this request's `_meta`, else the session's persisted copy. */
+  readonly restoredClientInfo?: McpClientInfo;
 }
 
 /** Long-lived DO execution runtime shared by per-request MCP servers. */
@@ -515,6 +527,34 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
+  /**
+   * Persist the client identity self-reported at `initialize` (or in a modern
+   * request's `_meta`), so a cold restore keeps span attribution. Subclasses
+   * hand this to `buildMcpServer` as `onClientInfoChange`; the modern request
+   * path calls it directly. Same no-op-before-meta contract as
+   * {@link persistAppsEnabled}.
+   */
+  protected persistClientInfo(clientInfo: McpClientInfo): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      const stored = yield* self.loadSessionMeta();
+      if (
+        !stored ||
+        (stored.clientInfo?.name === clientInfo.name &&
+          stored.clientInfo?.version === clientInfo.version &&
+          stored.clientInfo?.title === clientInfo.title)
+      ) {
+        return;
+      }
+      yield* Effect.promise(() => self.saveSessionMeta({ ...stored, clientInfo }));
+    }).pipe(
+      Effect.withSpan("mcp.session.persist_client_info", {
+        attributes: { "mcp.client.name": clientInfo.name },
+      }),
+      Effect.ignoreCause({ log: false }),
+    );
+  }
+
   private async markActivity(now = Date.now()): Promise<void> {
     this.lastActivityMs = now;
     const key =
@@ -606,6 +646,7 @@ export abstract class McpAgentSessionDOBase<
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
         appsEnabled: stored?.appsEnabled ?? false,
+        ...(stored?.clientInfo ? { clientInfo: stored.clientInfo } : {}),
         createdAtMs: stored?.createdAtMs ?? Date.now(),
       };
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
@@ -816,6 +857,7 @@ export abstract class McpAgentSessionDOBase<
         const parsedBody = self.modernRequestBodies.get(request);
         const propagation = self.modernRequestPropagation.get(request);
         const capabilities = clientCapabilitiesFromRequestBody(parsedBody);
+        const clientInfo = clientInfoFromRequestBody(parsedBody) ?? sessionMeta.clientInfo;
         return Effect.runPromise(
           Effect.gen(function* () {
             const requestStatePrincipal = mcpRequestStatePrincipal({
@@ -834,6 +876,7 @@ export abstract class McpAgentSessionDOBase<
               requestStateSigningKey: self.modernRequestStateSigningKey(),
               requestStatePrincipal,
               ...(requestStateBinding === null ? {} : { requestStateBinding }),
+              ...(clientInfo === undefined ? {} : { restoredClientInfo: clientInfo }),
             });
           }).pipe(
             (effect) => self.withTelemetry(effect, propagation),
@@ -1280,6 +1323,17 @@ export abstract class McpAgentSessionDOBase<
       return jsonRpcErrorBody(403, -32003, "MCP session does not belong to the current bearer", {
         cors: false,
       });
+    }
+
+    // Modern clients self-report identity per request (`_meta` clientInfo) or
+    // at `initialize`; persist it so meta-less requests and cold restores keep
+    // their span attribution. Best-effort by construction (persistClientInfo
+    // swallows failures) and a storage no-op unless the identity changed.
+    const reportedClientInfo = clientInfoFromRequestBody(parsedBody);
+    if (reportedClientInfo) {
+      await Effect.runPromise(
+        this.withTelemetry(this.persistClientInfo(reportedClientInfo), props.propagation),
+      );
     }
 
     this.modernRequestBodies.set(request, parsedBody);
