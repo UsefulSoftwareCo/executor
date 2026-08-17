@@ -54,9 +54,9 @@ const SAFE_HEADER_NAMES = [
   "x-request-id",
 ] as const;
 
-// `Headers.redact` lowercases stored names and, for a RegExp entry, redacts
-// every name the pattern matches. One negative lookahead turns the allowlist
-// into "redact everything else".
+// Header names are lowercased at `Headers` construction, and `Headers.redact`
+// masks every name a RegExp entry matches. One negative lookahead turns the
+// allowlist into "redact everything else".
 const redactAllButSafe = new RegExp(`^(?!(?:${SAFE_HEADER_NAMES.join("|")})$)`);
 
 export const SpanHeaderRedactionLive: Layer.Layer<never> = Layer.succeed(
