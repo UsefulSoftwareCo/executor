@@ -19,6 +19,10 @@ const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 let db: PGlite | undefined;
 let server: PGLiteSocketServer | undefined;
 
+/**
+ * Starts the cloud unit-test database and returns teardown that releases every
+ * resource without allowing PGlite shutdown to erase Vitest's failure status.
+ */
 export default async function setup() {
   db = await PGlite.create();
   await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
@@ -30,7 +34,11 @@ export default async function setup() {
   console.log(`[test-db] PGlite socket server listening on 127.0.0.1:${PORT}`);
 
   return async () => {
+    // PGlite's shutdown path resets process.exitCode. Preserve Vitest's failure
+    // signal so a red test cannot be reported to Turbo and CI as successful.
+    const testsFailed = process.exitCode === 1;
     await server?.stop();
     await db?.close();
+    if (testsFailed) process.exitCode = 1;
   };
 }
