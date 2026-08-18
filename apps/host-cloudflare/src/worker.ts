@@ -11,8 +11,9 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
-// handler. `/mcp` stays at this edge boundary so the Worker authenticates and
-// binds ownership before forwarding the request to its session Durable Object.
+// handler. `/mcp` and `/mcp/toolkits/<slug>` stay at this edge boundary so the
+// Worker authenticates and binds ownership before forwarding the request to its
+// session Durable Object.
 // ---------------------------------------------------------------------------
 
 let handlerPromise: Promise<{
@@ -47,7 +48,8 @@ export default {
     }
 
     const serve = await resolveHandler(env);
-    if (new URL(request.url).pathname === "/mcp") {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/mcp" || /^\/mcp\/toolkits\/[^/]+$/.test(pathname)) {
       return serve.mcp(request, env, ctx);
     }
     return serve.app(request);

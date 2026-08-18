@@ -7,6 +7,7 @@ import {
   defaultMcpResource,
   type AuthOutcome,
   type McpModernServerBuilder,
+  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
 import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
@@ -131,9 +132,23 @@ const authenticate = (request: Request, authProvider: Layer.Layer<McpAuthProvide
     return { auth, outcome };
   }).pipe(Effect.provide(authProvider));
 
+// The MCP resource the request targets. The worker entry routes both the bare
+// `/mcp` endpoint and `/mcp/toolkits/<slug>` here; everything downstream keys
+// off the resource this returns — the modern router caches one server per
+// resource, and a session Durable Object pins the resource it was opened with
+// for its entire lifetime (it rejects a later request carrying a different one).
+const resourceFromPath = (request: Request): McpResource => {
+  const segments = new URL(request.url).pathname.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits" && segments[2]) {
+    return { kind: "toolkit", slug: segments[2] };
+  }
+  return defaultMcpResource;
+};
+
 const propsForPrincipal = (
   request: Request,
   principal: Principal,
+  resource: McpResource,
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
     const propagation = yield* currentPropagationHeaders(request);
@@ -143,10 +158,7 @@ const propsForPrincipal = (
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
-        // host-cloudflare only routes the bare `/mcp` endpoint to the session
-        // Durable Object (see worker.ts), so it always serves the default
-        // resource.
-        resource: defaultMcpResource,
+        resource,
         webOrigin: new URL(request.url).origin,
       },
       propagation,
@@ -199,13 +211,19 @@ export const makeCloudflareMcpAgentHandler = (
       return renderAuthError(auth, request, outcome);
     }
 
+    // Both eras carry the resource the same way — stamped into the internal
+    // identity header the session DO verifies — so it is resolved once here,
+    // before the era split.
+    const resource = resourceFromPath(request);
     const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
     const era = await classifyMcpProtocolEra(request, parsedBody);
     if (era === "modern") {
       if (env.MCP_2026_07_28_ENABLED === "false") {
         return mcpModernDisabledResponse();
       }
-      const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+      const props = await Effect.runPromise(
+        propsForPrincipal(request, outcome.principal, resource),
+      );
       (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
       const forwarded = withVerifiedIdentityHeaders(
         request,
@@ -213,13 +231,13 @@ export const makeCloudflareMcpAgentHandler = (
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
         },
-        defaultMcpResource,
+        resource,
       );
       return modern.fetch({
         request: forwarded,
         parsedBody,
         principal: outcome.principal,
-        resource: defaultMcpResource,
+        resource,
         props,
         requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
         builder: options.makeModernServerBuilder(env, config, props.session),
@@ -264,7 +282,7 @@ export const makeCloudflareMcpAgentHandler = (
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
         },
-        defaultMcpResource,
+        resource,
       ),
       propagation,
     );
