@@ -213,18 +213,33 @@ const verifySealedSessionLocally = (
   jwks: CachedRemoteJWKSet,
 ): Effect.Effect<LocalSessionVerification, ServiceAdapterError> =>
   Effect.gen(function* () {
+    // Phase timings, not just child spans. `local_verify` is a leaf in
+    // production traces, so a ~3.3s verify has nothing under it to blame —
+    // and it stayed 3.3s after the JWKS fetch was eliminated entirely
+    // (jwks.fetch_count == 0), so the cost is one of the phases below. Under
+    // workerd `Date.now()` only advances at I/O boundaries, which is exactly
+    // what makes a raw span duration misleading here: recording each phase
+    // explicitly says which await the wall-clock actually crossed.
+    const verifyStartedAt = Date.now();
+
+    const unsealStartedAt = Date.now();
     const unsealed = yield* Effect.tryPromise({
       try: () => unsealWorkOSSession(sessionData, cookiePassword),
       catch: (cause) => new LocalSessionCookieError({ cause }),
     }).pipe(
       Effect.catchTag("LocalSessionCookieError", () => Effect.succeed(null as unknown | null)),
+      Effect.withSpan("workos.session.unseal"),
     );
+    const unsealMs = Date.now() - unsealStartedAt;
+    yield* Effect.annotateCurrentSpan({ "verify.unseal_ms": unsealMs });
     if (!unsealed) return { _tag: "InvalidCookie" };
 
+    const decodeStartedAt = Date.now();
     const session = Option.match(decodeSealedSessionPayload(unsealed), {
       onNone: (): SealedSessionPayload | null => null,
       onSome: (payload) => payload,
     });
+    yield* Effect.annotateCurrentSpan({ "verify.decode_ms": Date.now() - decodeStartedAt });
     if (!session) return { _tag: "InvalidCookie" };
 
     // Snapshot the JWKS cache around the verify so the `local_verify` span
@@ -241,10 +256,15 @@ const verifySealedSessionLocally = (
         ? {}
         : { "jwks.cache_age_ms": Date.now() - jwksBefore.fetchedAt }),
     });
+    const jwtStartedAt = Date.now();
     const verified = yield* verifyJwtWithRefreshRetry(session.accessToken, jwks).pipe(
+      Effect.withSpan("workos.session.jwt_verify"),
       Effect.onExit(() => {
         const jwksAfter = jwks.inspect();
+        const finishedAt = Date.now();
         return Effect.annotateCurrentSpan({
+          "verify.jwt_ms": finishedAt - jwtStartedAt,
+          "verify.total_ms": finishedAt - verifyStartedAt,
           // Blocking, not total: under stale-while-revalidate a background
           // refresh moves `fetchCount` without costing this verify anything.
           // Attribute latency to what the caller actually waited on.
