@@ -257,7 +257,12 @@ const connectClient = (input: {
     const transportInstance = input.createTransport();
 
     yield* Effect.tryPromise({
-      try: () => client.connect(transportInstance),
+      // Interruption (an HTTP 499 cancelling a health check, the discovery
+      // timeout) aborts this signal; the SDK then fails the in-flight
+      // handshake and closes the transport. Without it the abandoned connect
+      // kept the spawned stdio child alive forever; `docker run -i --rm`
+      // integrations stranded a container per interrupted dial (#1631).
+      try: (signal) => client.connect(transportInstance, { signal }),
       catch: (cause) =>
         connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
     }).pipe(
