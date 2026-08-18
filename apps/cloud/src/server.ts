@@ -134,6 +134,22 @@ const fetchHandler = async (
   // 0ms for work that actually took seconds — which is exactly what the
   // first run of this probe showed (handlerMs 0 against 6002ms wall).
   await scheduler.wait(0);
+
+  // "First Start request in this isolate" does TWO things: it evaluates the
+  // 2.56MB module graph, and it builds the app's Effect layers (DB, WorkOS)
+  // for the first time. Those have different fixes, so time them apart.
+  // Importing the same virtual ids `loadEntries` uses means its cache finds
+  // the module already evaluated, so `handlerMs` below excludes the load.
+  const moduleStartedAt = Date.now();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
+  try {
+    await Promise.all([import("#tanstack-router-entry"), import("#tanstack-start-entry")]);
+  } catch {
+    // ignored — the timing is the signal
+  }
+  await scheduler.wait(0);
+  const moduleMs = Date.now() - moduleStartedAt;
+
   const startedAt = Date.now();
   const response = await rawFetchHandler(request, env, ctx);
   await scheduler.wait(0);
@@ -143,6 +159,7 @@ const fetchHandler = async (
       probe: "start-graph",
       path: new URL(request.url).pathname,
       wasWarm,
+      moduleMs,
       handlerMs,
     }),
   );
