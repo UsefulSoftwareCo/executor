@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
 import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
@@ -268,13 +268,27 @@ scenario(
           ).toBe("healthy");
         }
 
-        const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
-        for (const row of rows) {
-          expect(
-            ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
-            `${row.presetName} health check reached the Google emulator`,
-          ).toBe(true);
-        }
+        // The hosted emulator acknowledges a request before its ledger entry
+        // is readable, so a single list right after the probe races the write
+        // (the health checks above already came back healthy, which only the
+        // emulator can answer). Poll until every expected operation is
+        // visible; on timeout the assertion names what never arrived.
+        const missing = yield* Effect.gen(function* () {
+          const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
+          return rows.filter(
+            (row) => !ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+          );
+        }).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("500 millis"),
+            until: (unseen) => unseen.length === 0,
+            times: 19,
+          }),
+        );
+        expect(
+          missing.map((row) => row.presetName),
+          "every health check reached the Google emulator",
+        ).toEqual([]);
       }),
       Effect.gen(function* () {
         for (const row of rows) {
