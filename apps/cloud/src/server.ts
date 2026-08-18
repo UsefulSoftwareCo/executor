@@ -179,6 +179,32 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    // TEMPORARY DIAGNOSTIC (Aug 2026 latency hunt).
+    //
+    // workerd freezes `Date.now()` and only advances it when I/O completes, so
+    // every `Date.now()` delta taken ACROSS the first I/O of a request silently
+    // includes all wall-clock since the request started — queueing, isolate
+    // start, module evaluation. That is why per-phase timings kept reporting
+    // 0ms for everything up to the first await and then a multi-second number
+    // for whichever await happened to be first: the instrument was measuring
+    // the clock jump, not the operation.
+    //
+    // `scheduler.wait(0)` is an I/O boundary, so awaiting it here forces the
+    // clock forward before any real work. The delta it absorbs IS the
+    // pre-work time (queue + start + module eval); every measurement after it
+    // is honest.
+    const entryPinned = Date.now();
+    await scheduler.wait(0);
+    const preWorkMs = Date.now() - entryPinned;
+    const probeUrl = new URL(request.url);
+    console.log(
+      JSON.stringify({
+        probe: "clock-sync",
+        path: probeUrl.pathname,
+        preWorkMs,
+      }),
+    );
+
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
