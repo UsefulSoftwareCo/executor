@@ -202,7 +202,8 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // answer whether the multi-second cost is specific to the Cache API or
     // hits every outbound subrequest from this Worker.
     const cacheStartedAt = Date.now();
-    await caches.default.match("https://executor.sh/__probe_never_cached");
+    const probeCaches = caches as CacheStorage & { readonly default?: Cache };
+    await probeCaches.default?.match("https://executor.sh/__probe_never_cached");
     const cacheProbeMs = Date.now() - cacheStartedAt;
 
     const timerStartedAt = Date.now();
