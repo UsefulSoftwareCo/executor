@@ -261,6 +261,15 @@ const connectClient = (input: {
       catch: (cause) =>
         connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
     }).pipe(
+      // The negotiated era ("modern" = 2026-07-28 server/discover, "legacy" =
+      // 2025 initialize) is otherwise invisible: both eras list and call tools
+      // identically, so traces are the one place an integration author can
+      // verify which handshake a connection actually used.
+      Effect.tap(() =>
+        Effect.annotateCurrentSpan({
+          "plugin.mcp.protocol_era": client.getProtocolEra() ?? "unknown",
+        }),
+      ),
       Effect.withSpan("plugin.mcp.connection.handshake", {
         attributes: { "plugin.mcp.transport": input.transport },
       }),
@@ -299,6 +308,12 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
       return yield* connectClient({
         transport: "stdio",
+        // Opt-in per integration (default legacy) — see
+        // `McpStdioVersionNegotiation` for why stdio does not follow the
+        // remote transport's unconditional auto.
+        ...(input.versionNegotiation === "auto"
+          ? { versionNegotiation: { mode: "auto" as const } }
+          : {}),
         createTransport: () =>
           createStdioTransport({
             command,
@@ -318,9 +333,10 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
-  // Auto-negotiate the 2026-07-28 era only on Streamable HTTP. SSE is a
-  // legacy-only transport, and stdio servers are spawned per call where the
-  // SDK recommends retaining its legacy-default handshake.
+  // Auto-negotiate the 2026-07-28 era unconditionally only on Streamable
+  // HTTP. SSE is a legacy-only transport; stdio negotiates per the
+  // integration's `versionNegotiation` (default legacy — see the stdio
+  // branch above).
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
     versionNegotiation: { mode: "auto" },

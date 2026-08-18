@@ -31,6 +31,20 @@ export type McpRemoteTransport = typeof McpRemoteTransport.Type;
 export const McpTransport = Schema.Literals(["streamable-http", "sse", "stdio", "auto"]);
 export type McpTransport = typeof McpTransport.Type;
 
+/** Protocol-version negotiation for a stdio server, mirroring the client
+ *  SDK's `versionNegotiation` modes. `legacy` (the default when absent) opens
+ *  with the 2025 `initialize` handshake; `auto` probes `server/discover`
+ *  (spec 2026-07-28) and falls back to `initialize` on legacy servers.
+ *
+ *  Deliberately opt-in, unlike remote streamable HTTP where `auto` is
+ *  unconditional: the SDK's stdio probe runs on a short-lived sibling
+ *  process, and a legacy server that never answers the probe stalls connect
+ *  for the full probe timeout — the wrong default for spawn-per-call CLI
+ *  servers, and exactly the case the SDK's own guidance says to keep on the
+ *  legacy handshake unless the server is known-modern. */
+export const McpStdioVersionNegotiation = Schema.Literals(["legacy", "auto"]);
+export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
+
 // ---------------------------------------------------------------------------
 // Auth methods — the shared placements vocabulary (`@executor-js/sdk/http-auth`)
 // plus MCP's own oauth variant. An integration declares zero or more methods,
@@ -208,6 +222,9 @@ export const McpStdioIntegrationConfig = Schema.Struct({
   env: Schema.optional(StringMap),
   /** Working directory */
   cwd: Schema.optional(Schema.String),
+  /** Protocol negotiation at connect. Absent means `legacy` (see
+   *  `McpStdioVersionNegotiation` for why that stays the default). */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
   /** Declared auth methods — a single `stdio_env` method naming the secret env
    *  vars, or `none`. A connection's `template` picks one by slug, exactly as
    *  for remote servers. Optional so pre-revamp stdio configs (which had no
