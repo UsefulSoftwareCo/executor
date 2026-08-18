@@ -13,6 +13,7 @@ import handler from "@tanstack/react-start/server-entry";
 
 import { isAppOwnedPath } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
+import { passthroughResponse } from "./edge/passthrough";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
@@ -102,69 +103,11 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const rawFetchHandler = handler.fetch as (
+const fetchHandler = handler.fetch as (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
-
-// TEMPORARY DIAGNOSTIC (Aug 2026 latency hunt).
-//
-// The standing explanation is that Start's lazy `loadEntries` import of the
-// 2.56MB server graph costs seconds on the first Start-handled request per
-// isolate. That does not fit the numbers: module evaluation is CPU work, but
-// these requests report 45-72ms of CPU against 4s of wall time.
-//
-// So distinguish the two directly. `wasWarm` is false only for the FIRST
-// Start-handled request in this isolate — the one that pays the module load.
-// If cold requests are slow and warm ones are fast, the graph load is real.
-// If both are slow, the cost is per-request work inside Start/Effect and the
-// module-load story is wrong.
-let startHandledInThisIsolate = false;
-
-const fetchHandler = async (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-): Promise<Response> => {
-  const wasWarm = startHandledInThisIsolate;
-  startHandledInThisIsolate = true;
-  // Sync the clock on BOTH sides. Without the trailing `scheduler.wait(0)`,
-  // a handler that performs no I/O leaves `Date.now()` pinned and reports
-  // 0ms for work that actually took seconds — which is exactly what the
-  // first run of this probe showed (handlerMs 0 against 6002ms wall).
-  await scheduler.wait(0);
-
-  // "First Start request in this isolate" does TWO things: it evaluates the
-  // 2.56MB module graph, and it builds the app's Effect layers (DB, WorkOS)
-  // for the first time. Those have different fixes, so time them apart.
-  // Importing the same virtual ids `loadEntries` uses means its cache finds
-  // the module already evaluated, so `handlerMs` below excludes the load.
-  const moduleStartedAt = Date.now();
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
-  try {
-    await Promise.all([import("#tanstack-router-entry"), import("#tanstack-start-entry")]);
-  } catch {
-    // ignored — the timing is the signal
-  }
-  await scheduler.wait(0);
-  const moduleMs = Date.now() - moduleStartedAt;
-
-  const startedAt = Date.now();
-  const response = await rawFetchHandler(request, env, ctx);
-  await scheduler.wait(0);
-  const handlerMs = Date.now() - startedAt;
-  console.log(
-    JSON.stringify({
-      probe: "start-graph",
-      path: new URL(request.url).pathname,
-      wasWarm,
-      moduleMs,
-      handlerMs,
-    }),
-  );
-  return response;
-};
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
@@ -237,90 +180,6 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
-    // TEMPORARY DIAGNOSTIC (Aug 2026 latency hunt).
-    //
-    // workerd freezes `Date.now()` and only advances it when I/O completes, so
-    // every `Date.now()` delta taken ACROSS the first I/O of a request silently
-    // includes all wall-clock since the request started — queueing, isolate
-    // start, module evaluation. That is why per-phase timings kept reporting
-    // 0ms for everything up to the first await and then a multi-second number
-    // for whichever await happened to be first: the instrument was measuring
-    // the clock jump, not the operation.
-    //
-    // `scheduler.wait(0)` is an I/O boundary, so awaiting it here forces the
-    // clock forward before any real work. The delta it absorbs IS the
-    // pre-work time (queue + start + module eval); every measurement after it
-    // is honest.
-    const entryPinned = Date.now();
-    await scheduler.wait(0);
-    const preWorkMs = Date.now() - entryPinned;
-    const probeUrl = new URL(request.url);
-
-    // With the clock synced above, these two deltas are real durations. They
-    // answer whether the multi-second cost is specific to the Cache API or
-    // hits every outbound subrequest from this Worker.
-    const cacheStartedAt = Date.now();
-    const probeCaches = caches as CacheStorage & { readonly default?: Cache };
-    await probeCaches.default?.match("https://executor.sh/__probe_never_cached");
-    const cacheProbeMs = Date.now() - cacheStartedAt;
-
-    const timerStartedAt = Date.now();
-    await scheduler.wait(1);
-    const timerProbeMs = Date.now() - timerStartedAt;
-
-    // The cache and timer probes are LOCAL. Neither leaves the isolate, and
-    // both come back in single-digit ms while the same requests take 4-6s.
-    // This one is a real outbound network subrequest to a small, fast,
-    // unrelated endpoint — the only class of I/O not yet measured, and the
-    // one the docs proxy (0.098s direct, 3-6s through the Worker) implicates.
-    const fetchStartedAt = Date.now();
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
-    try {
-      await fetch("https://cloudflare.com/cdn-cgi/trace", { method: "GET" });
-    } catch {
-      // ignored — the timing is the signal, not the result
-    }
-    const fetchProbeMs = Date.now() - fetchStartedAt;
-
-    // `fetch()` above resolves when HEADERS arrive — it never reads a body,
-    // which is why it returns in ~1ms while the request it lives in takes
-    // seconds. Both genuinely slow operations read a body: the docs proxy
-    // reads a 179KB page, and the JWKS store does `hit.json()`. Split header
-    // time from body time on the exact URL the docs proxy uses.
-    //
-    // Gated to one cheap path so normal traffic never pays for the probe.
-    let bodyHeadersMs = -1;
-    let bodyReadMs = -1;
-    let bodyBytes = -1;
-    if (probeUrl.pathname === "/robots.txt") {
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
-      try {
-        const h0 = Date.now();
-        const probeRes = await fetch("https://executor.mintlify.dev/docs/concepts/policies");
-        bodyHeadersMs = Date.now() - h0;
-        const b0 = Date.now();
-        const text = await probeRes.text();
-        bodyReadMs = Date.now() - b0;
-        bodyBytes = text.length;
-      } catch {
-        // ignored — the timing is the signal
-      }
-    }
-
-    console.log(
-      JSON.stringify({
-        probe: "clock-sync",
-        path: probeUrl.pathname,
-        preWorkMs,
-        cacheProbeMs,
-        timerProbeMs,
-        fetchProbeMs,
-        bodyHeadersMs,
-        bodyReadMs,
-        bodyBytes,
-      }),
-    );
-
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
@@ -328,6 +187,16 @@ const cloudflareHandler: ExportedHandler<Env> = {
     const marketingRequest = marketingProxyRequest(request);
     const marketing: Fetcher | undefined = env.MARKETING;
     if (marketingRequest && marketing) return marketing.fetch(marketingRequest);
+
+    // Same reasoning, same seam: `/docs` and the PostHog proxy forward to an
+    // external origin and never touch the router, React, or the Effect app.
+    // Left in Start's middleware they still paid its lazy `loadEntries` import
+    // first — measured at p50 3.1s on a cold isolate, against p50 33ms for the
+    // request's own work, on a Worker where 1,666 dispatches spread across
+    // 1,608 isolates (so nearly every request is cold). Forward before Start.
+    const passthroughPath = new URL(request.url).pathname;
+    const passthrough = passthroughResponse(request, passthroughPath);
+    if (passthrough) return passthrough;
 
     // Browser OTLP ingress — before the server span opens: exporter traffic
     // must never trace itself (the browser already excludes /v1/traces from
