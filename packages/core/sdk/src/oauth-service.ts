@@ -1302,9 +1302,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // list is already authoritative (§7.2) and must not be re-narrowed by a
       // divergent authorization server.
       const authorizationRequestedScopes =
-        scopePolicy.kind === "discover"
-          ? requestedScopes
-          : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+        firstParty?.authorizationScopes !== undefined
+          ? dedupeScopes(firstParty.authorizationScopes)
+          : scopePolicy.kind === "discover"
+            ? requestedScopes
+            : yield* filterAuthorizationCodeScopes(client, requestedScopes);
 
       // authorization_code: persist a session + build the authorize URL.
       const verifier = createPkceCodeVerifier();

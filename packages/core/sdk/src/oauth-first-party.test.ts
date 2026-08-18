@@ -17,7 +17,7 @@ import {
 } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
-import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { scopesFromAuthorizeUrl, serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // First-party OAuth clients: host-operated apps declared in executor config
 // (`firstPartyOAuthClients`), addressed as `first-party:<name>`. Resolved from
@@ -163,6 +163,40 @@ describe("first-party oauth clients", () => {
         Effect.withTracer(makeRecordingTracer(spans)),
       );
     },
+  );
+
+  it.effect("an authorization scope override supports scope-less provider app tokens", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["repo"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [{ ...firstPartyClientFor(server), authorizationScopes: [] }],
+        });
+        yield* executor.acme.seed(["repo"]);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: FIRST_PARTY,
+          clientOwner: "org",
+          name: ConnectionName.make("github-app"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([]);
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+        expect(connection.oauthScope).toBeNull();
+      }),
+    ),
   );
 
   it.effect("refresh resolves the config-declared client (no oauth_client row exists)", () =>

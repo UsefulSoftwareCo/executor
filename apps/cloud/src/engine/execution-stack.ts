@@ -126,6 +126,10 @@ const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] =
             env.FIRST_PARTY_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
           clientId: env.FIRST_PARTY_GITHUB_CLIENT_ID,
           clientSecret: env.FIRST_PARTY_GITHUB_CLIENT_SECRET,
+          integrations: [IntegrationSlug.make("github_rest")],
+          // GitHub App user access tokens do not use classic OAuth scopes;
+          // their capabilities come from the app's registered permissions.
+          authorizationScopes: [],
         },
       ]
     : []),
