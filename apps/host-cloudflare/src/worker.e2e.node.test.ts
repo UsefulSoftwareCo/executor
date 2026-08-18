@@ -303,6 +303,74 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(toolNames).toContain("execute");
   }, 60_000);
 
+  it("serves a toolkit-scoped MCP session", async () => {
+    const created = await worker.fetch("/api/toolkits", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner: "org", name: "Test Kit", slug: "test-kit" }),
+    });
+    expect(created.status).toBe(200);
+
+    const path = "/mcp/toolkits/test-kit";
+    const accept = "application/json, text/event-stream";
+    const rpc = (sessionId: string | null, body: unknown) =>
+      worker.fetch(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept,
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    const init = await rpc(null, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1" },
+      },
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    await rpc(sessionId, {
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    });
+
+    const list = await rpc(sessionId, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+    });
+    expect(list.status).toBe(200);
+    const listed = await readMcpJson<{
+      result?: { tools?: ReadonlyArray<{ name: string }> };
+    }>(list);
+    expect(listed.result?.tools?.map((tool) => tool.name)).toContain("execute");
+
+    // The session is pinned to `toolkit:test-kit`, not merely reachable at that
+    // path: replaying its id against the bare `/mcp` endpoint carries the
+    // default resource key, which the session DO refuses. Were the resource
+    // still defaulted at the edge, the two paths would agree and this would
+    // succeed — so this is the assertion that fails if the scoping regresses.
+    const crossResource = await worker.fetch("/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept,
+        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+    });
+    expect(crossResource.status).toBe(403);
+  }, 60_000);
+
   it("serves streamable HTTP GET only for initialized sessions", async () => {
     const missing = await worker.fetch("/mcp", {
       method: "GET",
