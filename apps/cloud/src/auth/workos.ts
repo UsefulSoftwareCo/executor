@@ -277,6 +277,15 @@ const verifySealedSessionLocally = (
           ...(jwksAfter.lastFetchDurationMs === null
             ? {}
             : { "jwks.last_fetch_ms": jwksAfter.lastFetchDurationMs }),
+          // Splits the ~3.4s that sits inside jwt_verify with zero upstream
+          // fetches: the cross-isolate store read (I/O) vs WebCrypto key
+          // import vs the signature check itself.
+          ...(jwksAfter.lastStoreReadMs === null
+            ? {}
+            : { "jwks.store_read_ms": jwksAfter.lastStoreReadMs }),
+          ...(jwksAfter.lastResolveMs === null
+            ? {}
+            : { "jwks.key_resolve_ms": jwksAfter.lastResolveMs }),
         });
       }),
     );

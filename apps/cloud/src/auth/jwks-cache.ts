@@ -113,6 +113,10 @@ export interface CachedRemoteJWKSet extends JWTVerifyGetKey {
     blockingFetchCount: number;
     storeHitCount: number;
     lastFetchDurationMs: number | null;
+    /** Wall-clock of the last cross-isolate store read (I/O). */
+    lastStoreReadMs: number | null;
+    /** Wall-clock of the last key resolution — WebCrypto `importKey`. */
+    lastResolveMs: number | null;
   };
 }
 
@@ -272,6 +276,8 @@ export const createCachedRemoteJWKSet = (
   let blockingFetchCount = 0;
   let storeHitCount = 0;
   let lastFetchDurationMs: number | null = null;
+  let lastStoreReadMs: number | null = null;
+  let lastResolveMs: number | null = null;
 
   const isFresh = (candidate: CacheEntry): boolean => Date.now() - candidate.fetchedAt < ttlMs;
   const isUsable = (candidate: CacheEntry): boolean =>
@@ -314,7 +320,9 @@ export const createCachedRemoteJWKSet = (
     if (!store) return null;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the L2 store is an optimization; any failure degrades to an upstream fetch
     try {
+      const storeReadStartedAt = Date.now();
       const stored = await store.get(url);
+      lastStoreReadMs = Date.now() - storeReadStartedAt;
       if (!stored) return null;
       const candidate = entryFrom(stored);
       if (!isUsable(candidate)) return null;
@@ -364,7 +372,10 @@ export const createCachedRemoteJWKSet = (
     const current = await ensureFresh(false);
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: jose JWTVerifyGetKey retry path is defined by thrown resolver failures
     try {
-      return await current.resolver(protectedHeader, token);
+      const resolveStartedAt = Date.now();
+      const key = await current.resolver(protectedHeader, token);
+      lastResolveMs = Date.now() - resolveStartedAt;
+      return key;
     } catch (error) {
       // Likely cause: keys rotated upstream after our TTL window started, or
       // we answered from a stale entry. Refetch once and try again. Anything
@@ -394,6 +405,8 @@ export const createCachedRemoteJWKSet = (
       blockingFetchCount,
       storeHitCount,
       lastFetchDurationMs,
+      lastStoreReadMs,
+      lastResolveMs,
     }),
   });
   return result;
