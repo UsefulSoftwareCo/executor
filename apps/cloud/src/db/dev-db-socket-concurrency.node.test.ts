@@ -42,6 +42,40 @@ const makeClient = (port: number, connectTimeout = 5) =>
     onnotice: () => undefined,
   });
 
+// Hand-rolled wire client: connect and complete the trust-auth startup, so a
+// test can then speak raw protocol frames (e.g. a lone Parse) that postgres.js
+// would never emit on its own. Resolves after ReadyForQuery so the next write
+// is its own data event — and its own queue entry — on the server.
+const openWireClient = async (port: number): Promise<Socket> => {
+  const socket: Socket = connect(port, "127.0.0.1");
+  await new Promise<void>((res, rej) => {
+    socket.once("connect", res);
+    socket.once("error", rej);
+  });
+  const startupBody = Buffer.concat([
+    Buffer.from([0, 3, 0, 0]),
+    Buffer.from("user\0postgres\0database\0postgres\0\0"),
+  ]);
+  const startup = Buffer.concat([Buffer.alloc(4), startupBody]);
+  startup.writeInt32BE(startup.length, 0);
+  socket.write(startup);
+  await new Promise<void>((res) => {
+    socket.on("data", (chunk: Buffer) => {
+      if (chunk.includes(0x5a)) res(); // 'Z' = ReadyForQuery
+    });
+  });
+  return socket;
+};
+
+// A Parse frame for an unnamed statement: opens an extended-protocol pipeline
+// that only a later Sync (or the server's recovery) closes.
+const parseFrame = (query: string): Buffer => {
+  const body = Buffer.concat([Buffer.from(`\0${query}\0`), Buffer.from([0, 0])]);
+  const frame = Buffer.concat([Buffer.from("P"), Buffer.alloc(4), body]);
+  frame.writeInt32BE(4 + body.length, 1);
+  return frame;
+};
+
 describe("dev-db PGlite socket under concurrent connections", () => {
   it(
     "serves interleaved multi-connection pipelines without protocol corruption",
@@ -207,29 +241,8 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       // Hand-rolled wire client: complete the trust-auth startup, then send a
       // lone Parse. Its last frame type ('P') marks the pipeline open, so the
       // handler takes affinity and every other connection queues behind it.
-      const staller: Socket = connect(port, "127.0.0.1");
-      await new Promise<void>((res, rej) => {
-        staller.once("connect", res);
-        staller.once("error", rej);
-      });
-      const startupBody = Buffer.concat([
-        Buffer.from([0, 3, 0, 0]),
-        Buffer.from("user\0postgres\0database\0postgres\0\0"),
-      ]);
-      const startup = Buffer.concat([Buffer.alloc(4), startupBody]);
-      startup.writeInt32BE(startup.length, 0);
-      staller.write(startup);
-      // Wait for AuthenticationOk + ReadyForQuery before opening the pipeline,
-      // so the Parse is its own data event (and its own queue entry).
-      await new Promise<void>((res) => {
-        staller.on("data", (chunk: Buffer) => {
-          if (chunk.includes(0x5a)) res(); // 'Z' = ReadyForQuery
-        });
-      });
-      const parseBody = Buffer.from("\0select 1\0\0\0");
-      const parse = Buffer.concat([Buffer.from("P"), Buffer.alloc(4), parseBody]);
-      parse.writeInt32BE(4 + parseBody.length, 1);
-      staller.write(parse);
+      const staller = await openWireClient(port);
+      staller.write(parseFrame("select 1"));
 
       const bystander = makeClient(port, 10);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
@@ -240,6 +253,52 @@ describe("dev-db PGlite socket under concurrent connections", () => {
         // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
         await bystander.end({ timeout: 5 }).catch(() => {});
         staller.destroy();
+        await server.stop();
+        await db.close();
+      }
+    },
+  );
+
+  // Regression for the second wedge mode behind the same CI cascade: a client
+  // whose socket dies WHILE its pipeline-opening entry is executing. detach()
+  // clears pipeline affinity before the entry finishes, so the queue then
+  // assigned affinity to the already-dead handler — and nothing ever cleared
+  // it: the dead handler has no timers left, and every other connection
+  // (including fresh startups) queued behind the ghost forever. The queue now
+  // tracks detached handlers and repairs affinity they can no longer release.
+  it(
+    "a client that dies mid-execution does not leave the queue pinned to its ghost",
+    { timeout: 30_000 },
+    async () => {
+      const port = 45994;
+      const db = await PGlite.create();
+
+      // Hold the marker query in flight long enough that the disconnect below
+      // reliably lands while the entry is EXECUTING (after detach's cleanup,
+      // before the queue takes affinity for it).
+      const real = db.execProtocolRawStream.bind(db);
+      (db as { execProtocolRawStream: typeof real }).execProtocolRawStream = async (...args) => {
+        if (Buffer.from(args[0]).includes("ghost_marker")) await sleep(300);
+        return real(...args);
+      };
+
+      const server = new PGLiteSocketServer({ db, port, host: "127.0.0.1", maxConnections: 100 });
+      await server.start();
+
+      const ghost = await openWireClient(port);
+      ghost.write(parseFrame("select 'ghost_marker'"));
+      // Give the data event time to reach the queue and start executing, then
+      // die without a trace mid-flight.
+      await sleep(100);
+      ghost.destroy();
+
+      const bystander = makeClient(port);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
+      try {
+        expect((await bystander.unsafe(`select 5 as five`))[0]).toEqual({ five: 5 });
+      } finally {
+        // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
+        await bystander.end({ timeout: 5 }).catch(() => {});
         await server.stop();
         await db.close();
       }

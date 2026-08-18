@@ -104,14 +104,20 @@ await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 // but prepared statement requires M" -> random 500s on whichever request lost
 // the race). The patch in patches/@electric-sql%2Fpglite-socket@0.1.4.patch
 // batches each socket data event into one queue entry and holds handler
-// affinity while a pipeline is open. The patch also fixes the queue's failure
-// path: stock 0.1.4 `return`ed out of the drain loop when a query REJECTED at
-// the JS level, leaving its `processing` flag latched true — after one such
-// throw nothing was ever dequeued again, so new connections' startup packets
-// sat unanswered (postgres.js CONNECT_TIMEOUT) and the whole stack was bricked
-// until restart: the CI e2e "cloud signIn: callback set no session (500)"
-// cascade. src/db/dev-db-socket-concurrency.node.test.ts is the regression
-// test for all of the above.
+// affinity while a pipeline is open. The patch also fixes the queue's two
+// self-bricking failure paths — both surfaced in CI as the e2e "cloud signIn:
+// callback set no session (500)" cascade, where new connections' startup
+// packets sat unanswered (postgres.js CONNECT_TIMEOUT) until restart:
+//   1. Stock 0.1.4 `return`ed out of the drain loop when a query REJECTED at
+//      the JS level, leaving its `processing` flag latched true; nothing was
+//      ever dequeued again.
+//   2. A client whose socket died WHILE its pipeline-opening entry executed:
+//      detach() cleared affinity before the entry finished, the queue then
+//      took affinity for the already-dead handler, and no timer was left to
+//      release it. The queue now tracks detached handlers and repairs any
+//      transaction or pipeline affinity they can no longer release.
+// src/db/dev-db-socket-concurrency.node.test.ts is the regression test for
+// all of the above.
 const server = new PGLiteSocketServer({
   db,
   port: PORT,
