@@ -129,8 +129,14 @@ const fetchHandler = async (
 ): Promise<Response> => {
   const wasWarm = startHandledInThisIsolate;
   startHandledInThisIsolate = true;
+  // Sync the clock on BOTH sides. Without the trailing `scheduler.wait(0)`,
+  // a handler that performs no I/O leaves `Date.now()` pinned and reports
+  // 0ms for work that actually took seconds — which is exactly what the
+  // first run of this probe showed (handlerMs 0 against 6002ms wall).
+  await scheduler.wait(0);
   const startedAt = Date.now();
   const response = await rawFetchHandler(request, env, ctx);
+  await scheduler.wait(0);
   const handlerMs = Date.now() - startedAt;
   console.log(
     JSON.stringify({
