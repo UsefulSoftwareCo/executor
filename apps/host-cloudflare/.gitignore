@@ -2,3 +2,7 @@ dist/
 .dev.vars
 .wrangler/
 wrangler.preview.jsonc
+# This installation's Wrangler deltas + the generated merge wrangler actually
+# reads (scripts/deploy-config.ts). Deployment state, never the repo's.
+wrangler.local.jsonc
+wrangler.deploy.json
