@@ -240,6 +240,14 @@ jobs:
         with:
           bun-version: 1.3.11
 
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
       # The dev stacks spawn Node sidecars (vite/workerd tooling); pin the
       # same Node 24 runtime the release and publish workflows use.
       - uses: actions/setup-node@v4
