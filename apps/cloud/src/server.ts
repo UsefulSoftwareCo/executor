@@ -197,11 +197,25 @@ const cloudflareHandler: ExportedHandler<Env> = {
     await scheduler.wait(0);
     const preWorkMs = Date.now() - entryPinned;
     const probeUrl = new URL(request.url);
+
+    // With the clock synced above, these two deltas are real durations. They
+    // answer whether the multi-second cost is specific to the Cache API or
+    // hits every outbound subrequest from this Worker.
+    const cacheStartedAt = Date.now();
+    await caches.default.match("https://executor.sh/__probe_never_cached");
+    const cacheProbeMs = Date.now() - cacheStartedAt;
+
+    const timerStartedAt = Date.now();
+    await scheduler.wait(1);
+    const timerProbeMs = Date.now() - timerStartedAt;
+
     console.log(
       JSON.stringify({
         probe: "clock-sync",
         path: probeUrl.pathname,
         preWorkMs,
+        cacheProbeMs,
+        timerProbeMs,
       }),
     );
 
