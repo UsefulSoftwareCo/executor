@@ -487,6 +487,82 @@ describe("exchangeAuthorizationCode", () => {
     ),
   );
 
+  it.effect("uses nested granted scopes for Slack-style user token responses", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "xoxp-user-token",
+        token_type: "Bearer",
+        scope: "",
+        authed_user: {
+          id: "U12345",
+          scope: "channels:read,chat:write",
+        },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.access_token).toBe("xoxp-user-token");
+          expect(result.scope).toBe("channels:read chat:write");
+        }),
+    ),
+  );
+
+  it.effect("does not assign nested user scopes to a distinct top-level bot token", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "xoxb-bot-token",
+        token_type: "Bearer",
+        scope: "",
+        authed_user: {
+          scope: "channels:read,chat:write",
+          access_token: "xoxp-user-token",
+        },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.scope).toBe("");
+        }),
+    ),
+  );
+
+  it.effect("keeps a standard top-level scope ahead of nested provider metadata", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "user-token",
+        token_type: "Bearer",
+        scope: "standard.scope",
+        authed_user: { scope: "provider.scope" },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.scope).toBe("standard.scope");
+        }),
+    ),
+  );
+
   it.effect("still surfaces RFC 6749 §5.2 error envelopes after the id_token strip", () =>
     withTokenEndpoint(
       () =>

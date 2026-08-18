@@ -604,6 +604,48 @@ type StrippedTokenResponse = {
   readonly idTokenIdentityLabel?: string;
 };
 
+const NestedAuthedUserScope = Schema.Struct({
+  authed_user: Schema.Struct({
+    scope: Schema.String,
+    access_token: Schema.optional(Schema.String),
+  }),
+});
+const decodeNestedAuthedUserScope = Schema.decodeUnknownOption(NestedAuthedUserScope);
+
+type NestedAuthedUserGrant = {
+  readonly scope: string;
+  readonly accessToken?: string;
+};
+
+/** Slack's MCP-oriented `oauth.v2.user.access` endpoint returns its granted
+ * user scopes under `authed_user.scope` instead of the RFC 6749 top-level
+ * `scope`. Preserve that provider extension only when the standard field is
+ * absent or empty, and normalize Slack's comma separator back to RFC space-delimited
+ * scope syntax at this boundary. */
+const nestedAuthedUserGrant = async (
+  response: Response,
+): Promise<NestedAuthedUserGrant | undefined> => {
+  const body = await response
+    .clone()
+    .json()
+    .then(
+      (value: unknown) => value,
+      () => null,
+    );
+  const decoded = decodeNestedAuthedUserScope(body);
+  if (Option.isNone(decoded)) return undefined;
+  const normalized = decoded.value.authed_user.scope
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .join(" ");
+  if (normalized.length === 0) return undefined;
+  const nestedAccessToken = decoded.value.authed_user.access_token;
+  return {
+    scope: normalized,
+    ...(nestedAccessToken === undefined ? {} : { accessToken: nestedAccessToken }),
+  };
+};
+
 // MCP source connections are pure OAuth 2.0. Some providers (PostHog, etc.)
 // front an OIDC backend and emit an `id_token` anyway; oauth4webapi then
 // strict-validates its claims against the AS metadata and rejects mismatches we
@@ -638,9 +680,18 @@ const processTokenEndpointResponse = async (
   response: Response,
 ): Promise<OAuth2TokenResponse> => {
   const stripped = await stripIdToken(response);
-  const token = tokenResponseFrom(
+  const providerUserGrant = await nestedAuthedUserGrant(stripped.response);
+  const parsed = tokenResponseFrom(
     await oauth.processGenericTokenEndpointResponse(as, client, stripped.response),
   );
+  const topLevelScopeIsEmpty = parsed.scope === undefined || parsed.scope.trim().length === 0;
+  const nestedGrantMatchesAccessToken =
+    providerUserGrant?.accessToken === undefined ||
+    providerUserGrant.accessToken === parsed.access_token;
+  const token =
+    topLevelScopeIsEmpty && providerUserGrant !== undefined && nestedGrantMatchesAccessToken
+      ? { ...parsed, scope: providerUserGrant.scope }
+      : parsed;
   return stripped.idTokenIdentityLabel
     ? { ...token, idTokenIdentityLabel: stripped.idTokenIdentityLabel }
     : token;
