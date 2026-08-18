@@ -438,7 +438,7 @@ describe("createExecutor", () => {
 
       const listed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.list"),
-        { integration: "diagnostics" },
+        { integration: "diagnostics", verbose: true },
       );
       expect(listed).toMatchObject({
         connections: [
