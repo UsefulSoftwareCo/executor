@@ -1,5 +1,32 @@
 # @executor-js/local
 
+## 1.5.42
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d), [`32206c7`](https://github.com/UsefulSoftwareCo/executor/commit/32206c7f78654f638bfd27c25c71c30c3d6354be), [`9ecc7cb`](https://github.com/UsefulSoftwareCo/executor/commit/9ecc7cb8b30375ffa960e3fefe4d211e0254e691)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/plugin-openapi@1.5.42
+  - @executor-js/plugin-mcp@1.5.42
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.6
+  - @executor-js/api@1.4.62
+  - @executor-js/config@1.5.42
+  - @executor-js/execution@1.5.42
+  - @executor-js/vite-plugin@0.0.59
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.10
+  - @executor-js/plugin-desktop-settings@1.5.42
+  - @executor-js/plugin-example@1.5.42
+  - @executor-js/plugin-file-secrets@1.5.42
+  - @executor-js/plugin-graphql@1.5.42
+  - @executor-js/plugin-keychain@1.5.42
+  - @executor-js/plugin-onepassword@1.5.42
+  - @executor-js/plugin-provider-service-split@0.0.13
+  - @executor-js/plugin-toolkits@1.5.34
+  - @executor-js/react@1.4.62
+  - @executor-js/runtime-quickjs@1.5.42
+
 ## 1.5.41
 
 ### Patch Changes
