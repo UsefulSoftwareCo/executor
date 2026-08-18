@@ -210,6 +210,20 @@ const cloudflareHandler: ExportedHandler<Env> = {
     await scheduler.wait(1);
     const timerProbeMs = Date.now() - timerStartedAt;
 
+    // The cache and timer probes are LOCAL. Neither leaves the isolate, and
+    // both come back in single-digit ms while the same requests take 4-6s.
+    // This one is a real outbound network subrequest to a small, fast,
+    // unrelated endpoint — the only class of I/O not yet measured, and the
+    // one the docs proxy (0.098s direct, 3-6s through the Worker) implicates.
+    const fetchStartedAt = Date.now();
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
+    try {
+      await fetch("https://cloudflare.com/cdn-cgi/trace", { method: "GET" });
+    } catch {
+      // ignored — the timing is the signal, not the result
+    }
+    const fetchProbeMs = Date.now() - fetchStartedAt;
+
     console.log(
       JSON.stringify({
         probe: "clock-sync",
@@ -217,6 +231,7 @@ const cloudflareHandler: ExportedHandler<Env> = {
         preWorkMs,
         cacheProbeMs,
         timerProbeMs,
+        fetchProbeMs,
       }),
     );
 
