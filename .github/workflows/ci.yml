@@ -201,16 +201,7 @@ jobs:
           # durations plus a conservative weight for new tests. Extra shards
           # keep each hermetic stack below the PGlite lifetime failure window.
           - { target: cloud, shard-index: 1, shard-name: 1of16 }
-          # This shard owns the intentional 65-second human-delay approval
-          # scenario. Extra CPU cannot shorten that assertion, but it does keep
-          # dependency linking and the cloud stack's startup outside the
-          # remaining two-minute wall-clock budget.
-          - {
-              target: cloud,
-              shard-index: 2,
-              shard-name: 2of16,
-              runner: blacksmith-8vcpu-ubuntu-2404,
-            }
+          - { target: cloud, shard-index: 2, shard-name: 2of16 }
           - { target: cloud, shard-index: 3, shard-name: 3of16 }
           - { target: cloud, shard-index: 4, shard-name: 4of16 }
           - { target: cloud, shard-index: 5, shard-name: 5of16 }
@@ -240,7 +231,7 @@ jobs:
           # lane from the two-minute critical path.
           - { target: local, shard-index: 1, shard-name: 1of2 }
           - { target: local, shard-index: 2, shard-name: 2of2 }
-    runs-on: ${{ matrix.runner || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

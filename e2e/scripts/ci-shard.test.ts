@@ -122,18 +122,5 @@ describe("CI shard planning", () => {
         Array.from({ length: CI_SHARD_COUNTS[target] }, (_, index) => String(index + 1)),
       );
     }
-
-    const cloudPlan = await planTargetShards(
-      "cloud",
-      fileURLToPath(new URL("..", import.meta.url)),
-    );
-    const approvalShard = cloudPlan.find((shard) =>
-      shard.files.includes("scenarios/artifact-approval.test.ts"),
-    );
-    expect(approvalShard?.files).toEqual(["scenarios/artifact-approval.test.ts"]);
-    const acceleratedEntry = new RegExp(
-      `-\\s*\\{[^}]*target:\\s*cloud,[^}]*shard-index:\\s*${approvalShard?.index},[^}]*runner:\\s*blacksmith-8vcpu-ubuntu-2404`,
-    );
-    expect(workflow).toMatch(acceleratedEntry);
   });
 });

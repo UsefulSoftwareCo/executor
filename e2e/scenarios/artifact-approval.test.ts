@@ -12,13 +12,12 @@
 // Two things are asserted that the older scenarios could not:
 //
 //   1. The approval is honoured at all on this path, and the side effect lands.
-//   2. It is still honoured after a human-scale delay. The reported symptom was
-//      an approval that took "tens of seconds", so a scenario approving
-//      instantly would stay green against the broken code. It is worth being
-//      precise about why: the bug is NOT time-based (a resume 7ms after the
-//      pause failed identically), so the delay is not what makes this catch the
-//      regression — the artifact-scoped path is. The delay guards the separate
-//      promise that an approval window is human-scale.
+//   2. It is honoured by a later request after the engine that paused is gone.
+//      The reported symptom involved an approval after "tens of seconds", but
+//      the bug itself was not time-based: a resume 7ms after the pause failed
+//      identically. The SDK store tests advance a controlled clock across the
+//      complete approval lease; this scenario covers the cross-request path
+//      without making every CI run wait on wall clock.
 import { randomUUID } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -30,15 +29,6 @@ import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const);
-
-/**
- * How long the scenario waits before approving.
- *
- * Long enough to be a real human pause rather than a same-tick round trip, and
- * well past the 4-minute paused-execution lease the MCP plane advertises being
- * irrelevant here. Kept modest so the scenario stays inside the default timeout.
- */
-const APPROVAL_DELAY_MS = 65_000;
 
 /**
  * The one call the shell's proxy is allowed to emit: a single awaited tool call,
@@ -71,8 +61,8 @@ const pausedExecutionId = (structured: unknown): string | undefined =>
   (structured as { readonly executionId?: string } | null)?.executionId;
 
 scenario(
-  "Artifacts · a destructive action approved from an artifact runs, even minutes later",
-  { timeout: 240_000 },
+  "Artifacts · a destructive action approved from an artifact runs from a later request",
+  {},
   Effect.gen(function* () {
     const target = yield* Target;
     const apiSurface = yield* Api;
@@ -129,10 +119,6 @@ scenario(
         beforeApproval.some((p) => p.pattern === pattern),
         "the action does not run while it is waiting on approval",
       ).toBe(false);
-
-      // The human reads the request and decides. This is the wait that makes the
-      // approval window a real promise rather than a same-request formality.
-      yield* Effect.sleep(APPROVAL_DELAY_MS);
 
       const approved = yield* client.executions.resume({
         params: { executionId },

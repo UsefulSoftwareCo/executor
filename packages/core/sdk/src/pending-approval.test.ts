@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { makeInMemoryBlobStore } from "./blob";
 import {
   makePendingApprovalStore,
+  pendingApprovalExpiresAt,
   PENDING_APPROVAL_TTL_MS,
   type PendingApproval,
 } from "./pending-approval";
@@ -84,6 +85,22 @@ describe("makePendingApprovalStore", () => {
       yield* store.put(approval({ expiresAt: now + 1 }));
 
       expect(yield* store.consume("exec_1")).not.toBeNull();
+    }),
+  );
+
+  it.effect("keeps the full human-scale approval window without waiting on wall clock", () =>
+    Effect.gen(function* () {
+      const recordedAt = 1_000_000;
+      let now = recordedAt + PENDING_APPROVAL_TTL_MS - 1;
+      const blobs = makeInMemoryBlobStore();
+      const store = makePendingApprovalStore(blobs, "u:t:s", () => now);
+      yield* store.put(approval({ expiresAt: pendingApprovalExpiresAt(recordedAt) }));
+
+      expect(yield* store.consume("exec_1")).not.toBeNull();
+
+      yield* store.put(approval({ expiresAt: pendingApprovalExpiresAt(recordedAt) }));
+      now += 1;
+      expect(yield* store.consume("exec_1")).toBeNull();
     }),
   );
 
