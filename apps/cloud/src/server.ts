@@ -224,6 +224,31 @@ const cloudflareHandler: ExportedHandler<Env> = {
     }
     const fetchProbeMs = Date.now() - fetchStartedAt;
 
+    // `fetch()` above resolves when HEADERS arrive — it never reads a body,
+    // which is why it returns in ~1ms while the request it lives in takes
+    // seconds. Both genuinely slow operations read a body: the docs proxy
+    // reads a 179KB page, and the JWKS store does `hit.json()`. Split header
+    // time from body time on the exact URL the docs proxy uses.
+    //
+    // Gated to one cheap path so normal traffic never pays for the probe.
+    let bodyHeadersMs = -1;
+    let bodyReadMs = -1;
+    let bodyBytes = -1;
+    if (probeUrl.pathname === "/robots.txt") {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- temporary diagnostic: a probe failure must not affect the request
+      try {
+        const h0 = Date.now();
+        const probeRes = await fetch("https://executor.mintlify.dev/docs/concepts/policies");
+        bodyHeadersMs = Date.now() - h0;
+        const b0 = Date.now();
+        const text = await probeRes.text();
+        bodyReadMs = Date.now() - b0;
+        bodyBytes = text.length;
+      } catch {
+        // ignored — the timing is the signal
+      }
+    }
+
     console.log(
       JSON.stringify({
         probe: "clock-sync",
@@ -232,6 +257,9 @@ const cloudflareHandler: ExportedHandler<Env> = {
         cacheProbeMs,
         timerProbeMs,
         fetchProbeMs,
+        bodyHeadersMs,
+        bodyReadMs,
+        bodyBytes,
       }),
     );
 
