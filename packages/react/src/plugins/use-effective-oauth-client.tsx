@@ -59,9 +59,13 @@ export const isFirstPartyClient = (app: OAuthClientOption): boolean =>
 const firstPartyClientAllowsScopes = (
   app: OAuthClientOption,
   requestedScopes: readonly string[] | undefined,
+  discoversScopes: boolean,
 ): boolean => {
   if (app.origin.kind !== "first_party" || app.origin.allowedScopes === undefined) return true;
-  if (requestedScopes === undefined) return false;
+  // MCP providers discover their scopes at OAuth start. The server intersects
+  // that catalog with this same allow-list before redirecting, so an absent
+  // static scope list is safe only on the explicit discovery path.
+  if (requestedScopes === undefined) return discoversScopes;
   const allowed = new Set(app.origin.allowedScopes);
   return requestedScopes.every((scope) => allowed.has(scope));
 };
@@ -178,6 +182,9 @@ export function selectClientsForEndpoints(
     /** Complete scope set declared by the selected OAuth auth method. Used to
      *  hide scope-limited first-party apps that the host will reject. */
     readonly scopes?: readonly string[];
+    /** The OAuth service discovers provider scopes at connect time and caps a
+     *  first-party app's result to its configured allow-list. */
+    readonly discoversScopes?: boolean;
     /** When set, an integration that targets a SPECIFIC server (MCP, whose
      *  endpoints are discovered at connect) must match by endpoint — absent
      *  endpoints mean NO match (show the register CTA), never "every app
@@ -192,7 +199,9 @@ export function selectClientsForEndpoints(
 } {
   // DCR clients are plumbing, never picker options.
   const manual = all.filter(
-    (app) => !isDcrClient(app) && firstPartyClientAllowsScopes(app, endpoints.scopes),
+    (app) =>
+      !isDcrClient(app) &&
+      firstPartyClientAllowsScopes(app, endpoints.scopes, endpoints.discoversScopes === true),
   );
 
   const intent = endpoints.integration;
@@ -281,6 +290,7 @@ export function useOAuthClientsForIntegration(opts: {
   readonly authorizationUrl?: string;
   readonly integration?: IntegrationSlug;
   readonly scopes?: readonly string[];
+  readonly discoversScopes?: boolean;
   readonly requireEndpointMatch?: boolean;
 }): UseOAuthClientsResult {
   // Read the optimistic list so a just-registered/edited/removed app paints
@@ -303,6 +313,7 @@ export function useOAuthClientsForIntegration(opts: {
         authorizationUrl: opts.authorizationUrl,
         integration: opts.integration,
         scopes: opts.scopes,
+        discoversScopes: opts.discoversScopes,
         requireEndpointMatch: opts.requireEndpointMatch,
       }),
     [
@@ -311,6 +322,7 @@ export function useOAuthClientsForIntegration(opts: {
       opts.authorizationUrl,
       opts.integration,
       opts.scopes,
+      opts.discoversScopes,
       opts.requireEndpointMatch,
     ],
   );

@@ -1517,6 +1517,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
     authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
     scopes: method?.oauth?.scopes,
+    // MCP OAuth scopes are discovered by the server at connect time, where a
+    // first-party app's configured allow-list caps the provider's catalog.
+    discoversScopes: isDcr,
     // Recorded intent: a manual app registered from THIS integration's dialog is
     // a tier-1 match regardless of host.
     integration,

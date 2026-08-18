@@ -316,6 +316,38 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched).toEqual([]);
   });
 
+  it("only allows unknown first-party scopes on the provider-discovery path", () => {
+    const integration = IntegrationSlug.make("slack_mcp");
+    const firstParty = app("first-party:slack", {
+      owner: "org",
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+      origin: {
+        kind: "first_party",
+        allowedScopes: ["search:read.public", "chat:write"],
+      },
+    });
+    const endpoints = {
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+      integration,
+      requireEndpointMatch: true,
+    } as const;
+
+    const staticUnknown = selectClientsForEndpoints([firstParty], endpoints);
+    expect(staticUnknown.endpointMatched).toBe(false);
+    expect(staticUnknown.matched).toEqual([]);
+
+    const discovered = selectClientsForEndpoints([firstParty], {
+      ...endpoints,
+      discoversScopes: true,
+    });
+    expect(discovered.endpointMatched).toBe(true);
+    expect(discovered.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:slack",
+    ]);
+  });
+
   it("intent-matches a first-party app to its declared integrations even without endpoints", () => {
     const integration = IntegrationSlug.make("github_rest");
     const firstParty = app("first-party:github", {
