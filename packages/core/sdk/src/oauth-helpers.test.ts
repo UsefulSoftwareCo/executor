@@ -514,15 +514,21 @@ describe("exchangeAuthorizationCode", () => {
     ),
   );
 
-  it.effect("does not assign nested user scopes to a distinct top-level bot token", () =>
+  it.effect("selects the nested user grant when an empty top-level grant has a bot token", () =>
     withTokenEndpoint(
       tokenResponse({
         access_token: "xoxb-bot-token",
         token_type: "Bearer",
         scope: "",
+        refresh_token: "bot-refresh-token",
+        expires_in: 600,
+        id_token: unsignedJwt({ email: "alice@example.com" }),
         authed_user: {
           scope: "channels:read,chat:write",
           access_token: "xoxp-user-token",
+          token_type: "user",
+          refresh_token: "user-refresh-token",
+          expires_in: 3600,
         },
       }),
       ({ tokenUrl }) =>
@@ -535,7 +541,36 @@ describe("exchangeAuthorizationCode", () => {
             codeVerifier: "verifier",
             code: "abc",
           });
-          expect(result.scope).toBe("");
+          expect(result).toMatchObject({
+            access_token: "xoxp-user-token",
+            token_type: "user",
+            refresh_token: "user-refresh-token",
+            expires_in: 3600,
+            scope: "channels:read chat:write",
+            idTokenIdentityLabel: "alice@example.com",
+          });
+        }),
+    ),
+  );
+
+  it.effect("treats an empty standard scope as omitted", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "user-token",
+        token_type: "Bearer",
+        scope: "   ",
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.scope).toBeUndefined();
         }),
     ),
   );

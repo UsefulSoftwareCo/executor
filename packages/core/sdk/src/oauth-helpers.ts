@@ -557,7 +557,7 @@ const tokenResponseFrom = (r: oauth.TokenEndpointResponse): OAuth2TokenResponse 
   token_type: r.token_type,
   refresh_token: r.refresh_token,
   expires_in: typeof r.expires_in === "number" ? r.expires_in : undefined,
-  scope: r.scope,
+  scope: typeof r.scope === "string" && r.scope.trim().length > 0 ? r.scope : undefined,
 });
 
 const JwtClaims = Schema.Record(Schema.String, Schema.Unknown);
@@ -608,6 +608,9 @@ const NestedAuthedUserScope = Schema.Struct({
   authed_user: Schema.Struct({
     scope: Schema.String,
     access_token: Schema.optional(Schema.String),
+    token_type: Schema.optional(Schema.String),
+    refresh_token: Schema.optional(Schema.String),
+    expires_in: Schema.optional(Schema.Number),
   }),
 });
 const decodeNestedAuthedUserScope = Schema.decodeUnknownOption(NestedAuthedUserScope);
@@ -615,6 +618,9 @@ const decodeNestedAuthedUserScope = Schema.decodeUnknownOption(NestedAuthedUserS
 type NestedAuthedUserGrant = {
   readonly scope: string;
   readonly accessToken?: string;
+  readonly tokenType?: string;
+  readonly refreshToken?: string;
+  readonly expiresIn?: number;
 };
 
 /** Slack's MCP-oriented `oauth.v2.user.access` endpoint returns its granted
@@ -640,9 +646,15 @@ const nestedAuthedUserGrant = async (
     .join(" ");
   if (normalized.length === 0) return undefined;
   const nestedAccessToken = decoded.value.authed_user.access_token;
+  const nestedTokenType = decoded.value.authed_user.token_type;
+  const nestedRefreshToken = decoded.value.authed_user.refresh_token;
+  const nestedExpiresIn = decoded.value.authed_user.expires_in;
   return {
     scope: normalized,
     ...(nestedAccessToken === undefined ? {} : { accessToken: nestedAccessToken }),
+    ...(nestedTokenType === undefined ? {} : { tokenType: nestedTokenType }),
+    ...(nestedRefreshToken === undefined ? {} : { refreshToken: nestedRefreshToken }),
+    ...(nestedExpiresIn === undefined ? {} : { expiresIn: nestedExpiresIn }),
   };
 };
 
@@ -684,13 +696,17 @@ const processTokenEndpointResponse = async (
   const parsed = tokenResponseFrom(
     await oauth.processGenericTokenEndpointResponse(as, client, stripped.response),
   );
-  const topLevelScopeIsEmpty = parsed.scope === undefined || parsed.scope.trim().length === 0;
-  const nestedGrantMatchesAccessToken =
-    providerUserGrant?.accessToken === undefined ||
-    providerUserGrant.accessToken === parsed.access_token;
   const token =
-    topLevelScopeIsEmpty && providerUserGrant !== undefined && nestedGrantMatchesAccessToken
-      ? { ...parsed, scope: providerUserGrant.scope }
+    parsed.scope === undefined && providerUserGrant !== undefined
+      ? providerUserGrant.accessToken === undefined
+        ? { ...parsed, scope: providerUserGrant.scope }
+        : {
+            access_token: providerUserGrant.accessToken,
+            token_type: providerUserGrant.tokenType,
+            refresh_token: providerUserGrant.refreshToken,
+            expires_in: providerUserGrant.expiresIn,
+            scope: providerUserGrant.scope,
+          }
       : parsed;
   return stripped.idTokenIdentityLabel
     ? { ...token, idTokenIdentityLabel: stripped.idTokenIdentityLabel }
