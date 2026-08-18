@@ -6,6 +6,13 @@ declare global {
   namespace Cloudflare {
     interface Env {
       // Observability
+      // Worker version metadata binding (wrangler.jsonc `version_metadata`).
+      // Optional so test workers and local setups without the binding still
+      // typecheck; spans then carry the "dev" service.version default.
+      CF_VERSION_METADATA?: WorkerVersionMetadata;
+      // Commit that produced the running deploy, passed by CI as
+      // `wrangler deploy --var GIT_COMMIT_SHA:$GITHUB_SHA`. Absent outside CI.
+      GIT_COMMIT_SHA?: string;
       AXIOM_TOKEN?: string;
       AXIOM_DATASET?: string;
       AXIOM_TRACES_URL?: string;

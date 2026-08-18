@@ -48,8 +48,20 @@ export interface CachedRemoteJWKSetOptions {
 export interface CachedRemoteJWKSet extends JWTVerifyGetKey {
   /** Drop the cached JWKS so the next call refetches. */
   readonly forceRefresh: () => void;
-  /** Inspect the current cache state (testing/diagnostics). */
-  readonly inspect: () => { fetchedAt: number | null; hasJwks: boolean };
+  /**
+   * Inspect the current cache state (testing/diagnostics/span annotation).
+   * `fetchCount`/`fetchFailureCount` are lifetime counters for this resolver
+   * instance; callers snapshot them around a verify to tell a cache hit from
+   * a live upstream fetch (the Aug 2026 latency regression was exactly this
+   * cache silently missing on ~92% of verifies, invisible in traces).
+   */
+  readonly inspect: () => {
+    fetchedAt: number | null;
+    hasJwks: boolean;
+    fetchCount: number;
+    fetchFailureCount: number;
+    lastFetchDurationMs: number | null;
+  };
 }
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
@@ -125,9 +137,14 @@ export const createCachedRemoteJWKSet = (
 
   let entry: CacheEntry | null = null;
   let inflight: Promise<CacheEntry> | null = null;
+  let fetchCount = 0;
+  let fetchFailureCount = 0;
+  let lastFetchDurationMs: number | null = null;
 
   const refresh = (): Promise<CacheEntry> => {
     if (inflight) return inflight;
+    const startedAt = Date.now();
+    fetchCount += 1;
     inflight = (async () => {
       const jwks = await fetchJwksOnce(url, fetchImpl(), timeoutMs);
       const next: CacheEntry = {
@@ -137,9 +154,19 @@ export const createCachedRemoteJWKSet = (
       };
       entry = next;
       return next;
-    })().finally(() => {
-      inflight = null;
-    });
+    })()
+      .then(
+        (next) => next,
+        (error: unknown) => {
+          fetchFailureCount += 1;
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: counting a fetch failure must preserve the original rejection for jose
+          throw error;
+        },
+      )
+      .finally(() => {
+        lastFetchDurationMs = Date.now() - startedAt;
+        inflight = null;
+      });
     return inflight;
   };
 
@@ -177,6 +204,9 @@ export const createCachedRemoteJWKSet = (
     value: () => ({
       fetchedAt: entry?.fetchedAt ?? null,
       hasJwks: entry !== null,
+      fetchCount,
+      fetchFailureCount,
+      lastFetchDurationMs,
     }),
   });
   return result;

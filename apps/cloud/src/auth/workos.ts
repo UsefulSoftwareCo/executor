@@ -227,7 +227,33 @@ const verifySealedSessionLocally = (
     });
     if (!session) return { _tag: "InvalidCookie" };
 
-    const verified = yield* verifyJwtWithRefreshRetry(session.accessToken, jwks);
+    // Snapshot the JWKS cache around the verify so the `local_verify` span
+    // says whether THIS verify was a warm-cache signature check or paid for a
+    // live upstream JWKS fetch. The Aug 2026 latency regression was the cache
+    // silently missing on most verifies, and no span attribute distinguished
+    // the two paths.
+    const jwksBefore = jwks.inspect();
+    // Entry-state annotation goes on BEFORE the verify so a failing verify
+    // (the case worth debugging) still records whether the cache was warm.
+    yield* Effect.annotateCurrentSpan({
+      "jwks.cache_populated_at_start": jwksBefore.hasJwks,
+      ...(jwksBefore.fetchedAt === null
+        ? {}
+        : { "jwks.cache_age_ms": Date.now() - jwksBefore.fetchedAt }),
+    });
+    const verified = yield* verifyJwtWithRefreshRetry(session.accessToken, jwks).pipe(
+      Effect.onExit(() => {
+        const jwksAfter = jwks.inspect();
+        return Effect.annotateCurrentSpan({
+          "jwks.fetched_during_verify": jwksAfter.fetchCount > jwksBefore.fetchCount,
+          "jwks.fetch_count": jwksAfter.fetchCount,
+          "jwks.fetch_failure_count": jwksAfter.fetchFailureCount,
+          ...(jwksAfter.lastFetchDurationMs === null
+            ? {}
+            : { "jwks.last_fetch_ms": jwksAfter.lastFetchDurationMs }),
+        });
+      }),
+    );
     if (!verified) return { _tag: "Refresh" };
 
     const claims = Option.getOrNull(decodeJwtClaims(decodeJwt(session.accessToken)));

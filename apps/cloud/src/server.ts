@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { SpanKind, SpanStatusCode, context, trace } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, context, trace, type SpanContext } from "@opentelemetry/api";
 import type { ErrorEvent } from "@sentry/cloudflare";
 import {
   ATTR_HTTP_REQUEST_METHOD,
@@ -110,6 +110,15 @@ const fetchHandler = handler.fetch as (
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
+const traceparentValueFor = (spanContext: SpanContext): string =>
+  `00-${spanContext.traceId}-${spanContext.spanId}-${(spanContext.traceFlags & 0xff).toString(16).padStart(2, "0")}`;
+
+const withTraceparent = (request: Request, spanContext: SpanContext): Request => {
+  const headers = new Headers(request.headers);
+  headers.set("traceparent", traceparentValueFor(spanContext));
+  return new Request(request, { headers });
+};
+
 const traceCloudMcpRequest = async (
   request: Request,
   _env: Env,
@@ -138,15 +147,9 @@ const traceCloudMcpRequest = async (
       span.setAttribute(ATTR_URL_FULL, request.url);
       span.setAttribute(ATTR_URL_PATH, url.pathname);
       span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
-      const spanContext = span.spanContext();
-      const headers = new Headers(request.headers);
-      headers.set(
-        "traceparent",
-        `00-${spanContext.traceId}-${spanContext.spanId}-${(spanContext.traceFlags & 0xff).toString(16).padStart(2, "0")}`,
-      );
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep trace export alive after the Agents bridge resolves or rejects
       try {
-        const response = await handle(new Request(request, { headers }));
+        const response = await handle(withTraceparent(request, span.spanContext()));
         span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
         if (response.status >= 500) {
           span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
@@ -221,16 +224,47 @@ const cloudflareHandler: ExportedHandler<Env> = {
       return fetchHandler(request, env, ctx);
     }
     // Effect-served paths bring their own http.server span (with traceparent
-    // join) — opening one here too would duplicate it. See the header note.
+    // join) — a second SERVER span here would duplicate it (the header note).
+    // What they do NOT cover is the time between this invocation starting and
+    // the Effect router opening its span (Start dispatch, middleware, lazy
+    // module graph): during the Aug 2026 regression that gap was seconds of
+    // invisible wall time. `worker.dispatch` is an INTERNAL parent that
+    // brackets the whole invocation; Effect's http.server span joins under it
+    // via the injected traceparent, so gap = dispatch minus server span.
     if (isAppOwnedPath(url.pathname)) {
-      // The provider is installed (above) and the flush still must outlive
-      // the request — Effect's BatchSpanProcessor ships on a timer.
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; mirror the traced path's finally
-      try {
-        return await fetchHandler(request, env, ctx);
-      } finally {
-        ctx.waitUntil(flushTracerProvider());
-      }
+      return tracer.startActiveSpan(
+        "worker.dispatch",
+        { kind: SpanKind.INTERNAL },
+        parentContext,
+        async (span) => {
+          span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
+          span.setAttribute(ATTR_URL_PATH, url.pathname);
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
+          try {
+            const response = await fetchHandler(
+              withTraceparent(request, span.spanContext()),
+              env,
+              ctx,
+            );
+            span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+            return response;
+          } catch (err) {
+            // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- adapter boundary: Cloudflare's fetch callback throws untyped; normalized only for the OTel span record, the original error is rethrown below
+            const cause = err instanceof Error ? err : String(err);
+            span.recordException(cause);
+            // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: same normalization as the recordException line above
+            const message = typeof cause === "string" ? cause : cause.message;
+            span.setStatus({ code: SpanStatusCode.ERROR, message });
+            // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
+            throw err;
+          } finally {
+            span.end();
+            // The flush still must outlive the request — Effect's
+            // BatchSpanProcessor ships on a timer.
+            ctx.waitUntil(flushTracerProvider());
+          }
+        },
+      );
     }
     return tracer.startActiveSpan(
       `http.server ${request.method}`,
