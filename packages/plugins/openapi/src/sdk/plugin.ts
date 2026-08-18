@@ -646,14 +646,10 @@ export const openApiPlugin = definePlugin<
   const resolveSpecForInput = (
     config: Pick<
       OpenApiSpecConfig,
-      | "spec"
-      | "specFormat"
-      | "specOverrides"
-      | "headers"
-      | "queryParams"
-      | "baseUrl"
-      | "authenticationTemplate"
-    >,
+      "spec" | "specFormat" | "specOverrides" | "headers" | "queryParams" | "baseUrl"
+    > & {
+      readonly authenticationTemplate?: readonly (Authentication | AuthenticationInput)[];
+    },
     httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   ): Effect.Effect<
     ResolvedSpec,
@@ -989,6 +985,7 @@ export const openApiPlugin = definePlugin<
               headers: current.headers,
               queryParams: current.queryParams,
               baseUrl: current.baseUrl,
+              authenticationTemplate: current.authenticationTemplate,
             },
             httpClientLayer,
           );
