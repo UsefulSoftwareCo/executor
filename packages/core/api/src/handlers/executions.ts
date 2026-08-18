@@ -6,7 +6,7 @@ import { ExecutorApi } from "../api";
 import { formatExecuteResult, formatPausedExecution } from "@executor-js/execution";
 import { resolveArtifactAction } from "@executor-js/host-mcp/artifact-action";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "@executor-js/host-mcp/tool-call-code";
-import { pendingApprovalExpiresAt } from "@executor-js/sdk";
+import { PENDING_APPROVAL_TTL_MS } from "@executor-js/sdk";
 import { ExecutionEngineService, ExecutorService } from "../services";
 import { capture, captureEngineError } from "@executor-js/api";
 
@@ -115,7 +115,7 @@ const recordPendingApproval = (approval: {
   Effect.gen(function* () {
     const executor = yield* ExecutorService;
     yield* executor.pendingApprovals
-      .put({ ...approval, expiresAt: pendingApprovalExpiresAt(Date.now()) })
+      .put({ ...approval, expiresAt: Date.now() + PENDING_APPROVAL_TTL_MS })
       .pipe(Effect.catchCause(() => Effect.void));
   });
 

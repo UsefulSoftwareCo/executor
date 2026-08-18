@@ -13,7 +13,17 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = 5434;
+const parsePort = (input: string | undefined): number => {
+  if (input === undefined) return 5434;
+  if (!/^\d+$/.test(input)) throw new Error("CLOUD_TEST_DB_PORT must be an integer");
+  const port = Number(input);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("CLOUD_TEST_DB_PORT must be between 1 and 65535");
+  }
+  return port;
+};
+
+const PORT = parsePort(process.env.CLOUD_TEST_DB_PORT);
 const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 
 let db: PGlite | undefined;
@@ -34,8 +44,9 @@ export default async function setup() {
   console.log(`[test-db] PGlite socket server listening on 127.0.0.1:${PORT}`);
 
   return async () => {
-    // PGlite's shutdown path resets process.exitCode. Preserve Vitest's failure
-    // signal so a red test cannot be reported to Turbo and CI as successful.
+    // PGlite sets an internal 99 sentinel on startup and replaces it with 0 on
+    // close. Preserve Vitest's failure status across that close so
+    // teardown can turn neither a red test green nor a green test red.
     const testsFailed = process.exitCode === 1;
     await server?.stop();
     await db?.close();

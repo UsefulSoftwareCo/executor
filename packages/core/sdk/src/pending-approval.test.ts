@@ -4,7 +4,6 @@ import { Effect } from "effect";
 import { makeInMemoryBlobStore } from "./blob";
 import {
   makePendingApprovalStore,
-  pendingApprovalExpiresAt,
   PENDING_APPROVAL_TTL_MS,
   type PendingApproval,
 } from "./pending-approval";
@@ -94,11 +93,12 @@ describe("makePendingApprovalStore", () => {
       let now = recordedAt + PENDING_APPROVAL_TTL_MS - 1;
       const blobs = makeInMemoryBlobStore();
       const store = makePendingApprovalStore(blobs, "u:t:s", () => now);
-      yield* store.put(approval({ expiresAt: pendingApprovalExpiresAt(recordedAt) }));
+      const expiresAt = recordedAt + PENDING_APPROVAL_TTL_MS;
+      yield* store.put(approval({ expiresAt }));
 
       expect(yield* store.consume("exec_1")).not.toBeNull();
 
-      yield* store.put(approval({ expiresAt: pendingApprovalExpiresAt(recordedAt) }));
+      yield* store.put(approval({ expiresAt }));
       now += 1;
       expect(yield* store.consume("exec_1")).toBeNull();
     }),

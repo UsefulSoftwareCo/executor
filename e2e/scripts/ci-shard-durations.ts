@@ -35,6 +35,7 @@ export const OBSERVED_TEST_DURATIONS_MS: Readonly<
     "cloud/org-multitab-cookie.test.ts": 15_626,
     "cloud/org-switcher.test.ts": 7_686,
     "cloud/repro-transport-brick.test.ts": 5_474,
+    "scenarios/artifact-approval.test.ts": 65_965,
     "scenarios/artifact-loading-surface.test.ts": 16_426,
     "scenarios/artifact-preview-gallery.test.ts": 10_838,
     "scenarios/artifacts.test.ts": 23_178,
@@ -63,6 +64,7 @@ export const OBSERVED_TEST_DURATIONS_MS: Readonly<
     "local/update-notice.test.ts": 8_438,
   },
   selfhost: {
+    "scenarios/artifact-approval.test.ts": 65_795,
     "scenarios/artifact-loading-surface.test.ts": 10_961,
     "scenarios/artifact-preview-gallery.test.ts": 6_923,
     "scenarios/artifacts.test.ts": 17_794,

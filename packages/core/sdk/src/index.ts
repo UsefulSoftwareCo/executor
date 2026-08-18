@@ -241,7 +241,6 @@ export {
 // survives a host whose HTTP API builds a fresh engine per request.
 export {
   makePendingApprovalStore,
-  pendingApprovalExpiresAt,
   PendingApproval,
   PENDING_APPROVAL_TTL_MS,
   type PendingApprovalStore,

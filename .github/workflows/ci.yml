@@ -198,8 +198,9 @@ jobs:
       matrix:
         include:
           # The planner assigns every file exactly once using recorded slow-file
-          # durations plus a conservative weight for new tests. Extra shards
-          # keep each hermetic stack below the PGlite lifetime failure window.
+          # durations plus a conservative weight for new tests. The cloud DB's
+          # connection teardown and concurrent socket protocol have dedicated
+          # regression tests; these shards balance wall clock, not hide retries.
           - { target: cloud, shard-index: 1, shard-name: 1of16 }
           - { target: cloud, shard-index: 2, shard-name: 2of16 }
           - { target: cloud, shard-index: 3, shard-name: 3of16 }

@@ -33,10 +33,6 @@ import type { StorageError } from "./fuma-runtime";
  *  action again, which is safe because nothing has run yet. */
 export const PENDING_APPROVAL_TTL_MS = 15 * 60 * 1000;
 
-/** Returns the exclusive expiry boundary for a newly paused approval. */
-export const pendingApprovalExpiresAt = (recordedAt: number): number =>
-  recordedAt + PENDING_APPROVAL_TTL_MS;
-
 /**
  * The resolved call an approval authorizes.
  *
