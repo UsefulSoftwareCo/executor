@@ -95,6 +95,12 @@ declare global {
       MCP_REQUEST_STATE_KEY?: string;
       /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
       MCP_2026_07_28_ENABLED?: string;
+      // Kill switch for the Start server-graph warmup (server.ts). Set to
+      // "false" to disable without a deploy if it ever costs memory again.
+      START_GRAPH_WARM?: string;
+      // How many fetches an isolate must serve before it is considered
+      // persistent enough to warm. Defaults to 2.
+      START_GRAPH_WARM_AFTER?: string;
       NODE_ENV?: string;
 
       // Shared with frontend
