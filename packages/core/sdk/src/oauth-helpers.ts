@@ -552,12 +552,34 @@ const pickClientAuth = (
     : oauth.ClientSecretPost(clientSecret);
 };
 
-const tokenResponseFrom = (r: oauth.TokenEndpointResponse): OAuth2TokenResponse => ({
+const normalizedTokenScope = (
+  as: oauth.AuthorizationServer,
+  scope: string | undefined,
+): string | undefined => {
+  if (scope === undefined || scope.trim().length === 0) return undefined;
+  const tokenEndpoint = typeof as.token_endpoint === "string" ? URL.parse(as.token_endpoint) : null;
+  const isSlackTokenEndpoint =
+    tokenEndpoint?.hostname.toLowerCase() === "slack.com" &&
+    (tokenEndpoint.pathname === "/api/oauth.v2.access" ||
+      tokenEndpoint.pathname === "/api/oauth.v2.user.access");
+  if (!isSlackTokenEndpoint) return scope;
+
+  const normalized = scope
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .join(" ");
+  return normalized.length > 0 ? normalized : undefined;
+};
+
+const tokenResponseFrom = (
+  as: oauth.AuthorizationServer,
+  r: oauth.TokenEndpointResponse,
+): OAuth2TokenResponse => ({
   access_token: r.access_token,
   token_type: r.token_type,
   refresh_token: r.refresh_token,
   expires_in: typeof r.expires_in === "number" ? r.expires_in : undefined,
-  scope: typeof r.scope === "string" && r.scope.trim().length > 0 ? r.scope : undefined,
+  scope: normalizedTokenScope(as, typeof r.scope === "string" ? r.scope : undefined),
 });
 
 const JwtClaims = Schema.Record(Schema.String, Schema.Unknown);
@@ -694,6 +716,7 @@ const processTokenEndpointResponse = async (
   const stripped = await stripIdToken(response);
   const providerUserGrant = await nestedAuthedUserGrant(stripped.response);
   const parsed = tokenResponseFrom(
+    as,
     await oauth.processGenericTokenEndpointResponse(as, client, stripped.response),
   );
   const token =
@@ -839,7 +862,7 @@ export const exchangeClientCredentials = (
         ),
       );
       const result = await oauth.processClientCredentialsResponse(as, client, response);
-      return tokenResponseFrom(result);
+      return tokenResponseFrom(as, result);
     },
     catch: (cause) => cause,
   }).pipe(
@@ -918,7 +941,7 @@ export const refreshAccessToken = (
         client,
         (await stripIdToken(response)).response,
       );
-      return tokenResponseFrom(result);
+      return tokenResponseFrom(as, result);
     },
     catch: (cause) => cause,
   }).pipe(
