@@ -454,6 +454,16 @@ export const TOOL_INVOCATION_COLUMNS = [
   "created_at",
   "updated_at",
 ] as const satisfies readonly (keyof ToolRow)[];
+/** The connection columns the tools read's catalog-refresh scan projects: the
+ *  address `produceConnectionTools` needs plus the stamp its trigger check
+ *  reads. Credentials, OAuth state and health JSON stay unread — the scan runs
+ *  on every `tools.list`, and in steady state it must match no rows at all. */
+export const CONNECTION_CATALOG_SCAN_COLUMNS = [
+  "owner",
+  "integration",
+  "name",
+  "tools_synced_at",
+] as const satisfies readonly (keyof ConnectionRow)[];
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
 export type ArtifactRow = FumaRow<CoreSchema["artifact"]>;
