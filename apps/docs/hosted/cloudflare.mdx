@@ -27,9 +27,12 @@ bunx wrangler login
 bun run deploy:setup
 ```
 
-`deploy:setup` is idempotent: it creates or reuses the `executor` D1 database,
-writes its id into `wrangler.jsonc`, generates and uploads the `EXECUTOR_SECRET_KEY`
-secret, and deploys the Worker. It then prints the one remaining manual step.
+`deploy:setup` is idempotent: it creates or reuses the `executor` D1 database, records
+its id in `wrangler.local.jsonc` (this installation's gitignored settings — the tracked
+`wrangler.jsonc` template is never written, which is what keeps
+[upgrading](#upgrading) a plain `git pull`), generates and uploads the
+`EXECUTOR_SECRET_KEY` secret, and deploys the Worker. It then prints the one remaining
+manual step.
 
 ## Put it behind Cloudflare Access
 
@@ -42,13 +45,16 @@ Until the Worker is behind an Access application, every API and MCP route return
 4. Copy the application **Audience (AUD)** tag, then redeploy with your Access settings:
 
    ```bash
-   bunx wrangler deploy \
+   bunx wrangler deploy --config wrangler.deploy.json \
      --var ACCESS_AUD:<aud> \
      --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com
    ```
 
-   You can also set `ACCESS_AUD` and `ACCESS_TEAM_DOMAIN` in `wrangler.jsonc` and
-   redeploy.
+   These become live Worker variables, and `keep_vars` preserves them through every
+   later deploy — so you set them once, and an upgrade cannot drop them. To change
+   them, run the command again. If you would rather keep them in a file, put them
+   under `vars` in `wrangler.local.jsonc` (never in the tracked `wrangler.jsonc`,
+   which each release updates).
 
 Now visiting the Worker prompts a Cloudflare Access login, and the Worker validates
 the issued JWT on every request.
@@ -149,3 +155,83 @@ authenticate machine-to-machine with an Access service token instead.
 
 Once connected, see [MCP Proxy](/mcp-proxy) for how the endpoint exposes your
 integrations.
+
+## Upgrading
+
+The console's sidebar shows an **Update available** card when the running Worker is
+behind the published release, and links here. A Cloudflare install upgrades by
+redeploying the Worker from a newer checkout:
+
+```bash
+git pull            # from a fork: git fetch upstream && git merge --ff-only upstream/main
+bun install
+cd apps/host-cloudflare
+bun run deploy
+```
+
+`bun run deploy` rebuilds the SPA, regenerates the deploy config, and ships a new
+Worker version. Database migrations run on demand at boot, so there is no separate
+migrate step.
+
+### What a redeploy keeps
+
+Nothing installation-specific lives in the code you just pulled, so an upgrade
+carries none of it away:
+
+| State                                                     | Where it lives                     |
+| --------------------------------------------------------- | ---------------------------------- |
+| Integrations, connections, secrets, policies              | your D1 database                   |
+| `EXECUTOR_SECRET_KEY` and any other `wrangler secret`     | Worker secrets                     |
+| `ACCESS_AUD`, `ACCESS_TEAM_DOMAIN`, `ADMIN_EMAILS`        | live Worker vars (`keep_vars`)     |
+| Your Access application, its policies, and service tokens | Cloudflare Access                  |
+| Your D1 database id and org name                          | `wrangler.local.jsonc` (see below) |
+
+The one thing to check before deploying is whether the release added a _new_
+deployment prerequisite — usually a `wrangler secret` the Worker now requires. The
+Worker fails closed when one is missing rather than serving in a degraded state, so
+read the release notes for the versions you are jumping across and set anything new
+first:
+
+```bash
+bunx wrangler secret put <NAME> --config wrangler.deploy.json
+```
+
+### Keeping local modifications
+
+Two kinds of local change need different homes, and only one of them belongs in a
+file you edit.
+
+**Configuration** — your D1 database id, the org name in the console, a custom Worker
+name or route — goes in `apps/host-cloudflare/wrangler.local.jsonc`, a gitignored
+overlay merged over the tracked `wrangler.jsonc` template at deploy time:
+
+```jsonc
+{
+  "d1_databases": [{ "binding": "DB", "database_id": "<your database id>" }],
+  "vars": { "SELF_HOSTED_ORG_NAME": "Acme" },
+}
+```
+
+`deploy:setup` writes your provisioned database id there for you. Because the tracked
+template is never modified, `git pull` on a new release can never conflict with your
+deployment's settings.
+
+**Code changes** belong on a branch you rebase onto each release, not in an
+uncommitted working tree — an upgrade pull will otherwise ask you to reconcile your
+edits against a moving codebase with no record of what you changed or why. If the
+change is a fix or a missing capability rather than something specific to your
+install, [send it upstream](https://github.com/UsefulSoftwareCo/executor) and carry
+nothing.
+
+### Rolling back
+
+Worker versions are retained, so a bad upgrade reverts in one command:
+
+```bash
+bunx wrangler rollback --config wrangler.deploy.json
+```
+
+Two caveats. Cloudflare refuses a rollback across a Durable Object class migration, so
+a release that adds one (the `migrations` array in `wrangler.jsonc`) can only be
+reverted by redeploying the older checkout. And rollback restores code, not data: any
+database migration the newer version applied at boot stays applied.

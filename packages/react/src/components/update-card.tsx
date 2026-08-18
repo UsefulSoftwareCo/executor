@@ -42,7 +42,7 @@ const UPGRADE_HINT = appEnv?.VITE_UPGRADE_HINT as UpgradeHint | undefined;
 // wrong upgrade step.
 const UPGRADE_DOCS_URL: Partial<Record<UpgradeHint, string>> = {
   selfhost: `${DOCS_BASE_URL}/hosted/docker`,
-  cloudflare: `${DOCS_BASE_URL}/hosted/cloudflare`,
+  cloudflare: `${DOCS_BASE_URL}/hosted/cloudflare#upgrading`,
 };
 
 // ── useLatestVersion ────────────────────────────────────────────────────

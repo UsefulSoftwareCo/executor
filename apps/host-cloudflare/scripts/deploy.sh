@@ -3,19 +3,21 @@
 #
 # Provisions everything a fresh account needs and deploys the Worker:
 #   1. verifies wrangler is logged in
-#   2. creates (or reuses) the `executor` D1 database and writes its id into
-#      wrangler.jsonc
+#   2. creates (or reuses) the `executor` D1 database and records its id in
+#      wrangler.local.jsonc (this installation's gitignored overlay — the
+#      tracked wrangler.jsonc template is never written, so upgrading is a
+#      clean `git pull`; see scripts/deploy-config.ts)
 #   3. generates + uploads EXECUTOR_SECRET_KEY (the at-rest secret key) if unset
 #   4. deploys the Worker
 #   5. prints the single manual step: configure the Cloudflare Access application
 #
-# Idempotent — safe to re-run. Run from anywhere:
+# Idempotent — safe to re-run, and re-running it after an upgrade is the whole
+# upgrade procedure. Run from anywhere:
 #   bash apps/host-cloudflare/scripts/deploy.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG="$APP_DIR/wrangler.jsonc"
 cd "$APP_DIR"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
@@ -42,22 +44,20 @@ else
 fi
 [ -n "$DB_ID" ] || { echo "Failed to resolve D1 database id" >&2; exit 1; }
 
-step "Writing D1 id into wrangler.jsonc"
-# Replace whatever database_id is present (placeholder or a prior id).
-node -e '
-  const fs=require("fs"),p=process.argv[1],id=process.argv[2];
-  let t=fs.readFileSync(p,"utf8");
-  t=t.replace(/("database_id":\s*")[^"]*(")/, `$1${id}$2`);
-  fs.writeFileSync(p,t);
-' "$CONFIG" "$DB_ID"
-info "wrangler.jsonc -> $DB_ID"
+step "Recording D1 id in wrangler.local.jsonc"
+# The id belongs to this account, not to the repo, so it goes in the gitignored
+# overlay; deploy-config.ts merges it over the tracked template and prints the
+# generated config every wrangler command below deploys with.
+CONFIG="$(bun scripts/deploy-config.ts --set-d1 "$DB_ID")"
+info "wrangler.local.jsonc -> $DB_ID"
+info "deploying with $(basename "$CONFIG")"
 
 step "Ensuring EXECUTOR_SECRET_KEY secret"
-if bunx wrangler secret list 2>/dev/null | grep -q EXECUTOR_SECRET_KEY; then
+if bunx wrangler secret list --config "$CONFIG" 2>/dev/null | grep -q EXECUTOR_SECRET_KEY; then
   info "Secret already set — leaving it."
 else
   SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
-  printf '%s' "$SECRET" | bunx wrangler secret put EXECUTOR_SECRET_KEY >/dev/null
+  printf '%s' "$SECRET" | bunx wrangler secret put EXECUTOR_SECRET_KEY --config "$CONFIG" >/dev/null
   info "Generated + uploaded a fresh 32-byte key."
 fi
 
@@ -65,7 +65,7 @@ step "Building the web SPA"
 bunx vite build
 
 step "Deploying Worker"
-bunx wrangler deploy
+bunx wrangler deploy --config "$CONFIG"
 
 cat <<'NEXT'
 

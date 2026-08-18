@@ -37,8 +37,18 @@ bun run deploy:setup    # apps/host-cloudflare — provisions D1 + secret + depl
 ```
 
 `deploy:setup` (scripts/deploy.sh) is idempotent. It creates or reuses the
-`executor` D1 database, writes its id into `wrangler.jsonc`, generates and
+`executor` D1 database, records its id in `wrangler.local.jsonc`, generates and
 uploads `EXECUTOR_SECRET_KEY`, then deploys. It then prints the one manual step.
+
+### Config: template, overlay, generated
+
+`wrangler.jsonc` is the tracked template — bindings, migrations, routing, owned
+by the release. Values that belong to one installation (the D1 id created in
+your account, the org name, a custom worker name) go in `wrangler.local.jsonc`,
+a gitignored overlay. `scripts/deploy-config.ts` merges the two into
+`wrangler.deploy.json`, which every deploying command reads via `--config`; the
+template is never written. That is what keeps an upgrade a plain `git pull` —
+see [Upgrading](https://executor.sh/docs/hosted/cloudflare#upgrading).
 
 ### The one manual step — Cloudflare Access
 
@@ -72,7 +82,7 @@ EXECUTOR_SECRET_KEY=dev-secret-key-0123456789abcdef
 ENABLE_DEV_AUTH=true     # bypass Access; every request is a fixed dev admin
 
 bun run build            # vite build -> dist/ (the SPA)
-bunx wrangler dev --local   # serves the SPA + Worker API together
+bun run dev              # merges the config, then serves the SPA + Worker API
 ```
 
 `bun run dev:web` runs the Vite dev server (HMR) for UI work; point its API at a

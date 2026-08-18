@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "vite build && node scripts/assert-shell-asset.mjs",
-    "deploy": "vite build && node scripts/assert-shell-asset.mjs && wrangler deploy",
-    "dev": "wrangler dev",
+    "config": "bun scripts/deploy-config.ts",
+    "deploy": "vite build && node scripts/assert-shell-asset.mjs && bun scripts/deploy-config.ts && wrangler deploy --config wrangler.deploy.json",
+    "dev": "bun scripts/deploy-config.ts && wrangler dev --config wrangler.deploy.json",
     "dev:web": "vite dev",
     "typecheck": "tsgo --noEmit",
     "cf-typegen": "wrangler types",
