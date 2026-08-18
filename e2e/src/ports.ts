@@ -234,8 +234,14 @@ export const isAddrInUse = (error: unknown): boolean => {
   for (let cursor: unknown = error; cursor instanceof Error; cursor = cursor.cause) {
     if ((cursor as NodeJS.ErrnoException).code === "EADDRINUSE") return true;
     // The emulate/vite boot glue wraps the OS error in a plain Error whose
-    // message carries the code, so match the text too.
-    if (/EADDRINUSE/.test(cursor.message)) return true;
+    // message carries the code, so match the text too. Vite's --strictPort
+    // exit never says EADDRINUSE at all — the CLI catches the bind failure
+    // and dies with "Port N is already in use", which reaches us only as
+    // BootProcessExitError's log tail — so match that phrasing as well, or
+    // the claimAndBoot re-claim retry never engages for the most common
+    // collision (a Linux ephemeral outbound socket grabbing the claimed
+    // port between probe release and vite's bind).
+    if (/EADDRINUSE|is already in use/.test(cursor.message)) return true;
   }
   return false;
 };
