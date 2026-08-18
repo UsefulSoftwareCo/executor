@@ -245,8 +245,14 @@ const verifySealedSessionLocally = (
       Effect.onExit(() => {
         const jwksAfter = jwks.inspect();
         return Effect.annotateCurrentSpan({
-          "jwks.fetched_during_verify": jwksAfter.fetchCount > jwksBefore.fetchCount,
+          // Blocking, not total: under stale-while-revalidate a background
+          // refresh moves `fetchCount` without costing this verify anything.
+          // Attribute latency to what the caller actually waited on.
+          "jwks.fetched_during_verify":
+            jwksAfter.blockingFetchCount > jwksBefore.blockingFetchCount,
+          "jwks.served_from_store": jwksAfter.storeHitCount > jwksBefore.storeHitCount,
           "jwks.fetch_count": jwksAfter.fetchCount,
+          "jwks.blocking_fetch_count": jwksAfter.blockingFetchCount,
           "jwks.fetch_failure_count": jwksAfter.fetchFailureCount,
           ...(jwksAfter.lastFetchDurationMs === null
             ? {}

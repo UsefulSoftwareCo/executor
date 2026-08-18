@@ -98,12 +98,20 @@ export interface CachedRemoteJWKSet extends JWTVerifyGetKey {
    * instance; callers snapshot them around a verify to tell a cache hit from
    * a live upstream fetch (the Aug 2026 latency regression was exactly this
    * cache silently missing on ~92% of verifies, invisible in traces).
+   *
+   * `blockingFetchCount` counts only fetches a verify actually WAITED on.
+   * Under stale-while-revalidate `fetchCount` also moves for background
+   * revalidation the caller never paid for, so latency attribution wants
+   * `blockingFetchCount`. `storeHitCount` counts cold-isolate reads answered
+   * by the cross-isolate store instead of going upstream.
    */
   readonly inspect: () => {
     fetchedAt: number | null;
     hasJwks: boolean;
     fetchCount: number;
     fetchFailureCount: number;
+    blockingFetchCount: number;
+    storeHitCount: number;
     lastFetchDurationMs: number | null;
   };
 }
@@ -261,6 +269,8 @@ export const createCachedRemoteJWKSet = (
   let inflight: Promise<CacheEntry> | null = null;
   let fetchCount = 0;
   let fetchFailureCount = 0;
+  let blockingFetchCount = 0;
+  let storeHitCount = 0;
   let lastFetchDurationMs: number | null = null;
 
   const isFresh = (candidate: CacheEntry): boolean => Date.now() - candidate.fetchedAt < ttlMs;
@@ -309,14 +319,21 @@ export const createCachedRemoteJWKSet = (
       const candidate = entryFrom(stored);
       if (!isUsable(candidate)) return null;
       entry = candidate;
+      storeHitCount += 1;
       return candidate;
     } catch {
       return null;
     }
   };
 
+  /** A refresh the caller waits on — the only kind that costs it latency. */
+  const refreshBlocking = (): Promise<CacheEntry> => {
+    blockingFetchCount += 1;
+    return refresh();
+  };
+
   const ensureFresh = async (forceRefresh: boolean): Promise<CacheEntry> => {
-    if (forceRefresh) return refresh();
+    if (forceRefresh) return refreshBlocking();
     if (entry && isFresh(entry)) return entry;
 
     // Memory is stale but still usable: serve it now, revalidate behind it.
@@ -334,7 +351,7 @@ export const createCachedRemoteJWKSet = (
 
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a failed refresh must fall back to stale keys rather than fail the verify
     try {
-      return await refresh();
+      return await refreshBlocking();
     } catch (error) {
       // Upstream is slow or down. Last good keys beat failing every request.
       if (entry && isUsable(entry)) return entry;
@@ -374,6 +391,8 @@ export const createCachedRemoteJWKSet = (
       hasJwks: entry !== null,
       fetchCount,
       fetchFailureCount,
+      blockingFetchCount,
+      storeHitCount,
       lastFetchDurationMs,
     }),
   });

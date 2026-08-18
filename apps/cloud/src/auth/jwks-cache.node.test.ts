@@ -279,6 +279,49 @@ describe("createCachedRemoteJWKSet", () => {
     await expect(jwtVerify(token, jwks, { issuer, audience })).rejects.toThrow();
   });
 
+  it("attributes background revalidation to fetchCount but not blockingFetchCount", async () => {
+    const kp = await generateRotatableKeypair("k1");
+    const harness = makeFetchHarness([kp.publicJwk]);
+    const jwks = createCachedRemoteJWKSet(jwksUrl, {
+      fetch: harness.fetch,
+      store: null,
+      ttlMs: 10,
+      staleMaxMs: 60_000,
+    });
+
+    const token = await sign(kp);
+    await jwtVerify(token, jwks, { issuer, audience });
+    expect(jwks.inspect().blockingFetchCount).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Past the TTL: served from the stale entry, revalidated behind it. The
+    // caller waited on nothing, so latency must not be attributed to it.
+    const before = jwks.inspect();
+    await jwtVerify(token, jwks, { issuer, audience });
+    const after = jwks.inspect();
+
+    expect(after.blockingFetchCount).toBe(before.blockingFetchCount);
+    expect(after.fetchCount).toBeGreaterThan(before.fetchCount);
+  });
+
+  it("records a cold-isolate store read as a store hit, not a fetch", async () => {
+    const kp = await generateRotatableKeypair("k1");
+    const store = makeStoreHarness();
+    const warm = makeFetchHarness([kp.publicJwk]);
+
+    const first = createCachedRemoteJWKSet(jwksUrl, { fetch: warm.fetch, store });
+    const token = await sign(kp);
+    await jwtVerify(token, first, { issuer, audience });
+
+    const second = createCachedRemoteJWKSet(jwksUrl, { fetch: failingFetch, store });
+    await jwtVerify(token, second, { issuer, audience });
+
+    const stats = second.inspect();
+    expect(stats.storeHitCount).toBe(1);
+    expect(stats.blockingFetchCount).toBe(0);
+  });
+
   it("does not block a request on revalidation once keys are cached", async () => {
     const kp = await generateRotatableKeypair("k1");
     const harness = makeFetchHarness([kp.publicJwk]);
