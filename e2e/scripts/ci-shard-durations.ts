@@ -43,7 +43,7 @@ export const OBSERVED_TEST_DURATIONS_MS: Readonly<
     "scenarios/connect-handoff-session.test.ts": 10_296,
     "scenarios/connect-handoff.test.ts": 7_519,
     "scenarios/connection-remove-confirm.test.ts": 5_197,
-    "scenarios/google-health-checks.test.ts": 20_737,
+    "scenarios/google-health-checks.test.ts": 39_421,
     "scenarios/google-photos-preset-ui.test.ts": 5_696,
     "scenarios/graphql-introspection-health.test.ts": 12_617,
     "scenarios/health-checks-ui.test.ts": 71_165,

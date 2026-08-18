@@ -113,17 +113,27 @@ describe("CI shard planning", () => {
     );
 
     for (const target of CI_TARGETS) {
-      const entries = workflow
-        .split("\n")
-        .filter((line) => line.includes(`{ target: ${target}, shard-index:`));
-      const indexes = entries.map((line) => {
-        const match = /shard-index: (\d+)/.exec(line);
-        return match?.[1];
-      });
+      const entries = workflow.matchAll(
+        new RegExp(`-\\s*\\{[^}]*target:\\s*${target},[^}]*shard-index:\\s*(\\d+)`, "g"),
+      );
+      const indexes = [...entries].map((entry) => entry[1]);
 
       expect(indexes).toEqual(
         Array.from({ length: CI_SHARD_COUNTS[target] }, (_, index) => String(index + 1)),
       );
     }
+
+    const cloudPlan = await planTargetShards(
+      "cloud",
+      fileURLToPath(new URL("..", import.meta.url)),
+    );
+    const approvalShard = cloudPlan.find((shard) =>
+      shard.files.includes("scenarios/artifact-approval.test.ts"),
+    );
+    expect(approvalShard?.files).toEqual(["scenarios/artifact-approval.test.ts"]);
+    const acceleratedEntry = new RegExp(
+      `-\\s*\\{[^}]*target:\\s*cloud,[^}]*shard-index:\\s*${approvalShard?.index},[^}]*runner:\\s*blacksmith-8vcpu-ubuntu-2404`,
+    );
+    expect(workflow).toMatch(acceleratedEntry);
   });
 });

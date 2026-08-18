@@ -60,9 +60,10 @@ const testDirectories: Readonly<Record<CiTarget, readonly string[]>> = {
   local: ["local"],
 };
 
-// A file this long already consumes most of the two-minute budget after the
-// target stack boots. Keep it alone instead of balancing unrelated work onto it.
-const ISOLATED_TEST_DURATION_MS = 45_000;
+// A file this long already consumes most of the two-minute budget after
+// dependency linking, target startup, and Vitest global setup. Keep it alone
+// instead of balancing unrelated work onto it.
+const ISOLATED_TEST_DURATION_MS = 35_000;
 
 const comparePaths = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
