@@ -605,7 +605,12 @@ describe("tool catalog sync safety", () => {
         yield* Effect.promise(() =>
           config.db.updateMany("connection", {
             where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
-            set: { tools_synced_at: null },
+            // The failed sync above put this connection on the retry ladder, so
+            // the next read is held off until its backoff window elapses. Move
+            // the window into the past rather than sleeping through it; the
+            // failure count stays, so the successful sync below has to clear
+            // the whole ledger and not just the health record.
+            set: { tools_synced_at: null, tools_sync_retry_at: Date.now() - 1 },
           }),
         );
         yield* executor.tools.list({ integration: INTEG });

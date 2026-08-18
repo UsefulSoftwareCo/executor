@@ -32,6 +32,7 @@ import type {
   Tenant,
   ToolAddress,
 } from "./ids";
+import type { ToolSyncErrorKind } from "./tool-sync-schedule";
 import type { IntegrationDetectionResult } from "./types";
 import type {
   ElicitationDeclinedError,
@@ -231,11 +232,22 @@ export interface PluginCtx<TStore = unknown> {
       readonly Tool[],
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     >;
-    /** Mark a connection's persisted tool catalog stale (clears its sync
-     *  stamp) without re-listing inline. The next tools read re-produces it.
-     *  For signals that arrive mid-invocation — e.g. an MCP server sending
+    /** Record that a connection's persisted tool catalog has drifted, without
+     *  re-listing inline. The next tools read re-produces it. For signals that
+     *  arrive mid-invocation — e.g. an MCP server sending
      *  `notifications/tools/list_changed` or rejecting a call as an unknown
-     *  tool — where an inline `refresh` would block the caller. */
+     *  tool — where an inline `refresh` would block the caller. The last
+     *  verified sync time is preserved; the drift is recorded alongside it.
+     *
+     *  Safe to call at any point, including while a listing for the same
+     *  connection is in flight: the mark is recorded as a fresh token, and a
+     *  listing only resolves the token it observed when it started. A signal
+     *  that arrives mid-listing therefore survives it and re-lists.
+     *
+     *  NOT from inside `ctx.transaction(...)`, though: the write takes a
+     *  non-reentrant executor permit, and on sqlite an open BEGIN blocking on
+     *  that permit can silently drop a concurrent catalog rebuild. Call it
+     *  before the transaction, or after it commits. */
     readonly markToolsStale: (ref: ConnectionRef) => Effect.Effect<void, StorageFailure>;
     /** Resolve a connection's value through its provider (and OAuth refresh).
      *  null if the provider can't produce one. */
@@ -335,6 +347,14 @@ export interface ResolveToolsResult {
   /** Human-readable reason for an incomplete listing. Persisted by core when it
    *  preserves the prior catalog so operators can see why data is stale. */
   readonly incompleteReason?: string;
+  /** What KIND of failure made the listing incomplete, as the structured
+   *  counterpart to `incompleteReason`. Core persists it on the connection and
+   *  schedules the next attempt from it: `auth` parks the connection until a
+   *  human re-authorizes, because retrying a rejected credential cannot change
+   *  the verdict, while the other kinds walk the retry ladder. Omit when the
+   *  plugin genuinely cannot tell them apart — an unclassified failure still
+   *  backs off, it just never parks. */
+  readonly incompleteKind?: ToolSyncErrorKind;
 }
 
 export interface ProjectToolSchemaInput<TStore = unknown> {

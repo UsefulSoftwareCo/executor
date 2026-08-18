@@ -590,14 +590,25 @@ export const resolveOpenApiBackedTools = ({
   readonly storage: OpenapiStore;
 }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
   Effect.gen(function* () {
+    // Always `config`: an OpenAPI catalog is derived entirely from the stored
+    // spec and its operation bindings, so nothing here can fail on a credential
+    // or an upstream. Every incomplete listing below means the integration's
+    // own persisted artifacts cannot produce a catalog, which is a fixable
+    // configuration state rather than something to keep re-dialing.
     const incomplete = (reason: string): ResolveToolsResult => ({
       tools: [],
       definitions: {},
       incomplete: true,
       incompleteReason: reason,
+      incompleteKind: "config",
     });
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
-    if (!openApiConfig) return { tools: [], definitions: {} };
+    // Incomplete, never an authoritative empty catalog. Core reads an
+    // authoritative listing as the truth and DELETES every persisted tool row
+    // for the integration, and this plugin does not set `remoteToolCatalog`, so
+    // the nonzero-catalog guard that would otherwise catch it never runs — an
+    // unreadable config blob would wipe a working catalog.
+    if (!openApiConfig) return incomplete("The OpenAPI integration config could not be read.");
     if (openApiConfig.specHash != null) {
       const defsJson = yield* storage
         .getDefs(openApiConfig.specHash)

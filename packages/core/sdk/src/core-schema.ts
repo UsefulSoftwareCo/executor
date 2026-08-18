@@ -219,9 +219,47 @@ export const coreTables = defineTables({
       // accounts list shows alive/expired AT A GLANCE (the customer ask)
       // instead of only after a per-row manual probe. Null = never checked.
       last_health: nullableJsonColumn("last_health"),
-      // Epoch ms of the last tool (re)production for this connection. Stale
-      // vs the integration's `config_revised_at` → re-produced on next read.
+      // Epoch ms of the last AUTHORITATIVE tool (re)production for this
+      // connection. Stale vs the integration's `config_revised_at` →
+      // re-produced on next read. Never stamped by an incomplete or failed
+      // listing: a month-dead MCP server that reads as "synced 30s ago" is
+      // re-dialed once per freshness window forever.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      // Set when an event declares this catalog drifted (an MCP
+      // `tools/list_changed`, an unknown-tool rejection); null when there is no
+      // outstanding drift. Separate from `tools_synced_at` so marking a catalog
+      // stale no longer destroys the last-verified timestamp — "drifted" and
+      // "never synced" are different states with different diagnoses.
+      //
+      // An OPAQUE token, not a timestamp: it answers "was this catalog
+      // invalidated since the listing now finishing began", which is a version
+      // question, and a wall clock answers it only as precisely as it ticks. A
+      // listing captures the token it observed at its start and clears the
+      // column only if that same token is still there, so a mark that landed
+      // mid-listing carries a different token, survives the clear, and re-lists.
+      // Never compared for order.
+      tools_stale_token: nullableTextColumn("tools_stale_token"),
+      // The refresh lease. Concurrent reads land in different Workers isolates
+      // with no shared memory, so the row IS the coordination medium: a
+      // refresh compare-and-sets its own nonce here before dialing, and the
+      // losers serve the existing catalog instead of duplicating the
+      // handshake. `tools_sync_claim_at` bounds the lease
+      // (`TOOL_SYNC_CLAIM_LEASE_MS`), so an isolate evicted mid-listing frees
+      // the connection rather than wedging it.
+      tools_sync_claim_id: nullableTextColumn("tools_sync_claim_id"),
+      tools_sync_claim_at: nullableBigintColumn("tools_sync_claim_at"),
+      // The failure ladder: CONSECUTIVE failed listings, and the earliest next
+      // attempt derived from them (see `tool-sync-schedule`). Zeroed by an
+      // authoritative listing. `tools_sync_retry_at` is also written on
+      // success, where it carries the freshness horizon rather than a gate.
+      tools_sync_failures: nullableBigintColumn("tools_sync_failures"),
+      tools_sync_retry_at: nullableBigintColumn("tools_sync_retry_at"),
+      // Why the last listing failed, as the closed `ToolSyncErrorKind` set
+      // (`auth` | `unreachable` | `protocol` | `config`). `auth` parks the
+      // connection: retrying a rejected credential cannot change the verdict,
+      // and 401 handshakes were the single largest source of wasted upstream
+      // dials.
+      tools_sync_error_kind: nullableTextColumn("tools_sync_error_kind"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for
@@ -455,14 +493,21 @@ export const TOOL_INVOCATION_COLUMNS = [
   "updated_at",
 ] as const satisfies readonly (keyof ToolRow)[];
 /** The connection columns the tools read's catalog-refresh scan projects: the
- *  address `produceConnectionTools` needs plus the stamp its trigger check
- *  reads. Credentials, OAuth state and health JSON stay unread — the scan runs
- *  on every `tools.list`, and in steady state it must match no rows at all. */
+ *  address `produceConnectionTools` needs plus the whole sync lifecycle its
+ *  eligibility check reads (`ToolSyncCandidate`). Credentials, OAuth state and
+ *  health JSON stay unread — the scan runs on every `tools.list`, and in steady
+ *  state it must match no rows at all. */
 export const CONNECTION_CATALOG_SCAN_COLUMNS = [
   "owner",
   "integration",
   "name",
   "tools_synced_at",
+  "tools_stale_token",
+  "tools_sync_claim_id",
+  "tools_sync_claim_at",
+  "tools_sync_failures",
+  "tools_sync_retry_at",
+  "tools_sync_error_kind",
 ] as const satisfies readonly (keyof ConnectionRow)[];
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;

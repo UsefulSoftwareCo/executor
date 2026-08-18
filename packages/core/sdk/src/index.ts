@@ -159,6 +159,31 @@ export {
   type ToolPolicyAction,
 } from "./core-schema";
 
+// Tool-catalog sync lifecycle. The error-kind vocabulary is part of the plugin
+// contract (`ResolveToolsResult.incompleteKind`), so plugins outside this
+// package need it by name.
+export {
+  TOOL_SYNC_BACKOFF_CEILING_MS,
+  TOOL_SYNC_CLAIM_LEASE_MS,
+  TOOL_SYNC_ERROR_KINDS,
+  TOOL_SYNC_JITTER_MAX,
+  TOOL_SYNC_JITTER_MIN,
+  classifyToolSync,
+  decideToolSync,
+  isSyncEligible,
+  isToolSyncBackedOff,
+  isToolSyncClaimLive,
+  isToolSyncErrorKind,
+  isToolSyncParked,
+  scheduleAfterFailure,
+  scheduleAfterSuccess,
+  type ToolSyncCandidate,
+  type ToolSyncDecision,
+  type ToolSyncErrorKind,
+  type ToolSyncSkip,
+  type ToolSyncState,
+} from "./tool-sync-schedule";
+
 // Owner policy.
 export {
   ORG_SUBJECT,
