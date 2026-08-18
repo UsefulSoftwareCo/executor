@@ -66,14 +66,24 @@ const serviceVersion = (): string => env.CF_VERSION_METADATA?.id ?? "dev";
 // from "one isolate is slow", and makes per-isolate cache behavior (JWKS,
 // module caches) measurable from Axiom. The Aug 2026 latency investigation
 // stalled for lack of exactly this attribute.
-const ISOLATE_INSTANCE_ID = crypto.randomUUID();
-const ISOLATE_STARTED_AT = Date.now();
+//
+// Generated LAZILY on first use, not at module scope: workerd forbids random
+// generation (and I/O) in global scope and Cloudflare's upload validation
+// rejects the whole deploy for it (error 10021). First use is inside
+// `installTracerProvider()` / the telemetry layer build, which both run in a
+// request handler, so the id is still one-per-isolate.
+let isolateInstanceId: string | null = null;
+let isolateStartedAt: number | null = null;
 
-const resourceAttributes = (): Record<string, string | number> => ({
-  "service.instance.id": ISOLATE_INSTANCE_ID,
-  "executor.isolate_started_at": new Date(ISOLATE_STARTED_AT).toISOString(),
-  ...(env.GIT_COMMIT_SHA === undefined ? {} : { "executor.commit_sha": env.GIT_COMMIT_SHA }),
-});
+const resourceAttributes = (): Record<string, string | number> => {
+  isolateInstanceId ??= crypto.randomUUID();
+  isolateStartedAt ??= Date.now();
+  return {
+    "service.instance.id": isolateInstanceId,
+    "executor.isolate_started_at": new Date(isolateStartedAt).toISOString(),
+    ...(env.GIT_COMMIT_SHA === undefined ? {} : { "executor.commit_sha": env.GIT_COMMIT_SHA }),
+  };
+};
 
 // Module-scope: one provider per isolate, never shut down. The provider holds
 // the SimpleSpanProcessor + OTLP exporter, so any tracer reference captured by
