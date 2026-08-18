@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { Effect } from "effect";
-import { chromium, type Page } from "playwright";
+import { chromium, type Locator, type Page } from "playwright";
 
 import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
@@ -35,6 +35,35 @@ const slug = (text: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+
+/**
+ * Click `trigger` until `revealed` is visible.
+ *
+ * `waitUntil: "networkidle"` does not mean the console has hydrated: a click
+ * that lands between the SSR paint and React attaching the handler is
+ * swallowed without a trace, and whatever the click was meant to open never
+ * appears (the "Connect an integration" dialog no-show flake). Re-clicking a
+ * reveal-style trigger is idempotent, so retry until the result is actually
+ * on screen; the final attempt waits with the full timeout so the failure
+ * surfaces as the ordinary locator error.
+ */
+export const clickToReveal = async (
+  trigger: Locator,
+  revealed: Locator,
+  { attempts = 5, revealTimeoutMs = 4_000 }: { attempts?: number; revealTimeoutMs?: number } = {},
+): Promise<void> => {
+  for (let attempt = 1; attempt < attempts; attempt++) {
+    await trigger.click();
+    const shown = await revealed
+      .waitFor({ timeout: revealTimeoutMs })
+      .then(() => true)
+      // oxlint-disable-next-line executor/no-promise-catch -- retry boundary: a missed reveal is the signal to click again, not a failure
+      .catch(() => false);
+    if (shown) return;
+  }
+  await trigger.click();
+  await revealed.waitFor({ timeout: revealTimeoutMs });
+};
 
 // acquireUseRelease so a vitest timeout (fiber interruption) still closes the
 // browser and flushes video + trace — a bare promise would leak Chromium.
