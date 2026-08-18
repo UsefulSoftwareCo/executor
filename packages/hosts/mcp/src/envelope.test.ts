@@ -252,6 +252,43 @@ describe("McpServingRoutes envelope", () => {
     });
   });
 
+  it("answers a dead-session standalone GET with 405 so old clients stop retrying", async () => {
+    const NotFoundStoreLive = Layer.succeed(McpSessionStore)({
+      dispatch: (): Effect.Effect<McpDispatchResult> => Effect.succeed("not-found"),
+      dispose: () => Effect.void,
+    });
+    const handler = buildHandler(NotFoundStoreLive, McpErrorReporterNoop);
+
+    const get = await handler(
+      new Request("https://host.test/mcp", {
+        method: "GET",
+        headers: {
+          authorization: "Bearer x",
+          accept: "text/event-stream",
+          "mcp-session-id": "dead-session",
+          "mcp-protocol-version": "2025-06-18",
+        },
+      }),
+    );
+    expect(get.status).toBe(405);
+    expect(get.headers.get("allow")).toBe("POST, DELETE");
+    expect(await get.json()).toMatchObject({ error: { code: -32001 } });
+
+    const post = await handler(
+      new Request("https://host.test/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer x",
+          "content-type": "application/json",
+          "mcp-session-id": "dead-session",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    expect(post.status).toBe(404);
+  });
+
   it("404s a modern request whose toolkit route is not served", async () => {
     const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
     const response = await handler(modernRequest("https://host.test/mcp/toolkits/unknown/extra"));

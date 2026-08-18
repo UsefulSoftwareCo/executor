@@ -9,12 +9,14 @@ import * as Cause from "effect/Cause";
 import {
   acceptedContent,
   CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
   createRequestStateCodec,
   fromJsonSchema,
   inputRequired,
   inputResponse,
   McpServer,
   type CallToolResult,
+  type Implementation,
   type InputRequiredResult,
   type ServerContext,
 } from "@modelcontextprotocol/server";
@@ -37,6 +39,7 @@ import {
   buildExecutorMcpTools,
   type ExecutorMcpAssembly,
   type ExecutorMcpToolConfig,
+  type McpClientInfo,
   type McpHandlerResult,
   type McpRequestJoinKeys,
   type McpToolResult,
@@ -48,6 +51,7 @@ export type {
   BrowserApprovalStore,
   ExecutorMcpToolConfig,
   McpArtifactsPort,
+  McpClientInfo,
   McpConnectionsPort,
   McpToolResult,
   PausedExecutionHooks,
@@ -247,6 +251,43 @@ const elicitationSupportFromUnknown = (
     form: hasExplicitModes ? Boolean(elicitation.form) : true,
     url: Boolean(elicitation.url),
   };
+};
+
+const ClientInfoSchema = Schema.Struct({
+  name: Schema.String,
+  version: Schema.optional(Schema.String),
+  title: Schema.optional(Schema.String),
+});
+const decodeClientInfo = Schema.decodeUnknownOption(ClientInfoSchema);
+
+const toClientInfo = (value: unknown): McpClientInfo | null =>
+  Option.getOrNull(decodeClientInfo(value));
+
+const clientInfoFromImplementation = (
+  implementation: Implementation | undefined,
+): McpClientInfo | null =>
+  implementation === undefined
+    ? null
+    : {
+        name: implementation.name,
+        version: implementation.version,
+        ...(implementation.title !== undefined ? { title: implementation.title } : {}),
+      };
+
+/**
+ * Parse the self-reported client identity from a modern request's `_meta`
+ * envelope (`io.modelcontextprotocol/clientInfo`, sent per request), falling
+ * back to the `initialize` body's native `params.clientInfo`. Malformed or
+ * absent identity decodes to null: it is display/telemetry data, never load-bearing.
+ */
+export const clientInfoFromRequestBody = (body: unknown): McpClientInfo | null => {
+  if (!isRecord(body)) return null;
+  const params = body.params;
+  if (!isRecord(params)) return null;
+  const metadata = params._meta;
+  const fromMeta = isRecord(metadata) ? toClientInfo(metadata[CLIENT_INFO_META_KEY]) : null;
+  if (fromMeta) return fromMeta;
+  return body.method === "initialize" ? toClientInfo(params.clientInfo) : null;
 };
 
 /** Parse the MCP Apps capability subset from an already-decoded modern body. */
@@ -464,6 +505,8 @@ const createMcpAssembly = <E extends Cause.YieldableError>(
     initialAppsEnabled,
     getClientCapabilities: () =>
       sessionful ? (server.server.getClientCapabilities() ?? null) : null,
+    getClientInfo: () =>
+      sessionful ? clientInfoFromImplementation(server.server.getClientVersion()) : null,
     getElicitationSupport: () =>
       sessionful
         ? elicitationSupportFromUnknown(server.server.getClientCapabilities())

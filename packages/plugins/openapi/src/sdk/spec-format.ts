@@ -15,6 +15,9 @@ export interface SpecFetchCredentials {
 export interface SpecFetchInput {
   readonly urls: readonly string[];
   readonly credentials?: SpecFetchCredentials;
+  /** Explicit OAuth scopes selected by the caller. Format adapters may use
+   *  these to omit operations that the resulting connection cannot invoke. */
+  readonly consentScopes?: readonly string[];
   readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>;
 }
 

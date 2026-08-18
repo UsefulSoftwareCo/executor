@@ -12,10 +12,14 @@ import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
 import { isAppOwnedPath } from "./app-paths";
+import { marketingProxyRequest } from "./edge/marketing";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
-import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
+import {
+  makeCloudModernMcpServerBuilder,
+  McpSessionDOSqlite as McpSessionDOBase,
+} from "./mcp/session-durable-object";
 import {
   beforeSendWithOtelCorrelation,
   captureCause,
@@ -85,15 +89,12 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // migration — without the OTel-SDK version-conflict that package would now
 // drag in (it pins `@opentelemetry/otlp-* ^0.200.0`, we ship ^0.214.0).
 //
-// ONLY for paths the Effect app does not own. App-owned paths (/api/*, /mcp,
-// /.well-known/* — see app-paths.ts) get their `http.server` span from
-// Effect's own HttpMiddleware.tracer, which parses `traceparent` itself and
-// parents the workos/store/db child spans. Wrapping those here too produced
-// two identical sibling `http.server` spans per request (scope
-// `executor-cloud-worker` next to scope `executor-cloud`) — double ingest,
-// and the waterfall showed a childless twin. The worker span remains for
-// everything Effect never sees: Start SSR, the marketing proxy, /_astro
-// assets.
+// App-owned paths (/api/* and /.well-known/* — see app-paths.ts) get their
+// `http.server` span from Effect's HttpMiddleware tracer. `/mcp` is dispatched
+// directly and uses `traceCloudMcpRequest` below so the agent handler can skip
+// the entire span envelope for negative-cache hits. Other paths keep this
+// worker span. Wrapping Effect-owned paths here too produced duplicate sibling
+// spans per request.
 //
 // SimpleSpanProcessor exports synchronously at span end but the underlying
 // `fetch()` to Axiom is fire-and-forget; the Worker may terminate before it
@@ -108,10 +109,81 @@ const fetchHandler = handler.fetch as (
 ) => Response | Promise<Response>;
 
 const tracer = trace.getTracer("executor-cloud-worker");
-const mcpAgentHandler = makeCloudMcpAgentHandler();
+
+const traceCloudMcpRequest = async (
+  request: Request,
+  _env: Env,
+  ctx: ExecutionContext,
+  handle: (tracedRequest: Request) => Promise<Response>,
+): Promise<Response> => {
+  if (!installTracerProvider()) return handle(request);
+
+  const url = new URL(request.url);
+  const inbound = parseTraceparent(request.headers.get("traceparent"), null);
+  const parentContext = inbound
+    ? trace.setSpanContext(context.active(), {
+        traceId: inbound.traceId,
+        spanId: inbound.spanId,
+        traceFlags: inbound.traceFlags,
+        isRemote: true,
+      })
+    : context.active();
+
+  return tracer.startActiveSpan(
+    `http.server ${request.method}`,
+    { kind: SpanKind.SERVER },
+    parentContext,
+    async (span) => {
+      span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
+      span.setAttribute(ATTR_URL_FULL, request.url);
+      span.setAttribute(ATTR_URL_PATH, url.pathname);
+      span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
+      const spanContext = span.spanContext();
+      const headers = new Headers(request.headers);
+      headers.set(
+        "traceparent",
+        `00-${spanContext.traceId}-${spanContext.spanId}-${(spanContext.traceFlags & 0xff).toString(16).padStart(2, "0")}`,
+      );
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep trace export alive after the Agents bridge resolves or rejects
+      try {
+        const response = await handle(new Request(request, { headers }));
+        span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+        if (response.status >= 500) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
+        }
+        return response;
+      } catch (err) {
+        // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- adapter boundary: Cloudflare's fetch callback throws untyped; normalized only for the OTel span record, the original error is rethrown below
+        const cause = err instanceof Error ? err : String(err);
+        span.recordException(cause);
+        // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: same normalization as the recordException line above
+        const message = typeof cause === "string" ? cause : cause.message;
+        span.setStatus({ code: SpanStatusCode.ERROR, message });
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
+        throw err;
+      } finally {
+        span.end();
+        ctx.waitUntil(flushTracerProvider());
+      }
+    },
+  );
+};
+
+const mcpAgentHandler = makeCloudMcpAgentHandler({
+  makeModernServerBuilder: makeCloudModernMcpServerBuilder,
+  traceRequest: traceCloudMcpRequest,
+});
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    // Public pages must not enter TanStack Start: its first-request dynamic
+    // import loads the entire React + Effect server graph and can take seconds
+    // on a cold isolate. Classify and service-bind marketing at the Worker
+    // entry, before telemetry or fetchHandler touches that graph.
+    const marketingRequest = marketingProxyRequest(request);
+    const marketing: Fetcher | undefined = env.MARKETING;
+    if (marketingRequest && marketing) return marketing.fetch(marketingRequest);
+
     // Browser OTLP ingress — before the server span opens: exporter traffic
     // must never trace itself (the browser already excludes /v1/traces from
     // its own tracing for the same reason).
@@ -120,10 +192,17 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // The MCP dispatch is classified up front, independent of whether
     // telemetry installs — an unset `AXIOM_TOKEN` (tracer not installed) must
     // never take /mcp requests down with it. See `installTracerProvider`'s
-    // early return below: it only governs the tracing envelope for
-    // non-MCP paths.
+    // early return below: the handler invokes it for uncached MCP traffic, and
+    // this entry invokes it for non-MCP paths.
     const url = new URL(request.url);
     const mcpRoute = classifyMcpPath(url.pathname);
+    if (mcpRoute?.kind === "mcp") {
+      // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
+      // to pass authenticated session props into the hibernatable DO.
+      // Discovery docs still flow through the app-level MCP envelope.
+      const forwarded = prepareMcpOrgScope(request);
+      return mcpAgentHandler(forwarded, env, ctx);
+    }
     const tracingInstalled = installTracerProvider();
     // Join the caller's W3C trace when the request carries one — the web UI
     // sends traceparent on every API fetch, so the browser's spans and this
@@ -138,54 +217,6 @@ const cloudflareHandler: ExportedHandler<Env> = {
           isRemote: true,
         })
       : context.active();
-    if (mcpRoute?.kind === "mcp") {
-      // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
-      // to pass authenticated session props into the hibernatable DO.
-      // Discovery docs still flow through the app-level MCP envelope.
-      const forwarded = prepareMcpOrgScope(request);
-      if (!tracingInstalled) {
-        return mcpAgentHandler(forwarded, env, ctx);
-      }
-      // /mcp left the Effect app in the Agents-bridge migration, so no
-      // downstream HttpMiddleware.tracer opens the request envelope anymore —
-      // this worker span is now THE `http.server` span for MCP traffic. Its
-      // context is stamped onto the forwarded request's traceparent so the
-      // agent handler's Effect programs (mcp.request and children) and the
-      // session DO parent under it instead of exporting orphaned roots.
-      return tracer.startActiveSpan(
-        `http.server ${request.method}`,
-        { kind: SpanKind.SERVER },
-        parentContext,
-        async (span) => {
-          span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
-          span.setAttribute(ATTR_URL_FULL, request.url);
-          span.setAttribute(ATTR_URL_PATH, url.pathname);
-          span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
-          const spanContext = span.spanContext();
-          const headers = new Headers(forwarded.headers);
-          headers.set(
-            "traceparent",
-            `00-${spanContext.traceId}-${spanContext.spanId}-${(spanContext.traceFlags & 0xff).toString(16).padStart(2, "0")}`,
-          );
-          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep trace export alive after the Agents bridge resolves or rejects
-          try {
-            const response = await mcpAgentHandler(new Request(forwarded, { headers }), env, ctx);
-            span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
-            if (response.status >= 500) {
-              span.setStatus({ code: SpanStatusCode.ERROR });
-            }
-            return response;
-          } catch (err) {
-            span.setStatus({ code: SpanStatusCode.ERROR });
-            // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
-            throw err;
-          } finally {
-            span.end();
-            ctx.waitUntil(flushTracerProvider());
-          }
-        },
-      );
-    }
     if (!tracingInstalled) {
       return fetchHandler(request, env, ctx);
     }
@@ -237,11 +268,18 @@ const cloudflareHandler: ExportedHandler<Env> = {
           const response = await fetchHandler(request, env, ctx);
           span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
           if (response.status >= 500) {
-            span.setStatus({ code: SpanStatusCode.ERROR });
+            span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
           }
           return response;
         } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR });
+          // Record the exception itself, not just the status bit: without it
+          // these spans are ERROR with zero diagnostic content.
+          // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- adapter boundary: Cloudflare's fetch callback throws untyped; normalized only for the OTel span record, the original error is rethrown below
+          const cause = err instanceof Error ? err : String(err);
+          span.recordException(cause);
+          // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: same normalization as the recordException line above
+          const message = typeof cause === "string" ? cause : cause.message;
+          span.setStatus({ code: SpanStatusCode.ERROR, message });
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
           throw err;
         } finally {

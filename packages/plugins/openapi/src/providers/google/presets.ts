@@ -250,7 +250,7 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 
 export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]>> = {
   "google-calendar": ["https://www.googleapis.com/auth/calendar"],
-  "google-gmail": ["https://mail.google.com/"],
+  "google-gmail": ["https://www.googleapis.com/auth/gmail.modify"],
   "google-sheets": ["https://www.googleapis.com/auth/spreadsheets"],
   "google-drive": ["https://www.googleapis.com/auth/drive"],
   "google-docs": ["https://www.googleapis.com/auth/documents"],
@@ -317,16 +317,21 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
   "google-cloud-resource-manager": { operation: "cloudresourcemanager.projects.list" },
 };
 
+/** Complete Google OAuth scope set requested by a catalog preset, including
+ *  identity scopes used to label and distinguish connected accounts. */
+export const googleCatalogOAuthScopesForPreset = (presetId: string): readonly string[] =>
+  compactGoogleOAuthScopes([
+    ...GOOGLE_IDENTITY_SCOPES,
+    ...googleOAuthConsentScopesForPreset(presetId),
+  ]);
+
 const googleCatalogAuthTemplate = (presetId: string) => [
   {
     slug: GOOGLE_OAUTH_SECURITY_SCHEME,
     kind: "oauth2" as const,
     authorizationUrl: GOOGLE_OAUTH_AUTHORIZATION_URL,
     tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
-    scopes: compactGoogleOAuthScopes([
-      ...GOOGLE_IDENTITY_SCOPES,
-      ...googleOAuthConsentScopesForPreset(presetId),
-    ]),
+    scopes: googleCatalogOAuthScopesForPreset(presetId),
   },
 ];
 

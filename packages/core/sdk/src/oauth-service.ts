@@ -36,8 +36,12 @@ import {
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
   OAuthStartError,
+  firstPartyOAuthClientAllowsScopes,
+  firstPartyOAuthClientSlug,
+  isFirstPartyOAuthClientSlug,
   type ConnectResult,
   type CreateOAuthClientInput,
+  type FirstPartyOAuthClientConfig,
   type OAuthClientOrigin,
   type OAuthClientSummary,
   type OAuthCompleteInput,
@@ -174,6 +178,12 @@ export interface OAuthServiceDeps {
   readonly redirectUri: string | null;
   /** URL selected organization slug to round-trip through OAuth `state`. */
   readonly callbackStateOrgSlug?: string | null;
+  /** Host-operated apps declared at composition time (`first-party:<name>`
+   *  slugs). Resolved from config, never from storage: `loadClient` intercepts
+   *  the prefix ahead of the DB, `listClients` appends their summaries, and the
+   *  client CRUD surface rejects the namespace. Empty/omitted on hosts that
+   *  ship no first-party apps. */
+  readonly firstPartyClients?: readonly FirstPartyOAuthClientConfig[];
 }
 
 type LooseDb = {
@@ -490,9 +500,42 @@ const validateClientEndpoints = (
     }
   });
 
+/** Resolve a config-declared first-party app to the loaded-client shape the
+ *  flow/refresh paths consume. First-party apps are authorization_code only:
+ *  client_credentials mints machine tokens under the OPERATOR's app identity,
+ *  which must never be shared across tenants. */
+export const loadedFirstPartyClient = (
+  config: FirstPartyOAuthClientConfig,
+): {
+  readonly slug: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly grant: OAuthGrant;
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly resource: string | null;
+} => ({
+  slug: String(firstPartyOAuthClientSlug(config.name)),
+  authorizationUrl: config.authorizationUrl,
+  tokenUrl: config.tokenUrl,
+  grant: "authorization_code",
+  clientId: config.clientId,
+  clientSecret: config.clientSecret,
+  resource: config.resource ?? null,
+});
+
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const httpClientLayer = deps.httpClientLayer ?? FetchHttpClient.layer;
   const fetch = deps.fetch;
+  // Config-declared first-party apps, keyed by their prefixed slug. Config is
+  // the source of truth — no row exists, so every stored-row path (CRUD, GC)
+  // is bypassed by construction, and rotating a secret is an env change.
+  const firstPartyBySlug = new Map(
+    (deps.firstPartyClients ?? []).map((client) => [
+      String(firstPartyOAuthClientSlug(client.name)),
+      client,
+    ]),
+  );
   // EXPLICIT — no localhost default. `null` means this executor has no OAuth
   // callback; redirect-requiring flows fail loudly via `requireRedirectUri`.
   const redirectUri = deps.redirectUri;
@@ -597,6 +640,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: CreateOAuthClientInput,
   ): Effect.Effect<OAuthClientSlug, StorageFailure> =>
     Effect.gen(function* () {
+      // The `first-party:` namespace is reserved for config-declared apps — a
+      // stored row under it would be shadowed by (or worse, impersonate) the
+      // host's own app.
+      if (isFirstPartyOAuthClientSlug(String(input.slug))) {
+        return yield* new StorageError({
+          message: `OAuth client slug "${String(input.slug)}" uses the reserved first-party namespace.`,
+          cause: undefined,
+        });
+      }
       yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
@@ -682,6 +734,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const removeClient = (owner: Owner, slug: OAuthClientSlug): Effect.Effect<void, StorageFailure> =>
     Effect.gen(function* () {
+      // Config-declared apps have no row to remove; removing one is an env
+      // change on the host, not a storage operation. Fail loudly rather than
+      // returning a success that changed nothing.
+      if (isFirstPartyOAuthClientSlug(String(slug))) {
+        return yield* new StorageError({
+          message: `OAuth client "${String(slug)}" is a first-party app declared in host config; it cannot be removed through this surface.`,
+          cause: undefined,
+        });
+      }
       yield* deps.fuma
         .use("oauth_client.delete", (db) =>
           looseDb(db).deleteMany("oauth_client", {
@@ -953,8 +1014,28 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // tenant's org rows + this subject's own user rows, so no explicit filter is
   // needed. The `client_secret` column is deliberately never projected.
   // -----------------------------------------------------------------------
-  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> =>
-    deps.fuma
+  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> => {
+    // First-party apps lead the list: config-resolved, visible to every caller,
+    // and projected exactly like stored rows — clientId only, never the secret.
+    // Owner is reported as "org" (the widest visibility the summary shape can
+    // express); the flow itself ignores owner for first-party slugs.
+    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()].map(
+      (config) => ({
+        owner: "org",
+        slug: firstPartyOAuthClientSlug(config.name),
+        grant: "authorization_code",
+        authorizationUrl: config.authorizationUrl,
+        tokenUrl: config.tokenUrl,
+        resource: config.resource ?? null,
+        clientId: config.clientId,
+        origin: {
+          kind: "first_party",
+          ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
+          ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
+        },
+      }),
+    );
+    return deps.fuma
       .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
       .pipe(
         Effect.flatMap((rows) =>
@@ -982,7 +1063,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             } satisfies OAuthClientSummary);
           }),
         ),
+        Effect.map((stored) => [...firstPartySummaries, ...stored]),
       );
+  };
 
   // -----------------------------------------------------------------------
   // Load an oauth_client row by (owner, slug).
@@ -990,8 +1073,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const loadClient = (
     owner: Owner,
     slug: OAuthClientSlug,
-  ): Effect.Effect<LoadedOAuthClient | null, StorageFailure> =>
-    deps.fuma
+  ): Effect.Effect<LoadedOAuthClient | null, StorageFailure> => {
+    // First-party apps resolve from config, never storage. Owner is irrelevant:
+    // the app belongs to the DEPLOYMENT, and visibility policy has nothing to
+    // narrow — only the minted connection (and its tokens) is owner-scoped.
+    if (isFirstPartyOAuthClientSlug(String(slug))) {
+      const config = firstPartyBySlug.get(String(slug));
+      return Effect.succeed(config ? loadedFirstPartyClient(config) : null);
+    }
+    return deps.fuma
       .use("oauth_client.findFirst", (db) =>
         looseDb(db).findFirst("oauth_client", {
           where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
@@ -1038,6 +1128,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           });
         }),
       );
+  };
 
   // -----------------------------------------------------------------------
   // start — begin a flow through a client to mint a connection.
@@ -1058,7 +1149,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // cannot be backed by a member's private (user) app. The connection owner
       // and the app owner are otherwise independent — a Personal connection
       // through a shared Workspace app is the supported cross-owner case.
-      if (input.owner === "org" && input.clientOwner === "user") {
+      // First-party apps are deployment-owned, outside the owner lattice
+      // entirely, so the rule does not apply to them.
+      const firstPartyFlow = isFirstPartyOAuthClientSlug(String(input.client));
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.client_first_party": firstPartyFlow,
+      });
+      if (!firstPartyFlow && input.owner === "org" && input.clientOwner === "user") {
         return yield* new OAuthStartError({
           message: "A Workspace connection must use a Workspace app.",
         });
@@ -1116,18 +1213,41 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
           ),
         );
+      const firstParty = firstPartyFlow ? firstPartyBySlug.get(String(input.client)) : undefined;
       const requestedScopes =
         scopePolicy.kind === "discover"
-          ? yield* discoverScopesForResource(client.resource).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OAuthStartError({
-                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
-                    message: `Failed to discover OAuth scopes: ${cause.message}`,
-                  }),
-              ),
-            )
+          ? yield* (() => {
+              const discovered = discoverScopesForResource(client.resource).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OAuthStartError({
+                      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                      message: `Failed to discover OAuth scopes: ${cause.message}`,
+                    }),
+                ),
+              );
+              if (firstParty?.allowedScopes === undefined) return discovered;
+              const allowed = new Set(firstParty.allowedScopes);
+              return discovered.pipe(
+                Effect.map((scopes) => scopes.filter((scope) => allowed.has(scope))),
+              );
+            })()
           : dedupeScopes(scopePolicy.scopes);
+
+      // An explicitly scope-limited first-party app is an authorization
+      // boundary, not picker decoration. Endpoint matching and provider
+      // discovery can surface capabilities outside the registered app, so
+      // enforce the complete requested set before persisting or redirecting.
+      if (firstPartyFlow) {
+        if (
+          firstParty !== undefined &&
+          !firstPartyOAuthClientAllowsScopes(firstParty, requestedScopes)
+        ) {
+          return yield* new OAuthStartError({
+            message: `The built-in OAuth app is not enabled for integration ${input.integration}.`,
+          });
+        }
+      }
 
       // client_credentials: exchange immediately and mint the connection.
       if (client.grant === "client_credentials") {
@@ -1294,6 +1414,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         "executor.connection": String(session.name),
         "executor.template": String(session.template),
         "executor.oauth.client": String(session.clientSlug),
+        "executor.oauth.client_first_party": isFirstPartyOAuthClientSlug(
+          String(session.clientSlug),
+        ),
       });
 
       // Expired sessions are not redeemable — drop + treat as not found.
@@ -1309,6 +1432,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           message: `OAuth client not found: ${session.clientSlug}`,
           restartRequired: true,
         });
+      }
+      if (isFirstPartyOAuthClientSlug(String(session.clientSlug))) {
+        const firstParty = firstPartyBySlug.get(String(session.clientSlug));
+        if (
+          firstParty !== undefined &&
+          firstParty.allowedScopes !== undefined &&
+          (session.requestedScopes === null ||
+            !firstPartyOAuthClientAllowsScopes(firstParty, session.requestedScopes))
+        ) {
+          return yield* new OAuthCompleteError({
+            message: `The built-in OAuth app is no longer enabled for integration ${session.integration}; restart the flow.`,
+            restartRequired: true,
+          });
+        }
       }
 
       // The PKCE verifier is minted by `start` for every authorization_code

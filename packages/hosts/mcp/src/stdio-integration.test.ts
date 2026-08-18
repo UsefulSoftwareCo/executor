@@ -4,8 +4,8 @@ import { StdioClientTransport as ModernStdioClientTransport } from "@modelcontex
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Effect } from "effect";
-import { mkdtempSync } from "node:fs";
+import { Effect, Schema } from "effect";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -17,6 +17,60 @@ const stdioServer = {
   command: "bun",
   args: ["run", stdioServerEntry],
 };
+const decodeDaemonManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ pid: Schema.Number })),
+);
+
+const isProcessGroupAlive = (pid: number): boolean => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: process liveness probing reports false after the test daemon is reaped
+  try {
+    process.kill(process.platform === "win32" ? pid : -pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const signalProcessGroup = (pid: number, signal: NodeJS.Signals): void => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Windows and pre-detach failures require a direct-pid fallback
+  try {
+    process.kill(process.platform === "win32" ? pid : -pid, signal);
+  } catch {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- cleanup tolerates a daemon that exited between liveness check and signal
+    try {
+      process.kill(pid, signal);
+    } catch {}
+  }
+};
+
+const stopAutoSpawnedDaemon = async (dataDir: string): Promise<void> => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- cleanup tolerates startup that failed before publishing a manifest
+  try {
+    const manifest = decodeDaemonManifest(
+      readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
+    );
+    if (!Number.isSafeInteger(manifest.pid) || manifest.pid <= 0) return;
+
+    const pid = manifest.pid;
+    signalProcessGroup(pid, "SIGTERM");
+    const deadline = performance.now() + 10_000;
+    while (isProcessGroupAlive(pid) && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (isProcessGroupAlive(pid)) signalProcessGroup(pid, "SIGKILL");
+  } catch {
+    // No manifest means there is no auto-started daemon to stop.
+  }
+};
+
+const withTempData = Effect.acquireRelease(
+  Effect.sync(() => mkdtempSync(join(tmpdir(), "executor-mcp-test-"))),
+  (dataDir) =>
+    Effect.promise(async () => {
+      await stopAutoSpawnedDaemon(dataDir);
+      rmSync(dataDir, { recursive: true, force: true });
+    }),
+);
 
 describe("MCP stdio integration", () => {
   it.effect(
@@ -25,7 +79,7 @@ describe("MCP stdio integration", () => {
       Effect.gen(function* () {
         // Fresh temp dir so the test doesn't migrate against the developer's
         // real ~/.executor/data.db.
-        const dataDir = mkdtempSync(join(tmpdir(), "executor-mcp-test-"));
+        const dataDir = yield* withTempData;
         const transport = new StdioClientTransport({
           command: "bun",
           args: ["run", cliEntry, "mcp", "--scope", testScope],

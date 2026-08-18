@@ -418,9 +418,21 @@ describe("McpAgentSessionDOBase session serving", () => {
         }),
       ),
     );
-    const standaloneReplayBody = await standaloneReplay.text();
+    // The standalone listener replays undelivered responses as its opening
+    // frames and then STAYS OPEN (a close-after-replay here put every active
+    // client into a permanent reconnect loop), so read incrementally instead
+    // of draining to EOF.
+    const standaloneReader = standaloneReplay.body?.getReader();
+    const decoder = new TextDecoder();
+    let standaloneReplayBody = "";
+    while (!standaloneReplayBody.includes("slow result")) {
+      const next = await standaloneReader?.read();
+      if (!next || next.done) break;
+      standaloneReplayBody += decoder.decode(next.value, { stream: true });
+    }
     expect(standaloneReplayBody).toContain("slow result");
     expect(standaloneReplayBody).toContain("event: message");
+    await standaloneReader?.cancel("test complete");
     await state.flushWaitUntil();
   });
 
@@ -572,6 +584,34 @@ describe("McpAgentSessionDOBase session serving", () => {
     const response = await session.fetch(request);
 
     expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: -32001, message: "Session not found" },
+    });
+  });
+
+  it("answers a dead-session standalone GET with 405 so old clients stop retrying", async () => {
+    const state = new MemoryDurableObjectState();
+    await state.storage.put("session-meta", {
+      organizationId: ORGANIZATION_ID,
+      organizationName: "Old Agent Org",
+      userId: ACCOUNT_ID,
+      resource: defaultMcpResource,
+    } satisfies SessionMeta);
+    const session = new HarnessSession(state, {} as Cloudflare.Env);
+    const request = verifiedRequest(
+      new Request("https://executor.test/mcp", {
+        method: "GET",
+        headers: {
+          accept: "text/event-stream",
+          "mcp-session-id": SESSION_ID,
+        },
+      }),
+    );
+
+    const response = await session.fetch(request);
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST, DELETE");
     await expect(response.json()).resolves.toMatchObject({
       error: { code: -32001, message: "Session not found" },
     });

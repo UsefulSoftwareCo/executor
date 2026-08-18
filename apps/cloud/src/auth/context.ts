@@ -9,10 +9,13 @@ import { UserStoreError, tryPromiseService, withServiceLogging } from "./errors"
 
 type RawStore = ReturnType<typeof makeUserStore>;
 
+// `op` names the store call so every span reads `user_store.<operation>`
+// instead of one undifferentiated "user_store" bucket, and failures log which
+// query actually failed.
 const makeService = (store: RawStore) => ({
-  use: <A>(fn: (s: RawStore) => Promise<A>) =>
+  use: <A>(op: string, fn: (s: RawStore) => Promise<A>) =>
     withServiceLogging(
-      "user_store",
+      `user_store.${op}`,
       () => new UserStoreError(),
       tryPromiseService(() => fn(store)),
     ),

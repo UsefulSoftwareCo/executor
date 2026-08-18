@@ -215,9 +215,11 @@ const waitForShutdownSignal = () =>
     const shutdown = () => resume(Effect.void);
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+    process.once("SIGHUP", shutdown);
     return Effect.sync(() => {
       process.off("SIGINT", shutdown);
       process.off("SIGTERM", shutdown);
+      process.off("SIGHUP", shutdown);
     });
   });
 

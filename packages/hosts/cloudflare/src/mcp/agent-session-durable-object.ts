@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { Cause, Data, Deferred, Effect, Option, Schema } from "effect";
-import type * as Tracer from "effect/Tracer";
+import * as Tracer from "effect/Tracer";
 import {
   createMcpHandler,
   DEFAULT_NEGOTIATED_PROTOCOL_VERSION,
@@ -24,11 +24,13 @@ import {
 import {
   appsEnabledForClientCapabilities,
   clientCapabilitiesFromRequestBody,
+  clientInfoFromRequestBody,
   mcpRequestStateBindingFromBody,
   PAUSED_APPROVAL_TIMEOUT_MS,
   formatMcpExecutionOutcome,
   mcpRequestStatePrincipal,
   requestBodyFromRequest,
+  type McpClientInfo,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
@@ -39,6 +41,7 @@ import {
   type McpResource,
 } from "@executor-js/host-mcp";
 import {
+  parseTraceparentHeader,
   readArtifactsEnabled,
   readElicitationMode,
   verifiedMcpRequestHeaders,
@@ -147,6 +150,14 @@ export interface SessionMeta {
    * unknown, which behaves as disabled until the next `initialize`.
    */
   readonly appsEnabled?: boolean;
+  /**
+   * The client identity (`clientInfo`) self-reported at `initialize` or in a
+   * modern request's `_meta`. Persisted for the same reason as
+   * {@link appsEnabled}: a cold-restored server never sees an `initialize`,
+   * and without this the execution spans' `mcp.client.*` attribution vanishes
+   * mid-conversation. Telemetry/display only, never behavior.
+   */
+  readonly clientInfo?: McpClientInfo;
   /** Creation time of this session, retained across isolate eviction. */
   readonly createdAtMs?: number;
 }
@@ -164,6 +175,8 @@ export interface ModernMcpServerRequestOptions {
   readonly requestStateSigningKey: Uint8Array | string;
   readonly requestStatePrincipal: string;
   readonly requestStateBinding?: string;
+  /** Client identity for span attribution: this request's `_meta`, else the session's persisted copy. */
+  readonly restoredClientInfo?: McpClientInfo;
 }
 
 /** Long-lived DO execution runtime shared by per-request MCP servers. */
@@ -285,6 +298,24 @@ type QueuedTransportMessage = {
   readonly extra?: MessageExtraInfo;
 };
 
+/**
+ * Dead-session answer by method: POST/DELETE keep the 404 that drives client
+ * re-initialization; a standalone GET gets 405, which the v1 SDK reads as
+ * "no SSE stream offered" and stops retrying — breaking the reconnect loops
+ * of pre-cutover deployments whose GET-404 path never re-initialized.
+ */
+const deadSessionDoResponse = (method: string): Response =>
+  method === "GET"
+    ? new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Session not found" },
+          id: null,
+        }),
+        { status: 405, headers: { "content-type": "application/json", allow: "POST, DELETE" } },
+      )
+    : jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
+
 export abstract class McpAgentSessionDOBase<
   Env extends Cloudflare.Env = Cloudflare.Env,
   TDbHandle extends SessionDbHandle = SessionDbHandle,
@@ -301,6 +332,15 @@ export abstract class McpAgentSessionDOBase<
   private modernRunningRequestCount = 0;
   private modernRequestBodies = new WeakMap<Request, unknown>();
   private modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
+  // Trace context of the most recently entered MCP request, kept for
+  // `currentParentSpan`. Deliberately not cleared when the request settles:
+  // deferred SDK callbacks fire after the response resolves, and parenting
+  // them under the latest request is right far more often than falling back
+  // to the session's construction-time span. Concurrent requests on one DO
+  // can mis-parent to each other's trace (last writer wins); threading a
+  // per-request context through the MCP SDK's callback surface is the
+  // rejected-for-now alternative.
+  private lastIncomingTrace: IncomingTraceHeaders | undefined;
   private legacyRunningRequestCount = 0;
   private activeLegacyStreamCount = 0;
   private keepAliveCount = 0;
@@ -369,8 +409,20 @@ export abstract class McpAgentSessionDOBase<
     return this.ctx.id.toString();
   }
 
+  // Parent for spans opened by deferred MCP SDK callbacks (tool handlers run
+  // through `runToolEffect`, which otherwise inherits the Effect context
+  // captured when the server was BUILT). The legacy sessionful runtime builds
+  // its server once per session and reuses it across every request, so
+  // without this the whole tool execution tree parents under the long-closed
+  // session-construction span instead of the request that triggered it.
   protected currentParentSpan(): Tracer.AnySpan | undefined {
-    return undefined;
+    const parsed = parseTraceparentHeader(this.lastIncomingTrace?.traceparent);
+    if (!parsed) return undefined;
+    return Tracer.externalSpan({
+      traceId: parsed.traceId,
+      spanId: parsed.spanId,
+      sampled: (parsed.traceFlags & 1) === 1,
+    });
   }
 
   protected sessionTimeoutMs(): number {
@@ -515,6 +567,34 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
+  /**
+   * Persist the client identity self-reported at `initialize` (or in a modern
+   * request's `_meta`), so a cold restore keeps span attribution. Subclasses
+   * hand this to `buildMcpServer` as `onClientInfoChange`; the modern request
+   * path calls it directly. Same no-op-before-meta contract as
+   * {@link persistAppsEnabled}.
+   */
+  protected persistClientInfo(clientInfo: McpClientInfo): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      const stored = yield* self.loadSessionMeta();
+      if (
+        !stored ||
+        (stored.clientInfo?.name === clientInfo.name &&
+          stored.clientInfo?.version === clientInfo.version &&
+          stored.clientInfo?.title === clientInfo.title)
+      ) {
+        return;
+      }
+      yield* Effect.promise(() => self.saveSessionMeta({ ...stored, clientInfo }));
+    }).pipe(
+      Effect.withSpan("mcp.session.persist_client_info", {
+        attributes: { "mcp.client.name": clientInfo.name },
+      }),
+      Effect.ignoreCause({ log: false }),
+    );
+  }
+
   private async markActivity(now = Date.now()): Promise<void> {
     this.lastActivityMs = now;
     const key =
@@ -606,6 +686,7 @@ export abstract class McpAgentSessionDOBase<
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
         appsEnabled: stored?.appsEnabled ?? false,
+        ...(stored?.clientInfo ? { clientInfo: stored.clientInfo } : {}),
         createdAtMs: stored?.createdAtMs ?? Date.now(),
       };
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
@@ -816,6 +897,7 @@ export abstract class McpAgentSessionDOBase<
         const parsedBody = self.modernRequestBodies.get(request);
         const propagation = self.modernRequestPropagation.get(request);
         const capabilities = clientCapabilitiesFromRequestBody(parsedBody);
+        const clientInfo = clientInfoFromRequestBody(parsedBody) ?? sessionMeta.clientInfo;
         return Effect.runPromise(
           Effect.gen(function* () {
             const requestStatePrincipal = mcpRequestStatePrincipal({
@@ -834,6 +916,7 @@ export abstract class McpAgentSessionDOBase<
               requestStateSigningKey: self.modernRequestStateSigningKey(),
               requestStatePrincipal,
               ...(requestStateBinding === null ? {} : { requestStateBinding }),
+              ...(clientInfo === undefined ? {} : { restoredClientInfo: clientInfo }),
             });
           }).pipe(
             (effect) => self.withTelemetry(effect, propagation),
@@ -1032,6 +1115,27 @@ export abstract class McpAgentSessionDOBase<
     return typeof streamId === "string" ? streamId : null;
   }
 
+  /**
+   * Whether the stream named by `lastEventId` still has a request awaiting
+   * its response. SAFETY: reads the transport's pinned
+   * `_requestToStreamMapping` for the same reason `requestStreamId` and
+   * `supersedeReplayStream` do — the SDK exposes no public pending-request
+   * probe.
+   */
+  private async lastEventIdStreamHasPendingRequest(
+    transport: WebStandardStreamableHTTPServerTransport,
+    lastEventId: string,
+  ): Promise<boolean> {
+    const streamId = await this.eventStore.getStreamIdForEventId(lastEventId);
+    if (!streamId) return false;
+    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
+    if (!(mapping instanceof Map)) return false;
+    for (const mappedStreamId of mapping.values()) {
+      if (mappedStreamId === streamId) return true;
+    }
+    return false;
+  }
+
   private async supersedeReplayStream(
     transport: WebStandardStreamableHTTPServerTransport,
     lastEventId: string,
@@ -1065,14 +1169,36 @@ export abstract class McpAgentSessionDOBase<
       },
       onClose: (reason) => {
         this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
-        if (reason === "complete" && options.acknowledge && options.acknowledge.length > 0) {
+        // "complete": the source body drained to its natural end. "rotate":
+        // the client stayed attached for the whole max-age window, so the
+        // initial replay frames were drained long before. Both count as
+        // delivered. "cancel"/"error" leave the streams replayable for the
+        // client's reconnect GET.
+        if (
+          (reason === "complete" || reason === "rotate") &&
+          options.acknowledge &&
+          options.acknowledge.length > 0
+        ) {
           this.ctx.waitUntil(this.eventStore.acknowledgeUndeliveredStreams(options.acknowledge));
         }
       },
     });
 
-  private async replayUndeliveredOnStandaloneGet(request: Request): Promise<Response | null> {
-    if (request.method !== "GET" || request.headers.has("last-event-id")) return null;
+  /**
+   * Collect every undelivered stream's events as one SSE frame block, for
+   * prepending onto the standalone GET stream. Returning a FINITE response
+   * here instead (the pre-2026-08-17 behavior) was catastrophic: the client's
+   * standalone listener closed the moment the replay flushed, and because
+   * every POST marks its stream undelivered until acknowledged, an active
+   * session ALWAYS had something to replay — so every listener GET became a
+   * ~3s reconnect short-poll. Fleet-wide, that reconnect storm multiplied
+   * /mcp volume ~15x, drove the worker into memory-limit kills, and (by
+   * recycling isolates) pushed homepage TTFB from ~15ms to ~3s.
+   */
+  private async collectUndeliveredReplay(): Promise<{
+    readonly frame: Uint8Array;
+    readonly streamIds: readonly string[];
+  } | null> {
     const frames: Uint8Array[] = [];
     const streamIds = await this.eventStore.replayUndeliveredStreams({
       send: (eventId, message) => {
@@ -1081,18 +1207,7 @@ export abstract class McpAgentSessionDOBase<
       },
     });
     if (frames.length === 0) return null;
-    return this.trackedLegacyResponse(
-      new Response(combineFrames(frames), {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-          "x-accel-buffering": "no",
-          "mcp-session-id": this.sessionId,
-        },
-      }),
-      { acknowledge: streamIds },
-    );
+    return { frame: new Uint8Array(combineFrames(frames)), streamIds };
   }
 
   private async serializedTransportRequest<A>(run: () => Promise<A>): Promise<A> {
@@ -1117,19 +1232,48 @@ export abstract class McpAgentSessionDOBase<
     return this.serializedTransportRequest(async () => {
       const transport = this.transport;
       if (!transport) {
-        return jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
+        return deadSessionDoResponse(request.method);
       }
       if (request.method === "GET") {
         const lastEventId = request.headers.get("last-event-id");
-        if (lastEventId) {
+        // A reconnect id is only "drained" when the stream has no stored
+        // events after it AND no request still in flight on it. An in-flight
+        // tool call has produced no events past the priming frame yet, but
+        // its POST stream must still be resumed so the eventual result lands
+        // on this connection (the severed-POST recovery contract).
+        const resumable =
+          lastEventId !== null &&
+          ((await this.eventStore.hasEventsAfter(lastEventId)) ||
+            (await this.lastEventIdStreamHasPendingRequest(transport, lastEventId)));
+        if (lastEventId && resumable) {
           await this.supersedeReplayStream(transport, lastEventId);
         } else {
+          // Standalone listener path — taken for a bare GET AND for a GET
+          // whose Last-Event-ID stream is fully drained. EventSource clients
+          // echo their last id on every reconnect, so a drained id must not
+          // enter the transport's resume (it closes a completed stream's
+          // resume immediately, turning the echo into a reconnect loop).
+          let serveRequest = request;
+          if (lastEventId) {
+            const headers = new Headers(request.headers);
+            headers.delete("last-event-id");
+            serveRequest = new Request(request, { headers });
+          }
           // Latest-listener-wins. Client cancellation is not reliably relayed
           // through every workerd/Vite streaming hop, so explicitly retire a
           // stale standalone mapping before opening its replacement.
           transport.closeStandaloneSSEStream();
-          const replay = await this.replayUndeliveredOnStandaloneGet(request);
-          if (replay) return replay;
+          const replay = await this.collectUndeliveredReplay();
+          // Replayed responses ride as the opening frames of the transport's
+          // own long-lived standalone stream — the stream MUST stay open
+          // afterwards (see collectUndeliveredReplay). Acknowledgement moves
+          // to stream end: "complete"/"rotate" imply the client stayed
+          // attached long enough to have drained the prepended frames.
+          const response = await transport.handleRequest(serveRequest);
+          return this.trackedLegacyResponse(
+            response,
+            replay ? { initialFrame: replay.frame, acknowledge: replay.streamIds } : {},
+          );
         }
       }
       const toolCallIds = legacyToolCallRequestIds(parsedBody);
@@ -1201,6 +1345,11 @@ export abstract class McpAgentSessionDOBase<
         cors: false,
       });
     }
+    this.lastIncomingTrace = {
+      traceparent: request.headers.get("traceparent") ?? undefined,
+      tracestate: request.headers.get("tracestate") ?? undefined,
+      baggage: request.headers.get("baggage") ?? undefined,
+    };
     if ((await this.ctx.storage.get<boolean>(DESTROY_PENDING_KEY)) === true) {
       return jsonRpcErrorBody(404, -32001, "Session timed out, please reconnect", {
         cors: false,
@@ -1212,7 +1361,7 @@ export abstract class McpAgentSessionDOBase<
     if (!stored) {
       if (!isInitializeBody(parsedBody)) {
         return request.headers.has("mcp-session-id")
-          ? jsonRpcErrorBody(404, -32001, "Session not found", { cors: false })
+          ? deadSessionDoResponse(request.method)
           : jsonRpcErrorBody(400, -32000, "Bad Request: Server not initialized", {
               cors: false,
             });
@@ -1282,8 +1431,20 @@ export abstract class McpAgentSessionDOBase<
       });
     }
 
+    // Modern clients self-report identity per request (`_meta` clientInfo) or
+    // at `initialize`; persist it so meta-less requests and cold restores keep
+    // their span attribution. Best-effort by construction (persistClientInfo
+    // swallows failures) and a storage no-op unless the identity changed.
+    const reportedClientInfo = clientInfoFromRequestBody(parsedBody);
+    if (reportedClientInfo) {
+      await Effect.runPromise(
+        this.withTelemetry(this.persistClientInfo(reportedClientInfo), props.propagation),
+      );
+    }
+
     this.modernRequestBodies.set(request, parsedBody);
     this.modernRequestPropagation.set(request, props.propagation);
+    this.lastIncomingTrace = props.propagation;
     this.modernRunningRequestCount += 1;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the RPC must decrement its in-memory running lease on both handler resolution and rejection
     try {

@@ -192,14 +192,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Each cloud shard boots its own fresh dev stack. On 4 vCPU runners,
-          # four fatter shards keep the longest shard below selfhost while saving
-          # four runner boots and four warm cache restores.
-          - { target: cloud, shard: 1/4, shard-name: 1of4 }
-          - { target: cloud, shard: 2/4, shard-name: 2of4 }
-          - { target: cloud, shard: 3/4, shard-name: 3of4 }
-          - { target: cloud, shard: 4/4, shard-name: 4of4 }
-          - target: selfhost
+          # PGlite is deliberately single-connection, and under a sustained
+          # multi-minute shard it can stop accepting postgres sockets. Keep
+          # every hermetic dev stack short: eight serial shards remove that
+          # lifetime-dependent failure and put cloud below the selfhost lane.
+          - { target: cloud, shard: 1/8, shard-name: 1of8 }
+          - { target: cloud, shard: 2/8, shard-name: 2of8 }
+          - { target: cloud, shard: 3/8, shard-name: 3of8 }
+          - { target: cloud, shard: 4/8, shard-name: 4of8 }
+          - { target: cloud, shard: 5/8, shard-name: 5of8 }
+          - { target: cloud, shard: 6/8, shard-name: 6of8 }
+          - { target: cloud, shard: 7/8, shard-name: 7of8 }
+          - { target: cloud, shard: 8/8, shard-name: 8of8 }
+          # Selfhost shards the same way: each shard is its own runner booting
+          # its own fresh instance (own port block + data dir), so the
+          # project's shared-bootstrap-admin assumption stays intact per shard
+          # and `fileParallelism: false` still serializes within a shard.
+          - { target: selfhost, shard: 1/3, shard-name: 1of3 }
+          - { target: selfhost, shard: 2/3, shard-name: 2of3 }
+          - { target: selfhost, shard: 3/3, shard-name: 3of3 }
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
@@ -241,20 +252,20 @@ jobs:
 
       # The globalsetup boots the target's own dev server (ports are claimed
       # per checkout, so this is hermetic) and tears it down after the run.
-      # --retry=2: browser scenarios can still hit isolated waitFor timeouts
-      # (single-test waitFor timeouts, not systemic failures); a retry on the
-      # same booted stack clears them.
+      # Do not retry scenarios: retries hide flakes and multiply slow timeout
+      # failures. The fixtures and process lifecycle are deterministic enough
+      # that the first result is the result.
       - name: Run cloud scenarios
         if: matrix.target == 'cloud'
         env:
           MCP_SESSION_TIMEOUT_MS: "3000"
           MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
-        run: bunx vitest run --project cloud --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        run: bunx vitest run --project cloud ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         working-directory: e2e
 
       - name: Run selfhost scenarios
         if: matrix.target == 'selfhost'
-        run: bunx vitest run --project selfhost --retry=2
+        run: bunx vitest run --project selfhost ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in
@@ -268,10 +279,7 @@ jobs:
           retention-days: 7
 
   e2e-local:
-    name: E2E (stdio MCP)
-    # Skipped on pull_request: the local scenario boots a real `executor web`
-    # plus a browser and is currently flaky on PRs. Still runs on push to main.
-    if: github.event_name != 'pull_request'
+    name: E2E (local)
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
@@ -314,15 +322,10 @@ jobs:
         run: bunx playwright install --with-deps chromium chromium-headless-shell
         working-directory: e2e
 
-      # The `local` project is excluded from the default `test` chain (each
-      # scenario boots its own `executor web`). Run just the stdio MCP scenario
-      # here: it is the auto-connect / env-as-secret regression guard, and
-      # running it alone avoids the boot-resource accumulation and the
-      # pre-existing browser flakiness of the rest of the local suite. Expanding
-      # to the full `local` project (bun run test:local) is a follow-up once
-      # those are stabilized.
-      - name: Run the stdio MCP scenario
-        run: bunx vitest run --project local local/stdio-mcp.test.ts
+      # Each scenario owns its server, browser, data directory, and descendants;
+      # run the complete hermetic suite on PRs without scenario retries.
+      - name: Run local scenarios
+        run: bunx vitest run --project local
         working-directory: e2e
 
   desktop-smoke:

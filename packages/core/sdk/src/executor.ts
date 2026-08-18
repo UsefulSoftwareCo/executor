@@ -118,7 +118,8 @@ import {
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
-import type { OAuthService } from "./oauth-client";
+import { isFirstPartyOAuthClientSlug, type OAuthService } from "./oauth-client";
+import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
   isValidPattern,
@@ -648,6 +649,14 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   /** Optional URL selected organization slug to carry inside OAuth `state`. */
   readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  /**
+   * Host-operated OAuth apps (the deployment's own registered GitHub/Google/…
+   * apps), addressed as `first-party:<name>`. Users connect through them with
+   * nothing to paste. Config-resolved — never persisted; secrets stay in host
+   * env and are never written to a credential provider or returned over any
+   * read surface. Minted connections and their tokens remain per-owner.
+   */
+  readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
   /**
    * Enable the built-in `core-tools` plugin which contributes agent-facing
    * static tools over the v2 surface (integrations / connections / policies).
@@ -1776,6 +1785,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         where: (b: AnyCb) => b.and(byOwner(owner)(b), b("slug", "=", slug)),
       });
 
+    // Config-declared first-party apps, keyed by prefixed slug — the refresh
+    // path's counterpart to the OAuth service's config-first resolution.
+    const firstPartyOAuthBySlug = new Map(
+      (config.firstPartyOAuthClients ?? []).map((client) => [`first-party:${client.name}`, client]),
+    );
+
+    /** The app identity a refresh runs against, uniformly resolved: a stored
+     *  row's secret comes out of the credential provider by item id; a
+     *  first-party app's comes from host config and never touches a provider. */
+    interface RefreshClient {
+      readonly clientId: string;
+      readonly clientSecret: string;
+      readonly tokenUrl: string;
+      readonly grant: string;
+      readonly resource: string | null;
+    }
+
     /** What drove a refresh: the pre-call expiry check (`proactive`), or an
      *  upstream 401 on a token we believed was still valid (`reactive`). */
     type RefreshTrigger = "proactive" | "reactive";
@@ -1862,19 +1888,42 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return yield* reauth(detail);
         }
 
-        // Load the backing app by the owner STORED on the connection (a Personal
-        // connection may be backed by a shared Workspace app) — no derivation.
-        const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
-        const clientRow = yield* loadOAuthClientRow(clientOwner, String(row.oauth_client));
+        // Load the backing app. A `first-party:` slug resolves from host config
+        // (deployment-owned identity, in-memory secret); a stored slug loads by
+        // the owner STORED on the connection (a Personal connection may be
+        // backed by a shared Workspace app) — no derivation — with its secret
+        // resolved out of the credential provider by item id.
+        const clientSlug = String(row.oauth_client);
+        const clientRow: RefreshClient | null = yield* Effect.gen(function* () {
+          if (isFirstPartyOAuthClientSlug(clientSlug)) {
+            const firstParty = firstPartyOAuthBySlug.get(clientSlug);
+            if (!firstParty) return null;
+            return {
+              clientId: firstParty.clientId,
+              clientSecret: firstParty.clientSecret,
+              tokenUrl: firstParty.tokenUrl,
+              grant: "authorization_code",
+              resource: null,
+            } satisfies RefreshClient;
+          }
+          const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
+          const stored = yield* loadOAuthClientRow(clientOwner, clientSlug);
+          if (!stored) return null;
+          return {
+            clientId: String(stored.client_id),
+            clientSecret: stored.client_secret_item_id
+              ? ((yield* provider.get(ProviderItemId.make(String(stored.client_secret_item_id)))) ??
+                "")
+              : "",
+            tokenUrl: String(stored.token_url),
+            grant: String(stored.grant),
+            resource: stored.resource ? String(stored.resource) : null,
+          } satisfies RefreshClient;
+        });
         if (!clientRow) {
           return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`);
         }
-
-        // The secret is stored in the provider (a vault item id), not inline.
-        const clientSecret = clientRow.client_secret_item_id
-          ? ((yield* provider.get(ProviderItemId.make(String(clientRow.client_secret_item_id)))) ??
-            "")
-          : "";
+        const clientSecret = clientRow.clientSecret;
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
         // refresh must not exceed the originally-granted scope). Empty → omit
         // the param, which the AS treats as "same scopes as granted".
@@ -1885,9 +1934,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Refresh against the region the code was redeemed at when one was
         // recorded at connect time (multi-site providers like Datadog), else
         // the oauth_client's configured token endpoint.
-        const tokenUrl = row.oauth_token_url
-          ? String(row.oauth_token_url)
-          : String(clientRow.token_url);
+        const tokenUrl = row.oauth_token_url ? String(row.oauth_token_url) : clientRow.tokenUrl;
 
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
@@ -1895,13 +1942,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // what keeps a client_credentials connection (e.g. DealCloud) from
         // demanding a re-auth on a credential that has no human to re-auth.
         const token =
-          String(clientRow.grant) === "client_credentials"
+          clientRow.grant === "client_credentials"
             ? yield* exchangeClientCredentials({
                 tokenUrl,
-                clientId: String(clientRow.client_id),
+                clientId: clientRow.clientId,
                 clientSecret,
                 scopes: grantedScopes,
-                resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                resource: clientRow.resource ?? undefined,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
               }).pipe(
@@ -1928,13 +1975,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 }
                 return yield* refreshAccessToken({
                   tokenUrl,
-                  clientId: String(clientRow.client_id),
+                  clientId: clientRow.clientId,
                   clientSecret,
                   refreshToken,
                   scopes: grantedScopes,
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
-                  resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                  resource: clientRow.resource ?? undefined,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(
@@ -4740,6 +4787,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // OAuth (cloud, self-host) derive a real `${webBaseUrl}/oauth/callback`.
       redirectUri: config.redirectUri ?? null,
       callbackStateOrgSlug: config.oauthCallbackStateOrgSlug ?? null,
+      firstPartyClients: config.firstPartyOAuthClients,
     });
 
     // ------------------------------------------------------------------

@@ -876,11 +876,18 @@ function OAuthAppRadioRow(props: {
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium">{clientDisplayName(String(app.slug))}</span>
           <span className="block truncate text-xs text-muted-foreground">
-            {clientHost(app.tokenUrl)} ·{" "}
-            {app.grant === "client_credentials" ? "app-to-app" : "you'll sign in"}
+            {app.origin.kind === "first_party"
+              ? "No setup needed · you'll sign in"
+              : `${clientHost(app.tokenUrl)} · ${
+                  app.grant === "client_credentials" ? "app-to-app" : "you'll sign in"
+                }`}
           </span>
         </span>
-        {showOwnerLabel ? <Badge variant="outline">{ownerLabel(app.owner)}</Badge> : null}
+        {app.origin.kind === "first_party" ? (
+          <Badge variant="outline">Built-in</Badge>
+        ) : showOwnerLabel ? (
+          <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
+        ) : null}
       </Label>
       {onManage ? (
         <DropdownMenu>
@@ -1509,6 +1516,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // unrelated provider's app.
     tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
     authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
+    scopes: method?.oauth?.scopes,
+    // MCP OAuth scopes are discovered by the server at connect time, where a
+    // first-party app's configured allow-list caps the provider's catalog.
+    discoversScopes: isDcr,
     // Recorded intent: a manual app registered from THIS integration's dialog is
     // a tier-1 match regardless of host.
     integration,
@@ -1557,6 +1568,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     [...oauthApps, ...oauthNearApps, ...oauthOtherApps].find(
       (c: OAuthClientOption) => String(c.slug) === selectedApp,
     ) ?? null;
+  const isBuiltInGoogleClient =
+    chosenClient?.origin.kind === "first_party" &&
+    String(chosenClient.slug) === "first-party:google";
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
@@ -1595,6 +1609,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const manageHandlersFor = (
     appOption: OAuthClientOption,
   ): { readonly onEdit: () => void; readonly onRemove: () => void } | undefined => {
+    // First-party apps are host config, not rows: nothing to edit or remove.
+    if (appOption.origin.kind === "first_party") return undefined;
     const summary = clientSummaries.find(
       (c: OAuthClientSummary) =>
         c.owner === appOption.owner && String(c.slug) === String(appOption.slug),
@@ -2870,6 +2886,22 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   />
                 </div>
               )}
+
+              {isBuiltInGoogleClient && showPlaceStep ? (
+                <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                  Executor uses the Google data you authorize only to perform the actions you
+                  request. Read the{` `}
+                  <a
+                    href="https://executor.sh/privacy"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    privacy policy
+                  </a>
+                  .
+                </p>
+              ) : null}
             </div>
 
             {continueError ? (

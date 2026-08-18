@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cloud",
-  "version": "1.4.58",
+  "version": "1.4.59",
   "private": true,
   "type": "module",
   "scripts": {

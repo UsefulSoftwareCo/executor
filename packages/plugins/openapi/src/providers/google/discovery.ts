@@ -831,9 +831,6 @@ const GOOGLE_PHOTOS_APPENDONLY_SCOPE = "https://www.googleapis.com/auth/photosli
 const GOOGLE_PHOTOS_UPLOAD_TOOL_PATH = "photoslibrary.mediaItems.upload";
 const GOOGLE_PHOTOS_UPLOAD_PATH = "/v1/uploads";
 
-const isGooglePhotosService = (service: string): boolean =>
-  service === GOOGLE_PHOTOS_LIBRARY_SERVICE || service === GOOGLE_PHOTOS_PICKER_SERVICE;
-
 const discoveryScopesForService = (
   service: string,
   document: DiscoveryDocument,
@@ -1124,10 +1121,10 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
     const schemaPrefix = schemaComponentPart(`${info.service}_${info.version}`);
     const schemaNameForRef = (name: string) => `${schemaPrefix}_${schemaComponentPart(name)}`;
     const scopeDescriptions = discoveryScopesForService(info.service, info.document);
-    const filterPhotosScopes = consentScopeSet !== null && isGooglePhotosService(info.service);
+    const filterConsentScopes = consentScopeSet !== null;
 
     for (const [scope, description] of Object.entries(scopeDescriptions)) {
-      if (filterPhotosScopes && !consentScopeSet.has(scope)) continue;
+      if (filterConsentScopes && !consentScopeSet.has(scope)) continue;
       rawScopes[scope] ??= description;
     }
 
@@ -1140,10 +1137,10 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
       const rawPathTemplate = Option.getOrUndefined(method.path);
       if (!methodId || !rawPathTemplate || !method.httpMethod) continue;
       const methodScopes = discoveryMethodScopesForService(info.service, method);
-      const oauthScopes = filterPhotosScopes
+      const oauthScopes = filterConsentScopes
         ? methodScopes.filter((scope) => consentScopeSet.has(scope))
         : methodScopes;
-      if (filterPhotosScopes && methodScopes.length > 0 && oauthScopes.length === 0) continue;
+      if (filterConsentScopes && methodScopes.length > 0 && oauthScopes.length === 0) continue;
 
       const toolPath = methodId;
       const wirePath = rawPathTemplate.startsWith("/") ? rawPathTemplate : `/${rawPathTemplate}`;

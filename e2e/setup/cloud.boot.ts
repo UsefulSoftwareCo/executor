@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 // Vendored fork import (same pattern as mcporter).
 import { createEmulator } from "@executor-js/emulate";
 
-import { bootProcesses, waitForHttp } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
 import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
 
@@ -94,6 +94,21 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
     MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
     ALLOW_LOCAL_NETWORK: "true",
+    // A first-party GitHub app for the first-party-oauth scenario: proves the
+    // env → HostConfig → executor plumbing end to end. The scenario asserts the
+    // authorize REDIRECT only (client id + callback), never visits github.com.
+    FIRST_PARTY_GITHUB_CLIENT_ID: "e2e-first-party-github",
+    FIRST_PARTY_GITHUB_CLIENT_SECRET: "e2e-first-party-github-secret",
+    // Optional endpoint overrides pass through so a dev instance (`cli up
+    // cloud`) can point the first-party app at an emulated GitHub and run the
+    // complete authorize → token dance instead of stopping at github.com.
+    FIRST_PARTY_GITHUB_AUTHORIZE_URL: process.env.FIRST_PARTY_GITHUB_AUTHORIZE_URL,
+    FIRST_PARTY_GITHUB_TOKEN_URL: process.env.FIRST_PARTY_GITHUB_TOKEN_URL,
+    // Fake Google registration for redirect-only first-party coverage. The
+    // scenario never visits Google or exchanges a code; it proves cloud env,
+    // scope policy, and authorization URL construction end to end.
+    FIRST_PARTY_GOOGLE_CLIENT_ID: "e2e-first-party-google",
+    FIRST_PARTY_GOOGLE_CLIENT_SECRET: "e2e-first-party-google-secret",
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real
     // executions — but see execution-limits.ts: it must stay above every other
@@ -153,9 +168,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
 
   try {
     const local = `http://127.0.0.1:${options.cloudPort}`;
-    await waitForHttp(local);
+    await waitForBoot(procs, (signal) => waitForHttp(local, { signal }));
     // The API plane is ready when login actually redirects to AuthKit.
-    await waitForHttp(`${local}/api/auth/login`, { expectRedirect: true });
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`${local}/api/auth/login`, { expectRedirect: true, signal }),
+    );
   } catch (error) {
     await teardown();
     throw error;

@@ -1,0 +1,153 @@
+---
+const pageTitle = "Executor";
+const pageDescription =
+  "Executor is a web application that lets people connect AI assistants to Google Calendar, Gmail, Google Sheets, and other software, then control the actions those assistants can take.";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content={pageTitle} />
+    <meta name="description" content={pageDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={pageTitle} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDescription} />
+    <meta property="og:url" content="https://executor.sh/about-executor" />
+    <link rel="canonical" href="https://executor.sh/about-executor" />
+    <title>Executor</title>
+    <style is:global>
+      :root {
+        color-scheme: light;
+        font-family: Arial, Helvetica, sans-serif;
+        color: #181818;
+        background: #ffffff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        line-height: 1.6;
+      }
+
+      header,
+      main,
+      footer {
+        width: min(760px, calc(100% - 40px));
+        margin-inline: auto;
+      }
+
+      header {
+        padding: 64px 0 36px;
+        border-bottom: 1px solid #dedede;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(48px, 9vw, 72px);
+        line-height: 1;
+      }
+
+      .purpose {
+        margin: 28px 0 0;
+        font-size: 21px;
+      }
+
+      section {
+        padding: 34px 0;
+        border-bottom: 1px solid #dedede;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 25px;
+      }
+
+      p {
+        margin: 0 0 16px;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 24px;
+      }
+
+      li + li {
+        margin-top: 10px;
+      }
+
+      a {
+        color: #174ea6;
+      }
+
+      footer {
+        padding: 28px 0 56px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Executor</h1>
+      <p class="purpose">
+        Executor is a web application that lets people connect AI assistants to their software
+        and data. It gives those assistants specific tools to complete tasks the person requests,
+        while letting the person approve or block actions.
+      </p>
+    </header>
+
+    <main>
+      <section aria-labelledby="what-heading">
+        <h2 id="what-heading">What Executor does</h2>
+        <p>
+          A person can use Executor to connect an AI assistant to services such as Google
+          Calendar, Gmail, and Google Sheets. The person can then ask the assistant to manage a
+          schedule, organize email, or update a spreadsheet through Executor.
+        </p>
+        <p>
+          Executor performs only the actions the person requests and permits. It does not give an
+          AI assistant an unrestricted session in the person's account.
+        </p>
+      </section>
+
+      <section aria-labelledby="google-heading">
+        <h2 id="google-heading">How Executor uses Google data</h2>
+        <p>
+          When a person chooses to connect a Google service, Executor requests the permissions
+          needed to provide that connection and uses the resulting data to carry out that
+          person's instructions.
+        </p>
+        <ul>
+          <li><strong>Google Calendar:</strong> read calendars and events, or create, update, and remove events.</li>
+          <li><strong>Gmail:</strong> read and search messages, compose and send mail, manage labels, archive messages, or move messages to trash.</li>
+          <li><strong>Google Sheets:</strong> read spreadsheet data and update cells, ranges, and worksheets.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="privacy-heading">
+        <h2 id="privacy-heading">Privacy and user control</h2>
+        <p>
+          Executor does not sell Google user data. A person can remove a connection in Executor or
+          revoke it from their Google Account permissions. More information is available in the
+          <a href="https://executor.sh/privacy">Executor Privacy Policy</a>.
+        </p>
+        <p>
+          Executor's use and transfer of information received from Google APIs adheres to the
+          <a href="https://developers.google.com/terms/api-services-user-data-policy"
+            >Google API Services User Data Policy</a
+          >, including the Limited Use requirements.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      Executor is operated by Useful Software Company. <a href="https://executor.sh/terms">Terms of Service</a>
+    </footer>
+  </body>
+</html>

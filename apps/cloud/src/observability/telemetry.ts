@@ -45,6 +45,7 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 
+import { SpanHeaderRedactionLive } from "./header-redaction";
 import {
   CountingSpanExporter,
   CountingSpanProcessor,
@@ -124,15 +125,21 @@ export const flushTracerProvider = async (): Promise<void> => {
 };
 
 const makeTelemetryLive = (): Layer.Layer<never> =>
-  Layer.unwrap(
-    Effect.sync(() =>
-      ensureGlobalTracerProvider()
-        ? OtelTracer.layerGlobal.pipe(
-            Layer.provide(
-              Resource.layer({ serviceName: SERVICE_NAME, serviceVersion: SERVICE_VERSION }),
-            ),
-          )
-        : Layer.empty,
+  Layer.mergeAll(
+    // Redaction applies even when the exporter is not installed: Effect still
+    // builds spans (and their header attributes) in-memory, and any future
+    // consumer of those spans must never observe an unredacted credential.
+    SpanHeaderRedactionLive,
+    Layer.unwrap(
+      Effect.sync(() =>
+        ensureGlobalTracerProvider()
+          ? OtelTracer.layerGlobal.pipe(
+              Layer.provide(
+                Resource.layer({ serviceName: SERVICE_NAME, serviceVersion: SERVICE_VERSION }),
+              ),
+            )
+          : Layer.empty,
+      ),
     ),
   );
 

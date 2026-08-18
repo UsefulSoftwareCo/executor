@@ -1,5 +1,12 @@
 # @executor-js/runtime-quickjs
 
+## 1.5.41
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.41
+
 ## 1.5.40
 
 ### Patch Changes

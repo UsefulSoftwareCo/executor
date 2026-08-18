@@ -17,8 +17,10 @@ import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 import {
   buildMcpServer,
+  clientInfoFromRequestBody,
   formatMcpExecutionOutcome,
   type ExecutorMcpServerConfig,
+  type McpClientInfo,
 } from "./tool-server";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ type TestServerConfig<E extends Cause.YieldableError> = Pick<
   | "pausedExecutionHooks"
   | "pausedExecutionLeaseMs"
   | "resumeFallback"
+  | "onClientInfoChange"
 >;
 
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */
@@ -1607,6 +1610,77 @@ describe("MCP host server — skills tool", () => {
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
     });
+  });
+});
+
+describe("MCP host server — client attribution", () => {
+  it("stamps the initialize-reported client identity on execution spans", async () => {
+    await withTracedClient(makeStubEngine({}), async (client, spans) => {
+      await client.callTool({ name: "execute", arguments: { code: "1+1" } });
+
+      const execute = spans.find((span) => span.name === "mcp.host.tool.execute");
+      expectDefined(execute);
+      expect(execute.attributes.get("mcp.client.name")).toBe("test-client");
+      expect(execute.attributes.get("mcp.client.version")).toBe("1.0.0");
+    });
+  });
+
+  it("reports the initialize-reported identity to onClientInfoChange once", async () => {
+    const reported: McpClientInfo[] = [];
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        await client.callTool({ name: "execute", arguments: { code: "1+1" } });
+        expect(reported).toEqual([{ name: "test-client", version: "1.0.0" }]);
+      },
+      {
+        onClientInfoChange: (clientInfo) =>
+          Effect.sync(() => {
+            reported.push(clientInfo);
+          }),
+      },
+    );
+  });
+});
+
+describe("clientInfoFromRequestBody", () => {
+  const META_KEY = "io.modelcontextprotocol/clientInfo";
+
+  it("prefers the per-request _meta identity", () => {
+    expect(
+      clientInfoFromRequestBody({
+        method: "tools/call",
+        params: { _meta: { [META_KEY]: { name: "meta-client", version: "2.0.0" } } },
+      }),
+    ).toEqual({ name: "meta-client", version: "2.0.0" });
+  });
+
+  it("falls back to the initialize body's native clientInfo", () => {
+    expect(
+      clientInfoFromRequestBody({
+        method: "initialize",
+        params: { clientInfo: { name: "init-client", version: "1.2.3", title: "Init Client" } },
+      }),
+    ).toEqual({ name: "init-client", version: "1.2.3", title: "Init Client" });
+  });
+
+  it("decodes a malformed or absent identity to null", () => {
+    expect(clientInfoFromRequestBody(null)).toBeNull();
+    expect(clientInfoFromRequestBody({ method: "tools/call", params: {} })).toBeNull();
+    expect(
+      clientInfoFromRequestBody({
+        method: "tools/call",
+        params: { _meta: { [META_KEY]: { version: "no-name" } } },
+      }),
+    ).toBeNull();
+    // Native clientInfo is only trusted on `initialize`, where the spec puts it.
+    expect(
+      clientInfoFromRequestBody({
+        method: "tools/call",
+        params: { clientInfo: { name: "misplaced" } },
+      }),
+    ).toBeNull();
   });
 });
 

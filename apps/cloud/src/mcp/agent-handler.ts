@@ -1,5 +1,5 @@
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
-import { Effect, Predicate } from "effect";
+import { Effect, Layer, Predicate } from "effect";
 
 import {
   McpAuthProvider,
@@ -8,6 +8,7 @@ import {
   defaultMcpResource,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
+  type McpModernServerBuilder,
   type McpResource,
 } from "@executor-js/host-mcp";
 import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
@@ -32,8 +33,52 @@ import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mc
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
-import { makeCloudModernMcpServerBuilder } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
+
+const DEAD_SESSION_CACHE_TTL_MS = 5 * 60 * 1_000;
+const DEAD_SESSION_CACHE_MAX_ENTRIES = 4_096;
+const deadSessionExpiries = new Map<string, number>();
+const timedOutSessionIds = new Set<string>();
+
+type DeadSessionReason = "not_found" | "timed_out";
+
+const isDeadSessionCached = (sessionId: string, now = Date.now()): boolean => {
+  const expiry = deadSessionExpiries.get(sessionId);
+  if (expiry === undefined) return false;
+  if (expiry > now) return true;
+  deadSessionExpiries.delete(sessionId);
+  timedOutSessionIds.delete(sessionId);
+  return false;
+};
+
+const cacheDeadSession = (sessionId: string, reason: DeadSessionReason, now = Date.now()): void => {
+  deadSessionExpiries.delete(sessionId);
+  if (deadSessionExpiries.size >= DEAD_SESSION_CACHE_MAX_ENTRIES) {
+    const oldestSessionId = deadSessionExpiries.keys().next().value;
+    if (oldestSessionId !== undefined) {
+      deadSessionExpiries.delete(oldestSessionId);
+      timedOutSessionIds.delete(oldestSessionId);
+    }
+  }
+  deadSessionExpiries.set(sessionId, now + DEAD_SESSION_CACHE_TTL_MS);
+  if (reason === "timed_out") timedOutSessionIds.add(sessionId);
+  else timedOutSessionIds.delete(sessionId);
+};
+
+const cachedDeadSessionMessage = (sessionId: string): string =>
+  timedOutSessionIds.has(sessionId) ? "Session timed out, please reconnect" : "Session not found";
+
+/** Test-only access to reset and verify the isolate-local dead-session cache. */
+export const cloudDeadSessionCacheForTest = {
+  clear: (): void => {
+    deadSessionExpiries.clear();
+    timedOutSessionIds.clear();
+  },
+  remember: (sessionId: string, now?: number): void =>
+    cacheDeadSession(sessionId, "not_found", now),
+  has: isDeadSessionCached,
+  size: (): number => deadSessionExpiries.size,
+};
 
 const jsonRpcResponse = (
   status: number,
@@ -44,6 +89,25 @@ const jsonRpcResponse = (
   challenge === undefined
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
+
+/**
+ * A dead session id answers by request method. POST/DELETE keep the 404 that
+ * tells a compliant client to re-initialize. A standalone GET gets 405: the
+ * v1 SDK treats that as "no SSE stream offered" and stops retrying quietly,
+ * which breaks the reconnect loops of pre-cutover always-on deployments —
+ * their GET-404 path never re-initialized, it just retried forever.
+ */
+const deadSessionResponse = (method: string, message: string): Response =>
+  method === "GET"
+    ? new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message }, id: null }), {
+        status: 405,
+        headers: {
+          "content-type": "application/json",
+          allow: "POST, DELETE",
+          "access-control-allow-origin": "*",
+        },
+      })
+    : jsonRpcResponse(404, -32001, message);
 
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
@@ -78,12 +142,12 @@ const renderAuthError = (
   });
 };
 
-const authenticate = (request: Request) =>
+const authenticate = (request: Request, authProvider: Layer.Layer<McpAuthProvider>) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(cloudMcpAuth));
+  }).pipe(Effect.provide(authProvider));
 
 // The earlier shared envelope ran the MCP auth path inside the Effect app, whose
 // HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
@@ -106,6 +170,21 @@ const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> =
     ),
   );
 };
+
+type TraceCloudMcpRequest = (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  handle: (tracedRequest: Request) => Promise<Response>,
+) => Promise<Response>;
+
+interface CloudMcpAgentHandlerOptions {
+  readonly makeModernServerBuilder: (
+    session: McpSessionProps["session"],
+  ) => McpModernServerBuilder["Service"];
+  readonly authProvider?: Layer.Layer<McpAuthProvider>;
+  readonly traceRequest?: TraceCloudMcpRequest;
+}
 
 // The MCP resource the request targets. `server.ts` routes both the bare `/mcp`
 // and `/mcp/toolkits/<slug>` to this handler (`prepareMcpOrgScope` strips the org
@@ -139,11 +218,14 @@ const propsForPrincipal = (
     };
   });
 
-export const makeCloudMcpAgentHandler = () => {
+/** Build the cloud worker's authenticated legacy/modern MCP request handler. */
+export const makeCloudMcpAgentHandler = (options: CloudMcpAgentHandlerOptions) => {
+  const authProvider = options.authProvider ?? cloudMcpAuth;
+  const traceRequest = options.traceRequest ?? ((request, _env, _ctx, handle) => handle(request));
   const modern = makeMcpModernRequestRouter();
   const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
-  return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
+  const handle = async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") {
       return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
     }
@@ -154,7 +236,7 @@ export const makeCloudMcpAgentHandler = () => {
     }
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await runTraced(request, authenticate(request));
+    const { auth, outcome } = await runTraced(request, authenticate(request, authProvider));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       // Destroying a live session on auth grounds requires a POSITIVE
       // determination that access is genuinely gone — only `Forbidden` carries
@@ -199,7 +281,7 @@ export const makeCloudMcpAgentHandler = () => {
         resource,
         props,
         requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
-        builder: makeCloudModernMcpServerBuilder(props.session),
+        builder: options.makeModernServerBuilder(props.session),
         sessions: env.MCP_SESSION,
         executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
       });
@@ -217,21 +299,23 @@ export const makeCloudMcpAgentHandler = () => {
 
     const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
     if (sessionId && !existingSession) {
-      return jsonRpcResponse(404, -32001, "Session not found");
+      return deadSessionResponse(request.method, "Session not found");
     }
-    if (existingSession) {
+    if (existingSession && sessionId) {
       const owner = await existingSession.validateMcpSessionOwner({
         accountId: outcome.principal.accountId,
         organizationId: outcome.principal.organizationId,
       });
       if (owner === "not_found") {
-        return jsonRpcResponse(404, -32001, "Session not found");
+        cacheDeadSession(sessionId, "not_found");
+        return deadSessionResponse(request.method, "Session not found");
       }
       if (owner === "terminated") {
         // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
         // yet. Same envelope as the post-destroy race below: the client must
         // treat the id as dead and reconnect.
-        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+        cacheDeadSession(sessionId, "timed_out");
+        return deadSessionResponse(request.method, "Session timed out, please reconnect");
       }
       if (owner === "forbidden") {
         return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
@@ -267,11 +351,28 @@ export const makeCloudMcpAgentHandler = () => {
       // client to be told to reconnect, matching a timed-out session).
       // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message IS the signal
       if (Predicate.isError(error) && error.message === "destroyed") {
-        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+        if (sessionId) cacheDeadSession(sessionId, "timed_out");
+        return deadSessionResponse(request.method, "Session timed out, please reconnect");
       }
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
       throw error;
     }
     return withMcpResponseHeaders(wrapMcpSseResponse(request, env, response));
+  };
+
+  return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
+    const sessionId = request.headers.get("mcp-session-id");
+    const cacheEligible = request.method !== "OPTIONS" && ALLOWED_METHODS.has(request.method);
+    if (cacheEligible && sessionId && isDeadSessionCached(sessionId)) {
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const { auth, outcome } = yield* authenticate(request, authProvider);
+          return Predicate.isTagged(outcome, "Authenticated")
+            ? deadSessionResponse(request.method, cachedDeadSessionMessage(sessionId))
+            : renderAuthError(auth, request, outcome);
+        }).pipe(Effect.withTracerEnabled(false)),
+      );
+    }
+    return traceRequest(request, env, ctx, (tracedRequest) => handle(tracedRequest, env, ctx));
   };
 };

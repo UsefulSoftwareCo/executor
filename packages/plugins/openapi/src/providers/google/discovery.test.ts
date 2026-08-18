@@ -959,6 +959,78 @@ it.effect("bundles Google Discovery documents into one Google OpenAPI integratio
   }),
 );
 
+it.effect("filters Gmail operations to the explicitly selected consent scope", () =>
+  Effect.gen(function* () {
+    const modifyScope = "https://www.googleapis.com/auth/gmail.modify";
+    const fullScope = "https://mail.google.com/";
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      consentScopes: [modifyScope],
+      documents: [
+        {
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "gmail",
+            version: "v1",
+            title: "Gmail API",
+            rootUrl: "https://gmail.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  [modifyScope]: { description: "Read and modify Gmail" },
+                  [fullScope]: { description: "Full Gmail access" },
+                },
+              },
+            },
+            resources: {
+              users: {
+                resources: {
+                  messages: {
+                    methods: {
+                      list: {
+                        id: "gmail.users.messages.list",
+                        httpMethod: "GET",
+                        path: "gmail/v1/users/{userId}/messages",
+                        scopes: [modifyScope, fullScope],
+                        parameters: {
+                          userId: { location: "path", required: true, type: "string" },
+                        },
+                      },
+                      delete: {
+                        id: "gmail.users.messages.delete",
+                        httpMethod: "DELETE",
+                        path: "gmail/v1/users/{userId}/messages/{id}",
+                        scopes: [fullScope],
+                        parameters: {
+                          userId: { location: "path", required: true, type: "string" },
+                          id: { location: "path", required: true, type: "string" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {},
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operationIds = Object.values(spec.paths).flatMap((path) =>
+      Object.values(path).map((operation) => operation.operationId),
+    );
+    expect(operationIds).toContain("gmail.users.messages.list");
+    expect(operationIds).not.toContain("gmail.users.messages.delete");
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
+      modifyScope,
+    ]);
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // The merged bundle scope set is the COMPACTED + FILTERED union: sub-scopes
 // collapse under their broad parent (`gmail.*` → `mail.google.com/`,

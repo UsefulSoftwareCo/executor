@@ -10,6 +10,9 @@ import { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-fo
 import { googleCatalog } from "./presets";
 
 const TASKS_URL = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
+const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
+const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+const GMAIL_FULL_SCOPE = "https://mail.google.com/";
 
 const tasksDiscoveryDoc = {
   name: "tasks",
@@ -63,6 +66,66 @@ const discoveryHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
         request,
         new Response(JSON.stringify(tasksDiscoveryDoc), {
           status: request.url === TASKS_URL ? 200 : 404,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    ),
+  ),
+);
+
+const gmailDiscoveryDoc = {
+  name: "gmail",
+  version: "v1",
+  title: "Gmail API",
+  rootUrl: "https://gmail.googleapis.com/",
+  servicePath: "",
+  auth: {
+    oauth2: {
+      scopes: {
+        [GMAIL_MODIFY_SCOPE]: { description: "Read and modify Gmail" },
+        [GMAIL_FULL_SCOPE]: { description: "Full Gmail access" },
+      },
+    },
+  },
+  resources: {
+    users: {
+      resources: {
+        messages: {
+          methods: {
+            list: {
+              id: "gmail.users.messages.list",
+              httpMethod: "GET",
+              path: "gmail/v1/users/{userId}/messages",
+              scopes: [GMAIL_MODIFY_SCOPE, GMAIL_FULL_SCOPE],
+              parameters: {
+                userId: { location: "path", required: true, type: "string" },
+              },
+            },
+            delete: {
+              id: "gmail.users.messages.delete",
+              httpMethod: "DELETE",
+              path: "gmail/v1/users/{userId}/messages/{id}",
+              scopes: [GMAIL_FULL_SCOPE],
+              parameters: {
+                userId: { location: "path", required: true, type: "string" },
+                id: { location: "path", required: true, type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  schemas: {},
+};
+
+const gmailDiscoveryHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+  HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        new Response(JSON.stringify(gmailDiscoveryDoc), {
+          status: request.url === GMAIL_URL ? 200 : 404,
           headers: { "content-type": "application/json" },
         }),
       ),
@@ -164,4 +227,46 @@ it.effect(
         ]),
       );
     }),
+);
+
+it.effect("preserves a Google preset's consent scope boundary when refreshing", () =>
+  Effect.gen(function* () {
+    const gmailPreset = googleCatalog.find((preset) => preset.id === "google-gmail")!;
+    const authTemplate: readonly AuthenticationInput[] = (gmailPreset.authTemplate ?? []).flatMap(
+      (template) => (template.kind === "oauth2" ? [template] : []),
+    );
+    const executor = yield* createExecutor(
+      makeTestConfig({
+        plugins: [
+          openApiPlugin({
+            httpClientLayer: gmailDiscoveryHttpClientLayer,
+            presets: [gmailPreset],
+            specFormats: [googleDiscoveryAdapter],
+          }),
+          memoryCredentialsPlugin(),
+        ],
+      }),
+    );
+
+    const added = yield* executor.openapi.addSpec({
+      spec: { kind: "url", url: GMAIL_URL },
+      slug: gmailPreset.defaultSlug,
+      specFormat: gmailPreset.specFormat,
+      family: gmailPreset.family,
+      authenticationTemplate: authTemplate,
+    });
+    expect(added.toolCount).toBe(1);
+
+    const updated = yield* executor.openapi.updateSpec("google_gmail");
+
+    const config = yield* executor.openapi.getConfig("google_gmail");
+    const oauthTemplate = config?.authenticationTemplate?.find(
+      (template) => template.kind === "oauth2",
+    );
+    expect(updated.toolCount).toBe(1);
+    expect(updated.addedTools).not.toContain("gmail.users.messages.delete");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toContain(
+      GMAIL_MODIFY_SCOPE,
+    );
+  }),
 );

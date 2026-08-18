@@ -123,6 +123,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly redirectUri?: string | null;
   readonly oauthCallbackStateOrgSlug?: string;
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
+  readonly firstPartyOAuthClients?: ExecutorConfig<TPlugins>["firstPartyOAuthClients"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -163,6 +164,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     onIntegrationChange: options?.onIntegrationChange,
     ...(redirectUri != null ? { redirectUri } : {}),
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
+    firstPartyOAuthClients: options?.firstPartyOAuthClients,
   };
 };
 
