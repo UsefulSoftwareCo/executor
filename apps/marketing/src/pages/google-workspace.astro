@@ -8,12 +8,37 @@ const services = [
   {
     name: "Gmail",
     description:
-      "Read, search, compose, send, label, archive, or move messages to trash when you ask an agent to work with your email.",
+      "Read, search, compose, send, label, archive, trash, or permanently delete messages when you explicitly ask an agent to work with your email.",
   },
   {
     name: "Google Sheets",
     description:
       "Read spreadsheet data and update cells, ranges, or worksheets when you ask an agent to work with a spreadsheet.",
+  },
+  {
+    name: "Google Drive, Docs, Slides, and Forms",
+    description:
+      "Find and manage files and folders, edit documents and presentations, and create or read forms and responses when you ask an agent to work with them.",
+  },
+  {
+    name: "Google Contacts and Tasks",
+    description:
+      "Read or update contacts and contact groups, read other contacts or an available Workspace directory, and manage task lists and tasks when you ask an agent to organize people or work.",
+  },
+  {
+    name: "Google Meet",
+    description:
+      "Create and configure meeting spaces or read meeting records, participants, recordings, and transcripts when you request meeting-related work.",
+  },
+  {
+    name: "Google Photos",
+    description:
+      "Upload and manage app-created photos or read media you explicitly select through Google Photos Picker.",
+  },
+  {
+    name: "Google Search Console",
+    description:
+      "Read and manage verified sites, sitemaps, URL inspection results, and search-performance data when you request website analysis.",
   },
 ] as const;
 ---
@@ -26,7 +51,7 @@ const services = [
     <meta name="robots" content="index, follow" />
     <meta
       name="description"
-      content="Executor connects AI agents to Google Calendar, Gmail, and Google Sheets with your permission."
+      content="Executor connects AI agents to Google Workspace and related Google services with your permission."
     />
     <link rel="canonical" href="https://executor.sh/google-workspace" />
     <title>Executor</title>
@@ -134,7 +159,7 @@ const services = [
       <h1>Executor</h1>
       <p class="purpose">
         Executor is an integration platform and MCP gateway for AI agents. Executor lets you
-        securely connect Google Calendar, Gmail, and Google Sheets so an agent can read your
+        securely connect Google Workspace and related Google services so an agent can read your
         Google data and take only the actions you request.
       </p>
     </header>

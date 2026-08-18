@@ -174,6 +174,7 @@ const googleHealthCheckDiscoveryFixtures = {
 
 const FROZEN_GOOGLE_SLUGS = [
   "google_calendar",
+  "google_meet",
   "google_gmail",
   "google_sheets",
   "google_drive",
@@ -200,6 +201,7 @@ it("keeps Select all limited to Google services that can use normal user OAuth",
   const standardIds = new Set(googleStandardUserOAuthPresets.map((preset) => preset.id));
 
   expect(standardIds).toContain("google-calendar");
+  expect(standardIds).toContain("google-meet");
   expect(standardIds).toContain("google-gmail");
   expect(standardIds).toContain("google-tasks");
   expect(standardIds).toContain("google-people");
@@ -211,6 +213,52 @@ it("keeps Select all limited to Google services that can use normal user OAuth",
   expect(standardIds).not.toContain("google-keep");
   expect(standardIds).not.toContain("google-admin-directory");
   expect(standardIds).not.toContain("google-admin-reports");
+});
+
+it("requests full Gmail and the complete user-facing Meet surface", () => {
+  const gmail = googleCatalog.find((preset) => preset.id === "google-gmail");
+  const meet = googleCatalog.find((preset) => preset.id === "google-meet");
+  const gmailOAuth = gmail?.authTemplate?.find((template) => template.kind === "oauth2");
+  const meetOAuth = meet?.authTemplate?.find((template) => template.kind === "oauth2");
+
+  expect(gmailOAuth?.scopes).toContain("https://mail.google.com/");
+  expect(gmailOAuth?.scopes).not.toContain("https://www.googleapis.com/auth/gmail.modify");
+  expect(meetOAuth?.scopes).toEqual(
+    expect.arrayContaining([
+      "https://www.googleapis.com/auth/meetings.space.created",
+      "https://www.googleapis.com/auth/meetings.space.readonly",
+      "https://www.googleapis.com/auth/meetings.space.settings",
+    ]),
+  );
+});
+
+it("requests every scope needed by Forms, People, and app-created Photos", () => {
+  const oauthScopes = (presetId: string) => {
+    const preset = googleCatalog.find((candidate) => candidate.id === presetId);
+    const oauth = preset?.authTemplate?.find((template) => template.kind === "oauth2");
+    return oauth?.scopes ?? [];
+  };
+
+  expect(oauthScopes("google-forms")).toEqual(
+    expect.arrayContaining([
+      "https://www.googleapis.com/auth/forms.body",
+      "https://www.googleapis.com/auth/forms.responses.readonly",
+    ]),
+  );
+  expect(oauthScopes("google-photos-library")).toEqual(
+    expect.arrayContaining([
+      "https://www.googleapis.com/auth/photoslibrary.appendonly",
+      "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
+      "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+    ]),
+  );
+  expect(oauthScopes("google-people")).toEqual(
+    expect.arrayContaining([
+      "https://www.googleapis.com/auth/contacts",
+      "https://www.googleapis.com/auth/contacts.other.readonly",
+      "https://www.googleapis.com/auth/directory.readonly",
+    ]),
+  );
 });
 
 it("classifies every Google service for bundle OAuth UX", () => {

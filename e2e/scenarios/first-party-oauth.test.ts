@@ -25,7 +25,8 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
-import { Api, Target } from "../src/services";
+import { Api, Browser, Target } from "../src/services";
+import { clickToReveal } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -168,15 +169,48 @@ scenario(
 );
 
 scenario(
-  "First-party OAuth · Google offers Gmail modify but refuses full Gmail and Drive scopes",
+  "First-party OAuth · Google offers the reviewed consumer bundle and refuses admin scopes",
   {},
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
       if (target.name !== "cloud") return;
+      const browser = yield* Browser;
       const { client: makeApiClient } = yield* Api;
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Open the Google integration catalog", async () => {
+          await page.goto("/integrations", { waitUntil: "networkidle" });
+          const dialog = page.getByRole("dialog", { name: "Connect an integration" });
+          await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
+        });
+
+        const services = [
+          "Google Calendar",
+          "Google Meet",
+          "Gmail",
+          "Google Sheets",
+          "Google Drive",
+          "Google Docs",
+          "Google Slides",
+          "Google Forms",
+          "Google Tasks",
+          "Google People",
+          "Google Photos Library",
+          "Google Photos Picker",
+          "Google Search Console",
+        ] as const;
+        const dialog = page.getByRole("dialog", { name: "Connect an integration" });
+        const search = dialog.getByPlaceholder(/Search or paste a URL/);
+        for (const service of services) {
+          await step(`${service} is available to connect`, async () => {
+            await search.fill(service);
+            await dialog.getByRole("link", { name: new RegExp(`^${service}\\b`) }).waitFor();
+          });
+        }
+      });
 
       const clients = yield* client.oauth.listClients();
       const google = clients.find((candidate) => String(candidate.slug) === "first-party:google");
@@ -184,10 +218,46 @@ scenario(
       expect(google?.origin.kind).toBe("first_party");
       if (google?.origin.kind !== "first_party") return;
       expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/calendar");
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/meetings.space.readonly",
+      );
       expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/gmail.modify");
+      expect(google.origin.allowedScopes).toContain("https://mail.google.com/");
       expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/spreadsheets");
-      expect(google.origin.allowedScopes).not.toContain("https://mail.google.com/");
-      expect(google.origin.allowedScopes).not.toContain("https://www.googleapis.com/auth/drive");
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/drive");
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/documents");
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/presentations",
+      );
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/forms.body");
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/forms.responses.readonly",
+      );
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/tasks");
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/contacts");
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/contacts.other.readonly",
+      );
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/directory.readonly",
+      );
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/photoslibrary.appendonly",
+      );
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
+      );
+      expect(google.origin.allowedScopes).toContain(
+        "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+      );
+      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/webmasters");
+      expect(google.origin.allowedScopes).not.toContain(
+        "https://www.googleapis.com/auth/admin.directory.user",
+      );
+      expect(google.origin.allowedScopes).not.toContain("https://www.googleapis.com/auth/youtube");
+      expect(google.origin.allowedScopes).not.toContain(
+        "https://www.googleapis.com/auth/cloud-platform",
+      );
 
       const calendar = IntegrationSlug.make(unique("google_calendar"));
       yield* client.openapi.addSpec({
@@ -266,14 +336,67 @@ scenario(
           slug: fullGmail,
         },
       });
+      const fullGmailStarted = yield* client.oauth.start({
+        payload: {
+          client: OAuthClientSlug.make("first-party:google"),
+          clientOwner: "org",
+          owner: "org",
+          name: ConnectionName.make("gmail-full"),
+          integration: fullGmail,
+          template: AuthTemplateSlug.make("oauth"),
+        },
+      });
+      expect(fullGmailStarted.status).toBe("redirect");
+      const fullGmailAuthorizationUrl =
+        fullGmailStarted.status === "redirect" ? fullGmailStarted.authorizationUrl : "";
+      expect(
+        new Set(new URL(fullGmailAuthorizationUrl).searchParams.get("scope")?.split(" ") ?? []),
+      ).toEqual(new Set(["openid", "email", "profile", "https://mail.google.com/"]));
+
+      const drive = IntegrationSlug.make(unique("google_drive"));
+      yield* client.openapi.addSpec({
+        payload: {
+          ...googleShapedIntegrationSpec([
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/drive",
+          ]),
+          slug: drive,
+        },
+      });
+      const driveStarted = yield* client.oauth.start({
+        payload: {
+          client: OAuthClientSlug.make("first-party:google"),
+          clientOwner: "org",
+          owner: "org",
+          name: ConnectionName.make("drive"),
+          integration: drive,
+          template: AuthTemplateSlug.make("oauth"),
+        },
+      });
+      expect(driveStarted.status).toBe("redirect");
+
+      const admin = IntegrationSlug.make(unique("google_admin"));
+      yield* client.openapi.addSpec({
+        payload: {
+          ...googleShapedIntegrationSpec([
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/admin.directory.user",
+          ]),
+          slug: admin,
+        },
+      });
       const blocked = yield* client.oauth
         .start({
           payload: {
             client: OAuthClientSlug.make("first-party:google"),
             clientOwner: "org",
             owner: "org",
-            name: ConnectionName.make("gmail-full"),
-            integration: fullGmail,
+            name: ConnectionName.make("admin"),
+            integration: admin,
             template: AuthTemplateSlug.make("oauth"),
           },
         })

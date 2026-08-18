@@ -264,6 +264,7 @@ const GOOGLE_IDENTITY_DISCOVERY_URL = "https://www.googleapis.com/discovery/v1/a
 
 const GOOGLE_TOOL_PREFIX_TO_PRESET_ID: ReadonlyMap<string, string> = new Map([
   ["calendar", "google-calendar"],
+  ["meet", "google-meet"],
   ["gmail", "google-gmail"],
   ["sheets", "google-sheets"],
   ["drive", "google-drive"],

@@ -57,6 +57,15 @@ export const googleOpenApiPresets: readonly GoogleOpenApiPreset[] = [
     oauthAudience: "standard-user",
   },
   {
+    id: "google-meet",
+    name: "Google Meet",
+    summary: "Meeting spaces, conference records, participants, recordings, and transcripts.",
+    url: "https://meet.googleapis.com/$discovery/rest?version=v2",
+    icon: "https://fonts.gstatic.com/s/i/productlogos/meet_2020q4/v8/192px.svg",
+    featured: true,
+    oauthAudience: "standard-user",
+  },
+  {
     id: "google-gmail",
     name: "Gmail",
     summary: "Messages, threads, labels, and drafts.",
@@ -250,16 +259,29 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 
 export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]>> = {
   "google-calendar": ["https://www.googleapis.com/auth/calendar"],
-  "google-gmail": ["https://www.googleapis.com/auth/gmail.modify"],
+  "google-meet": [
+    "https://www.googleapis.com/auth/meetings.space.created",
+    "https://www.googleapis.com/auth/meetings.space.readonly",
+    "https://www.googleapis.com/auth/meetings.space.settings",
+  ],
+  "google-gmail": ["https://mail.google.com/"],
   "google-sheets": ["https://www.googleapis.com/auth/spreadsheets"],
   "google-drive": ["https://www.googleapis.com/auth/drive"],
   "google-docs": ["https://www.googleapis.com/auth/documents"],
   "google-slides": ["https://www.googleapis.com/auth/presentations"],
-  "google-forms": ["https://www.googleapis.com/auth/forms.body"],
+  "google-forms": [
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
+  ],
   "google-tasks": ["https://www.googleapis.com/auth/tasks"],
-  "google-people": ["https://www.googleapis.com/auth/contacts"],
+  "google-people": [
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+    "https://www.googleapis.com/auth/directory.readonly",
+  ],
   "google-photos-library": [
     "https://www.googleapis.com/auth/photoslibrary.appendonly",
+    "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
     "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
   ],
   "google-photos-picker": ["https://www.googleapis.com/auth/photospicker.mediaitems.readonly"],

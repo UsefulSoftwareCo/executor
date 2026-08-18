@@ -94,15 +94,34 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
  */
 export const CLOUD_MOUNT_PREFIX = "/api" as const;
 
-// Initial Google launch boundary. Gmail uses gmail.modify for read, send, and
-// trash operations while immediate permanent deletion remains absent until the
-// broader mail.google.com scope is approved. Account-wide Drive remains absent.
-// The same scope source builds the catalog auth templates, preventing drift.
+// Consumer Google launch boundary. Keep this list aligned with the scopes
+// submitted for the Executor-owned production app: ordinary Workspace services
+// plus Photos, Meet, and Search Console. Admin, Classroom, YouTube, Apps Script,
+// BigQuery, and Cloud Resource Manager have materially different audiences or
+// provider requirements and remain BYO OAuth. The same scope source builds each
+// catalog auth template, preventing picker/start drift.
+const GOOGLE_FIRST_PARTY_PRESET_IDS = [
+  "google-calendar",
+  "google-meet",
+  "google-gmail",
+  "google-sheets",
+  "google-drive",
+  "google-docs",
+  "google-slides",
+  "google-forms",
+  "google-tasks",
+  "google-people",
+  "google-photos-library",
+  "google-photos-picker",
+  "google-search-console",
+] as const;
+
 const GOOGLE_FIRST_PARTY_ALLOWED_SCOPES: readonly string[] = [
   ...new Set([
-    ...googleCatalogOAuthScopesForPreset("google-calendar"),
-    ...googleCatalogOAuthScopesForPreset("google-gmail"),
-    ...googleCatalogOAuthScopesForPreset("google-sheets"),
+    ...GOOGLE_FIRST_PARTY_PRESET_IDS.flatMap(googleCatalogOAuthScopesForPreset),
+    // Connections created before the full-Gmail review retain this declared
+    // scope on reconnect. New Gmail presets request `mail.google.com`.
+    "https://www.googleapis.com/auth/gmail.modify",
   ]),
 ];
 
