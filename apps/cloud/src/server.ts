@@ -102,11 +102,46 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const fetchHandler = handler.fetch as (
+const rawFetchHandler = handler.fetch as (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
+
+// TEMPORARY DIAGNOSTIC (Aug 2026 latency hunt).
+//
+// The standing explanation is that Start's lazy `loadEntries` import of the
+// 2.56MB server graph costs seconds on the first Start-handled request per
+// isolate. That does not fit the numbers: module evaluation is CPU work, but
+// these requests report 45-72ms of CPU against 4s of wall time.
+//
+// So distinguish the two directly. `wasWarm` is false only for the FIRST
+// Start-handled request in this isolate — the one that pays the module load.
+// If cold requests are slow and warm ones are fast, the graph load is real.
+// If both are slow, the cost is per-request work inside Start/Effect and the
+// module-load story is wrong.
+let startHandledInThisIsolate = false;
+
+const fetchHandler = async (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> => {
+  const wasWarm = startHandledInThisIsolate;
+  startHandledInThisIsolate = true;
+  const startedAt = Date.now();
+  const response = await rawFetchHandler(request, env, ctx);
+  const handlerMs = Date.now() - startedAt;
+  console.log(
+    JSON.stringify({
+      probe: "start-graph",
+      path: new URL(request.url).pathname,
+      wasWarm,
+      handlerMs,
+    }),
+  );
+  return response;
+};
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
