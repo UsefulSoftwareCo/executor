@@ -103,11 +103,25 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const fetchHandler = handler.fetch as (
+const rawFetchHandler = handler.fetch as (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
+
+/**
+ * Every entry into TanStack Start goes through here so `startGraphEntered`
+ * reflects whether this isolate has already paid the lazy `loadEntries`
+ * import — the cost that dominates a cold page request.
+ */
+const fetchHandler = (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Response | Promise<Response> => {
+  markStartGraphEntered();
+  return rawFetchHandler(request, env, ctx);
+};
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
@@ -178,8 +192,43 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
   traceRequest: traceCloudMcpRequest,
 });
 
+// ---------------------------------------------------------------------------
+// Isolate lifecycle signals
+// ---------------------------------------------------------------------------
+//
+// The Aug 2026 page-latency hunt kept stalling on one blind spot: every span we
+// emit starts INSIDE the fetch handler, so nothing could distinguish "this
+// isolate is cold and paying Start's lazy `loadEntries` import" from "this
+// isolate came up slowly before our code ran at all". Both look like one slow
+// span. These three attributes make the distinction queryable:
+//
+//   executor.isolate.request_seq  - 1 means this request is the isolate's
+//                                   first; page requests measured 1.04 per
+//                                   isolate, which is why nearly every one
+//                                   pays the cold cost.
+//   executor.start_graph.entered  - whether anything had already driven
+//                                   TanStack Start in this isolate. /mcp and
+//                                   the passthrough proxies return before
+//                                   `fetchHandler`, so an isolate can serve
+//                                   plenty of traffic and still be cold here.
+// Measured with a temporary entry-lag probe correlated against `wrangler tail`
+// event timestamps: a cold isolate (`request_seq` 1) spends **840-1844ms**
+// coming up before our first line runs, while a reused one spends **0-2ms**.
+// That startup is invisible to every span we emit, and it sits on top of the
+// ~3.1s `loadEntries` import — together the 3-5s a signed-in page costs.
+//
+// Both counters are cheap: two increments and no I/O.
+let isolateRequestSeq = 0;
+let startGraphEntered = false;
+
+const markStartGraphEntered = (): void => {
+  startGraphEntered = true;
+};
+
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    isolateRequestSeq += 1;
+
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
@@ -250,6 +299,8 @@ const cloudflareHandler: ExportedHandler<Env> = {
         async (span) => {
           span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
           span.setAttribute(ATTR_URL_PATH, url.pathname);
+          span.setAttribute("executor.isolate.request_seq", isolateRequestSeq);
+          span.setAttribute("executor.start_graph.entered", startGraphEntered);
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
           try {
             const response = await fetchHandler(
