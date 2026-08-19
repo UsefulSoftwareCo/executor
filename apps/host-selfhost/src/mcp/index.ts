@@ -11,6 +11,7 @@ import type {
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import type { SelfHostDbHandle } from "../db/self-host-db";
+import { loadConfig } from "../config";
 import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
@@ -142,7 +143,11 @@ export const makeSelfHostMcpSeams = (
   webBaseUrl?: string,
   modernEnabled = true,
 ): SelfHostMcpSeams => {
-  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
+  const sessionStore = makeSelfHostMcpSessionStore(
+    dbHandle,
+    webBaseUrl,
+    loadConfig().mcpSessionIdleTtlMs,
+  );
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );
