@@ -61,7 +61,6 @@ import {
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
-  McpStdioVersionNegotiation,
   parseMcpIntegrationConfig,
   type McpIntegrationConfig as McpIntegrationConfigType,
   type McpStdioEnvMethod,
@@ -208,11 +207,6 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  instead and leaves the values to the connect step. */
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   cwd: Schema.optional(Schema.String),
-  /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
-   *  2026-07-28) for modern-only servers. Defaults to the legacy `initialize`
-   *  handshake — the right call for spawn-per-call servers, where the auto
-   *  probe costs an extra child process per connect. */
-  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
   slug: Schema.optional(Schema.String),
 });
 
@@ -376,7 +370,6 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
-      versionNegotiation: input.versionNegotiation,
       authenticationTemplate:
         vars.length > 0
           ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars }]
@@ -593,7 +586,6 @@ const buildConnectorInput = (
       args: config.args,
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
-      versionNegotiation: config.versionNegotiation,
     } satisfies McpStdioIntegrationConfig);
   }
 
@@ -1052,7 +1044,6 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 command: config.command,
                 args: config.args,
                 cwd: config.cwd,
-                versionNegotiation: config.versionNegotiation,
                 authenticationTemplate: hasEnv
                   ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars: envVars }]
                   : [{ slug: "none", kind: "none" }],

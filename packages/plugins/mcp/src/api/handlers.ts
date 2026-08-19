@@ -39,7 +39,6 @@ const toServerInput = (
       envVars?: readonly string[];
       env?: Record<string, string>;
       cwd?: string;
-      versionNegotiation?: "legacy" | "auto";
       slug?: string;
     };
     return {
@@ -51,7 +50,6 @@ const toServerInput = (
       envVars: p.envVars ? [...p.envVars] : undefined,
       env: p.env,
       cwd: p.cwd,
-      versionNegotiation: p.versionNegotiation,
       slug: p.slug,
     };
   }
