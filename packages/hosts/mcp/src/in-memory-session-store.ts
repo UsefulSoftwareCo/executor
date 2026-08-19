@@ -54,6 +54,23 @@ import { mcpRequestStatePrincipal, type BrowserApprovalStore } from "./tool-serv
 //   - "forbidden" (session owned by another bearer) -> envelope renders 403 -32003
 // ---------------------------------------------------------------------------
 
+// A streamable-HTTP session only leaves these maps when the client sends
+// `DELETE /mcp`. Nothing else can free it: with `enableJsonResponse` there is no
+// stream whose teardown signals the client is gone, and a client that crashes,
+// is killed, or simply calls the MCP SDK's `transport.close()` (which aborts
+// locally and sends nothing) never issues that DELETE. Without a sweep, one
+// abandoned session pins its `McpServer`, its tool registry, and its
+// `ExecutionEngine` for the lifetime of the process.
+//
+// So the store treats a session as abandoned once it has gone `idleTtlMs`
+// without a request and disposes it. That is what the streamable-HTTP spec
+// allows a server to do: a request carrying an evicted id gets the store's
+// existing "not-found" (404, -32001), which is the client's cue to re-initialize.
+/** Idle window after which an untouched session is evicted. */
+const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
+/** Floor on the sweep interval, so a small TTL cannot spin the timer. */
+const MIN_SWEEP_INTERVAL_MS = 30 * 1000;
+
 /** Engine construction failed for a principal. The store surfaces it as a 500. */
 export class McpEngineBuildError extends Data.TaggedError("McpEngineBuildError")<{
   readonly cause: unknown;
@@ -116,6 +133,11 @@ export interface InMemoryMcpSessionStore {
   ) => Promise<Response | null>;
   /** Number of live initialized sessions currently owned by this store. */
   readonly sessionCount: () => number;
+  /**
+   * Dispose every session idle past the store's TTL and return how many went.
+   * Runs on a timer; exposed so a host (or a test) can drive it directly.
+   */
+  readonly sweepIdleSessions: (now?: number) => Promise<number>;
   /** Dispose every live session — wire into the host's shutdown (not a seam). */
   readonly close: () => Promise<void>;
 }
@@ -172,7 +194,13 @@ export const makeInMemoryMcpSessionStore = (
   // proxy) it is preferred over the request URL — whose host would be the
   // internal bind address (127.0.0.1:PORT), unreachable for the user. Omit it on
   // loopback hosts (local/desktop), where the request URL is already correct.
-  options: { readonly webBaseUrl?: string } = {},
+  options: {
+    readonly webBaseUrl?: string;
+    /** Idle window before a session is evicted. 0 disables eviction. */
+    readonly sessionIdleTtlMs?: number;
+    /** How often the sweep runs. Defaults to a quarter of the TTL. */
+    readonly sessionSweepIntervalMs?: number;
+  } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
@@ -180,6 +208,17 @@ export const makeInMemoryMcpSessionStore = (
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
   const requestStateSigningKey = crypto.getRandomValues(new Uint8Array(32));
+  // Monotonic-ish last-touch stamp per live session, the only input the idle
+  // sweep reads. Written on create and on every forwarded request.
+  const lastSeen = new Map<string, number>();
+
+  const idleTtlMs = options.sessionIdleTtlMs ?? DEFAULT_SESSION_IDLE_TTL_MS;
+  const sweepIntervalMs =
+    options.sessionSweepIntervalMs ?? Math.max(MIN_SWEEP_INTERVAL_MS, Math.floor(idleTtlMs / 4));
+
+  const touch = (id: string): void => {
+    if (lastSeen.has(id)) lastSeen.set(id, Date.now());
+  };
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
@@ -188,6 +227,7 @@ export const makeInMemoryMcpSessionStore = (
     servers.delete(id);
     owners.delete(id);
     engines.delete(id);
+    lastSeen.delete(id);
     if (opts.transport) await ignoreClose(transport ? () => transport.close() : undefined);
     if (opts.server) await ignoreClose(server ? () => server.close() : undefined);
   };
@@ -228,6 +268,7 @@ export const makeInMemoryMcpSessionStore = (
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
+    touch(sessionId);
     return runHandleRequest(transport, request);
   };
 
@@ -290,6 +331,7 @@ export const makeInMemoryMcpSessionStore = (
               servers.set(sid, mcpServer);
               owners.set(sid, { principal, resource });
               engines.set(sid, engine);
+              lastSeen.set(sid, Date.now());
             },
             onsessionclosed: (sid) => void dispose(sid, { server: true }),
           });
@@ -397,12 +439,42 @@ export const makeInMemoryMcpSessionStore = (
     });
   };
 
+  /** Dispose every session whose last request is older than the idle window. */
+  const sweepIdleSessions = async (now: number = Date.now()): Promise<number> => {
+    if (idleTtlMs <= 0) return 0;
+    const stale = [...lastSeen.entries()]
+      .filter(([, seen]) => now - seen >= idleTtlMs)
+      .map(([id]) => id);
+    // Both flags: an evicted session's transport has no other owner, and leaving
+    // it open would keep the very handles the eviction exists to release.
+    await Promise.all(stale.map((id) => dispose(id, { transport: true, server: true })));
+    return stale.length;
+  };
+
+  // `unref` so the sweep never keeps a host process alive on its own. Node and
+  // Bun both return a Timeout with it; the DOM typing does not, hence the guard.
+  const sweepTimer: ReturnType<typeof setInterval> | undefined =
+    idleTtlMs > 0
+      ? setInterval(() => {
+          // Same shape as `ignoreClose`: a sweep failure is not the host's
+          // problem and must never surface as an unhandled rejection.
+          void Effect.runPromise(
+            Effect.ignore(
+              Effect.tryPromise({ try: () => sweepIdleSessions(), catch: () => undefined }),
+            ),
+          );
+        }, sweepIntervalMs)
+      : undefined;
+  (sweepTimer as { unref?: () => void } | undefined)?.unref?.();
+
   return {
     store,
     handlePausedRequest,
     handleApprovalRequest,
     sessionCount: () => transports.size,
+    sweepIdleSessions,
     close: async () => {
+      if (sweepTimer !== undefined) clearInterval(sweepTimer);
       const ids = new Set([...transports.keys(), ...servers.keys()]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },

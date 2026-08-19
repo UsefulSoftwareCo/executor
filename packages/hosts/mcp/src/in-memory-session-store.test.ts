@@ -112,6 +112,106 @@ describe("in-memory MCP session store", () => {
     expect(buildOptions?.requestStateSigningKey).toBeInstanceOf(Uint8Array);
   });
 
+  it("evicts a session that goes idle past the TTL and keeps a busy one", async () => {
+    const { engine } = makeElicitingEngine();
+    const sessions = makeInMemoryMcpSessionStore(
+      (_principal, options) =>
+        buildMcpServer({
+          engine,
+          ...options,
+          loadAppShellHtml: async () => "<html></html>",
+        }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
+      { sessionIdleTtlMs: 300 },
+    );
+
+    const open = async (): Promise<string> => {
+      const response = (await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                clientInfo: { name: "idle-test", version: "1.0.0" },
+              },
+            }),
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId: null,
+          method: "POST",
+        }),
+      )) as Response;
+      expect(response.status).toBe(200);
+      const sessionId = response.headers.get("mcp-session-id") ?? "";
+      expect(sessionId).not.toBe("");
+      return sessionId;
+    };
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the store
+    try {
+      const idle = await open();
+      const busy = await open();
+      expect(sessions.sessionCount()).toBe(2);
+
+      // Neither is stale yet, so a sweep now must not touch them.
+      expect(await sessions.sweepIdleSessions()).toBe(0);
+      expect(sessions.sessionCount()).toBe(2);
+
+      // Let both age past the idle window, then keep working on one of them:
+      // `forward` restamps that session and only that session.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json, text/event-stream",
+              "mcp-session-id": busy,
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId: busy,
+          method: "POST",
+        }),
+      );
+
+      // The idle session is now well past the window and the busy one was just
+      // restamped, so the sweep takes exactly one.
+      expect(await sessions.sweepIdleSessions()).toBe(1);
+      expect(sessions.sessionCount()).toBe(1);
+
+      // The evicted id is gone; the store reports it the way the envelope 404s.
+      const afterEviction = await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "POST",
+            headers: { "content-type": "application/json", "mcp-session-id": idle },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId: idle,
+          method: "POST",
+        }),
+      );
+      expect(afterEviction).toBe("not-found");
+    } finally {
+      await sessions.close();
+    }
+  });
+
   it("serves a legacy client with live Apps capabilities, elicitation, and reuse", async () => {
     const { engine, resumedWith } = makeElicitingEngine();
     const sessions = makeInMemoryMcpSessionStore((_principal, options) =>
