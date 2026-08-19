@@ -211,9 +211,34 @@ const mcpAgentHandler = makeCloudMcpAgentHandler();
 // That startup is invisible to every span we emit, and it sits on top of the
 // ~3.1s `loadEntries` import — together the 3-5s a signed-in page costs.
 //
-// Both counters are cheap: two increments and no I/O.
+//   executor.isolate.id           - identifies the isolate itself, so reuse can
+//                                   be counted directly instead of inferred.
+//   executor.isolate.age_ms       - ms since this isolate served its first
+//                                   request.
+//
+// The last two exist because the Aug 2026 hunt inferred "isolates stopped being
+// reused" from a latency cutoff (requests slower than 1s were called cold) and
+// then built a size-based theory on top of that proxy. The theory was wrong:
+// reverting the offending packages restored production while moving the
+// evaluated module closure by 0.02 MB (see scripts/start-closure.mjs). Grouping
+// by isolate id answers "how many requests did this isolate serve, and were the
+// slow ones its first?" directly, which no latency threshold can.
+//
+// All of it is cheap: two increments, one lazy uuid, and no I/O.
 let isolateRequestSeq = 0;
 let startGraphEntered = false;
+// Minted on first request rather than at module scope: Workers reject random
+// number generation during global-scope evaluation.
+let isolateId: string | undefined;
+let isolateFirstSeenAt = 0;
+
+const identifyIsolate = (): { readonly id: string; readonly ageMs: number } => {
+  if (isolateId === undefined) {
+    isolateId = crypto.randomUUID();
+    isolateFirstSeenAt = Date.now();
+  }
+  return { id: isolateId, ageMs: Date.now() - isolateFirstSeenAt };
+};
 
 const markStartGraphEntered = (): void => {
   startGraphEntered = true;
@@ -300,8 +325,11 @@ const cloudflareHandler: ExportedHandler<Env> = {
         async (span) => {
           span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
           span.setAttribute(ATTR_URL_PATH, url.pathname);
+          const isolate = identifyIsolate();
           span.setAttribute("executor.isolate.request_seq", isolateRequestSeq);
           span.setAttribute("executor.start_graph.entered", startGraphEntered);
+          span.setAttribute("executor.isolate.id", isolate.id);
+          span.setAttribute("executor.isolate.age_ms", isolate.ageMs);
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
           try {
             const response = await fetchHandler(

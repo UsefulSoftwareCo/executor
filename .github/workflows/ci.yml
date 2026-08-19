@@ -18,6 +18,7 @@ jobs:
     outputs:
       desktop_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop_smoke == 'true' }}
       selfhost_docker_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.selfhost_docker_smoke == 'true' }}
+      cloud_closure: ${{ github.event_name != 'pull_request' || steps.filter.outputs.cloud_closure == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +42,14 @@ jobs:
               - "packages/kernel/runtime-quickjs/**"
               - "packages/plugins/**"
               - "packages/react/**"
+            cloud_closure:
+              - ".github/workflows/**"
+              - "bun.lock"
+              - "package.json"
+              - "turbo.json"
+              - "apps/cloud/**"
+              - "packages/**"
+
             selfhost_docker_smoke:
               - ".github/workflows/**"
               - ".dockerignore"
@@ -301,6 +310,50 @@ jobs:
           name: e2e-runs-${{ matrix.target }}${{ matrix['shard-name'] && format('-{0}', matrix['shard-name']) || '' }}
           path: e2e/runs/
           retention-days: 7
+
+  cloud-closure:
+    name: Cloud evaluated closure
+    needs: changes
+    if: needs.changes.outputs.cloud_closure == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    env:
+      TURBO_API: ${{ vars.TURBO_API }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+      # Every cold isolate evaluates this closure before it can answer a
+      # request, and it only ever grows by accident - a barrel export or a new
+      # module-scope import quietly pulls megabytes into the server graph. The
+      # budget is a ratchet just above today's size, not a discovered limit:
+      # when it trips, make the new dependency lazy rather than raising it.
+      START_CLOSURE_BUDGET_MB: 13.5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build
+        working-directory: apps/cloud
+
+      - run: node scripts/start-closure.mjs
+        working-directory: apps/cloud
 
   desktop-smoke:
     name: Desktop smoke build
