@@ -3,9 +3,8 @@
 // ---------------------------------------------------------------------------
 //
 // Kept in its own module so `connection.ts` never imports it eagerly at
-// module load. The v2 `@modelcontextprotocol/client/stdio` entry still eagerly
-// evaluates Node-only process/stream imports and `cross-spawn` (which loads
-// `node:child_process`); under `@cloudflare/vitest-pool-workers`
+// module load. `@modelcontextprotocol/sdk/client/stdio.js` pulls in
+// `node:child_process` at evaluation time; under `@cloudflare/vitest-pool-workers`
 // that crashes workerd at module instantiation with SIGSEGV (prod bundles
 // tree-shake it away when `dangerouslyAllowStdioMCP: false`, tests do not).
 //
@@ -14,7 +13,7 @@
 // the import and therefore never touch `node:child_process`.
 // ---------------------------------------------------------------------------
 
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 export type StdioTransportConfig = {
   readonly command: string;

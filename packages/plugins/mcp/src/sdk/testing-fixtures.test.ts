@@ -1,6 +1,7 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { OAuthTestServer } from "@executor-js/sdk/testing";
 
 import { makeEchoMcpServer, serveMcpServerWithOAuth } from "../testing";
@@ -15,10 +16,7 @@ const createGreetingMcpServer = () =>
   });
 
 const makeClient = (endpoint: string, accessToken: string) => {
-  const client = new Client(
-    { name: "executor-test-client", version: "1.0.0" },
-    { versionNegotiation: { mode: "auto" } },
-  );
+  const client = new Client({ name: "executor-test-client", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
     requestInit: {
       headers: { authorization: `Bearer ${accessToken}` },

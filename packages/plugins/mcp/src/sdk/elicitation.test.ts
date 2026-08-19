@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Schema, Semaphore } from "effect";
-import type { JsonSchemaType } from "@modelcontextprotocol/client";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation/types";
 
 import {
   AuthTemplateSlug,
@@ -226,7 +226,7 @@ describe("MCP elicitation (end-to-end)", () => {
         ]),
       );
       expect(schema?.outputTypeScript).toContain('type: "text"');
-      expect(schema?.outputTypeScript).toContain("structuredContent?: unknown;");
+      expect(schema?.outputTypeScript).toContain("structuredContent?: { [k: string]: unknown; }");
 
       const result = yield* executor.execute(
         simpleEcho.address,

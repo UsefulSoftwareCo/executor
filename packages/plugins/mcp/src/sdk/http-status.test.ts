@@ -1,5 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import { InsufficientScopeError, SdkErrorCode, SdkHttpError } from "@modelcontextprotocol/client";
 
 // oxlint-disable executor/no-error-constructor -- boundary: these tests reproduce the MCP SDK's own transport rejections, which are built-in Errors
 import { insufficientScopeFromCause } from "./http-status";
@@ -10,8 +9,7 @@ import { insufficientScopeFromCause } from "./http-status";
 //   - with an authProvider (the production OAuth path): the StreamableHTTP
 //     transport consumes the insufficient_scope challenge itself, retries
 //     with the broader scope, and only when THAT fails throws the fixed
-//     typed `InsufficientScopeError`, or after retry exhaustion the fixed
-//     `SdkHttpError` step-up message.
+//     "Server returned 403 after trying upscoping" message.
 describe("insufficientScopeFromCause", () => {
   it("detects the OAuth error body embedded in a transport message", () => {
     expect(
@@ -33,21 +31,9 @@ describe("insufficientScopeFromCause", () => {
     ).toBe(true);
   });
 
-  it("detects the SDK's typed insufficient-scope failure", () => {
+  it("detects the SDK's exhausted-upscoping failure (the authProvider path)", () => {
     expect(
-      insufficientScopeFromCause(new InsufficientScopeError({ requiredScope: "files.read" })),
-    ).toBe(true);
-  });
-
-  it("detects the SDK's exhausted step-up failure (the authProvider path)", () => {
-    expect(
-      insufficientScopeFromCause(
-        new SdkHttpError(
-          SdkErrorCode.ClientHttpForbidden,
-          "Server returned 403 insufficient_scope after step-up re-authorization (retry limit 2 reached)",
-          { status: 403 },
-        ),
-      ),
+      insufficientScopeFromCause(new Error("Server returned 403 after trying upscoping")),
     ).toBe(true);
   });
 
