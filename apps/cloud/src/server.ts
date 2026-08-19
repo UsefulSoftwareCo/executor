@@ -103,11 +103,35 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const fetchHandler = handler.fetch as (
+const rawFetchHandler = handler.fetch as (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
+
+// TEMPORARY: does an isolate that already warmed still pay for Start?
+let startEverHandled = false;
+const fetchHandler = async (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> => {
+  const wasWarm = startEverHandled;
+  startEverHandled = true;
+  await scheduler.wait(0);
+  const startedAt = Date.now();
+  const response = await rawFetchHandler(request, env, ctx);
+  await scheduler.wait(0);
+  console.log(
+    JSON.stringify({
+      probe: "start",
+      path: new URL(request.url).pathname,
+      wasWarm,
+      ms: Date.now() - startedAt,
+    }),
+  );
+  return response;
+};
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
@@ -220,6 +244,7 @@ const warmStartGraph = (env: Env, ctx: ExecutionContext): void => {
 
   ctx.waitUntil(
     (async () => {
+      const startedAt = Date.now();
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; a warmup failure must never affect the request that triggered it
       try {
         await fetchHandler(
@@ -227,9 +252,18 @@ const warmStartGraph = (env: Env, ctx: ExecutionContext): void => {
           env,
           ctx,
         );
-      } catch {
+        console.log(JSON.stringify({ probe: "warm", ok: true, ms: Date.now() - startedAt }));
+      } catch (err) {
         // Advisory only — the request path still loads the graph lazily.
         startGraphWarmupStarted = false;
+        console.log(
+          JSON.stringify({
+            probe: "warm",
+            ok: false,
+            ms: Date.now() - startedAt,
+            err: String(err),
+          }),
+        );
       }
     })(),
   );
