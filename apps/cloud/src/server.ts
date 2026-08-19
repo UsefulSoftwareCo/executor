@@ -178,8 +178,70 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
   traceRequest: traceCloudMcpRequest,
 });
 
+// ---------------------------------------------------------------------------
+// Start server-graph warmup
+// ---------------------------------------------------------------------------
+//
+// Page latency was p50 19-49ms daily through 2026-08-16 and 2728ms the day
+// after the 21:20 deploy. Not load: 2026-08-11 served MORE traffic (5.43M vs
+// 4.38M requests) with pages at p50 41ms.
+//
+// What changed is where MCP work runs. The old hibernatable Agent bridge handed
+// `/mcp` to the Durable Object almost immediately; the v2 stack authenticates
+// and dispatches in the worker. `/mcp` returns above without touching
+// `fetchHandler`, so an isolate can serve a lot of MCP traffic and still have
+// never loaded the Start graph. Measured: isolates that served a page request
+// had already served a median of 19 spans across 3 paths — they are reused,
+// they are just cold for Start. The page request then pays `loadEntries`: p50
+// **3.1s**, against p50 33ms for the request's own work and 9-104ms warm. The
+// same bundle in local workerd serves the same path in ~3ms.
+//
+// Warm by REPLAYING A REAL REQUEST through the handler, not by importing the
+// virtual entry ids. Two attempts at the import approach (#1679, #1681) moved
+// nothing in production: `loadEntries` awaits THREE specifiers
+// (`#tanstack-router-entry`, `#tanstack-start-entry`,
+// `#tanstack-start-plugin-adapters`) plus a separately-cached manifest, so
+// warming a subset leaves the request paying for the rest. Driving the real
+// handler populates whatever those caches are, by construction, and cannot
+// drift when Start changes its internals.
+//
+// `/robots.txt` is the cheapest Start-served route. It runs once per isolate,
+// under `waitUntil` so it outlives the request that triggered it, and costs one
+// extra synthetic request per isolate in telemetry.
+// `START_GRAPH_WARM=false` disables it without a deploy.
+// ---------------------------------------------------------------------------
+
+let startGraphWarmupStarted = false;
+
+const warmStartGraph = (env: Env, ctx: ExecutionContext): void => {
+  if (startGraphWarmupStarted) return;
+  if (env.START_GRAPH_WARM === "false") return;
+  startGraphWarmupStarted = true;
+
+  ctx.waitUntil(
+    (async () => {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; a warmup failure must never affect the request that triggered it
+      try {
+        await fetchHandler(
+          new Request("https://executor.sh/robots.txt", { method: "GET" }),
+          env,
+          ctx,
+        );
+      } catch {
+        // Advisory only — the request path still loads the graph lazily.
+        startGraphWarmupStarted = false;
+      }
+    })(),
+  );
+};
+
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    // First fetch in this isolate drives one real request through Start in the
+    // background, including for /mcp — MCP traffic is what reaches these
+    // isolates first, and is why they are otherwise never warmed.
+    warmStartGraph(env, ctx);
+
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
