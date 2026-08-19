@@ -253,7 +253,7 @@ const warmStartGraph = (env: Env, ctx: ExecutionContext): void => {
           ctx,
         );
         console.log(JSON.stringify({ probe: "warm", ok: true, ms: Date.now() - startedAt }));
-      } catch {
+      } catch (err) {
         // Advisory only — the request path still loads the graph lazily.
         startGraphWarmupStarted = false;
         console.log(
@@ -261,6 +261,7 @@ const warmStartGraph = (env: Env, ctx: ExecutionContext): void => {
             probe: "warm",
             ok: false,
             ms: Date.now() - startedAt,
+            err: String(err),
           }),
         );
       }
