@@ -198,3 +198,52 @@ scenario(
     );
   }),
 );
+
+scenario(
+  "Billing · a paid org runs past the rate-limit backstop instead of being blocked",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    // The backstop is sized for free-tier abuse, and it used to apply to every
+    // org regardless of plan: on 2026-08-18 it blocked a paying customer
+    // mid-workload. This pins the exemption end to end — the same run that
+    // blocks a free org (the scenario above) must sail past the cap here.
+    yield* Billing;
+    const autumn = yield* Autumn;
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+    const customerId = orgIdOf(bearer);
+
+    // Enterprise, not Team: it carries no price and no card-required trial, so
+    // the emulator activates it inline rather than answering with a checkout
+    // URL. Its executions are unlimited, so the BALANCE gate can never be what
+    // allows or blocks here — the rate-limit backstop is isolated as the only
+    // guard under test.
+    yield* autumn.attachPlan(customerId, "enterprise");
+
+    const session = mcp.session(identity);
+
+    // Deliberately past E2E_EXECUTION_RATE_LIMIT: the count that blocks a free
+    // org. Every one must run.
+    const overCap = RATE_LIMIT + 3;
+    for (let i = 1; i <= overCap; i++) {
+      const ok = yield* session.call("execute", { code: `return ${i};` });
+      expect(ok.ok, `execution ${i} succeeds for a paid org (cap is ${RATE_LIMIT})`).toBe(true);
+      expect(
+        ok.text,
+        `execution ${i} returns its value rather than the backstop message`,
+      ).not.toContain(RATE_LIMIT_BLOCKED_MESSAGE);
+    }
+
+    // Nothing was withheld from the meter either: a paid org past the cap is
+    // billed for every execution it ran.
+    const metered = yield* autumn.expectUsage({
+      customerId,
+      featureId: "executions",
+      count: overCap,
+    });
+    expect(metered.length, "every execution past the cap is still metered").toBe(overCap);
+  }),
+);
