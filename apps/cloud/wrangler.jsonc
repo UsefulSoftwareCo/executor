@@ -94,9 +94,6 @@
       "bucket_name": "executor-cloud-blobs",
     },
   ],
-  "placement": {
-    "region": "aws:us-east-1",
-  },
   "worker_loaders": [
     {
       "binding": "LOADER",
