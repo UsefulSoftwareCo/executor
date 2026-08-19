@@ -221,9 +221,14 @@ scenario(
       expect(google.origin.allowedScopes).toContain(
         "https://www.googleapis.com/auth/meetings.space.readonly",
       );
-      expect(google.origin.allowedScopes).not.toContain(
-        "https://www.googleapis.com/auth/gmail.modify",
-      );
+      // `gmail.modify` stays in the host-enforced allowlist on purpose: a
+      // connection created before the full-Gmail review still declares it, and
+      // `resolveFirstPartyScopes` filters discovered scopes through this list,
+      // so dropping it would break those reconnects — as the legacy-spec case
+      // further down this file asserts. The invariant that new Gmail presets
+      // request `mail.google.com` instead lives in the preset unit tests
+      // (packages/plugins/openapi/.../presets.test.ts), which is where the
+      // request-side scope choice is actually decided.
       expect(google.origin.allowedScopes).toContain("https://mail.google.com/");
       expect(google.origin.allowedScopes).toContain(
         "https://www.googleapis.com/auth/gmail.settings.basic",
