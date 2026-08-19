@@ -1,17 +1,8 @@
-import { DurableObject } from "cloudflare:workers";
-import { Cause, Data, Deferred, Effect, Option, Schema } from "effect";
-import * as Tracer from "effect/Tracer";
-import {
-  createMcpHandler,
-  DEFAULT_NEGOTIATED_PROTOCOL_VERSION,
-  type JSONRPCMessage,
-  type McpServer,
-  type MessageExtraInfo,
-  type McpHttpHandler,
-  type McpRequestContext,
-  type RequestId,
-  WebStandardStreamableHTTPServerTransport,
-} from "@modelcontextprotocol/server";
+import { Cause, Deferred, Effect, Exit, Option, Schema } from "effect";
+import type * as Tracer from "effect/Tracer";
+import type { Connection, ConnectionContext } from "agents";
+import { McpAgent } from "agents/mcp";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { RequestOrgSlug, RequestWebOrigin } from "@executor-js/api/server";
 import {
@@ -22,37 +13,18 @@ import {
   type ResumeResponse,
 } from "@executor-js/execution";
 import {
-  appsEnabledForClientCapabilities,
-  clientCapabilitiesFromRequestBody,
-  clientInfoFromRequestBody,
-  mcpRequestStateBindingFromBody,
   PAUSED_APPROVAL_TIMEOUT_MS,
   formatMcpExecutionOutcome,
-  mcpRequestStatePrincipal,
-  requestBodyFromRequest,
-  type McpClientInfo,
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import {
-  defaultMcpResource,
-  jsonRpcErrorBody,
-  mcpResourceKey,
-  type McpResource,
-} from "@executor-js/host-mcp";
-import {
-  parseTraceparentHeader,
-  readArtifactsEnabled,
-  readElicitationMode,
-  verifiedMcpRequestHeaders,
-  type IncomingPropagationHeaders,
-  type McpElicitationMode,
-} from "./do-headers";
-import {
-  modernMcpExecutionOwnerRoute,
-  type McpExecutionOwnerDirectory,
-  type McpExecutionOwnerRecord,
-  type McpExecutionOwnerRoute,
+import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+
+import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
+import type {
+  McpExecutionOwnerDirectory,
+  McpExecutionOwnerRecord,
+  McpExecutionOwnerRoute,
 } from "./execution-owner-directory";
 import {
   MAX_PAUSED_SESSION_IDLE_MS,
@@ -61,8 +33,6 @@ import {
   pausedLeaseExtensionLog,
   runningLeaseExtensionLog,
 } from "./session-alarm-policy";
-import { DurableObjectMcpEventStore } from "./do-event-store";
-import { rotateSseResponse } from "./sse-response-rotation";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
@@ -150,41 +120,11 @@ export interface SessionMeta {
    * unknown, which behaves as disabled until the next `initialize`.
    */
   readonly appsEnabled?: boolean;
-  /**
-   * The client identity (`clientInfo`) self-reported at `initialize` or in a
-   * modern request's `_meta`. Persisted for the same reason as
-   * {@link appsEnabled}: a cold-restored server never sees an `initialize`,
-   * and without this the execution spans' `mcp.client.*` attribution vanishes
-   * mid-conversation. Telemetry/display only, never behavior.
-   */
-  readonly clientInfo?: McpClientInfo;
-  /** Creation time of this session, retained across isolate eviction. */
-  readonly createdAtMs?: number;
 }
 
 export interface BuiltMcpServer {
   readonly mcpServer: McpServer;
   readonly engine: ExecutionEngine<Cause.YieldableError>;
-  /** Modern per-request server factory sharing this legacy runtime's engine. */
-  readonly modernRuntime?: BuiltModernMcpRuntime;
-}
-
-/** Request-specific inputs added to a DO-local MCP server. */
-export interface ModernMcpServerRequestOptions {
-  readonly appsEnabled: boolean;
-  readonly requestStateSigningKey: Uint8Array | string;
-  readonly requestStatePrincipal: string;
-  readonly requestStateBinding?: string;
-  /** Client identity for span attribution: this request's `_meta`, else the session's persisted copy. */
-  readonly restoredClientInfo?: McpClientInfo;
-}
-
-/** Long-lived DO execution runtime shared by per-request MCP servers. */
-export interface BuiltModernMcpRuntime {
-  readonly engine: ExecutionEngine<Cause.YieldableError>;
-  readonly buildServer: (
-    options: ModernMcpServerRequestOptions,
-  ) => Effect.Effect<McpServer, Cause.YieldableError>;
 }
 
 export interface BrowserApprovalStore {
@@ -192,21 +132,15 @@ export interface BrowserApprovalStore {
   readonly waitForResponse: (executionId: string) => Effect.Effect<ResumeResponse | null>;
 }
 
-type ModernRuntimeAccess =
-  | { readonly status: "ok"; readonly runtime: BuiltModernMcpRuntime }
-  | { readonly status: "forbidden" };
-
-class ModernMcpRuntimeNotConfigured extends Data.TaggedError("ModernMcpRuntimeNotConfigured") {}
-
-const LEGACY_AGENT_SESSION_META_KEY = "executor:mcp:v2:session-meta";
-const LEGACY_AGENT_LAST_ACTIVITY_KEY = "executor:mcp:v2:last-activity-ms";
-const MODERN_SESSION_META_KEY = "session-meta";
-const MODERN_LAST_ACTIVITY_KEY = "last-activity-ms";
-const MODERN_SESSION_KEY = "modern-session";
-const DESTROY_PENDING_KEY = "executor:mcp:v2:destroy-pending";
-const DESTROY_ALARM_DELAY_MS = 1_000;
+const SESSION_META_KEY = "session-meta";
+const LAST_ACTIVITY_KEY = "last-activity-ms";
+const PARTYSERVER_NAME_KEY = "__ps_name";
+/** The agents SDK's durable "condemned" marker (`_cf_scheduleDestroy`). */
+const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
+const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
+const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
-const LEGACY_PRIMING_PROTOCOL_VERSION = "2025-11-25";
+const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 
 type JsonRpcRequestId = string | number;
@@ -214,6 +148,8 @@ const JsonRpcRequestWithId = Schema.Struct({
   id: Schema.Union([Schema.String, Schema.Number]),
   method: Schema.String,
 });
+const JsonRpcPostPayload = Schema.fromJsonString(Schema.Unknown);
+const decodeJsonRpcPostPayload = Schema.decodeUnknownOption(JsonRpcPostPayload);
 const decodeJsonRpcRequestWithId = Schema.decodeUnknownOption(JsonRpcRequestWithId);
 
 const resumeApprovalResult = (
@@ -240,123 +176,65 @@ const resumeApprovalResult = (
   };
 };
 
-const jsonRpcMessages = (parsedBody: unknown): ReadonlyArray<unknown> =>
-  Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+const isSessionProps = (props: unknown): props is McpSessionProps =>
+  typeof props === "object" &&
+  props !== null &&
+  "session" in props &&
+  typeof (props as { readonly session?: unknown }).session === "object" &&
+  (props as { readonly session?: unknown }).session !== null;
 
-const isInitializeBody = (parsedBody: unknown): boolean =>
-  jsonRpcMessages(parsedBody).some((message) => {
-    const decoded = decodeJsonRpcRequestWithId(message);
-    return Option.isSome(decoded) && decoded.value.method === "initialize";
-  });
-
-const legacyToolCallRequestIds = (parsedBody: unknown): readonly JsonRpcRequestId[] => {
+const readActivePostRequestIds = (request: Request): readonly JsonRpcRequestId[] => {
+  if (request.headers.get(MCP_HTTP_METHOD_HEADER) !== "POST") return [];
+  const encoded = request.headers.get(MCP_MESSAGE_HEADER);
+  if (!encoded) return [];
+  const decoded = Effect.runSyncExit(
+    Effect.try({
+      try: () => atob(encoded),
+      catch: () => "invalid_base64" as const,
+    }),
+  );
+  if (Exit.isFailure(decoded)) {
+    console.warn(
+      JSON.stringify({
+        event: "mcp_active_post_response_wait_parse_failed",
+        reason: "invalid_base64",
+      }),
+    );
+    return [];
+  }
+  const parsed = decodeJsonRpcPostPayload(decoded.value);
+  if (Option.isNone(parsed)) {
+    console.warn(
+      JSON.stringify({
+        event: "mcp_active_post_response_wait_parse_failed",
+        reason: "invalid_json",
+      }),
+    );
+    return [];
+  }
+  const messages = Array.isArray(parsed.value) ? parsed.value : [parsed.value];
   const requestIds: JsonRpcRequestId[] = [];
-  for (const message of jsonRpcMessages(parsedBody)) {
+  for (const message of messages) {
     const decoded = decodeJsonRpcRequestWithId(message);
-    if (Option.isSome(decoded) && decoded.value.method === "tools/call") {
-      requestIds.push(decoded.value.id);
-    }
+    if (Option.isSome(decoded)) requestIds.push(decoded.value.id);
   }
   return requestIds;
 };
 
-const LEGACY_PRIMING_MESSAGE = {
-  jsonrpc: "2.0",
-  method: "notifications/message",
-  params: { level: "debug", data: "mcp-stream-priming" },
-} satisfies JSONRPCMessage;
-
-const legacyPrimingFrame = (eventId: string): Uint8Array =>
-  new TextEncoder().encode(
-    `event: mcp-priming\nid: ${eventId}\ndata: ${JSON.stringify(LEGACY_PRIMING_MESSAGE)}\n\n`,
-  );
-
-const replayFrame = (eventId: string, message: JSONRPCMessage): Uint8Array =>
-  new TextEncoder().encode(`event: message\nid: ${eventId}\ndata: ${JSON.stringify(message)}\n\n`);
-
-const combineFrames = (frames: readonly Uint8Array[]): ArrayBuffer => {
-  const byteLength = frames.reduce((total, frame) => total + frame.byteLength, 0);
-  const buffer = new ArrayBuffer(byteLength);
-  const combined = new Uint8Array(buffer);
-  let offset = 0;
-  for (const frame of frames) {
-    combined.set(frame, offset);
-    offset += frame.byteLength;
-  }
-  return buffer;
-};
-
-const mcpResourceFromKey = (resourceKey: string): McpResource =>
-  resourceKey.startsWith("toolkit:") && resourceKey.length > "toolkit:".length
-    ? { kind: "toolkit", slug: resourceKey.slice("toolkit:".length) }
-    : defaultMcpResource;
-
-type RuntimeKind = "legacy" | "modern";
-
-type QueuedTransportMessage = {
-  readonly message: JSONRPCMessage;
-  readonly extra?: MessageExtraInfo;
-};
-
-/**
- * Dead-session answer by method: POST/DELETE keep the 404 that drives client
- * re-initialization; a standalone GET gets 405, which the v1 SDK reads as
- * "no SSE stream offered" and stops retrying — breaking the reconnect loops
- * of pre-cutover deployments whose GET-404 path never re-initialized.
- */
-const deadSessionDoResponse = (method: string): Response =>
-  method === "GET"
-    ? new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          error: { code: -32001, message: "Session not found" },
-          id: null,
-        }),
-        { status: 405, headers: { "content-type": "application/json", allow: "POST, DELETE" } },
-      )
-    : jsonRpcErrorBody(404, -32001, "Session not found", { cors: false });
-
 export abstract class McpAgentSessionDOBase<
   Env extends Cloudflare.Env = Cloudflare.Env,
   TDbHandle extends SessionDbHandle = SessionDbHandle,
-> extends DurableObject<Env> {
-  server?: McpServer;
-  private transport: WebStandardStreamableHTTPServerTransport | null = null;
-  private readonly eventStore: DurableObjectMcpEventStore;
+> extends McpAgent<Env, unknown, McpSessionProps> {
+  server!: McpServer;
   private engine: ExecutionEngine<Cause.YieldableError> | null = null;
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
-  private modernRuntime: BuiltModernMcpRuntime | null = null;
-  private modernRuntimePromise: Promise<ModernRuntimeAccess> | null = null;
-  private modernHandler: McpHttpHandler | null = null;
-  private modernRunningRequestCount = 0;
-  private modernRequestBodies = new WeakMap<Request, unknown>();
-  private modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
-  // Trace context of the most recently entered MCP request, kept for
-  // `currentParentSpan`. Deliberately not cleared when the request settles:
-  // deferred SDK callbacks fire after the response resolves, and parenting
-  // them under the latest request is right far more often than falling back
-  // to the session's construction-time span. Concurrent requests on one DO
-  // can mis-parent to each other's trace (last writer wins); threading a
-  // per-request context through the MCP SDK's callback surface is the
-  // rejected-for-now alternative.
-  private lastIncomingTrace: IncomingTraceHeaders | undefined;
-  private legacyRunningRequestCount = 0;
-  private activeLegacyStreamCount = 0;
-  private keepAliveCount = 0;
-  private transportRequestTail = Promise.resolve();
-  private runtimeKind: RuntimeKind | null = null;
   private initialized = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private approvalResponses = new Map<string, ResumeResponse>();
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
   private pendingApprovalLeases = new Map<string, PendingApprovalLease>();
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.eventStore = new DurableObjectMcpEventStore(ctx.storage);
-  }
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
@@ -366,20 +244,6 @@ export abstract class McpAgentSessionDOBase<
     sessionMeta: SessionMeta,
     dbHandle: TDbHandle,
   ): Effect.Effect<BuiltMcpServer>;
-
-  /** Build the engine and per-request MCP server factory for a modern-only DO. */
-  protected buildModernMcpRuntime(
-    _sessionMeta: SessionMeta,
-    _dbHandle: TDbHandle,
-  ): Effect.Effect<BuiltModernMcpRuntime, Cause.YieldableError> {
-    return Effect.fail(new ModernMcpRuntimeNotConfigured());
-  }
-
-  /** Read and validate the deployment-provided modern request-state signing key. */
-  protected modernRequestStateSigningKey(): string {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- composition boundary: subclasses serving modern MCP must provide a shared deployment key
-    throw new Error("Modern MCP request-state signing is not configured");
-  }
 
   protected withTelemetry<A, E>(
     effect: Effect.Effect<A, E>,
@@ -406,23 +270,11 @@ export abstract class McpAgentSessionDOBase<
   }
 
   protected get sessionId(): string {
-    return this.ctx.id.toString();
+    return this.getSessionId();
   }
 
-  // Parent for spans opened by deferred MCP SDK callbacks (tool handlers run
-  // through `runToolEffect`, which otherwise inherits the Effect context
-  // captured when the server was BUILT). The legacy sessionful runtime builds
-  // its server once per session and reuses it across every request, so
-  // without this the whole tool execution tree parents under the long-closed
-  // session-construction span instead of the request that triggered it.
   protected currentParentSpan(): Tracer.AnySpan | undefined {
-    const parsed = parseTraceparentHeader(this.lastIncomingTrace?.traceparent);
-    if (!parsed) return undefined;
-    return Tracer.externalSpan({
-      traceId: parsed.traceId,
-      spanId: parsed.spanId,
-      sampled: (parsed.traceFlags & 1) === 1,
-    });
+    return undefined;
   }
 
   protected sessionTimeoutMs(): number {
@@ -439,18 +291,6 @@ export abstract class McpAgentSessionDOBase<
 
   protected executionOwnerRoute(): McpExecutionOwnerRoute {
     return { sessionId: this.sessionId };
-  }
-
-  private modernExecutionOwnerRoute(): McpExecutionOwnerRoute {
-    return this.runtimeKind === "legacy" || this.ctx.id.name
-      ? this.executionOwnerRoute()
-      : modernMcpExecutionOwnerRoute(this.ctx.id.toString());
-  }
-
-  private runtimeOwnerId(): string {
-    return this.runtimeKind === "modern"
-      ? this.modernExecutionOwnerRoute().sessionId
-      : this.sessionId;
   }
 
   protected sameExecutionOwnerRoute(a: McpExecutionOwnerRoute, b: McpExecutionOwnerRoute): boolean {
@@ -480,12 +320,6 @@ export abstract class McpAgentSessionDOBase<
   ): Effect.Effect<ResumeFallbackOutcome | null> =>
     this.resumeFromExecutionOwnerDirectory(executionId, response);
 
-  protected readonly modernModelResumeFallback = (
-    executionId: string,
-    response: ResumeResponse,
-  ): Effect.Effect<ResumeFallbackOutcome | null> =>
-    this.resumeFromExecutionOwnerDirectory(executionId, response, this.modernExecutionOwnerRoute());
-
   protected readonly pausedExecutionHooks: PausedExecutionHooks = {
     onExecutionPaused: (executionId, deadline) =>
       Effect.sync(() => {
@@ -495,16 +329,18 @@ export abstract class McpAgentSessionDOBase<
     onResumeSettled: (executionId) => this.finishPendingApprovalResume(executionId),
   };
 
-  /**
-   * Modern pause hooks await the directory write before the `input_required`
-   * result leaves the DO, so its signed continuation is immediately routable.
-   */
-  protected readonly modernPausedExecutionHooks: PausedExecutionHooks = {
-    onExecutionPaused: (executionId, deadline) =>
-      this.startPendingApprovalLease(executionId, deadline, this.modernExecutionOwnerRoute()),
-    onResumeStarted: (executionId) => this.beginPendingApprovalResume(executionId),
-    onResumeSettled: (executionId) => this.finishPendingApprovalResume(executionId),
-  };
+  override async onConnect(conn: Connection, context: ConnectionContext): Promise<void> {
+    const requestIds = readActivePostRequestIds(context.request);
+    if (requestIds.length === 0) {
+      await super.onConnect(conn, context);
+      return;
+    }
+
+    await this.keepAliveWhile(async () => {
+      await this.setStreamRequestIds(conn.id, [...requestIds]);
+      await super.onConnect(conn, context);
+    });
+  }
 
   private openSessionDbHandle(): Effect.Effect<TDbHandle> {
     return Effect.promise(() => Promise.resolve(this.openSessionDb()));
@@ -513,20 +349,7 @@ export abstract class McpAgentSessionDOBase<
   private loadSessionMeta(): Effect.Effect<SessionMeta | null> {
     return Effect.promise(async () => {
       if (this.sessionMeta) return this.sessionMeta;
-
-      const legacy = await this.ctx.storage.get<SessionMeta>(LEGACY_AGENT_SESSION_META_KEY);
-      if (legacy) {
-        this.runtimeKind = "legacy";
-        this.sessionMeta = { ...legacy, resource: legacy.resource ?? defaultMcpResource };
-        return this.sessionMeta;
-      }
-
-      const isModern =
-        this.runtimeKind === "modern" ||
-        (await this.ctx.storage.get<boolean>(MODERN_SESSION_KEY)) === true;
-      if (!isModern) return null;
-      this.runtimeKind = "modern";
-      const stored = await this.ctx.storage.get<SessionMeta>(MODERN_SESSION_META_KEY);
+      const stored = await this.ctx.storage.get<SessionMeta>(SESSION_META_KEY);
       // Backfill `resource` for sessions persisted before scoped toolkits added
       // the field. Their stored meta has no `resource`, and every such session
       // was minted against the default `/mcp` endpoint, so default it here
@@ -540,15 +363,13 @@ export abstract class McpAgentSessionDOBase<
 
   private async saveSessionMeta(sessionMeta: SessionMeta): Promise<void> {
     this.sessionMeta = sessionMeta;
-    const key =
-      this.runtimeKind === "modern" ? MODERN_SESSION_META_KEY : LEGACY_AGENT_SESSION_META_KEY;
-    await this.ctx.storage.put(key, sessionMeta);
+    await this.ctx.storage.put(SESSION_META_KEY, sessionMeta);
   }
 
   /**
    * Persist the MCP-Apps support negotiated at `initialize`, so a later cold
    * restore can rebuild the server with it. Subclasses hand this to
-   * `buildMcpServer` as `onAppsEnabledChange`.
+   * `createExecutorMcpServer` as `onAppsEnabledChange`.
    *
    * A no-op before meta exists: `initialize` always follows `init`, so there is
    * nothing to merge into and nothing worth failing the session over.
@@ -567,70 +388,80 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
-  /**
-   * Persist the client identity self-reported at `initialize` (or in a modern
-   * request's `_meta`), so a cold restore keeps span attribution. Subclasses
-   * hand this to `buildMcpServer` as `onClientInfoChange`; the modern request
-   * path calls it directly. Same no-op-before-meta contract as
-   * {@link persistAppsEnabled}.
-   */
-  protected persistClientInfo(clientInfo: McpClientInfo): Effect.Effect<void> {
-    const self = this;
-    return Effect.gen(function* () {
-      const stored = yield* self.loadSessionMeta();
-      if (
-        !stored ||
-        (stored.clientInfo?.name === clientInfo.name &&
-          stored.clientInfo?.version === clientInfo.version &&
-          stored.clientInfo?.title === clientInfo.title)
-      ) {
-        return;
-      }
-      yield* Effect.promise(() => self.saveSessionMeta({ ...stored, clientInfo }));
-    }).pipe(
-      Effect.withSpan("mcp.session.persist_client_info", {
-        attributes: { "mcp.client.name": clientInfo.name },
-      }),
-      Effect.ignoreCause({ log: false }),
-    );
-  }
-
   private async markActivity(now = Date.now()): Promise<void> {
     this.lastActivityMs = now;
-    const key =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
     await Promise.all([
-      this.ctx.storage.put(key, now),
+      this.ctx.storage.put(LAST_ACTIVITY_KEY, now),
       this.ctx.storage.setAlarm(now + this.sessionTimeoutMs()),
     ]);
   }
 
   private async loadLastActivity(): Promise<number> {
     if (this.lastActivityMs > 0) return this.lastActivityMs;
-    const key =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
-    const stored = await this.ctx.storage.get<number>(key);
+    const stored = await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY);
     this.lastActivityMs = stored ?? 0;
     return this.lastActivityMs;
   }
 
-  /** Hold the in-memory approval runtime until the matching pause settles. */
-  protected keepAlive(): Promise<() => void> {
-    this.keepAliveCount += 1;
-    let disposed = false;
-    return Promise.resolve(() => {
-      if (disposed) return;
-      disposed = true;
-      this.keepAliveCount = Math.max(0, this.keepAliveCount - 1);
-    });
+  private async hasPartyServerName(): Promise<boolean> {
+    if (this.ctx.id.name) return true;
+    const stored = await this.ctx.storage.get<string>(PARTYSERVER_NAME_KEY);
+    return !!stored;
   }
 
   private activeStreamCount(): number {
-    return this.activeLegacyStreamCount;
+    return this.connectionsOrNone().length;
   }
 
-  private runningExecutionCount(): number {
-    return this.legacyRunningRequestCount + this.modernRunningRequestCount;
+  private async runningExecutionCount(): Promise<number> {
+    // Only requests still awaiting a result count as running work. Undelivered
+    // response markers (the transport's __mcp_undelivered_stream__: keys)
+    // deliberately do NOT extend the lease: the response is persisted in storage,
+    // which survives disposeIdleRuntime, so a later reconnect GET re-inits the
+    // DO and replays it. Counting them would make every delivered-but-unacked
+    // POST response pin the runtime alive indefinitely.
+    const rows = await this.ctx.storage.list<readonly JsonRpcRequestId[]>({
+      prefix: MCP_STREAM_REQS_KEY_PREFIX,
+      limit: 1_000,
+    });
+    let count = 0;
+    for (const requestIds of rows.values()) {
+      if (Array.isArray(requestIds)) count += requestIds.length;
+    }
+    return count;
+  }
+
+  private closeActiveStreams(): void {
+    for (const connection of this.connectionsOrNone()) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort WebSocket close during runtime disposal.
+      try {
+        connection.close(1000, "Session closed");
+      } catch {}
+    }
+  }
+
+  /**
+   * partyserver's `getConnections` dereferences a `#connectionManager`
+   * private field that is only initialized once the DO has accepted a
+   * websocket (never in unit harnesses), and partyserver exposes no
+   * non-throwing probe for that state, so "it throws" IS the signal for
+   * "no connections yet". Treating that as an empty set is safe for both
+   * callers: `closeActiveStreams` then has nothing to close, and
+   * `activeStreamCount` feeds the idle-lease decision where zero at worst
+   * disposes an idle-looking runtime whose undelivered responses are
+   * persisted in durable storage and replayed by the next reconnect GET.
+   * Before this guard the alarm crashed and retried instead, which kept
+   * the session pinned without ever making progress.
+   */
+  private connectionsOrNone(): ReadonlyArray<Connection> {
+    const getConnections = (this as { getConnections?: () => Iterable<Connection> }).getConnections;
+    if (!getConnections) return [];
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: see doc comment; partyserver offers no non-throwing way to ask whether the connection manager exists.
+    try {
+      return Array.from(getConnections.call(this));
+    } catch {
+      return [];
+    }
   }
 
   private async cleanupUnaddressableSessionAlarm(): Promise<void> {
@@ -638,39 +469,30 @@ export abstract class McpAgentSessionDOBase<
     await Effect.runPromise(
       Effect.all([
         Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
-        Effect.ignore(
-          Effect.tryPromise(() =>
-            this.ctx.storage.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]),
-          ),
-        ),
+        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.delete(LAST_ACTIVITY_KEY))),
       ]),
     );
   }
 
   private async disposeIdleRuntime(input: {
     readonly idleMs: number;
-    readonly lastActivityMs: number;
     readonly pausedExecutionCount: number;
   }): Promise<void> {
     console.info(
       JSON.stringify({
         event: "mcp_session_idle_runtime_dispose",
-        sessionId: this.runtimeOwnerId(),
+        sessionId: this.sessionId,
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
       }),
     );
     await Effect.runPromise(this.closeRuntime());
-    const activityKey =
-      this.runtimeKind === "modern" ? MODERN_LAST_ACTIVITY_KEY : LEGACY_AGENT_LAST_ACTIVITY_KEY;
-    const cleared = await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<number>(activityKey);
-      if (current !== input.lastActivityMs) return false;
-      await transaction.delete([LEGACY_AGENT_LAST_ACTIVITY_KEY, MODERN_LAST_ACTIVITY_KEY]);
-      await transaction.deleteAlarm();
-      return true;
-    });
-    if (cleared) this.lastActivityMs = 0;
+    await Effect.runPromise(
+      Effect.all([
+        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
+        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.delete(LAST_ACTIVITY_KEY))),
+      ]),
+    );
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -685,9 +507,7 @@ export abstract class McpAgentSessionDOBase<
       const sessionMeta: SessionMeta = {
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
-        appsEnabled: stored?.appsEnabled ?? false,
-        ...(stored?.clientInfo ? { clientInfo: stored.clientInfo } : {}),
-        createdAtMs: stored?.createdAtMs ?? Date.now(),
+        ...(stored?.appsEnabled === undefined ? {} : { appsEnabled: stored.appsEnabled }),
       };
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
         Effect.withSpan("mcp.session.save_meta"),
@@ -720,7 +540,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_execution_owner_directory_error",
           operation: input.operation,
           executionId: input.executionId,
-          sessionId: self.runtimeOwnerId(),
+          sessionId: self.sessionId,
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
           cause: Cause.pretty(input.cause),
@@ -745,7 +565,7 @@ export abstract class McpAgentSessionDOBase<
         JSON.stringify({
           event: "mcp_model_resume_forward_error",
           executionId: input.executionId,
-          sessionId: self.runtimeOwnerId(),
+          sessionId: self.sessionId,
           ownerSessionId: input.owner.sessionId,
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
@@ -771,7 +591,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_model_resume_forward_error",
           reason: "timeout",
           executionId: input.executionId,
-          sessionId: self.runtimeOwnerId(),
+          sessionId: self.sessionId,
           ownerSessionId: input.owner.sessionId,
           timeoutMs: input.timeoutMs,
         }),
@@ -799,173 +619,26 @@ export abstract class McpAgentSessionDOBase<
       : built;
   }
 
-  private buildModernRuntime(sessionMeta: SessionMeta, dbHandle: TDbHandle) {
-    const built = sessionMeta.organizationSlug
-      ? this.buildModernMcpRuntime(sessionMeta, dbHandle).pipe(
-          Effect.provideService(RequestOrgSlug, { slug: sessionMeta.organizationSlug }),
-        )
-      : this.buildModernMcpRuntime(sessionMeta, dbHandle);
-    return sessionMeta.webOrigin
-      ? built.pipe(Effect.provideService(RequestWebOrigin, { origin: sessionMeta.webOrigin }))
-      : built;
-  }
-
-  private modernPropsOwnSession(sessionMeta: SessionMeta, props: McpSessionProps): boolean {
-    return (
-      props.session.userId === sessionMeta.userId &&
-      props.session.organizationId === sessionMeta.organizationId &&
-      mcpResourceKey(props.session.resource) === mcpResourceKey(sessionMeta.resource)
-    );
-  }
-
-  private startModernRuntime(props: McpSessionProps): Promise<ModernRuntimeAccess> {
-    if (this.modernRuntimePromise) return this.modernRuntimePromise;
-
-    const self = this;
-    const program = Effect.gen(function* () {
-      yield* self.prepareErrorCaptureScope();
-      const stored = yield* self.loadSessionMeta();
-      if (stored && !self.modernPropsOwnSession(stored, props)) {
-        return { status: "forbidden" as const };
-      }
-      if (!stored) self.runtimeKind = "modern";
-      const sessionMeta = stored ?? (yield* self.resolveAndStoreSessionMeta(props.session));
-      if (self.runtimeKind === "legacy" && (!self.modernRuntime || !self.engine)) {
-        yield* self.initializeLegacyRuntime(props, sessionMeta);
-      }
-      if (self.modernRuntime && self.engine) {
-        yield* Effect.promise(() => self.markActivity());
-        return { status: "ok" as const, runtime: self.modernRuntime };
-      }
-
-      const dbHandle = self.dbHandle ?? (yield* self.openSessionDbHandle());
-      self.dbHandle = dbHandle;
-      const runtime = yield* self.buildModernRuntime(sessionMeta, dbHandle);
-      self.modernRuntime = runtime;
-      self.engine = runtime.engine;
-      yield* Effect.promise(() =>
-        self.runtimeKind === "modern"
-          ? Promise.all([self.ctx.storage.put(MODERN_SESSION_KEY, true), self.markActivity()]).then(
-              () => undefined,
-            )
-          : self.markActivity(),
-      );
-      return { status: "ok" as const, runtime };
-    }).pipe(
-      Effect.tapCause((cause) =>
-        Effect.gen(function* () {
-          console.error("[mcp-session] modern runtime init failed:", Cause.pretty(cause));
-          yield* self.captureCauseEffect(cause);
-          yield* self.recordCauseOnSpan(cause);
-          yield* self.closeRuntime();
-        }),
-      ),
-      Effect.withSpan("McpSessionDO.startModernRuntime", {
-        attributes: { "mcp.auth.organization_id": props.session.organizationId },
-      }),
-      (effect) => self.withTelemetry(effect, props.propagation),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object RPC methods can only reject their Promise
-      Effect.orDie,
-      (effect) => self.withSpanFlush(effect),
-    );
-
-    const starting = Effect.runPromise(program);
-    this.modernRuntimePromise = starting;
-    starting.then(
-      () => {
-        if (this.modernRuntimePromise === starting) this.modernRuntimePromise = null;
-      },
-      () => {
-        if (this.modernRuntimePromise === starting) this.modernRuntimePromise = null;
-      },
-    );
-    return starting;
-  }
-
-  private modernHandlerForRuntime(): McpHttpHandler {
-    if (this.modernHandler) return this.modernHandler;
-    const self = this;
-    this.modernHandler = createMcpHandler(
-      (context: McpRequestContext) => {
-        const request = context.requestInfo;
-        const runtime = self.modernRuntime;
-        const sessionMeta = self.sessionMeta;
-        if (!request || !runtime || !sessionMeta || !self.modernRequestBodies.has(request)) {
-          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise has no typed failure channel; absent DO request context is an SDK defect
-          return Effect.runPromise(Effect.die("Modern MCP Durable Object has no request runtime"));
-        }
-        const parsedBody = self.modernRequestBodies.get(request);
-        const propagation = self.modernRequestPropagation.get(request);
-        const capabilities = clientCapabilitiesFromRequestBody(parsedBody);
-        const clientInfo = clientInfoFromRequestBody(parsedBody) ?? sessionMeta.clientInfo;
-        return Effect.runPromise(
-          Effect.gen(function* () {
-            const requestStatePrincipal = mcpRequestStatePrincipal({
-              accountId: sessionMeta.userId,
-              organizationId: sessionMeta.organizationId,
-            });
-            const requestStateBinding = yield* Effect.promise(() =>
-              mcpRequestStateBindingFromBody({
-                body: parsedBody,
-                principal: requestStatePrincipal,
-                resource: sessionMeta.resource,
-              }),
-            );
-            return yield* runtime.buildServer({
-              appsEnabled: appsEnabledForClientCapabilities(capabilities),
-              requestStateSigningKey: self.modernRequestStateSigningKey(),
-              requestStatePrincipal,
-              ...(requestStateBinding === null ? {} : { requestStateBinding }),
-              ...(clientInfo === undefined ? {} : { restoredClientInfo: clientInfo }),
-            });
-          }).pipe(
-            (effect) => self.withTelemetry(effect, propagation),
-            // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party factory Promise can only reject
-            Effect.orDie,
-          ),
-        );
-      },
-      { legacy: "reject" },
-    );
-    return this.modernHandler;
-  }
-
-  private closeRuntime(): Effect.Effect<void> {
+  private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      // Detach the complete generation before awaiting cleanup. A request that
-      // interleaves with a slow server/DB close must build a fresh generation,
-      // never observe initialized=true with a closing/null transport, and the
-      // old cleanup must never clear fields belonging to that fresh runtime.
-      const transport = self.transport;
-      const server = self.server;
-      const modernHandler = self.modernHandler;
-      const dbHandle = self.dbHandle;
-      self.transport = null;
-      delete (self as { server?: McpServer }).server;
-      self.modernHandler = null;
-      self.dbHandle = null;
-      self.engine = null;
-      self.modernRuntime = null;
-      self.activeLegacyStreamCount = 0;
-      self.legacyRunningRequestCount = 0;
-      self.modernRequestBodies = new WeakMap<Request, unknown>();
-      self.modernRequestPropagation = new WeakMap<Request, IncomingTraceHeaders | undefined>();
-      self.initialized = false;
-
       yield* self.releaseAllPendingApprovalLeases();
-      if (transport) {
-        yield* Effect.promise(() => transport.close()).pipe(Effect.ignore);
+      if (options.closeStreams ?? true) {
+        yield* Effect.sync(() => self.closeActiveStreams());
       }
-      if (server) {
+      if (self.server) {
+        const server = self.server;
+        delete (self as { server?: McpServer }).server;
         yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
       }
-      if (modernHandler) {
-        yield* Effect.promise(() => modernHandler.close()).pipe(Effect.ignore);
-      }
-      if (dbHandle) {
+      Reflect.set(self, "_transport", undefined);
+      self.engine = null;
+      if (self.dbHandle) {
+        const dbHandle = self.dbHandle;
+        self.dbHandle = null;
         yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
       }
+      self.initialized = false;
     });
   }
 
@@ -984,111 +657,34 @@ export abstract class McpAgentSessionDOBase<
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
   }
 
-  private propsFromSessionMeta(
-    sessionMeta: SessionMeta,
-    propagation?: IncomingTraceHeaders,
-  ): McpSessionProps {
-    return {
-      session: {
-        organizationId: sessionMeta.organizationId,
-        userId: sessionMeta.userId,
-        elicitationMode: sessionMeta.elicitationMode ?? "model",
-        artifactsEnabled: sessionMeta.artifactsEnabled,
-        resource: sessionMeta.resource,
-        webOrigin: sessionMeta.webOrigin,
-      },
-      propagation,
-    };
-  }
-
-  private restoreTransportSession(transport: WebStandardStreamableHTTPServerTransport): void {
-    transport.sessionId = this.sessionId;
-    // SAFETY: the SDK exposes `sessionId` but not a public cold-restore setter.
-    // The installed transport's only additional session-validation bit is the
-    // runtime `_initialized` boolean. Restoring just those transport fields
-    // intentionally leaves McpServer client capabilities absent, so the
-    // sessionful assembly falls back to the persisted apps seed.
-    Reflect.set(transport, "_initialized", true);
-  }
-
-  private makeLegacyTransport(restoring: boolean): WebStandardStreamableHTTPServerTransport {
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: () => this.sessionId,
-      enableJsonResponse: false,
-      eventStore: this.eventStore,
-      retryInterval: 1_000,
-      onsessionclosed: () => this._cf_scheduleDestroy(),
-    });
-    transport.onerror = (error) => {
-      console.error("[mcp-session] transport error:", error);
-    };
-    if (restoring) this.restoreTransportSession(transport);
-    return transport;
-  }
-
-  private initializeLegacyRuntime(
-    props: McpSessionProps,
-    storedMeta: SessionMeta | null,
-  ): Effect.Effect<void> {
+  private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      yield* self.prepareErrorCaptureScope();
-      self.runtimeKind = "legacy";
-      const sessionMeta = storedMeta ?? (yield* self.resolveAndStoreSessionMeta(props.session));
-      const dbHandle = yield* self.openSessionDbHandle();
-      const { mcpServer, engine, modernRuntime } = yield* self.buildRuntime(sessionMeta, dbHandle);
-      const transport = self.makeLegacyTransport(storedMeta !== null);
-      self.dbHandle = dbHandle;
-      self.server = mcpServer;
-      self.engine = engine;
-      self.modernRuntime = modernRuntime ?? null;
-      self.transport = transport;
-      yield* Effect.promise(() => mcpServer.connect(transport));
-      self.initialized = true;
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
-      );
-    }).pipe(
-      Effect.tapCause((cause) =>
-        Effect.gen(function* () {
-          console.error("[mcp-session] legacy runtime init failed:", Cause.pretty(cause));
-          yield* self.captureCauseEffect(cause);
-          yield* self.recordCauseOnSpan(cause);
-        }),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          yield* self.closeRuntime();
-          return yield* Effect.failCause(cause);
-        }),
-      ),
-      Effect.withSpan("McpSessionDO.initializeLegacyRuntime", {
-        attributes: { "mcp.auth.organization_id": props.session.organizationId },
-      }),
-      (effect) => self.withTelemetry(effect, props.propagation),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object entrypoints can only reject their Promise
-      Effect.orDie,
-      (effect) => self.withSpanFlush(effect),
-    );
+      // PartyServer can rehydrate WebSockets before onStart runs in a
+      // cold-restored isolate. With no in-memory runtime to replace, those
+      // sockets are the live MCP response streams that triggered the restore.
+      const hasInMemoryRuntime =
+        self.initialized ||
+        self.engine !== null ||
+        self.dbHandle !== null ||
+        self.server !== undefined;
+      yield* self.closeRuntime({ closeStreams: hasInMemoryRuntime });
+      const started = yield* Effect.exit(Effect.promise(() => self.runMcpAgentOnStart(props)));
+      if (Exit.isFailure(started)) {
+        yield* self.closeRuntime();
+        return yield* Effect.failCause(started.cause);
+      }
+    });
   }
 
-  async onStart(props?: McpSessionProps): Promise<void> {
-    if (this.initialized && this.engine) return;
+  protected runMcpAgentOnStart(props?: McpSessionProps): Promise<void> {
+    return super.onStart(props);
+  }
+
+  override async onStart(props?: McpSessionProps): Promise<void> {
     if (this.onStartPromise) return this.onStartPromise;
 
-    const self = this;
-    const starting = Effect.runPromise(
-      Effect.gen(function* () {
-        const stored = yield* self.loadSessionMeta();
-        const resolvedProps = props ?? (stored ? self.propsFromSessionMeta(stored) : null);
-        if (!resolvedProps) return;
-        if (self.runtimeKind === "modern") {
-          yield* Effect.promise(() => self.startModernRuntime(resolvedProps));
-          return;
-        }
-        yield* self.initializeLegacyRuntime(resolvedProps, stored);
-      }),
-    );
+    const starting = Effect.runPromise(this.startRuntimeFromOnStart(props));
     this.onStartPromise = starting;
     starting.then(
       () => {
@@ -1101,357 +697,54 @@ export abstract class McpAgentSessionDOBase<
     return starting;
   }
 
-  private requestStreamId(
-    transport: WebStandardStreamableHTTPServerTransport,
-    requestId: RequestId,
-  ): string | null {
-    // SAFETY: the SDK currently has no public hook exposing the per-POST stream
-    // ID. The installed transport stores the exact request-id → stream-id map
-    // used by replay. Reading it lets the legacy compatibility prime share the
-    // same replay stream as the eventual result without changing SDK code.
-    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
-    if (!(mapping instanceof Map)) return null;
-    const streamId: unknown = mapping.get(requestId);
-    return typeof streamId === "string" ? streamId : null;
-  }
-
-  /**
-   * Whether the stream named by `lastEventId` still has a request awaiting
-   * its response. SAFETY: reads the transport's pinned
-   * `_requestToStreamMapping` for the same reason `requestStreamId` and
-   * `supersedeReplayStream` do — the SDK exposes no public pending-request
-   * probe.
-   */
-  private async lastEventIdStreamHasPendingRequest(
-    transport: WebStandardStreamableHTTPServerTransport,
-    lastEventId: string,
-  ): Promise<boolean> {
-    const streamId = await this.eventStore.getStreamIdForEventId(lastEventId);
-    if (!streamId) return false;
-    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
-    if (!(mapping instanceof Map)) return false;
-    for (const mappedStreamId of mapping.values()) {
-      if (mappedStreamId === streamId) return true;
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    const props = isSessionProps(this.props) ? this.props : null;
+    if (!props) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: McpAgent.init is a Promise-only framework hook and props are required before any Effect runtime exists.
+      throw new Error("MCP session props are required");
     }
-    return false;
-  }
-
-  private async supersedeReplayStream(
-    transport: WebStandardStreamableHTTPServerTransport,
-    lastEventId: string,
-  ): Promise<void> {
-    const streamId = await this.eventStore.getStreamIdForEventId(lastEventId);
-    if (!streamId) return;
-    // SAFETY: the installed SDK exposes closeSSEStream(requestId), but not the
-    // reverse request-id map needed to supersede a stale POST connection before
-    // replay. This is the same pinned map used by requestStreamId above.
-    const mapping: unknown = Reflect.get(transport, "_requestToStreamMapping");
-    if (!(mapping instanceof Map)) return;
-    for (const [requestId, mappedStreamId] of mapping) {
-      if (
-        mappedStreamId === streamId &&
-        (typeof requestId === "string" || typeof requestId === "number")
-      ) {
-        transport.closeSSEStream(requestId);
-        return;
-      }
-    }
-  }
-
-  private trackedLegacyResponse = (
-    response: Response,
-    options: { readonly initialFrame?: Uint8Array; readonly acknowledge?: readonly string[] } = {},
-  ): Response =>
-    rotateSseResponse(response, {
-      ...(options.initialFrame ? { initialFrame: options.initialFrame } : {}),
-      onOpen: () => {
-        this.activeLegacyStreamCount += 1;
-      },
-      onClose: (reason) => {
-        this.activeLegacyStreamCount = Math.max(0, this.activeLegacyStreamCount - 1);
-        // "complete": the source body drained to its natural end. "rotate":
-        // the client stayed attached for the whole max-age window, so the
-        // initial replay frames were drained long before. Both count as
-        // delivered. "cancel"/"error" leave the streams replayable for the
-        // client's reconnect GET.
-        if (
-          (reason === "complete" || reason === "rotate") &&
-          options.acknowledge &&
-          options.acknowledge.length > 0
-        ) {
-          this.ctx.waitUntil(this.eventStore.acknowledgeUndeliveredStreams(options.acknowledge));
-        }
-      },
-    });
-
-  /**
-   * Collect every undelivered stream's events as one SSE frame block, for
-   * prepending onto the standalone GET stream. Returning a FINITE response
-   * here instead (the pre-2026-08-17 behavior) was catastrophic: the client's
-   * standalone listener closed the moment the replay flushed, and because
-   * every POST marks its stream undelivered until acknowledged, an active
-   * session ALWAYS had something to replay — so every listener GET became a
-   * ~3s reconnect short-poll. Fleet-wide, that reconnect storm multiplied
-   * /mcp volume ~15x, drove the worker into memory-limit kills, and (by
-   * recycling isolates) pushed homepage TTFB from ~15ms to ~3s.
-   */
-  private async collectUndeliveredReplay(): Promise<{
-    readonly frame: Uint8Array;
-    readonly streamIds: readonly string[];
-  } | null> {
-    const frames: Uint8Array[] = [];
-    const streamIds = await this.eventStore.replayUndeliveredStreams({
-      send: (eventId, message) => {
-        frames.push(replayFrame(eventId, message));
-        return Promise.resolve();
-      },
-    });
-    if (frames.length === 0) return null;
-    return { frame: new Uint8Array(combineFrames(frames)), streamIds };
-  }
-
-  private async serializedTransportRequest<A>(run: () => Promise<A>): Promise<A> {
-    const previous = this.transportRequestTail;
-    let release = (): void => undefined;
-    this.transportRequestTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- concurrency boundary: release the next DO transport request on both success and rejection
-    try {
-      return await run();
-    } finally {
-      release();
-    }
-  }
-
-  private async handleLegacyTransportRequest(
-    request: Request,
-    parsedBody: unknown,
-  ): Promise<Response> {
-    return this.serializedTransportRequest(async () => {
-      const transport = this.transport;
-      if (!transport) {
-        return deadSessionDoResponse(request.method);
-      }
-      if (request.method === "GET") {
-        const lastEventId = request.headers.get("last-event-id");
-        // A reconnect id is only "drained" when the stream has no stored
-        // events after it AND no request still in flight on it. An in-flight
-        // tool call has produced no events past the priming frame yet, but
-        // its POST stream must still be resumed so the eventual result lands
-        // on this connection (the severed-POST recovery contract).
-        const resumable =
-          lastEventId !== null &&
-          ((await this.eventStore.hasEventsAfter(lastEventId)) ||
-            (await this.lastEventIdStreamHasPendingRequest(transport, lastEventId)));
-        if (lastEventId && resumable) {
-          await this.supersedeReplayStream(transport, lastEventId);
-        } else {
-          // Standalone listener path — taken for a bare GET AND for a GET
-          // whose Last-Event-ID stream is fully drained. EventSource clients
-          // echo their last id on every reconnect, so a drained id must not
-          // enter the transport's resume (it closes a completed stream's
-          // resume immediately, turning the echo into a reconnect loop).
-          let serveRequest = request;
-          if (lastEventId) {
-            const headers = new Headers(request.headers);
-            headers.delete("last-event-id");
-            serveRequest = new Request(request, { headers });
-          }
-          // Latest-listener-wins. Client cancellation is not reliably relayed
-          // through every workerd/Vite streaming hop, so explicitly retire a
-          // stale standalone mapping before opening its replacement.
-          transport.closeStandaloneSSEStream();
-          const replay = await this.collectUndeliveredReplay();
-          // Replayed responses ride as the opening frames of the transport's
-          // own long-lived standalone stream — the stream MUST stay open
-          // afterwards (see collectUndeliveredReplay). Acknowledgement moves
-          // to stream end: "complete"/"rotate" imply the client stayed
-          // attached long enough to have drained the prepended frames.
-          const response = await transport.handleRequest(serveRequest);
-          return this.trackedLegacyResponse(
-            response,
-            replay ? { initialFrame: replay.frame, acknowledge: replay.streamIds } : {},
-          );
-        }
-      }
-      const toolCallIds = legacyToolCallRequestIds(parsedBody);
-      const protocolVersion =
-        request.headers.get("mcp-protocol-version") ?? DEFAULT_NEGOTIATED_PROTOCOL_VERSION;
-      const needsLegacyPrime =
-        toolCallIds.length > 0 && protocolVersion < LEGACY_PRIMING_PROTOCOL_VERSION;
-      if (!needsLegacyPrime) {
-        const response = await transport.handleRequest(request);
-        const streamId = toolCallIds[0] ? this.requestStreamId(transport, toolCallIds[0]) : null;
-        if (streamId) await this.eventStore.markStreamUndelivered(streamId);
-        return this.trackedLegacyResponse(response);
-      }
-
-      const originalOnMessage = transport.onmessage;
-      const queued: QueuedTransportMessage[] = [];
-      transport.onmessage = (message, extra) => {
-        queued.push(extra === undefined ? { message } : { message, extra });
-      };
-      let response: Response;
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- SDK adapter boundary: restore the connected server handler even when request parsing fails
-      try {
-        response = await transport.handleRequest(request);
-      } finally {
-        transport.onmessage = originalOnMessage;
-      }
-
-      const streamId = this.requestStreamId(transport, toolCallIds[0]!);
-      const eventId = streamId
-        ? await this.eventStore.storeEvent(streamId, LEGACY_PRIMING_MESSAGE)
-        : null;
-      if (streamId) await this.eventStore.markStreamUndelivered(streamId);
-      const rotated = this.trackedLegacyResponse(response, {
-        ...(eventId ? { initialFrame: legacyPrimingFrame(eventId) } : {}),
-      });
-      // ReadableStream.start enqueues the priming frame synchronously while
-      // building `rotated`; only then may the server see the tools/call.
-      for (const item of queued) originalOnMessage?.(item.message, item.extra);
-      return rotated;
-    });
-  }
-
-  private propsFromLegacyRequest(
-    request: Request,
-    verified: NonNullable<ReturnType<typeof verifiedMcpRequestHeaders>>,
-  ): McpSessionProps {
-    return {
-      session: {
-        organizationId: verified.organizationId,
-        userId: verified.accountId,
-        elicitationMode: readElicitationMode(request),
-        artifactsEnabled: readArtifactsEnabled(request),
-        resource: mcpResourceFromKey(verified.resourceKey),
-        webOrigin: new URL(request.url).origin,
-      },
-      propagation: {
-        traceparent: request.headers.get("traceparent") ?? undefined,
-        tracestate: request.headers.get("tracestate") ?? undefined,
-        baggage: request.headers.get("baggage") ?? undefined,
-      },
-    };
-  }
-
-  /** Serve one authenticated legacy MCP exchange directly from this DO. */
-  override async fetch(request: Request): Promise<Response> {
-    const verified = verifiedMcpRequestHeaders(request);
-    if (!verified) {
-      return jsonRpcErrorBody(403, -32003, "Invalid MCP Durable Object identity", {
-        cors: false,
-      });
-    }
-    this.lastIncomingTrace = {
-      traceparent: request.headers.get("traceparent") ?? undefined,
-      tracestate: request.headers.get("tracestate") ?? undefined,
-      baggage: request.headers.get("baggage") ?? undefined,
-    };
-    if ((await this.ctx.storage.get<boolean>(DESTROY_PENDING_KEY)) === true) {
-      return jsonRpcErrorBody(404, -32001, "Session timed out, please reconnect", {
-        cors: false,
-      });
-    }
-
-    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
-    const stored = await Effect.runPromise(this.loadSessionMeta());
-    if (!stored) {
-      if (!isInitializeBody(parsedBody)) {
-        return request.headers.has("mcp-session-id")
-          ? deadSessionDoResponse(request.method)
-          : jsonRpcErrorBody(400, -32000, "Bad Request: Server not initialized", {
-              cors: false,
-            });
-      }
-      this.runtimeKind = "legacy";
-      await this.onStart(this.propsFromLegacyRequest(request, verified));
-    } else {
-      if (
-        this.runtimeKind !== "legacy" ||
-        stored.userId !== verified.accountId ||
-        stored.organizationId !== verified.organizationId ||
-        mcpResourceKey(stored.resource) !== verified.resourceKey
-      ) {
-        return jsonRpcErrorBody(403, -32003, "MCP session does not belong to the current bearer", {
-          cors: false,
-        });
-      }
-      await this.onStart(
-        this.propsFromSessionMeta(stored, {
-          traceparent: request.headers.get("traceparent") ?? undefined,
-          tracestate: request.headers.get("tracestate") ?? undefined,
-          baggage: request.headers.get("baggage") ?? undefined,
+    const self = this;
+    const program = Effect.gen(function* () {
+      yield* self.prepareErrorCaptureScope();
+      const sessionMeta = yield* self.resolveAndStoreSessionMeta(props.session);
+      const dbHandle = yield* self.openSessionDbHandle();
+      const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
+      self.dbHandle = dbHandle;
+      self.server = mcpServer;
+      self.engine = engine;
+      self.initialized = true;
+      yield* Effect.promise(() => self.markActivity()).pipe(
+        Effect.withSpan("McpSessionDO.markActivity"),
+      );
+    }).pipe(
+      Effect.tapCause((cause) =>
+        Effect.gen(function* () {
+          console.error("[mcp-session] init failed:", Cause.pretty(cause));
+          yield* self.captureCauseEffect(cause);
+          yield* self.recordCauseOnSpan(cause);
         }),
-      );
-    }
-
-    this.legacyRunningRequestCount += 1;
-    await this.markActivity();
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: running-request accounting must settle on transport failure too
-    try {
-      return await this.handleLegacyTransportRequest(request, parsedBody);
-    } finally {
-      this.legacyRunningRequestCount = Math.max(0, this.legacyRunningRequestCount - 1);
-    }
-  }
-
-  /**
-   * Serve one authenticated modern request without entering the legacy
-   * sessionful streamable-HTTP transport.
-   */
-  async serveModernMcp(
-    request: Request,
-    props: McpSessionProps,
-    parsedBody: unknown,
-  ): Promise<Response> {
-    this.modernRequestStateSigningKey();
-    const verified = verifiedMcpRequestHeaders(request);
-    if (
-      !verified ||
-      verified.accountId !== props.session.userId ||
-      verified.organizationId !== props.session.organizationId ||
-      verified.resourceKey !== mcpResourceKey(props.session.resource)
-    ) {
-      return jsonRpcErrorBody(403, -32003, "Invalid MCP Durable Object identity", {
-        cors: false,
-      });
-    }
-    const access = await this.startModernRuntime(props);
-    const sessionMeta = this.sessionMeta;
-    if (
-      access.status === "forbidden" ||
-      !sessionMeta ||
-      !this.modernPropsOwnSession(sessionMeta, props)
-    ) {
-      return jsonRpcErrorBody(403, -32003, "MCP session does not belong to the current bearer", {
-        cors: false,
-      });
-    }
-
-    // Modern clients self-report identity per request (`_meta` clientInfo) or
-    // at `initialize`; persist it so meta-less requests and cold restores keep
-    // their span attribution. Best-effort by construction (persistClientInfo
-    // swallows failures) and a storage no-op unless the identity changed.
-    const reportedClientInfo = clientInfoFromRequestBody(parsedBody);
-    if (reportedClientInfo) {
-      await Effect.runPromise(
-        this.withTelemetry(this.persistClientInfo(reportedClientInfo), props.propagation),
-      );
-    }
-
-    this.modernRequestBodies.set(request, parsedBody);
-    this.modernRequestPropagation.set(request, props.propagation);
-    this.lastIncomingTrace = props.propagation;
-    this.modernRunningRequestCount += 1;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the RPC must decrement its in-memory running lease on both handler resolution and rejection
-    try {
-      return await this.modernHandlerForRuntime().fetch(request, { parsedBody });
-    } finally {
-      this.modernRunningRequestCount = Math.max(0, this.modernRunningRequestCount - 1);
-    }
+      ),
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => self.cleanup());
+          return yield* Effect.failCause(cause);
+        }),
+      ),
+      Effect.withSpan("McpSessionDO.init", {
+        attributes: {
+          "mcp.auth.organization_id": props?.session.organizationId ?? "",
+        },
+      }),
+    );
+    const traced = this.withTelemetry(program, props?.propagation);
+    return Effect.runPromise(
+      traced.pipe(
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object init method can only reject its Promise
+        Effect.orDie,
+        (effect) => self.withSpanFlush(effect),
+      ),
+    );
   }
 
   async validateMcpSessionOwner(
@@ -1462,13 +755,15 @@ export abstract class McpAgentSessionDOBase<
       Effect.gen(function* () {
         yield* self.prepareErrorCaptureScope();
         // A DELETE-terminated session is condemned via `_cf_scheduleDestroy`,
-        // which writes a durable marker and defers the actual storage wipe to
+        // which writes a durable marker and defers the actual `destroy()` to
         // an alarm (~1s later). A request that races into that window still
         // sees the session's storage intact, so without this gate the session
         // would restore and answer — but the protocol contract is that a
-        // terminated id is dead the moment the DELETE returns.
+        // terminated id is dead the moment the DELETE returns. (The old code
+        // won this race by accident: its onConnect drain-wait stalled the
+        // request until the destroy alarm aborted the isolate.)
         const destroyPending = yield* Effect.promise(() =>
-          self.ctx.storage.get<boolean>(DESTROY_PENDING_KEY),
+          self.ctx.storage.get<boolean>(AGENTS_DESTROY_PENDING_KEY),
         );
         if (destroyPending === true) return "terminated" as const;
         const sessionMeta = yield* self.loadSessionMeta();
@@ -1622,17 +917,9 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
-  /** Condemn this session and arm a fresh alarm invocation to wipe it. */
-  async _cf_scheduleDestroy(): Promise<void> {
-    await this.ctx.storage.put(DESTROY_PENDING_KEY, true);
-    await this.ctx.storage.setAlarm(Date.now() + DESTROY_ALARM_DELAY_MS);
-  }
-
-  private async destroySession(): Promise<void> {
+  override async destroy(): Promise<void> {
     await this.cleanup();
-    await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
-    setTimeout(() => this.ctx.abort("destroyed"), 0);
+    await super.destroy();
   }
 
   private async pausedExecutionCount(): Promise<number> {
@@ -1641,20 +928,14 @@ export abstract class McpAgentSessionDOBase<
   }
 
   override async alarm(): Promise<void> {
-    if ((await this.ctx.storage.get<boolean>(DESTROY_PENDING_KEY)) === true) {
-      await this.destroySession();
-      return;
-    }
-    const sessionMeta = await Effect.runPromise(this.loadSessionMeta());
-    if (!sessionMeta) {
+    if (!(await this.hasPartyServerName())) {
       await this.cleanupUnaddressableSessionAlarm();
       return;
     }
-    const isModernSession = this.runtimeKind === "modern";
     const lastActivityMs = await this.loadLastActivity();
     const idleMs = lastActivityMs > 0 ? Date.now() - lastActivityMs : 0;
     const pausedExecutionCount = await this.pausedExecutionCount();
-    const runningExecutionCount = this.runningExecutionCount();
+    const runningExecutionCount = await this.runningExecutionCount();
     const activeStreamCount = this.activeStreamCount();
     const decision = decideSessionAlarm({
       idleMs,
@@ -1666,17 +947,15 @@ export abstract class McpAgentSessionDOBase<
     });
 
     if (decision.kind === "idle_within_timeout") {
-      await this.ctx.storage.setAlarm(Date.now() + Math.max(1, this.sessionTimeoutMs() - idleMs));
+      await super.alarm();
       return;
     }
-
-    const ownerId = isModernSession ? this.modernExecutionOwnerRoute().sessionId : this.sessionId;
 
     if (decision.kind === "extend_paused_lease") {
       console.info(
         JSON.stringify(
           pausedLeaseExtensionLog({
-            sessionId: ownerId,
+            sessionId: this.sessionId,
             pausedExecutionCount,
             idleMs,
             leaseMs: decision.leaseMs,
@@ -1691,7 +970,7 @@ export abstract class McpAgentSessionDOBase<
       console.info(
         JSON.stringify(
           runningLeaseExtensionLog({
-            sessionId: ownerId,
+            sessionId: this.sessionId,
             runningExecutionCount,
             activeStreamCount,
             idleMs,
@@ -1699,14 +978,15 @@ export abstract class McpAgentSessionDOBase<
           }),
         ),
       );
-      // A direct streamed response represents work that can still deliver or
-      // replay a result. Cancellation, completion, and max-age rotation all
-      // decrement activeStreamCount, so dead streams stop extending the lease.
+      // Open streamable-HTTP bridges and persisted request ids represent work
+      // that can still deliver or replay a response. Buggy dead pipes are
+      // closed by the SSE writer's terminal failure path, so they stop
+      // extending the lease once the bridge observes the failure.
       await this.ctx.storage.setAlarm(Date.now() + decision.leaseMs);
       return;
     }
 
-    await this.disposeIdleRuntime({ idleMs, lastActivityMs, pausedExecutionCount });
+    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount });
   }
 
   private validateApprovalIdentity(
@@ -1750,7 +1030,6 @@ export abstract class McpAgentSessionDOBase<
   private writeExecutionOwnerEntry(
     executionId: string,
     deadline: PausedExecutionDeadline | undefined,
-    owner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<void> {
     const directory = this.executionOwnerDirectory();
     if (!directory || !deadline) return Effect.void;
@@ -1760,7 +1039,7 @@ export abstract class McpAgentSessionDOBase<
       if (!sessionMeta) return;
       const record: McpExecutionOwnerRecord = {
         executionId,
-        owner,
+        owner: self.executionOwnerRoute(),
         accountId: sessionMeta.userId,
         organizationId: sessionMeta.organizationId,
         expiresAt: deadline.expiresAt,
@@ -1803,7 +1082,6 @@ export abstract class McpAgentSessionDOBase<
   private resumeFromExecutionOwnerDirectory(
     executionId: string,
     response: ResumeResponse,
-    currentOwner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<ResumeFallbackOutcome | null> {
     const directory = this.executionOwnerDirectory();
     if (!directory) return Effect.succeed(null);
@@ -1830,7 +1108,7 @@ export abstract class McpAgentSessionDOBase<
         return { status: "execution_forbidden" } as const;
       }
 
-      if (self.sameExecutionOwnerRoute(record.owner, currentOwner)) {
+      if (self.sameExecutionOwnerRoute(record.owner, self.executionOwnerRoute())) {
         yield* self.deleteExecutionOwnerEntry(executionId);
         return { status: "execution_expired", ttlMs: record.ttlMs } as const;
       }
@@ -1877,16 +1155,20 @@ export abstract class McpAgentSessionDOBase<
   private startPendingApprovalLease(
     executionId: string,
     deadline: PausedExecutionDeadline | undefined,
-    owner: McpExecutionOwnerRoute = this.executionOwnerRoute(),
   ): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       yield* self.prepareErrorCaptureScope();
       if (self.pendingApprovalLeases.has(executionId)) return;
 
-      // The base owns alarm arming now: record the in-memory lease first, then
-      // mark activity so the session alarm is durably scheduled for the idle /
-      // paused-expiry policy while this approval is outstanding.
+      // keepAlive BEFORE markActivity: acquiring the first keepAlive ref runs
+      // the SDK's _scheduleNextAlarm, which re-arms the DO alarm to its 30s
+      // heartbeat and would overwrite the idle alarm markActivity sets. With
+      // this ordering markActivity's setAlarm(now + sessionTimeoutMs) lands
+      // last, so the idle/paused-expiry clock keeps ticking while the lease
+      // holds the runtime alive. (Round 1 removed onConnect's drain-wait,
+      // which used to hold a ref across the pause and mask this by keeping
+      // the ref transition away from 0->1.)
       const disposeKeepAlive = yield* Effect.promise(() => self.keepAlive());
       yield* Effect.promise(() => self.markActivity()).pipe(
         Effect.withSpan("McpSessionDO.markActivity"),
@@ -1895,7 +1177,7 @@ export abstract class McpAgentSessionDOBase<
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);
       self.pendingApprovalLeases.set(executionId, { disposeKeepAlive, timeout, expiring: false });
-      yield* self.writeExecutionOwnerEntry(executionId, deadline, owner);
+      yield* self.writeExecutionOwnerEntry(executionId, deadline);
     }).pipe(
       Effect.withSpan("McpSessionDO.pending_approval_lease.start", {
         attributes: { "mcp.execution.id": executionId },

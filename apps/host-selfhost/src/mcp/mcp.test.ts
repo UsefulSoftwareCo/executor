@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 import { mintInviteCode } from "../testing/mint-invite";
 
@@ -86,40 +85,6 @@ test("an authenticated MCP client initializes, lists tools, and executes code", 
   );
   expect(call.status).toBe(200);
   expect(JSON.stringify(await call.json())).toContain("42");
-});
-
-test("an authenticated modern MCP client discovers, lists tools, and executes code", async () => {
-  const token = await signUp("modern@mcp.test");
-  const seenMethods: string[] = [];
-  const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
-    fetch: async (input, init) => {
-      const request =
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
-      const body = (await request.clone().json()) as { readonly method?: string };
-      if (body.method) seenMethods.push(body.method);
-      const headers = new Headers(request.headers);
-      headers.set("authorization", `Bearer ${token}`);
-      return handler(new Request(request, { headers }));
-    },
-  });
-  const client = new Client(
-    { name: "selfhost-modern-test", version: "1.0.0" },
-    { capabilities: {}, versionNegotiation: { mode: { pin: "2026-07-28" } } },
-  );
-
-  await client.connect(transport);
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the authenticated modern client
-  try {
-    expect(seenMethods).toContain("server/discover");
-    expect((await client.listTools()).tools.map(({ name }) => name)).toContain("execute");
-    const result = await client.callTool({
-      name: "execute",
-      arguments: { code: "export default 6 * 7" },
-    });
-    expect(JSON.stringify(result)).toContain("42");
-  } finally {
-    await client.close();
-  }
 });
 
 test("an MCP session cannot be reused by another user, and unauth is rejected", async () => {

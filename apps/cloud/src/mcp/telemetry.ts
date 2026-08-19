@@ -102,14 +102,6 @@ const InitializeParams = Schema.Struct({
   capabilities: Schema.optional(UnknownRecord),
 });
 
-const ModernEnvelopeParams = Schema.Struct({
-  _meta: Schema.optional(
-    Schema.Struct({
-      "io.modelcontextprotocol/protocolVersion": Schema.optional(Schema.String),
-    }),
-  ),
-});
-
 const NamedParams = Schema.Struct({ name: Schema.optional(Schema.String) });
 const UriParams = Schema.Struct({ uri: Schema.optional(Schema.String) });
 
@@ -127,7 +119,6 @@ const decodeJsonRpcEnvelopeString = Schema.decodeUnknownOption(
   Schema.fromJsonString(JsonRpcEnvelope),
 );
 const decodeInitializeParams = Schema.decodeUnknownOption(InitializeParams);
-const decodeModernEnvelopeParams = Schema.decodeUnknownOption(ModernEnvelopeParams);
 const decodeNamedParams = Schema.decodeUnknownOption(NamedParams);
 const decodeUriParams = Schema.decodeUnknownOption(UriParams);
 const decodeCancelledParams = Schema.decodeUnknownOption(CancelledParams);
@@ -145,14 +136,7 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
 
 const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
   const params = envelope.params ?? {};
-  const protocolAttrs = Option.match(decodeModernEnvelopeParams(params), {
-    onNone: () => ({}),
-    onSome: (modern) => {
-      const protocolVersion = modern._meta?.["io.modelcontextprotocol/protocolVersion"];
-      return protocolVersion ? { "mcp.client.protocol_version": protocolVersion } : {};
-    },
-  });
-  const methodSpecific = Match.value(envelope.method).pipe(
+  return Match.value(envelope.method).pipe(
     Match.when("initialize", () =>
       Option.match(decodeInitializeParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
@@ -197,7 +181,6 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
     Match.option,
     Option.getOrElse(() => ({}) as Record<string, unknown>),
   );
-  return { ...protocolAttrs, ...methodSpecific };
 };
 
 const replyAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {

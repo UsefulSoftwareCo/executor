@@ -40,6 +40,7 @@
     "@executor-js/sdk": "workspace:*",
     "@libsql/client": "catalog:",
     "@libsql/kysely-libsql": "catalog:",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tanstack/react-router": "catalog:",
     "better-auth": "^1.6.11",
     "drizzle-orm": "catalog:",
@@ -52,7 +53,6 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@executor-js/vite-plugin": "workspace:*",
-    "@modelcontextprotocol/client": "2.0.0",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",
     "@tanstack/virtual-file-routes": "^1.162.0",

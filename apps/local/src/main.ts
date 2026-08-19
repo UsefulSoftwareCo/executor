@@ -119,7 +119,6 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         localAnalytics.record(`artifact_${action}`, { via: "agent" }),
     };
     mcp = createMcpRequestHandler({
-      modernEnabled: process.env.MCP_2026_07_28_ENABLED !== "false",
       defaultConfig: {
         engine,
         artifacts: executor.artifacts,
