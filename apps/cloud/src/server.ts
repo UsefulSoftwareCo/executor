@@ -178,8 +178,59 @@ const mcpAgentHandler = makeCloudMcpAgentHandler({
   traceRequest: traceCloudMcpRequest,
 });
 
+// ---------------------------------------------------------------------------
+// Start server-graph warmup
+// ---------------------------------------------------------------------------
+//
+// Page latency was p50 19-49ms every day up to 2026-08-16 and 2728ms the day
+// after the 21:20 UTC deploy. It is not load: 2026-08-11 served MORE total
+// traffic (5.43M requests vs 4.38M) with pages at p50 41ms, so the
+// reconnect-storm/volume explanation does not hold.
+//
+// What changed is where MCP work runs. The old hibernatable Agent bridge
+// handed `/mcp` to the Durable Object almost immediately; the v2 stack
+// authenticates and dispatches in the WORKER (`mcp.auth.jwt_verify` alone runs
+// ~35k times per 6h there). That spins up far more worker isolates, and `/mcp`
+// returns above without ever touching `fetchHandler` — so those isolates never
+// load the Start graph. Page requests then land on them cold and pay
+// `loadEntries`: measured p50 **3.1s**, against p50 33ms for the request's own
+// work and 9-104ms for a warm isolate. The same bundle in local workerd serves
+// the same path in ~3ms, so this is a cold-isolate cost, not slow code.
+//
+// So warm on the isolate's FIRST fetch, in the background: MCP traffic then
+// pre-warms an isolate before a page request reaches it. This is #1628, which
+// worked; it was reverted (#1634) when memory-limit kills jumped, but that
+// landed during the 2026-08-17 storm — 11.67M requests in a day against a
+// 2.6-4.3M baseline. Volume is back to baseline and `exceededMemory` is
+// currently zero, so the condition that made it expensive is gone.
+// `START_GRAPH_WARM=false` disables it without a deploy.
+//
+// Deliberately NOT at module scope: a full warmup there trips workerd's
+// global-scope I/O restriction, and DO-only isolates should not carry the SSR
+// graph.
+// ---------------------------------------------------------------------------
+
+let startGraphWarmupStarted = false;
+
+const warmStartGraph = (env: Env): void => {
+  if (startGraphWarmupStarted) return;
+  if (env.START_GRAPH_WARM === "false") return;
+  startGraphWarmupStarted = true;
+  // oxlint-disable-next-line executor/no-promise-catch -- adapter boundary; fire-and-forget warmup outside any Effect runtime
+  void Promise.all([import("#tanstack-router-entry"), import("#tanstack-start-entry")]).catch(
+    () => {
+      // Advisory only — the request path still loads the graph lazily.
+      startGraphWarmupStarted = false;
+    },
+  );
+};
+
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    // First fetch in this isolate kicks the graph load off in the background,
+    // including for /mcp — MCP traffic is what reaches these isolates first.
+    warmStartGraph(env);
+
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
