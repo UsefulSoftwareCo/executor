@@ -66,9 +66,6 @@ import {
   type DrizzleDb,
   type DbServiceShape,
 } from "../db/db";
-import { makeExecutionStack } from "../engine/execution-stack";
-import { preloadQuickJs } from "../quickjs";
-import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import {
@@ -242,6 +239,31 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
+      // Imported here rather than at module scope. Cloudflare requires a
+      // Durable Object class to be exported from the Worker entry, so every
+      // static import this module makes is evaluated by *every* cold isolate —
+      // including the ones that only render a page or forward a passthrough
+      // proxy and never open an MCP session. These three roots pull the whole
+      // code-execution stack (sucrase, ajv, QuickJS-WASM): measured at 1.9 MB
+      // of the Worker's startup closure, for code only a real session runs.
+      // `apps/cloud/scripts/start-closure.mjs` reports that number and will
+      // show it moving back if these become static again.
+      const [{ preloadQuickJs }, { makeExecutionStack }, { CloudMeteredExecutionStackLayer }] =
+        yield* Effect.promise(
+          () =>
+            Promise.all([
+              import("../quickjs"),
+              import("../engine/execution-stack"),
+              import("../engine/execution-stack-metered"),
+            ]) as Promise<
+              [
+                typeof import("../quickjs"),
+                typeof import("../engine/execution-stack"),
+                typeof import("../engine/execution-stack-metered"),
+              ]
+            >,
+        );
+
       // QuickJS-WASM must be loaded before anything asks for a sandbox: the
       // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
       // user `execute` code on the dynamic-worker runtime, but the artifact
