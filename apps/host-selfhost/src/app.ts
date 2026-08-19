@@ -78,12 +78,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // ---- the in-process MCP serving seams (+ shutdown hook) ----------------
   // Pass the pinned public origin so browser-approval URLs are reachable behind
   // a reverse proxy (not the internal 127.0.0.1 bind from the request URL).
-  const mcp = makeSelfHostMcpSeams(
-    dbHandle,
-    betterAuth,
-    config.webBaseUrl,
-    config.mcp20260728Enabled,
-  );
+  const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl);
 
   // CLI device-login discovery (`executor login`). Points the CLI at Better
   // Auth's device endpoints; `requestFormat: "json"` because those endpoints
@@ -115,12 +110,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // plane's decorator is wired in mcp/session-store.ts's stack layer).
         decorator: SelfHostAnalyticsEngineDecorator,
       },
-      mcp: {
-        auth: mcp.auth,
-        sessions: mcp.sessions,
-        modern: mcp.modern,
-        reporter: mcp.reporter,
-      },
+      mcp: { auth: mcp.auth, sessions: mcp.sessions, reporter: mcp.reporter },
       plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
       errorCapture: ErrorCaptureLive,
     },

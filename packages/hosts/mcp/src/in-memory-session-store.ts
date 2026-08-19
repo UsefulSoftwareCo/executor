@@ -1,8 +1,6 @@
 import { Cause, Data, Effect, Layer } from "effect";
-import {
-  type McpServer,
-  WebStandardStreamableHTTPServerTransport,
-} from "@modelcontextprotocol/server";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
 
@@ -28,7 +26,7 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import { mcpRequestStatePrincipal, type BrowserApprovalStore } from "./tool-server";
+import type { BrowserApprovalStore } from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -77,20 +75,12 @@ export interface McpBuildServerOptions {
    *  with `?artifacts=false`; opted out, the built server registers none of
    *  the artifact tools, resource, or skills. */
   readonly artifactsEnabled?: boolean;
-  /** The sessionful assembly starts disabled and replaces this from initialize. */
-  readonly appsEnabled: false;
-  /** Process-lifetime HMAC key for legacy-shim continuation state. */
-  readonly requestStateSigningKey: Uint8Array;
-  /** Stable authenticated owner bound into continuation state. */
-  readonly requestStatePrincipal: string;
-  /** Selects live negotiated capabilities instead of stateless request policy. */
-  readonly sessionful: true;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
 export type McpBuildServer = (
   principal: Principal,
-  options: McpBuildServerOptions,
+  options?: McpBuildServerOptions,
 ) => Effect.Effect<BuiltMcpServer, McpEngineBuildError>;
 
 export interface InMemoryMcpSessionStore {
@@ -114,16 +104,9 @@ export interface InMemoryMcpSessionStore {
     request: Request,
     principal?: Principal,
   ) => Promise<Response | null>;
-  /** Number of live initialized sessions currently owned by this store. */
-  readonly sessionCount: () => number;
   /** Dispose every live session — wire into the host's shutdown (not a seam). */
   readonly close: () => Promise<void>;
 }
-
-type McpRequestBuildOptions = Pick<
-  McpBuildServerOptions,
-  "artifactsEnabled" | "browserApprovalStore" | "elicitationMode"
->;
 
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
@@ -179,7 +162,6 @@ export const makeInMemoryMcpSessionStore = (
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
-  const requestStateSigningKey = crypto.getRandomValues(new Uint8Array(32));
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
@@ -240,7 +222,7 @@ export const makeInMemoryMcpSessionStore = (
   const buildOptionsFor = (
     request: Request,
     sessionId: () => string | null,
-  ): McpRequestBuildOptions => {
+  ): McpBuildServerOptions => {
     const artifactsEnabled = readArtifactsEnabled(request);
     const mode = readElicitationMode(request);
     if (mode !== "browser") return { artifactsEnabled, elicitationMode: { mode } };
@@ -271,19 +253,12 @@ export const makeInMemoryMcpSessionStore = (
     return buildServer(principal, {
       ...buildOptionsFor(request, () => createdSessionId),
       resource,
-      appsEnabled: false,
-      requestStateSigningKey,
-      requestStatePrincipal: mcpRequestStatePrincipal(principal),
-      sessionful: true,
     }).pipe(
       Effect.flatMap(({ mcpServer, engine }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
-            // Native mode needs an open SSE response for the legacy shim's
-            // server→client elicitation request. Other modes preserve the
-            // store's existing single-JSON response behavior.
-            enableJsonResponse: readElicitationMode(request) !== "native",
+            enableJsonResponse: true,
             onsessioninitialized: (sid) => {
               createdSessionId = sid;
               transports.set(sid, transport);
@@ -401,7 +376,6 @@ export const makeInMemoryMcpSessionStore = (
     store,
     handlePausedRequest,
     handleApprovalRequest,
-    sessionCount: () => transports.size,
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));

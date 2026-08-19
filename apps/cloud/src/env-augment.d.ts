@@ -91,10 +91,6 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
-      /** HMAC key for MCP 2026-07-28 continuation state (32+ byte secret). */
-      MCP_REQUEST_STATE_KEY?: string;
-      /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-      MCP_2026_07_28_ENABLED?: string;
       NODE_ENV?: string;
 
       // Shared with frontend
