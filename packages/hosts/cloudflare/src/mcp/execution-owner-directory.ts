@@ -5,6 +5,21 @@ export type McpExecutionOwnerRoute = {
   readonly sessionId: string;
 };
 
+/** Prefix distinguishing a modern request DO from a sessionful transport DO. */
+export const MODERN_MCP_EXECUTION_OWNER_PREFIX = "modern:";
+
+/** Encode a unique modern session DO id in the existing owner route slot. */
+export const modernMcpExecutionOwnerRoute = (durableObjectId: string): McpExecutionOwnerRoute => ({
+  sessionId: `${MODERN_MCP_EXECUTION_OWNER_PREFIX}${durableObjectId}`,
+});
+
+/** Decode the unique DO id from a modern owner route, or return null for sessionful owners. */
+export const modernMcpDurableObjectId = (route: McpExecutionOwnerRoute): string | null => {
+  if (!route.sessionId.startsWith(MODERN_MCP_EXECUTION_OWNER_PREFIX)) return null;
+  const id = route.sessionId.slice(MODERN_MCP_EXECUTION_OWNER_PREFIX.length);
+  return id.length > 0 ? id : null;
+};
+
 export type McpExecutionOwnerRecord = {
   readonly executionId: string;
   readonly owner: McpExecutionOwnerRoute;
@@ -35,9 +50,6 @@ type McpExecutionOwnerDirectoryStorage = DurableObjectState["storage"];
 
 const toMcpExecutionOwnerDirectoryStub = (stub: unknown): McpExecutionOwnerDirectoryStub =>
   stub as McpExecutionOwnerDirectoryStub;
-
-export const mcpSessionDurableObjectName = (sessionId: string): string =>
-  `streamable-http:${sessionId}`;
 
 class McpExecutionOwnerDirectoryRpcError extends Data.TaggedError(
   "McpExecutionOwnerDirectoryRpcError",

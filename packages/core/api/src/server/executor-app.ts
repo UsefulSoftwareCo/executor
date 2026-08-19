@@ -15,8 +15,8 @@
 //                               + that stack + plugin tuple + failure strategy) (auth + per-request executor)
 //   3. the protected (plugin) API = makeProtectedApiLayer(plugins, { errorCapture,
 //                               router: prefixed(mountPrefix) }) wrapped by (2)
-//   4. the MCP serving envelope = McpServingRoutes + the 2-3 seams (auth/sessions
-//                               /reporter), double-provided like the host did      (the seams)
+//   4. the MCP serving envelope = McpServingRoutes + the auth/session/modern
+//                               builder/reporter seams                             (the seams)
 //   5. the account API = makeAccountApiLayer(accountMiddleware, { router })
 //   6. each extensions.route (Better Auth handler, Swagger, marketing, /autumn)
 //   7. provideMerge(boot) (+ optional requestScoped) -> the AppLayer
@@ -53,6 +53,7 @@ import {
   McpErrorReporterNoop,
   type McpAuthProvider,
   type McpErrorReporter,
+  type McpModernServerBuilder,
   type McpSessionStore,
 } from "@executor-js/host-mcp";
 
@@ -132,18 +133,31 @@ export interface EngineProviders<REngine = never> {
  * identity fallback sets `RMcpAuth = IdentityProvider` (self-host) and one whose
  * MCP plane is a separate credential surface leaves it `never` (cloud).
  */
-export interface McpProviders<RMcpAuth = never> {
+interface McpProviderBase<RMcpAuth> {
   /** Resolve a request to an MCP `AuthOutcome` + declare the discovery routes. */
   readonly auth: Layer.Layer<McpAuthProvider, never, RMcpAuth>;
-  /**
-   * Owns the entire serving-session lifecycle (in-process Map vs DO). Optional:
-   * a host that serves `/mcp` transport outside this envelope (the Cloudflare
-   * Agent bridge) omits it, and only the discovery routes are mounted.
-   */
-  readonly sessions?: Layer.Layer<McpSessionStore>;
   /** Forward an orchestration defect to the host's capture; default no-op. */
   readonly reporter?: Layer.Layer<McpErrorReporter>;
 }
+
+/** MCP providers either serve discovery alone or provide both protocol eras. */
+export type McpProviders<RMcpAuth = never> = McpProviderBase<RMcpAuth> &
+  (
+    | {
+        /**
+         * Owns the legacy serving-session lifecycle (in-process Map vs DO).
+         */
+        readonly sessions: Layer.Layer<McpSessionStore>;
+        /** Builds one stateless MCP server for each modern request. */
+        readonly modern: Layer.Layer<McpModernServerBuilder>;
+      }
+    | {
+        /** Omitted when another platform surface serves `/mcp` transport. */
+        readonly sessions?: undefined;
+        /** Discovery-only providers do not construct modern servers here. */
+        readonly modern?: undefined;
+      }
+  );
 
 /**
  * The provider seams common to BOTH execution models (scoped + fixed): identity,
@@ -546,12 +560,12 @@ export const make = <
     : pluginApiLive;
 
   // ---- (4) the MCP serving envelope (optional) --------------------------
-  // The two providers, by design (mirrors makeSelfHostMcp):
+  // The serving providers, by design (mirrors makeSelfHostMcp):
   //   - `Layer.provide(mcpAuth)` satisfies the `HttpRouter.use` callback's
   //     build-time `McpAuthProvider` requirement (it registers a GET per
   //     provider-declared discovery path).
   //   - `HttpRouter.provideRequest(McpSeams)` clears the route handlers'
-  //     per-request `Requires` markers (auth + session store + reporter) so the
+  //     per-request `Requires` markers (auth + both eras + reporter) so the
   //     /mcp routes carry no leftover requirements when merged into the router.
   // The auth seam may require the neutral `IdentityProvider` (`RMcpAuth =
   // IdentityProvider` for self-host, whose MCP auth genuinely reads the fallback;
@@ -603,7 +617,7 @@ export const make = <
 };
 
 /**
- * Compose the MCP serving routes over the auth/sessions/reporter seams. The auth
+ * Compose the MCP serving routes over the auth/legacy/modern/reporter seams. The auth
  * seam may require the neutral `IdentityProvider` (`RMcpAuth`); the facade provides
  * the complete identity seam ONCE (memoized) and shares it across the build-time
  * `Layer.provide` AND the per-request `HttpRouter.provideRequest`, so a single
@@ -625,10 +639,15 @@ const buildMcpRoutes = <RMcpAuth>(
   // No session store: the host serves `/mcp` transport elsewhere (the Cloudflare
   // Agent bridge), so mount only the auth-declared discovery routes. The discovery
   // handlers are captured from the auth seam at build, so no per-request seams.
-  if (!mcp.sessions) {
+  if (mcp.sessions === undefined) {
     return McpDiscoveryRoutes.pipe(Layer.provide(mcpAuthLive));
   }
-  const mcpSeams = Layer.mergeAll(mcpAuthLive, mcp.sessions, mcp.reporter ?? McpErrorReporterNoop);
+  const mcpSeams = Layer.mergeAll(
+    mcpAuthLive,
+    mcp.sessions,
+    mcp.modern,
+    mcp.reporter ?? McpErrorReporterNoop,
+  );
   return McpServingRoutes.pipe(HttpRouter.provideRequest(mcpSeams), Layer.provide(mcpAuthLive));
 };
 

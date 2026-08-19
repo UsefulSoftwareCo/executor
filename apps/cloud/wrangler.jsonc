@@ -46,12 +46,12 @@
       },
     ],
   },
-  // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
-  // stores state in SQLite. The original `McpSessionDO` was created on the
+  // The MCP session DO previously moved to a SQLite-backed class. The original
+  // `McpSessionDO` was created on the
   // key-value backend (`new_classes`) and cannot be converted in place. Cloudflare
   // also refuses to delete a class in the same deploy that moves its binding (it
   // validates the delete against the live binding), so v2 only CREATES the new
-  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moves to it.
+  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moved to it.
   // The old KV `McpSessionDO` is left orphaned (unbound, kept as a stub export in
   // server.ts so the migration stays valid); it can be deleted in a later deploy
   // now that nothing binds it. Session state is ephemeral, so nothing is lost.
@@ -109,7 +109,14 @@
   "version_metadata": {
     "binding": "CF_VERSION_METADATA",
   },
+  // DEPLOYMENT PREREQUISITE: MCP 2026-07-28 requestState is shared between
+  // stateless Worker isolates and session DOs. Configure the same 32+ byte
+  // secret for both with `wrangler secret put MCP_REQUEST_STATE_KEY`.
+  // It must never be placed in `vars` or generated independently per isolate.
   "vars": {
+    // MCP_2026_07_28_ENABLED is intentionally absent: unset enables modern
+    // inbound serving. Set the Worker var to "false" for emergency rollback;
+    // legacy serving remains available.
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
     // Keeps the /__sentry-otel-verify probe live in production: Sentry
     // delivery failed silently for weeks (zero events after ~Jul 30 with an

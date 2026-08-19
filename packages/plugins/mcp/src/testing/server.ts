@@ -1,5 +1,6 @@
 import { Context, Data, Effect, Layer, Option, Ref, Schema, Scope } from "effect";
 import * as http from "node:http";
+// Intentionally stays on the legacy SDK as a wire-interop fixture for MCP plugin clients.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";

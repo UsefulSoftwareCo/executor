@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Cloud MCP Session Durable Object — the cloud binding of the shared
-// `McpAgentSessionDOBase` (@executor-js/cloudflare). Hibernatable transport
+// `McpAgentSessionDOBase` (@executor-js/cloudflare). Direct HTTP transport
 // serving, cold restore, the inactivity alarm, owner validation, browser
 // approval storage, and the per-request span bridge live in the base. Cloud
 // supplies ONLY its injected dependencies:
@@ -16,14 +16,19 @@
 import { env } from "cloudflare:workers";
 import { Data, Effect, Layer } from "effect";
 import type { Cause } from "effect";
+import type * as Tracer from "effect/Tracer";
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
-  createExecutorMcpServer,
+  buildMcpServer,
+  mcpRequestStatePrincipal,
+  type PausedExecutionHooks,
+  type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
+import type { McpModernServerBuilder, Principal } from "@executor-js/host-mcp";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
@@ -31,18 +36,20 @@ import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
+  type BuiltModernMcpRuntime,
   type IncomingTraceHeaders,
   type McpApprovalOwner,
   type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { requireMcpRequestStateKey } from "@executor-js/cloudflare/mcp/modern-request-router";
 import {
   mcpExecutionOwnerDirectoryFromNamespace,
   type McpExecutionOwnerDirectory,
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
-import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import { mcpSessionStubForOwner } from "@executor-js/cloudflare/mcp/session-stub";
 import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
@@ -117,6 +124,10 @@ class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForward
   readonly cause: unknown;
 }> {}
 
+class CloudModernMcpBuildError extends Data.TaggedError("CloudModernMcpBuildError")<{
+  readonly cause: unknown;
+}> {}
+
 /**
  * The DO keeps one postgres.js client for the MCP session runtime. postgres.js
  * closes idle sockets quickly, while the runtime object stays alive so the MCP
@@ -168,6 +179,127 @@ const loadAppShellHtml = makeAssetsShellHtmlLoader({
     import("virtual:executor-mcp-apps-shell-dev-html").then((mod) => mod.devShellHtml),
 });
 
+const resolveCloudSessionMeta = (token: McpSessionInit, dbHandle: CloudSessionDbHandle) =>
+  Effect.gen(function* () {
+    const org = yield* resolveOrganization(token.organizationId);
+    if (!org) {
+      return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
+    }
+    return {
+      organizationId: org.id,
+      organizationName: org.name,
+      organizationSlug: org.slug,
+      userId: token.userId,
+      resource: token.resource,
+      elicitationMode: token.elicitationMode,
+      artifactsEnabled: token.artifactsEnabled,
+      webOrigin: token.webOrigin,
+    } satisfies SessionMeta;
+  }).pipe(Effect.provide(makeSessionServices(dbHandle)));
+
+const makeCloudExecutionRuntime = (sessionMeta: SessionMeta, dbHandle: CloudSessionDbHandle) =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() => preloadQuickJs());
+    const { executor, engine } = yield* makeExecutionStack(
+      sessionMeta.userId,
+      sessionMeta.organizationId,
+      sessionMeta.organizationName,
+      { mcpResource: sessionMeta.resource },
+    ).pipe(
+      Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
+      Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
+    );
+    const description = yield* buildExecuteDescription(executor).pipe(
+      Effect.withSpan("mcp.execute.description.build"),
+    );
+    return { executor, engine, description };
+  }).pipe(Effect.provide(makeSessionServices(dbHandle)));
+
+type CloudExecutionRuntime = Effect.Success<ReturnType<typeof makeCloudExecutionRuntime>>;
+
+type CloudModernLifecycle = {
+  readonly pausedExecutionHooks?: PausedExecutionHooks;
+  readonly resumeFallback?: (
+    executionId: string,
+    response: ResumeResponse,
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
+  readonly parentSpan?: () => Tracer.AnySpan | undefined;
+};
+
+const makeCloudModernRuntime = (
+  sessionMeta: SessionMeta,
+  runtime: CloudExecutionRuntime,
+  lifecycle: CloudModernLifecycle = {},
+): BuiltModernMcpRuntime => ({
+  engine: runtime.engine,
+  buildServer: (options) =>
+    buildMcpServer({
+      engine: runtime.engine,
+      description: runtime.description,
+      artifacts: runtime.executor.artifacts,
+      connections: runtime.executor.connections,
+      artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+      loadAppShellHtml,
+      smokeRenderArtifact,
+      artifactUrl: artifactUrlFor(
+        env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+        sessionMeta.organizationSlug,
+      ),
+      debug: env.EXECUTOR_MCP_DEBUG === "true",
+      elicitationMode: { mode: "native" },
+      ...(lifecycle.parentSpan ? { parentSpan: lifecycle.parentSpan } : {}),
+      ...(lifecycle.pausedExecutionHooks
+        ? {
+            pausedExecutionHooks: lifecycle.pausedExecutionHooks,
+            pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,
+          }
+        : {}),
+      ...(lifecycle.resumeFallback ? { resumeFallback: lifecycle.resumeFallback } : {}),
+      ...options,
+    }),
+});
+
+const closeModernServerWithDb = <Server extends { close: () => Promise<void> }>(
+  server: Server,
+  dbHandle: CloudSessionDbHandle,
+): Server => {
+  const closeServer = server.close.bind(server);
+  server.close = () =>
+    Effect.runPromise(
+      Effect.promise(closeServer).pipe(Effect.ensuring(Effect.promise(() => dbHandle.end()))),
+    );
+  return server;
+};
+
+/** Build one worker-side stateless MCP server over a fresh cloud runtime. */
+export const makeCloudModernMcpServerBuilder = (
+  session: McpSessionInit,
+): McpModernServerBuilder["Service"] => ({
+  build: (principal: Principal, options) => {
+    const dbHandle = makeEphemeralDb();
+    const { resource, ...requestOptions } = options;
+    const token: McpSessionInit = {
+      ...session,
+      userId: principal.accountId,
+      organizationId: principal.organizationId,
+      resource,
+    };
+    return resolveCloudSessionMeta(token, dbHandle).pipe(
+      Effect.flatMap((sessionMeta) =>
+        makeCloudExecutionRuntime(sessionMeta, dbHandle).pipe(
+          Effect.map((runtime) => ({ runtime, sessionMeta })),
+        ),
+      ),
+      Effect.flatMap(({ runtime, sessionMeta }) =>
+        makeCloudModernRuntime(sessionMeta, runtime).buildServer(requestOptions),
+      ),
+      Effect.map((server) => closeModernServerWithDb(server, dbHandle)),
+      Effect.tapCause(() => Effect.promise(() => dbHandle.end())),
+      Effect.mapError((cause) => new CloudModernMcpBuildError({ cause })),
+    );
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Durable Object
 // ---------------------------------------------------------------------------
@@ -193,13 +325,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     executionId: string,
     response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
+    const ownerSession = mcpSessionStubForOwner(env.MCP_SESSION, owner);
+    if (!ownerSession) {
+      return Effect.succeed({ status: "execution_expired", ttlMs: PAUSED_APPROVAL_TIMEOUT_MS });
+    }
     return Effect.tryPromise({
-      try: () =>
-        mcpSessionStub(env.MCP_SESSION, owner.sessionId).resumeExecutionForModel(
-          executionId,
-          identity,
-          response,
-        ),
+      try: () => ownerSession.resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),
     });
   }
@@ -213,23 +344,8 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
     const dbHandle = makeEphemeralDb();
-    return Effect.gen(function* () {
-      const org = yield* resolveOrganization(token.organizationId);
-      if (!org) {
-        return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
-      }
-      return {
-        organizationId: org.id,
-        organizationName: org.name,
-        organizationSlug: org.slug,
-        userId: token.userId,
-        resource: token.resource,
-        elicitationMode: token.elicitationMode,
-        artifactsEnabled: token.artifactsEnabled,
-      } satisfies SessionMeta;
-    }).pipe(
+    return resolveCloudSessionMeta(token, dbHandle).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
-      Effect.provide(makeSessionServices(dbHandle)),
       Effect.ensuring(Effect.promise(() => dbHandle.end())),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a vanished org is a defect; the worker already verified the bearer
       Effect.orDie,
@@ -242,36 +358,15 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
-      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
-      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
-      // user `execute` code on the dynamic-worker runtime, but the artifact
-      // smoke render is a QuickJS sandbox on every host — without this it fails
-      // open on each create and the check silently does nothing.
-      // Idempotent per isolate.
-      yield* Effect.promise(() => preloadQuickJs());
-      const { executor, engine } = yield* makeExecutionStack(
-        sessionMeta.userId,
-        sessionMeta.organizationId,
-        sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource },
-      ).pipe(
-        // The metered stack tracks each execution to Autumn. It requires
-        // `AutumnService | DbService`; `AutumnService.Default` is provided here
-        // (it only reads `env`, no further deps), and `DbService` flows from the
-        // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
-        // billing service degrades to a no-op tracker, so this stays inert in
-        // cloud dev/preview environments that run without a billing backend.
-        Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
-        Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
-      );
-      // Build the description here so `executor.connections.list()` stays under
-      // the DO startup span and the MCP SDK receives a concrete string instead
-      // of invoking `engine.getDescription` across its async boundary.
-      const description = yield* buildExecuteDescription(executor).pipe(
-        Effect.withSpan("mcp.execute.description.build"),
-      );
+      const runtime = yield* makeCloudExecutionRuntime(sessionMeta, dbHandle);
+      const { executor, engine, description } = runtime;
+      const modernRuntime = makeCloudModernRuntime(sessionMeta, runtime, {
+        pausedExecutionHooks: self.modernPausedExecutionHooks,
+        resumeFallback: self.modernModelResumeFallback,
+        parentSpan: () => self.currentParentSpan(),
+      });
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
-      const mcpServer = yield* createExecutorMcpServer({
+      const mcpServer = yield* buildMcpServer({
         engine,
         description,
         artifacts: executor.artifacts,
@@ -284,6 +379,17 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        // Same restore contract for the client identity that keys the
+        // `mcp.client.*` span attribution on execution spans.
+        ...(sessionMeta.clientInfo ? { restoredClientInfo: sessionMeta.clientInfo } : {}),
+        onClientInfoChange: (clientInfo) => self.persistClientInfo(clientInfo),
+        appsEnabled: false,
+        sessionful: true,
+        requestStateSigningKey: self.modernRequestStateSigningKey(),
+        requestStatePrincipal: mcpRequestStatePrincipal({
+          accountId: sessionMeta.userId,
+          organizationId: sessionMeta.organizationId,
+        }),
         loadAppShellHtml,
         smokeRenderArtifact,
         artifactUrl: artifactUrlFor(
@@ -309,14 +415,36 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
                   }),
               }
             : { mode: sessionElicitationMode },
-      }).pipe(Effect.withSpan("McpSessionDOSqlite.createExecutorMcpServer"));
-      return { mcpServer, engine } satisfies BuiltMcpServer;
+      }).pipe(Effect.withSpan("McpSessionDOSqlite.buildMcpServer"));
+      return { mcpServer, engine, modernRuntime } satisfies BuiltMcpServer;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),
-      Effect.provide(makeSessionServices(dbHandle)),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: runtime-build failures surface as the base's tapCause/cleanup defect
       Effect.orDie,
     );
+  }
+
+  protected override buildModernMcpRuntime(
+    sessionMeta: SessionMeta,
+    dbHandle: CloudSessionDbHandle,
+  ): Effect.Effect<BuiltModernMcpRuntime> {
+    const self = this;
+    return makeCloudExecutionRuntime(sessionMeta, dbHandle).pipe(
+      Effect.map((runtime) =>
+        makeCloudModernRuntime(sessionMeta, runtime, {
+          pausedExecutionHooks: self.modernPausedExecutionHooks,
+          resumeFallback: self.modernModelResumeFallback,
+          parentSpan: () => self.currentParentSpan(),
+        }),
+      ),
+      Effect.withSpan("McpSessionDOSqlite.buildModernMcpRuntime"),
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: runtime-build failures surface through the base RPC cleanup path
+      Effect.orDie,
+    );
+  }
+
+  protected override modernRequestStateSigningKey(): string {
+    return requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY);
   }
 
   protected override withTelemetry<A, E>(

@@ -1,15 +1,31 @@
 import { Effect, Match, Predicate } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import {
+  createMcpHandler,
+  isLegacyRequest,
+  type McpHttpHandler,
+  type McpRequestContext,
+} from "@modelcontextprotocol/server";
 
 import {
   defaultMcpResource,
   McpAuthProvider,
   McpErrorReporter,
+  McpModernServerBuilder,
   McpSessionStore,
+  mcpResourceKey,
   type AuthOutcome,
   type McpDispatchResult,
   type McpResource,
+  type Principal,
 } from "./seams";
+import {
+  appsEnabledForClientCapabilities,
+  clientCapabilitiesFromRequest,
+  mcpRequestStateBindingFromBody,
+  mcpRequestStatePrincipal,
+  requestBodyFromRequest,
+} from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // Provider-neutral MCP serving envelope.
@@ -30,7 +46,7 @@ import {
 // The envelope hard-codes ONLY the MCP serving paths and CORS. Everything else
 // — every `/.well-known/*` path, the resource-metadata URL, the authn/authz
 // semantics, and the entire session lifecycle (create + forward + ownership) —
-// comes from the two seams.
+// comes from the three seams.
 //
 // Runtime-agnostic: built on `effect/unstable/http` (HttpRouter), NO
 // platform-bun. The `/mcp` flow is fully Effect; the streamable-HTTP transport
@@ -42,6 +58,14 @@ import {
 
 const MCP_PATH = "/mcp";
 const TOOLKIT_MCP_PATH = "/mcp/toolkits/:toolkitSlug";
+// Static fallback only: the 2026-07-28 era mirrors request params into
+// dynamic `Mcp-Param-<name>` headers (SEP-2243), and CORS header names never
+// glob — the preflight must echo `Access-Control-Request-Headers` verbatim to
+// admit them. `*` would not help either: it is ignored for credentialed
+// requests and never covers `Authorization`.
+const MCP_CORS_ALLOWED_HEADERS =
+  "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, mcp-method, mcp-name";
+const MCP_CORS_EXPOSED_HEADERS = "mcp-session-id, mcp-protocol-version, WWW-Authenticate";
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
@@ -68,15 +92,19 @@ const fromWebResponse = (response: Response): HttpServerResponse.HttpServerRespo
  * preflight against the metadata docs too (RFC 9728 discovery from a 401), so
  * the envelope answers OPTIONS for those paths, not only `/mcp`.
  */
-const corsPreflightResponse = (): Response =>
+const corsPreflightResponse = (requestedHeaders?: string | null): Response =>
   new Response(null, {
     status: 204,
     headers: {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+      // Echo the browser's requested headers so dynamic `Mcp-Param-<name>`
+      // names pass; the static list is the no-preflight-header fallback.
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
+        requestedHeaders && requestedHeaders.trim() !== ""
+          ? requestedHeaders
+          : MCP_CORS_ALLOWED_HEADERS,
+      "access-control-expose-headers": MCP_CORS_EXPOSED_HEADERS,
     },
   });
 
@@ -127,6 +155,10 @@ export const jsonRpcErrorBody = (
     },
   });
 };
+
+/** Graceful rollback response that lets auto-negotiating v2 clients try legacy. */
+export const mcpModernDisabledResponse = (opts?: { readonly cors?: boolean }): Response =>
+  jsonRpcErrorBody(400, -32022, "MCP 2026-07-28 support is disabled", opts);
 
 /**
  * Advertised on transient-auth 503s (`Unavailable` outcomes) so clients back
@@ -230,8 +262,92 @@ const renderDispatchError = (lookup: "not-found" | "forbidden", method: string):
   return jsonRpcResponse(404, -32001, "Session not found");
 };
 
+const withModernMcpCors = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", MCP_CORS_EXPOSED_HEADERS);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+interface ModernRequestInputs {
+  readonly builder: McpModernServerBuilder["Service"];
+  readonly parsedBody: unknown;
+  readonly principal: Principal;
+}
+
+interface ModernMcpRouter {
+  readonly fetch: (
+    request: Request,
+    principal: Principal,
+    resource: McpResource,
+    builder: McpModernServerBuilder["Service"],
+  ) => Promise<Response>;
+}
+
+/** Build the resource-keyed, process-lifetime modern handler cache. */
+const makeModernMcpRouter = (): ModernMcpRouter => {
+  const handlers = new Map<string, McpHttpHandler>();
+  const requestInputs = new WeakMap<Request, ModernRequestInputs>();
+  let signingKey: Uint8Array | undefined;
+
+  const getSigningKey = (): Uint8Array =>
+    (signingKey ??= crypto.getRandomValues(new Uint8Array(32)));
+
+  const handlerFor = (resource: McpResource): McpHttpHandler => {
+    const key = mcpResourceKey(resource);
+    const cached = handlers.get(key);
+    if (cached) return cached;
+
+    const handler = createMcpHandler(
+      (context: McpRequestContext) => {
+        const request = context.requestInfo;
+        const inputs = request ? requestInputs.get(request) : undefined;
+        if (!request || !inputs) {
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party McpServerFactory Promise contract has no typed failure channel; missing documented request context is an SDK defect
+          return Effect.runPromise(Effect.die("Modern MCP request has no authenticated context"));
+        }
+        return Effect.runPromise(
+          Effect.gen(function* () {
+            const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
+            const requestStatePrincipal = mcpRequestStatePrincipal(inputs.principal);
+            const requestStateBinding = yield* Effect.promise(() =>
+              mcpRequestStateBindingFromBody({
+                body: inputs.parsedBody,
+                principal: requestStatePrincipal,
+                resource,
+              }),
+            );
+            return yield* inputs.builder.build(inputs.principal, {
+              resource,
+              appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
+              requestStateSigningKey: getSigningKey(),
+              requestStatePrincipal,
+              ...(requestStateBinding === null ? {} : { requestStateBinding }),
+            });
+          }),
+        );
+      },
+      { legacy: "reject" },
+    );
+    handlers.set(key, handler);
+    return handler;
+  };
+
+  return {
+    fetch: async (request, principal, resource, builder) => {
+      const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
+      requestInputs.set(request, { builder, parsedBody, principal });
+      return handlerFor(resource).fetch(request, { parsedBody });
+    },
+  };
+};
+
 /** Dispatch an MCP request through authenticate -> store.dispatch -> transport. */
-const mcpDispatch = (resource: McpResource) =>
+const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
   Effect.gen(function* () {
     const httpRequest = yield* HttpServerRequest.HttpServerRequest;
     const auth = yield* McpAuthProvider;
@@ -240,7 +356,9 @@ const mcpDispatch = (resource: McpResource) =>
 
     // CORS preflight: answer before auth so unauthenticated clients can probe.
     if (request.method === "OPTIONS") {
-      return fromWebResponse(corsPreflightResponse());
+      return fromWebResponse(
+        corsPreflightResponse(request.headers.get("access-control-request-headers")),
+      );
     }
 
     // Streamable-HTTP only defines GET/POST/DELETE on the endpoint. Any other
@@ -262,6 +380,17 @@ const mcpDispatch = (resource: McpResource) =>
       return fromWebResponse(renderAuthError(auth, request, outcome));
     }
     const principal = outcome.principal;
+
+    if (!(yield* Effect.promise(() => isLegacyRequest(request)))) {
+      const builder = yield* McpModernServerBuilder;
+      if (builder.enabled === false) {
+        return fromWebResponse(mcpModernDisabledResponse());
+      }
+      const response = yield* Effect.promise(() =>
+        modern.fetch(request, principal, resource, builder),
+      );
+      return fromWebResponse(withModernMcpCors(response));
+    }
 
     // No session id: per the streamable-HTTP transport contract, only POST opens
     // a session. A GET needs an existing id (400); a DELETE on nothing is a
@@ -300,8 +429,8 @@ const mcpDispatch = (resource: McpResource) =>
  * otherwise, since the envelope returns a `Response`) and rendered as a stable
  * JSON-RPC 500 -32603 + CORS, rather than a bare platform 500 with no body.
  */
-const mcpRoute = (resource: McpResource) =>
-  mcpDispatch(resource).pipe(
+const mcpRoute = (resource: McpResource, modern: ModernMcpRouter) =>
+  mcpDispatch(resource, modern).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         const reporter = yield* McpErrorReporter;
@@ -311,15 +440,16 @@ const mcpRoute = (resource: McpResource) =>
     ),
   );
 
-const toolkitMcpRoute = Effect.gen(function* () {
-  const params = yield* HttpRouter.params;
-  const slug = params.toolkitSlug;
-  return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource);
-});
+const toolkitMcpRoute = (modern: ModernMcpRouter) =>
+  Effect.gen(function* () {
+    const params = yield* HttpRouter.params;
+    const slug = params.toolkitSlug;
+    return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource, modern);
+  });
 
 /**
  * The shared MCP serving routes, as an `HttpRouter.use` Layer. A host merges
- * this with its other routes and provides the two seam Layers + the HTTP
+ * this with its other routes and provides the three seam Layers + the HTTP
  * platform services. Provider-neutral: cloud adopts the same Layer next.
  *
  * The discovery `GET` routes come from `McpAuthProvider.discoveryRoutes`, so
@@ -330,16 +460,22 @@ const toolkitMcpRoute = Effect.gen(function* () {
 export const McpServingRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
+    const modern = makeModernMcpRouter();
     for (const route of auth.discoveryRoutes) {
       yield* router.add("GET", route.path, discoveryRoute(route.handler));
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
+        Effect.gen(function* () {
+          const preflight = yield* HttpServerRequest.HttpServerRequest;
+          return fromWebResponse(
+            corsPreflightResponse(preflight.headers["access-control-request-headers"] ?? null),
+          );
+        }),
       );
     }
-    yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
-    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute);
+    yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource, modern));
+    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute(modern));
   }),
 );
 
@@ -361,7 +497,12 @@ export const McpDiscoveryRoutes = HttpRouter.use((router) =>
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
+        Effect.gen(function* () {
+          const preflight = yield* HttpServerRequest.HttpServerRequest;
+          return fromWebResponse(
+            corsPreflightResponse(preflight.headers["access-control-request-headers"] ?? null),
+          );
+        }),
       );
     }
   }),

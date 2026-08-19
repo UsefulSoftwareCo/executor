@@ -17,7 +17,10 @@ import { passthroughResponse } from "./edge/passthrough";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
-import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
+import {
+  makeCloudModernMcpServerBuilder,
+  McpSessionDOSqlite as McpSessionDOBase,
+} from "./mcp/session-durable-object";
 import {
   beforeSendWithOtelCorrelation,
   captureCause,
@@ -170,7 +173,10 @@ const traceCloudMcpRequest = async (
   );
 };
 
-const mcpAgentHandler = makeCloudMcpAgentHandler();
+const mcpAgentHandler = makeCloudMcpAgentHandler({
+  makeModernServerBuilder: makeCloudModernMcpServerBuilder,
+  traceRequest: traceCloudMcpRequest,
+});
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
@@ -209,14 +215,7 @@ const cloudflareHandler: ExportedHandler<Env> = {
       // to pass authenticated session props into the hibernatable DO.
       // Discovery docs still flow through the app-level MCP envelope.
       const forwarded = prepareMcpOrgScope(request);
-      // /mcp leaves the Effect app for the Agents bridge, so no downstream
-      // HttpMiddleware.tracer opens the request envelope — this worker span is
-      // THE `http.server` span for MCP traffic, and its context is stamped onto
-      // the forwarded traceparent so the agent handler and session DO parent
-      // under it instead of exporting orphaned roots.
-      return traceCloudMcpRequest(forwarded, env, ctx, (tracedRequest) =>
-        Promise.resolve(mcpAgentHandler(tracedRequest, env, ctx)),
-      );
+      return mcpAgentHandler(forwarded, env, ctx);
     }
     const tracingInstalled = installTracerProvider();
     // Join the caller's W3C trace when the request carries one — the web UI
