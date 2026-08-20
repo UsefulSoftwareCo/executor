@@ -13,6 +13,18 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# CI is not a user. Without this, executor's own product telemetry reports to the
+# production PostHog project from every e2e shard: the analytics layer
+# (integration_added, execution_completed, artifact_*) and the
+# integrations-registry fetch, which lands as a `hit` event. Each shard is a
+# fresh container, so it mints a fresh anonymous id and arrives on a fresh
+# runner IP — inflating machine and user counts by roughly an order of
+# magnitude. Both opt-outs are the packages' documented CI/test hooks.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   release:
     runs-on: ubuntu-latest
