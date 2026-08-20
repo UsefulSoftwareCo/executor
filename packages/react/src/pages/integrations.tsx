@@ -335,7 +335,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
                 }}
                 placeholder="Search or paste a URL…"
                 disabled={detecting}
-                className="pl-9"
+                className="h-11 pl-9 sm:h-9"
               />
             </div>
             {isUrl && (
@@ -495,14 +495,14 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="sm:hidden">
+              <Button variant="outline" className="min-h-11 sm:hidden">
                 <PlusIcon />
                 Add manually
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
               {integrationPlugins.map((plugin) => (
-                <DropdownMenuItem key={plugin.key} asChild>
+                <DropdownMenuItem key={plugin.key} asChild className="min-h-11">
                   {manualAddLink(plugin)}
                 </DropdownMenuItem>
               ))}

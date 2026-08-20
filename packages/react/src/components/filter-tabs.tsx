@@ -36,7 +36,9 @@ export function FilterTabs<T extends string = string>({
             key={tab.value}
             onClick={() => onChange(tab.value)}
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium shadow-none transition-transform duration-100 active:scale-[0.98]",
+              // 32px is a fine mouse target and a poor thumb one, so phones get the
+              // 44px the touch guidelines ask for.
+              "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium shadow-none transition-transform duration-100 active:scale-[0.98] sm:min-h-0",
               isActive
                 ? "border-border bg-background text-foreground"
                 : "border-transparent bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground",

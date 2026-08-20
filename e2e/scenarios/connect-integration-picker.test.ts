@@ -2,6 +2,8 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
+import type { Locator, Page } from "playwright";
+
 import { Browser, Target } from "../src/services";
 import { clickToReveal, visit } from "../src/surfaces/browser";
 
@@ -81,7 +83,29 @@ scenario(
         expect(await dialog.getByRole("link", { name: "Add OpenAPI" }).isVisible()).toBe(false);
         await dialog.getByRole("button", { name: "Add manually" }).click();
         await page.getByRole("menuitem", { name: "Add GraphQL" }).waitFor();
+
+        // Touch guidelines (WCAG 2.5.5, Apple, Material) put a thumb target at
+        // 44px; the defaults here land at 32 and the dialog's close at 16.
+        const undersized = (scope: Locator | Page, selector: string) =>
+          scope.locator(selector).evaluateAll((els) =>
+            els
+              .map((el) => ({
+                label: (el.textContent ?? "").trim().slice(0, 24),
+                box: el.getBoundingClientRect(),
+              }))
+              .filter((t) => t.box.width > 0 && (t.box.height < 44 || t.box.width < 44))
+              .map(
+                (t) =>
+                  `${t.label || "(icon)"} ${Math.round(t.box.width)}x${Math.round(t.box.height)}`,
+              ),
+          );
+        expect(await undersized(page, "[role=menuitem]"), "menu items are thumb-sized").toEqual([]);
         await page.keyboard.press("Escape");
+        await page.getByRole("menuitem", { name: "Add GraphQL" }).waitFor({ state: "detached" });
+        expect(
+          await undersized(dialog, "a[href], button, input"),
+          "every control in the picker is thumb-sized",
+        ).toEqual([]);
       });
 
       await step("Picking a service opens its add flow with the preset applied", async () => {
