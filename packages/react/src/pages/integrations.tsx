@@ -1,29 +1,16 @@
-import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Suspense, useMemo, useState, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import * as Exit from "effect/Exit";
 import { PlusIcon } from "lucide-react";
-import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
-import {
-  useIntegrationPlugins,
-  type IntegrationPlugin,
-  type IntegrationPreset,
-} from "@executor-js/sdk/client";
-import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
+import type { Integration } from "@executor-js/sdk/shared";
+import { useIntegrationPlugins, type IntegrationPlugin } from "@executor-js/sdk/client";
+import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { McpInstallCard } from "../components/mcp-install-card";
 import { Button } from "../components/button";
 import { PageContainer, PageHeader } from "../components/page";
-import { Badge } from "../components/badge";
-import { Input } from "../components/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "../components/dialog";
+import { ConnectIntegrationDialog } from "../components/connect-integration-dialog";
 import {
   CardStack,
   CardStackContent,
@@ -31,7 +18,6 @@ import {
   CardStackEntryActions,
   CardStackEntryContent,
   CardStackEntryDescription,
-  CardStackEntryMedia,
   CardStackEntryTitle,
   CardStackHeader,
 } from "../components/card-stack";
@@ -47,24 +33,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
-
-const KIND_TO_PLUGIN_KEY: Record<string, string> = {
-  openapi: "openapi",
-  mcp: "mcp",
-  graphql: "graphql",
-  googleDiscovery: "google",
-};
-
-const detectionRank: Record<IntegrationDetectionResult["confidence"], number> = {
-  high: 3,
-  medium: 2,
-  low: 1,
-};
-
-const bestDetection = (
-  results: readonly IntegrationDetectionResult[],
-): IntegrationDetectionResult | undefined =>
-  [...results].sort((a, b) => detectionRank[b.confidence] - detectionRank[a.confidence])[0];
+import { pluginKeyForIntegrationKind } from "../lib/integration-plugin-keys";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -131,167 +100,8 @@ export function IntegrationsPage() {
         })
       )}
 
-      <ConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
+      <ConnectIntegrationDialog open={connectOpen} onOpenChange={setConnectOpen} />
     </PageContainer>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Connect dialog — URL detection + manual plugin chooser + presets
-// ---------------------------------------------------------------------------
-
-// Heuristic: the input either looks like a URL (auto-detect) or a free-text
-// search query (filter the preset list). Anything with a scheme, slash, or
-// host-with-TLD is treated as a URL; everything else is search.
-const looksLikeUrl = (raw: string): boolean => {
-  const v = raw.trim();
-  if (v.length === 0) return false;
-  if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(v)) return true;
-  if (v.includes("/")) return true;
-  if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?::\d+)?$/i.test(v)) return true;
-  return false;
-};
-
-function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const integrationPlugins = useIntegrationPlugins();
-  const doDetect = useAtomSet(detectIntegration, { mode: "promiseExit" });
-  const navigate = useNavigate();
-
-  const [query, setQuery] = useState("");
-  const [detecting, setDetecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const isUrl = looksLikeUrl(query);
-  const presetSearch = isUrl ? "" : query;
-
-  const closeAndReset = useCallback(() => {
-    setQuery("");
-    setError(null);
-    setDetecting(false);
-    props.onOpenChange(false);
-  }, [props]);
-
-  const handleDetect = useCallback(async () => {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    setDetecting(true);
-    setError(null);
-    // Detection is read-only — it inspects a URL and returns candidates without
-    // mutating the catalog, so it invalidates nothing.
-    const exit = await doDetect({
-      payload: { url: trimmed },
-      reactivityKeys: [],
-    });
-    if (Exit.isFailure(exit)) {
-      trackEvent("integration_detect_submitted", { success: false });
-      setError("Detection failed. Try adding an integration manually.");
-      setDetecting(false);
-      return;
-    }
-    const results = exit.value;
-    if (results.length === 0) {
-      trackEvent("integration_detect_submitted", { success: false });
-      setError("Could not detect an integration type from this URL. Try adding manually.");
-      setDetecting(false);
-      return;
-    }
-    const detected = bestDetection(results);
-    if (!detected) {
-      trackEvent("integration_detect_submitted", { success: false });
-      setError("Could not detect an integration type from this URL. Try adding manually.");
-      setDetecting(false);
-      return;
-    }
-    trackEvent("integration_detect_submitted", {
-      success: true,
-      detected_kind: detected.kind,
-      confidence: detected.confidence,
-    });
-    const pluginKey = KIND_TO_PLUGIN_KEY[detected.kind] ?? detected.kind;
-    if (integrationPlugins.some((p) => p.key === pluginKey)) {
-      trackEvent("integration_add_started", { plugin_key: pluginKey, via: "detect" });
-      closeAndReset();
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey },
-        search: { url: trimmed, namespace: detected.slug },
-      });
-    } else {
-      setError(`Detected integration type "${detected.kind}" but no plugin is available for it.`);
-      setDetecting(false);
-    }
-  }, [query, doDetect, navigate, integrationPlugins, closeAndReset]);
-
-  return (
-    <Dialog
-      open={props.open}
-      onOpenChange={(open) => {
-        if (!open) closeAndReset();
-        else props.onOpenChange(open);
-      }}
-    >
-      <DialogContent className="sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle>Connect an integration</DialogTitle>
-          <DialogDescription>
-            Search the preset library, or paste a URL to auto-detect.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="flex flex-col gap-2">
-            <div className="flex gap-2">
-              <Input
-                type="text"
-                value={query}
-                onChange={(e) => {
-                  setQuery((e.target as HTMLInputElement).value);
-                  setError(null);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && isUrl) void handleDetect();
-                }}
-                placeholder="Search or paste a URL…"
-                disabled={detecting}
-                className="flex-1"
-              />
-              {isUrl && (
-                <Button onClick={() => void handleDetect()} disabled={detecting || !query.trim()}>
-                  {detecting ? "Detecting..." : "Detect"}
-                </Button>
-              )}
-            </div>
-            {error && <p className="text-xs text-destructive">{error}</p>}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <p className="text-xs font-medium text-foreground/80">Or add manually</p>
-            <div className="flex flex-wrap gap-2">
-              {integrationPlugins.map((p) => (
-                <Link
-                  key={p.key}
-                  to="/{-$orgSlug}/integrations/add/$pluginKey"
-                  params={{ pluginKey: p.key }}
-                  onClick={() => {
-                    trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
-                    closeAndReset();
-                  }}
-                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
-                >
-                  {p.label}
-                </Link>
-              ))}
-            </div>
-          </div>
-
-          <PresetGrid
-            plugins={integrationPlugins}
-            onPick={closeAndReset}
-            searchQuery={presetSearch}
-          />
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -318,115 +128,6 @@ function EmptyIntegrations(props: { onConnect: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Preset grid (for inside the Connect dialog)
-// ---------------------------------------------------------------------------
-
-type PresetEntry = {
-  preset: IntegrationPreset;
-  pluginKey: string;
-  pluginLabel: string;
-};
-
-function PresetGrid(props: {
-  plugins: readonly IntegrationPlugin[];
-  onPick: () => void;
-  /** Controlled filter query forwarded from the dialog's unified
-   *  search/URL input. Empty string disables filtering. */
-  searchQuery?: string;
-}) {
-  const allPresets = useMemo(() => {
-    const entries: PresetEntry[] = [];
-    for (const plugin of props.plugins) {
-      for (const preset of plugin.presets ?? []) {
-        entries.push({
-          preset,
-          pluginKey: plugin.key,
-          pluginLabel: plugin.label,
-        });
-      }
-    }
-    return entries;
-  }, [props.plugins]);
-
-  const filtered = useMemo(() => {
-    const q = (props.searchQuery ?? "").trim().toLowerCase();
-    if (q.length === 0) return allPresets;
-    return allPresets.filter(({ preset, pluginLabel }) => {
-      const corpus =
-        `${preset.name} ${preset.summary ?? ""} ${preset.family ?? ""} ${preset.specFormat ?? ""} ${pluginLabel}`.toLowerCase();
-      return corpus.includes(q);
-    });
-  }, [allPresets, props.searchQuery]);
-
-  if (allPresets.length === 0) return null;
-
-  return (
-    <div className="flex min-w-0 flex-col gap-2">
-      <p className="text-xs font-medium text-foreground/80">Popular integrations</p>
-      <CardStack className="min-w-0">
-        {/* Fixed height keeps the dialog stable as the user filters; the
-         *  inner area scrolls when the list overflows and shows an empty
-         *  state when no presets match. */}
-        <CardStackContent className="h-64 overflow-y-auto">
-          {filtered.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-1 px-4 py-6 text-center">
-              <p className="text-sm text-muted-foreground">No matching presets</p>
-              <p className="text-xs text-muted-foreground/70">
-                Paste a URL above to auto-detect, or pick an integration type manually.
-              </p>
-            </div>
-          ) : (
-            filtered.map(({ preset, pluginKey, pluginLabel }) => {
-              const search: Record<string, string> = { preset: preset.id };
-              if (preset.url) search.url = preset.url;
-              return (
-                <CardStackEntry key={`${pluginKey}-${preset.id}`} asChild>
-                  <Link
-                    to="/{-$orgSlug}/integrations/add/$pluginKey"
-                    params={{ pluginKey }}
-                    search={search}
-                    onClick={() => {
-                      trackEvent("integration_add_started", {
-                        plugin_key: pluginKey,
-                        via: "preset",
-                        preset_id: preset.id,
-                      });
-                      props.onPick();
-                    }}
-                  >
-                    <CardStackEntryMedia>
-                      {preset.icon ? (
-                        <img
-                          src={preset.icon}
-                          alt=""
-                          className="size-5 object-contain"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <svg viewBox="0 0 16 16" className="size-3.5" fill="none">
-                          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
-                        </svg>
-                      )}
-                    </CardStackEntryMedia>
-                    <CardStackEntryContent>
-                      <CardStackEntryTitle>{preset.name}</CardStackEntryTitle>
-                      <CardStackEntryDescription>{preset.summary}</CardStackEntryDescription>
-                    </CardStackEntryContent>
-                    <CardStackEntryActions>
-                      <Badge variant="secondary">{pluginLabel}</Badge>
-                    </CardStackEntryActions>
-                  </Link>
-                </CardStackEntry>
-              );
-            })
-          )}
-        </CardStackContent>
-      </CardStack>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Integration grid — flat list of catalog integrations, click-through to detail
 // ---------------------------------------------------------------------------
 
@@ -441,7 +142,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
   const items = useMemo(() => groupIntegrations(props.integrations), [props.integrations]);
 
   const renderEntry = (integration: Integration) => {
-    const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
+    const pluginKey = pluginKeyForIntegrationKind(integration.kind);
     const plugin = pluginByKind.get(pluginKey);
     const SummaryComponent = plugin?.summary;
     const slug = String(integration.slug);

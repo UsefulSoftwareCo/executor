@@ -3,6 +3,8 @@ import { useState } from "react";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { getDomain } from "tldts";
 
+import { pluginKeyForIntegrationKind } from "../lib/integration-plugin-keys";
+
 // ---------------------------------------------------------------------------
 // IntegrationFavicon — renders a small favicon derived from an integration URL.
 // Falls back to a neutral icon if the URL is missing or the image fails to load.
@@ -27,13 +29,6 @@ export function integrationLocalIconUrl(integrationId: string | undefined): stri
   if (integrationId !== "executor") return null;
   return "/favicon-32.png";
 }
-
-const KIND_TO_PLUGIN_KEY: Record<string, string> = {
-  openapi: "openapi",
-  mcp: "mcp",
-  graphql: "graphql",
-  googleDiscovery: "google",
-};
 
 const normalizeUrl = (url: string | undefined): string | null => {
   if (!url) return null;
@@ -104,7 +99,7 @@ export function integrationPresetIconUrl(
   },
   integrationPlugins: readonly IntegrationPlugin[],
 ): string | null {
-  const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
+  const pluginKey = pluginKeyForIntegrationKind(integration.kind);
   const plugin = integrationPlugins.find((p) => p.key === pluginKey);
   const presets = plugin?.presets ?? [];
   const exactSlugIcon = presets.find((p) => p.defaultSlug === integration.id)?.icon;

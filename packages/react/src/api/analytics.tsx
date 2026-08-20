@@ -42,6 +42,9 @@ export interface AnalyticsEvents {
     via: "detect" | "manual" | "preset" | "command_palette";
     preset_id?: string;
   };
+  /** A multi-service provider card was opened in the connect picker. `family`
+   *  is a curated catalog value (e.g. "google"), never user-entered text. */
+  integration_picker_family_opened: { family: string };
   integration_added: { plugin_key: string; integration_slug?: string };
   integration_add_cancelled: { plugin_key: string };
   integration_removed: { integration_slug: string; success: boolean };
