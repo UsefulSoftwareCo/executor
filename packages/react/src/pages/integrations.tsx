@@ -451,23 +451,26 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           )}
         </div>
 
-        {/* The chips above filter; these navigate. Same three protocol names,
-         *  so they must not wear the same pill. */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <p className="text-xs text-muted-foreground">Not listed? Add manually:</p>
+        {/* Pointing your own spec, server, or endpoint at Executor is a first-
+         *  class way in, not a footnote to the library — so this reads as three
+         *  actions. The verb is what keeps "Add MCP" from being mistaken for
+         *  the "MCP 13" facet above. */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          <p className="mr-1 text-sm font-medium">Not in the library?</p>
           {integrationPlugins.map((p) => (
-            <Link
-              key={p.key}
-              to="/{-$orgSlug}/integrations/add/$pluginKey"
-              params={{ pluginKey: p.key }}
-              onClick={() => {
-                trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
-                closeDialog();
-              }}
-              className="text-xs font-medium underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
-            >
-              {p.label}
-            </Link>
+            <Button key={p.key} variant="outline" asChild>
+              <Link
+                to="/{-$orgSlug}/integrations/add/$pluginKey"
+                params={{ pluginKey: p.key }}
+                onClick={() => {
+                  trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
+                  closeDialog();
+                }}
+              >
+                <PlusIcon />
+                Add {p.label}
+              </Link>
+            </Button>
           ))}
         </div>
       </DialogContent>
