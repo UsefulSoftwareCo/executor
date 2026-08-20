@@ -14,15 +14,19 @@ interface FilterTabsProps<T extends string = string> {
   tabs: FilterTab<T>[];
   value: T;
   onChange: (value: T) => void;
+  /** For callers that need the row to behave differently when it runs out of
+   *  width — e.g. scroll instead of wrap in a narrow dialog. */
+  className?: string;
 }
 
 export function FilterTabs<T extends string = string>({
   tabs,
   value,
   onChange,
+  className,
 }: FilterTabsProps<T>) {
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className={cn("flex flex-wrap items-center gap-1", className)}>
       {tabs.map((tab) => {
         const isActive = value === tab.value;
         return (

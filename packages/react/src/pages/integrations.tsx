@@ -15,6 +15,12 @@ import { Badge } from "../components/badge";
 import { Input } from "../components/input";
 import { FilterTabs } from "../components/filter-tabs";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/dropdown-menu";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -240,6 +246,22 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
     [],
   );
 
+  /** One "add this protocol by hand" link, worn as a button on a wide dialog
+   *  and as a menu item on a narrow one. */
+  const manualAddLink = (plugin: IntegrationPlugin) => (
+    <Link
+      to="/{-$orgSlug}/integrations/add/$pluginKey"
+      params={{ pluginKey: plugin.key }}
+      onClick={() => {
+        trackEvent("integration_add_started", { plugin_key: plugin.key, via: "manual" });
+        closeDialog();
+      }}
+    >
+      <PlusIcon />
+      Add {plugin.label}
+    </Link>
+  );
+
   const handleDetect = useCallback(async () => {
     const trimmed = query.trim();
     if (!trimmed) return;
@@ -329,6 +351,9 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
          *  list that isn't it, contradicting the "N services" line below. */}
         {openFamily === null && (
           <FilterTabs
+            // A narrow dialog would wrap the last protocol onto its own row and
+            // push everything below it; the row scrolls sideways instead.
+            className="flex-nowrap overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             tabs={facets.map((facet) => ({
               label: facet.label,
               value: facet.key ?? ALL_PROTOCOLS,
@@ -379,7 +404,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-px bg-border pb-px sm:grid-cols-2">
               {items.map((item) =>
                 item.type === "family" ? (
                   <Button
@@ -455,26 +480,34 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
         </div>
 
         {/* Pointing your own spec, server, or endpoint at Executor is a first-
-         *  class way in, not a footnote to the library — so this reads as three
+         *  class way in, not a footnote to the library — so this reads as real
          *  actions. The verb is what keeps "Add MCP" from being mistaken for
-         *  the "MCP 13" facet above. */}
-        <div className="flex flex-wrap items-center gap-2">
+         *  the "MCP 13" facet above. Narrow enough and one row of them would
+         *  wrap into two, so there they become a single menu instead. */}
+        <div className="flex items-center gap-2">
           <p className="mr-1 text-sm font-medium">Not in the library?</p>
-          {integrationPlugins.map((p) => (
-            <Button key={p.key} variant="outline" asChild>
-              <Link
-                to="/{-$orgSlug}/integrations/add/$pluginKey"
-                params={{ pluginKey: p.key }}
-                onClick={() => {
-                  trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
-                  closeDialog();
-                }}
-              >
+          <div className="hidden gap-2 sm:flex">
+            {integrationPlugins.map((plugin) => (
+              <Button key={plugin.key} variant="outline" asChild>
+                {manualAddLink(plugin)}
+              </Button>
+            ))}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="sm:hidden">
                 <PlusIcon />
-                Add {p.label}
-              </Link>
-            </Button>
-          ))}
+                Add manually
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {integrationPlugins.map((plugin) => (
+                <DropdownMenuItem key={plugin.key} asChild>
+                  {manualAddLink(plugin)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </DialogContent>
     </Dialog>

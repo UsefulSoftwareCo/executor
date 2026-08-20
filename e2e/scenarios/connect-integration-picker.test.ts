@@ -67,7 +67,25 @@ scenario(
         expect(await dialog.getByRole("link", { name: /^Figma\b/ }).count()).toBe(0);
       });
 
+      await step("On a phone the filters and the add path stay on one row", async () => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        const facetTops = await dialog
+          .getByRole("button", { name: /^(All|OpenAPI|MCP|GraphQL)\s+\d+$/ })
+          .evaluateAll((chips) => chips.map((chip) => chip.getBoundingClientRect().top));
+        expect(facetTops.length).toBeGreaterThan(1);
+        expect(new Set(facetTops).size, "the facets scroll sideways, they do not wrap").toBe(1);
+
+        // Three protocol buttons would wrap into a second row down here, so
+        // they collapse into one menu that opens the same links.
+        await dialog.getByRole("button", { name: "Add manually" }).waitFor();
+        expect(await dialog.getByRole("link", { name: "Add OpenAPI" }).isVisible()).toBe(false);
+        await dialog.getByRole("button", { name: "Add manually" }).click();
+        await page.getByRole("menuitem", { name: "Add GraphQL" }).waitFor();
+        await page.keyboard.press("Escape");
+      });
+
       await step("Picking a service opens its add flow with the preset applied", async () => {
+        await page.setViewportSize({ width: 1280, height: 800 });
         await allFacet().click();
         await search().fill("gmail");
         await dialog.getByRole("link", { name: /^Gmail\b/ }).click();
