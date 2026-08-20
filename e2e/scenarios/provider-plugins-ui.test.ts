@@ -3,7 +3,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
-import { clickToReveal } from "../src/surfaces/browser";
+import { clickToReveal, visit } from "../src/surfaces/browser";
 
 scenario(
   "Provider catalog · Google and Microsoft services are OpenAPI presets",
@@ -15,7 +15,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the integrations picker", async () => {
-        await page.goto("/integrations", { waitUntil: "networkidle" });
+        await visit(page, "/integrations");
         await clickToReveal(
           page.getByRole("button", { name: "Connect" }),
           page.getByRole("dialog", { name: "Connect an integration" }),

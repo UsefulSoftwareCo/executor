@@ -27,6 +27,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -161,7 +162,7 @@ scenario(
         const internalError = JSON.stringify({ _tag: "InternalError", traceId: "policy-write" });
 
         await step("Open the integration's Tools tab", async () => {
-          await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${integration}`);
           await page.getByRole("tab", { name: "Tools" }).click();
           await sectionFor(alpha).waitFor();
           await sectionFor(beta).waitFor();
@@ -288,7 +289,7 @@ scenario(
         });
 
         await step("Both rules are manageable rows on the Policies page", async () => {
-          await page.goto("/policies", { waitUntil: "networkidle" });
+          await visit(page, "/policies");
           await page.getByText(leafPattern, { exact: true }).waitFor();
           await page.getByText(categoryPattern, { exact: true }).waitFor();
         });

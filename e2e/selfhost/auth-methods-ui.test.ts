@@ -23,6 +23,7 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
@@ -160,9 +161,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the add-MCP flow pointed at the server", async () => {
-          await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           // Generous timeout: the debounced probe request can queue behind a
           // busy dev server under CI load, and there is no clean client-side
           // re-trigger to poke it mid-flight.
@@ -216,9 +215,7 @@ scenario(
       yield* Effect.gen(function* () {
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the add-MCP flow pointed at the Slack-shaped server", async () => {
-            await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-              waitUntil: "networkidle",
-            });
+            await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
             await page.getByText("How does this server authenticate?").waitFor({ timeout: 90_000 });
             await page.getByText("OAuth metadata is discovered from this server").waitFor();
           });
@@ -324,9 +321,7 @@ scenario(
       yield* Effect.gen(function* () {
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the integration's connect modal", async () => {
-            await page.goto(`/integrations/${slug}`, {
-              waitUntil: "networkidle",
-            });
+            await visit(page, `/integrations/${slug}`);
             await page.getByRole("button", { name: "Add connection" }).first().click();
             await page.getByRole("tab", { name: "OAuth" }).waitFor();
           });
@@ -426,9 +421,7 @@ scenario(
       yield* Effect.gen(function* () {
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the integration's connect modal", async () => {
-            await page.goto(`/integrations/${slug}`, {
-              waitUntil: "networkidle",
-            });
+            await visit(page, `/integrations/${slug}`);
             await page.getByRole("button", { name: "Add connection" }).first().click();
             await page.getByRole("tab", { name: "API key (Authorization)" }).waitFor();
           });

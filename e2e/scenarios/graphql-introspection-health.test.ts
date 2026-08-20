@@ -11,6 +11,7 @@ import { variable } from "@executor-js/sdk/http-auth";
 import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([graphqlHttpPlugin()] as const);
 const unique = (prefix: string): string => `${prefix}_${randomBytes(4).toString("hex")}`;
@@ -30,11 +31,18 @@ scenario(
       connectEmulator({ baseUrl: emulatorBaseUrl, service: "github" }),
     );
 
+    // A budget, not a count: nothing in this scenario depends on how many
+    // times the connect flow introspects, and the emulator's answer when the
+    // budget runs out is not a neutral pass-through — an unauthenticated
+    // GraphQL POST to the real handler is GitHub-shaped, so it comes back 403
+    // "API rate limit exceeded". The UI then honestly reports HTTP 403 and the
+    // assertion below fails on a message that has nothing to do with the
+    // product. Arm enough that one connect attempt cannot exhaust it.
     yield* Effect.promise(() =>
       emulator.faults.arm({
         match: { method: "POST", pathPattern: "/graphql" },
         response: { status: 401, body: { message: "Bad credentials" } },
-        times: 10,
+        times: 100,
       }),
     );
 
@@ -56,9 +64,7 @@ scenario(
     yield* Effect.gen(function* () {
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the connection flow", async () => {
-          await page.goto(`/integrations/${slug}?addAccount=1&owner=org&template=header`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/${slug}?addAccount=1&owner=org&template=header`);
           await page.getByRole("heading", { name: /Add connection · GraphQL health/ }).waitFor();
         });
 
@@ -97,7 +103,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("A failed existing connection explains the empty tool catalogue", async () => {
-          await page.goto(`/integrations/${slug}?tab=tools`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}?tab=tools`);
           await page.getByText("Connection rejected", { exact: true }).first().waitFor();
           await page
             .getByText("The endpoint rejected the credential with HTTP 401.", {

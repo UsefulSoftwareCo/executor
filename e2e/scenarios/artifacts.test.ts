@@ -24,6 +24,7 @@ import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([] as const);
 
@@ -263,7 +264,7 @@ scenario(
 
         await step("Open the artifact link the agent handed over", async () => {
           await recordHandshakeOrdering(page);
-          await page.goto(url, { waitUntil: "networkidle" });
+          await visit(page, url);
           consoleStyleBefore = await readConsoleStyle(page);
         });
 
@@ -596,7 +597,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Artifacts tab", async () => {
-          await page.goto("/artifacts", { waitUntil: "networkidle" });
+          await visit(page, "/artifacts");
           await page.getByRole("link", { name: `Open artifact ${originalTitle}` }).waitFor({
             timeout: 20_000,
           });
@@ -634,7 +635,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Delete the artifact from the list", async () => {
-          await page.goto("/artifacts", { waitUntil: "networkidle" });
+          await visit(page, "/artifacts");
           const card = page.locator('[data-slot="artifact-card"]').filter({
             hasText: renamedTitle,
           });
@@ -738,7 +739,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("The artifact's own URL shows the updated component", async () => {
-          await page.goto(`/artifacts/${artifactId}`, { waitUntil: "networkidle" });
+          await visit(page, `/artifacts/${artifactId}`);
           const content = artifactContent(page);
           await content
             .locator('[data-testid="artifact-marker"]')

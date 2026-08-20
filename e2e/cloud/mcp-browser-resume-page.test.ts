@@ -18,6 +18,7 @@ import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import { parseBrowserApproval } from "../src/surfaces/mcp";
 import type { Identity } from "../src/target";
+import { visit } from "../src/surfaces/browser";
 
 const coreApi = composePluginApi([] as const);
 
@@ -224,7 +225,7 @@ scenario(
             ),
             browser.session(identity, async ({ page, step }) => {
               await step("Open the paused execution approval page", async () => {
-                await page.goto(pathWithSearch(approval.approvalUrl), { waitUntil: "networkidle" });
+                await visit(page, pathWithSearch(approval.approvalUrl));
                 await page.getByText("User approval required").waitFor();
               });
 

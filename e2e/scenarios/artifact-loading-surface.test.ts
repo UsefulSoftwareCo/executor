@@ -43,6 +43,7 @@ import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([] as const);
 
@@ -230,7 +231,7 @@ scenario(
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Artifacts gallery", async () => {
           await startSampling(page);
-          await page.goto(`${target.baseUrl}/artifacts`, { waitUntil: "networkidle" });
+          await visit(page, `${target.baseUrl}/artifacts`);
           await page
             .getByRole("link", { name: `Open artifact ${title}` })
             .waitFor({ timeout: 30_000 });
