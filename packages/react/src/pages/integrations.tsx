@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -175,7 +175,21 @@ const PresetIcon = (props: { src?: string; alt?: string; className?: string }) =
 // where multi-service providers collapse into one card you can open.
 // ---------------------------------------------------------------------------
 
-function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+interface ConnectIntegrationDialogProps {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+}
+
+/** The connect dialog is self-contained: the search text, the protocol facet,
+ *  the open provider card, and the in-flight URL detection all live in
+ *  `ConnectIntegrationDialogView`, so closing genuinely unmounts them rather
+ *  than hand-resetting a list that grows every time the dialog gains a control.
+ *  The page owns only whether it is open. */
+function ConnectIntegrationDialog(props: ConnectIntegrationDialogProps) {
+  return props.open ? <ConnectIntegrationDialogView {...props} /> : null;
+}
+
+function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
   const integrationPlugins = useIntegrationPlugins();
   const doDetect = useAtomSet(detectIntegration, { mode: "promiseExit" });
   const navigate = useNavigate();
@@ -211,14 +225,21 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
   const resultsRef = useRef<HTMLDivElement>(null);
   const scrollResultsToTop = () => resultsRef.current?.scrollTo({ top: 0 });
 
-  const closeAndReset = useCallback(() => {
-    setQuery("");
-    setPluginFilter("all");
-    setOpenFamily(null);
-    setError(null);
-    setDetecting(false);
-    props.onOpenChange(false);
-  }, [props]);
+  // Just ask the page to close. Reopening remounts this view (see
+  // `ConnectIntegrationDialog`), so there is nothing to hand-reset — the query,
+  // the facet, and the open provider die with this instance.
+  const closeDialog = useCallback(() => props.onOpenChange(false), [props]);
+
+  // Unmounting cannot undo one thing: `handleDetect`'s continuation runs to
+  // completion whatever happens to this view, and it navigates. Closing the
+  // dialog withdraws the question, so the answer must land nowhere.
+  const detectionWanted = useRef(true);
+  useEffect(
+    () => () => {
+      detectionWanted.current = false;
+    },
+    [],
+  );
 
   const handleDetect = useCallback(async () => {
     const trimmed = query.trim();
@@ -228,6 +249,7 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
     // Detection is read-only — it inspects a URL and returns candidates without
     // mutating the catalog, so it invalidates nothing.
     const exit = await doDetect({ payload: { url: trimmed }, reactivityKeys: [] });
+    if (!detectionWanted.current) return;
     if (Exit.isFailure(exit)) {
       trackEvent("integration_detect_submitted", { success: false });
       setError("Detection failed. Try adding an integration manually.");
@@ -249,7 +271,7 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
     const pluginKey = pluginKeyForIntegrationKind(detected.kind);
     if (integrationPlugins.some((p) => p.key === pluginKey)) {
       trackEvent("integration_add_started", { plugin_key: pluginKey, via: "detect" });
-      closeAndReset();
+      closeDialog();
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
@@ -259,14 +281,13 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
       setError(`Detected integration type "${detected.kind}" but no plugin is available for it.`);
       setDetecting(false);
     }
-  }, [query, doDetect, navigate, integrationPlugins, closeAndReset]);
+  }, [query, doDetect, navigate, integrationPlugins, closeDialog]);
 
   return (
     <Dialog
-      open={props.open}
+      open
       onOpenChange={(open) => {
-        if (!open) closeAndReset();
-        else props.onOpenChange(open);
+        if (!open) closeDialog();
       }}
     >
       <DialogContent className="flex max-h-[min(46rem,92vh)] flex-col gap-4 sm:max-w-[52rem]">
@@ -402,7 +423,7 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
                         via: "preset",
                         preset_id: item.entry.preset.id,
                       });
-                      closeAndReset();
+                      closeDialog();
                     }}
                     className="flex items-center gap-3 bg-background px-4 py-3 transition-colors hover:bg-muted"
                   >
@@ -436,7 +457,7 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
               params={{ pluginKey: p.key }}
               onClick={() => {
                 trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
-                closeAndReset();
+                closeDialog();
               }}
               className="rounded-md border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted"
             >
