@@ -22,7 +22,7 @@ import {
   type Owner,
 } from "./ids";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
-import { HealthCheckResult } from "./health-check";
+import { HealthCheckResult, isToolSyncHealth } from "./health-check";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
 
@@ -408,6 +408,26 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 
+/** How long a non-healthy persisted verdict may be served to an agent before
+ *  it is re-verified. Verdicts are sticky — nothing re-probes them between UI
+ *  visits — so without read-time revalidation an agent keeps reporting
+ *  "unhealthy, reconnect" for a connection that recovered long ago (or was
+ *  never really down: invocation auto-refreshes OAuth tokens, so a stale
+ *  "expired" verdict often describes a working connection). The window is
+ *  short so recovery shows on the next read, but bounds repeated lists from
+ *  hammering a genuinely-down upstream. Healthy verdicts are deliberately
+ *  served as-is: they mislead no one into reconnect guidance, and the UI
+ *  owns their background revalidation. */
+const NON_HEALTHY_REVALIDATE_MS = 60 * 1000;
+
+/** Whether an agent read must re-verify a persisted verdict before reporting
+ *  it. Only probe-refutable non-healthy verdicts qualify: `unknown` and
+ *  missing verdicts carry no reconnect implication, and a tool-sync failure
+ *  verdict cannot be refuted by a credential probe (a successful sync clears
+ *  it instead). */
+const needsAgentReadRevalidation = (last: HealthCheckResult | null | undefined): boolean =>
+  (last?.status === "expired" || last?.status === "degraded") && !isToolSyncHealth(last);
+
 const toolToOutput = (toolRow: Tool) => ({
   address: String(toolRow.address),
   owner: toolRow.owner,
@@ -593,20 +613,45 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           inputSchema: ConnectionsListInputStd,
           outputSchema: ConnectionsListOutputStd,
           execute: (input: typeof ConnectionsListInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.connections.list({
+            Effect.gen(function* () {
+              const connections = yield* ctx.connections.list({
                 integration:
                   input.integration === undefined
                     ? undefined
                     : IntegrationSlug.make(input.integration),
                 owner: input.owner === undefined ? undefined : (input.owner as Owner),
-              }),
-              (connections) => ({
-                connections: connections.map((connection) =>
+              });
+              // Re-verify sticky non-healthy verdicts before reporting them
+              // (the same probe as the UI's "Check now", server-cached via
+              // `ifStaleMs` so repeated lists collapse to one probe per
+              // window). Quiet on probe failure: the persisted verdict is
+              // still the best known state, exactly like the UI surfaces.
+              const revalidated = yield* Effect.forEach(
+                connections,
+                (connection) =>
+                  needsAgentReadRevalidation(connection.lastHealth)
+                    ? ctx.connections
+                        .checkHealth(
+                          {
+                            owner: connection.owner,
+                            integration: connection.integration,
+                            name: connection.name,
+                          },
+                          { ifStaleMs: NON_HEALTHY_REVALIDATE_MS },
+                        )
+                        .pipe(
+                          Effect.map((health) => ({ ...connection, lastHealth: health })),
+                          Effect.catch(() => Effect.succeed(connection)),
+                        )
+                    : Effect.succeed(connection),
+                { concurrency: 4 },
+              );
+              return {
+                connections: revalidated.map((connection) =>
                   connectionToListItem(connection, input.verbose === true),
                 ),
-              }),
-            ),
+              };
+            }),
         }),
         tool({
           name: "connections.create",

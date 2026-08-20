@@ -27,7 +27,12 @@ import type {
   UpdateConnectionInput,
   ValidateConnectionInput,
 } from "./connection";
-import { HealthCheckResult, HealthCheckSpec } from "./health-check";
+import {
+  HealthCheckResult,
+  HealthCheckSpec,
+  isToolSyncHealth,
+  toolSyncHealthDetailPrefix,
+} from "./health-check";
 import type { HealthCheckCandidate } from "./health-check";
 import {
   ARTIFACT_SUMMARY_COLUMNS,
@@ -168,7 +173,7 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult } from "./tool-result";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
@@ -2541,8 +2546,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
-    const toolSyncHealthDetailPrefix = "Tool sync failing";
-
     const toolSyncHealth = (reason: string): HealthCheckResult => ({
       status: "degraded",
       checkedAt: Date.now(),
@@ -2576,8 +2579,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("name", "=", String(ref.name)),
           );
-        const isToolSyncHealth = (health: HealthCheckResult | null): boolean =>
-          health?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
         const syncedSet = (row: ConnectionRow | null) => {
           const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
           return isToolSyncHealth(health)
@@ -3241,6 +3242,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           set: { last_health: result, updated_at: new Date() },
         })
         .pipe(Effect.ignore);
+
+    /** Heal-on-use: a successful invocation is stronger evidence about the
+     *  credential than any persisted probe verdict, so flip a stale non-healthy
+     *  verdict back to healthy from real traffic instead of waiting for the
+     *  next probe. Skipped for tool-sync verdicts (a working credential does
+     *  not refute a failed tool sync; only a successful sync clears those) and
+     *  for grants recorded invalid_grant-dead (the call succeeded on the old
+     *  access token's remaining lifetime — reconnect is still required, so a
+     *  healthy verdict would mislead). Best-effort, like every verdict write. */
+    const healPersistedHealthOnUse = (row: ConnectionRow, result: unknown): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (isToolResult(result) && !result.ok) return Effect.void;
+        const last = Option.getOrNull(decodeLastHealth(row.last_health));
+        if (last === null || last.status === "healthy" || last.status === "unknown") {
+          return Effect.void;
+        }
+        if (isToolSyncHealth(last)) return Effect.void;
+        if (oauthReauthRequiredFromProviderState(row.provider_state) !== null) return Effect.void;
+        const ref: ConnectionRef = {
+          owner: row.owner as Owner,
+          integration: IntegrationSlug.make(row.integration),
+          name: ConnectionName.make(row.name),
+        };
+        return persistHealthResult(ref, {
+          status: "healthy",
+          checkedAt: Date.now(),
+          detail: "Tool invocation succeeded.",
+        });
+      });
 
     const healthFromCredentialResolutionError = (
       err: CredentialResolutionError,
@@ -4541,16 +4571,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // If the retry also fails its result stands, so a genuinely dead grant
         // still surfaces the upstream's own auth failure and its reconnect
         // guidance rather than a masked one.
-        if (!isUnauthorizedToolFailure(first)) return first;
-        const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
-          // A failed re-mint is not this call's failure to report: the upstream
-          // already produced an auth failure with recovery guidance, which is
-          // strictly more actionable than a refresh-plumbing error. Keep it.
-          Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
-        );
-        if (!refreshed) return first;
-        yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
-        return yield* invokeWith(refreshed);
+        const result = yield* Effect.gen(function* () {
+          if (!isUnauthorizedToolFailure(first)) return first;
+          const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
+            // A failed re-mint is not this call's failure to report: the upstream
+            // already produced an auth failure with recovery guidance, which is
+            // strictly more actionable than a refresh-plumbing error. Keep it.
+            Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
+          );
+          if (!refreshed) return first;
+          yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
+          return yield* invokeWith(refreshed);
+        });
+        yield* healPersistedHealthOnUse(connectionRow, result);
+        return result;
       }).pipe(
         // Expected tool failures (`ToolResult.fail`) resolve through the
         // success channel, so the tracer alone would record them as healthy
@@ -4709,6 +4743,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           update: (ref, input) => connectionsUpdate(ref, input),
           remove: (ref) => connectionsRemove(ref),
           refresh: (ref) => connectionsRefresh(ref),
+          checkHealth: (ref, options) => connectionCheckHealth(ref, options),
           markToolsStale: (ref) => connectionsMarkToolsStale(ref),
           resolveValue: (ref) => resolveConnectionValueByRef(ref),
         },

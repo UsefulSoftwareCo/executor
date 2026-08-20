@@ -84,6 +84,15 @@ export const HealthCheckResult = Schema.Struct({
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
+/** Detail prefix that marks a verdict as produced by tool-catalog sync, not a
+ *  credential probe. Shared vocabulary: sync stamps it, and the surfaces that
+ *  auto-revalidate verdicts skip these — a credential probe cannot refute a
+ *  failed tool sync, and a later successful sync clears the verdict itself. */
+export const toolSyncHealthDetailPrefix = "Tool sync failing";
+
+export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): boolean =>
+  result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
+
 // ---------------------------------------------------------------------------
 // HealthCheckCandidate: one operation the user can pick as the health check,
 // projected from the plugin's stored operations. The editor lists these ranked

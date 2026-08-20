@@ -231,6 +231,17 @@ export interface PluginCtx<TStore = unknown> {
       readonly Tool[],
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     >;
+    /** Run the integration's declared health check against a saved connection
+     *  and persist the verdict. `ifStaleMs` serves the persisted verdict when
+     *  younger than that window, so concurrent readers collapse to one probe;
+     *  omit it to always probe. */
+    readonly checkHealth: (
+      ref: ConnectionRef,
+      options?: { readonly ifStaleMs?: number },
+    ) => Effect.Effect<
+      HealthCheckResult,
+      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+    >;
     /** Mark a connection's persisted tool catalog stale (clears its sync
      *  stamp) without re-listing inline. The next tools read re-produces it.
      *  For signals that arrive mid-invocation — e.g. an MCP server sending

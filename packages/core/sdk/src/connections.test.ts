@@ -14,6 +14,7 @@ import { createExecutor } from "./executor";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
+import { ToolResult } from "./tool-result";
 
 // removed: v1 connection-refresh lifecycle, ConnectionProvider.refresh,
 // SecretProvider, accessToken token-refresh + in-flight dedup tests — the v2
@@ -715,6 +716,195 @@ describe("execute over a connection", () => {
       });
       const out = yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
       expect(out).toEqual({ ran: "deploy", value: "secret-token" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Sticky-verdict repair: agents read `lastHealth` through coreTools
+// connections.list, and nothing else ever re-probes a persisted verdict, so a
+// transient failure used to read as "unhealthy, reconnect" until a human
+// clicked "Check now". These cover the two repair paths: read-time
+// revalidation on the agent list, and heal-on-use from a successful
+// invocation.
+// ---------------------------------------------------------------------------
+
+const CORE_LIST = ToolAddress.make("executor.coreTools.connections.list");
+const STALE_MS = 5 * 60 * 1000;
+
+type ListedConnections = {
+  readonly connections: readonly {
+    readonly name: string;
+    readonly lastHealth: { readonly status: string; readonly detail?: string } | null;
+  }[];
+};
+
+const makeHealthHarness = () => {
+  const counters = { probes: 0 };
+  const plugin = definePlugin(() => ({
+    id: "healthdemo" as const,
+    credentialProviders: [memoryProvider()],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+    invokeTool: ({ toolRow, credential, args }) =>
+      Effect.succeed(
+        (args as { fail?: boolean }).fail === true
+          ? ToolResult.fail({ code: "upstream_error", message: "boom" })
+          : { ran: toolRow.name, value: credential.value },
+      ),
+    checkHealth: () =>
+      Effect.sync(() => {
+        counters.probes += 1;
+        return { status: "healthy" as const, checkedAt: Date.now(), detail: "probe ok" };
+      }),
+    extension: (ctx) => ({
+      seed: () =>
+        ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+    }),
+  }))();
+
+  return Effect.gen(function* () {
+    const config = makeTestConfig({
+      plugins: [plugin] as const,
+      coreTools: { webBaseUrl: "http://localhost:3000" },
+    });
+    const executor = yield* createExecutor(config);
+    yield* executor.healthdemo.seed();
+    yield* executor.connections.create({
+      owner: "org",
+      name: ConnectionName.make("main"),
+      integration: INTEG,
+      template: TEMPLATE,
+      value: "secret-token",
+    });
+    const stamp = (set: Record<string, unknown>) =>
+      Effect.promise(() =>
+        config.db.updateMany("connection", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+          set,
+        }),
+      );
+    const persisted = () =>
+      executor.connections.get({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+    return { executor, counters, stamp, persisted } as const;
+  });
+};
+
+describe("agent read revalidation (coreTools connections.list)", () => {
+  it.effect("re-probes a stale non-healthy verdict and reports + persists the fresh one", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+
+  it.effect("serves a fresh non-healthy verdict without re-probing", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "HTTP 401" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+    }),
+  );
+
+  it.effect("never probes a healthy verdict, however old", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "healthy", checkedAt: Date.now() - STALE_MS, detail: "probe ok" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("healthy");
+      expect(counters.probes).toBe(0);
+    }),
+  );
+
+  it.effect("leaves tool-sync failure verdicts for sync to clear", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp } = yield* makeHealthHarness();
+      const detail = "Tool sync failing: plugin returned an incomplete tool catalog";
+      yield* stamp({
+        last_health: { status: "degraded", checkedAt: Date.now() - STALE_MS, detail },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.detail).toBe(detail);
+      expect(counters.probes).toBe(0);
+    }),
+  );
+});
+
+describe("heal-on-use", () => {
+  it.effect("a successful invocation flips a stale non-healthy verdict to healthy", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({
+        status: "healthy",
+        detail: "Tool invocation succeeded.",
+      });
+    }),
+  );
+
+  it.effect("an explicit tool failure does not heal", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), { fail: true });
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("a grant recorded invalid_grant-dead is not healed by a lingering token", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: {
+          status: "expired",
+          checkedAt: Date.now() - STALE_MS,
+          detail: "invalid_grant",
+        },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
     }),
   );
 });
