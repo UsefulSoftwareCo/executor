@@ -71,6 +71,25 @@ describe("preset catalog", () => {
     expect(google?.type === "family" && google.members.length).toBe(3);
   });
 
+  it("only collapses the curated families, not any provider that sets `family`", () => {
+    // `MULTI_SERVICE_FAMILIES` is the one rule for "browses as a provider card",
+    // shared with the connected-integrations grid. A plugin that tags presets
+    // with a family nobody curated lists them as themselves rather than
+    // inventing a card the rest of the app won't group behind.
+    const uncurated = presetCatalogEntries([
+      {
+        key: "openapi",
+        label: "OpenAPI",
+        presets: [
+          { id: "acme-billing", name: "Acme Billing", summary: "Invoices.", family: "acme" },
+          { id: "acme-crm", name: "Acme CRM", summary: "Contacts.", family: "acme" },
+        ],
+      },
+    ]);
+
+    expect(titles(groupPresetEntriesByFamily(uncurated))).toEqual(["Acme Billing", "Acme CRM"]);
+  });
+
   it("keeps a family with a single service as an ordinary card", () => {
     const solo = presetCatalogEntries([
       {

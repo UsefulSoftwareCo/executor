@@ -10,10 +10,16 @@ const FAMILY_LABELS: Record<string, string> = {
 export const familyLabel = (family: string): string =>
   FAMILY_LABELS[family] ?? family.charAt(0).toUpperCase() + family.slice(1);
 
-export const integrationFamily = (integration: Integration): string | null => {
-  const family = integration.family?.trim();
-  return family && MULTI_SERVICE_FAMILIES.has(family) ? family : null;
+/** The curated family a value names, or `null` when it isn't one we group.
+ *  The connect picker and the integrations grid ask this of different shapes —
+ *  a preset and a stored integration — so the rule itself lives in one place. */
+export const curatedFamily = (family: string | undefined): string | null => {
+  const trimmed = family?.trim();
+  return trimmed && MULTI_SERVICE_FAMILIES.has(trimmed) ? trimmed : null;
 };
+
+export const integrationFamily = (integration: Integration): string | null =>
+  curatedFamily(integration.family);
 
 export interface IntegrationFamilyGroup {
   readonly type: "group";

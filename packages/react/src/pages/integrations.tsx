@@ -156,16 +156,11 @@ const presetLinkSearch = (entry: PresetEntry): Record<string, string> => {
   return search;
 };
 
-const PresetIcon = (props: { src?: string; alt?: string; className?: string }) =>
+const PresetIcon = (props: { src?: string; className: string }) =>
   props.src ? (
-    <img
-      src={props.src}
-      alt={props.alt ?? ""}
-      loading="lazy"
-      className={props.className ?? "size-6 object-contain"}
-    />
+    <img src={props.src} alt="" loading="lazy" className={props.className} />
   ) : (
-    <svg viewBox="0 0 16 16" className={props.className ?? "size-4"} fill="none" aria-hidden>
+    <svg viewBox="0 0 16 16" className={props.className} fill="none" aria-hidden>
       <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
     </svg>
   );
@@ -174,6 +169,10 @@ const PresetIcon = (props: { src?: string; alt?: string; className?: string }) =
 // Connect dialog — search/detect, protocol facets, and a browsable catalog
 // where multi-service providers collapse into one card you can open.
 // ---------------------------------------------------------------------------
+
+/** `FilterTabs` needs a string per tab, and the "every protocol" tab is not a
+ *  plugin — a key no plugin can hold keeps the two apart. */
+const ALL_PROTOCOLS = "__all__";
 
 interface ConnectIntegrationDialogProps {
   readonly open: boolean;
@@ -195,7 +194,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
   const navigate = useNavigate();
 
   const [query, setQuery] = useState("");
-  const [pluginFilter, setPluginFilter] = useState("all");
+  const [pluginFilter, setPluginFilter] = useState(ALL_PROTOCOLS);
   const [openFamily, setOpenFamily] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -212,7 +211,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
   const items = useMemo(() => {
     const filter = {
       query: presetSearch,
-      pluginKey: pluginFilter === "all" ? null : pluginFilter,
+      pluginKey: pluginFilter === ALL_PROTOCOLS ? null : pluginFilter,
     };
     if (openFamily === null) return presetCatalogItems(entries, filter);
     return familyMemberEntries(entries, openFamily)
@@ -256,7 +255,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
       setDetecting(false);
       return;
     }
-    const detected = exit.value.length === 0 ? undefined : bestDetection(exit.value);
+    const detected = bestDetection(exit.value);
     if (!detected) {
       trackEvent("integration_detect_submitted", { success: false });
       setError("Could not detect an integration type from this URL. Try adding manually.");
@@ -326,19 +325,23 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
 
-        <FilterTabs
-          tabs={facets.map((facet) => ({
-            label: facet.label,
-            value: facet.key ?? "all",
-            count: facet.count,
-          }))}
-          value={pluginFilter}
-          onChange={(value) => {
-            setPluginFilter(value);
-            setOpenFamily(null);
-            scrollResultsToTop();
-          }}
-        />
+        {/* Inside a provider the facets would count the whole catalog over a
+         *  list that isn't it, contradicting the "N services" line below. */}
+        {openFamily === null && (
+          <FilterTabs
+            tabs={facets.map((facet) => ({
+              label: facet.label,
+              value: facet.key ?? ALL_PROTOCOLS,
+              count: facet.count,
+            }))}
+            value={pluginFilter}
+            onChange={(value) => {
+              setPluginFilter(value);
+              setOpenFamily(null);
+              scrollResultsToTop();
+            }}
+          />
+        )}
 
         {openFamilyLabel !== null && (
           <div className="flex items-center gap-2">
@@ -448,7 +451,9 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {/* The chips above filter; these navigate. Same three protocol names,
+         *  so they must not wear the same pill. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <p className="text-xs text-muted-foreground">Not listed? Add manually:</p>
           {integrationPlugins.map((p) => (
             <Link
@@ -459,7 +464,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
                 trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
                 closeDialog();
               }}
-              className="rounded-md border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted"
+              className="text-xs font-medium underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
             >
               {p.label}
             </Link>

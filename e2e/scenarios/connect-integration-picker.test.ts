@@ -20,6 +20,7 @@ scenario(
       const dialog = page.getByRole("dialog", { name: "Connect an integration" });
       const search = () => dialog.getByPlaceholder(/Search or paste a URL/);
       const googleCard = () => dialog.getByRole("button", { name: /^Google\b.*services$/s });
+      const allFacet = () => dialog.getByRole("button", { name: /^All\s+\d+$/ });
 
       await step("Open the connect picker", async () => {
         await visit(page, "/integrations");
@@ -37,11 +38,15 @@ scenario(
         await googleCard().click();
         await dialog.getByRole("link", { name: /^Gmail\b/ }).waitFor();
         await dialog.getByRole("link", { name: /^Google Drive\b/ }).waitFor();
+        // Inside a provider the protocol facets would advertise catalog-wide
+        // counts over a list that isn't the catalog, so they stand down.
+        expect(await allFacet().count()).toBe(0);
       });
 
       await step("Going back returns to the browsable catalog", async () => {
         await dialog.getByRole("button", { name: /All integrations/ }).click();
         await googleCard().waitFor();
+        await allFacet().waitFor();
         expect(await dialog.getByRole("link", { name: /^Gmail\b/ }).count()).toBe(0);
       });
 
@@ -63,7 +68,7 @@ scenario(
       });
 
       await step("Picking a service opens its add flow with the preset applied", async () => {
-        await dialog.getByRole("button", { name: /^All\s+\d+$/ }).click();
+        await allFacet().click();
         await search().fill("gmail");
         await dialog.getByRole("link", { name: /^Gmail\b/ }).click();
         await page.waitForURL(/\/integrations\/add\/openapi/);

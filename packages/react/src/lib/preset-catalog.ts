@@ -1,6 +1,6 @@
 import type { IntegrationPreset } from "@executor-js/sdk/client";
 
-import { familyLabel } from "./integration-grouping";
+import { curatedFamily, familyLabel } from "./integration-grouping";
 
 // ---------------------------------------------------------------------------
 // The connect picker's browsable catalog.
@@ -88,14 +88,15 @@ export const filterPresetEntries = (
   });
 };
 
-/** Collapse each provider with more than one service into a single card, in the
- *  position of its first member. A family of one browses better as itself. */
+/** Collapse each curated provider with more than one service into a single
+ *  card, in the position of its first member. A family of one browses better as
+ *  itself, and a family the app doesn't group elsewhere isn't grouped here. */
 export const groupPresetEntriesByFamily = (
   entries: readonly PresetEntry[],
 ): readonly PresetCatalogItem[] => {
   const counts = new Map<string, number>();
   for (const entry of entries) {
-    const family = entry.preset.family;
+    const family = curatedFamily(entry.preset.family);
     if (family) counts.set(family, (counts.get(family) ?? 0) + 1);
   }
 
@@ -103,7 +104,7 @@ export const groupPresetEntriesByFamily = (
   const indexByFamily = new Map<string, number>();
 
   for (const entry of entries) {
-    const family = entry.preset.family;
+    const family = curatedFamily(entry.preset.family);
     if (!family || (counts.get(family) ?? 0) < 2) {
       items.push({ type: "single", entry });
       continue;
