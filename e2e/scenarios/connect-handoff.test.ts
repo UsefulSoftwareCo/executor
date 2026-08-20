@@ -120,51 +120,53 @@ const mintEmulatorApiKey = (client: EmulatorClient) =>
 scenario(
   "Connect · the agentic handoff URL opens this deployment's add-account flow and the pasted key works",
   { timeout: 240_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const mcp = yield* Mcp;
-    const browser = yield* Browser;
-    const { client: makeApiClient } = yield* Api;
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const mcp = yield* Mcp;
+      const browser = yield* Browser;
+      const { client: makeApiClient } = yield* Api;
 
-    const integration = unique("resendhf");
-    const emailSubject = unique("connect-handoff");
-    const emulatorClient = yield* emulator;
-    const apiKey = yield* mintEmulatorApiKey(emulatorClient);
+      const integration = unique("resendhf");
+      const emailSubject = unique("connect-handoff");
+      const emulatorClient = yield* emulator;
+      const apiKey = yield* mintEmulatorApiKey(emulatorClient);
 
-    const identity = yield* target.newIdentity();
-    const session = mcp.session(identity);
-    const client = yield* makeApiClient(api, identity);
+      const identity = yield* target.newIdentity();
+      const session = mcp.session(identity);
+      const client = yield* makeApiClient(api, identity);
 
-    // The bound org's slug, read from the same account surface the console
-    // shell reads — the handoff URL must canonicalize onto exactly this.
-    const accountClient = yield* makeApiClient(AccountHttpApi, identity);
-    const me = yield* accountClient.account.me();
-    const orgSlug = me.organization?.slug;
-    expect(orgSlug, "the bound organization advertises a URL slug").toBeTruthy();
+      // The bound org's slug, read from the same account surface the console
+      // shell reads — the handoff URL must canonicalize onto exactly this.
+      const accountClient = yield* makeApiClient(AccountHttpApi, identity);
+      const me = yield* accountClient.account.me();
+      const orgSlug = me.organization?.slug;
+      expect(orgSlug, "the bound organization advertises a URL slug").toBeTruthy();
 
-    yield* runScenario({
-      target,
-      browser,
-      session,
-      identity,
-      integration,
-      emailSubject,
-      apiKey,
-      orgSlug: orgSlug!,
-      emulatorClient,
-    }).pipe(
-      // Best-effort cleanup even on failure: drop the created connection(s)
-      // over MCP, then the integration over the API. `connections.remove` is
-      // approval-gated, so the cleanup execute pauses per connection;
-      // `executeJson` auto-approves each pause so the removes actually run.
-      Effect.ensuring(
-        Effect.gen(function* () {
-          yield* executeJson(session, removeConnectionsCode(integration));
-          yield* client.openapi.removeSpec({ params: { slug: integration } });
-        }).pipe(Effect.ignore),
-      ),
-    );
-  }),
+      yield* runScenario({
+        target,
+        browser,
+        session,
+        identity,
+        integration,
+        emailSubject,
+        apiKey,
+        orgSlug: orgSlug!,
+        emulatorClient,
+      }).pipe(
+        // Best-effort cleanup even on failure: drop the created connection(s)
+        // over MCP, then the integration over the API. `connections.remove` is
+        // approval-gated, so the cleanup execute pauses per connection;
+        // `executeJson` auto-approves each pause so the removes actually run.
+        Effect.ensuring(
+          Effect.gen(function* () {
+            yield* executeJson(session, removeConnectionsCode(integration));
+            yield* client.openapi.removeSpec({ params: { slug: integration } });
+          }).pipe(Effect.ignore),
+        ),
+      );
+    }),
+  ),
 );
 
 const runScenario = (input: {

@@ -190,236 +190,242 @@ const runGoogleOAuthFlow = (
 scenario(
   "Google · Calendar and Gmail catalog health checks run against the emulator",
   { timeout: 300_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const browser = yield* Browser;
-    const { client: makeClient } = yield* Api;
-    const identity = yield* target.newIdentity();
-    const client = yield* makeClient(api, identity);
-    const emulator = yield* createGoogleEmulator;
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const emulator = yield* createGoogleEmulator;
 
-    const rows = [
-      {
-        presetName: "Google Calendar",
-        slug: IntegrationSlug.make("google_calendar"),
-        oauthClient: OAuthClientSlug.make(unique("google_calendar_oauth")),
-        expectedHealthOperation: "calendar.calendarList.list",
-        expectedLedgerOperation: "calendar.calendarList.list",
-        emulatorPathPrefix: "/calendar/v3",
-      },
-      {
-        presetName: "Gmail",
-        slug: IntegrationSlug.make("google_gmail"),
-        oauthClient: OAuthClientSlug.make(unique("google_gmail_oauth")),
-        expectedHealthOperation: "gmail.users.labels.list",
-        expectedLedgerOperation: "gmail.users.labels.list",
-        emulatorPathPrefix: "",
-      },
-    ] as const;
+      const rows = [
+        {
+          presetName: "Google Calendar",
+          slug: IntegrationSlug.make("google_calendar"),
+          oauthClient: OAuthClientSlug.make(unique("google_calendar_oauth")),
+          expectedHealthOperation: "calendar.calendarList.list",
+          expectedLedgerOperation: "calendar.calendarList.list",
+          emulatorPathPrefix: "/calendar/v3",
+        },
+        {
+          presetName: "Gmail",
+          slug: IntegrationSlug.make("google_gmail"),
+          oauthClient: OAuthClientSlug.make(unique("google_gmail_oauth")),
+          expectedHealthOperation: "gmail.users.labels.list",
+          expectedLedgerOperation: "gmail.users.labels.list",
+          emulatorPathPrefix: "",
+        },
+      ] as const;
 
-    yield* Effect.ensuring(
-      Effect.gen(function* () {
-        for (const row of rows) {
-          yield* addGooglePresetFromCatalog(browser, identity, row.presetName, String(row.slug));
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          for (const row of rows) {
+            yield* addGooglePresetFromCatalog(browser, identity, row.presetName, String(row.slug));
 
-          const stored = yield* client.integrations.healthCheckGet({ params: { slug: row.slug } });
-          expect(stored?.operation, `${row.presetName} stored health check`).toBe(
-            row.expectedHealthOperation,
-          );
+            const stored = yield* client.integrations.healthCheckGet({
+              params: { slug: row.slug },
+            });
+            expect(stored?.operation, `${row.presetName} stored health check`).toBe(
+              row.expectedHealthOperation,
+            );
 
-          yield* connectGoogleAccount({
-            client,
-            emulator: emulator.client,
-            emulatorBaseUrl: emulator.baseUrl,
-            integrationBaseUrl: `${emulator.baseUrl}${row.emulatorPathPrefix ?? ""}`,
-            target,
-            integration: row.slug,
-            oauthClient: row.oauthClient,
-          });
+            yield* connectGoogleAccount({
+              client,
+              emulator: emulator.client,
+              emulatorBaseUrl: emulator.baseUrl,
+              integrationBaseUrl: `${emulator.baseUrl}${row.emulatorPathPrefix ?? ""}`,
+              target,
+              integration: row.slug,
+              oauthClient: row.oauthClient,
+            });
 
-          const connections = yield* client.connections.list({
-            query: { owner: "org", integration: row.slug },
-          });
-          const connected = connections.find((connection) => connection.name === CONNECTION);
-          expect(
-            connected?.identityLabel,
-            `${row.presetName} stores OAuth identity from the id_token before health checks`,
-          ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
-          expect(
-            connected?.lastHealth,
-            `${row.presetName} has not run a health check before the explicit probe`,
-          ).toBeNull();
+            const connections = yield* client.connections.list({
+              query: { owner: "org", integration: row.slug },
+            });
+            const connected = connections.find((connection) => connection.name === CONNECTION);
+            expect(
+              connected?.identityLabel,
+              `${row.presetName} stores OAuth identity from the id_token before health checks`,
+            ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+            expect(
+              connected?.lastHealth,
+              `${row.presetName} has not run a health check before the explicit probe`,
+            ).toBeNull();
 
-          const tools = yield* client.tools.list({
-            query: { integration: row.slug, connection: CONNECTION },
-          });
-          expect(
-            tools.length,
-            `${row.presetName} exposes tools for the connection`,
-          ).toBeGreaterThan(0);
+            const tools = yield* client.tools.list({
+              query: { integration: row.slug, connection: CONNECTION },
+            });
+            expect(
+              tools.length,
+              `${row.presetName} exposes tools for the connection`,
+            ).toBeGreaterThan(0);
 
-          const health = yield* client.connections.checkHealth({
-            params: { owner: "org", integration: row.slug, name: CONNECTION },
-            query: { ifStaleMs: 0 },
-          });
-          expect(
-            health.status,
-            `${row.presetName} health check is healthy: ${JSON.stringify(health)}`,
-          ).toBe("healthy");
-
-          // Check this row's ledger entry HERE, not after both rows have run.
-          // `ledger.list(n)` is the last n entries, and connecting the second
-          // account is easily a hundred emulator requests, so the first row's
-          // health check can be evicted from the window before a combined
-          // assertion at the end ever looks for it — which reads as "Calendar's
-          // health check never reached the emulator" when it plainly did (the
-          // probe above came back healthy, and only the emulator can answer
-          // that). The hosted emulator also acknowledges a request before its
-          // ledger entry is readable, so poll rather than read once.
-          const reached = yield* Effect.promise(() => emulator.client.ledger.list(50)).pipe(
-            Effect.map((ledger) =>
-              ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
-            ),
-            Effect.repeat({
-              schedule: Schedule.spaced("500 millis"),
-              until: (seen) => seen,
-              times: 19,
-            }),
-          );
-          expect(
-            reached,
-            `${row.presetName}'s health check reached the Google emulator as ${row.expectedLedgerOperation}`,
-          ).toBe(true);
-        }
-      }),
-      Effect.gen(function* () {
-        for (const row of rows) {
-          yield* client.connections
-            .remove({
+            const health = yield* client.connections.checkHealth({
               params: { owner: "org", integration: row.slug, name: CONNECTION },
-            })
-            .pipe(Effect.ignore);
-          yield* client.oauth
-            .removeClient({ params: { slug: row.oauthClient }, payload: { owner: "org" } })
-            .pipe(Effect.ignore);
-          yield* client.openapi.removeSpec({ params: { slug: row.slug } }).pipe(Effect.ignore);
-        }
-      }),
-    );
-  }),
+              query: { ifStaleMs: 0 },
+            });
+            expect(
+              health.status,
+              `${row.presetName} health check is healthy: ${JSON.stringify(health)}`,
+            ).toBe("healthy");
+
+            // Check this row's ledger entry HERE, not after both rows have run.
+            // `ledger.list(n)` is the last n entries, and connecting the second
+            // account is easily a hundred emulator requests, so the first row's
+            // health check can be evicted from the window before a combined
+            // assertion at the end ever looks for it — which reads as "Calendar's
+            // health check never reached the emulator" when it plainly did (the
+            // probe above came back healthy, and only the emulator can answer
+            // that). The hosted emulator also acknowledges a request before its
+            // ledger entry is readable, so poll rather than read once.
+            const reached = yield* Effect.promise(() => emulator.client.ledger.list(50)).pipe(
+              Effect.map((ledger) =>
+                ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+              ),
+              Effect.repeat({
+                schedule: Schedule.spaced("500 millis"),
+                until: (seen) => seen,
+                times: 19,
+              }),
+            );
+            expect(
+              reached,
+              `${row.presetName}'s health check reached the Google emulator as ${row.expectedLedgerOperation}`,
+            ).toBe(true);
+          }
+        }),
+        Effect.gen(function* () {
+          for (const row of rows) {
+            yield* client.connections
+              .remove({
+                params: { owner: "org", integration: row.slug, name: CONNECTION },
+              })
+              .pipe(Effect.ignore);
+            yield* client.oauth
+              .removeClient({ params: { slug: row.oauthClient }, payload: { owner: "org" } })
+              .pipe(Effect.ignore);
+            yield* client.openapi.removeSpec({ params: { slug: row.slug } }).pipe(Effect.ignore);
+          }
+        }),
+      );
+    }),
+  ),
 );
 
 scenario(
   "Google · OAuth catalog connection without a health check is healthy from the grant",
   { timeout: 300_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const browser = yield* Browser;
-    const { client: makeClient } = yield* Api;
-    const identity = yield* target.newIdentity();
-    const client = yield* makeClient(api, identity);
-    const emulator = yield* createGoogleEmulator;
-    const slug = IntegrationSlug.make("google_sheets");
-    const oauthClient = OAuthClientSlug.make(unique("google_sheets_oauth"));
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const emulator = yield* createGoogleEmulator;
+      const slug = IntegrationSlug.make("google_sheets");
+      const oauthClient = OAuthClientSlug.make(unique("google_sheets_oauth"));
 
-    yield* Effect.ensuring(
-      Effect.gen(function* () {
-        yield* addGooglePresetFromCatalog(browser, identity, "Google Sheets", String(slug));
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* addGooglePresetFromCatalog(browser, identity, "Google Sheets", String(slug));
 
-        const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
-        expect(stored, "Google Sheets catalog preset declares no health check").toBeNull();
+          const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
+          expect(stored, "Google Sheets catalog preset declares no health check").toBeNull();
 
-        yield* connectGoogleAccount({
-          client,
-          emulator: emulator.client,
-          emulatorBaseUrl: emulator.baseUrl,
-          target,
-          integration: slug,
-          oauthClient,
-        });
+          yield* connectGoogleAccount({
+            client,
+            emulator: emulator.client,
+            emulatorBaseUrl: emulator.baseUrl,
+            target,
+            integration: slug,
+            oauthClient,
+          });
 
-        const connections = yield* client.connections.list({
-          query: { owner: "org", integration: slug },
-        });
-        const connected = connections.find((connection) => connection.name === CONNECTION);
-        expect(
-          connected?.identityLabel,
-          "Google Sheets stores grant identity before any probe is configured",
-        ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
-        expect(
-          connected?.lastHealth,
-          "Google Sheets has not run a health check before the explicit check",
-        ).toBeNull();
+          const connections = yield* client.connections.list({
+            query: { owner: "org", integration: slug },
+          });
+          const connected = connections.find((connection) => connection.name === CONNECTION);
+          expect(
+            connected?.identityLabel,
+            "Google Sheets stores grant identity before any probe is configured",
+          ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+          expect(
+            connected?.lastHealth,
+            "Google Sheets has not run a health check before the explicit check",
+          ).toBeNull();
 
-        const health = yield* client.connections.checkHealth({
-          params: { owner: "org", integration: slug, name: CONNECTION },
-          query: { ifStaleMs: 0 },
-        });
-        expect(
-          health.status,
-          `Google Sheets no-probe health is healthy: ${JSON.stringify(health)}`,
-        ).toBe("healthy");
-        expect(health.detail).toBe("Credential resolved (no probe configured).");
+          const health = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name: CONNECTION },
+            query: { ifStaleMs: 0 },
+          });
+          expect(
+            health.status,
+            `Google Sheets no-probe health is healthy: ${JSON.stringify(health)}`,
+          ).toBe("healthy");
+          expect(health.detail).toBe("Credential resolved (no probe configured).");
 
-        const refreshed = yield* client.connections.list({
-          query: { owner: "org", integration: slug },
-        });
-        expect(
-          refreshed.find((connection) => connection.name === CONNECTION)?.identityLabel,
-          "Google Sheets still shows the OAuth grant identity after no-probe health",
-        ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+          const refreshed = yield* client.connections.list({
+            query: { owner: "org", integration: slug },
+          });
+          expect(
+            refreshed.find((connection) => connection.name === CONNECTION)?.identityLabel,
+            "Google Sheets still shows the OAuth grant identity after no-probe health",
+          ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
 
-        // Reconnecting the SAME connection must not clobber a curated label
-        // with the grant identity.
-        yield* client.connections.update({
-          params: { owner: "org", integration: slug, name: CONNECTION },
-          payload: { identityLabel: "Finance account" },
-        });
-        yield* runGoogleOAuthFlow({ client, target, integration: slug, oauthClient });
-        const reconnected = yield* client.connections.list({
-          query: { owner: "org", integration: slug },
-        });
-        expect(
-          reconnected.find((connection) => connection.name === CONNECTION)?.identityLabel,
-          "reconnect keeps the curated label over the grant identity",
-        ).toBe("Finance account");
+          // Reconnecting the SAME connection must not clobber a curated label
+          // with the grant identity.
+          yield* client.connections.update({
+            params: { owner: "org", integration: slug, name: CONNECTION },
+            payload: { identityLabel: "Finance account" },
+          });
+          yield* runGoogleOAuthFlow({ client, target, integration: slug, oauthClient });
+          const reconnected = yield* client.connections.list({
+            query: { owner: "org", integration: slug },
+          });
+          expect(
+            reconnected.find((connection) => connection.name === CONNECTION)?.identityLabel,
+            "reconnect keeps the curated label over the grant identity",
+          ).toBe("Finance account");
 
-        // A `newConnection` connect under a taken name mints a SECOND
-        // connection with a suffixed name instead of replacing the first.
-        const second = yield* runGoogleOAuthFlow({
-          client,
-          target,
-          integration: slug,
-          oauthClient,
-          newConnection: true,
-        });
-        expect(String(second.name), "second account mints a suffixed connection").toBe(
-          `${String(CONNECTION)}2`,
-        );
-        expect(second.identityLabel, "second account label comes from the grant identity").toBe(
-          GOOGLE_EMULATOR_ACCOUNT_EMAIL,
-        );
-        const both = yield* client.connections.list({
-          query: { owner: "org", integration: slug },
-        });
-        expect(
-          both.map((connection) => String(connection.name)).sort(),
-          "both accounts coexist",
-        ).toEqual([String(CONNECTION), `${String(CONNECTION)}2`]);
-      }),
-      Effect.gen(function* () {
-        for (const name of [CONNECTION, ConnectionName.make(`${String(CONNECTION)}2`)]) {
-          yield* client.connections
-            .remove({
-              params: { owner: "org", integration: slug, name },
-            })
+          // A `newConnection` connect under a taken name mints a SECOND
+          // connection with a suffixed name instead of replacing the first.
+          const second = yield* runGoogleOAuthFlow({
+            client,
+            target,
+            integration: slug,
+            oauthClient,
+            newConnection: true,
+          });
+          expect(String(second.name), "second account mints a suffixed connection").toBe(
+            `${String(CONNECTION)}2`,
+          );
+          expect(second.identityLabel, "second account label comes from the grant identity").toBe(
+            GOOGLE_EMULATOR_ACCOUNT_EMAIL,
+          );
+          const both = yield* client.connections.list({
+            query: { owner: "org", integration: slug },
+          });
+          expect(
+            both.map((connection) => String(connection.name)).sort(),
+            "both accounts coexist",
+          ).toEqual([String(CONNECTION), `${String(CONNECTION)}2`]);
+        }),
+        Effect.gen(function* () {
+          for (const name of [CONNECTION, ConnectionName.make(`${String(CONNECTION)}2`)]) {
+            yield* client.connections
+              .remove({
+                params: { owner: "org", integration: slug, name },
+              })
+              .pipe(Effect.ignore);
+          }
+          yield* client.oauth
+            .removeClient({ params: { slug: oauthClient }, payload: { owner: "org" } })
             .pipe(Effect.ignore);
-        }
-        yield* client.oauth
-          .removeClient({ params: { slug: oauthClient }, payload: { owner: "org" } })
-          .pipe(Effect.ignore);
-        yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
-      }),
-    );
-  }),
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
 );

@@ -1,6 +1,32 @@
-import { Effect, Schedule } from "effect";
+// Per-scenario service emulators, spawned IN THIS PROCESS.
+//
+// These used to be hosted instances created through
+// `https://<service>.emulators.dev/_emulate/instances`. That put the public
+// internet on the critical path of a scenario that is otherwise entirely
+// local, and it showed: in the two weeks to 2026-08-20, `connect ETIMEDOUT`
+// and bare 502s reaching the edge failed 17 shards. Worse, by 2026-08-20
+// `graphql-introspection-health` failed on every CI run because the hosted
+// GitHub emulator answered `403 API rate limit exceeded` — GitHub's real
+// unauthenticated-rate-limit shape — instead of the 401 the scenario had
+// armed a fault for. Raising the fault budget from 10 to 100 changed nothing,
+// so whatever produced that 403 sat outside the instance's own fault
+// accounting; from a shared CI egress IP there is no version of the scenario
+// that can stay under it.
+//
+// `@executor-js/emulate` describes itself as "local drop-in replacement
+// services for CI and no-network sandboxes", and the suite already boots
+// WorkOS and Autumn this way in `setup/cloud.boot.ts`. This is the same thing
+// per scenario: same package, same wire behaviour, same per-run isolation (a
+// fresh process-local instance, so ledger assertions stay clean), minus the
+// network. The app under test reaches it over loopback, which cloud already
+// allows for the WorkOS and Autumn emulators (`ALLOW_LOCAL_NETWORK`).
+import { createServer } from "node:net";
 
-/** The suite could not get an instance out of the hosted control plane. */
+import { Effect, Schedule, type Scope } from "effect";
+
+import { createEmulator, type ServiceName } from "@executor-js/emulate";
+
+/** The emulator could not be started, or never answered its control plane. */
 export class EmulatorInstanceError extends Error {
   readonly _tag = "EmulatorInstanceError";
 
@@ -8,64 +34,88 @@ export class EmulatorInstanceError extends Error {
     readonly service: string,
     readonly reason: string,
   ) {
-    super(`${service} emulator instance creation failed: ${reason}`);
+    super(`${service} emulator did not start: ${reason}`);
     this.name = "EmulatorInstanceError";
   }
 }
 
-// Bound each attempt: a hung connection to the edge must not eat the
-// scenario's whole timeout before the first retry.
-const ATTEMPT_TIMEOUT = "10 seconds";
-const RETRIES = 3;
-
-const requestInstance = (service: string, label: string) =>
-  Effect.tryPromise({
-    try: async (): Promise<string> => {
-      const response = await fetch(`https://${service}.emulators.dev/_emulate/instances`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ instance: label }),
-      });
-      if (!response.ok) {
-        throw new EmulatorInstanceError(service, `HTTP ${response.status}`);
-      }
-      const instance = (await response.json()) as { readonly providerBaseUrl: string };
-      return instance.providerBaseUrl;
-    },
-    catch: (cause) =>
-      cause instanceof EmulatorInstanceError
-        ? cause
-        : new EmulatorInstanceError(service, String(cause)),
+// Ask the OS for a port and hand it straight to the emulator. There is a
+// window between the probe closing and the emulator binding, which is why
+// `spawnEmulator` retries: on Linux CI this whole range is ephemeral, so an
+// outbound socket really can take the port in between (the same race
+// `src/ports.ts` documents for the target's own stack).
+const freePort = (): Promise<number | null> =>
+  new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(null));
+    probe.listen(0, "0.0.0.0", () => {
+      const address = probe.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      probe.close(() => resolve(port === 0 ? null : port));
+    });
   });
 
-// Hosted service hosts (e.g. resend.emulators.dev) are control plane only —
-// there is no shared default instance behind them. Every scenario creates its
-// own isolated instance and works against the returned providerBaseUrl, which
-// also keeps ledger assertions free of cross-run pollution. The server
-// generates an unguessable instance name; the label is a readable prefix.
-//
-// This is also the one request in a scenario that leaves the runner, so it is
-// the one place where a CI runner's transient network trouble fails a scenario
-// that has nothing to do with the network: `connect ETIMEDOUT` reaching the
-// edge, plus the occasional bare 502, accounted for 17 shard failures in the
-// two weeks to 2026-08-20. Asking for an instance is idempotent (a spare
-// instance is nobody's business but the control plane's), so bound the attempt
-// and retry with backoff. Nothing below this line retries anything the
-// scenario is actually asserting on.
-export const createEmulatorInstance = (service: string, label = "e2e"): Effect.Effect<string> =>
-  requestInstance(service, label).pipe(
-    Effect.timeoutOrElse({
-      duration: ATTEMPT_TIMEOUT,
-      orElse: () =>
-        Effect.fail(new EmulatorInstanceError(service, `no response in ${ATTEMPT_TIMEOUT}`)),
-    }),
-    Effect.retry(
-      Schedule.both(
-        Schedule.exponential("500 millis").pipe(Schedule.jittered),
-        Schedule.recurs(RETRIES),
+const READY_TIMEOUT = "10 seconds";
+
+const spawnEmulator = (service: ServiceName, label: string) =>
+  Effect.gen(function* () {
+    const port = yield* Effect.promise(freePort).pipe(
+      Effect.flatMap((found) =>
+        found === null
+          ? Effect.fail(new EmulatorInstanceError(service, "the OS offered no free port"))
+          : Effect.succeed(found),
       ),
+    );
+    // 127.0.0.1, not localhost: the emulator stamps this base URL into its own
+    // OAuth metadata and discovery documents, and `localhost` resolves to ::1
+    // first on some hosts. Pinning the family keeps what the app is told
+    // byte-identical to what the emulator is listening on.
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const emulator = yield* Effect.tryPromise({
+      try: () => createEmulator({ service, port, baseUrl }),
+      catch: (cause) => new EmulatorInstanceError(service, String(cause)),
+    });
+    // `createEmulator` returns as soon as the server is handed off, so prove
+    // the control plane answers before a scenario arms a fault against it.
+    yield* Effect.tryPromise({
+      try: async () => {
+        const response = await fetch(`${baseUrl}/_emulate/manifest`);
+        if (!response.ok) throw new Error(`manifest HTTP ${response.status}`);
+      },
+      catch: (cause) => new EmulatorInstanceError(service, String(cause)),
+    }).pipe(
+      Effect.retry(Schedule.both(Schedule.spaced("100 millis"), Schedule.recurs(50))),
+      Effect.timeoutOrElse({
+        duration: READY_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            new EmulatorInstanceError(service, `control plane silent for ${READY_TIMEOUT}`),
+          ),
+      }),
+      // The half-started server must not outlive the failure.
+      Effect.tapError(() => Effect.promise(() => emulator.close())),
+    );
+    yield* Effect.logDebug(`[e2e] ${label} ${service} emulator at ${baseUrl}`);
+    return emulator;
+  });
+
+/**
+ * Start a `service` emulator for the calling scenario and return its base URL.
+ *
+ * Scoped: the emulator is closed when the scenario's scope closes, so wrap the
+ * body in `Effect.scoped`. `label` names the instance in debug output.
+ */
+export const createEmulatorInstance = (
+  service: ServiceName,
+  label = "e2e",
+): Effect.Effect<string, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    spawnEmulator(service, label).pipe(
+      // A port lost between probe and bind is worth one more try; anything
+      // else is a defect in the run, not a product failure the scenario
+      // should be asked to model.
+      Effect.retry(Schedule.both(Schedule.spaced("200 millis"), Schedule.recurs(2))),
+      Effect.orDie,
     ),
-    // An emulator the suite cannot reach at all is a defect in the run, not a
-    // product failure the scenario should be asked to model.
-    Effect.orDie,
-  );
+    (emulator) => Effect.promise(() => emulator.close()),
+  ).pipe(Effect.map((emulator) => emulator.url));
