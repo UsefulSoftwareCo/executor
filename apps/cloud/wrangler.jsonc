@@ -94,6 +94,14 @@
       "bucket_name": "executor-cloud-blobs",
     },
   ],
+  // Pins the Worker to the Hyperdrive/Postgres region. Added in #420 to fix
+  // MCP Hyperdrive connection pressure; dropped in #1693 as a placement
+  // experiment, which took `user_store.*` from ~12ms to ~300ms because every
+  // query started crossing regions. Restored to measure that against the
+  // JWKS verify time the experiment also moved.
+  "placement": {
+    "region": "aws:us-east-1",
+  },
   "worker_loaders": [
     {
       "binding": "LOADER",
