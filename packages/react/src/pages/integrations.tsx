@@ -289,7 +289,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
         if (!open) closeDialog();
       }}
     >
-      <DialogContent className="flex max-h-[min(46rem,92vh)] flex-col gap-4 sm:max-w-[52rem]">
+      <DialogContent className="flex max-h-[92vh] flex-col gap-4 sm:max-w-[52rem]">
         <DialogHeader>
           <DialogTitle>Connect an integration</DialogTitle>
           <DialogDescription>Search the library, or paste a URL to auto-detect.</DialogDescription>
@@ -364,9 +364,12 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           </div>
         )}
 
+        {/* A fixed height, not flex-1: sizing to the results made the dialog
+         *  shrink as you filtered, walking the facet chips out from under the
+         *  cursor that was clicking them. */}
         <div
           ref={resultsRef}
-          className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border"
+          className="h-[min(36rem,55vh)] overflow-y-auto rounded-lg border border-border"
         >
           {items.length === 0 ? (
             <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 px-4 py-10 text-center">
