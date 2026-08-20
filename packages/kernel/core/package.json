@@ -15,6 +15,7 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts"
   },
