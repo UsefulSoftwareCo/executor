@@ -179,6 +179,8 @@ const readStamp = (annotations: unknown): McpToolStamp | null =>
 const McpRemoteServerInputSchema = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
@@ -196,6 +198,8 @@ const McpRemoteServerInputSchema = Schema.Struct({
 const McpStdioServerInputSchema = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
@@ -373,6 +377,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     const vars = stdioEnvVarNames(input);
     return {
       transport: "stdio",
+      family: input.family?.trim() || undefined,
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
@@ -385,6 +390,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
   }
   return {
     transport: "remote",
+    family: input.family?.trim() || undefined,
     endpoint: input.endpoint,
     remoteTransport: input.remoteTransport ?? "auto",
     queryParams: input.queryParams,
@@ -714,10 +720,14 @@ export const describeMcpAuthMethods = (
 
 export const describeMcpIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = parseMcpIntegrationConfig(record.config);
-  if (!config || config.transport === "stdio") return {};
-  return { url: config.endpoint };
+  if (!config) return {};
+  const family = config.family?.trim();
+  return {
+    ...(config.transport === "remote" ? { url: config.endpoint } : {}),
+    ...(family ? { family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------

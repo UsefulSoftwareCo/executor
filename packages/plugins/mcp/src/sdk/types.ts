@@ -190,6 +190,8 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 
 export const McpRemoteIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("remote"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The MCP server endpoint URL */
   endpoint: Schema.String,
   /** Transport preference for this remote server */
@@ -209,6 +211,8 @@ export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
 export const McpStdioIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("stdio"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The command to run */
   command: Schema.String,
   /** Arguments to the command */

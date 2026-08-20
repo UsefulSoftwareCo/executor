@@ -346,6 +346,23 @@ describe("mcpPlugin", () => {
     }),
   );
 
+  it.effect("projects an MCP server family into the integration catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      yield* executor.mcp.addServer({
+        name: "Cloudflare Docs",
+        family: "cloudflare",
+        endpoint: "https://example.com/mcp",
+        slug: "cloudflare_docs",
+      });
+
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.find((item) => item.slug === "cloudflare_docs")?.family).toBe(
+        "cloudflare",
+      );
+    }),
+  );
+
   it.effect("connection tools list is empty until a connection is created", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
