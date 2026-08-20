@@ -52,6 +52,7 @@ import { invokeMcpTool, isUnknownToolMessage } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
+import { recoverSlackConnectFile } from "./slack-connect-file";
 import {
   McpAuthMethodInput,
   McpAuthShorthand,
@@ -1296,12 +1297,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }
         }
 
+        const invokeHttpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
         const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           String(credential.template),
           allowStdio,
-          options?.httpClientLayer ?? ctx.httpClientLayer,
+          invokeHttpClientLayer,
         );
         const connector: McpConnector = createMcpConnector(connectorInput);
         const poolKey =
@@ -1352,6 +1354,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return yield* ctx.connections
               .markToolsStale(connectionRef)
               .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
+          }
+          if (parsed.transport === "remote") {
+            const recoveredSlackConnectFile = yield* recoverSlackConnectFile({
+              endpoint: parsed.endpoint,
+              toolName: stamp.toolName,
+              args,
+              accessToken: credential.values[TOKEN_VARIABLE],
+              upstreamErrorMessage: errorMessage,
+            }).pipe(Effect.provide(invokeHttpClientLayer));
+            if (Option.isSome(recoveredSlackConnectFile)) {
+              return ToolResult.ok(recoveredSlackConnectFile.value);
+            }
           }
           return ToolResult.fail({
             code: "mcp_tool_error",
