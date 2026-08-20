@@ -455,7 +455,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
          *  class way in, not a footnote to the library — so this reads as three
          *  actions. The verb is what keeps "Add MCP" from being mistaken for
          *  the "MCP 13" facet above. */}
-        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+        <div className="flex flex-wrap items-center gap-2">
           <p className="mr-1 text-sm font-medium">Not in the library?</p>
           {integrationPlugins.map((p) => (
             <Button key={p.key} variant="outline" asChild>
