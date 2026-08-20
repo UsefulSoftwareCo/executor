@@ -279,6 +279,11 @@ function OwnerAccounts(props: {
       }
       const payload = oauthReconnectPayload(connection);
       if (payload === null) return;
+      // Claim the sign-in window on the click: `oauth.start` below is a network
+      // round trip, and the browser's user activation can expire before it
+      // answers, which would leave Reconnect silently doing nothing.
+      const reservation = oauthPopup.reserve();
+      if (reservation.kind === "blocked") return;
       // `oauth.start` discriminates the grant: client_credentials mints inline
       // (`status: "connected"`, no authorization URL) while authorization_code
       // returns a redirect the popup must complete. The popup hook only handles
@@ -291,6 +296,7 @@ function OwnerAccounts(props: {
         reactivityKeys: connectionWriteKeys,
       });
       if (Exit.isFailure(startExit)) {
+        oauthPopup.releaseReservation();
         toast.error(messageFromExit(startExit, "Failed to reconnect"));
         trackEvent("connection_reconnected", {
           integration_slug: String(connection.integration),
@@ -301,6 +307,7 @@ function OwnerAccounts(props: {
       }
       const started = startExit.value;
       if (started.status === "connected") {
+        oauthPopup.releaseReservation();
         toast.success("Reconnected");
         trackEvent("connection_reconnected", {
           integration_slug: String(connection.integration),
@@ -311,6 +318,7 @@ function OwnerAccounts(props: {
       }
       void oauthPopup.openAuthorization({
         owner: payload.owner,
+        reservation,
         run: () =>
           Promise.resolve({
             state: started.state,
