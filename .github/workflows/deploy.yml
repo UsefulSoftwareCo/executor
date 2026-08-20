@@ -9,6 +9,16 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
+# CI is not a user — see the note in ci.yml. Applied to every workflow rather
+# than the ones that look like they run product code: the first pass guessed,
+# missed preview/deploy/pkg-pr-new, and kept leaking. These vars are inert
+# where the product is not executed, so the blanket application is the cheap
+# structural answer.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   migrate:
     name: Migrate database
