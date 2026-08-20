@@ -361,7 +361,9 @@ function ConnectIntegrationDialog(props: { open: boolean; onOpenChange: (open: b
                     onClick={() => {
                       setOpenFamily(item.family);
                       scrollResultsToTop();
-                      trackEvent("integration_picker_family_opened", { family: item.family });
+                      trackEvent("integration_connect_dialog_family_opened", {
+                        family: item.family,
+                      });
                     }}
                     className="h-auto justify-start gap-3 rounded-none bg-background px-4 py-3 text-left font-normal hover:bg-muted"
                   >
