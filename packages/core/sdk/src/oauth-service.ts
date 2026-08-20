@@ -518,6 +518,7 @@ export const loadedFirstPartyClient = (
   readonly clientId: string;
   readonly clientSecret: string;
   readonly resource: string | null;
+  readonly tokenEndpointAuthMethod: ClientAuthMethod;
 } => ({
   slug: String(firstPartyOAuthClientSlug(config.name)),
   authorizationUrl: config.authorizationUrl,
@@ -526,6 +527,7 @@ export const loadedFirstPartyClient = (
   clientId: config.clientId,
   clientSecret: config.clientSecret,
   resource: config.resource ?? null,
+  tokenEndpointAuthMethod: "body",
 });
 
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {

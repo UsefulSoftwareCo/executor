@@ -166,6 +166,7 @@ import {
   exchangeClientCredentials,
   parseClientAuthMethod,
   shouldRefreshToken,
+  type ClientAuthMethod,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -1778,6 +1779,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenUrl: string;
       readonly grant: string;
       readonly resource: string | null;
+      readonly tokenEndpointAuthMethod: ClientAuthMethod;
     }
 
     /** What drove a refresh: the pre-call expiry check (`proactive`), or an
@@ -1882,6 +1884,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               tokenUrl: firstParty.tokenUrl,
               grant: "authorization_code",
               resource: null,
+              tokenEndpointAuthMethod: "body",
             } satisfies RefreshClient;
           }
           const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
@@ -1896,6 +1899,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tokenUrl: String(stored.token_url),
             grant: String(stored.grant),
             resource: stored.resource ? String(stored.resource) : null,
+            tokenEndpointAuthMethod: parseClientAuthMethod(stored.token_endpoint_auth_method),
           } satisfies RefreshClient;
         });
         if (!clientRow) {
@@ -1918,7 +1922,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Null on old rows resolves to "body" (client_secret_post). Threaded
         // into both the client_credentials re-mint and the refresh_token call so
         // Basic-only providers keep working across refreshes.
-        const clientAuth = parseClientAuthMethod(clientRow.token_endpoint_auth_method);
+        const clientAuth = clientRow.tokenEndpointAuthMethod;
 
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
