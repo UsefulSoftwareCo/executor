@@ -176,7 +176,22 @@ export const presetTypeFacets = (
 };
 
 /** The services behind one provider card, for the drill-down view. */
-export const familyMemberEntries = (
+const familyMemberEntries = (
   entries: readonly PresetEntry[],
   family: string,
 ): readonly PresetEntry[] => entries.filter((entry) => entry.preset.family === family);
+
+/** What the picker shows once a provider card is open: its services, each as
+ *  itself, narrowed by the protocol chip still on screen.
+ *
+ *  There is no query here on purpose. Typing exits the drill-down, because a
+ *  search scoped to the open provider would quietly hide the rest of the
+ *  catalog from someone who asked it a question. */
+export const familyDrillDownItems = (
+  entries: readonly PresetEntry[],
+  family: string,
+  pluginKey: string | null,
+): readonly PresetCatalogItem[] =>
+  familyMemberEntries(entries, family)
+    .filter((entry) => pluginKey === null || entry.pluginKey === pluginKey)
+    .map((entry) => ({ type: "single", entry }));

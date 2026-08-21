@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  familyMemberEntries,
+  familyDrillDownItems,
   presetCatalogItems,
   filterPresetEntries,
   groupPresetEntriesByFamily,
@@ -176,11 +176,47 @@ describe("preset catalog", () => {
   });
 
   it("drills into a family and lists only that provider's services", () => {
-    expect(familyMemberEntries(entries, "google").map((entry) => entry.preset.name)).toEqual([
+    // Every member browses as itself: the card you opened is the one thing the
+    // drill-down must not show you again.
+    expect(titles(familyDrillDownItems(entries, "google", null))).toEqual([
       "Gmail",
       "Google Drive",
       "Google Chat",
     ]);
-    expect(familyMemberEntries(entries, "nope")).toEqual([]);
+    expect(familyDrillDownItems(entries, "nope", null)).toEqual([]);
+  });
+
+  it("keeps the protocol filter while drilled in, even where a provider spans two", () => {
+    // No shipped family mixes protocols yet, but the facet chips stay live
+    // inside the drill-down, so a provider that gained an MCP service must
+    // still narrow to the chip the user is holding.
+    const mixed = presetCatalogEntries([
+      {
+        key: "openapi",
+        label: "OpenAPI",
+        presets: [
+          { id: "google-gmail", name: "Gmail", summary: "Mail.", family: "google" },
+          { id: "google-drive", name: "Google Drive", summary: "Files.", family: "google" },
+        ],
+      },
+      {
+        key: "mcp",
+        label: "MCP",
+        presets: [
+          { id: "google-chat-mcp", name: "Google Chat", summary: "Spaces.", family: "google" },
+        ],
+      },
+    ]);
+
+    expect(titles(familyDrillDownItems(mixed, "google", "openapi"))).toEqual([
+      "Gmail",
+      "Google Drive",
+    ]);
+    expect(titles(familyDrillDownItems(mixed, "google", "mcp"))).toEqual(["Google Chat"]);
+    expect(titles(familyDrillDownItems(mixed, "google", null))).toEqual([
+      "Gmail",
+      "Google Drive",
+      "Google Chat",
+    ]);
   });
 });

@@ -55,7 +55,7 @@ import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { pluginKeyForIntegrationKind } from "../lib/integration-plugin-keys";
 import {
-  familyMemberEntries,
+  familyDrillDownItems,
   presetCatalogEntries,
   presetCatalogItems,
   presetTypeFacets,
@@ -215,14 +215,10 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
   // or switching protocol leaves the drill-down, so a query always searches the
   // whole catalog rather than silently scoping to the open provider.
   const items = useMemo(() => {
-    const filter = {
-      query: presetSearch,
-      pluginKey: pluginFilter === ALL_PROTOCOLS ? null : pluginFilter,
-    };
-    if (openFamily === null) return presetCatalogItems(entries, filter);
-    return familyMemberEntries(entries, openFamily)
-      .filter((entry) => filter.pluginKey === null || entry.pluginKey === filter.pluginKey)
-      .map((entry) => ({ type: "single", entry }) as const);
+    const pluginKey = pluginFilter === ALL_PROTOCOLS ? null : pluginFilter;
+    return openFamily === null
+      ? presetCatalogItems(entries, { query: presetSearch, pluginKey })
+      : familyDrillDownItems(entries, openFamily, pluginKey);
   }, [entries, presetSearch, pluginFilter, openFamily]);
 
   const openFamilyLabel = openFamily === null ? null : familyLabel(openFamily);
