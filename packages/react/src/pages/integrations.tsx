@@ -253,8 +253,7 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
         closeDialog();
       }}
     >
-      <PlusIcon />
-      Add {plugin.label}
+      {plugin.label}
     </Link>
   );
 
@@ -477,11 +476,16 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
 
         {/* Pointing your own spec, server, or endpoint at Executor is a first-
          *  class way in, not a footnote to the library — so this reads as real
-         *  actions. The verb is what keeps "Add MCP" from being mistaken for
-         *  the "MCP 13" facet above. Narrow enough and one row of them would
-         *  wrap into two, so there they become a single menu instead. */}
+         *  actions. The lead-in carries the verb for all three, which is what
+         *  keeps a bare "MCP" from reading as the "MCP 13" facet above; a verb
+         *  and a plus on each button restated one idea three times. These link
+         *  to a form rather than creating anything inline, so no plus earns its
+         *  place here. Narrow enough and one row of them would wrap into two,
+         *  so there the whole sentence collapses into a single menu instead. */}
         <div className="flex items-center gap-2">
-          <p className="mr-1 text-sm font-medium">Not in the library?</p>
+          <p className="mr-1 text-sm font-medium">
+            Not in the library?<span className="hidden sm:inline"> Add your own</span>
+          </p>
           <div className="hidden gap-2 sm:flex">
             {integrationPlugins.map((plugin) => (
               <Button key={plugin.key} variant="outline" asChild>
@@ -492,7 +496,6 @@ function ConnectIntegrationDialogView(props: ConnectIntegrationDialogProps) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="min-h-11 sm:hidden">
-                <PlusIcon />
                 Add manually
               </Button>
             </DropdownMenuTrigger>

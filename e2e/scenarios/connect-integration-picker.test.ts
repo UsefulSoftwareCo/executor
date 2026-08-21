@@ -69,6 +69,27 @@ scenario(
         expect(await dialog.getByRole("link", { name: /^Figma\b/ }).count()).toBe(0);
       });
 
+      // "Add OpenAPI / Add MCP / Add GraphQL" spent a verb and a plus icon on
+      // each of three buttons for one idea. The lead-in carries the verb once
+      // and the buttons carry only the format they add. The plus is gone too:
+      // these open a form, they do not create anything inline.
+      await step("The manual add path spells out the verb once", async () => {
+        await dialog.getByText(/Not in the library\? Add your own/).waitFor();
+        for (const format of ["OpenAPI", "MCP", "GraphQL"]) {
+          await dialog.getByRole("link", { name: format, exact: true }).waitFor();
+        }
+        expect(
+          await dialog.getByRole("link", { name: /^Add (OpenAPI|MCP|GraphQL)$/ }).count(),
+          "the verb is not repeated per button",
+        ).toBe(0);
+        expect(
+          await dialog
+            .getByRole("link", { name: /^(OpenAPI|MCP|GraphQL)$/ })
+            .evaluateAll((links) => links.filter((link) => link.querySelector("svg")).length),
+          "the manual add links carry no icon",
+        ).toBe(0);
+      });
+
       await step("On a phone the filters and the add path stay on one row", async () => {
         await page.setViewportSize({ width: 390, height: 844 });
         const facetTops = await dialog
@@ -80,9 +101,11 @@ scenario(
         // Three protocol buttons would wrap into a second row down here, so
         // they collapse into one menu that opens the same links.
         await dialog.getByRole("button", { name: "Add manually" }).waitFor();
-        expect(await dialog.getByRole("link", { name: "Add OpenAPI" }).isVisible()).toBe(false);
+        expect(await dialog.getByRole("link", { name: "OpenAPI", exact: true }).isVisible()).toBe(
+          false,
+        );
         await dialog.getByRole("button", { name: "Add manually" }).click();
-        await page.getByRole("menuitem", { name: "Add GraphQL" }).waitFor();
+        await page.getByRole("menuitem", { name: "GraphQL", exact: true }).waitFor();
 
         // Touch guidelines (WCAG 2.5.5, Apple, Material) put a thumb target at
         // 44px; the defaults here land at 32 and the dialog's close at 16.
@@ -101,7 +124,9 @@ scenario(
           );
         expect(await undersized(page, "[role=menuitem]"), "menu items are thumb-sized").toEqual([]);
         await page.keyboard.press("Escape");
-        await page.getByRole("menuitem", { name: "Add GraphQL" }).waitFor({ state: "detached" });
+        await page
+          .getByRole("menuitem", { name: "GraphQL", exact: true })
+          .waitFor({ state: "detached" });
         expect(
           await undersized(dialog, "a[href], button, input"),
           "every control in the picker is thumb-sized",
