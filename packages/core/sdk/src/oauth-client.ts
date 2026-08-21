@@ -134,6 +134,25 @@ export interface FirstPartyOAuthClientConfig {
    *  GitHub Apps, whose capabilities are configured on the app and whose OAuth
    *  user-token flow does not use scopes. Omit for normal OAuth clients. */
   readonly authorizationScopes?: readonly string[];
+  /** Scopes the host always adds to the integration-declared set. Use this for
+   *  provider lifecycle scopes such as Atlassian and Microsoft
+   *  `offline_access`; unlike `authorizationScopes`, this preserves the
+   *  integration's least-privilege scopes. */
+  readonly additionalAuthorizationScopes?: readonly string[];
+  /** Separator used in the authorize URL's `scope` parameter. OAuth defaults
+   *  to a space; legacy providers such as Linear require a comma. */
+  readonly authorizationScopeSeparator?: string;
+  /** Provider-specific, non-secret authorize parameters fixed by the host
+   *  registration contract (for example Atlassian's `audience`). These are
+   *  merged after generic provider defaults and may intentionally override
+   *  them. */
+  readonly authorizationExtraParams?: Readonly<Record<string, string>>;
+  /** Token endpoint client-auth transport. Omitted means
+   *  `client_secret_post`; `basic` sends the secret only in HTTP Basic auth. */
+  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  /** Token endpoint request encoding. OAuth defaults to URL-encoded form;
+   *  providers such as Atlassian, ClickUp, and Notion require JSON. */
+  readonly tokenRequestFormat?: "form" | "json";
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this

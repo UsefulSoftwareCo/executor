@@ -749,6 +749,9 @@ export type ExchangeAuthorizationCodeInput = {
   readonly codeVerifier: string;
   readonly code: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator. MCP Auth spec MUST-requires this on
    *  the token request when the client knows the resource it intends
@@ -757,6 +760,59 @@ export type ExchangeAuthorizationCodeInput = {
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
+};
+
+const base64BasicCredentials = (clientId: string, clientSecret: string): string => {
+  const bytes = new TextEncoder().encode(`${clientId}:${clientSecret}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return globalThis.btoa(binary);
+};
+
+const jsonTokenEndpointRequest = async (input: {
+  readonly tokenUrl: string;
+  readonly clientId: string;
+  readonly clientSecret?: string | null;
+  readonly clientAuth: ClientAuthMethod;
+  readonly grantType: "authorization_code" | "refresh_token";
+  readonly parameters: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
+}): Promise<Response> => {
+  const tokenUrl = assertSupportedOAuthEndpointUrl(
+    input.tokenUrl,
+    "Token URL",
+    input.endpointUrlPolicy,
+  );
+  const headers = new Headers({
+    accept: "application/json",
+    "content-type": "application/json",
+  });
+  const confidential = Boolean(input.clientSecret);
+  if (confidential && input.clientAuth === "basic") {
+    headers.set(
+      "authorization",
+      `Basic ${base64BasicCredentials(input.clientId, input.clientSecret ?? "")}`,
+    );
+  }
+  const body = {
+    grant_type: input.grantType,
+    ...input.parameters,
+    ...(confidential && input.clientAuth === "basic"
+      ? {}
+      : {
+          client_id: input.clientId,
+          ...(confidential ? { client_secret: input.clientSecret ?? "" } : {}),
+        }),
+  };
+  // oxlint-disable-next-line executor/no-raw-fetch -- boundary: provider token exchange is the SDK's HTTP boundary and preserves its injected fetch seam
+  return await (input.fetch ?? globalThis.fetch)(tokenUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(input.timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS),
+  });
 };
 
 export const exchangeAuthorizationCode = (
@@ -786,19 +842,32 @@ export const exchangeAuthorizationCode = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
-      const response = await oauth.genericTokenEndpointRequest(
-        as,
-        client,
-        clientAuth,
-        "authorization_code",
-        params,
-        oauth4webapiRequestOptions(
-          input.tokenUrl,
-          input.timeoutMs,
-          input.endpointUrlPolicy,
-          input.fetch,
-        ),
-      );
+      const response =
+        input.requestFormat === "json"
+          ? await jsonTokenEndpointRequest({
+              tokenUrl: input.tokenUrl,
+              clientId: input.clientId,
+              clientSecret: input.clientSecret,
+              clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+              grantType: "authorization_code",
+              parameters: Object.fromEntries(params),
+              timeoutMs: input.timeoutMs,
+              endpointUrlPolicy: input.endpointUrlPolicy,
+              fetch: input.fetch,
+            })
+          : await oauth.genericTokenEndpointRequest(
+              as,
+              client,
+              clientAuth,
+              "authorization_code",
+              params,
+              oauth4webapiRequestOptions(
+                input.tokenUrl,
+                input.timeoutMs,
+                input.endpointUrlPolicy,
+                input.fetch,
+              ),
+            );
       return await processTokenEndpointResponse(as, client, response);
     },
     catch: (cause) => cause,
@@ -888,6 +957,9 @@ export type RefreshAccessTokenInput = {
   readonly scopes?: readonly string[];
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator — MCP spec MUST-requires this on
    *  refresh requests so the new access token's audience is bound to
@@ -921,6 +993,26 @@ export const refreshAccessToken = (
       }
       const additionalParameters =
         Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
+      if (input.requestFormat === "json") {
+        const response = await jsonTokenEndpointRequest({
+          tokenUrl: input.tokenUrl,
+          clientId: input.clientId,
+          clientSecret: input.clientSecret,
+          clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+          grantType: "refresh_token",
+          parameters: {
+            refresh_token: input.refreshToken,
+            ...(input.scopes && input.scopes.length > 0
+              ? { scope: input.scopes.join(input.scopeSeparator ?? " ") }
+              : {}),
+            ...(input.resource ? { resource: input.resource } : {}),
+          },
+          timeoutMs: input.timeoutMs,
+          endpointUrlPolicy: input.endpointUrlPolicy,
+          fetch: input.fetch,
+        });
+        return await processTokenEndpointResponse(as, client, response);
+      }
       const response = await oauth.refreshTokenGrantRequest(
         as,
         client,

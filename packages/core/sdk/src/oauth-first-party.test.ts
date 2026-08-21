@@ -199,6 +199,42 @@ describe("first-party oauth clients", () => {
     ),
   );
 
+  it.effect("applies first-party lifecycle scopes, separators, and authorize parameters", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read", "offline_access"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [
+            {
+              ...firstPartyClientFor(server),
+              allowedScopes: ["read", "offline_access"],
+              additionalAuthorizationScopes: ["offline_access"],
+              authorizationScopeSeparator: ",",
+              authorizationExtraParams: { audience: "api.example.com", prompt: "consent" },
+            },
+          ],
+        });
+        yield* executor.acme.seed(["read"]);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: FIRST_PARTY,
+          clientOwner: "org",
+          name: ConnectionName.make("lifecycle"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const authorizationUrl = new URL(started.authorizationUrl);
+        expect(authorizationUrl.searchParams.get("scope")).toBe("read,offline_access");
+        expect(authorizationUrl.searchParams.get("audience")).toBe("api.example.com");
+        expect(authorizationUrl.searchParams.get("prompt")).toBe("consent");
+      }),
+    ),
+  );
+
   it.effect("refresh resolves the config-declared client (no oauth_client row exists)", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Ref } from "effect";
+import { Effect, Exit, Ref, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -30,7 +30,10 @@ interface TokenCall {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: URLSearchParams;
+  readonly jsonBody: unknown;
 }
+
+const decodeJsonBody = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 type TokenHandler = (call: TokenCall) => HttpServerResponse.HttpServerResponse;
 
@@ -48,6 +51,9 @@ const serveTokenEndpoint = (handler: TokenHandler) =>
           url: request.url ?? "/",
           headers: request.headers,
           body: new URLSearchParams(bodyText),
+          jsonBody: request.headers["content-type"]?.startsWith("application/json")
+            ? decodeJsonBody(bodyText)
+            : null,
         };
         yield* Ref.update(calls, (all) => [...all, call]);
         return handler(call);
@@ -256,6 +262,56 @@ describe("buildAuthorizationUrl", () => {
 });
 
 describe("exchangeAuthorizationCode", () => {
+  it.effect("supports JSON token exchange with HTTP Basic client authentication", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          clientAuth: "basic",
+          requestFormat: "json",
+        });
+        const call = (yield* calls)[0]!;
+        expect(call.headers["content-type"]).toBe("application/json");
+        expect(call.headers["authorization"]).toBe("Basic Y2lkOmNzZWNyZXQ=");
+        expect(call.jsonBody).toEqual({
+          grant_type: "authorization_code",
+          code: "abc",
+          redirect_uri: "https://app.example.com/cb",
+          code_verifier: "verifier",
+        });
+      }),
+    ),
+  );
+
+  it.effect("supports JSON token exchange with client credentials in the body", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          requestFormat: "json",
+        });
+        expect((yield* calls)[0]!.jsonBody).toEqual({
+          grant_type: "authorization_code",
+          code: "abc",
+          redirect_uri: "https://app.example.com/cb",
+          code_verifier: "verifier",
+          client_id: "cid",
+          client_secret: "csecret",
+        });
+      }),
+    ),
+  );
+
   it.effect("posts form-urlencoded body with grant_type=authorization_code and PKCE verifier", () =>
     withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {
@@ -904,6 +960,31 @@ describe("exchangeClientCredentials", () => {
 });
 
 describe("refreshAccessToken", () => {
+  it.effect("persists provider-compatible JSON refresh rotation requests", () =>
+    withTokenEndpoint(
+      tokenResponse({ ...validRefreshBody, refresh_token: "rotated" }),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const result = yield* refreshAccessToken({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            refreshToken: "old",
+            scopes: ["read", "offline_access"],
+            requestFormat: "json",
+          });
+          expect(result.refresh_token).toBe("rotated");
+          expect((yield* calls)[0]!.jsonBody).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "old",
+            scope: "read offline_access",
+            client_id: "cid",
+            client_secret: "csecret",
+          });
+        }),
+    ),
+  );
+
   it.effect("normalizes Slack's comma-delimited scopes on refresh", () =>
     Effect.gen(function* () {
       const result = yield* refreshAccessToken({
