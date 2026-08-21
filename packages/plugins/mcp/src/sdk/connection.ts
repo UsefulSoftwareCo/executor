@@ -123,6 +123,16 @@ const abortError = (signal: AbortSignal): unknown => {
   return error;
 };
 
+/** An effect that completes when `signal` aborts (already-aborted = now). */
+const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    if (signal.aborted) {
+      resume(Effect.void);
+      return;
+    }
+    signal.addEventListener("abort", () => resume(Effect.void), { once: true });
+  });
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): FetchLike => {
@@ -139,10 +149,19 @@ const fetchFromHttpClientLayer = (
       for (const [key, value] of Object.entries(response.headers)) {
         if (value !== undefined) responseHeaders.set(key, value);
       }
+      // Abort must reach the body, not just the pending request: this stream
+      // fiber outlives the `runPromise` below, so without this streamable
+      // http's SSE `GET` stays in flight after `close()`. Interrupted at the
+      // source because the SDK holds a locked reader on that same stream,
+      // which rules out cancelling the ReadableStream.
+      const stream =
+        init?.signal == null
+          ? response.stream
+          : Stream.interruptWhen(response.stream, awaitAbort(init.signal));
       const body =
         response.status === 204 || response.status === 205 || response.status === 304
           ? null
-          : Stream.toReadableStream(response.stream);
+          : Stream.toReadableStream(stream);
       return new Response(body, {
         status: response.status,
         headers: responseHeaders,
