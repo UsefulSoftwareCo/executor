@@ -146,6 +146,10 @@ scenario(
         // Group rows are the only tree buttons carrying aria-expanded.
         const closedGroup = (connection: string, text: string) =>
           sectionFor(connection).locator('button[aria-expanded="false"]').filter({ hasText: text });
+        const expandGroup = async (connection: string, text: string) => {
+          const group = closedGroup(connection, text);
+          if ((await group.count()) > 0) await group.first().click();
+        };
         const policyMenuFor = (connection: string, node: string) =>
           sectionFor(connection).getByRole("button", {
             name: `Set policy for ${node}`,
@@ -169,8 +173,8 @@ scenario(
         });
 
         await step("Expand the records category in the first account", async () => {
-          await closedGroup(alpha, integration).click();
-          await closedGroup(alpha, "records").click();
+          await expandGroup(alpha, integration);
+          await expandGroup(alpha, "records");
           await policyMenuFor(alpha, `${integration}.records.create`).waitFor();
         });
 
@@ -249,8 +253,8 @@ scenario(
         );
 
         await step("The same rules govern the second account's rows", async () => {
-          await closedGroup(beta, integration).click();
-          await closedGroup(beta, "records").click();
+          await expandGroup(beta, integration);
+          await expandGroup(beta, "records");
           await leafIndicator(beta, "create", `Blocked (matched ${leafPattern})`).waitFor();
           await leafIndicator(
             beta,
