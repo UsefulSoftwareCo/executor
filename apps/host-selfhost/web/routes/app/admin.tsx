@@ -34,7 +34,7 @@ const ROLES = ["member", "admin"] as const;
 function AdminPage() {
   useExecutorDocumentTitle("Admin");
   return (
-    <PageContainer variant="narrow">
+    <PageContainer>
       <PageHeader title="Admin" description="Manage members and invite links for this instance." />
       <div className="space-y-10">
         <MembersSection />

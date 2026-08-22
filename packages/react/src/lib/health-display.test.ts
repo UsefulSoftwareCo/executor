@@ -8,17 +8,23 @@ import {
 } from "./health-display";
 
 describe("healthStatusForDisplay", () => {
-  it("keeps an unknown loading verdict neutral", () => {
-    const status = healthStatusForDisplay(undefined, true);
+  it("keeps a stale healthy verdict neutral while probing", () => {
+    const status = healthStatusForDisplay("healthy", true);
 
     expect(status).toBe("unknown");
     expect(HEALTH_STATUS_LABEL[status]).toBe("Unchecked");
     expect(HEALTH_INDICATOR_COLOR[status].dot).not.toBe(HEALTH_INDICATOR_COLOR.healthy.dot);
   });
 
-  it("preserves a concrete verdict after loading completes", () => {
+  it("keeps a persisted expired verdict visible while probing", () => {
+    const status = healthStatusForDisplay("expired", false);
+
+    expect(status).toBe("expired");
+    expect(HEALTH_STATUS_LABEL[status]).toBe("Expired");
+  });
+
+  it("preserves a concrete healthy verdict after loading completes", () => {
     expect(healthStatusForDisplay("healthy", false)).toBe("healthy");
-    expect(healthStatusForDisplay("expired", false)).toBe("expired");
   });
 });
 

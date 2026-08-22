@@ -12,15 +12,14 @@ import { cn } from "../lib/utils";
 type PageContainerProps = React.ComponentProps<"div"> & {
   /**
    * Content width variants for pages whose information architecture genuinely
-   * needs more or less room than the settings column.
+   * needs more room than the settings column.
    */
-  variant?: "default" | "wide" | "narrow";
+  variant?: "default" | "wide";
 };
 
 const PAGE_CONTAINER_WIDTHS = {
   default: "max-w-4xl",
   wide: "max-w-6xl",
-  narrow: "max-w-3xl",
 } as const;
 
 function PageContainer({ className, children, variant = "default", ...props }: PageContainerProps) {

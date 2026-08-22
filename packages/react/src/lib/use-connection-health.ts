@@ -1,10 +1,10 @@
 // Shared stale-while-revalidate health probing for connections. Two surfaces
 // render a connection's health (the detail page's AccountRow and the
 // integrations-list summary), and both must revalidate the same way: render
-// a fresh persisted `lastHealth` verdict instantly, then probe in the
-// background for stale or missing data. Keeping the guard, the `ifStaleMs`
-// semantics, and the freshness window here means the two surfaces cannot
-// drift apart.
+// a fresh persisted `lastHealth` verdict instantly. Stale healthy and missing
+// data stay neutral while probing; persisted non-healthy verdicts remain
+// visible until corrected. Keeping the guard, the `ifStaleMs` semantics, and
+// the freshness window here means the two surfaces cannot drift apart.
 
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { RegistryContext, useAtomSet } from "@effect/atom-react";
@@ -27,13 +27,13 @@ const connectionParams = (connection: Connection) => ({
   name: connection.name,
 });
 
-/** Whether a persisted verdict may render as-is without a background probe.
- *  Healthy-and-fresh renders untouched. Everything else revalidates: stale or
- *  never-checked for obvious reasons, and NON-healthy always; while that probe
- *  is in flight the display stays neutral rather than presenting stale health.
- */
+/** Whether a persisted verdict may render as-is without a background probe. */
 const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
   last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
+
+/** Only absent and stale healthy data are unsafe to display during probing. */
+const neutralWhileProbing = (last: HealthCheckResult | null | undefined): boolean =>
+  last == null || (last.status === "healthy" && !healthyAndFresh(last));
 
 /** The revalidation query: a healthy (but stale) verdict defers to the
  *  server-enforced window so N open tabs can't stampede the upstream; a
@@ -88,10 +88,11 @@ function useInvalidateConnections(): (owner: Owner) => void {
 
 /**
  * Health for ONE connection, stale-while-revalidate. A fresh persisted verdict
- * renders instantly; stale or missing data stays neutral while a background
- * probe corrects it in place (once per mount, quiet on failure). `runCheck` is
- * the manual path ("Check now"): it always forces a fresh probe and folds the
- * result into the same live state.
+ * renders instantly; stale healthy or missing data stays neutral while a
+ * background probe corrects it in place (once per mount, quiet on failure).
+ * Persisted non-healthy verdicts remain visible while they revalidate.
+ * `runCheck` is the manual path ("Check now"): it always forces a fresh probe
+ * and folds the result into the same live state.
  */
 export function useConnectionHealth(connection: Connection): {
   readonly probe: HealthCheckResult | null;
@@ -104,21 +105,21 @@ export function useConnectionHealth(connection: Connection): {
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
-  const loading = liveProbe === null && !healthyAndFresh(connection.lastHealth);
+  const loading = liveProbe === null && neutralWhileProbing(connection.lastHealth);
   const probe = loading ? null : freshestVerdict(liveProbe, connection.lastHealth);
   const status = healthStatusForDisplay(probe?.status, loading);
 
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
   // older than the freshness window (or never checked), stale-while-revalidate
-  // style: a fresh persisted verdict renders instantly, while stale or missing
-  // data stays neutral until the probe corrects it in place. The guard is once
-  // per mount PLUS once per clearing: the ref holds
-  // the last epoch seen, and a verdict giving way to `null` (an OAuth re-mint
-  // cleared it) re-arms the probe — that is how a completed reconnect gets its
-  // recovery probe without a page reload. Only the clearing transition
-  // re-arms; every other epoch change (a probe's own verdict echoed back by
-  // the refetch, a concurrent surface's fresher verdict) stays quiet, keeping
-  // the no-probe-storm invariant of the original once-per-mount guard.
+  // style: a fresh persisted verdict renders instantly, while stale healthy or
+  // missing data stays neutral until the probe corrects it in place. The guard
+  // is once per mount PLUS once per clearing: the ref holds the last epoch
+  // seen, and a verdict giving way to `null` (an OAuth re-mint cleared it)
+  // re-arms the probe. That is how a completed reconnect gets its recovery
+  // probe without a page reload. Only the clearing transition re-arms; every
+  // other epoch change (a probe's own verdict echoed back by the refetch, or a
+  // concurrent surface's fresher verdict) stays quiet, keeping the
+  // no-probe-storm invariant of the original once-per-mount guard.
   const seenEpoch = useRef<number | null | undefined>(undefined);
   useEffect(() => {
     const last = connection.lastHealth;
@@ -218,7 +219,7 @@ export function useConnectionsHealth(
   return useCallback(
     (connection: Connection) => {
       const live = liveProbes.get(probeKey(connection)) ?? null;
-      if (live === null && !healthyAndFresh(connection.lastHealth)) return null;
+      if (live === null && neutralWhileProbing(connection.lastHealth)) return null;
       return freshestVerdict(live, connection.lastHealth);
     },
     [liveProbes],
