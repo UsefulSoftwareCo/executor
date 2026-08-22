@@ -33,6 +33,7 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { Skeleton } from "../components/skeleton";
+import { EmptyState } from "../components/empty-state";
 
 // ---------------------------------------------------------------------------
 // Shared API-keys page. Reads/writes the provider-neutral `/account/api-keys`
@@ -300,12 +301,11 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
             ),
             onSuccess: ({ value }) =>
               value.apiKeys.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border bg-card p-8">
-                  <h3 className="text-base font-semibold text-foreground">No API keys</h3>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                    Create a key and send it in the Authorization Bearer header.
-                  </p>
-                </div>
+                <EmptyState
+                  title="No API keys"
+                  description="Create a key and send it in the Authorization Bearer header."
+                  action={<Button onClick={() => setCreateOpen(true)}>Create a key</Button>}
+                />
               ) : (
                 <KeyTable keys={value.apiKeys} revokingId={revokingId} onRevoke={handleRevoke} />
               ),
@@ -451,12 +451,15 @@ function OrgApiKeysSectionBody() {
             ),
           onSuccess: ({ value }) =>
             value.apiKeys.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border bg-card p-8">
-                <h3 className="text-base font-semibold text-foreground">No organization keys</h3>
-                <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Create one to call the admin API from your backend.
-                </p>
-              </div>
+              <EmptyState
+                title="No organization keys"
+                description="Create one to call the admin API from your backend."
+                action={
+                  <Button size="sm" onClick={() => setCreateOpen(true)}>
+                    Create an organization key
+                  </Button>
+                }
+              />
             ) : (
               <KeyTable
                 keys={value.apiKeys}

@@ -21,6 +21,7 @@ const SearchParams = Schema.toStandardSchemaV1(
   Schema.Struct({
     tab: Schema.optional(Schema.Literals(["accounts", "source", "tools"])),
     addAccount: Schema.optional(Schema.Unknown),
+    tool: Schema.optional(Schema.String),
   }),
 );
 
@@ -32,11 +33,12 @@ export const Route = createFileRoute("/{-$orgSlug}/integrations/$namespace")({
   validateSearch: SearchParams,
   component: () => {
     const { namespace } = Route.useParams();
-    const { tab, addAccount } = Route.useSearch();
+    const { tab, addAccount, tool } = Route.useSearch();
     return (
       <IntegrationDetailPage
         namespace={namespace}
         tab={tab as IntegrationDetailSearchTab | undefined}
+        tool={tool}
         addAccount={isAddAccountRequested(addAccount)}
       />
     );

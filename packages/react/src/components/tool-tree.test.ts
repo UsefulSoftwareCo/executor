@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { EffectivePolicy, Owner } from "@executor-js/sdk/shared";
 
-import { buildAccountGroups, type ToolSummary } from "./tool-tree";
+import { buildAccountGroups, defaultExpandedPaths, type ToolSummary } from "./tool-tree";
 
 // A trivial always-approve plugin default — the policy field is required on a
 // ToolSummary but irrelevant to grouping.
@@ -105,5 +105,25 @@ describe("buildAccountGroups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]!.label).toBe("Workspace");
     expect(groups[0]!.tools).toHaveLength(2);
+  });
+});
+
+describe("defaultExpandedPaths", () => {
+  it("opens every group in a small tree", () => {
+    expect(
+      defaultExpandedPaths([
+        tool({ id: "github.user.get", name: "github.user.get" }),
+        tool({ id: "github.repos.list", name: "github.repos.list" }),
+      ]),
+    ).toEqual(new Set(["github", "github.user", "github.repos"]));
+  });
+
+  it("opens only top-level groups in a large tree", () => {
+    const paths = defaultExpandedPaths(
+      Array.from({ length: 13 }, (_, index) =>
+        tool({ id: `github.repos.tool${index}`, name: `github.repos.tool${index}` }),
+      ),
+    );
+    expect(paths).toEqual(new Set(["github"]));
   });
 });

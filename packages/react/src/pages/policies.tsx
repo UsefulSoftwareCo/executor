@@ -430,9 +430,10 @@ export function PoliciesPage() {
                   {sorted.length === 0 ? (
                     <CardStackEntry>
                       <CardStackEntryContent>
+                        <CardStackEntryTitle>No active policies</CardStackEntryTitle>
                         <CardStackEntryDescription>
-                          No policies yet. Tools fall back to their plugin's default approval
-                          behavior.
+                          Add a policy above to control whether matching tools are allowed, blocked,
+                          or require approval.
                         </CardStackEntryDescription>
                       </CardStackEntryContent>
                     </CardStackEntry>

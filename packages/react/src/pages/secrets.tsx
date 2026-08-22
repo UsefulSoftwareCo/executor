@@ -103,8 +103,9 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
                 {value.length === 0 ? (
                   <CardStackEntry>
                     <CardStackEntryContent>
+                      <CardStackEntryTitle>No providers configured</CardStackEntryTitle>
                       <CardStackEntryDescription>
-                        No credential providers are registered.
+                        Providers appear here when a connection needs a place to store credentials.
                       </CardStackEntryDescription>
                     </CardStackEntryContent>
                   </CardStackEntry>

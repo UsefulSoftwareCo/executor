@@ -28,6 +28,7 @@ import { Button } from "../components/button";
 import { ArtifactPreview } from "../components/artifact-preview";
 import { ErrorState } from "../components/error-state";
 import { PageContainer, PageHeader } from "../components/page";
+import { EmptyState as PageEmptyState } from "../components/empty-state";
 import { Skeleton } from "../components/skeleton";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
@@ -68,14 +69,11 @@ const LoadingState = () => (
  * that cannot exist.
  */
 const EmptyState = () => (
-  <div
-    data-slot="artifact-empty"
-    className="rounded-lg border border-dashed border-border px-6 py-16 text-center"
-  >
-    <p className="text-sm text-muted-foreground">
-      No artifacts yet. Ask an agent to render a UI and it appears here, ready to reopen.
-    </p>
-  </div>
+  <PageEmptyState
+    className="py-10"
+    title="No saved artifacts"
+    description="Ask an agent to render a UI and it will appear here, ready to reopen."
+  />
 );
 
 /**

@@ -13,6 +13,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { EmptyState } from "../components/empty-state";
 
 // Dynamic tool policy patterns are derived from the connection-aware address.
 // Static tools (for example Executor's own tools) use their address directly.
@@ -129,13 +130,12 @@ export function ToolsPage() {
           ),
           onSuccess: () =>
             summaries.length === 0 ? (
-              <div className="flex min-h-0 flex-1 items-center justify-center">
-                <div className="text-center">
-                  <p className="text-sm font-medium text-foreground/70">No tools registered</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Add an integration to start discovering tools.
-                  </p>
-                </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+                <EmptyState
+                  className="w-full max-w-xl"
+                  title="No tools registered"
+                  description="Add an integration to start discovering tools."
+                />
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 overflow-hidden">

@@ -47,6 +47,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { EmptyState } from "../components/empty-state";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
   openapi: "openapi",
@@ -301,19 +302,17 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
 
 function EmptyIntegrations(props: { onConnect: () => void }) {
   return (
-    <div className="mb-8 flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-16">
-      <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-        <PlusIcon className="size-5" />
-      </div>
-      <p className="mb-1 text-[14px] font-medium text-foreground/70">No integrations yet</p>
-      <p className="mb-5 text-[13px] text-muted-foreground/60">
-        Connect an integration to start curating tools.
-      </p>
-      <Button onClick={props.onConnect} size="sm" className="gap-1.5">
-        <PlusIcon className="size-4" />
-        Connect an integration
-      </Button>
-    </div>
+    <EmptyState
+      className="mb-8"
+      title="No integrations yet"
+      description="Connect an integration to start curating tools."
+      action={
+        <Button onClick={props.onConnect} size="sm" className="gap-1.5">
+          <PlusIcon className="size-4" />
+          Connect an integration
+        </Button>
+      }
+    />
   );
 }
 
