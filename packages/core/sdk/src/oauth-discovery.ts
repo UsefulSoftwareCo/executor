@@ -314,17 +314,42 @@ export const discoverProtectedResourceMetadata = (
 // HttpClient boundary and timeout behavior.
 // ---------------------------------------------------------------------------
 
-const wellKnownUrlFor = (
+interface WellKnownCandidate {
+  readonly algorithm: "oauth2" | "oidc";
+  readonly url: string;
+}
+
+const wellKnownCandidatesFor = (
   issuerOrigin: string,
-  algorithm: "oauth2" | "oidc",
   issuerPath: string,
-): string => {
+): readonly WellKnownCandidate[] => {
+  const hasPath = issuerPath !== "" && issuerPath !== "/";
   // Mirrors the library's own well-known composition so the URL we
   // surface matches what was actually fetched.
-  const suffix = algorithm === "oauth2" ? "oauth-authorization-server" : "openid-configuration";
-  return issuerPath && issuerPath !== "/"
-    ? `${issuerOrigin}/.well-known/${suffix}${issuerPath}`
-    : `${issuerOrigin}/.well-known/${suffix}`;
+  const insertPath = (suffix: string) =>
+    hasPath
+      ? `${issuerOrigin}/.well-known/${suffix}${issuerPath}`
+      : `${issuerOrigin}/.well-known/${suffix}`;
+
+  const candidates: WellKnownCandidate[] = [
+    { algorithm: "oauth2", url: insertPath("oauth-authorization-server") },
+    { algorithm: "oidc", url: insertPath("openid-configuration") },
+  ];
+
+  // OIDC Discovery 1.0 §4 appends the well-known segment to the issuer
+  // instead of inserting it after the origin, and the MCP authorization
+  // spec requires clients to try that form as well. An issuer mounted
+  // under a path may serve only this variant, in which case stopping
+  // after the two path-insertion URLs reports "no metadata" for an
+  // authorization server that is configured correctly.
+  if (hasPath) {
+    candidates.push({
+      algorithm: "oidc",
+      url: `${issuerOrigin}${issuerPath}/.well-known/openid-configuration`,
+    });
+  }
+
+  return candidates;
 };
 
 export const discoverAuthorizationServerMetadata = (
@@ -343,8 +368,10 @@ export const discoverAuthorizationServerMetadata = (
     const issuerOrigin = `${issuerUrl.protocol}//${issuerUrl.host}`;
     const issuerPath = issuerUrl.pathname.replace(/\/+$/, "");
 
-    for (const algorithm of ["oauth2", "oidc"] as const) {
-      const metadataUrl = wellKnownUrlFor(issuerOrigin, algorithm, issuerPath);
+    for (const { algorithm, url: metadataUrl } of wellKnownCandidatesFor(
+      issuerOrigin,
+      issuerPath,
+    )) {
       let request = HttpClientRequest.get(metadataUrl).pipe(
         HttpClientRequest.setHeader("accept", "application/json"),
       );
