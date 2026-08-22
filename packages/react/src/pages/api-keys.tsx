@@ -32,6 +32,7 @@ import { Label } from "../components/label";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { Skeleton } from "../components/skeleton";
 
 // ---------------------------------------------------------------------------
 // Shared API-keys page. Reads/writes the provider-neutral `/account/api-keys`
@@ -290,16 +291,10 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
         </p>
 
         {isAsyncResultLoading(result) ? (
-          <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-            Loading API keys...
-          </div>
+          <KeyTableSkeleton />
         ) : (
           AsyncResult.match(result, {
-            onInitial: () => (
-              <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-                Loading API keys...
-              </div>
-            ),
+            onInitial: () => <KeyTableSkeleton />,
             onFailure: () => (
               <ErrorState message="Failed to load API keys" onRetry={refreshApiKeys} />
             ),
@@ -433,16 +428,10 @@ function OrgApiKeysSectionBody() {
       </div>
 
       {isAsyncResultLoading(result) ? (
-        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-          Loading organization keys...
-        </div>
+        <KeyTableSkeleton />
       ) : (
         AsyncResult.match(result, {
-          onInitial: () => (
-            <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-              Loading organization keys...
-            </div>
-          ),
+          onInitial: () => <KeyTableSkeleton />,
           onFailure: ({ cause }) =>
             isOrgKeysAccessDenied(cause) ? (
               <div className="rounded-md border border-border bg-card p-8">
@@ -525,5 +514,32 @@ function OrgApiKeysSectionBody() {
         </DialogContent>
       </Dialog>
     </section>
+  );
+}
+
+function KeyTableSkeleton() {
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-card">
+      <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="hidden h-3 w-16 md:block" />
+        <Skeleton className="hidden h-3 w-16 md:block" />
+        <Skeleton className="ml-auto h-3 w-14" />
+      </div>
+      {Array.from({ length: 2 }).map((_, index) => (
+        <div
+          key={index}
+          className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 last:border-b-0 md:grid-cols-[1.4fr_1fr_1fr_auto]"
+        >
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-2/5" />
+            <Skeleton className="h-3 w-1/3" />
+          </div>
+          <Skeleton className="hidden h-3 w-20 md:block" />
+          <Skeleton className="hidden h-3 w-20 md:block" />
+          <Skeleton className="ml-auto size-7 rounded-md" />
+        </div>
+      ))}
+    </div>
   );
 }

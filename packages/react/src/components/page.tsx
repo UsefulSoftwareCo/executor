@@ -9,10 +9,31 @@ import { cn } from "../lib/utils";
 // instead of hand-rolling the `mx-auto max-w-* px-* py-*` wrapper per page.
 // ---------------------------------------------------------------------------
 
-function PageContainer({ className, children, ...props }: React.ComponentProps<"div">) {
+type PageContainerProps = React.ComponentProps<"div"> & {
+  /**
+   * Content width variants for pages whose information architecture genuinely
+   * needs more or less room than the settings column.
+   */
+  variant?: "default" | "wide" | "narrow";
+};
+
+const PAGE_CONTAINER_WIDTHS = {
+  default: "max-w-4xl",
+  wide: "max-w-6xl",
+  narrow: "max-w-3xl",
+} as const;
+
+function PageContainer({ className, children, variant = "default", ...props }: PageContainerProps) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto" data-slot="page-container">
-      <div className={cn("mx-auto max-w-4xl px-6 py-10 lg:px-8 lg:py-14", className)} {...props}>
+      <div
+        className={cn(
+          "mx-auto px-6 py-10 lg:px-8 lg:py-14",
+          PAGE_CONTAINER_WIDTHS[variant],
+          className,
+        )}
+        {...props}
+      >
         {children}
       </div>
     </div>

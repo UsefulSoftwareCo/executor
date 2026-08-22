@@ -404,7 +404,7 @@ export function ToolTree(props: {
           ref={searchRef}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Filter ${tools.length} tools…`}
+          placeholder={`Filter ${tools.length} available tool entries…`}
           aria-label="Filter tools"
           className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-xs shadow-none outline-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
         />

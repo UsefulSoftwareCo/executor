@@ -28,6 +28,7 @@ import { Button } from "../components/button";
 import { ArtifactPreview } from "../components/artifact-preview";
 import { ErrorState } from "../components/error-state";
 import { PageContainer, PageHeader } from "../components/page";
+import { Skeleton } from "../components/skeleton";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { formatRelativeTime } from "../lib/relative-time";
@@ -44,10 +45,21 @@ interface ArtifactSummary {
 }
 
 const LoadingState = () => (
-  <div className="flex items-center gap-2 py-8">
-    <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-    <p className="text-sm text-muted-foreground">Loading artifacts…</p>
-  </div>
+  <section>
+    <Skeleton className="mb-3 h-4 w-32" />
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={index} className="overflow-hidden rounded-lg border border-border bg-card">
+          <Skeleton className="aspect-[16/10] rounded-none" />
+          <div className="space-y-2 px-4 py-3">
+            <Skeleton className="h-4 w-3/5" />
+            <Skeleton className="h-3 w-4/5" />
+            <Skeleton className="h-3 w-1/4" />
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
 );
 
 /**
@@ -197,7 +209,7 @@ export function ArtifactsPage() {
   return (
     // Wider than the settings column: three preview cards need the room, and
     // this page is a gallery rather than a form.
-    <PageContainer className="max-w-6xl">
+    <PageContainer variant="wide">
       <PageHeader
         title="Artifacts"
         description="Interactive components your agents generated. Ask an agent to render a UI and it is saved here — reopen it any time, or have the agent bring it back by name."

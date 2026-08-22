@@ -86,6 +86,7 @@ import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import { Skeleton } from "./skeleton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import {
   DropdownMenu,
@@ -374,7 +375,11 @@ function OnePasswordItemSelect(props: {
   );
 
   if (state.loading) {
-    return <p className="text-xs text-muted-foreground">Loading 1Password items…</p>;
+    return (
+      <div className="flex h-9 items-center">
+        <Skeleton className="h-3.5 w-40" />
+      </div>
+    );
   }
   if (state.error) {
     return <p className="text-xs text-destructive">{state.error}</p>;
@@ -2555,7 +2560,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                 </p>
                               </div>
                             ) : oauthLoading ? (
-                              <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
+                              <div className="flex h-9 items-center">
+                                <Skeleton className="h-3.5 w-36" />
+                              </div>
                             ) : (
                               <div className="space-y-3">
                                 {dcrFallbackMessage ? (

@@ -39,6 +39,7 @@ import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placeme
 import { usePolicyActions } from "../hooks/use-policy-actions";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
+import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
@@ -457,6 +458,10 @@ export function IntegrationDetailPage(props: {
     setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
   };
 
+  if (isAsyncResultLoading(integration) && !integrationData) {
+    return <IntegrationDetailPageSkeleton />;
+  }
+
   const handleTabChange = (value: string) => {
     const nextTab = value === "tools" ? "tools" : "accounts";
     setActiveTab(nextTab);
@@ -473,16 +478,13 @@ export function IntegrationDetailPage(props: {
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header bar */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-3">
-          <h2 className="truncate text-sm font-semibold text-foreground">
-            {integrationData?.name || namespace}
-          </h2>
+        <PageHeader title={integrationData?.name || namespace} className="mb-0 min-w-0">
           {AsyncResult.isSuccess(tools) && (
-            <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">
-              {distinctToolCount} {distinctToolCount === 1 ? "tool" : "tools"}
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {distinctToolCount} {distinctToolCount === 1 ? "logical tool" : "logical tools"}
             </span>
           )}
-        </div>
+        </PageHeader>
 
         <div className="flex shrink-0 items-center gap-2">
           {!confirmDelete && !isBuiltInIntegration && integrationData && (
@@ -561,14 +563,14 @@ export function IntegrationDetailPage(props: {
                 />
               </Suspense>
             ) : (
-              <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
+              <PageContainer variant="narrow" className="space-y-8 py-8">
                 <AccountsSection
                   integration={slug}
                   integrationName={integrationData?.name || namespace}
                   methods={accountsMethods}
                   accountHandoff={accountHandoff}
                 />
-              </div>
+              </PageContainer>
             )}
           </TabsContent>
         )}
@@ -728,9 +730,23 @@ function IntegrationDetailSkeleton() {
   );
 }
 
+function IntegrationDetailPageSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-12 shrink-0 items-center border-b border-border bg-background/95 px-4">
+        <Skeleton className="h-5 w-44" />
+      </div>
+      <div className="shrink-0 border-b border-border/60 px-4 py-2">
+        <Skeleton className="h-8 w-24 rounded-md" />
+      </div>
+      <IntegrationDetailSkeleton />
+    </div>
+  );
+}
+
 function AccountsSkeleton() {
   return (
-    <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
+    <PageContainer variant="narrow" className="space-y-8 py-8">
       <div className="space-y-3">
         <Skeleton className="h-4 w-40" />
         <Skeleton className="h-16 w-full rounded-lg" />
@@ -739,6 +755,6 @@ function AccountsSkeleton() {
         <Skeleton className="h-4 w-24" />
         <Skeleton className="h-20 w-full rounded-lg" />
       </div>
-    </div>
+    </PageContainer>
   );
 }
