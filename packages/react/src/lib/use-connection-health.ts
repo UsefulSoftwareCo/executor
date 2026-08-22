@@ -1,8 +1,8 @@
 // Shared stale-while-revalidate health probing for connections. Two surfaces
 // render a connection's health (the detail page's AccountRow and the
 // integrations-list summary), and both must revalidate the same way: render
-// the persisted `lastHealth` verdict instantly, then probe in the background
-// unless the verdict is healthy and fresh. Keeping the guard, the `ifStaleMs`
+// a fresh persisted `lastHealth` verdict instantly, then probe in the
+// background for stale or missing data. Keeping the guard, the `ifStaleMs`
 // semantics, and the freshness window here means the two surfaces cannot
 // drift apart.
 
@@ -13,6 +13,7 @@ import type { Connection, HealthCheckResult, HealthStatus, Owner } from "@execut
 
 import { checkConnectionHealth, connectionsOptimisticAtom } from "../api/atoms";
 import { connectionCheckKeys } from "../api/reactivity-keys";
+import { healthStatusForDisplay } from "./health-display";
 
 /** Freshness window for automatic revalidation: a HEALTHY verdict younger
  *  than this renders as-is; anything else (stale, missing, or non-healthy)
@@ -28,9 +29,9 @@ const connectionParams = (connection: Connection) => ({
 
 /** Whether a persisted verdict may render as-is without a background probe.
  *  Healthy-and-fresh renders untouched. Everything else revalidates: stale or
- *  never-checked for obvious reasons, and NON-healthy always; an expired dot
- *  is exactly the verdict the user is waiting to see change, so recovery must
- *  show on the next load, not after the freshness window. */
+ *  never-checked for obvious reasons, and NON-healthy always; while that probe
+ *  is in flight the display stays neutral rather than presenting stale health.
+ */
 const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
   last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
 
@@ -86,30 +87,32 @@ function useInvalidateConnections(): (owner: Owner) => void {
 }
 
 /**
- * Health for ONE connection, stale-while-revalidate. The persisted verdict
- * renders instantly; a background probe on mount corrects it in place (once
- * per mount, quiet on failure: the persisted verdict is still the best known
- * state). `runCheck` is the manual path ("Check now"): it always forces a
- * fresh probe and folds the result into the same live state.
+ * Health for ONE connection, stale-while-revalidate. A fresh persisted verdict
+ * renders instantly; stale or missing data stays neutral while a background
+ * probe corrects it in place (once per mount, quiet on failure). `runCheck` is
+ * the manual path ("Check now"): it always forces a fresh probe and folds the
+ * result into the same live state.
  */
 export function useConnectionHealth(connection: Connection): {
   readonly probe: HealthCheckResult | null;
   readonly status: HealthStatus;
   readonly runCheck: () => Promise<Exit.Exit<HealthCheckResult, unknown>>;
 } {
-  // A live probe result, once a check has run; merged with the persisted
+  // A live probe result, once a check has run; merged with a fresh persisted
   // verdict by freshness (see freshestVerdict for why not live-always-wins).
   const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(null);
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
-  const probe = freshestVerdict(liveProbe, connection.lastHealth);
-  const status: HealthStatus = probe?.status ?? "unknown";
+  const loading = liveProbe === null && !healthyAndFresh(connection.lastHealth);
+  const probe = loading ? null : freshestVerdict(liveProbe, connection.lastHealth);
+  const status = healthStatusForDisplay(probe?.status, loading);
 
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
   // older than the freshness window (or never checked), stale-while-revalidate
-  // style: the persisted verdict renders instantly, the probe corrects it in
-  // place. The guard is once per mount PLUS once per clearing: the ref holds
+  // style: a fresh persisted verdict renders instantly, while stale or missing
+  // data stays neutral until the probe corrects it in place. The guard is once
+  // per mount PLUS once per clearing: the ref holds
   // the last epoch seen, and a verdict giving way to `null` (an OAuth re-mint
   // cleared it) re-arms the probe — that is how a completed reconnect gets its
   // recovery probe without a page reload. Only the clearing transition
@@ -171,8 +174,8 @@ const probeKey = (connection: Connection): string =>
  * hooks-in-a-loop is illegal. One effect walks the list and fires the same
  * guarded per-connection revalidation as `useConnectionHealth`, accumulating
  * live probes in a map keyed by `owner:integration:name`. The returned reader
- * resolves a connection's best-known probe: the live result when a check has
- * run, otherwise the persisted verdict.
+ * resolves a connection's best-known fresh probe: the live result when a check
+ * has run, otherwise a fresh persisted verdict.
  */
 export function useConnectionsHealth(
   connections: readonly Connection[],
@@ -213,8 +216,11 @@ export function useConnectionsHealth(
   }, [connections, doCheck, invalidateConnections]);
 
   return useCallback(
-    (connection: Connection) =>
-      freshestVerdict(liveProbes.get(probeKey(connection)) ?? null, connection.lastHealth),
+    (connection: Connection) => {
+      const live = liveProbes.get(probeKey(connection)) ?? null;
+      if (live === null && !healthyAndFresh(connection.lastHealth)) return null;
+      return freshestVerdict(live, connection.lastHealth);
+    },
     [liveProbes],
   );
 }

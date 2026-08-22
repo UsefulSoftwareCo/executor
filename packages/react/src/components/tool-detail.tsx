@@ -251,6 +251,9 @@ export function ToolDetail(props: {
             />
           </div>
           {data?.description && <ToolDescription description={data.description} />}
+          {!AsyncResult.isSuccess(toolContract) && (
+            <Skeleton className="mt-1.5 h-5 w-2/3 max-w-2xl" />
+          )}
 
           {/* Tabs */}
           <div className="mt-3 flex gap-4" role="tablist">

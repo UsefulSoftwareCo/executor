@@ -42,6 +42,7 @@ import {
 } from "./alert-dialog";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import { Skeleton } from "./skeleton";
 import {
   CardStack,
   CardStackContent,
@@ -152,7 +153,7 @@ function AccountRow(props: {
             className={`size-2 shrink-0 rounded-full ${indicator.dot}`}
           />
           <span className="truncate">{displayLabel}</span>
-          {needsHealthAttention ? (
+          {status !== "healthy" ? (
             <Badge variant={expired ? "destructive" : "outline"} className="shrink-0">
               {HEALTH_STATUS_LABEL[status]}
             </Badge>
@@ -545,10 +546,7 @@ export function AccountsSection(props: {
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 py-6">
-          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">Loading accounts…</p>
-        </div>
+        <AccountsSkeleton />
       ) : showEmptyState ? (
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
           <p className="text-sm font-medium text-foreground">No connections yet</p>
@@ -609,5 +607,20 @@ export function AccountsSection(props: {
         }}
       />
     </section>
+  );
+}
+
+export function AccountsSkeleton() {
+  return (
+    <div className="space-y-8">
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-16 w-full rounded-lg" />
+      </div>
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-24" />
+        <Skeleton className="h-20 w-full rounded-lg" />
+      </div>
+    </div>
   );
 }

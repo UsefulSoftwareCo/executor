@@ -32,7 +32,7 @@ import {
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
-import { AccountsSection } from "../components/accounts-section";
+import { AccountsSection, AccountsSkeleton } from "../components/accounts-section";
 import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
@@ -588,7 +588,13 @@ export function IntegrationDetailPage(props: {
         {!isBuiltInIntegration && (
           <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
             {editPlugin?.accounts ? (
-              <Suspense fallback={<AccountsSkeleton />}>
+              <Suspense
+                fallback={
+                  <div className="mx-auto max-w-3xl px-6 py-8 lg:px-8">
+                    <AccountsSkeleton />
+                  </div>
+                }
+              >
                 <editPlugin.accounts
                   integrationId={namespace}
                   integrationName={integrationData?.name || namespace}
@@ -773,21 +779,6 @@ function IntegrationDetailPageSkeleton() {
         <Skeleton className="h-8 w-24 rounded-md" />
       </div>
       <IntegrationDetailSkeleton />
-    </div>
-  );
-}
-
-function AccountsSkeleton() {
-  return (
-    <div className="mx-auto max-w-3xl space-y-8 px-6 py-8 lg:px-8">
-      <div className="space-y-3">
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-16 w-full rounded-lg" />
-      </div>
-      <div className="space-y-3">
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-20 w-full rounded-lg" />
-      </div>
     </div>
   );
 }

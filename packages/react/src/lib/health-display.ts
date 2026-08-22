@@ -6,6 +6,12 @@
 
 import type { HealthStatus } from "@executor-js/sdk/shared";
 
+/** Normalize an absent or in-flight verdict before it reaches a status display. */
+export const healthStatusForDisplay = (
+  status: HealthStatus | null | undefined,
+  loading: boolean,
+): HealthStatus => (loading ? "unknown" : (status ?? "unknown"));
+
 /** State form: badge text, indicator tooltips, "what is the current state". */
 export const HEALTH_STATUS_LABEL: Record<HealthStatus, string> = {
   healthy: "Healthy",
