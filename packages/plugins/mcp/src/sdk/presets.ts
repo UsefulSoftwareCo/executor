@@ -87,6 +87,15 @@ export const mcpPresets: readonly McpPreset[] = [
     featured: true,
   },
   {
+    id: "supabase",
+    name: "Supabase",
+    summary: "Postgres, auth, storage, edge functions, and project management via MCP.",
+    url: "https://mcp.supabase.com/mcp",
+    endpoint: "https://mcp.supabase.com/mcp",
+    icon: "https://integrations.sh/logo/supabase.com",
+    featured: true,
+  },
+  {
     id: "axiom",
     name: "Axiom",
     summary: "Query, analyze, and monitor your logs and event data.",

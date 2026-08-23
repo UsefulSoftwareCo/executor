@@ -102,6 +102,14 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     featured: true,
   },
   {
+    id: "supabase",
+    name: "Supabase",
+    summary: "Projects, organizations, databases, auth, and storage management.",
+    url: "https://api.supabase.com/api/v1-json",
+    icon: "https://integrations.sh/logo/supabase.com",
+    featured: true,
+  },
+  {
     id: "openai",
     name: "OpenAI",
     summary: "Models, files, responses, and fine-tuning.",
