@@ -232,6 +232,22 @@ export const googleOpenApiPresets: readonly GoogleOpenApiPreset[] = [
     icon: "https://fonts.gstatic.com/s/i/productlogos/google_cloud/v6/192px.svg",
     oauthAudience: "advanced-user",
   },
+  {
+    id: "google-firebase",
+    name: "Firebase Management",
+    summary: "Firebase projects, apps, hosting, extensions, and configuration.",
+    url: gd("firebase", "v1beta1"),
+    icon: "https://fonts.gstatic.com/s/i/productlogos/firebase/v7/192px.svg",
+    oauthAudience: "advanced-user",
+  },
+  {
+    id: "google-firestore",
+    name: "Cloud Firestore",
+    summary: "Documents, collections, queries, and indexes.",
+    url: gd("firestore", "v1"),
+    icon: "https://fonts.gstatic.com/s/i/productlogos/google_cloud/v6/192px.svg",
+    oauthAudience: "advanced-user",
+  },
 ];
 
 export const googleStandardUserOAuthPresets = googleOpenApiPresets.filter(
@@ -313,6 +329,10 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
   },
   "google-cloud-resource-manager": {
     operation: "cloudresourcemanager.projects.search",
+    args: { pageSize: 1 },
+  },
+  "google-firebase": {
+    operation: "firebase.projects.list",
     args: { pageSize: 1 },
   },
 };

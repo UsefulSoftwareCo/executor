@@ -151,4 +151,14 @@ export const mcpPresets: readonly McpPreset[] = [
     command: "npx",
     args: ["-y", "chrome-devtools-mcp@latest"],
   },
+  {
+    id: "firebase",
+    name: "Firebase",
+    summary: "Manage projects, Auth, Firestore, rules, and deploys via the Firebase CLI.",
+    icon: "https://integrations.sh/logo/firebase.google.com",
+    featured: true,
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "firebase-tools@latest", "mcp"],
+  },
 ];

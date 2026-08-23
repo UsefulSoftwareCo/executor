@@ -199,6 +199,8 @@ const FROZEN_GOOGLE_SLUGS = [
   "google_apps_script",
   "google_bigquery",
   "google_cloud_resource_manager",
+  "google_firebase",
+  "google_firestore",
 ] as const;
 
 it("keeps Select all limited to Google services that can use normal user OAuth", () => {

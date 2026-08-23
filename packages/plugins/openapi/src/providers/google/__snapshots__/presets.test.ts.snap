@@ -90,5 +90,13 @@ exports[`classifies every Google service for bundle OAuth UX 1`] = `
     "id": "google-cloud-resource-manager",
     "oauthAudience": "advanced-user",
   },
+  {
+    "id": "google-firebase",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-firestore",
+    "oauthAudience": "advanced-user",
+  },
 ]
 `;

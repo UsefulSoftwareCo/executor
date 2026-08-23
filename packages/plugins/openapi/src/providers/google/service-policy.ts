@@ -105,6 +105,8 @@ export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]
   ],
   "google-bigquery": [auth("bigquery")],
   "google-cloud-resource-manager": [auth("cloud-platform")],
+  "google-firebase": [auth("firebase")],
+  "google-firestore": [auth("datastore")],
 };
 
 export const googleOAuthConsentScopesForPreset = (presetId: string): readonly string[] =>
@@ -237,6 +239,8 @@ const GOOGLE_DISCOVERY_POLICIES: Readonly<Record<string, GoogleDiscoveryServiceP
   }),
   "bigquery/v2": policy("google-bigquery"),
   "cloudresourcemanager/v3": policy("google-cloud-resource-manager"),
+  "firebase/v1beta1": policy("google-firebase"),
+  "firestore/v1": policy("google-firestore"),
 };
 
 export const googleDiscoveryPolicyFor = (
