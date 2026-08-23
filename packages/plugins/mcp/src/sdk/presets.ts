@@ -69,6 +69,15 @@ export const mcpPresets: readonly McpPreset[] = [
     featured: true,
   },
   {
+    id: "brightdata",
+    name: "Bright Data",
+    summary: "Web search, scraping, structured data extraction, and browser automation via MCP.",
+    url: "https://mcp.brightdata.com/mcp",
+    endpoint: "https://mcp.brightdata.com/mcp",
+    icon: "https://integrations.sh/logo/brightdata.com",
+    featured: true,
+  },
+  {
     id: "firecrawl",
     name: "Firecrawl",
     summary: "Crawl and scrape websites into structured data.",

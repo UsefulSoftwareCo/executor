@@ -74,6 +74,7 @@ const liveServers: ReadonlyArray<{ readonly name: string; readonly url: string }
   // JSON-RPC error envelopes; ref.tools omits WWW-Authenticate on the
   // 401 entirely so wire-shape detection rejects it (the URL-token
   // detect fallback still surfaces it as low-confidence).
+  { name: "brightdata", url: "https://mcp.brightdata.com/mcp" },
   { name: "cubic", url: "https://www.cubic.dev/api/mcp" },
   { name: "reftools", url: "https://api.ref.tools/mcp" },
 
