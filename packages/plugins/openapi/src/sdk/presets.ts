@@ -129,7 +129,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     id: "exa",
     name: "Exa",
     summary: "Web search, similar links, content retrieval, and answers.",
-    url: "https://raw.githubusercontent.com/exa-labs/openapi-spec/refs/heads/master/exa-openapi-spec.yaml",
+    url: "https://exa.ai/docs/exa-spec.yaml",
     icon: "https://integrations.sh/logo/exa.ai",
     featured: true,
   },
