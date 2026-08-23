@@ -1,6 +1,6 @@
 ---
 title: "MCPs, CLIs, and APIs are the same thing"
-description: "You can compile an MCP server into a CLI without changing a single tool. An interactive look at what tool calling actually is, why context bloat is a client problem, and what that viral paper really measured."
+description: "You can compile an MCP server into a CLI without changing a single tool. An interactive look at what tool calling actually is, why context bloat is a client problem, and why the MCP-vs-CLI debate is a category error."
 date: 2026-08-23
 author: "Rhys Sullivan"
 ---
@@ -8,10 +8,9 @@ author: "Rhys Sullivan"
 import { SameCallDemo } from "../../components/blog/same-call-demo";
 import { McpToCliDemo } from "../../components/blog/mcp-to-cli-demo";
 import { ContextFloodDemo } from "../../components/blog/context-flood-demo";
-import { HarnessSpreadDemo } from "../../components/blog/harness-spread-demo";
 import { InstallRaceDemo } from "../../components/blog/install-race-demo";
 
-Last week a [paper](https://arxiv.org/abs/2608.08654) made the rounds claiming that agents finish software tasks just as reliably without MCP, and 5 to 28 times cheaper. The replies sorted themselves into the usual camps: MCP is dead, CLIs won, protocols were a mistake.
+Every few weeks the debate comes back around: CLIs beat MCP, MCP is dead, agents just need bash. Benchmarks get run, threads get written, and everyone sorts into camps.
 
 The whole argument is built on a category error. MCP servers, CLIs, and APIs are not three competing technologies. They are three envelopes around the same thing: an agent invoking a tool.
 
@@ -45,19 +44,7 @@ There are two independent choices hiding in every setup: which interface you use
 
 The number follows the loading axis. A CLI feels cheap because no one would ever dream of inlining the help text for every `gh` subcommand up front — the model runs `--help` for the two commands it needs, when it needs them. Then we built MCP clients that do exactly the thing nobody would do to a CLI, and blamed the protocol for the result.
 
-This is not a hypothetical; it is in the paper's own data. Against the same 44-tool GitHub server, the harnesses that resent the full catalog with every request spent a median of 216,986 tokens per completed run. The one harness that exposed a two-tool gateway — list tools, invoke tool — and fetched descriptions on demand spent 70,836. A 3.1x difference the authors themselves call "a property of the agent scaffolding rather than of the protocol." They also cite [Anthropic's write-up on code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) as establishing that eager transmission "is a design choice rather than a requirement of the protocol."
-
-## What the paper actually measured
-
-So where did 5 to 28x come from? Here is the chart behind the headline: seven harnesses, the same GitHub task, median input tokens per completed run. Before reading on, answer the question under the chart.
-
-<HarnessSpreadDemo client:visible />
-
-The 28x is a comparison between harnesses with **no MCP server attached to any run**. That is not my gotcha — it is the abstract's own phrasing: the two lean harnesses were "5.0× to 28× cheaper than the five scaffoldings that do support MCP, comparing CLI runs alone with no MCP server attached anywhere." Claude Code starts around 22,000 tokens before the task says anything, because it ships 27 built-in tool schemas with every request. pi finishes the _entire task_ in 14,660. That spread — the headline number — is pure harness overhead, measured in a room MCP never entered.
-
-When the authors did attach the server, four of five harnesses got _cheaper_, the median paired ratio was 0.93, and both arms failed the same number of times. Their own stated noise floor is a factor of two: anything smaller "cannot be distinguished from run-to-run variation."
-
-To be fair to the authors, they know this — the paper is literally titled _The Scaffolding Matters More Than the Interface_. My complaints are that it tests one task against one server, nearly every cell is a single run, and it still got passed around as "MCP costs 28x more." The measured content of the paper is one of the better arguments for the thesis of this post.
+The good clients already work this way. Lazy loading, tool search, and code mode all defer tool descriptions until the model actually needs them — [Anthropic's write-up on code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) describes cutting token use dramatically by having the model write code that calls tools instead of front-loading every definition. Eager transmission is a client design choice, not a requirement of the protocol. Any benchmark that measures an eager client and reports the result as a property of MCP is measuring the client.
 
 ## The restart is not in the spec
 
@@ -91,4 +78,4 @@ Stop arguing about envelopes. Fix the client.
 
 ---
 
-_Numbers in this post are from [arXiv:2608.08654](https://arxiv.org/abs/2608.08654), Tables 2, 3, and 5: median input tokens per completed run. Token figures in the loading-strategy widget are illustrative, anchored to the paper's measurements (~800 tokens per tool schema, 44 tools on the official GitHub MCP server)._
+_Token figures in the loading-strategy widget are illustrative: roughly 800 tokens per tool schema, against the official GitHub MCP server's catalog of 44 tools._

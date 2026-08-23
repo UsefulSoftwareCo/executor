@@ -12,10 +12,9 @@ import { fmt, useAnimatedNumber } from "./shared";
  * (on demand or everything up front). Flipping the interface barely moves the
  * number; flipping the loading strategy moves it ~20x.
  *
- * Figures are illustrative but anchored: the arXiv paper everyone cited
- * measured the official GitHub MCP server at 44 tools, eager clients resending
- * the whole catalog every request, and ~22k tokens for 27 built-in tool
- * schemas (~800 tokens per schema).
+ * Figures are illustrative: the official GitHub MCP server's 44-tool catalog
+ * at roughly 800 tokens per tool schema, resent every request by eager
+ * clients.
  */
 
 type Interface_ = "cli" | "mcp";
