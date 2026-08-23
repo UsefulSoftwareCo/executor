@@ -2,7 +2,7 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { BookOpen, Command, ExternalLink } from "lucide-react";
+import { BookOpen, Command, ExternalLink, PlusIcon } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
@@ -23,6 +23,7 @@ import {
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
 import { Wordmark } from "../components/wordmark";
+import { ConnectDialog } from "../pages/integrations";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
@@ -347,6 +348,7 @@ function SidebarContent(
     onNavigate?: () => void;
     showBrand?: boolean;
     onOpenCommands: () => void;
+    onOpenIntegrationConnect: () => void;
   },
 ) {
   const plugins = useClientPlugins();
@@ -382,8 +384,19 @@ function SidebarContent(
           />
         ))}
 
-        <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <div className="mt-5 mb-1 flex items-center justify-between px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
           <span>Integrations</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Connect an integration"
+            title="Connect an integration"
+            onClick={props.onOpenIntegrationConnect}
+            className="-my-1 text-muted-foreground hover:bg-sidebar-active/60 hover:text-foreground"
+          >
+            <PlusIcon className="size-3.5" />
+          </Button>
         </div>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
@@ -415,6 +428,7 @@ export function Shell(props: ShellProps) {
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [connectIntegrationOpen, setConnectIntegrationOpen] = useState(false);
   if (lastPathname.current !== pathname) {
     lastPathname.current = pathname;
     if (mobileSidebarOpen) setMobileSidebarOpen(false);
@@ -432,12 +446,17 @@ export function Shell(props: ShellProps) {
   return (
     <div className="flex h-screen overflow-hidden">
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
+      <ConnectDialog open={connectIntegrationOpen} onOpenChange={setConnectIntegrationOpen} />
       {/* Desktop sidebar */}
       <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
         <SidebarContent
           {...props}
           pathname={pathname}
           onOpenCommands={() => setCommandPaletteOpen(true)}
+          onOpenIntegrationConnect={() => {
+            setConnectIntegrationOpen(true);
+            trackEvent("integration_connect_dialog_opened");
+          }}
         />
       </aside>
 
@@ -480,6 +499,11 @@ export function Shell(props: ShellProps) {
               onOpenCommands={() => {
                 setMobileSidebarOpen(false);
                 setCommandPaletteOpen(true);
+              }}
+              onOpenIntegrationConnect={() => {
+                setMobileSidebarOpen(false);
+                setConnectIntegrationOpen(true);
+                trackEvent("integration_connect_dialog_opened");
               }}
             />
           </div>
