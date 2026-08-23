@@ -1,0 +1,94 @@
+---
+title: "MCPs, CLIs, and APIs are the same thing"
+description: "You can compile an MCP server into a CLI without changing a single tool. An interactive look at what tool calling actually is, why context bloat is a client problem, and what that viral paper really measured."
+date: 2026-08-23
+author: "Rhys Sullivan"
+---
+
+import { SameCallDemo } from "../../components/blog/same-call-demo";
+import { McpToCliDemo } from "../../components/blog/mcp-to-cli-demo";
+import { ContextFloodDemo } from "../../components/blog/context-flood-demo";
+import { HarnessSpreadDemo } from "../../components/blog/harness-spread-demo";
+import { InstallRaceDemo } from "../../components/blog/install-race-demo";
+
+Last week a [paper](https://arxiv.org/abs/2608.08654) made the rounds claiming that agents finish software tasks just as reliably without MCP, and 5 to 28 times cheaper. The replies sorted themselves into the usual camps: MCP is dead, CLIs won, protocols were a mistake.
+
+The whole argument is built on a category error. MCP servers, CLIs, and APIs are not three competing technologies. They are three envelopes around the same thing: an agent invoking a tool.
+
+Here is one operation — create a GitHub issue — in all three envelopes. Flip between them and watch what actually changes.
+
+<SameCallDemo client:load />
+
+Same operation, same arguments, same GitHub on the other end. What changes is the delivery mechanism: a JSON-RPC message from a connected client, a process spawned in a shell, an HTTP request with a bearer token. Every take of the form "CLIs beat MCP" is a claim about envelopes, not about capabilities.
+
+And because they are just envelopes, you can convert between them freely. Let's do that.
+
+## Compile an MCP server into a CLI
+
+The official GitHub MCP server publishes 44 tools. Each one has a name, a JSON schema for its arguments, a description, and annotations like whether it is destructive. Press `Compile to CLI`.
+
+<McpToCliDemo client:visible />
+
+Nothing about the tools changed. Not the count, not the schemas, not the descriptions. What changed is the execution environment you need to invoke them: on the left, a client that speaks JSON-RPC; on the right, a shell, a filesystem, a `PATH`, and a process per invocation.
+
+Note the direction of that arrow, though. MCP to CLI is mechanical, because the catalog declares its entire action space up front. The reverse is not. A CLI declares nothing — the only way to find out what `gh` can do is to recursively run `--help` and hope the help text is complete. Keep that asymmetry in mind; it comes back later.
+
+If context bloat were a property of MCP, this compile step would be a miracle cure: same 44 tools, bloat gone. That is obviously absurd, which tells you the bloat was never coming from the protocol.
+
+## Context bloat is a loading strategy
+
+When someone says "MCP floods your context window," the thing being described is a client that takes every tool schema from every connected server and pastes all of them into every request. That is a decision the client made. The protocol did not make it.
+
+There are two independent choices hiding in every setup: which interface you use, and how tools get loaded into context. Try both axes and watch which one the number follows.
+
+<ContextFloodDemo client:visible />
+
+The number follows the loading axis. A CLI feels cheap because no one would ever dream of inlining the help text for every `gh` subcommand up front — the model runs `--help` for the two commands it needs, when it needs them. Then we built MCP clients that do exactly the thing nobody would do to a CLI, and blamed the protocol for the result.
+
+This is not a hypothetical; it is in the paper's own data. Against the same 44-tool GitHub server, the harnesses that resent the full catalog with every request spent a median of 216,986 tokens per completed run. The one harness that exposed a two-tool gateway — list tools, invoke tool — and fetched descriptions on demand spent 70,836. A 3.1x difference the authors themselves call "a property of the agent scaffolding rather than of the protocol." They also cite [Anthropic's write-up on code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) as establishing that eager transmission "is a design choice rather than a requirement of the protocol."
+
+## What the paper actually measured
+
+So where did 5 to 28x come from? Here is the chart behind the headline: seven harnesses, the same GitHub task, median input tokens per completed run. Before reading on, answer the question under the chart.
+
+<HarnessSpreadDemo client:visible />
+
+The 28x is a comparison between harnesses with **no MCP server attached to any run**. That is not my gotcha — it is the abstract's own phrasing: the two lean harnesses were "5.0× to 28× cheaper than the five scaffoldings that do support MCP, comparing CLI runs alone with no MCP server attached anywhere." Claude Code starts around 22,000 tokens before the task says anything, because it ships 27 built-in tool schemas with every request. pi finishes the _entire task_ in 14,660. That spread — the headline number — is pure harness overhead, measured in a room MCP never entered.
+
+When the authors did attach the server, four of five harnesses got _cheaper_, the median paired ratio was 0.93, and both arms failed the same number of times. Their own stated noise floor is a factor of two: anything smaller "cannot be distinguished from run-to-run variation."
+
+To be fair to the authors, they know this — the paper is literally titled _The Scaffolding Matters More Than the Interface_. My complaints are that it tests one task against one server, nearly every cell is a single run, and it still got passed around as "MCP costs 28x more." The measured content of the paper is one of the better arguments for the thesis of this post.
+
+## The restart is not in the spec
+
+The strongest real advantage CLIs have today has nothing to do with tokens. It is this:
+
+<InstallRaceDemo client:visible />
+
+Tell an agent to install a CLI and it is using it seconds later, mid-conversation. Add an MCP server to most clients and you are editing a config file, restarting the client, losing your session, and re-authenticating. That friction is real and I will not defend it.
+
+But locate it precisely. The protocol lets a client connect to a new server at any point in a session, and `notifications/tools/list_changed` exists so the tool list can update in place. The middle lane is a client implementation gap — the same species of gap as eager loading. Bash had 37 years of polish behind it when agents arrived; most MCP clients were built in months. That is an argument about maturity, not about which envelope is correct.
+
+## So when do you reach for each?
+
+If they are all the same thing underneath, choosing between them is about what each envelope buys you.
+
+**MCP** is the right envelope for interactions that are _about_ the agent session: elicitation (ask the human before doing something), MCP Apps (render UI inside the chat), triggers and notifications (push state changes back into a running session). None of that maps onto a CLI or a bare API. You also get the enumerable action space and destructive-action annotations that made the compile step above possible.
+
+**APIs** are right for raw data access and bulk work, and they are the fastest way to make an existing product agent-accessible. The OpenAPI spec already carries descriptions and marks what is destructive. If your MCP server is a thin mirror of your API, the spec alone was probably enough.
+
+**CLIs** are the best debugging experience an agent can have today, because bash composability — chain commands, grep the output, retry — is unmatched. The price is a shell and a sandbox per agent, plus an action space you cannot enumerate. Over a long enough horizon I think CLIs are for humans; today they are often the pragmatic choice.
+
+I wrote more about how MCP ended up with its scar tissue in [Why MCP had so many growing pains](/blog/why-mcp-had-growing-pains).
+
+## It's all tool calling
+
+You can convert an API into an MCP server, the MCP server into a CLI, and the CLI back into API calls, and at no point did the agent's actual capabilities change. What changed is the dependencies you carry — a client, a shell, an HTTP stack — and the interaction patterns you unlock.
+
+That is the bet behind [Executor](https://executor.sh): the harness should not care which envelope you bring. MCP server, OpenAPI spec, GraphQL, CLI — it all lands in one catalog, loaded on demand, behind one `execute` tool. My personal instance has around 10,000 tools in it, a mix of MCP servers and raw APIs, and agents work through it comfortably — not because the envelopes are exotic, but because the loading strategy is right.
+
+Stop arguing about envelopes. Fix the client.
+
+---
+
+_Numbers in this post are from [arXiv:2608.08654](https://arxiv.org/abs/2608.08654), Tables 2, 3, and 5: median input tokens per completed run. Token figures in the loading-strategy widget are illustrative, anchored to the paper's measurements (~800 tokens per tool schema, 44 tools on the official GitHub MCP server)._

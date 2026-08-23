@@ -15,10 +15,11 @@
   },
   "dependencies": {
     "@astrojs/cloudflare": "^13.0.0",
+    "@astrojs/mdx": "^6.0.3",
     "@astrojs/react": "^5.0.4",
     "@executor-js/react": "workspace:*",
     "@tailwindcss/vite": "^4.2.2",
-    "astro": "^6.1.3",
+    "astro": "^6.4.8",
     "clsx": "^2.1.1",
     "motion": "^12.38.0",
     "posthog-js": "^1.372.5",

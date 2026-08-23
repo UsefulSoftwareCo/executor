@@ -1,11 +1,12 @@
 import { defineCollection, z } from "astro:content";
 import { glob } from "astro/loaders";
 
-// Blog posts authored as Markdown under src/content/blog. The glob loader
-// turns each file into a collection entry whose `id` is the slug used in the
-// /blog/[...slug] route (filename without extension).
+// Blog posts authored as Markdown or MDX under src/content/blog. The glob
+// loader turns each file into a collection entry whose `id` is the slug used
+// in the /blog/[...slug] route (filename without extension). MDX is for posts
+// that embed interactive island components.
 const blog = defineCollection({
-  loader: glob({ pattern: "**/*.md", base: "./src/content/blog" }),
+  loader: glob({ pattern: "**/*.{md,mdx}", base: "./src/content/blog" }),
   schema: z.object({
     title: z.string(),
     description: z.string(),
