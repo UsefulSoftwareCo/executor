@@ -1966,48 +1966,14 @@ body {
     grid-template-columns: 1fr 200px;
   }
 }
-.bw-flood__rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
+.bw-flood__win {
   min-width: 0;
 }
-.bw-flood__meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.6rem;
-  margin-bottom: 0.3rem;
-  font-size: 12.5px;
-}
-.bw-flood__name {
-  color: var(--color-ink-2);
-}
-.bw-flood__tok {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-3);
-  white-space: nowrap;
-}
-.bw-flood__track {
-  height: 12px;
-  border-radius: 3px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-rule);
-  overflow: hidden;
-}
-.bw-flood__fill {
-  height: 100%;
-  min-width: 3px;
-  background: rgba(13, 13, 16, 0.45);
-  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.bw-flood__fill[data-flood="true"] {
-  background: repeating-linear-gradient(
-    -45deg,
-    rgba(13, 13, 16, 0.55) 0 3px,
-    rgba(13, 13, 16, 0.18) 3px 7px
-  );
+.bw-flood__scroll {
+  height: 300px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.65;
 }
 .bw-flood__total {
   text-align: center;
@@ -2187,7 +2153,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bw-flood__fill,
   .bw-pane,
   .bw-step,
   .bw-seg__btn,
