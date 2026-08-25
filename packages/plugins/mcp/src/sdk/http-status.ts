@@ -10,7 +10,10 @@
 import { Option, Schema } from "effect";
 
 import { insufficientScopeFromEmbeddedJson } from "@executor-js/sdk/core";
-import { InsufficientScopeError, SdkHttpError, SseError } from "@modelcontextprotocol/client";
+// The SDK error classes are reached through the lazy loader: any error of
+// those classes was constructed by the loaded client module, so "not loaded"
+// soundly classifies the cause as not-an-SDK-error (see client-module.ts).
+import { mcpClientSdkIfLoaded } from "./client-module";
 
 const SsePostErrorCause = Schema.Struct({ message: Schema.String });
 const decodeSsePostErrorCause = Schema.decodeUnknownOption(SsePostErrorCause);
@@ -28,8 +31,10 @@ const statusFromSsePostError = (cause: unknown): number | undefined =>
   });
 
 const statusFromTypedTransportError = (cause: unknown): number | undefined => {
-  if (SdkHttpError.isInstance(cause)) return cause.status;
-  if (SseError.isInstance(cause)) {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined) return undefined;
+  if (sdk.client.SdkHttpError.isInstance(cause)) return cause.status;
+  if (sdk.client.SseError.isInstance(cause)) {
     const code = cause.code;
     return code !== undefined && code >= 100 && code <= 599 ? code : undefined;
   }
@@ -54,7 +59,7 @@ const SDK_STEP_UP_EXHAUSTED_RE =
   /^Server returned 403 insufficient_scope after step-up re-authorization \(retry limit \d+ reached\)$/;
 
 export const insufficientScopeFromCause = (cause: unknown): boolean =>
-  InsufficientScopeError.isInstance(cause) ||
+  (mcpClientSdkIfLoaded()?.client.InsufficientScopeError.isInstance(cause) ?? false) ||
   Option.match(decodeSsePostErrorCause(cause), {
     onNone: () => false,
     onSome: ({ message }) =>

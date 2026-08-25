@@ -2,7 +2,8 @@ import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
-import { CallToolResultSchema } from "@modelcontextprotocol/core";
+
+import { callToolResultJsonSchema } from "./call-tool-result-schema.gen";
 
 import {
   authToolFailure,
@@ -399,7 +400,11 @@ type JsonSchemaObject = Record<string, unknown> & {
   readonly properties?: Record<string, unknown>;
 };
 
-const McpCallToolResultJsonSchema: JsonSchemaObject = CallToolResultSchema.toJSONSchema();
+// Baked at generation time rather than derived from @modelcontextprotocol/core
+// at module scope — importing core costs ~8.6MB of heap per Cloudflare isolate
+// (see client-module.ts), and this schema is the only thing the plugin needs
+// from it outside a live connection.
+const McpCallToolResultJsonSchema: JsonSchemaObject = callToolResultJsonSchema;
 
 const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
   const defaultStructuredContentSchema =

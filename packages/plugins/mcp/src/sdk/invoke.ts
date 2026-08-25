@@ -16,7 +16,11 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/client";
+import type { ProtocolError } from "@modelcontextprotocol/client";
+
+// SDK error classes come through the lazy loader; by the time a tool call can
+// fail, the connect path has always loaded the module (see client-module.ts).
+import { mcpClientSdkIfLoaded } from "./client-module";
 
 import {
   ElicitationId,
@@ -59,13 +63,25 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
   ).test(message);
 };
 
-const isUnknownToolCause = (cause: unknown, toolName: string): boolean =>
+const asProtocolError = (cause: unknown): ProtocolError | undefined => {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined) return undefined;
   // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK surfaces JSON-RPC protocol errors as this Error subclass
-  cause instanceof ProtocolError &&
-  (cause.code === ProtocolErrorCode.InvalidParams ||
-    cause.code === ProtocolErrorCode.MethodNotFound) &&
-  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: instanceof narrows to the SDK's ProtocolError, whose message carries the only unknown-tool discriminator the protocol provides
-  isUnknownToolMessage(cause.message, toolName);
+  return cause instanceof sdk.client.ProtocolError ? cause : undefined;
+};
+
+const isUnknownToolCause = (cause: unknown, toolName: string): boolean => {
+  const sdk = mcpClientSdkIfLoaded();
+  const protocolError = asProtocolError(cause);
+  return (
+    sdk !== undefined &&
+    protocolError !== undefined &&
+    (protocolError.code === sdk.client.ProtocolErrorCode.InvalidParams ||
+      protocolError.code === sdk.client.ProtocolErrorCode.MethodNotFound) &&
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message carries the only unknown-tool discriminator the protocol provides
+    isUnknownToolMessage(protocolError.message, toolName)
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge — decode incoming MCP ElicitRequest, route through
@@ -198,8 +214,7 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK protocol failures are its ProtocolError subclass; transport failures use other error shapes
-        const protocolFailure = cause instanceof ProtocolError;
+        const protocolFailure = asProtocolError(cause) !== undefined;
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,

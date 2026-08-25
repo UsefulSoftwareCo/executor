@@ -1,21 +1,17 @@
-import {
-  Client,
-  SSEClientTransport,
-  StreamableHTTPClientTransport,
-  type FetchLike,
-  type OAuthClientProvider,
-} from "@modelcontextprotocol/client";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
+import type { Client, FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
 import { Effect, Layer, Predicate, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-// NOTE: `StdioClientTransport` is NOT imported eagerly. The upstream module
-// (`@modelcontextprotocol/client/stdio`) still imports Node process/stream and
-// `cross-spawn` eagerly at evaluation time, which crashes workerd (including
-// vitest-pool-workers) with SIGSEGV on module instantiation. Cloud callers set
-// `dangerouslyAllowStdioMCP: false` and never reach the stdio branch below;
-// prod bundles that DO use stdio load it via a dynamic import inside the
-// stdio branch of `createMcpConnector`.
+// NOTE: nothing from `@modelcontextprotocol/client` is imported eagerly —
+// value access goes through `loadMcpClientSdk` (see client-module.ts for the
+// isolate-startup cost rationale). `StdioClientTransport` additionally stays
+// out of even the lazy barrel: the upstream `@modelcontextprotocol/client/stdio`
+// entry imports Node process/stream and `cross-spawn` at evaluation time,
+// which crashes workerd (including vitest-pool-workers) with SIGSEGV on
+// module instantiation. Cloud callers set `dangerouslyAllowStdioMCP: false`
+// and never reach the stdio branch below; prod bundles that DO use stdio load
+// it via the dynamic import inside the stdio branch of `createMcpConnector`.
+import { loadMcpClientSdk, type McpClientSdk } from "./client-module";
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import {
@@ -203,12 +199,12 @@ const fetchFromHttpClientLayer = (
 // MCP plugin runs inside a Cloudflare Worker (executor.sh). The
 // cfworker validator does not use code generation and works in every
 // runtime we ship to.
-const createClient = (versionNegotiation?: { readonly mode: "auto" }): Client =>
-  new Client(
+const createClient = (sdk: McpClientSdk, versionNegotiation?: { readonly mode: "auto" }): Client =>
+  new sdk.client.Client(
     { name: "executor-mcp", version: "0.1.0" },
     {
       capabilities: { elicitation: { form: {}, url: {} } },
-      jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+      jsonSchemaValidator: new sdk.validators.CfWorkerJsonSchemaValidator(),
       ...(versionNegotiation === undefined ? {} : { versionNegotiation }),
     },
   );
@@ -249,12 +245,20 @@ const connectionFailure = (
 
 const connectClient = (input: {
   transport: string;
-  createTransport: () => Parameters<Client["connect"]>[0];
+  createTransport: (sdk: McpClientSdk) => Parameters<Client["connect"]>[0];
   versionNegotiation?: { readonly mode: "auto" };
 }): Effect.Effect<McpConnection, McpConnectionError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
-    const client = createClient(input.versionNegotiation);
-    const transportInstance = input.createTransport();
+    const sdk = yield* Effect.tryPromise({
+      try: () => loadMcpClientSdk(),
+      catch: () =>
+        new McpConnectionError({
+          transport: input.transport,
+          message: "Failed to load MCP client module",
+        }),
+    });
+    const client = createClient(sdk, input.versionNegotiation);
+    const transportInstance = input.createTransport(sdk);
 
     yield* Effect.tryPromise({
       // Interruption (an HTTP 499 cancelling a health check, the discovery
@@ -345,8 +349,8 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
     versionNegotiation: { mode: "auto" },
-    createTransport: () =>
-      new StreamableHTTPClientTransport(endpoint, {
+    createTransport: (sdk) =>
+      new sdk.client.StreamableHTTPClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,
@@ -355,8 +359,8 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const connectSse = connectClient({
     transport: "sse",
-    createTransport: () =>
-      new SSEClientTransport(endpoint, {
+    createTransport: (sdk) =>
+      new sdk.client.SSEClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,
