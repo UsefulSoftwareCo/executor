@@ -1,5 +1,17 @@
 # executor
 
+## 1.6.0
+
+### Patch Changes
+
+- [#1737](https://github.com/UsefulSoftwareCo/executor/pull/1737) [`9296f36`](https://github.com/UsefulSoftwareCo/executor/commit/9296f36a8adbfdeec700ce33c37987127857b2fd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Scope the `skills` tool to Executor's own documentation. Its description, argument, index, and unknown-name error now state that it serves a fixed catalog of how-to docs for this server's tools, so an agent on a host without a skill tool of its own no longer reads it as a general reader for the harness's or the user's skills.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/local@1.6.0
+  - @executor-js/api@1.4.63
+  - @executor-js/runtime-quickjs@1.6.0
+
 ## 1.5.42
 
 ### Patch Changes

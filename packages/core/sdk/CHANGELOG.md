@@ -1,5 +1,11 @@
 # @executor-js/sdk
 
+## 1.6.0
+
+### Patch Changes
+
+- [#1648](https://github.com/UsefulSoftwareCo/executor/pull/1648) [`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Keep `connections.list` health output compact unless callers opt into diagnostics with `verbose: true`. Default list responses now retain only the health status, identity, and check timestamp; verbose responses continue to include HTTP status, diagnostic detail, and bounded upstream response samples.
+
 ## 1.5.42
 
 ### Patch Changes
