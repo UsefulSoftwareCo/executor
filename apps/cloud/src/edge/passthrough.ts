@@ -28,7 +28,10 @@
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 const DOCS_UPSTREAM_HOST = "executor.mintlify.dev";
-const POSTHOG_INGEST_HOST = "us.i.posthog.com";
+/** PostHog's US ingest origin. Exported because the server-side feature-flag
+ *  gate (`../analytics/ema-rollout`) calls the same origin directly, and the
+ *  two must not be able to drift onto different PostHog regions. */
+export const POSTHOG_INGEST_HOST = "us.i.posthog.com";
 const POSTHOG_ASSETS_HOST = "us-assets.i.posthog.com";
 
 export const POSTHOG_PROXY_PATH = `/api/${(
