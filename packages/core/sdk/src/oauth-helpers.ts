@@ -324,13 +324,40 @@ const tokenEndpointHttpSummary = async (response: Response): Promise<string> => 
   return parts.join("; ");
 };
 
-const bodyPreviewFromResponse = async (response: Response): Promise<string | undefined> => {
-  const text = await Promise.resolve()
-    .then(() => response.clone().text())
+/** Read a response body as text without throwing. Null means the body could not
+ *  be read at all — already consumed, or the connection died mid-stream — which
+ *  is a DIFFERENT outcome from a body that read fine and said something we did
+ *  not expect. The read is passed as a thunk so that `.clone()` throwing on an
+ *  already-consumed body is caught here too, rather than escaping as a defect. */
+const safeBodyText = async (read: () => Promise<string>): Promise<string | null> =>
+  Promise.resolve()
+    .then(read)
     .then(
-      (value) => value.trim(),
-      () => "",
+      (value) => value,
+      () => null,
     );
+
+/** Structurally probe an untrusted upstream body. Returns `undefined` rather
+ *  than a fabricated value when it is not JSON; the caller's schema decode
+ *  decides what an absent envelope means. */
+const safeJson = (text: string): unknown => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted token-endpoint body; unparseable means "no OAuth envelope"
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is only decoded through a schema or inspected against a closed code set
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Read and JSON-probe a response body without consuming the caller's copy. */
+const safeJsonFromResponse = async (response: Response): Promise<unknown> => {
+  const text = await safeBodyText(() => response.clone().text());
+  return text === null ? undefined : safeJson(text);
+};
+
+const bodyPreviewFromResponse = async (response: Response): Promise<string | undefined> => {
+  const text = (await safeBodyText(() => response.clone().text()))?.trim() ?? "";
   if (!text) return undefined;
   const redacted = redactTokenEndpointBody(text.replaceAll(/\s+/g, " "));
   return redacted.length > 500 ? `${redacted.slice(0, 500)}...` : redacted;
@@ -356,22 +383,14 @@ const rfc6749CodeFromCandidate = (candidate: unknown): string | undefined => {
   );
 };
 
-/** Recover the AS's §5.2 verdict from an error body oauth4webapi refused to
- *  parse. Some ASes wrap the code in a non-conform envelope — Datadog answers
- *  refresh grants with `{"errors": ["invalid_grant - Invalid or expired
- *  refresh token or code verifier."]}` — and without this probe a definitive
- *  `invalid_grant` (dead refresh token, reconnect required) is classified as
- *  a transient failure and retried forever instead of surfacing a re-auth. */
-const oauthErrorCodeFromNonConformBody = (text: string): string | undefined => {
-  const parsed: unknown = (() => {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted upstream body that already failed spec parsing; a parse failure just means "no recoverable code"
-    try {
-      // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is only structurally inspected against the closed §5.2 code set, never decoded into domain types
-      return JSON.parse(text) as unknown;
-    } catch {
-      return undefined;
-    }
-  })();
+/** Recover the AS's §5.2 verdict from an already-parsed error body that is not
+ *  a conform RFC 6749 envelope. Some ASes wrap the code in a shape of their own
+ *  — Datadog answers refresh grants with `{"errors": ["invalid_grant - Invalid
+ *  or expired refresh token or code verifier."]}` — and without this probe a
+ *  definitive `invalid_grant` (dead refresh token, reconnect required) is
+ *  classified as a transient failure and retried forever instead of surfacing a
+ *  re-auth. Takes the parsed value, not the text, so the caller parses once. */
+const oauthErrorCodeFromNonConformBody = (parsed: unknown): string | undefined => {
   if (typeof parsed !== "object" || parsed === null) return undefined;
   const envelope = parsed as { readonly error?: unknown; readonly errors?: unknown };
   const direct = rfc6749CodeFromCandidate(envelope.error);
@@ -383,6 +402,40 @@ const oauthErrorCodeFromNonConformBody = (text: string): string | undefined => {
     }
   }
   return undefined;
+};
+
+// The RFC 6749 §5.2 error envelope. Its code is NOT constrained to the closed
+// set above: extension grants define their own (RFC 8693 §2.2.2 adds
+// `invalid_target`, which the ID-JAG exchange leans on), and a conform envelope
+// is the authorization server naming its own verdict. Only the free-text
+// recovery has to stay closed.
+const TokenErrorEnvelopeSchema = Schema.Struct({
+  error: Schema.String,
+  error_description: Schema.optional(Schema.String),
+});
+const decodeTokenErrorEnvelope = Schema.decodeUnknownOption(TokenErrorEnvelopeSchema);
+
+/** The authorization server's verdict as read off an error-response body: its
+ *  conform §5.2 envelope when it sent one, otherwise the closed-set recovery
+ *  from a non-conform envelope. ONE classifier, so every token path — code
+ *  exchange, refresh, client credentials, ID-JAG exchange, ID-JAG redemption —
+ *  reaches the same conclusion about the same body. */
+const oauthErrorFromResponseBody = (
+  text: string,
+): { readonly code: string; readonly description?: string } | undefined => {
+  const parsed = safeJson(text);
+  return Option.match(decodeTokenErrorEnvelope(parsed), {
+    onNone: () => {
+      const code = oauthErrorCodeFromNonConformBody(parsed);
+      return code === undefined ? undefined : { code };
+    },
+    onSome: (envelope) => ({
+      code: envelope.error,
+      ...(envelope.error_description === undefined
+        ? {}
+        : { description: envelope.error_description }),
+    }),
+  });
 };
 
 const toOAuth2Error = (cause: unknown): OAuth2Error => {
@@ -412,30 +465,41 @@ const toOAuth2Error = (cause: unknown): OAuth2Error => {
   });
 };
 
-const toOAuth2ErrorWithHttpSummary = (cause: unknown): Effect.Effect<OAuth2Error> => {
+/** Turn whatever a token request failed with into an `OAuth2Error` carrying the
+ *  HTTP summary and, when the body admits one, the authorization server's own
+ *  §5.2 code.
+ *
+ *  `fallbackMessage` is for the paths that hold the error Response directly
+ *  rather than catching a thrown oauth4webapi error: there is no library
+ *  message to build on, so the caller names the step instead. */
+const toOAuth2ErrorWithHttpSummary = (
+  cause: unknown,
+  options?: { readonly fallbackMessage?: string },
+): Effect.Effect<OAuth2Error> => {
   if (isOAuth2Error(cause)) return Effect.succeed(cause);
   const base = toOAuth2Error(cause);
   const response = responseFromOAuthErrorCause(cause);
   if (!response) return Effect.succeed(base);
   return Effect.promise(async () => {
     const summary = await tokenEndpointHttpSummary(response);
-    // A 4xx the spec parser refused may still carry the AS's verdict in a
-    // non-conform envelope; recover it so classification (invalid_grant →
-    // reauth-required) sees the code instead of a code-less "transient".
+    // A 4xx the spec parser refused may still carry the AS's verdict in its
+    // body; recover it so classification (invalid_grant → reauth-required,
+    // invalid_target → blocked-by-admin) sees the code instead of a code-less
+    // "transient". 5xx is left code-less on purpose: it is a transport verdict.
     const recovered =
       base.error === undefined && response.status >= 400 && response.status < 500
-        ? oauthErrorCodeFromNonConformBody(
-            await Promise.resolve()
-              .then(() => response.clone().text())
-              .then(
-                (value) => value,
-                () => "",
-              ),
-          )
+        ? oauthErrorFromResponseBody((await safeBodyText(() => response.clone().text())) ?? "")
         : undefined;
+    const headline = options?.fallbackMessage ?? base.message;
+    const described =
+      options?.fallbackMessage === undefined || recovered === undefined
+        ? headline
+        : `${headline}: ${recovered.code}${
+            recovered.description === undefined ? "" : ` — ${recovered.description}`
+          }`;
     return new OAuth2Error({
-      message: `${base.message} (${summary})`,
-      error: base.error ?? recovered,
+      message: `${described} (${summary})`,
+      error: base.error ?? recovered?.code,
       cause,
     });
   });
@@ -443,6 +507,20 @@ const toOAuth2ErrorWithHttpSummary = (cause: unknown): Effect.Effect<OAuth2Error
 
 const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2Error> =>
   toOAuth2ErrorWithHttpSummary(cause).pipe(Effect.flatMap((error) => Effect.fail(error)));
+
+/** Fail from a token-endpoint error Response the caller holds directly — the
+ *  `genericTokenEndpointRequest` paths, where oauth4webapi hands back the raw
+ *  response instead of throwing. Classification runs through the SAME machinery
+ *  every other token path uses, including the non-conform recovery: without it
+ *  an IdP answering `{"errors":["invalid_grant - …"]}` reads as a transport
+ *  failure and gets retried forever instead of asking for a fresh sign-on. */
+const failOAuth2FromErrorResponse = (
+  response: Response,
+  fallbackMessage: string,
+): Effect.Effect<never, OAuth2Error> =>
+  toOAuth2ErrorWithHttpSummary(response, { fallbackMessage }).pipe(
+    Effect.flatMap((error) => Effect.fail(error)),
+  );
 
 /** Trace one token-endpoint round trip. This is the ONLY place a token request
  *  can be observed: oauth4webapi drives the raw global `fetch`, not Effect's
@@ -674,14 +752,7 @@ type NestedAuthedUserGrant = {
 const nestedAuthedUserGrant = async (
   response: Response,
 ): Promise<NestedAuthedUserGrant | undefined> => {
-  const body = await response
-    .clone()
-    .json()
-    .then(
-      (value: unknown) => value,
-      () => null,
-    );
-  const decoded = decodeNestedAuthedUserScope(body);
+  const decoded = decodeNestedAuthedUserScope(await safeJsonFromResponse(response));
   if (Option.isNone(decoded)) return undefined;
   const normalized = decoded.value.authed_user.scope
     .split(/[\s,]+/)
@@ -707,13 +778,7 @@ const nestedAuthedUserGrant = async (
 // don't care about. Strip the field before delegation, after extracting the
 // optional display label when the token endpoint returned OIDC account claims.
 const stripIdToken = async (response: Response): Promise<StrippedTokenResponse> => {
-  const body = await response
-    .clone()
-    .json()
-    .then(
-      (value: unknown) => value,
-      () => null,
-    );
+  const body = await safeJsonFromResponse(response);
   if (!body || typeof body !== "object" || !("id_token" in (body as Record<string, unknown>))) {
     return { response };
   }
@@ -985,12 +1050,6 @@ export const refreshAccessToken = (
 // against the exact shape the draft specifies.
 // ---------------------------------------------------------------------------
 
-const TokenErrorEnvelopeSchema = Schema.Struct({
-  error: Schema.String,
-  error_description: Schema.optional(Schema.String),
-});
-const decodeTokenErrorEnvelope = Schema.decodeUnknownOption(TokenErrorEnvelopeSchema);
-
 const IdJagResponseSchema = Schema.Struct({
   access_token: Schema.String,
   issued_token_type: Schema.String,
@@ -1010,44 +1069,6 @@ export type IdJagGrant = {
    *  was requested; policy MAY narrow the set (§4.3.3). */
   readonly scope?: string;
   readonly expiresIn?: number;
-};
-
-const failOAuth2FromErrorResponse = (
-  response: Response,
-  fallbackMessage: string,
-): Effect.Effect<never, OAuth2Error> =>
-  Effect.promise(async () => {
-    const text = await Promise.resolve()
-      .then(() => response.clone().text())
-      .then(
-        (value) => value,
-        () => "",
-      );
-    const envelope = text.length > 0 ? decodeTokenErrorEnvelope(safeJson(text)) : Option.none();
-    const summary = await tokenEndpointHttpSummary(response);
-    return Option.match(envelope, {
-      onNone: () => new OAuth2Error({ message: `${fallbackMessage} (${summary})` }),
-      onSome: (parsed) =>
-        new OAuth2Error({
-          message: `${fallbackMessage}: ${parsed.error}${
-            parsed.error_description ? ` — ${parsed.error_description}` : ""
-          } (${summary})`,
-          error: parsed.error,
-        }),
-    });
-  }).pipe(Effect.flatMap((error) => Effect.fail(error)));
-
-/** Structurally probe an untrusted upstream body. Returns `undefined` rather
- *  than a fabricated value when it is not JSON; the caller's schema decode
- *  decides what an absent envelope means. */
-const safeJson = (text: string): unknown => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted token-endpoint error body; unparseable means "no RFC 6749 envelope"
-  try {
-    // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is immediately decoded through TokenErrorEnvelopeSchema
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
 };
 
 export type ExchangeSubjectTokenForIdJagInput = {
@@ -1126,16 +1147,16 @@ export const exchangeSubjectTokenForIdJag = (
       return yield* failOAuth2FromErrorResponse(response, "ID-JAG token exchange was rejected");
     }
 
-    const body = yield* Effect.promise(() =>
-      response
-        .clone()
-        .json()
-        .then(
-          (value: unknown) => value,
-          () => null,
-        ),
-    );
-    const parsed = yield* decodeIdJagResponse(body).pipe(
+    // Nothing else reads this body, so it is consumed directly. A read failure
+    // is its own outcome: "the IdP's answer never arrived" is not the same
+    // verdict as "the IdP answered with something that is not an ID-JAG".
+    const text = yield* Effect.promise(() => safeBodyText(() => response.text()));
+    if (text === null) {
+      return yield* new OAuth2Error({
+        message: "The ID-JAG token exchange response body could not be read",
+      });
+    }
+    const parsed = yield* decodeIdJagResponse(safeJson(text)).pipe(
       Effect.mapError(
         (cause) =>
           new OAuth2Error({
