@@ -19,6 +19,7 @@ import {
 } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
+import { summarizeInputConstraints, type ToolInputConstraint } from "./schema-constraints";
 
 const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
 const TOOL_DESCRIBE_SUGGESTION_LIMIT = 5;
@@ -75,6 +76,7 @@ type DescribedTool = {
   readonly name: string;
   readonly description?: string;
   readonly inputTypeScript?: string;
+  readonly inputConstraints?: readonly ToolInputConstraint[];
   readonly outputTypeScript?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
@@ -125,12 +127,14 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     {
       path: "describe.tool",
       name: "describe.tool",
-      description: "Describe a tool's compact TypeScript input and output shapes.",
+      description:
+        "Describe a tool's compact TypeScript input and output shapes plus validation constraints TypeScript cannot express.",
       inputTypeScript: "{ path: string; }",
       outputTypeScript: "DescribedTool",
       typeScriptDefinitions: {
         DescribedTool:
-          '{ path: string; name: string; description?: string; inputTypeScript?: string; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; error?: { code: "tool_not_found"; message: string; suggestions?: string[]; }; }',
+          '{ path: string; name: string; description?: string; inputTypeScript?: string; inputConstraints?: ToolInputConstraint[]; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; error?: { code: "tool_not_found"; message: string; suggestions?: string[]; }; }',
+        ToolInputConstraint: "{ path: string; rules: string[]; }",
       },
     },
   ],
@@ -860,11 +864,13 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
 
   // The schema's address is the tool address; name/description come from the
   // tool row which tools.schema() already loaded.
+  const inputConstraints = summarizeInputConstraints(schema.inputSchema, schema.schemaDefinitions);
   const described: DescribedTool = {
     path,
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
+    ...(inputConstraints.length > 0 ? { inputConstraints } : {}),
     outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };

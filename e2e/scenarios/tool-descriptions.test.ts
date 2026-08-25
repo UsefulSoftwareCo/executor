@@ -61,7 +61,7 @@ const ordersOpenApiSpec = (baseUrl: string): string =>
               in: "path",
               required: true,
               description: "Unique order identifier (ULID).",
-              schema: { type: "string" },
+              schema: { type: "string", minLength: 26, maxLength: 26 },
             },
             {
               name: "include",
@@ -384,12 +384,65 @@ scenario(
         const openapiTools = yield* snapshotFor(openapiSlug);
         const graphqlTools = yield* snapshotFor(graphqlSlug);
 
+        const session = mcp.session(identity);
+        const advertisedTools = yield* session.describeTools();
+        const executeDescription =
+          advertisedTools.find((tool) => tool.name === "execute")?.description ?? "";
+        expect(
+          executeDescription,
+          "the execute description directs models to the companion MCP tool",
+        ).toContain("companion `skills` MCP tool");
+        expect(
+          executeDescription,
+          "the execute description does not suggest a nonexistent sandbox function",
+        ).not.toContain("skills({");
+
+        const executeSkill = yield* session.call("skills", { name: "execute" });
+        expect(executeSkill.ok, "the execute guide is available through skills").toBe(true);
+        expect(executeSkill.text, "the guide tells models to inspect validation limits").toContain(
+          "inputConstraints",
+        );
+        expect(executeSkill.text, "the guide distinguishes nested MCP domain status").toContain(
+          "data.structuredContent",
+        );
+
+        const describedGetOrderSnapshot = openapiTools.find((tool) =>
+          String(tool.address).endsWith(".getOrder"),
+        );
+        expect(
+          describedGetOrderSnapshot,
+          "the constrained getOrder operation is present",
+        ).toBeDefined();
+        const getOrderPath = String(describedGetOrderSnapshot?.address ?? "").replace(
+          /^tools\./,
+          "",
+        );
+        const describedResult = yield* session.call("execute", {
+          code: `return await tools.describe.tool({ path: ${JSON.stringify(getOrderPath)} });`,
+        });
+        expect(describedResult.ok, `the sandbox describes getOrder: ${describedResult.text}`).toBe(
+          true,
+        );
+        const describedGetOrder = JSON.parse(describedResult.text) as {
+          readonly inputConstraints?: readonly {
+            readonly path: string;
+            readonly rules: readonly string[];
+          }[];
+        };
+        const orderIdConstraints = describedGetOrder.inputConstraints?.find((constraint) =>
+          constraint.path.endsWith("orderId"),
+        );
+        expect(
+          orderIdConstraints?.rules,
+          "describe.tool preserves the ULID length constraint TypeScript cannot express",
+        ).toEqual(["length >= 26", "length <= 26"]);
+
         // The execute tool's description over the real MCP surface — the
         // connected-integration inventory an MCP client (and its model) reads.
         // Only this run's lines: the shared selfhost admin may have other
         // integrations in the inventory.
         const readInventory = () =>
-          Effect.map(mcp.session(identity).describeTools(), (mcpTools) =>
+          Effect.map(session.describeTools(), (mcpTools) =>
             (mcpTools.find((tool) => tool.name === "execute")?.description ?? "")
               .split("## Available integrations")[1]
               ?.split("\n")

@@ -99,7 +99,8 @@ describe("buildExecuteDescription", () => {
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
       // The full how-to now lives behind the `skills` tool, so the description
       // points there rather than inlining the workflow/rules.
-      expect(description).toContain('skills({ name: "execute" })');
+      expect(description).toContain("companion `skills` MCP tool");
+      expect(description).toContain("Do not call `skills` inside this sandbox");
       expect(description).not.toContain("Use `emit(value)` to append user-visible output");
       expect(description).not.toContain("## Workflow");
       expect(description).not.toContain("## Rules");

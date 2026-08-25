@@ -67,7 +67,10 @@ const EmptyValidator: Validator = Schema.toStandardSchemaV1(Schema.Struct({}));
 // core, exactly like the openapi plugin's spec-derived schemas.)
 const RepoInputJson = {
   type: "object",
-  properties: { owner: { type: "string" }, repo: { type: "string" } },
+  properties: {
+    owner: { type: "string", minLength: 1, maxLength: 100 },
+    repo: { type: "string", minLength: 1, maxLength: 100 },
+  },
   required: ["owner", "repo"],
 } as const;
 const RepoDetailsOutputJson = {
@@ -864,6 +867,10 @@ describe("tool discovery", () => {
       expect(described.name).toBe("listRepositoryIssues");
       expect(described.description).toBe("List issues for a repository");
       expect(described.inputTypeScript).toBe("{ owner: string; repo: string; }");
+      expect(described.inputConstraints).toEqual([
+        { path: "owner", rules: ["length >= 1", "length <= 100"] },
+        { path: "repo", rules: ["length >= 1", "length <= 100"] },
+      ]);
       expect(described.outputTypeScript).toBe(
         "{ ok: true; data: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
       );
@@ -978,6 +985,7 @@ describe("tool discovery", () => {
       expect(described.path).toBe("github.org.main.getRepoDetails");
       expect(described.name).toBe("github.org.main.getRepoDetails");
       expect(described.inputTypeScript).toBeUndefined();
+      expect(described.inputConstraints).toBeUndefined();
       expect(described.error?.code).toBe("tool_not_found");
       expect(described.error?.message).toBe("Tool not found: github.org.main.getRepoDetails");
       expect(described.error?.suggestions).toContain("github.org.main.getRepositoryDetails");
