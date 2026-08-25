@@ -21,6 +21,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "Org tabs · two tabs on different orgs stay independent (URL-scoped, no cookie steal)",
@@ -53,7 +54,7 @@ scenario(
       let slugB = "";
 
       await step("Onboard org A in tab 1", async () => {
-        await tab1.goto("/", { waitUntil: "networkidle" });
+        await visit(tab1, "/");
         await tab1.getByPlaceholder("Northwind Labs").fill("Multitab A");
         await tab1.getByRole("button", { name: "Create organization" }).click();
         await tab1.getByText("Connect your MCP client").waitFor({ timeout: 30_000 });
@@ -83,7 +84,7 @@ scenario(
       const tab2 = await tab1.context().newPage();
 
       await step("Tab 2 opens org A's URL and stays in A — no switch, no reload loop", async () => {
-        await tab2.goto(`/${slugA}/policies`, { waitUntil: "networkidle" });
+        await visit(tab2, `/${slugA}/policies`);
         await tab2.getByText("Policies").first().waitFor({ timeout: 30_000 });
         expect(new URL(tab2.url()).pathname, "tab 2 stays on org A's URL").toBe(
           `/${slugA}/policies`,
@@ -134,7 +135,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the OpenAPI add form", async () => {
-        await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
+        await visit(page, "/integrations/add/openapi");
         await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
       });
 

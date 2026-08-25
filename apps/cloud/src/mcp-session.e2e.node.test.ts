@@ -6,7 +6,7 @@
 //     FumaDB/Drizzle handle (the 2026-04-16 prod outage was a schema spread bug
 //     here; see db/db.schema.test.ts)
 //   - `createExecutionEngine` with an in-process code executor
-//   - `buildMcpServer` for the MCP request surface
+//   - `createExecutorMcpServer` for the MCP request surface
 //   - Real `@modelcontextprotocol/sdk` Client → server round-trips
 //
 // This test replicates the DO's init path (minus the WorkerTransport and
@@ -22,7 +22,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 
-import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
+import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { collectTables } from "@executor-js/api/server";
@@ -138,12 +138,8 @@ const openSession = (
     Effect.gen(function* () {
       const executor = yield* buildScopedExecutor(organizationId, `Org ${organizationId}`, options);
       const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
-      const mcpServer = yield* buildMcpServer({
+      const mcpServer = yield* createExecutorMcpServer({
         engine,
-        appsEnabled: false,
-        requestStateSigningKey: new Uint8Array(32).fill(23),
-        requestStatePrincipal: `cloud-mcp-test:${organizationId}`,
-        sessionful: true,
         elicitationMode: options.elicitationMode ? { mode: options.elicitationMode } : undefined,
       });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

@@ -29,6 +29,15 @@ join the same traces via traceparent).
 
 **Span names worth querying** (and their custom attrs):
 
+- `mcp.execute` / `mcp.execute.resume` — `mcp.execute.mode`
+  (`pausable`/`inline`), `mcp.execute.code_length`, and
+  `mcp.execute.outcome` (`ok`/`fail`/`paused`) with, on failures,
+  `mcp.execute.error_kind` (`type_error` | `reference_error` |
+  `syntax_error` | `range_error` | `tool_error` | `timeout` |
+  `resource_limit` | `serialization_error` | `thrown` | `unknown`).
+  Sandbox script failures ride the MCP success channel, so `status.code`
+  stays OK — filter on these attributes, not span status. Spans from
+  before the attributes shipped carry neither; absence is not success.
 - `executor.tool.execute` — `mcp.tool.name` (full address), and since
   PR #992: `executor.tool.outcome` (`ok`/`fail`),
   `executor.tool.error_code`, `executor.tool.error_status`,

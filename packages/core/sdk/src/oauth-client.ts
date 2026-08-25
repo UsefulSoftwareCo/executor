@@ -129,6 +129,11 @@ export interface FirstPartyOAuthClientConfig {
    *  exact-match default for those integrations. Endpoint-host matching still
    *  applies when omitted. */
   readonly integrations?: readonly IntegrationSlug[];
+  /** Scopes sent on the provider authorization request instead of the
+   *  integration-declared set. Use an empty array for providers such as
+   *  GitHub Apps, whose capabilities are configured on the app and whose OAuth
+   *  user-token flow does not use scopes. Omit for normal OAuth clients. */
+  readonly authorizationScopes?: readonly string[];
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this

@@ -1,5 +1,11 @@
 # @executor-js/sdk
 
+## 1.5.42
+
+### Patch Changes
+
+- [#1626](https://github.com/UsefulSoftwareCo/executor/pull/1626) [`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Redact every span header attribute outside a safe allowlist on the hosted HTTP client. The tracer's default four-name blocklist let provider-specific credential headers reach the trace backend verbatim; the hosted client now inverts the model and masks everything except structurally safe negotiation, caching, and tracing headers.
+
 ## 1.5.41
 
 ### Patch Changes

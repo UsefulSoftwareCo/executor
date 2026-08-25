@@ -76,6 +76,14 @@ export interface AutumnSurface {
    *  which drives `remaining` to zero. This is the setup a "blocked at cap"
    *  scenario runs before opening the session it expects to be gated. */
   readonly exhaustExecutions: (customerId: string) => Effect.Effect<void, unknown>;
+  /** Put an org on a plan directly (`billing.attach`), skipping the hosted
+   *  checkout. Only valid for a plan that needs no payment — Enterprise carries
+   *  no price and no card-required trial, so the emulator activates its
+   *  subscription inline. Team does have both, so it must still go through the
+   *  browser checkout + `settleCheckout`. This is the setup a scenario runs when
+   *  it needs a PAID org and the upgrade journey itself is not what's under
+   *  test (e.g. the rate-limit backstop's paid exemption). */
+  readonly attachPlan: (customerId: string, planId: string) => Effect.Effect<void, unknown>;
   /** Arm a fault against a matching Autumn request (`POST /_emulate/faults`). */
   readonly armFault: (input: FaultInput) => Effect.Effect<void, unknown>;
   /** Clear every armed fault (`DELETE /_emulate/faults`) — the finalizer that
@@ -155,6 +163,33 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
       }
     });
 
+  const attachPlan = (customerId: string, planId: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        fetch(`${autumnUrl}/v1/billing.attach`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ customer_id: customerId, plan_id: planId }),
+        }),
+      );
+      if (!response.ok) {
+        return yield* Effect.fail(
+          `autumn billing.attach responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
+        );
+      }
+      // A plan that needs payment answers with a checkout URL instead of
+      // activating; that silently leaves the org on Free, and a scenario that
+      // asked for a paid org would then assert against the wrong plan.
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly payment_url?: string | null;
+      };
+      if (body.payment_url) {
+        return yield* Effect.fail(
+          `autumn billing.attach returned a checkout URL for '${planId}': it requires payment, so it cannot be attached directly`,
+        );
+      }
+    });
+
   const armFault = (input: FaultInput) =>
     Effect.gen(function* () {
       const response = yield* Effect.promise(() =>
@@ -213,6 +248,7 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
     usageEvents,
     settleCheckout,
     exhaustExecutions,
+    attachPlan,
     armFault,
     clearFaults,
     ledgerFor,

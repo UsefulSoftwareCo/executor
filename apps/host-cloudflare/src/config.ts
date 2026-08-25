@@ -47,10 +47,6 @@ export interface CloudflareEnv {
   readonly SELF_HOSTED_ORG_SLUG?: string;
   /** At-rest secret-encryption key (a `wrangler secret`, NOT a var). */
   readonly EXECUTOR_SECRET_KEY?: string;
-  /** HMAC key for MCP 2026-07-28 continuation state (32+ byte secret). */
-  readonly MCP_REQUEST_STATE_KEY?: string;
-  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-  readonly MCP_2026_07_28_ENABLED?: string;
   readonly ALLOW_LOCAL_NETWORK?: string;
   readonly VITE_PUBLIC_SITE_URL?: string;
   /**

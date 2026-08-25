@@ -13,7 +13,7 @@
 //   and (b) plenty of real MCP servers authenticate with static API
 //   keys and publish no OAuth metadata at all (e.g. cubic.dev).
 //
-// The primary probe issues an unauth JSON-RPC `initialize` POST and accepts
+// The probe issues an unauth JSON-RPC `initialize` POST and accepts
 // only the wire shapes a real MCP server can return:
 //
 //   - 2xx with `Content-Type: text/event-stream` — streamable HTTP
@@ -30,14 +30,8 @@
 // only accepts 2xx with `text/event-stream` or the same 401+Bearer
 // shape.
 //
-// If initialize ultimately has the wrong shape, a second JSON-RPC POST probes
-// `server/discover` using the 2026-07-28 envelope and protocol header. This
-// catches modern-only servers that reject initialize with a non-JSON-RPC
-// response. Authentication outcomes remain terminal because they do not vary
-// by transport era.
-//
-// One primary request (occasionally plus legacy GET and modern discover), no
-// MCP-SDK session state, no OAuth round-trip, no DCR.
+// One `fetch` (occasionally two), no MCP-SDK session state, no OAuth
+// round-trip, no DCR — every non-MCP endpoint exits here.
 // ---------------------------------------------------------------------------
 
 import { Data, Duration, Effect, Layer, Option, Schema } from "effect";
@@ -54,18 +48,9 @@ const INITIALIZE_BODY = JSON.stringify({
   id: 1,
   method: "initialize",
   params: {
-    protocolVersion: "2025-11-25",
+    protocolVersion: "2025-06-18",
     capabilities: {},
     clientInfo: { name: "executor-probe", version: "0" },
-  },
-});
-
-const DISCOVER_BODY = JSON.stringify({
-  jsonrpc: "2.0",
-  id: 2,
-  method: "server/discover",
-  params: {
-    _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
   },
 });
 
@@ -400,9 +385,10 @@ export const probeMcpEndpointShape = (
         .execute(postRequest)
         .pipe(Effect.timeout(Duration.millis(timeoutMs)));
 
-      let initializeResult = yield* classify(postResponse, "POST");
+      const postResult = yield* classify(postResponse, "POST");
+      if (postResult) return postResult;
 
-      if (initializeResult === null && [404, 405, 406, 415].includes(postResponse.status)) {
+      if ([404, 405, 406, 415].includes(postResponse.status)) {
         let getRequest = HttpClientRequest.get(url.toString()).pipe(
           HttpClientRequest.setHeader("accept", "text/event-stream"),
         );
@@ -412,42 +398,15 @@ export const probeMcpEndpointShape = (
         const getResponse = yield* client
           .execute(getRequest)
           .pipe(Effect.timeout(Duration.millis(timeoutMs)));
-        initializeResult = yield* classify(getResponse, "GET");
+        const getResult = yield* classify(getResponse, "GET");
+        if (getResult) return getResult;
       }
 
-      initializeResult ??= {
+      return {
         kind: "not-mcp",
         category: "wrong-shape",
         reason: `unexpected status ${postResponse.status} for initialize`,
       } as const;
-
-      if (initializeResult.kind !== "not-mcp" || initializeResult.category !== "wrong-shape") {
-        return initializeResult;
-      }
-
-      let discoverRequest = HttpClientRequest.post(url.toString()).pipe(
-        HttpClientRequest.setHeader("content-type", "application/json"),
-        HttpClientRequest.setHeader("accept", "application/json, text/event-stream"),
-        HttpClientRequest.bodyText(DISCOVER_BODY, "application/json"),
-      );
-      for (const [name, value] of Object.entries(options.headers ?? {})) {
-        discoverRequest = HttpClientRequest.setHeader(discoverRequest, name, value);
-      }
-      discoverRequest = HttpClientRequest.setHeader(
-        discoverRequest,
-        "MCP-Protocol-Version",
-        "2026-07-28",
-      );
-
-      // The endpoint already answered the primary probe, so a transport
-      // failure on this secondary request must not overwrite that verdict
-      // with "unreachable" — keep the initialize classification instead.
-      const discoverResult = yield* client.execute(discoverRequest).pipe(
-        Effect.timeout(Duration.millis(timeoutMs)),
-        Effect.flatMap((discoverResponse) => classify(discoverResponse, "POST")),
-        Effect.catch(() => Effect.succeed(null)),
-      );
-      return discoverResult ?? initializeResult;
     }).pipe(
       Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
       Effect.mapError(

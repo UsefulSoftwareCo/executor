@@ -1,8 +1,9 @@
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
-import type { OAuthClientProvider } from "@modelcontextprotocol/client";
-import { CallToolResultSchema } from "@modelcontextprotocol/core";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import * as z from "zod/v4";
 
 import {
   authToolFailure,
@@ -51,6 +52,7 @@ import { invokeMcpTool, isUnknownToolMessage } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
+import { recoverSlackConnectFile } from "./slack-connect-file";
 import {
   McpAuthMethodInput,
   McpAuthShorthand,
@@ -391,7 +393,7 @@ type JsonSchemaObject = Record<string, unknown> & {
   readonly properties?: Record<string, unknown>;
 };
 
-const McpCallToolResultJsonSchema: JsonSchemaObject = CallToolResultSchema.toJSONSchema();
+const McpCallToolResultJsonSchema = z.toJSONSchema(CallToolResultSchema) as JsonSchemaObject;
 
 const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
   const defaultStructuredContentSchema =
@@ -492,9 +494,7 @@ export const userFacingProbeMessage = (
 // MCP-SDK OAuth provider adapter — wraps a pre-resolved access token so the
 // transport sends it as a Bearer header. Refresh is core's responsibility
 // (the connection row carries the OAuth grant); this adapter never initiates
-// a new flow and fails loudly if the SDK tries to. V2 stamps stored credentials
-// with the authorization-server issuer and offers scoped invalidation; this
-// single-token boundary intentionally persists neither.
+// a new flow and fails loudly if the SDK tries to.
 // ---------------------------------------------------------------------------
 
 const makeOAuthProvider = (accessToken: string): OAuthClientProvider => ({
@@ -1297,12 +1297,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }
         }
 
+        const invokeHttpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
         const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           String(credential.template),
           allowStdio,
-          options?.httpClientLayer ?? ctx.httpClientLayer,
+          invokeHttpClientLayer,
         );
         const connector: McpConnector = createMcpConnector(connectorInput);
         const poolKey =
@@ -1353,6 +1354,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return yield* ctx.connections
               .markToolsStale(connectionRef)
               .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
+          }
+          if (parsed.transport === "remote") {
+            const recoveredSlackConnectFile = yield* recoverSlackConnectFile({
+              endpoint: parsed.endpoint,
+              toolName: stamp.toolName,
+              args,
+              accessToken: credential.values[TOKEN_VARIABLE],
+              upstreamErrorMessage: errorMessage,
+            }).pipe(Effect.provide(invokeHttpClientLayer));
+            if (Option.isSome(recoveredSlackConnectFile)) {
+              return ToolResult.ok(recoveredSlackConnectFile.value);
+            }
           }
           return ToolResult.fail({
             code: "mcp_tool_error",

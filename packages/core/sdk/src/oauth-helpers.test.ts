@@ -99,6 +99,14 @@ const tokenResponse =
   () =>
     json(200, body);
 
+const tokenResponseFetch =
+  (body: unknown): typeof globalThis.fetch =>
+  async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
 // ---------------------------------------------------------------------------
 // PKCE
 // ---------------------------------------------------------------------------
@@ -575,6 +583,46 @@ describe("exchangeAuthorizationCode", () => {
     ),
   );
 
+  it.effect("normalizes Slack's comma-delimited top-level scopes", () =>
+    Effect.gen(function* () {
+      const result = yield* exchangeAuthorizationCode({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        fetch: tokenResponseFetch({
+          access_token: "xoxp-user-token",
+          token_type: "Bearer",
+          scope: "channels:read,chat:write,reactions:read",
+        }),
+      });
+
+      expect(result.scope).toBe("channels:read chat:write reactions:read");
+    }),
+  );
+
+  it.effect("preserves commas in scope tokens from non-Slack providers", () =>
+    Effect.gen(function* () {
+      const result = yield* exchangeAuthorizationCode({
+        tokenUrl: "https://oauth.example.com/token",
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        fetch: tokenResponseFetch({
+          access_token: "provider-token",
+          token_type: "Bearer",
+          scope: "scope,with-comma other.scope",
+        }),
+      });
+
+      expect(result.scope).toBe("scope,with-comma other.scope");
+    }),
+  );
+
   it.effect("keeps a standard top-level scope ahead of nested provider metadata", () =>
     withTokenEndpoint(
       tokenResponse({
@@ -856,6 +904,24 @@ describe("exchangeClientCredentials", () => {
 });
 
 describe("refreshAccessToken", () => {
+  it.effect("normalizes Slack's comma-delimited scopes on refresh", () =>
+    Effect.gen(function* () {
+      const result = yield* refreshAccessToken({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "csecret",
+        refreshToken: "refresh-token",
+        fetch: tokenResponseFetch({
+          access_token: "xoxp-refreshed-token",
+          token_type: "Bearer",
+          scope: "channels:read,chat:write,reactions:read",
+        }),
+      });
+
+      expect(result.scope).toBe("channels:read chat:write reactions:read");
+    }),
+  );
+
   it.effect("posts grant_type=refresh_token with the refresh token", () =>
     withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {

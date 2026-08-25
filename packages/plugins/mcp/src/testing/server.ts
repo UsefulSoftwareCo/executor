@@ -1,9 +1,7 @@
-import { Context, Data, Effect, Layer, Option, Ref, Schema, Scope } from "effect";
+import { Context, Data, Effect, Layer, Ref, Scope } from "effect";
 import * as http from "node:http";
-// Intentionally stays on the legacy SDK as a wire-interop fixture for MCP plugin clients.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { OAuthTestServer } from "@executor-js/sdk/testing";
 import z from "zod";
 
@@ -58,22 +56,6 @@ const writeText = (response: http.ServerResponse, status: number, body: string) 
   response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
   response.end(body);
 };
-
-const readRequestBody = (
-  request: http.IncomingMessage,
-): Effect.Effect<string, McpTestServerError> =>
-  Effect.tryPromise({
-    try: () =>
-      new Promise<string>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        request.on("data", (chunk: Buffer) => chunks.push(chunk));
-        request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        request.on("error", reject);
-      }),
-    catch: (cause) => new McpTestServerError({ cause }),
-  });
-
-const decodeJsonBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 const isMcpPath = (url: string, path: string): boolean => {
   const parsed = new URL(url, "http://executor.test");
@@ -175,24 +157,6 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             return;
           }
 
-          // Mirror the real v1 transport's stateful contract: only an
-          // `initialize` POST opens a session; any other sessionless POST
-          // (e.g. a v2 client's `server/discover` era probe) is rejected
-          // with 400 + a JSON-RPC error and no session is minted.
-          let parsedBody: unknown;
-          if (request.method === "POST") {
-            const body = yield* readRequestBody(request);
-            parsedBody = Option.getOrUndefined(decodeJsonBody(body));
-            if (!isInitializeRequest(parsedBody)) {
-              writeJson(response, 400, {
-                jsonrpc: "2.0",
-                error: { code: -32000, message: "Bad Request: Server not initialized" },
-                id: null,
-              });
-              return;
-            }
-          }
-
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             onsessioninitialized: (sid) => {
@@ -208,7 +172,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             catch: (cause) => new McpTestServerError({ cause }),
           });
           yield* Effect.tryPromise({
-            try: () => transport.handleRequest(request, response, parsedBody),
+            try: () => transport.handleRequest(request, response),
             catch: (cause) => new McpTestServerError({ cause }),
           });
         }).pipe(

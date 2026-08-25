@@ -102,7 +102,6 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       experimental: { disableExperimentalWarning: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
-        MCP_REQUEST_STATE_KEY: "test-mcp-request-state-key-0123456789abcdef",
         ENABLE_DEV_AUTH: "true",
       },
     });

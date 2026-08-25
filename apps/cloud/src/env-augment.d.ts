@@ -6,6 +6,13 @@ declare global {
   namespace Cloudflare {
     interface Env {
       // Observability
+      // Worker version metadata binding (wrangler.jsonc `version_metadata`).
+      // Optional so test workers and local setups without the binding still
+      // typecheck; spans then carry the "dev" service.version default.
+      CF_VERSION_METADATA?: WorkerVersionMetadata;
+      // Commit that produced the running deploy, passed by CI as
+      // `wrangler deploy --var GIT_COMMIT_SHA:$GITHUB_SHA`. Absent outside CI.
+      GIT_COMMIT_SHA?: string;
       AXIOM_TOKEN?: string;
       AXIOM_DATASET?: string;
       AXIOM_TRACES_URL?: string;
@@ -84,10 +91,6 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
-      /** HMAC key for MCP 2026-07-28 continuation state (32+ byte secret). */
-      MCP_REQUEST_STATE_KEY?: string;
-      /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-      MCP_2026_07_28_ENABLED?: string;
       NODE_ENV?: string;
 
       // Shared with frontend

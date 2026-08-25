@@ -17,6 +17,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Mcp, Target } from "../src/services";
+import { revisit, visit } from "../src/surfaces/browser";
 
 const uniqueSuffix = () => randomBytes(3).toString("hex");
 
@@ -167,7 +168,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the Artifacts gallery", async () => {
-        await page.goto(`${target.baseUrl}/artifacts`, { waitUntil: "networkidle" });
+        await visit(page, `${target.baseUrl}/artifacts`);
         await page.getByRole("heading", { name: "Artifacts", level: 1 }).waitFor();
         // Every seeded artifact is present before anything is measured.
         for (const [name] of seeded) {
@@ -257,7 +258,7 @@ scenario(
         // The stored markup is token-based, so the SAME markup has to read
         // correctly against the console's dark surface without being restyled.
         await page.emulateMedia({ colorScheme: "dark" });
-        await page.reload({ waitUntil: "networkidle" });
+        await revisit(page);
         await page.getByRole("heading", { name: "Artifacts", level: 1 }).waitFor();
         await page.locator('[data-slot="artifact-preview"]').first().waitFor({ timeout: 20_000 });
 
@@ -272,7 +273,7 @@ scenario(
 
       await step("Gallery in light mode", async () => {
         await page.emulateMedia({ colorScheme: "light" });
-        await page.reload({ waitUntil: "networkidle" });
+        await revisit(page);
         await page.getByRole("heading", { name: "Artifacts", level: 1 }).waitFor();
         await page.locator('[data-slot="artifact-preview"]').first().waitFor({ timeout: 20_000 });
       });

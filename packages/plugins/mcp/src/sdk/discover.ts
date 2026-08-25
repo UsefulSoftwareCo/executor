@@ -91,34 +91,45 @@ const listAllTools = (
  * forever. On timeout, any connection that DID get established is closed
  * before the timeout error is raised (`Effect.onExit` still fires for an
  * interrupted fiber).
+ *
+ * Interruption-safe: the connect phase cleans up after itself (the connector
+ * aborts the handshake and closes the transport, killing any spawned stdio
+ * child; #1631), and the mask below removes the window between the
+ * connector succeeding and `onExit` attaching, where an interrupt would
+ * leak the connection. The connector and listTools stay `restore`d so a 499
+ * or the timeout above can still cancel them promptly.
  */
 export const discoverTools = (
   connector: McpConnector,
   timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
 ): Effect.Effect<McpToolManifest, McpToolDiscoveryError> =>
-  Effect.gen(function* () {
-    // Acquire connection
-    const connection = yield* connector.pipe(
-      Effect.mapError((failure) => {
-        // Preserve the handshake HTTP status (401/403 = auth wall) so the
-        // liveness health check can classify structurally.
-        const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
-          ? failure.httpStatus
-          : undefined;
-        return new McpToolDiscoveryError({
-          stage: "connect",
-          message: `Failed connecting to MCP server: ${failure.message}`,
-          ...(httpStatus !== undefined ? { httpStatus } : {}),
-        });
-      }),
-    );
+  Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      // Acquire connection
+      const connection = yield* restore(
+        connector.pipe(
+          Effect.mapError((failure) => {
+            // Preserve the handshake HTTP status (401/403 = auth wall) so the
+            // liveness health check can classify structurally.
+            const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
+              ? failure.httpStatus
+              : undefined;
+            return new McpToolDiscoveryError({
+              stage: "connect",
+              message: `Failed connecting to MCP server: ${failure.message}`,
+              ...(httpStatus !== undefined ? { httpStatus } : {}),
+            });
+          }),
+        ),
+      );
 
-    const manifest = yield* listAllTools(connection).pipe(
-      Effect.onExit(() => closeConnection(connection)),
-    );
+      const manifest = yield* restore(listAllTools(connection)).pipe(
+        Effect.onExit(() => closeConnection(connection)),
+      );
 
-    return manifest;
-  }).pipe(
+      return manifest;
+    }),
+  ).pipe(
     Effect.timeoutOrElse({
       duration: Duration.millis(timeoutMs),
       orElse: () =>

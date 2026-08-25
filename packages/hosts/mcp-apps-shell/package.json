@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/mcp-apps-shell",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "private": true,
   "type": "module",
   "exports": {
@@ -69,7 +69,7 @@
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@tanstack/react-query": "^5.99.0",
     "effect": "catalog:",
     "esbuild": "^0.27.7",

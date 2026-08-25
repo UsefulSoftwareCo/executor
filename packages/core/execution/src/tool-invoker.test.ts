@@ -989,48 +989,54 @@ describe("tool discovery", () => {
     }),
   );
 
-  it.effect("describes built-in discovery tool shapes that accept their runtime output", () =>
-    Effect.gen(function* () {
-      const executor = yield* makeSearchExecutor();
-      const engine = createExecutionEngine({ executor, codeExecutor });
+  it.effect(
+    "describes built-in discovery tool shapes that accept their runtime output",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeSearchExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
 
-      const execution = yield* engine.execute(
-        [
-          "const searchDetails = await tools.describe.tool({ path: 'search' });",
-          "const integrationDetails = await tools.describe.tool({ path: 'executor.integrations.list' });",
-          "const describeDetails = await tools.describe.tool({ path: 'describe.tool' });",
-          "return {",
-          "  searchDetails,",
-          "  searchResult: await tools.search({ query: 'repo details', limit: 2 }),",
-          "  integrationDetails,",
-          "  integrationResult: await tools.executor.integrations.list({ limit: 2 }),",
-          "  describeDetails,",
-          "  describeResult: await tools.describe.tool({ path: 'github.org.main.getRepositoryDetails' }),",
-          "};",
-        ].join("\n"),
-        { onElicitation: acceptAll },
-      );
+        const execution = yield* engine.execute(
+          [
+            "const searchDetails = await tools.describe.tool({ path: 'search' });",
+            "const integrationDetails = await tools.describe.tool({ path: 'executor.integrations.list' });",
+            "const describeDetails = await tools.describe.tool({ path: 'describe.tool' });",
+            "return {",
+            "  searchDetails,",
+            "  searchResult: await tools.search({ query: 'repo details', limit: 2 }),",
+            "  integrationDetails,",
+            "  integrationResult: await tools.executor.integrations.list({ limit: 2 }),",
+            "  describeDetails,",
+            "  describeResult: await tools.describe.tool({ path: 'github.org.main.getRepositoryDetails' }),",
+            "};",
+          ].join("\n"),
+          { onElicitation: acceptAll },
+        );
 
-      expect(execution.error).toBeUndefined();
-      const observed = execution.result as {
-        readonly searchDetails: DescribedToolContract;
-        readonly searchResult: unknown;
-        readonly integrationDetails: DescribedToolContract;
-        readonly integrationResult: unknown;
-        readonly describeDetails: DescribedToolContract;
-        readonly describeResult: unknown;
-      };
+        expect(execution.error).toBeUndefined();
+        const observed = execution.result as {
+          readonly searchDetails: DescribedToolContract;
+          readonly searchResult: unknown;
+          readonly integrationDetails: DescribedToolContract;
+          readonly integrationResult: unknown;
+          readonly describeDetails: DescribedToolContract;
+          readonly describeResult: unknown;
+        };
 
-      expect(
-        typeCheckDescribedInvocation(observed.searchDetails, observed.searchResult, ""),
-      ).toEqual([]);
-      expect(
-        typeCheckDescribedInvocation(observed.integrationDetails, observed.integrationResult, ""),
-      ).toEqual([]);
-      expect(
-        typeCheckDescribedInvocation(observed.describeDetails, observed.describeResult, ""),
-      ).toEqual([]);
-    }),
+        expect(
+          typeCheckDescribedInvocation(observed.searchDetails, observed.searchResult, ""),
+        ).toEqual([]);
+        expect(
+          typeCheckDescribedInvocation(observed.integrationDetails, observed.integrationResult, ""),
+        ).toEqual([]);
+        expect(
+          typeCheckDescribedInvocation(observed.describeDetails, observed.describeResult, ""),
+        ).toEqual([]);
+      }),
+    // Three sandboxed describe.tool round-trips plus three type-checks of the
+    // described contracts routinely clear vitest's 5s default on a loaded CI
+    // runner; the same ceiling the file's other sandbox-heavy tests use.
+    { timeout: 10000 },
   );
 
   it.effect("rejects malformed discover calls inside the sandbox", () =>

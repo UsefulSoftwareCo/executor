@@ -104,8 +104,20 @@ await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 // but prepared statement requires M" -> random 500s on whichever request lost
 // the race). The patch in patches/@electric-sql%2Fpglite-socket@0.1.4.patch
 // batches each socket data event into one queue entry and holds handler
-// affinity while a pipeline is open;
-// src/db/dev-db-socket-concurrency.node.test.ts is the regression test.
+// affinity while a pipeline is open. The patch also fixes the queue's two
+// self-bricking failure paths — both surfaced in CI as the e2e "cloud signIn:
+// callback set no session (500)" cascade, where new connections' startup
+// packets sat unanswered (postgres.js CONNECT_TIMEOUT) until restart:
+//   1. Stock 0.1.4 `return`ed out of the drain loop when a query REJECTED at
+//      the JS level, leaving its `processing` flag latched true; nothing was
+//      ever dequeued again.
+//   2. A client whose socket died WHILE its pipeline-opening entry executed:
+//      detach() cleared affinity before the entry finished, the queue then
+//      took affinity for the already-dead handler, and no timer was left to
+//      release it. The queue now tracks detached handlers and repairs any
+//      transaction or pipeline affinity they can no longer release.
+// src/db/dev-db-socket-concurrency.node.test.ts is the regression test for
+// all of the above.
 const server = new PGLiteSocketServer({
   db,
   port: PORT,
@@ -115,7 +127,11 @@ const server = new PGLiteSocketServer({
   // sent, no Sync) with its socket still OPEN would hold the queue's handler
   // affinity forever and starve every other connection, since affinity only
   // releases on detach and detach needs close/error/idle-timeout. In ms; the
-  // timer resets on every data event, so only a genuinely dead client trips it.
+  // timer resets on every data event. The patch scopes the reap to connections
+  // actually HOLDING affinity (open pipeline or transaction): an idle-at-rest
+  // connection is the normal state of a healthy postgres.js pool held by a
+  // long-lived scope (SSE), and reaping those raced live queries into
+  // sporadic `write CONNECTION_ENDED` 500s.
   idleTimeout: Number(process.env.DEV_DB_IDLE_TIMEOUT_MS ?? 30_000),
 });
 

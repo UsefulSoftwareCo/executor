@@ -1,5 +1,17 @@
 # @executor-js/plugin-openapi
 
+## 1.5.42
+
+### Patch Changes
+
+- [#1642](https://github.com/UsefulSoftwareCo/executor/pull/1642) [`32206c7`](https://github.com/UsefulSoftwareCo/executor/commit/32206c7f78654f638bfd27c25c71c30c3d6354be) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Preserve an integration's selected OAuth consent scopes when refreshing converted API specifications, so Google Gmail refreshes do not restore operations that require broader scopes.
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/api@1.4.62
+  - @executor-js/config@1.5.42
+  - @executor-js/react@1.4.62
+
 ## 1.5.41
 
 ### Patch Changes

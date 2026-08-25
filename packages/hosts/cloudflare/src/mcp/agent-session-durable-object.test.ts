@@ -1,619 +1,485 @@
-import { afterEach, describe, expect, it, vi } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect } from "effect";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
-import type { ExecutionEngine } from "@executor-js/execution";
 import { defaultMcpResource } from "@executor-js/host-mcp";
-import { buildMcpServer, mcpRequestStatePrincipal } from "@executor-js/host-mcp/tool-server";
+import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
 
-import { withVerifiedIdentityHeaders } from "./do-headers";
 import {
   McpAgentSessionDOBase,
-  type BuiltMcpServer,
-  type McpSessionInit,
+  type McpApprovalOwner,
+  type McpSessionModelResumeResult,
   type SessionMeta,
 } from "./agent-session-durable-object";
 
-const SESSION_ID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const ACCOUNT_ID = "acct_test";
-const ORGANIZATION_ID = "org_test";
-const REQUEST_STATE_KEY = "0123456789abcdef0123456789abcdef";
+class MemoryStorage {
+  private readonly data = new Map<string, unknown>();
+  alarm: number | undefined;
 
-class MemoryStorage implements DurableObjectStorage, DurableObjectTransaction {
-  private readonly values = new Map<string, unknown>();
-  readonly sql = {} as DurableObjectStorage["sql"];
-  readonly kv = {} as DurableObjectStorage["kv"];
-  alarmAt: number | null = null;
+  readonly sql = {
+    exec: () => [],
+  };
 
-  async get<T>(key: string): Promise<T | undefined>;
-  async get<T>(keys: string[]): Promise<Map<string, T>>;
-  async get<T>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
-    if (Array.isArray(keyOrKeys)) {
-      return new Map(keyOrKeys.map((key) => [key, this.values.get(key) as T]));
-    }
-    return this.values.get(keyOrKeys) as T | undefined;
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.data.get(key) as T | undefined;
   }
 
-  async put<T>(key: string, value: T): Promise<void>;
-  async put<T>(entries: Record<string, T> | Map<string, T>): Promise<void>;
-  async put<T>(
-    keyOrEntries: string | Record<string, T> | Map<string, T>,
-    value?: T,
-  ): Promise<void> {
-    if (typeof keyOrEntries === "string") {
-      this.values.set(keyOrEntries, value);
-      return;
-    }
-    const entries =
-      keyOrEntries instanceof Map ? keyOrEntries.entries() : Object.entries(keyOrEntries);
-    for (const [key, entry] of entries) this.values.set(key, entry);
+  async put(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value);
   }
 
-  async delete(key: string): Promise<boolean>;
-  async delete(keys: string[]): Promise<number>;
-  async delete(keyOrKeys: string | string[]): Promise<boolean | number> {
-    if (!Array.isArray(keyOrKeys)) return this.values.delete(keyOrKeys);
-    let deleted = 0;
-    for (const key of keyOrKeys) {
-      if (this.values.delete(key)) deleted += 1;
-    }
-    return deleted;
-  }
-
-  async list<T = unknown>(options: DurableObjectListOptions = {}): Promise<Map<string, T>> {
-    let keys = [...this.values.keys()]
-      .filter((key) => (options.prefix === undefined ? true : key.startsWith(options.prefix)))
-      .filter((key) => (options.start === undefined ? true : key >= options.start))
-      .filter((key) => (options.startAfter === undefined ? true : key > options.startAfter))
-      .sort();
-    if (options.reverse) keys = keys.reverse();
-    if (options.limit !== undefined) keys = keys.slice(0, options.limit);
-    return new Map(keys.map((key) => [key, this.values.get(key) as T]));
-  }
-
-  async deleteAll(): Promise<void> {
-    this.values.clear();
-    this.alarmAt = null;
-  }
-
-  transaction<T>(closure: (txn: DurableObjectTransaction) => Promise<T>): Promise<T> {
-    return closure(this);
-  }
-
-  rollback(): void {}
-
-  transactionSync<T>(closure: () => T): T {
-    return closure();
-  }
-
-  async sync(): Promise<void> {}
-
-  async getAlarm(): Promise<number | null> {
-    return this.alarmAt;
-  }
-
-  async setAlarm(scheduledTime: number | Date): Promise<void> {
-    this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime;
+  async setAlarm(time: number | Date): Promise<void> {
+    this.alarm = typeof time === "number" ? time : time.getTime();
   }
 
   async deleteAlarm(): Promise<void> {
-    this.alarmAt = null;
+    this.alarm = undefined;
   }
 
-  async getCurrentBookmark(): Promise<string> {
-    return "test-bookmark";
-  }
-
-  async getBookmarkForTime(_timestamp: number | Date): Promise<string> {
-    return "test-bookmark";
-  }
-
-  onNextSessionRestoreBookmark(_bookmark: string): Promise<string> {
-    return Promise.resolve("test-bookmark");
-  }
-}
-
-class MemoryDurableObjectState implements DurableObjectState {
-  readonly id: DurableObjectId;
-  readonly props: unknown = undefined;
-  readonly facets = {} as DurableObjectState["facets"];
-  readonly storage: MemoryStorage;
-  private waitUntilPromises: Promise<unknown>[] = [];
-  abortedWith: string | undefined;
-
-  constructor(storage = new MemoryStorage()) {
-    this.storage = storage;
-    const id: Pick<DurableObjectId, "equals" | "toString"> = {
-      equals: (other) => other.toString() === SESSION_ID,
-      toString: () => SESSION_ID,
-    };
-    this.id = id as DurableObjectId;
-  }
-
-  waitUntil(promise: Promise<unknown>): void {
-    this.waitUntilPromises.push(promise);
-  }
-
-  async flushWaitUntil(): Promise<void> {
-    while (this.waitUntilPromises.length > 0) {
-      const pending = this.waitUntilPromises.splice(0);
-      await Promise.all(pending);
+  async delete(key: string | readonly string[]): Promise<void> {
+    if (typeof key === "string") {
+      this.data.delete(key);
+      return;
+    }
+    for (const entry of key) {
+      this.data.delete(entry);
     }
   }
 
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+  async deleteAll(): Promise<void> {
+    this.data.clear();
+  }
+
+  async list<T>(
+    options: { readonly prefix?: string; readonly limit?: number } = {},
+  ): Promise<Map<string, T>> {
+    const rows = new Map<string, T>();
+    for (const [key, value] of this.data) {
+      if (options.prefix && !key.startsWith(options.prefix)) continue;
+      rows.set(key, value as T);
+      if (options.limit && rows.size >= options.limit) break;
+    }
+    return rows;
+  }
+
+  async blockConcurrencyWhile<T>(callback: () => T | Promise<T>): Promise<T> {
     return callback();
   }
 
-  acceptWebSocket(_ws: WebSocket, _tags?: string[]): void {}
-  getWebSockets(_tag?: string): WebSocket[] {
-    return [];
+  get id(): { readonly name: string } {
+    return { name: "streamable-http:session-reconnect" };
   }
-  getTags(_ws: WebSocket): string[] {
-    return [];
+
+  get storage(): MemoryStorage {
+    return this;
   }
-  setWebSocketAutoResponse(_pair?: WebSocketRequestResponsePair): void {}
-  getWebSocketAutoResponse(): WebSocketRequestResponsePair | null {
-    return null;
-  }
-  getWebSocketAutoResponseTimestamp(_ws: WebSocket): Date | null {
-    return null;
-  }
-  setHibernatableWebSocketEventTimeout(_timeoutMs?: number): void {}
-  getHibernatableWebSocketEventTimeout(): number | null {
-    return null;
-  }
-  abort(reason?: string): void {
-    this.abortedWith = reason;
-  }
+
+  waitUntil(_promise: Promise<unknown>): void {}
 }
 
-const engine: ExecutionEngine<Cause.YieldableError> = {
-  execute: (code) => Effect.succeed({ result: code }),
-  executeWithPause: (code) =>
-    Effect.succeed({ status: "completed" as const, result: { result: code } }),
-  resume: () => Effect.succeed(null),
-  isExecutionSettled: () => Effect.succeed(false),
-  getPausedExecution: () => Effect.succeed(null),
-  pausedExecutionCount: () => Effect.succeed(0),
-  hasPausedExecutions: () => Effect.succeed(false),
-  getDescription: Effect.succeed("test Durable Object executor"),
+type HarnessSession = {
+  alarm: () => Promise<void>;
+  ctx: MemoryStorage;
+  dbHandle: { readonly end: () => void } | null;
+  engine: ExecutionEngine<Cause.YieldableError> | null;
+  getConnections?: () => Iterable<unknown>;
+  getSessionId: () => string;
+  initialized: boolean;
+  lastActivityMs: number;
+  maxPausedSessionIdleMs: () => number;
+  onStart: () => Promise<void>;
+  pendingApprovalLeases: Map<string, never>;
+  props: Record<string, unknown>;
+  runMcpAgentOnStart: () => Promise<void>;
+  server?: McpServer;
+  sessionMeta: SessionMeta;
+  sessionTimeoutMs: () => number;
+  resumeExecutionForModel: (
+    executionId: string,
+    identity: McpApprovalOwner,
+    response: ResumeResponse,
+  ) => Promise<McpSessionModelResumeResult>;
+  validateMcpSessionOwner: (identity: {
+    readonly accountId: string;
+    readonly organizationId: string;
+  }) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
 
-class HarnessSession extends McpAgentSessionDOBase<
-  Cloudflare.Env,
-  { readonly end: () => void | Promise<void> }
-> {
-  constructor(
-    ctx: DurableObjectState,
-    env: Cloudflare.Env,
-    private readonly sessionEngine: ExecutionEngine<Cause.YieldableError> = engine,
-    private readonly runtimeOptions: {
-      readonly end?: () => void | Promise<void>;
-      readonly sessionTimeoutMs?: number;
-    } = {},
-  ) {
-    super(ctx, env);
-  }
+class StaleCloseTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
 
-  protected override openSessionDb(): { readonly end: () => void | Promise<void> } {
-    return { end: this.runtimeOptions.end ?? (() => undefined) };
-  }
+  async start(): Promise<void> {}
 
-  protected override sessionTimeoutMs(): number {
-    return this.runtimeOptions.sessionTimeoutMs ?? super.sessionTimeoutMs();
-  }
+  async close(): Promise<void> {}
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
-    return Effect.succeed({
-      organizationId: token.organizationId,
-      organizationName: "Test Org",
-      userId: token.userId,
-      elicitationMode: token.elicitationMode,
-      artifactsEnabled: token.artifactsEnabled,
-      resource: token.resource,
-      webOrigin: token.webOrigin,
-    });
-  }
-
-  protected override buildMcpServer(sessionMeta: SessionMeta): Effect.Effect<BuiltMcpServer> {
-    const elicitationMode = sessionMeta.elicitationMode ?? "model";
-    return buildMcpServer({
-      engine: this.sessionEngine,
-      appsEnabled: false,
-      restoredAppsEnabled: sessionMeta.appsEnabled,
-      onAppsEnabledChange: (appsEnabled) => this.persistAppsEnabled(appsEnabled),
-      requestStateSigningKey: REQUEST_STATE_KEY,
-      requestStatePrincipal: mcpRequestStatePrincipal({
-        accountId: sessionMeta.userId,
-        organizationId: sessionMeta.organizationId,
-      }),
-      sessionful: true,
-      elicitationMode:
-        elicitationMode === "browser"
-          ? { mode: "browser", approvalUrl: () => "https://executor.test/approve" }
-          : { mode: elicitationMode },
-    }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine: this.sessionEngine })));
-  }
+  async send(_message: JSONRPCMessage): Promise<void> {}
 }
 
-const verifiedRequest = (request: Request): Request =>
-  withVerifiedIdentityHeaders(
-    request,
-    { accountId: ACCOUNT_ID, organizationId: ORGANIZATION_ID },
-    defaultMcpResource,
-  );
+class RestoredTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
 
-const makeClientHarness = (state = new MemoryDurableObjectState()) => {
-  let session = new HarnessSession(state, {} as Cloudflare.Env);
-  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const request =
-      input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
-    return session.fetch(verifiedRequest(request));
-  };
-  const transport = new StreamableHTTPClientTransport(
-    new URL("https://executor.test/mcp?elicitation_mode=model"),
-    { fetch },
-  );
-  const client = new Client({ name: "legacy-do-client", version: "1.0.0" });
+  async start(): Promise<void> {}
+
+  async close(): Promise<void> {
+    this.onclose?.();
+  }
+
+  async send(_message: JSONRPCMessage): Promise<void> {}
+}
+
+const makeServer = () => new McpServer({ name: "executor-test", version: "1.0.0" });
+
+const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: () => void } => {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+};
+
+type ResumeCall = {
+  readonly executionId: string;
+  readonly response: ResumeResponse;
+};
+
+const completed = (result: unknown): ExecutionResult => ({
+  status: "completed",
+  result: { result },
+});
+
+const makeEngine = (
+  resultForResume: (executionId: string, response: ResumeResponse) => ExecutionResult | null = () =>
+    completed("resume-result"),
+): { readonly calls: ResumeCall[]; readonly engine: ExecutionEngine<Cause.YieldableError> } => {
+  const calls: ResumeCall[] = [];
   return {
-    client,
-    state,
-    transport,
-    evict: () => {
-      session = new HarnessSession(state, {} as Cloudflare.Env);
+    calls,
+    engine: {
+      execute: () => Effect.succeed({ result: "execute-result" }),
+      executeWithPause: () => Effect.succeed(completed("execute-result")),
+      resume: (executionId, response) =>
+        Effect.sync(() => {
+          calls.push({ executionId, response });
+          return resultForResume(executionId, response);
+        }),
+      getPausedExecution: () => Effect.succeed(null),
+      pausedExecutionCount: () => Effect.succeed(0),
+      hasPausedExecutions: () => Effect.succeed(false),
+      getDescription: Effect.succeed("test engine"),
     },
   };
 };
 
-describe("McpAgentSessionDOBase session serving", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+const approval = {
+  action: "accept",
+  content: { approved: true },
+} satisfies ResumeResponse;
 
-  it("serves and reuses a legacy v1 SDK client through the Durable Object", async () => {
-    const harness = makeClientHarness();
-    await harness.client.connect(harness.transport);
+const makeHarnessSession = async (): Promise<HarnessSession> => {
+  const sessionId = "session-reconnect";
+  const sessionMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+  const storage = new MemoryStorage();
+  const server = makeServer();
+  await server.connect(new StaleCloseTransport());
 
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always release the MCP client's streamed transport after assertions
-    try {
-      const tools = await harness.client.listTools();
-      expect(tools.tools.map(({ name }) => name)).toContain("execute");
+  const session = Object.create(McpAgentSessionDOBase.prototype) as HarnessSession;
+  session.ctx = storage;
+  session.dbHandle = { end: () => undefined };
+  session.engine = makeEngine().engine;
+  session.getSessionId = () => sessionId;
+  session.initialized = true;
+  session.lastActivityMs = Date.now() - 10;
+  session.maxPausedSessionIdleMs = () => 1_000;
+  session.pendingApprovalLeases = new Map<string, never>();
+  session.props = {};
+  session.server = server;
+  session.sessionMeta = sessionMeta;
+  session.sessionTimeoutMs = () => 1;
+  session.runMcpAgentOnStart = async () => {
+    const restored = session.server ?? makeServer();
+    session.server = restored;
+    await restored.connect(new RestoredTransport());
+    session.engine = makeEngine().engine;
+    session.initialized = true;
+  };
 
-      const result = await harness.client.callTool({
-        name: "execute",
-        arguments: { code: "return 42" },
-      });
-      expect(result.content).toEqual([{ type: "text", text: "return 42" }]);
-      expect(harness.transport.sessionId).toBe(SESSION_ID);
-    } finally {
-      await harness.client.close();
-    }
-  });
+  return session;
+};
 
-  it("cold-restores the same v1 session without replaying initialize", async () => {
-    const harness = makeClientHarness();
-    await harness.client.connect(harness.transport);
+// The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
+// in the rebuilt server's memory. These pin the storage round-trip that lets a
+// cold-restored session rebuild with it instead of silently downgrading every
+// artifact to a deep link.
+describe("McpAgentSessionDOBase apps capability persistence", () => {
+  type CapabilitySession = HarnessSession & {
+    persistAppsEnabled: (appsEnabled: boolean) => Effect.Effect<void>;
+    loadSessionMeta: () => Effect.Effect<SessionMeta | null>;
+    resolveSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+    resolveAndStoreSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+  };
 
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always release the MCP client's streamed transport after assertions
-    try {
-      await harness.client.listTools();
-      harness.evict();
-      const tools = await harness.client.listTools();
-      expect(tools.tools.map(({ name }) => name)).toContain("execute");
-    } finally {
-      await harness.client.close();
-    }
-  });
+  const baseMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
 
-  it("primes a slow legacy tool stream and replays its result after disconnect", async () => {
-    let startExecution = (): void => undefined;
-    const executionStarted = new Promise<void>((resolve) => {
-      startExecution = resolve;
+  const makeCapabilitySession = async (
+    stored: SessionMeta = baseMeta,
+  ): Promise<{ session: CapabilitySession; storage: MemoryStorage }> => {
+    const storage = new MemoryStorage();
+    await storage.put("session-meta", stored);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+    return { session, storage };
+  };
+
+  it("persists the negotiated capability so a later restore can read it back", async () => {
+    const { session, storage } = await makeCapabilitySession();
+
+    await Effect.runPromise(session.persistAppsEnabled(true));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({
+      organizationId: "org-1",
+      appsEnabled: true,
     });
-    let finishExecution = (): void => undefined;
-    const executionResult = new Promise<{ readonly result: string }>((resolve) => {
-      finishExecution = () => resolve({ result: "slow result" });
-    });
-    const slowEngine: ExecutionEngine<Cause.YieldableError> = {
-      ...engine,
-      execute: () =>
-        Effect.promise(() => {
-          startExecution();
-          return executionResult;
-        }),
-      executeWithPause: () =>
-        Effect.promise(() => {
-          startExecution();
-          return executionResult;
-        }).pipe(Effect.map((result) => ({ status: "completed" as const, result }))),
+  });
+
+  it("records a client that loses apps support just as durably", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+
+    await Effect.runPromise(session.persistAppsEnabled(false));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: false });
+  });
+
+  // `init` runs again on every cold restore and rebuilds meta from the bearer
+  // token, which carries no capabilities. If that overwrite won, restoring the
+  // session would erase the very bit meant to survive it.
+  it("carries the stored capability through the re-resolve on cold restore", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+    // What the token resolves to: no `appsEnabled` anywhere in sight.
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBe(true);
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: true });
+  });
+
+  it("leaves a session with no negotiated capability untouched", async () => {
+    const { session, storage } = await makeCapabilitySession();
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).not.toHaveProperty("appsEnabled");
+  });
+
+  // Persistence is best-effort observation of a capability, never a reason to
+  // fail the session that was merely trying to render something.
+  it("stays silent when there is no stored meta to merge into", async () => {
+    const storage = new MemoryStorage();
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+
+    await expect(Effect.runPromise(session.persistAppsEnabled(true))).resolves.toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).toBeUndefined();
+  });
+});
+
+describe("McpAgentSessionDOBase transport restore", () => {
+  it("preserves hibernated response streams when a cold isolate starts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.initialized = false;
+    session.engine = null;
+    session.dbHandle = null;
+    delete session.server;
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
     };
-    const state = new MemoryDurableObjectState();
-    const session = new HarnessSession(state, {} as Cloudflare.Env, slowEngine);
-    const post = (body: unknown, sessionId?: string): Request =>
-      verifiedRequest(
-        new Request("https://executor.test/mcp?elicitation_mode=model", {
-          method: "POST",
-          headers: {
-            accept: "application/json, text/event-stream",
-            "content-type": "application/json",
-            ...(sessionId
-              ? { "mcp-session-id": sessionId, "mcp-protocol-version": "2025-06-18" }
-              : {}),
-          },
-          body: JSON.stringify(body),
-        }),
-      );
 
-    const initialize = await session.fetch(
-      post({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-06-18",
-          capabilities: {},
-          clientInfo: { name: "legacy-reconnect-test", version: "1.0.0" },
-        },
-      }),
-    );
-    expect(initialize.headers.get("mcp-session-id")).toBe(SESSION_ID);
-    await initialize.text();
-    await session.fetch(
-      post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, SESSION_ID),
-    );
+    await session.onStart();
 
-    const toolResponse = await session.fetch(
-      post(
-        {
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: { name: "execute", arguments: { code: "return slow" } },
-        },
-        SESSION_ID,
-      ),
-    );
-    const reader = toolResponse.body?.getReader();
-    const first = await reader?.read();
-    const primingFrame = new TextDecoder().decode(first?.value);
-    expect(primingFrame).toContain("event: mcp-priming");
-    const eventId = /^id: (.+)$/m.exec(primingFrame)?.[1];
-    const replayEventId = eventId ?? "";
-    expect(replayEventId).not.toBe("");
-    await reader?.cancel("simulated network drop");
-
-    await executionStarted;
-    finishExecution();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const replay = await session.fetch(
-      verifiedRequest(
-        new Request("https://executor.test/mcp", {
-          method: "GET",
-          headers: {
-            accept: "text/event-stream",
-            "mcp-session-id": SESSION_ID,
-            "mcp-protocol-version": "2025-06-18",
-            "last-event-id": replayEventId,
-          },
-        }),
-      ),
-    );
-    const replayBody = await replay.text();
-    expect(replayBody).toContain("slow result");
-    expect(replayBody).toContain(`id: ${replayEventId.slice(0, replayEventId.lastIndexOf(":"))}:`);
-
-    const standaloneReplay = await session.fetch(
-      verifiedRequest(
-        new Request("https://executor.test/mcp", {
-          method: "GET",
-          headers: {
-            accept: "text/event-stream",
-            "mcp-session-id": SESSION_ID,
-            "mcp-protocol-version": "2025-06-18",
-          },
-        }),
-      ),
-    );
-    // The standalone listener replays undelivered responses as its opening
-    // frames and then STAYS OPEN (a close-after-replay here put every active
-    // client into a permanent reconnect loop), so read incrementally instead
-    // of draining to EOF.
-    const standaloneReader = standaloneReplay.body?.getReader();
-    const decoder = new TextDecoder();
-    let standaloneReplayBody = "";
-    while (!standaloneReplayBody.includes("slow result")) {
-      const next = await standaloneReader?.read();
-      if (!next || next.done) break;
-      standaloneReplayBody += decoder.decode(next.value, { stream: true });
-    }
-    expect(standaloneReplayBody).toContain("slow result");
-    expect(standaloneReplayBody).toContain("event: message");
-    await standaloneReader?.cancel("test complete");
-    await state.flushWaitUntil();
+    expect(closeCalls).toBe(0);
+    expect(session.initialized).toBe(true);
   });
 
-  it("restores once while an idle runtime generation is still closing", async () => {
-    let now = 1_000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    let closeStarted = (): void => undefined;
-    const closing = new Promise<void>((resolve) => {
-      closeStarted = resolve;
+  it("closes response streams when an in-memory runtime restarts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
+    };
+
+    await session.onStart();
+
+    expect(closeCalls).toBe(1);
+    expect(session.initialized).toBe(true);
+  });
+
+  it("restores a same-session request after idle disposal leaves a stale server transport", async () => {
+    const session = await makeHarnessSession();
+
+    await session.alarm();
+
+    await expect(
+      session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
+    ).resolves.toBe("ok");
+  });
+
+  it("single-flights concurrent same-session restore after idle disposal", async () => {
+    const session = await makeHarnessSession();
+    const firstRestoreEntered = makeDeferred();
+    const finishRestore = makeDeferred();
+    let onStartCalls = 0;
+    let restoredServer: McpServer | undefined;
+
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      restoredServer ??= restored;
+      session.server = restored;
+      firstRestoreEntered.resolve();
+      await finishRestore.promise;
+      await restored.connect(new RestoredTransport());
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const first = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
     });
-    let finishClose = (): void => undefined;
-    const closeGate = new Promise<void>((resolve) => {
-      finishClose = resolve;
+    const second = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
     });
-    let closeCount = 0;
-    const state = new MemoryDurableObjectState();
-    const session = new HarnessSession(state, {} as Cloudflare.Env, engine, {
-      sessionTimeoutMs: 10,
-      end: () => {
-        closeCount += 1;
-        if (closeCount !== 1) return;
-        closeStarted();
-        return closeGate;
+
+    await firstRestoreEntered.promise;
+    await Promise.resolve();
+    finishRestore.resolve();
+
+    await expect(Promise.all([first, second])).resolves.toEqual(["ok", "ok"]);
+    expect(onStartCalls).toBe(1);
+    expect(session.server).toBe(restoredServer);
+  });
+
+  it("single-flights SDK onStart callers with same-session restore", async () => {
+    const session = await makeHarnessSession();
+    const firstStartEntered = makeDeferred();
+    const finishStart = makeDeferred();
+    let onStartCalls = 0;
+
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      session.server = restored;
+      firstStartEntered.resolve();
+      await finishStart.promise;
+      await restored.connect(new RestoredTransport());
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const restore = session.validateMcpSessionOwner({
+      accountId: "user-1",
+      organizationId: "org-1",
+    });
+    const sdkStart = session.onStart();
+
+    await firstStartEntered.promise;
+    await Promise.resolve();
+    finishStart.resolve();
+
+    await expect(Promise.all([restore, sdkStart])).resolves.toEqual(["ok", undefined]);
+    expect(onStartCalls).toBe(1);
+  });
+
+  it("single-flights model resume restore with SDK onStart", async () => {
+    const session = await makeHarnessSession();
+    const firstStartEntered = makeDeferred();
+    const finishStart = makeDeferred();
+    const restoredEngine = makeEngine(() => completed("model-result"));
+    let onStartCalls = 0;
+
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      const restored = session.server ?? makeServer();
+      session.server = restored;
+      firstStartEntered.resolve();
+      await finishStart.promise;
+      await restored.connect(new RestoredTransport());
+      session.engine = restoredEngine.engine;
+      session.initialized = true;
+    };
+
+    await session.alarm();
+
+    const resume = session.resumeExecutionForModel(
+      "exec-model",
+      { accountId: "user-1", organizationId: "org-1" },
+      approval,
+    );
+    const sdkStart = session.onStart();
+
+    await firstStartEntered.promise;
+    await Promise.resolve();
+    finishStart.resolve();
+
+    const [resumeResult] = await Promise.all([resume, sdkStart]);
+    expect(resumeResult).toMatchObject({
+      status: "result",
+      result: {
+        structuredContent: {
+          status: "completed",
+          result: "model-result",
+        },
       },
     });
-    const post = (body: unknown): Request =>
-      verifiedRequest(
-        new Request("https://executor.test/mcp", {
-          method: "POST",
-          headers: {
-            accept: "application/json, text/event-stream",
-            "content-type": "application/json",
-            "mcp-session-id": SESSION_ID,
-            "mcp-protocol-version": "2025-06-18",
-          },
-          body: JSON.stringify(body),
-        }),
-      );
-
-    const initialize = await session.fetch(
-      verifiedRequest(
-        new Request("https://executor.test/mcp", {
-          method: "POST",
-          headers: {
-            accept: "application/json, text/event-stream",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: "initialize",
-            method: "initialize",
-            params: {
-              protocolVersion: "2025-06-18",
-              capabilities: {},
-              clientInfo: { name: "restore-race", version: "1.0.0" },
-            },
-          }),
-        }),
-      ),
-    );
-    await initialize.text();
-    await session.fetch(post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }));
-
-    now += 100;
-    const alarm = session.alarm();
-    await closing;
-
-    const get = session.fetch(
-      verifiedRequest(
-        new Request("https://executor.test/mcp", {
-          method: "GET",
-          headers: {
-            accept: "text/event-stream",
-            "mcp-session-id": SESSION_ID,
-            "mcp-protocol-version": "2025-06-18",
-          },
-        }),
-      ),
-    );
-    const list = session.fetch(
-      post({ jsonrpc: "2.0", id: "concurrent-list", method: "tools/list", params: {} }),
-    );
-
-    finishClose();
-    const [getResponse, listResponse] = await Promise.all([get, list]);
-    expect(getResponse.status).toBe(200);
-    await getResponse.body?.cancel();
-    expect(listResponse.status).toBe(200);
-    expect(await listResponse.text()).toContain("execute");
-    await alarm;
-    await expect(state.storage.get("executor:mcp:v2:last-activity-ms")).resolves.toBe(now);
-    await expect(state.storage.getAlarm()).resolves.toBe(now + 10);
-
-    const followUp = await session.fetch(
-      post({ jsonrpc: "2.0", id: "follow-up-list", method: "tools/list", params: {} }),
-    );
-    expect(followUp.status).toBe(200);
-    expect(await followUp.text()).toContain("execute");
-  });
-
-  it("persists session metadata and rejects a different principal", async () => {
-    const harness = makeClientHarness();
-    await harness.client.connect(harness.transport);
-
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always release the MCP client's streamed transport after assertions
-    try {
-      const stored = await harness.state.storage.get<SessionMeta>("executor:mcp:v2:session-meta");
-      expect(stored).toMatchObject({
-        organizationId: ORGANIZATION_ID,
-        userId: ACCOUNT_ID,
-        elicitationMode: "model",
-        appsEnabled: false,
-      });
-      expect(stored?.createdAtMs).toEqual(expect.any(Number));
-
-      const session = new HarnessSession(harness.state, {} as Cloudflare.Env);
-      await expect(
-        session.validateMcpSessionOwner({
-          accountId: "acct_other",
-          organizationId: ORGANIZATION_ID,
-        }),
-      ).resolves.toBe("forbidden");
-    } finally {
-      await harness.client.close();
-    }
-  });
-
-  it("returns a clean 404 for storage created by the retired Agent stack", async () => {
-    const state = new MemoryDurableObjectState();
-    await state.storage.put("session-meta", {
-      organizationId: ORGANIZATION_ID,
-      organizationName: "Old Agent Org",
-      userId: ACCOUNT_ID,
-      resource: defaultMcpResource,
-    } satisfies SessionMeta);
-    const session = new HarnessSession(state, {} as Cloudflare.Env);
-    const request = verifiedRequest(
-      new Request("https://executor.test/mcp", {
-        method: "POST",
-        headers: {
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-          "mcp-session-id": SESSION_ID,
-        },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-      }),
-    );
-
-    const response = await session.fetch(request);
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: -32001, message: "Session not found" },
-    });
-  });
-
-  it("answers a dead-session standalone GET with 405 so old clients stop retrying", async () => {
-    const state = new MemoryDurableObjectState();
-    await state.storage.put("session-meta", {
-      organizationId: ORGANIZATION_ID,
-      organizationName: "Old Agent Org",
-      userId: ACCOUNT_ID,
-      resource: defaultMcpResource,
-    } satisfies SessionMeta);
-    const session = new HarnessSession(state, {} as Cloudflare.Env);
-    const request = verifiedRequest(
-      new Request("https://executor.test/mcp", {
-        method: "GET",
-        headers: {
-          accept: "text/event-stream",
-          "mcp-session-id": SESSION_ID,
-        },
-      }),
-    );
-
-    const response = await session.fetch(request);
-
-    expect(response.status).toBe(405);
-    expect(response.headers.get("allow")).toBe("POST, DELETE");
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: -32001, message: "Session not found" },
-    });
+    expect(onStartCalls).toBe(1);
+    expect(restoredEngine.calls).toEqual([{ executionId: "exec-model", response: approval }]);
   });
 });

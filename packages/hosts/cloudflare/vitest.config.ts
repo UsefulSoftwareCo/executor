@@ -15,5 +15,10 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     passWithNoTests: true,
     setupFiles: ["./src/test-setup.ts"],
+    server: {
+      deps: {
+        inline: ["agents", "partyserver"],
+      },
+    },
   },
 });

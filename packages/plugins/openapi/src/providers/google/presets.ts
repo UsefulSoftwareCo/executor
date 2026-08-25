@@ -1,6 +1,9 @@
 import { normalizeGoogleDiscoveryUrl } from "./discovery";
 import { compactGoogleOAuthScopes } from "./oauth-scopes";
+import { googleOAuthConsentScopesForPreset } from "./service-policy";
 import type { HealthCheckSpec, IntegrationPreset } from "@executor-js/sdk/core";
+
+export { googleOAuthConsentScopes, googleOAuthConsentScopesForPreset } from "./service-policy";
 
 export interface GooglePreset {
   readonly id: string;
@@ -53,6 +56,15 @@ export const googleOpenApiPresets: readonly GoogleOpenApiPreset[] = [
     summary: "Calendars, events, ACLs, and scheduling.",
     url: gd("calendar", "v3"),
     icon: "https://fonts.gstatic.com/s/i/productlogos/calendar_2020q4/v8/192px.svg",
+    featured: true,
+    oauthAudience: "standard-user",
+  },
+  {
+    id: "google-meet",
+    name: "Google Meet",
+    summary: "Meeting spaces, conference records, participants, recordings, and transcripts.",
+    url: "https://meet.googleapis.com/$discovery/rest?version=v2",
+    icon: "https://fonts.gstatic.com/s/i/productlogos/meet_2020q4/v8/192px.svg",
     featured: true,
     oauthAudience: "standard-user",
   },
@@ -146,12 +158,12 @@ export const googleOpenApiPresets: readonly GoogleOpenApiPreset[] = [
     summary: "Spaces, messages, members, reactions, and chat workflows.",
     url: gd("chat", "v1"),
     icon: "https://fonts.gstatic.com/s/i/productlogos/chat_2020q4/v8/192px.svg",
-    oauthAudience: "workspace-admin",
+    oauthAudience: "advanced-user",
   },
   {
     id: "google-keep",
     name: "Google Keep",
-    summary: "Notes, lists, attachments, and annotations.",
+    summary: "Create, list, delete, and share notes; download attachments.",
     url: "https://keep.googleapis.com/$discovery/rest?version=v1",
     icon: "https://fonts.gstatic.com/s/i/productlogos/keep_2020q4/v8/192px.svg",
     oauthAudience: "unsupported-user",
@@ -199,7 +211,7 @@ export const googleOpenApiPresets: readonly GoogleOpenApiPreset[] = [
   {
     id: "google-apps-script",
     name: "Google Apps Script",
-    summary: "Projects, deployments, and script execution.",
+    summary: "Projects, deployments, versions, processes, and metrics.",
     url: gd("script", "v1"),
     icon: "https://fonts.gstatic.com/s/i/productlogos/apps_script/v10/192px.svg",
     oauthAudience: "advanced-user",
@@ -248,36 +260,6 @@ export const googlePhotosOpenApiPresets: readonly GoogleOpenApiPreset[] =
 // `auth.oauth2.scopes`.
 // ---------------------------------------------------------------------------
 
-export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]>> = {
-  "google-calendar": ["https://www.googleapis.com/auth/calendar"],
-  "google-gmail": ["https://www.googleapis.com/auth/gmail.modify"],
-  "google-sheets": ["https://www.googleapis.com/auth/spreadsheets"],
-  "google-drive": ["https://www.googleapis.com/auth/drive"],
-  "google-docs": ["https://www.googleapis.com/auth/documents"],
-  "google-slides": ["https://www.googleapis.com/auth/presentations"],
-  "google-forms": ["https://www.googleapis.com/auth/forms.body"],
-  "google-tasks": ["https://www.googleapis.com/auth/tasks"],
-  "google-people": ["https://www.googleapis.com/auth/contacts"],
-  "google-photos-library": [
-    "https://www.googleapis.com/auth/photoslibrary.appendonly",
-    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-  ],
-  "google-photos-picker": ["https://www.googleapis.com/auth/photospicker.mediaitems.readonly"],
-  "google-chat": ["https://www.googleapis.com/auth/chat.spaces"],
-  "google-keep": ["https://www.googleapis.com/auth/keep"],
-  "google-youtube-data": ["https://www.googleapis.com/auth/youtube"],
-  "google-search-console": ["https://www.googleapis.com/auth/webmasters"],
-  "google-classroom": ["https://www.googleapis.com/auth/classroom.courses"],
-  "google-admin-directory": ["https://www.googleapis.com/auth/admin.directory.user"],
-  "google-admin-reports": ["https://www.googleapis.com/auth/admin.reports.audit.readonly"],
-  "google-apps-script": ["https://www.googleapis.com/auth/script.projects"],
-  "google-bigquery": ["https://www.googleapis.com/auth/bigquery"],
-  "google-cloud-resource-manager": ["https://www.googleapis.com/auth/cloud-platform"],
-};
-
-export const googleOAuthConsentScopesForPreset = (presetId: string): readonly string[] =>
-  googleOAuthConsentScopes[presetId] ?? [];
-
 export const googleServiceSlug = (presetId: string): string => presetId.replaceAll("-", "_");
 
 const GOOGLE_OAUTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -286,6 +268,7 @@ const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
 const GOOGLE_IDENTITY_SCOPES: readonly string[] = ["openid", "email", "profile"];
 const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
   "google-calendar": { operation: "calendar.calendarList.list" },
+  "google-meet": { operation: "meet.conferenceRecords.list" },
   "google-gmail": {
     operation: "gmail.users.labels.list",
     args: { userId: "me" },
@@ -294,10 +277,17 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
     operation: "drive.about.get",
     args: { fields: "user" },
   },
-  "google-tasks": { operation: "tasks.tasklists.list" },
+  "google-tasks": {
+    operation: "tasks.tasklists.list",
+    args: { maxResults: 1 },
+  },
   "google-people": {
     operation: "people.people.get",
-    args: { resourceName: "people/me", personFields: "emailAddresses" },
+    args: {
+      resourceName: "people/me",
+      personFields: "emailAddresses",
+      identityField: "emailAddresses.0.value",
+    },
   },
   "google-photos-library": { operation: "photoslibrary.albums.list" },
   "google-chat": { operation: "chat.spaces.list" },
@@ -312,9 +302,19 @@ const GOOGLE_HEALTH_CHECKS: Readonly<Record<string, HealthCheckSpec>> = {
     operation: "directory.users.list",
     args: { customer: "my_customer", maxResults: 1 },
   },
+  "google-admin-reports": {
+    operation: "reports.activities.list",
+    args: { userKey: "all", applicationName: "login", maxResults: 1 },
+  },
   "google-apps-script": { operation: "script.processes.list" },
-  "google-bigquery": { operation: "bigquery.projects.list" },
-  "google-cloud-resource-manager": { operation: "cloudresourcemanager.projects.list" },
+  "google-bigquery": {
+    operation: "bigquery.projects.list",
+    args: { maxResults: 1 },
+  },
+  "google-cloud-resource-manager": {
+    operation: "cloudresourcemanager.projects.search",
+    args: { pageSize: 1 },
+  },
 };
 
 /** Complete Google OAuth scope set requested by a catalog preset, including
@@ -335,19 +335,21 @@ const googleCatalogAuthTemplate = (presetId: string) => [
   },
 ];
 
-export const googleCatalog: readonly IntegrationPreset[] = googleOpenApiPresets.map((preset) => ({
-  id: preset.id,
-  name: preset.name,
-  summary: preset.summary,
-  ...(preset.url ? { url: preset.url } : {}),
-  ...(preset.icon ? { icon: preset.icon } : {}),
-  ...(preset.featured ? { featured: preset.featured } : {}),
-  family: "google",
-  specFormat: "google-discovery",
-  defaultSlug: googleServiceSlug(preset.id),
-  authTemplate: googleCatalogAuthTemplate(preset.id),
-  ...(GOOGLE_HEALTH_CHECKS[preset.id] ? { healthCheck: GOOGLE_HEALTH_CHECKS[preset.id] } : {}),
-}));
+export const googleCatalog: readonly IntegrationPreset[] = googleOpenApiPresets
+  .filter((preset) => preset.oauthAudience !== "unsupported-user")
+  .map((preset) => ({
+    id: preset.id,
+    name: preset.name,
+    summary: preset.summary,
+    ...(preset.url ? { url: preset.url } : {}),
+    ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(preset.featured ? { featured: preset.featured } : {}),
+    family: "google",
+    specFormat: "google-discovery",
+    defaultSlug: googleServiceSlug(preset.id),
+    authTemplate: googleCatalogAuthTemplate(preset.id),
+    ...(GOOGLE_HEALTH_CHECKS[preset.id] ? { healthCheck: GOOGLE_HEALTH_CHECKS[preset.id] } : {}),
+  }));
 
 // ---------------------------------------------------------------------------
 // Resolve a stored/normalized Discovery URL back to its preset, so a bundled

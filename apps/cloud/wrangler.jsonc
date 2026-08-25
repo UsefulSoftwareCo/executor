@@ -46,12 +46,12 @@
       },
     ],
   },
-  // The MCP session DO previously moved to a SQLite-backed class. The original
-  // `McpSessionDO` was created on the
+  // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
+  // stores state in SQLite. The original `McpSessionDO` was created on the
   // key-value backend (`new_classes`) and cannot be converted in place. Cloudflare
   // also refuses to delete a class in the same deploy that moves its binding (it
   // validates the delete against the live binding), so v2 only CREATES the new
-  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moved to it.
+  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moves to it.
   // The old KV `McpSessionDO` is left orphaned (unbound, kept as a stub export in
   // server.ts so the migration stays valid); it can be deleted in a later deploy
   // now that nothing binds it. Session state is ephemeral, so nothing is lost.
@@ -94,6 +94,11 @@
       "bucket_name": "executor-cloud-blobs",
     },
   ],
+  // Pins the Worker to the Hyperdrive/Postgres region. Added in #420 to fix
+  // MCP Hyperdrive connection pressure; dropped in #1693 as a placement
+  // experiment, which took `user_store.*` from ~12ms to ~300ms because every
+  // query started crossing regions. Restored to measure that against the
+  // JWKS verify time the experiment also moved.
   "placement": {
     "region": "aws:us-east-1",
   },
@@ -102,15 +107,22 @@
       "binding": "LOADER",
     },
   ],
-  // DEPLOYMENT PREREQUISITE: MCP 2026-07-28 requestState is shared between
-  // stateless Worker isolates and session DOs. Configure the same 32+ byte
-  // secret for both with `wrangler secret put MCP_REQUEST_STATE_KEY`.
-  // It must never be placed in `vars` or generated independently per isolate.
+  // Stamps spans (`service.version`) and mem-metrics snapshots with the
+  // running Worker version id, so an Axiom step-change maps to the exact
+  // deploy without Cloudflare API archaeology. memory-metrics.ts already
+  // reads this binding; it was never declared before, so it always fell back.
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA",
+  },
   "vars": {
-    // MCP_2026_07_28_ENABLED is intentionally absent: unset enables modern
-    // inbound serving. Set the Worker var to "false" for emergency rollback;
-    // legacy serving remains available.
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
+    // Keeps the /__sentry-otel-verify probe live in production: Sentry
+    // delivery failed silently for weeks (zero events after ~Jul 30 with an
+    // active DSN), and without this there is no way to test the pipeline
+    // end-to-end short of waiting for a real error. The endpoint only fires
+    // when its exact path is requested and the events are explicitly tagged
+    // synthetic.
+    "SENTRY_OTEL_VERIFY": "true",
     "VITE_PUBLIC_POSTHOG_KEY": "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL",
     // Browser OTLP spans → same-origin, forwarded to Axiom by the worker
     // (src/observability/browser-traces.ts). Relative on purpose: the

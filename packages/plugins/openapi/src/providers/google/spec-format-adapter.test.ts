@@ -13,6 +13,7 @@ const TASKS_URL = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
 const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 const GMAIL_FULL_SCOPE = "https://mail.google.com/";
+const GMAIL_SETTINGS_BASIC_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic";
 
 const tasksDiscoveryDoc = {
   name: "tasks",
@@ -84,6 +85,7 @@ const gmailDiscoveryDoc = {
       scopes: {
         [GMAIL_MODIFY_SCOPE]: { description: "Read and modify Gmail" },
         [GMAIL_FULL_SCOPE]: { description: "Full Gmail access" },
+        [GMAIL_SETTINGS_BASIC_SCOPE]: { description: "Manage Gmail settings" },
       },
     },
   },
@@ -109,6 +111,23 @@ const gmailDiscoveryDoc = {
               parameters: {
                 userId: { location: "path", required: true, type: "string" },
                 id: { location: "path", required: true, type: "string" },
+              },
+            },
+          },
+        },
+        settings: {
+          resources: {
+            filters: {
+              methods: {
+                create: {
+                  id: "gmail.users.settings.filters.create",
+                  httpMethod: "POST",
+                  path: "gmail/v1/users/{userId}/settings/filters",
+                  scopes: [GMAIL_SETTINGS_BASIC_SCOPE],
+                  parameters: {
+                    userId: { location: "path", required: true, type: "string" },
+                  },
+                },
               },
             },
           },
@@ -229,7 +248,7 @@ it.effect(
     }),
 );
 
-it.effect("preserves a Google preset's consent scope boundary when refreshing", () =>
+it.effect("preserves a Google preset's full consumer consent boundary when refreshing", () =>
   Effect.gen(function* () {
     const gmailPreset = googleCatalog.find((preset) => preset.id === "google-gmail")!;
     const authTemplate: readonly AuthenticationInput[] = (gmailPreset.authTemplate ?? []).flatMap(
@@ -255,7 +274,7 @@ it.effect("preserves a Google preset's consent scope boundary when refreshing", 
       family: gmailPreset.family,
       authenticationTemplate: authTemplate,
     });
-    expect(added.toolCount).toBe(1);
+    expect(added.toolCount).toBe(3);
 
     const updated = yield* executor.openapi.updateSpec("google_gmail");
 
@@ -263,10 +282,11 @@ it.effect("preserves a Google preset's consent scope boundary when refreshing", 
     const oauthTemplate = config?.authenticationTemplate?.find(
       (template) => template.kind === "oauth2",
     );
-    expect(updated.toolCount).toBe(1);
+    expect(updated.toolCount).toBe(3);
     expect(updated.addedTools).not.toContain("gmail.users.messages.delete");
-    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toContain(
-      GMAIL_MODIFY_SCOPE,
+    expect(updated.addedTools).not.toContain("gmail.users.settings.filters.create");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual(
+      expect.arrayContaining([GMAIL_FULL_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]),
     );
   }),
 );

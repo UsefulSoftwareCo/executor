@@ -8,6 +8,7 @@ import {
   isGoogleDiscoveryUrl,
   normalizeGoogleDiscoveryUrl,
 } from "./discovery";
+import { googleOAuthConsentScopesForPreset } from "./service-policy";
 import { extract, parse } from "@executor-js/plugin-openapi";
 
 const ConvertedOperation = Schema.Struct({
@@ -62,7 +63,9 @@ const oauth2DiscoveryDoc = {
   auth: {
     oauth2: {
       scopes: {
-        openid: { description: "Associate you with your personal info on Google" },
+        openid: {
+          description: "Associate you with your personal info on Google",
+        },
         "https://www.googleapis.com/auth/userinfo.email": {
           description: "See your primary Google Account email address",
         },
@@ -411,7 +414,9 @@ it.effect("converts Google OAuth2 v2 top-level and aliased userinfo methods", ()
       "x-executor-toolPath": "userinfo.get",
       "x-google-scopes": [...OAUTH2_USERINFO_SCOPES],
     });
-    expect(userinfo?.security).toEqual([{ googleOAuth2: [...OAUTH2_USERINFO_SCOPES] }]);
+    expect(userinfo?.security).toEqual(
+      OAUTH2_USERINFO_SCOPES.map((scope) => ({ googleOAuth2: [scope] })),
+    );
     expect(userinfo?.responses).toMatchObject({
       "200": {
         content: {
@@ -454,8 +459,16 @@ it.effect("marks Google Discovery media-download methods as binary responses", (
                 supportsMediaDownload: true,
                 useMediaDownloadService: true,
                 parameters: {
-                  fileId: { location: "path", required: true, type: "string" },
-                  mimeType: { location: "query", required: true, type: "string" },
+                  fileId: {
+                    location: "path",
+                    required: true,
+                    type: "string",
+                  },
+                  mimeType: {
+                    location: "query",
+                    required: true,
+                    type: "string",
+                  },
                 },
               },
             },
@@ -633,7 +646,11 @@ it.effect(
                   },
                   scopes: ["https://www.googleapis.com/auth/drive.file"],
                   parameters: {
-                    fileId: { location: "path", required: true, type: "string" },
+                    fileId: {
+                      location: "path",
+                      required: true,
+                      type: "string",
+                    },
                   },
                 },
                 export: {
@@ -643,8 +660,16 @@ it.effect(
                   supportsMediaDownload: true,
                   useMediaDownloadService: true,
                   parameters: {
-                    fileId: { location: "path", required: true, type: "string" },
-                    mimeType: { location: "query", required: true, type: "string" },
+                    fileId: {
+                      location: "path",
+                      required: true,
+                      type: "string",
+                    },
+                    mimeType: {
+                      location: "query",
+                      required: true,
+                      type: "string",
+                    },
                   },
                 },
               },
@@ -953,8 +978,11 @@ it.effect("bundles Google Discovery documents into one Google OpenAPI integratio
     // v2: the bundled oauth scopes are carried on the oauth auth template.
     const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
     expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
-      "https://www.googleapis.com/auth/gmail.metadata",
-      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "openid",
+      "email",
+      "profile",
+      ...googleOAuthConsentScopesForPreset("google-gmail"),
+      ...googleOAuthConsentScopesForPreset("google-chat"),
     ]);
   }),
 );
@@ -994,7 +1022,11 @@ it.effect("filters Gmail operations to the explicitly selected consent scope", (
                         path: "gmail/v1/users/{userId}/messages",
                         scopes: [modifyScope, fullScope],
                         parameters: {
-                          userId: { location: "path", required: true, type: "string" },
+                          userId: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
                         },
                       },
                       delete: {
@@ -1003,8 +1035,16 @@ it.effect("filters Gmail operations to the explicitly selected consent scope", (
                         path: "gmail/v1/users/{userId}/messages/{id}",
                         scopes: [fullScope],
                         parameters: {
-                          userId: { location: "path", required: true, type: "string" },
-                          id: { location: "path", required: true, type: "string" },
+                          userId: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                          id: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
                         },
                       },
                     },
@@ -1031,9 +1071,126 @@ it.effect("filters Gmail operations to the explicitly selected consent scope", (
   }),
 );
 
+it.effect("keeps consumer Gmail settings tools alongside full mailbox access", () =>
+  Effect.gen(function* () {
+    const fullScope = "https://mail.google.com/";
+    const settingsBasicScope = "https://www.googleapis.com/auth/gmail.settings.basic";
+    const settingsSharingScope = "https://www.googleapis.com/auth/gmail.settings.sharing";
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      consentScopes: [fullScope, settingsBasicScope],
+      documents: [
+        {
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "gmail",
+            version: "v1",
+            title: "Gmail API",
+            rootUrl: "https://gmail.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  [fullScope]: { description: "Full Gmail access" },
+                  [settingsBasicScope]: {
+                    description: "Manage Gmail settings",
+                  },
+                  [settingsSharingScope]: {
+                    description: "Manage Gmail sharing settings",
+                  },
+                },
+              },
+            },
+            resources: {
+              users: {
+                resources: {
+                  messages: {
+                    methods: {
+                      delete: {
+                        id: "gmail.users.messages.delete",
+                        httpMethod: "DELETE",
+                        path: "gmail/v1/users/{userId}/messages/{id}",
+                        scopes: [fullScope],
+                        parameters: {
+                          userId: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                          id: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                        },
+                      },
+                    },
+                  },
+                  settings: {
+                    resources: {
+                      filters: {
+                        methods: {
+                          create: {
+                            id: "gmail.users.settings.filters.create",
+                            httpMethod: "POST",
+                            path: "gmail/v1/users/{userId}/settings/filters",
+                            scopes: [settingsBasicScope],
+                            parameters: {
+                              userId: {
+                                location: "path",
+                                required: true,
+                                type: "string",
+                              },
+                            },
+                          },
+                        },
+                      },
+                      forwardingAddresses: {
+                        methods: {
+                          create: {
+                            id: "gmail.users.settings.forwardingAddresses.create",
+                            httpMethod: "POST",
+                            path: "gmail/v1/users/{userId}/settings/forwardingAddresses",
+                            scopes: [settingsSharingScope],
+                            parameters: {
+                              userId: {
+                                location: "path",
+                                required: true,
+                                type: "string",
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {},
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operationIds = Object.values(spec.paths).flatMap((path) =>
+      Object.values(path).map((operation) => operation.operationId),
+    );
+    expect(operationIds).toContain("gmail.users.messages.delete");
+    expect(operationIds).toContain("gmail.users.settings.filters.create");
+    expect(operationIds).not.toContain("gmail.users.settings.forwardingAddresses.create");
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
+      fullScope,
+      settingsBasicScope,
+    ]);
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // The merged bundle scope set is the COMPACTED + FILTERED union: sub-scopes
-// collapse under their broad parent (`gmail.*` → `mail.google.com/`,
+// collapse under their broad parent (Gmail message scopes → `mail.google.com/`,
 // `calendar.*` → `calendar`, `userinfo.email` → `email`), and scopes a user
 // OAuth consent screen can't show (`chat.bot`, `chat.app.*`, `keep`) are
 // dropped. The persisted auth template, the spec `securitySchemes.googleOAuth2`
@@ -1169,10 +1326,27 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
               oauth2: {
                 scopes: {
                   // Broad parent + a sub-scope that must collapse under it.
-                  "https://mail.google.com/": { description: "Full Gmail access" },
-                  "https://www.googleapis.com/auth/gmail.readonly": { description: "Read Gmail" },
+                  "https://mail.google.com/": {
+                    description: "Full Gmail access",
+                  },
+                  "https://www.googleapis.com/auth/gmail.readonly": {
+                    description: "Read Gmail",
+                  },
+                  // Basic settings remain independent; admin-only sharing and
+                  // contextual add-on scopes must not enter user consent.
+                  "https://www.googleapis.com/auth/gmail.settings.basic": {
+                    description: "Manage Gmail settings",
+                  },
+                  "https://www.googleapis.com/auth/gmail.settings.sharing": {
+                    description: "Manage Gmail sharing settings",
+                  },
+                  "https://www.googleapis.com/auth/gmail.addons.current.message.readonly": {
+                    description: "Read the current add-on message",
+                  },
                   // Identity scope normalized to `email`.
-                  "https://www.googleapis.com/auth/userinfo.email": { description: "Email" },
+                  "https://www.googleapis.com/auth/userinfo.email": {
+                    description: "Email",
+                  },
                 },
               },
             },
@@ -1187,7 +1361,11 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
                         path: "gmail/v1/users/{userId}/messages",
                         scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
                         parameters: {
-                          userId: { location: "path", required: true, type: "string" },
+                          userId: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
                         },
                       },
                     },
@@ -1212,9 +1390,15 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
                 scopes: {
                   // A keepable consent scope plus two that the user-consent filter
                   // must drop (`chat.bot`, `chat.app.*`).
-                  "https://www.googleapis.com/auth/chat.spaces.readonly": { description: "Spaces" },
-                  "https://www.googleapis.com/auth/chat.bot": { description: "Bot" },
-                  "https://www.googleapis.com/auth/chat.app.spaces": { description: "App spaces" },
+                  "https://www.googleapis.com/auth/chat.spaces.readonly": {
+                    description: "Spaces",
+                  },
+                  "https://www.googleapis.com/auth/chat.bot": {
+                    description: "Bot",
+                  },
+                  "https://www.googleapis.com/auth/chat.app.spaces": {
+                    description: "App spaces",
+                  },
                 },
               },
             },
@@ -1227,7 +1411,11 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
                     path: "v1/{+name}",
                     scopes: ["https://www.googleapis.com/auth/chat.bot"],
                     parameters: {
-                      name: { location: "path", required: true, type: "string" },
+                      name: {
+                        location: "path",
+                        required: true,
+                        type: "string",
+                      },
                     },
                   },
                 },
@@ -1240,13 +1428,15 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
     });
 
     const expectedConsentScopes = [
-      "https://mail.google.com/",
+      "openid",
       "email",
-      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "profile",
+      ...googleOAuthConsentScopesForPreset("google-gmail"),
+      ...googleOAuthConsentScopesForPreset("google-chat"),
     ];
 
-    // The derived oauth auth template carries the compacted/filtered set
-    // (gmail.readonly collapsed, userinfo.email → email, chat.bot/chat.app.* dropped).
+    // Known services use their audited consent bundle instead of treating the
+    // Discovery document's alternative scopes as a cumulative request.
     const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
     expect(oauthTemplate?.kind === "oauth2" ? [...oauthTemplate.scopes].sort() : undefined).toEqual(
       [...expectedConsentScopes].sort(),
@@ -1263,10 +1453,219 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
     expect([...(spec.security[0]?.["googleOAuth2"] ?? [])].sort()).toEqual(
       [...expectedConsentScopes].sort(),
     );
-    // Per-operation x-google-scopes stay RAW - a dropped consent scope can still
-    // be the scope a given method advertises.
-    expect(spec.paths["/v1/{name}"]?.get?.["x-google-scopes"]).toEqual([
-      "https://www.googleapis.com/auth/chat.bot",
+    // App-auth-only methods are unavailable to the ordinary user OAuth bundle.
+    expect(spec.paths["/v1/{name}"]?.get).toBeUndefined();
+  }),
+);
+
+it.effect("applies public Google schema and parameter corrections", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://sheets.googleapis.com/$discovery/rest?version=v4",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "sheets",
+            version: "v4",
+            title: "Google Sheets API",
+            rootUrl: "https://sheets.googleapis.com/",
+            servicePath: "",
+            schemas: {
+              Request: {
+                type: "object",
+                properties: {
+                  addSheet: { type: "object" },
+                  addDataSource: { type: "object" },
+                  updateDataSource: { type: "object" },
+                  refreshDataSource: { type: "object" },
+                  cancelDataSourceRefresh: { type: "object" },
+                },
+              },
+            },
+          }),
+        },
+        {
+          discoveryUrl: "https://photospicker.googleapis.com/$discovery/rest?version=v1",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "photospicker",
+            version: "v1",
+            title: "Google Photos Picker API",
+            rootUrl: "https://photospicker.googleapis.com/",
+            servicePath: "",
+            parameters: {
+              key: { location: "query", type: "string" },
+              oauth_token: { location: "query", type: "string" },
+            },
+            resources: {
+              mediaItems: {
+                methods: {
+                  list: {
+                    id: "photospicker.mediaItems.list",
+                    httpMethod: "GET",
+                    path: "v1/mediaItems",
+                    parameters: {
+                      sessionId: {
+                        location: "query",
+                        type: "string",
+                        description: "Required. The picker session identifier.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {
+              PickingConfig: {
+                type: "object",
+                properties: {
+                  maxItemCount: { type: "integer" },
+                  showEducationBanner: { type: "boolean" },
+                  showZeroState: { type: "boolean" },
+                  showExpandedAppBar: { type: "boolean" },
+                },
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const sheetsRequest = spec.components.schemas["sheets_v4_Request"] as {
+      properties?: Record<string, unknown>;
+    };
+    expect(Object.keys(sheetsRequest.properties ?? {})).toEqual(["addSheet"]);
+
+    const pickingConfig = spec.components.schemas["photospicker_v1_PickingConfig"] as {
+      properties?: Record<string, unknown>;
+    };
+    expect(Object.keys(pickingConfig.properties ?? {})).toEqual(["maxItemCount"]);
+
+    const pickerList = spec.paths["/v1/mediaItems"]?.get;
+    expect(pickerList?.parameters).toContainEqual(
+      expect.objectContaining({
+        name: "sessionId",
+        in: "query",
+        required: true,
+      }),
+    );
+    expect(pickerList?.parameters.map((parameter) => parameter.name)).not.toContain("key");
+    expect(pickerList?.parameters.map((parameter) => parameter.name)).not.toContain("oauth_token");
+  }),
+);
+
+it.effect("uses the preferred BigQuery grant for headless Discovery imports", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/bigquery/v2/rest",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "bigquery",
+            version: "v2",
+            title: "BigQuery API",
+            rootUrl: "https://bigquery.googleapis.com/",
+            servicePath: "bigquery/v2/",
+            auth: {
+              oauth2: {
+                scopes: {
+                  "https://www.googleapis.com/auth/bigquery": {
+                    description: "BigQuery",
+                  },
+                  "https://www.googleapis.com/auth/cloud-platform": {
+                    description: "Cloud",
+                  },
+                  "https://www.googleapis.com/auth/devstorage.read_write": {
+                    description: "Storage",
+                  },
+                },
+              },
+            },
+            schemas: {},
+          }),
+        },
+      ],
+    });
+
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
+      "openid",
+      "email",
+      "profile",
+      "https://www.googleapis.com/auth/bigquery",
     ]);
+  }),
+);
+
+it.effect("marks People API semantic inputs as required", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://people.googleapis.com/$discovery/rest?version=v1",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "people",
+            version: "v1",
+            title: "People API",
+            rootUrl: "https://people.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  "https://www.googleapis.com/auth/contacts": { description: "Contacts" },
+                },
+              },
+            },
+            resources: {
+              people: {
+                methods: {
+                  get: {
+                    id: "people.people.get",
+                    httpMethod: "GET",
+                    path: "v1/{+resourceName}",
+                    scopes: ["https://www.googleapis.com/auth/contacts"],
+                    parameters: {
+                      resourceName: { location: "path", required: true, type: "string" },
+                      personFields: { location: "query", type: "string" },
+                    },
+                  },
+                  batchCreateContacts: {
+                    id: "people.people.batchCreateContacts",
+                    httpMethod: "POST",
+                    path: "v1/people:batchCreateContacts",
+                    scopes: ["https://www.googleapis.com/auth/contacts"],
+                    request: { $ref: "BatchCreateContactsRequest" },
+                  },
+                },
+              },
+            },
+            schemas: {
+              BatchCreateContactsRequest: {
+                type: "object",
+                properties: {
+                  contacts: { type: "array", items: { type: "object" } },
+                  readMask: { type: "string" },
+                },
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    expect(spec.paths["/v1/{resourceName}"]?.get?.parameters).toContainEqual(
+      expect.objectContaining({ name: "personFields", required: true }),
+    );
+
+    const batchCreate = spec.paths["/v1/people:batchCreateContacts"]?.post;
+    expect(batchCreate?.requestBody).toMatchObject({ required: true });
+    expect(spec.components.schemas["people_v1_BatchCreateContactsRequest"]).toMatchObject({
+      required: ["contacts", "readMask"],
+    });
   }),
 );

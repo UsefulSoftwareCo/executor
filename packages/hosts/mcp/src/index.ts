@@ -5,17 +5,17 @@
 // its seams (`McpAuthProvider` / `McpSessionStore` / `McpErrorReporter` /
 // `Principal`) + the canonical JSON-RPC error renderer (`jsonRpcErrorBody`).
 //
-// The executor tool assemblies (execute/resume tools, elicitation and browser
-// approval bridges, Zod input schemas) are a different center of gravity. They
-// live behind the `tool-server` subpath so this serving
-// surface stays small and dependency-light.
+// The executor TOOL factory (`createExecutorMcpServer` — the execute/resume
+// tools, the elicitation/browser-approval bridge, the Zod input schemas) is a
+// different center of gravity: a host's session store builds an `McpServer`
+// from it. It lives behind the `@executor-js/host-mcp/tool-server` subpath so
+// the serving surface stays small and dependency-light.
 // ---------------------------------------------------------------------------
 
 export {
   Principal,
   McpAuthProvider,
   McpSessionStore,
-  McpModernServerBuilder,
   McpErrorReporter,
   McpErrorReporterNoop,
   defaultMcpResource,
@@ -33,7 +33,6 @@ export {
   type McpDiscoveryRoute,
   type McpDispatchInput,
   type McpDispatchResult,
-  type McpModernServerBuildOptions,
   type McpResource,
 } from "./seams";
 
@@ -41,6 +40,5 @@ export {
   McpServingRoutes,
   McpDiscoveryRoutes,
   jsonRpcErrorBody,
-  mcpModernDisabledResponse,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
 } from "./envelope";

@@ -631,9 +631,6 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
           const stub = getMcpSessionStub(params.mcpSessionId);
-          if (!stub) {
-            return yield* new McpExecutionNotFoundError({ executionId: params.executionId });
-          }
           const result = yield* Effect.promise(() =>
             stub.getPausedExecutionForApproval(params.executionId, {
               accountId: owner.accountId,
@@ -655,9 +652,6 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
           const stub = getMcpSessionStub(params.mcpSessionId);
-          if (!stub) {
-            return yield* new McpExecutionNotFoundError({ executionId: params.executionId });
-          }
           const result = yield* Effect.promise(() =>
             stub.resumeExecutionForApproval(
               params.executionId,

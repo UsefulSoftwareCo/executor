@@ -131,6 +131,10 @@ describe("IntegrationsRegistry", () => {
           Effect.provide(
             integrationsRegistryLayer({
               userAgent: TEST_USER_AGENT,
+              // Pinned: this case asserts the fetch happens, so it must not
+              // inherit an ambient DO_NOT_TRACK / EXECUTOR_DISABLE_INTEGRATIONS_FETCH
+              // (CI sets both). Mirrors the analytics package's test config.
+              disabled: false,
               cacheDir,
               url: "https://integrations.test/api.json",
             }).pipe(Layer.provide(httpLayer), Layer.provide(NodeFileSystem.layer)),
@@ -164,6 +168,10 @@ describe("IntegrationsRegistry", () => {
           Effect.provide(
             integrationsRegistryLayer({
               userAgent: TEST_USER_AGENT,
+              // Pinned: this case asserts the fetch happens, so it must not
+              // inherit an ambient DO_NOT_TRACK / EXECUTOR_DISABLE_INTEGRATIONS_FETCH
+              // (CI sets both). Mirrors the analytics package's test config.
+              disabled: false,
               cacheDir,
               url: "https://integrations.test/api.json",
             }).pipe(Layer.provide(httpLayer), Layer.provide(NodeFileSystem.layer)),
