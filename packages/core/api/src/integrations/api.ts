@@ -11,6 +11,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import {
+  EnterpriseIdentityProviderDescriptorSchema,
   HealthCheckCandidate,
   HealthCheckSpec,
   IntegrationDetectionResult,
@@ -18,8 +19,6 @@ import {
   IntegrationRemovalNotAllowedError,
   IntegrationSlug,
   InternalError,
-  OAuthClientSlug,
-  Owner,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -60,9 +59,7 @@ const OAuthDescriptor = Schema.Struct({
    *  this integration's identity assertions. Present only when the deployment
    *  declared one — the client names it on `oauth.start` alongside the
    *  assertion it holds. The interactive flow stays available regardless. */
-  enterpriseIdentityProvider: Schema.optional(
-    Schema.Struct({ client: OAuthClientSlug, clientOwner: Owner }),
-  ),
+  enterpriseIdentityProvider: Schema.optional(EnterpriseIdentityProviderDescriptorSchema),
 });
 
 /** A single declared auth method — mirrors the SDK's `AuthMethodDescriptor`. */

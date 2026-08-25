@@ -10,7 +10,7 @@ import {
   type IntegrationSlug,
   OAuthClientSlug,
   OAuthState,
-  type Owner,
+  Owner,
 } from "./ids";
 
 /** RFC 8693 §3 security token type identifiers usable as a `subject_token_type`
@@ -18,7 +18,7 @@ import {
  *  draft §4.3 profiles `id_token` and `saml2` for identity assertions and
  *  `refresh_token` for the re-issue path; `access_token` is the RFC 8693 base
  *  type some enterprise IdPs mint their SSO assertion as. */
-export const SUBJECT_TOKEN_TYPES = [
+const SUBJECT_TOKEN_TYPES = [
   "urn:ietf:params:oauth:token-type:id_token",
   "urn:ietf:params:oauth:token-type:saml2",
   "urn:ietf:params:oauth:token-type:refresh_token",
@@ -37,6 +37,24 @@ export type SubjectTokenType = typeof SubjectTokenTypeSchema.Type;
  *  every IdP to accept, so it is the only defensible default. */
 export const DEFAULT_SUBJECT_TOKEN_TYPE: SubjectTokenType =
   "urn:ietf:params:oauth:token-type:id_token";
+
+/** Which registered OAuth app stands for an integration's enterprise identity
+ *  provider, so a connect request can name it. Carries no assertion and no
+ *  secret — only the pointer.
+ *
+ *  One declaration for a shape that crosses three boundaries: the integration
+ *  catalog descriptor, the API's integrations response, and the MCP plugin's
+ *  server config all reference THIS schema rather than restating its fields. */
+export const EnterpriseIdentityProviderDescriptorSchema = Schema.Struct({
+  client: OAuthClientSlug,
+  clientOwner: Owner,
+}).annotate({
+  identifier: "EnterpriseIdentityProviderDescriptor",
+  description:
+    "The registered OAuth app that stands for the enterprise identity provider minting an integration's ID-JAGs.",
+});
+export type EnterpriseIdentityProviderDescriptor =
+  typeof EnterpriseIdentityProviderDescriptorSchema.Type;
 
 /* The v2 OAuth surface contracts. OAuth is a credential mechanism, not an
  * integration type. A client is a registered app; running its flow mints a
@@ -261,18 +279,26 @@ export interface OAuthStartInput {
 /** What an enterprise-managed connect needs beyond the ordinary start inputs.
  *  The subject token is supplied by the caller because "where the identity
  *  assertion comes from" is a host concern: a desktop app holds its own SSO
- *  tokens, a hosted deployment holds the session's. */
-export interface EnterpriseManagedStartInput {
+ *  tokens, a hosted deployment holds the session's.
+ *
+ *  Declared as a Schema because this shape crosses the HTTP boundary: the API's
+ *  `oauth.start` payload embeds THIS schema rather than restating its fields. */
+export const EnterpriseManagedStartInputSchema = Schema.Struct({
   /** `oauth_client` slug of the client's registration at the enterprise IdP. */
-  readonly idpClient: OAuthClientSlug;
-  readonly idpClientOwner: Owner;
+  idpClient: OAuthClientSlug,
+  idpClientOwner: Owner,
   /** The identity assertion from single sign-on with the IdP (an OIDC ID token
    *  by default). Persisted through the credential provider so token renewal
    *  needs no further user interaction. */
-  readonly subjectToken: string;
+  subjectToken: Schema.String,
   /** RFC 8693 §3 type of `subjectToken`. Defaults to an OIDC ID token. */
-  readonly subjectTokenType?: SubjectTokenType;
-}
+  subjectTokenType: Schema.optional(SubjectTokenTypeSchema),
+}).annotate({
+  identifier: "EnterpriseManagedStartInput",
+  description:
+    "The second client registration (at the enterprise identity provider) and the identity assertion an enterprise-managed connect presents.",
+});
+export type EnterpriseManagedStartInput = typeof EnterpriseManagedStartInputSchema.Type;
 
 export interface OAuthCompleteInput {
   readonly state: OAuthState;
@@ -339,6 +365,18 @@ export interface RegisterDynamicClientInput {
 export class OAuthStartError
   extends Schema.TaggedErrorClass<OAuthStartError>()("OAuthStartError", {
     message: Schema.String,
+    /** True when an enterprise identity provider declined to authorize this
+     *  connection under administrator policy. A console MUST branch on this
+     *  rather than on the message: blocked-by-admin means the interactive
+     *  per-server flow must NOT be offered as an alternative route, because
+     *  taking it would walk the user around the policy the IdP just enforced.
+     *  Every other start failure leaves that route open. */
+    blockedByAdmin: Schema.optional(Schema.Boolean),
+    /** The authorization server's RFC 6749 §5.2 error code (`invalid_target`,
+     *  `unauthorized_client`, `invalid_grant`, …), when the failure came from a
+     *  token-endpoint refusal. A typed field rather than message text so
+     *  telemetry and support tooling read the verdict structurally. */
+    oauthErrorCode: Schema.optional(Schema.String),
   })
   implements UserActionableError
 {

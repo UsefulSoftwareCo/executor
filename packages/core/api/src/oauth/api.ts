@@ -18,6 +18,7 @@ import {
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
+  EnterpriseManagedStartInputSchema,
   IntegrationSlug,
   InternalError,
   OAuthClientSlug,
@@ -29,7 +30,6 @@ import {
   OAuthState,
   Owner,
   ProviderKey,
-  SubjectTokenTypeSchema,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -179,14 +179,7 @@ const StartPayload = Schema.Struct({
    *  id/secret authenticate at the MCP server's authorization server, while
    *  these name the SECOND registration at the enterprise identity provider and
    *  carry the identity assertion the user already holds from single sign-on. */
-  enterprise: Schema.optional(
-    Schema.Struct({
-      idpClient: OAuthClientSlug,
-      idpClientOwner: Owner,
-      subjectToken: Schema.String,
-      subjectTokenType: Schema.optional(SubjectTokenTypeSchema),
-    }),
-  ),
+  enterprise: Schema.optional(EnterpriseManagedStartInputSchema),
 });
 
 const StartResponse = Schema.Union([

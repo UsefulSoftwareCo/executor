@@ -1,4 +1,5 @@
-import type { IntegrationSlug, OAuthClientSlug, Owner } from "./ids";
+import type { IntegrationSlug } from "./ids";
+import type { EnterpriseIdentityProviderDescriptor } from "./oauth-client";
 
 /* Core knows only an integration's catalog identity — slug + description + which
  * plugin (`kind`) owns it. The type-specific shape (openapi auth templates + spec,
@@ -71,13 +72,6 @@ export interface AuthMethodOAuthDescriptor {
    *  the ID-JAG grant profile, and falls back to the interactive flow when it
    *  does not. */
   readonly enterpriseIdentityProvider?: EnterpriseIdentityProviderDescriptor;
-}
-
-/** Which registered OAuth app stands for the enterprise IdP, so a connect
- *  request can name it. Carries no assertion and no secret — only the pointer. */
-export interface EnterpriseIdentityProviderDescriptor {
-  readonly client: OAuthClientSlug;
-  readonly clientOwner: Owner;
 }
 
 /** A single declared auth method on an integration's catalog response. */

@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { OAuthClientSlug, Owner } from "@executor-js/sdk/core";
+import { EnterpriseIdentityProviderDescriptorSchema } from "@executor-js/sdk/core";
 import {
   ApiKeyAuthMethod,
   ApiKeyAuthTemplate,
@@ -70,15 +70,11 @@ export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
  *  here can never take an ordinary MCP server off the interactive flow.
  *
  *  It is the POINTER only — no assertion, no secret. The identity assertion is
- *  supplied per connect request by whoever holds the user's single sign-on. */
-export const McpEnterpriseIdentityProvider = Schema.Struct({
-  client: OAuthClientSlug,
-  clientOwner: Owner,
-}).annotate({
-  identifier: "McpEnterpriseIdentityProvider",
-  description:
-    "The registered OAuth app that stands for the enterprise identity provider minting this server's ID-JAGs.",
-});
+ *  supplied per connect request by whoever holds the user's single sign-on.
+ *
+ *  The SDK owns the shape: this config, the integration catalog descriptor, and
+ *  the API's integrations response are one wire payload with one declaration. */
+export const McpEnterpriseIdentityProvider = EnterpriseIdentityProviderDescriptorSchema;
 export type McpEnterpriseIdentityProvider = typeof McpEnterpriseIdentityProvider.Type;
 
 export const McpOAuthMethod = Schema.Struct({
