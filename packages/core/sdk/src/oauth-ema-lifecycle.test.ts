@@ -9,7 +9,7 @@
 // it against a Resource Authorization Server that enforces `exp`.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 
 import {
@@ -162,11 +162,10 @@ describe("enterprise-managed connections", () => {
         yield* registerClients(executor.oauth.createClient, servers);
 
         const started = yield* executor.oauth.start(startEnterpriseConnect(servers));
-        expect(
-          started.status,
+        assert(
+          started.status === "connected",
           "the identity assertion replaces per-server consent, so there is nothing to redirect to",
-        ).toBe("connected");
-        if (started.status !== "connected") return;
+        );
         expect(started.connection.oauthScope).toBe("mcp.read");
 
         const invoked = (yield* executor.execute(TOOL, {})) as { readonly token: string };
@@ -215,13 +214,65 @@ describe("enterprise-managed connections", () => {
 
         yield* servers.idp.revokeAccessToken(servers.subjectToken);
         const failure = yield* executor.execute(TOOL, {}).pipe(Effect.flip);
-        expect(String(failure)).toContain("single sign-on");
+        assert(
+          Predicate.isTagged(failure, "CredentialResolutionError"),
+          "a dead assertion is a credential verdict, not an execution fault",
+        );
+        expect(
+          failure.reauthRequired,
+          "only a fresh single sign-on can replace a revoked assertion",
+        ).toBe(true);
+        expect(
+          failure.blockedByAdmin,
+          "the assertion died; the administrator did not withdraw access",
+        ).toBeUndefined();
 
         const connections = yield* executor.connections.list();
         const connection = connections.find((entry) => String(entry.name) === String(CONNECTION));
         expect(
           connection?.lastHealth?.status,
           "a dead assertion is recorded so the accounts list shows it without a probe",
+        ).toBe("expired");
+      }),
+    ),
+  );
+
+  it.effect("reports a policy withdrawn after connect as blocked-by-admin, not as re-auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const servers = yield* enterpriseServers({ resourceTokenExpiresInSeconds: 1 });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        yield* registerClients(executor.oauth.createClient, servers);
+        yield* executor.oauth.start(startEnterpriseConnect(servers));
+        yield* executor.execute(TOOL, {});
+
+        // The administrator revokes access AFTER the connection exists. Renewal
+        // meets the denial where no user is present, which is the only place
+        // `blockedByAdmin` is ever produced on a credential failure.
+        yield* servers.idp.setTokenExchangeDenial({
+          error: "access_denied",
+          errorDescription: "This user is no longer approved for the requested MCP server.",
+        });
+
+        const failure = yield* executor.execute(TOOL, {}).pipe(Effect.flip);
+        assert(
+          Predicate.isTagged(failure, "CredentialResolutionError"),
+          "an administrator decision is a credential verdict, not a transport failure that retries",
+        );
+        expect(
+          failure.blockedByAdmin,
+          "signing in again cannot help, and the interactive per-server flow must not be offered as a way around the policy",
+        ).toBe(true);
+        expect(failure.oauthErrorCode, "the IdP's own §5.2 code travels structurally").toBe(
+          "access_denied",
+        );
+
+        const connections = yield* executor.connections.list();
+        const connection = connections.find((entry) => String(entry.name) === String(CONNECTION));
+        expect(
+          connection?.lastHealth?.status,
+          "the accounts list shows the blocked connection without another probe",
         ).toBe("expired");
       }),
     ),
@@ -244,12 +295,15 @@ describe("enterprise-managed connections", () => {
           .start(startEnterpriseConnect(servers))
           .pipe(Effect.flip);
 
-        expect(Predicate.isTagged(failure, "OAuthStartError")).toBe(true);
+        assert(Predicate.isTagged(failure, "OAuthStartError"));
         expect(
-          String(failure.message),
-          "the user is told their organization declined, not offered a way around it",
-        ).toContain("identity provider did not authorize");
-        expect(String(failure.message)).toContain("unauthorized_client");
+          failure.blockedByAdmin,
+          "the console must be able to branch on blocked-by-admin without reading prose: it decides whether the interactive flow may be offered as an alternative",
+        ).toBe(true);
+        expect(
+          failure.oauthErrorCode,
+          "the IdP's own verdict travels as a code, so support can trace the decision",
+        ).toBe("unauthorized_client");
         expect(
           (yield* executor.connections.list()).length,
           "a denied connect leaves no half-made connection behind",

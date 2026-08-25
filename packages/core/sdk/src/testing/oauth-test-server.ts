@@ -152,6 +152,13 @@ export interface OAuthTestServerShape {
    *  fixture rejects the exchange afterwards exactly as it would for an expired
    *  or revoked assertion. */
   readonly revokeAccessToken: (token: string) => Effect.Effect<void>;
+  /** Start (or stop) refusing every RFC 8693 exchange with this §5.2 error.
+   *  `enterpriseIdp.denyExchangeWith` sets the same policy up front; this drives
+   *  the case that only exists over time — an administrator withdrawing access
+   *  AFTER a connection was made, which the credential-refresh path meets. */
+  readonly setTokenExchangeDenial: (
+    denial: { readonly error: string; readonly errorDescription: string } | null,
+  ) => Effect.Effect<void>;
   readonly acceptsAuthorizationHeader: (
     authorization: string | null | undefined,
   ) => Effect.Effect<boolean>;
@@ -482,26 +489,26 @@ const decodeJwksUriMetadata = Schema.decodeUnknownOption(JwksUriMetadata);
 
 /** Resolve a trusted IdP's signing keys the way a Resource Authorization Server
  *  does: read its RFC 8414 metadata, follow `jwks_uri`, fetch the key set. Any
- *  failure yields null, which the caller reports as `invalid_grant` — the
+ *  failure yields `None`, which the caller reports as `invalid_grant` — the
  *  fixture never falls back to trusting an unverified assertion. */
-const fetchTrustedIdpJwks = (issuer: string): Effect.Effect<unknown | null> =>
+const fetchTrustedIdpJwks = (issuer: string): Effect.Effect<Option.Option<unknown>> =>
   Effect.gen(function* () {
     const metadataUrl = `${issuer.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`;
     const metadataResponse = yield* executeOAuthHttp(
       HttpClientRequest.get(metadataUrl),
       metadataUrl,
     );
-    if (metadataResponse.status !== 200) return null;
+    if (metadataResponse.status !== 200) return Option.none();
     const metadata = yield* metadataResponse.json;
     const decoded = decodeJwksUriMetadata(metadata);
-    if (Option.isNone(decoded)) return null;
+    if (Option.isNone(decoded)) return Option.none();
     const jwksResponse = yield* executeOAuthHttp(
       HttpClientRequest.get(decoded.value.jwks_uri),
       decoded.value.jwks_uri,
     );
-    if (jwksResponse.status !== 200) return null;
-    return yield* jwksResponse.json;
-  }).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (jwksResponse.status !== 200) return Option.none();
+    return Option.some(yield* jwksResponse.json);
+  }).pipe(Effect.catch(() => Effect.succeed(Option.none())));
 
 /** Parse the `scope` query param from an authorize URL into an ordered list
  *  (empty when the parameter is absent or blank). */
@@ -559,6 +566,12 @@ export const serveOAuthTestServer = (
     // pay for it otherwise.
     const idJagKey = options.enterpriseIdp ? createIdJagSigningKey() : null;
     const idJagLifetimeSeconds = options.enterpriseIdp?.idJagExpiresInSeconds ?? 300;
+    // Policy is state, not configuration: an administrator can withdraw access
+    // between one exchange and the next, and the fixture has to be able to say so.
+    const tokenExchangeDenial = yield* Ref.make<{
+      readonly error: string;
+      readonly errorDescription: string;
+    } | null>(options.enterpriseIdp?.denyExchangeWith ?? null);
 
     let issuerUrl = "";
     const server = yield* serveOAuthTestHttpApp((request) =>
@@ -890,12 +903,9 @@ export const serveOAuthTestServer = (
             // Policy is evaluated BEFORE the subject token, so a denial cannot
             // be mistaken for a credential problem by a client that only looks
             // at the first failing check.
-            if (idp.denyExchangeWith) {
-              return oauthError(
-                400,
-                idp.denyExchangeWith.error,
-                idp.denyExchangeWith.errorDescription,
-              );
+            const denial = yield* Ref.get(tokenExchangeDenial);
+            if (denial) {
+              return oauthError(400, denial.error, denial.errorDescription);
             }
             const subjectAccepted = yield* Ref.get(issuedAccessTokens).pipe(
               Effect.map((tokens) => tokens.has(subjectToken)),
@@ -957,7 +967,7 @@ export const serveOAuthTestServer = (
               return oauthError(400, "invalid_request", "assertion is required");
             }
             const jwks = yield* fetchTrustedIdpJwks(resourceServer.trustedIdpIssuer);
-            if (jwks === null) {
+            if (Option.isNone(jwks)) {
               return oauthError(
                 400,
                 "invalid_grant",
@@ -967,7 +977,7 @@ export const serveOAuthTestServer = (
             const verified = verifyIdJag({
               assertion,
               trustedIssuer: resourceServer.trustedIdpIssuer,
-              jwks,
+              jwks: jwks.value,
               audience: currentIssuerUrl,
               authenticatedClientId: clientId,
             });
@@ -1059,6 +1069,7 @@ export const serveOAuthTestServer = (
           next.delete(token);
           return next;
         }),
+      setTokenExchangeDenial: (denial) => Ref.set(tokenExchangeDenial, denial),
       acceptsAuthorizationHeader: (authorization) => {
         const token = authorization?.replace(/^Bearer\s+/i, "");
         return token

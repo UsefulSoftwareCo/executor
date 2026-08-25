@@ -13,13 +13,15 @@
 // let a client bug pass here and fail in production.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Ref, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
-import { supportsIdJagGrantProfile } from "./oauth-discovery";
 import {
-  EmaGrantProfileUnsupported,
+  OAuthAuthorizationServerMetadataSchema,
+  supportsIdJagGrantProfile,
+} from "./oauth-discovery";
+import {
   mintEnterpriseManagedAccessToken,
   runEnterpriseManagedAuthorization,
   type EnterpriseManagedAuthorizationError,
@@ -95,32 +97,28 @@ const chainInput = (fixture: EnterpriseFixture, scopes: readonly string[]) => ({
   scopes,
 });
 
-/** Fetch the resource server's RFC 8414 metadata the way the connect path does,
- *  so the profile-detection assertions run against a real document. */
+const decodeMetadata = Schema.decodeUnknownEffect(OAuthAuthorizationServerMetadataSchema);
+
+/** Fetch the resource server's RFC 8414 metadata the way the connect path does
+ *  and decode it through the PRODUCTION schema, so the profile-detection
+ *  assertions run against a real document parsed by the real decoder. A local
+ *  restatement would pass even if the production schema silently dropped
+ *  `authorization_grant_profiles_supported` — the field this whole gate reads. */
 const resourceMetadata = (fixture: EnterpriseFixture) =>
   Effect.gen(function* () {
     const response = yield* Effect.promise(() =>
       // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: reads the fixture's metadata document exactly as the connect path's discovery does
       globalThis.fetch(`${fixture.resource.issuerUrl}/.well-known/oauth-authorization-server`),
     );
-    return yield* Effect.promise(() => response.json() as Promise<never>);
+    return yield* decodeMetadata(yield* Effect.promise((): Promise<unknown> => response.json()));
   });
-
-const AuthorizationServerMetadata = Schema.Struct({
-  issuer: Schema.String,
-  authorization_endpoint: Schema.String,
-  token_endpoint: Schema.String,
-  grant_types_supported: Schema.optional(Schema.Array(Schema.String)),
-  authorization_grant_profiles_supported: Schema.optional(Schema.Array(Schema.String)),
-});
-const decodeMetadata = Schema.decodeUnknownSync(AuthorizationServerMetadata);
 
 describe("enterprise-managed authorization: the ID-JAG chain", () => {
   it.effect("mints an MCP access token from an enterprise identity assertion", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* enterpriseFixture();
-        const metadata = decodeMetadata(yield* resourceMetadata(fixture));
+        const metadata = yield* resourceMetadata(fixture);
 
         expect(
           supportsIdJagGrantProfile(metadata),
@@ -221,7 +219,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* enterpriseFixture({ resourceAdvertisesProfile: false });
-        const metadata = decodeMetadata(yield* resourceMetadata(fixture));
+        const metadata = yield* resourceMetadata(fixture);
         expect(supportsIdJagGrantProfile(metadata)).toBe(false);
 
         const error = yield* runEnterpriseManagedAuthorization({
@@ -255,7 +253,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
             },
           },
         });
-        const metadata = decodeMetadata(yield* resourceMetadata(fixture));
+        const metadata = yield* resourceMetadata(fixture);
         const error: EnterpriseManagedAuthorizationError = yield* runEnterpriseManagedAuthorization(
           {
             ...chainInput(fixture, ["mcp.read"]),
@@ -264,11 +262,10 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           },
         ).pipe(Effect.flip);
 
-        expect(
+        assert(
           Predicate.isTagged(error, "EmaPolicyDenied"),
           "offering interactive OAuth here would route the user around enterprise policy, so this tag is NOT the one the connect path catches",
-        ).toBe(true);
-        if (!Predicate.isTagged(error, "EmaPolicyDenied")) return;
+        );
         expect(error.error).toBe("unauthorized_client");
         expect(
           (yield* fixture.resource.requests).some((entry) => entry.path === "/token"),
@@ -502,15 +499,4 @@ describe("enterprise-managed authorization: token exchange response contract", (
       }),
     ),
   );
-});
-
-describe("EmaGrantProfileUnsupported", () => {
-  it("names the profile the server failed to advertise", () => {
-    const error = new EmaGrantProfileUnsupported({
-      issuer: "https://auth.example",
-      advertised: ["urn:example:other"],
-    });
-    expect(error.message).toContain("urn:ietf:params:oauth:grant-profile:id-jag");
-    expect(error.message).toContain("urn:example:other");
-  });
 });

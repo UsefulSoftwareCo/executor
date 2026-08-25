@@ -29,8 +29,8 @@
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 
-import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { assert, expect } from "@effect/vitest";
+import { Effect, Predicate } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { createEmulator, type Emulator, type LedgerEntry } from "@executor-js/emulate";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
@@ -266,7 +266,7 @@ scenario(
             "declaring an IdP leaves the interactive flow advertised",
           ).toBe(true);
           const enterprise = declared?.oauth?.enterpriseIdentityProvider;
-          if (!enterprise) return;
+          assert(enterprise, "every connect request below drives off the projected pointer");
 
           // ---------------------------------------------------------------
           // Phase 1 — empty policy table: the IdP authorizes the exchange.
@@ -290,10 +290,10 @@ scenario(
 
           // The headline: connected outright. A `redirect` here would mean the
           // user was sent through per-server consent after all.
-          expect(connected.status, "the enterprise grant connects with no authorize redirect").toBe(
-            "connected",
+          assert(
+            connected.status === "connected",
+            "the enterprise grant connects with no authorize redirect",
           );
-          if (connected.status !== "connected") return;
           expect(
             connected.connection.oauthScope?.split(" ").sort(),
             "the connection carries the scopes the IdP granted",
@@ -385,14 +385,20 @@ scenario(
             })
             .pipe(Effect.flip);
 
-          // Blocked-by-admin reaches the user in those words, carrying the
-          // IdP's own RFC 8693 §2.2.2 code so support can trace the decision.
-          expect(blocked._tag).toBe("OAuthStartError");
+          // Blocked-by-admin survives the HTTP boundary as STRUCTURE, not as a
+          // sentence: the fields below are what a console branches on.
+          assert(
+            Predicate.isTagged(blocked, "OAuthStartError"),
+            "a policy denial is a start failure, not a transport or decoding fault",
+          );
           expect(
-            blocked.message,
-            "the denial is surfaced as an organization decision, not a credential problem",
-          ).toContain("identity provider did not authorize");
-          expect(blocked.message).toContain("invalid_target");
+            blocked.blockedByAdmin,
+            "the denial reaches the client as a FIELD — a console decides from it whether the interactive flow may be offered, and it cannot decide that from a sentence",
+          ).toBe(true);
+          expect(
+            blocked.oauthErrorCode,
+            "the IdP's own RFC 8693 §2.2.2 code travels structurally, so support can trace the decision",
+          ).toBe("invalid_target");
 
           const deniedEntries = yield* ledger(okta);
           const denied = entryFor(deniedEntries, "okta.oauth.tokenExchange");

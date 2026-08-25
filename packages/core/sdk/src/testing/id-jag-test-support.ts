@@ -25,6 +25,12 @@ import {
 } from "node:crypto";
 import { Option, Schema } from "effect";
 
+// The `_URN` suffix marks these as INDEPENDENT literals, deliberately not
+// imported from the production constants they mirror. This is a conformance
+// fixture: it has to be able to disagree with the client under test. Sharing a
+// constant would make a typo in the URN invisible — client and server would
+// agree on the same wrong string and the suite would still pass.
+
 /** draft §3.1 — the media type an ID-JAG MUST carry in its JWT header. */
 export const ID_JAG_HEADER_TYP = "oauth-id-jag+jwt";
 
