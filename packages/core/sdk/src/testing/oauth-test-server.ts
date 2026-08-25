@@ -11,6 +11,17 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 
+import {
+  ID_JAG_GRANT_PROFILE_URN,
+  ID_JAG_TOKEN_TYPE_URN,
+  JWT_BEARER_GRANT_TYPE_URN,
+  TOKEN_EXCHANGE_GRANT_TYPE_URN,
+  createIdJagSigningKey,
+  jwksDocumentFor,
+  signIdJag,
+  verifyIdJag,
+} from "./id-jag-test-support";
+
 export class OAuthTestServerAddressError extends Data.TaggedError("OAuthTestServerAddressError")<{
   readonly address: unknown;
 }> {}
@@ -71,6 +82,43 @@ export interface OAuthTestServerOptions {
    *  name is approved. Mirrors authorization servers (e.g. Mercury) that
    *  reject third-party client names containing their own brand. */
   readonly approveClientName?: (name: string) => boolean;
+  /** Act as an enterprise IdP Authorization Server for the Identity Assertion
+   *  JWT Authorization Grant: accept RFC 8693 token exchanges, mint signed
+   *  ID-JAGs, and publish the JWKS that verifies them. */
+  readonly enterpriseIdp?: EnterpriseIdpOptions;
+  /** Act as a Resource Authorization Server for the same profile: advertise it
+   *  in RFC 8414 metadata and redeem ID-JAGs presented as RFC 7523 assertions. */
+  readonly enterpriseResourceServer?: EnterpriseResourceServerOptions;
+}
+
+export interface EnterpriseIdpOptions {
+  /** Refuse every exchange with this RFC 6749 §5.2 error, standing in for an
+   *  administrator policy that does not permit this client/user/target. */
+  readonly denyExchangeWith?: { readonly error: string; readonly errorDescription: string };
+  /** Lifetime stamped on the minted ID-JAG. May be zero or negative so a test
+   *  can present an already-expired assertion. Default 300 (draft §4.3.4). */
+  readonly idJagExpiresInSeconds?: number;
+  /** JWT header `typ` to stamp. Default `oauth-id-jag+jwt`; override to prove a
+   *  Resource Authorization Server rejects a wrongly-typed assertion. */
+  readonly assertionTyp?: string;
+  /** Scope the IdP actually grants, standing in for policy narrowing (§4.3.3).
+   *  Omitted means "exactly what was requested". */
+  readonly grantScope?: (requested: string | null) => string | null;
+  /** draft §5: the IdP knows which `client_id` the Resource Authorization
+   *  Server registered for this client, which need not be the id the client
+   *  authenticates to the IdP with. Maps IdP client id to resource client id;
+   *  an unmapped client keeps its own id. */
+  readonly resourceClientIds?: Readonly<Record<string, string>>;
+}
+
+export interface EnterpriseResourceServerOptions {
+  /** The enterprise IdP whose JWKS signs assertions this server will accept.
+   *  Resolved through the IdP's own RFC 8414 metadata, as a real server would. */
+  readonly trustedIdpIssuer: string;
+  /** Scope this server is willing to grant. An assertion carrying more is
+   *  narrowed to the intersection (draft §4.4.1). Omitted grants what the
+   *  assertion carries. */
+  readonly grantableScopes?: readonly string[];
 }
 
 export interface OAuthTestServerShape {
@@ -99,6 +147,11 @@ export interface OAuthTestServerShape {
   readonly clearRequests: Effect.Effect<void>;
   readonly issuedAccessTokens: Effect.Effect<readonly string[]>;
   readonly acceptsAccessToken: (token: string) => Effect.Effect<boolean>;
+  /** Stop honouring a token this server issued, without re-issuing anything.
+   *  Drives the "the stored identity assertion died" tier: an enterprise IdP
+   *  fixture rejects the exchange afterwards exactly as it would for an expired
+   *  or revoked assertion. */
+  readonly revokeAccessToken: (token: string) => Effect.Effect<void>;
   readonly acceptsAuthorizationHeader: (
     authorization: string | null | undefined,
   ) => Effect.Effect<boolean>;
@@ -414,6 +467,42 @@ const completeAuthorizationCodeTokenFlow =
       };
     });
 
+/** RFC 8693 §3 subject token types this fixture accepts on a token exchange.
+ *  Anything else is `invalid_request`, so a client that invents a type finds
+ *  out here rather than against a lenient deployment. */
+const SUPPORTED_SUBJECT_TOKEN_TYPES = new Set([
+  "urn:ietf:params:oauth:token-type:id_token",
+  "urn:ietf:params:oauth:token-type:saml2",
+  "urn:ietf:params:oauth:token-type:refresh_token",
+  "urn:ietf:params:oauth:token-type:access_token",
+]);
+
+const JwksUriMetadata = Schema.Struct({ jwks_uri: Schema.String });
+const decodeJwksUriMetadata = Schema.decodeUnknownOption(JwksUriMetadata);
+
+/** Resolve a trusted IdP's signing keys the way a Resource Authorization Server
+ *  does: read its RFC 8414 metadata, follow `jwks_uri`, fetch the key set. Any
+ *  failure yields null, which the caller reports as `invalid_grant` — the
+ *  fixture never falls back to trusting an unverified assertion. */
+const fetchTrustedIdpJwks = (issuer: string): Effect.Effect<unknown | null> =>
+  Effect.gen(function* () {
+    const metadataUrl = `${issuer.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`;
+    const metadataResponse = yield* executeOAuthHttp(
+      HttpClientRequest.get(metadataUrl),
+      metadataUrl,
+    );
+    if (metadataResponse.status !== 200) return null;
+    const metadata = yield* metadataResponse.json;
+    const decoded = decodeJwksUriMetadata(metadata);
+    if (Option.isNone(decoded)) return null;
+    const jwksResponse = yield* executeOAuthHttp(
+      HttpClientRequest.get(decoded.value.jwks_uri),
+      decoded.value.jwks_uri,
+    );
+    if (jwksResponse.status !== 200) return null;
+    return yield* jwksResponse.json;
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
+
 /** Parse the `scope` query param from an authorize URL into an ordered list
  *  (empty when the parameter is absent or blank). */
 export const scopesFromAuthorizeUrl = (authorizationUrl: string): readonly string[] => {
@@ -465,6 +554,12 @@ export const serveOAuthTestServer = (
       });
     }
 
+    // Only generate a keypair for a server that actually plays the IdP role —
+    // RSA generation is not free, and every other fixture in the suite would
+    // pay for it otherwise.
+    const idJagKey = options.enterpriseIdp ? createIdJagSigningKey() : null;
+    const idJagLifetimeSeconds = options.enterpriseIdp?.idJagExpiresInSeconds ?? 300;
+
     let issuerUrl = "";
     const server = yield* serveOAuthTestHttpApp((request) =>
       Effect.gen(function* () {
@@ -496,6 +591,10 @@ export const serveOAuthTestServer = (
           });
         }
 
+        if (requestUrl.pathname === "/jwks" && idJagKey) {
+          return jsonResponse(200, jwksDocumentFor(idJagKey));
+        }
+
         if (
           requestUrl.pathname === "/.well-known/oauth-authorization-server" ||
           requestUrl.pathname === "/.well-known/openid-configuration"
@@ -506,7 +605,15 @@ export const serveOAuthTestServer = (
             token_endpoint: `${currentIssuerUrl}/token`,
             registration_endpoint: `${currentIssuerUrl}/register`,
             response_types_supported: ["code"],
-            grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
+            grant_types_supported: [
+              "authorization_code",
+              "refresh_token",
+              "client_credentials",
+              ...(options.enterpriseIdp ? [TOKEN_EXCHANGE_GRANT_TYPE_URN] : []),
+              // draft §7.2: a server advertising the ID-JAG profile MUST also
+              // advertise the jwt-bearer grant type.
+              ...(options.enterpriseResourceServer ? [JWT_BEARER_GRANT_TYPE_URN] : []),
+            ],
             code_challenge_methods_supported: ["S256"],
             token_endpoint_auth_methods_supported: [
               "none",
@@ -514,6 +621,15 @@ export const serveOAuthTestServer = (
               "client_secret_basic",
             ],
             scopes_supported: scopes,
+            ...(idJagKey ? { jwks_uri: `${currentIssuerUrl}/jwks` } : {}),
+            ...(options.enterpriseIdp
+              ? {
+                  identity_chaining_requested_token_types_supported: [ID_JAG_TOKEN_TYPE_URN],
+                }
+              : {}),
+            ...(options.enterpriseResourceServer
+              ? { authorization_grant_profiles_supported: [ID_JAG_GRANT_PROFILE_URN] }
+              : {}),
           });
         }
 
@@ -731,6 +847,156 @@ export const serveOAuthTestServer = (
             );
           }
 
+          // RFC 8693 token exchange → ID-JAG (draft §4.3). The subject token is
+          // an access token THIS server issued: that makes "the identity
+          // assertion expired" expressible (revoke it) without inventing a
+          // second credential store.
+          if (grantType === TOKEN_EXCHANGE_GRANT_TYPE_URN) {
+            const idp = options.enterpriseIdp;
+            if (!idp || !idJagKey) {
+              return oauthError(
+                400,
+                "unsupported_grant_type",
+                "This authorization server does not issue identity assertion grants",
+              );
+            }
+            if (params.get("requested_token_type") !== ID_JAG_TOKEN_TYPE_URN) {
+              return oauthError(
+                400,
+                "invalid_request",
+                `requested_token_type must be ${ID_JAG_TOKEN_TYPE_URN}`,
+              );
+            }
+            const audience = params.get("audience");
+            if (!audience) {
+              return oauthError(400, "invalid_request", "audience is required");
+            }
+            const subjectToken = params.get("subject_token");
+            const subjectTokenType = params.get("subject_token_type");
+            if (!subjectToken || !subjectTokenType) {
+              return oauthError(
+                400,
+                "invalid_request",
+                "subject_token and subject_token_type are required",
+              );
+            }
+            if (!SUPPORTED_SUBJECT_TOKEN_TYPES.has(subjectTokenType)) {
+              return oauthError(
+                400,
+                "invalid_request",
+                `Unsupported subject_token_type ${subjectTokenType}`,
+              );
+            }
+            // Policy is evaluated BEFORE the subject token, so a denial cannot
+            // be mistaken for a credential problem by a client that only looks
+            // at the first failing check.
+            if (idp.denyExchangeWith) {
+              return oauthError(
+                400,
+                idp.denyExchangeWith.error,
+                idp.denyExchangeWith.errorDescription,
+              );
+            }
+            const subjectAccepted = yield* Ref.get(issuedAccessTokens).pipe(
+              Effect.map((tokens) => tokens.has(subjectToken)),
+            );
+            if (!subjectAccepted) {
+              return oauthError(
+                400,
+                "invalid_grant",
+                "The subject token is expired, revoked, or was not issued by this identity provider",
+              );
+            }
+            const requestedScope = params.get("scope");
+            const grantedScope = idp.grantScope ? idp.grantScope(requestedScope) : requestedScope;
+            const resourceParam = params.get("resource");
+            const issuedAtSeconds = Math.floor(Date.now() / 1000);
+            const assertion = signIdJag({
+              key: idJagKey,
+              typ: idp.assertionTyp,
+              claims: {
+                iss: currentIssuerUrl,
+                sub: `subject_${clientId}`,
+                aud: audience,
+                // draft §5: the id the RESOURCE authorization server knows this
+                // client by, which the IdP holds out of band.
+                client_id: idp.resourceClientIds?.[clientId] ?? clientId,
+                jti: `jti_${randomUUID()}`,
+                iat: issuedAtSeconds,
+                exp: issuedAtSeconds + idJagLifetimeSeconds,
+                email: `${options.defaultUsername ?? "alice"}@executor.test`,
+                ...(resourceParam ? { resource: resourceParam } : {}),
+                ...(grantedScope ? { scope: grantedScope } : {}),
+              },
+            });
+            return jsonResponse(
+              200,
+              {
+                issued_token_type: ID_JAG_TOKEN_TYPE_URN,
+                access_token: assertion,
+                token_type: "N_A",
+                expires_in: idJagLifetimeSeconds,
+                ...(grantedScope ? { scope: grantedScope } : {}),
+              },
+              { "cache-control": "no-store", pragma: "no-cache" },
+            );
+          }
+
+          // RFC 7523 jwt-bearer redemption of an ID-JAG (draft §4.4).
+          if (grantType === JWT_BEARER_GRANT_TYPE_URN) {
+            const resourceServer = options.enterpriseResourceServer;
+            if (!resourceServer) {
+              return oauthError(
+                400,
+                "unsupported_grant_type",
+                "This authorization server does not accept identity assertion grants",
+              );
+            }
+            const assertion = params.get("assertion");
+            if (!assertion) {
+              return oauthError(400, "invalid_request", "assertion is required");
+            }
+            const jwks = yield* fetchTrustedIdpJwks(resourceServer.trustedIdpIssuer);
+            if (jwks === null) {
+              return oauthError(
+                400,
+                "invalid_grant",
+                `The JWKS of ${resourceServer.trustedIdpIssuer} could not be retrieved`,
+              );
+            }
+            const verified = verifyIdJag({
+              assertion,
+              trustedIssuer: resourceServer.trustedIdpIssuer,
+              jwks,
+              audience: currentIssuerUrl,
+              authenticatedClientId: clientId,
+            });
+            if (!verified.ok) {
+              return oauthError(400, "invalid_grant", verified.detail);
+            }
+            const assertedScopes = verified.claims.scope?.split(/\s+/).filter(Boolean) ?? [];
+            const grantable = resourceServer.grantableScopes;
+            const granted =
+              grantable === undefined
+                ? assertedScopes
+                : assertedScopes.filter((scope) => grantable.includes(scope));
+            const accessToken = `at_${randomUUID()}`;
+            yield* Ref.update(issuedAccessTokens, (tokens) => new Set([...tokens, accessToken]));
+            // draft §4.4.3: no refresh token. The ID-JAG chain IS the renewal
+            // path, and issuing one here would let a client skip the IdP's
+            // policy evaluation on every subsequent renewal.
+            return jsonResponse(
+              200,
+              {
+                access_token: accessToken,
+                token_type: "Bearer",
+                expires_in: tokenExpiresInSeconds,
+                ...(granted.length > 0 ? { scope: granted.join(" ") } : {}),
+              },
+              { "cache-control": "no-store" },
+            );
+          }
+
           return oauthError(400, "unsupported_grant_type", "Unsupported grant type");
         }
 
@@ -787,6 +1053,12 @@ export const serveOAuthTestServer = (
       clearRequests: Ref.set(requests, []),
       issuedAccessTokens: accessTokenSet.pipe(Effect.map((tokens) => [...tokens])),
       acceptsAccessToken: (token) => accessTokenSet.pipe(Effect.map((tokens) => tokens.has(token))),
+      revokeAccessToken: (token) =>
+        Ref.update(issuedAccessTokens, (tokens) => {
+          const next = new Set(tokens);
+          next.delete(token);
+          return next;
+        }),
       acceptsAuthorizationHeader: (authorization) => {
         const token = authorization?.replace(/^Bearer\s+/i, "");
         return token
