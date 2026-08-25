@@ -31,6 +31,7 @@ import {
   ProviderItemId,
 } from "./ids";
 import {
+  DEFAULT_SUBJECT_TOKEN_TYPE,
   OAuthCompleteError,
   OAuthProbeError,
   OAuthRegisterDynamicError,
@@ -41,6 +42,7 @@ import {
   isFirstPartyOAuthClientSlug,
   type ConnectResult,
   type CreateOAuthClientInput,
+  type EnterpriseManagedStartInput,
   type FirstPartyOAuthClientConfig,
   type OAuthClientOrigin,
   type OAuthClientSummary,
@@ -61,6 +63,11 @@ import {
   registerDynamicClient as registerDynamicClientDcr,
   type OAuthAuthorizationServerMetadata,
 } from "./oauth-discovery";
+import {
+  runEnterpriseManagedAuthorization,
+  type EnterpriseManagedConnectionState,
+  type EnterpriseManagedGrant,
+} from "./oauth-ema";
 import {
   assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
@@ -102,6 +109,10 @@ export interface MintOAuthConnectionInput {
   readonly expiresAt: number | null;
   readonly oauthScope: string | null;
   readonly missingOAuthScopes?: readonly string[];
+  /** Enterprise-managed authorization wiring, for connections minted through
+   *  the ID-JAG grant profile. Persisted on the connection so token renewal can
+   *  re-run the exchange without the user. Omitted for every other grant. */
+  readonly enterpriseManaged?: EnterpriseManagedConnectionState;
   /** Per-connection override for the token endpoint, persisted only when the
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
@@ -309,7 +320,9 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
  *  `authorization_code`; an unknown grant means a corrupt row and callers that
  *  drive token exchange (`loadClient`) must fail loudly rather than guessing. */
 const parseGrant = (grant: unknown): OAuthGrant | null =>
-  grant === "client_credentials" || grant === "authorization_code" ? grant : null;
+  grant === "client_credentials" || grant === "authorization_code" || grant === "id_jag"
+    ? grant
+    : null;
 
 const canonicalDcrIssuer = (
   issuer: string | null | undefined,
@@ -632,6 +645,42 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
       }),
     );
+
+  /** The RFC 8414 metadata of the authorization server that protects `resource`.
+   *  Enterprise-managed authorization needs two facts that live ONLY here: the
+   *  issuer identifier the ID-JAG must name as its audience, and whether the
+   *  server implements the ID-JAG grant profile at all. Same discovery order as
+   *  scope discovery — the protected resource names its authorization servers;
+   *  we never probe an arbitrary URL. */
+  const discoverResourceAuthorizationServer = (
+    resource: string | null,
+  ): Effect.Effect<OAuthAuthorizationServerMetadata, OAuthDiscoveryError> =>
+    Effect.gen(function* () {
+      if (resource == null) {
+        return yield* new OAuthDiscoveryError({
+          message:
+            "Cannot discover the authorization server: the OAuth app has no resource configured",
+        });
+      }
+      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
+      const protectedResource = yield* discoverProtectedResourceMetadata(
+        resource,
+        discoveryOptions,
+      );
+      const issuers = protectedResource?.metadata.authorization_servers ?? [];
+      for (const issuer of issuers.slice(0, MAX_DISCOVERY_AUTH_SERVERS)) {
+        const authServer = yield* discoverAuthorizationServerMetadata(
+          issuer,
+          discoveryOptions,
+        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
+        if (authServer) return authServer.metadata;
+      }
+      return yield* new OAuthDiscoveryError({
+        message: `No authorization-server metadata found for ${resource}${
+          issuers.length > 0 ? ` (tried: ${issuers.join(", ")})` : ""
+        }`,
+      });
+    });
 
   // -----------------------------------------------------------------------
   // createClient — write the oauth_client row.
@@ -1288,6 +1337,97 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         return { status: "connected", connection } as const;
       }
 
+      // Enterprise-managed authorization (draft §4): no browser, no per-server
+      // consent — exchange the identity assertion the user already holds. Only
+      // an authorization server that does NOT advertise the grant profile falls
+      // through to the interactive flow below; an IdP refusal is an enterprise
+      // policy decision and stops here, because offering the interactive flow
+      // instead would let the user route straight around it.
+      if (client.grant === "id_jag") {
+        const enterprise = input.enterprise;
+        if (enterprise === undefined) {
+          return yield* new OAuthStartError({
+            message:
+              "This OAuth app uses enterprise-managed authorization, which requires an enterprise identity provider and an identity assertion on the connect request.",
+          });
+        }
+        const idpClient = yield* loadClient(enterprise.idpClientOwner, enterprise.idpClient);
+        if (!idpClient) {
+          return yield* new OAuthStartError({
+            message: `Enterprise identity provider OAuth client not found: ${enterprise.idpClient}`,
+          });
+        }
+        const metadata = yield* discoverResourceAuthorizationServer(client.resource).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OAuthStartError({
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                message: `Failed to discover the MCP server's authorization server: ${cause.message}`,
+              }),
+          ),
+        );
+        const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
+          authorizationServerMetadata: metadata,
+          idp: {
+            tokenUrl: idpClient.tokenUrl,
+            clientId: idpClient.clientId,
+            clientSecret: idpClient.clientSecret,
+          },
+          resourceAuthorizationServer: {
+            clientId: client.clientId,
+            clientSecret: client.clientSecret,
+          },
+          subjectToken: enterprise.subjectToken,
+          subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+          resource: client.resource,
+          scopes: requestedScopes,
+          endpointUrlPolicy: deps.endpointUrlPolicy,
+          fetch,
+        }).pipe(
+          Effect.provide(httpClientLayer),
+          Effect.map((grant) => ({ supported: true as const, grant })),
+          // Only the unsupported-profile failure is recoverable; every other
+          // tag reaches the caller as a start error with its own wording.
+          Effect.catchTag("EmaGrantProfileUnsupported", () =>
+            Effect.succeed({ supported: false as const }),
+          ),
+          Effect.mapError(
+            (cause) =>
+              new OAuthStartError({
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error carries a typed `message` getter
+                message: cause.message,
+              }),
+          ),
+        );
+        if (enterpriseGrant.supported) {
+          const connection = yield* mintEnterpriseManagedConnection(
+            { ...input, name },
+            client,
+            input.clientOwner,
+            enterpriseGrant.grant,
+            enterprise,
+            {
+              idpClient: String(enterprise.idpClient),
+              idpClientOwner: enterprise.idpClientOwner,
+              audience: metadata.issuer,
+              subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+            },
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OAuthStartError({
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                  message: `Failed to mint OAuth connection: ${cause.message}`,
+                }),
+            ),
+          );
+          return { status: "connected", connection } as const;
+        }
+        yield* Effect.annotateCurrentSpan({
+          "executor.oauth.enterprise_managed_fallback": true,
+        });
+      }
+
       // authorization_code requires our callback to receive the code — fail
       // loudly if the executor was constructed without a redirectUri rather
       // than persisting a session pointed at a wrong localhost callback.
@@ -1629,6 +1769,61 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         oauthScope,
         missingOAuthScopes: missingScopes,
         oauthTokenUrl,
+      });
+    });
+
+  /** Mint a connection from an enterprise-managed grant. Distinct from
+   *  `mintFromToken` because the material persisted is different: there is no
+   *  refresh token (draft §4.4.3), and the identity assertion takes the refresh
+   *  slot — it is exactly the credential that lets renewal run without the
+   *  user, which is what that slot means. */
+  const mintEnterpriseManagedConnection = (
+    target: {
+      readonly owner: Owner;
+      readonly name: ConnectionName;
+      readonly integration: IntegrationSlug;
+      readonly template: AuthTemplateSlug;
+      readonly identityLabel?: string | null;
+    },
+    client: LoadedOAuthClient,
+    clientOwner: Owner,
+    grant: EnterpriseManagedGrant,
+    enterprise: EnterpriseManagedStartInput,
+    enterpriseState: EnterpriseManagedConnectionState,
+  ): Effect.Effect<Connection, StorageFailure> =>
+    Effect.gen(function* () {
+      const provider = deps.defaultWritableProvider();
+      if (!provider || !provider.set) {
+        return yield* new StorageError({
+          message:
+            "No default writable credential provider is registered to store the OAuth access token.",
+          cause: undefined,
+        });
+      }
+      const itemId = accessItemId(target.owner, target.integration, target.name);
+      yield* provider.set(ProviderItemId.make(itemId), grant.token.access_token);
+      const subjectTokenItemId = refreshItemIdFor(itemId);
+      yield* provider.set(ProviderItemId.make(subjectTokenItemId), enterprise.subjectToken);
+
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.has_advertised_expiry": typeof grant.token.expires_in === "number",
+        "executor.oauth.enterprise_managed": true,
+      });
+      return yield* deps.mintOAuthConnection({
+        owner: target.owner,
+        name: target.name,
+        integration: target.integration,
+        template: target.template,
+        identityLabel: target.identityLabel ?? null,
+        derivedIdentityLabel: grant.token.idTokenIdentityLabel ?? null,
+        provider: String(provider.key),
+        itemId,
+        oauthClient: OAuthClientSlug.make(client.slug),
+        oauthClientOwner: clientOwner,
+        refreshItemId: subjectTokenItemId,
+        expiresAt: expiresAtFrom(grant.token),
+        oauthScope: grant.scope,
+        enterpriseManaged: enterpriseState,
       });
     });
 

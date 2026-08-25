@@ -29,6 +29,7 @@ import {
   OAuthState,
   Owner,
   ProviderKey,
+  SubjectTokenTypeSchema,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -62,7 +63,7 @@ const CreateClientPayload = Schema.Struct({
   slug: OAuthClientSlug,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
-  grant: Schema.Literals(["authorization_code", "client_credentials"]),
+  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
   clientId: Schema.String,
   clientSecret: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -110,7 +111,7 @@ const RegisterDynamicResponse = Schema.Struct({
 const OAuthClientSummaryResponse = Schema.Struct({
   owner: Owner,
   slug: OAuthClientSlug,
-  grant: Schema.Literals(["authorization_code", "client_credentials"]),
+  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -173,6 +174,19 @@ const StartPayload = Schema.Struct({
    *  name server-side instead of re-minting the existing row. */
   newConnection: Schema.optional(Schema.Boolean),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Enterprise-managed authorization inputs (MCP EMA profile). Required when
+   *  the named client's grant is `id_jag`, ignored otherwise: the client's own
+   *  id/secret authenticate at the MCP server's authorization server, while
+   *  these name the SECOND registration at the enterprise identity provider and
+   *  carry the identity assertion the user already holds from single sign-on. */
+  enterprise: Schema.optional(
+    Schema.Struct({
+      idpClient: OAuthClientSlug,
+      idpClientOwner: Owner,
+      subjectToken: Schema.String,
+      subjectTokenType: Schema.optional(SubjectTokenTypeSchema),
+    }),
+  ),
 });
 
 const StartResponse = Schema.Union([

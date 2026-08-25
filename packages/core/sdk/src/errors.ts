@@ -195,6 +195,12 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
      *  `invalid_client` (rotated app secret, fleet-wide) surfaced as a vague
      *  "degraded" was only findable by grepping persisted message strings. */
     oauthErrorCode: Schema.optional(Schema.String),
+    /** True when an enterprise identity provider declined to authorize this
+     *  connection under administrator policy. Distinct from `reauthRequired`
+     *  because signing in again cannot help, and — critically — the client must
+     *  NOT offer the ordinary per-server OAuth flow as an alternative route:
+     *  that would let the user walk around the policy the IdP just enforced. */
+    blockedByAdmin: Schema.optional(Schema.Boolean),
   },
 ) {}
 
