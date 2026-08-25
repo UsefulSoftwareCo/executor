@@ -173,6 +173,7 @@ import {
   enterpriseManagedStateFrom,
   mintEnterpriseManagedAccessToken,
   type EnterpriseManagedMintError,
+  type EnterpriseManagedRollout,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome } from "./tool-result";
@@ -633,6 +634,25 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   /** Optional URL selected organization slug to carry inside OAuth `state`. */
   readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  /**
+   * Host-owned rollout gate for enterprise-managed authorization (the MCP EMA
+   * profile). Core declares the port and depends on no feature-flag or
+   * analytics vendor; a host that operates one supplies an implementation.
+   *
+   * ROLLOUT SEMANTIC: the gate decides only whether a NEW connect may attempt
+   * the enterprise-managed path. It is consulted once per `oauth.start` on an
+   * `id_jag` client, before discovery, and never after the identity provider
+   * has ruled. The verdict is then frozen onto the connection's
+   * `provider_state`, and the credential-refresh path
+   * (`performEnterpriseManagedRefresh`) follows that stored state rather than
+   * re-evaluating — so switching the flag off never strands or downgrades an
+   * existing enterprise-managed connection, and no third-party network
+   * dependency ever enters credential resolution.
+   *
+   * Omitted -> enterprise-managed authorization is attempted, which is exactly
+   * what every host did before this seam existed.
+   */
+  readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
   /**
    * Host-operated OAuth apps (the deployment's own registered GitHub/Google/…
    * apps), addressed as `first-party:<name>`. Users connect through them with
@@ -1885,7 +1905,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *
      *  The grant profile is NOT re-discovered here. It was confirmed when the
      *  connection was made and persisted as part of its enterprise state; a
-     *  fresh discovery round trip on every renewal could only ever restate it. */
+     *  fresh discovery round trip on every renewal could only ever restate it.
+     *
+     *  Neither is the rollout gate (`ExecutorConfig.enterpriseManagedRollout`)
+     *  re-consulted: this function does not receive it and must not. The flag
+     *  gates whether a connection MAY BE MADE this way; a connection that
+     *  already exists renews from its persisted state. Wiring the flag in here
+     *  would mean an operator dialling the rollout back, or the flag service
+     *  simply being unreachable, could strand or silently downgrade live
+     *  credentials — and would put a third-party network dependency inside
+     *  credential resolution, which is the last place one belongs. */
     const performEnterpriseManagedRefresh = (input: {
       readonly row: ConnectionRow;
       readonly provider: CredentialProvider;
@@ -4782,6 +4811,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+      // Connect-time only. The refresh path above (`performEnterpriseManagedRefresh`)
+      // deliberately never sees this — it follows the enterprise state persisted
+      // on the connection.
+      enterpriseManagedRollout: config.enterpriseManagedRollout,
       // EXPLICIT — no localhost default. When a caller omits `redirectUri` the
       // OAuth service receives `null` and redirect-requiring flows fail loudly
       // instead of silently using `http://127.0.0.1/callback`. Hosts that serve

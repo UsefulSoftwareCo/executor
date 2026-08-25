@@ -24,7 +24,7 @@
 
 import { Data, Effect, Option, Schema } from "effect";
 
-import { OAuthClientSlug, Owner } from "./ids";
+import { IntegrationSlug, OAuthClientSlug, Owner } from "./ids";
 import {
   DEFAULT_SUBJECT_TOKEN_TYPE,
   SubjectTokenTypeSchema,
@@ -362,3 +362,115 @@ export const runEnterpriseManagedAuthorization = (
       },
     });
   });
+
+// ---------------------------------------------------------------------------
+// Rollout gate
+//
+// Enterprise-managed authorization is shipped behind a host-owned rollout gate.
+// The SDK declares the PORT and stays vendor-free: no feature-flag service, no
+// analytics client, no network dependency of its own. A host that has one
+// injects an implementation through `OAuthServiceDeps`; a host that has none
+// (desktop, CLI, local, self-hosted) injects nothing and the profile behaves
+// exactly as it did before the gate existed.
+//
+// Two properties are load-bearing and are pinned by tests
+// (`oauth-ema-rollout.test.ts`):
+//
+//   1. The gate is consulted EXACTLY ONCE per connect, BEFORE discovery, and
+//      NEVER after the IdP has spoken. A policy denial that could be re-routed
+//      through a flag check would turn the flag into an escape hatch around the
+//      very enterprise control this profile exists to enforce.
+//
+//   2. The gate is a CONNECT-time decision only. It is recorded on the
+//      connection (`ENTERPRISE_MANAGED_PROVIDER_STATE_KEY`) and the
+//      credential-refresh path follows the stored state, never the gate. So
+//      turning the flag off stops NEW enterprise-managed connects and leaves
+//      every existing managed connection renewing untouched — and no
+//      third-party network dependency ever enters credential resolution.
+// ---------------------------------------------------------------------------
+
+/** Who is connecting, as far as a rollout gate needs to know. Carries identity
+ *  and catalog identifiers only — never the identity assertion, the client
+ *  secret, or any other credential material. */
+export interface EnterpriseManagedRolloutContext {
+  /** The acting user, as the host identifies them. Null when the executor is
+   *  bound to an org-level caller with no individual subject. */
+  readonly userId: string | null;
+  /** The organization the executor is bound to, when the host names one. */
+  readonly organizationId: string | null;
+  /** The integration being connected. A spec-derived catalog slug, safe to
+   *  report; the `oauth_client` slug is deliberately NOT here, because a
+   *  user-registered client's slug is user-entered text. */
+  readonly integration: IntegrationSlug;
+}
+
+/** Why the gate withheld the enterprise-managed path. Kept structural so a host
+ *  can tell "the operator has not enabled this yet" apart from "we could not
+ *  find out", which are the same user-visible behavior but different
+ *  operational events. */
+export type EnterpriseManagedRolloutWithheldReason =
+  /** The gate answered, and the answer was no. */
+  | "disabled"
+  /** The gate could not reach a decision (timeout, transport failure,
+   *  unusable answer, missing configuration) and failed closed. */
+  | "evaluation-unavailable";
+
+/** The gate's verdict on one connect. */
+export type EnterpriseManagedRolloutDecision =
+  | { readonly kind: "enabled" }
+  | { readonly kind: "withheld"; readonly reason: EnterpriseManagedRolloutWithheldReason };
+
+/** What happened on a connect against a client whose grant is `id_jag`, for a
+ *  host that records rollout analytics.
+ *
+ *  Every variant carries the context and the gate's decision and NOTHING else
+ *  that could be sensitive: there is no field here that can hold a token, an
+ *  identity assertion, a client secret, or a scope value. */
+export type EnterpriseManagedRolloutEvent =
+  /** A connect reached the enterprise-managed branch. Fires for BOTH arms of
+   *  the rollout — read `decision` for which — so the funnel below it has a
+   *  denominator. */
+  | {
+      readonly kind: "attempted";
+      readonly context: EnterpriseManagedRolloutContext;
+      readonly decision: EnterpriseManagedRolloutDecision;
+    }
+  /** The ID-JAG chain completed and a connection was minted. */
+  | {
+      readonly kind: "connected";
+      readonly context: EnterpriseManagedRolloutContext;
+      readonly decision: EnterpriseManagedRolloutDecision;
+    }
+  /** The enterprise IdP declined to authorize this user for this server. */
+  | {
+      readonly kind: "blocked-by-admin";
+      readonly context: EnterpriseManagedRolloutContext;
+      readonly decision: EnterpriseManagedRolloutDecision;
+      /** The IdP's RFC 6749 §5.2 error code, when it returned one. */
+      readonly oauthErrorCode: string | undefined;
+    };
+
+/** The host-owned rollout seam for enterprise-managed authorization.
+ *
+ *  `decide` is the gate: it MUST NOT fail, because a rollout mechanism that can
+ *  fail a connect is worse than no rollout mechanism. An implementation that
+ *  cannot reach a verdict returns
+ *  `{ kind: "withheld", reason: "evaluation-unavailable" }` — failing closed —
+ *  rather than failing the effect.
+ *
+ *  `record` is a best-effort observer. The OAuth service runs it with its
+ *  failures and defects discarded, so it can neither fail a connect nor change
+ *  its outcome no matter what the implementation does. */
+export interface EnterpriseManagedRollout {
+  readonly decide: (
+    context: EnterpriseManagedRolloutContext,
+  ) => Effect.Effect<EnterpriseManagedRolloutDecision>;
+  readonly record: (event: EnterpriseManagedRolloutEvent) => Effect.Effect<void>;
+}
+
+/** The decision that applies when no host injected a gate: enterprise-managed
+ *  authorization is attempted, which is the behavior every host had before the
+ *  rollout seam existed. */
+export const ENTERPRISE_MANAGED_ROLLOUT_ENABLED: EnterpriseManagedRolloutDecision = {
+  kind: "enabled",
+};

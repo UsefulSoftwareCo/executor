@@ -317,6 +317,18 @@ export {
   type OAuthService,
 } from "./oauth-client";
 
+// The enterprise-managed rollout PORT (not its implementation): hosts that
+// operate a feature-flag service implement this and hand it to
+// `createExecutor`. Core depends on no vendor.
+export {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
+  type EnterpriseManagedRolloutWithheldReason,
+} from "./oauth-ema";
+
 // NOTE: the OAuth 2.1 implementation helpers (`./oauth-helpers`,
 // `makeOAuthService` in `./oauth-service`, discovery in `./oauth-discovery`)
 // are SDK-internal — consumed only by `createExecutor`. The hosted HTTP client
