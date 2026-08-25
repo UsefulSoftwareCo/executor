@@ -48,7 +48,7 @@ const enterpriseFixture = (
     readonly resourceAdvertisesProfile?: boolean;
     readonly resourceGrantableScopes?: readonly string[];
   } = {},
-): Effect.Effect<EnterpriseFixture, unknown, never> =>
+) =>
   Effect.gen(function* () {
     const idp = yield* serveOAuthTestServer({
       clients: { [CLIENT_AT_IDP]: null },
@@ -78,8 +78,8 @@ const enterpriseFixture = (
       clientSecret: "",
       scopes: ["mcp.read", "mcp.write"],
     });
-    return { idp, resource, subjectToken: session.accessToken };
-  }) as Effect.Effect<EnterpriseFixture, unknown, never>;
+    return { idp, resource, subjectToken: session.accessToken } satisfies EnterpriseFixture;
+  });
 
 const chainInput = (fixture: EnterpriseFixture, scopes: readonly string[]) => ({
   idp: { tokenUrl: fixture.idp.tokenEndpoint, clientId: CLIENT_AT_IDP },
