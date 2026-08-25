@@ -417,7 +417,13 @@ jobs:
       - name: Run sidecar outside the workspace
         working-directory: apps/desktop
         run: |
-          docker run --rm -d --name sidecar-smoke -p 45841:45841 -e HOME=/tmp \
+          # Containers do not inherit the job environment. Keep the compiled
+          # product smoke from becoming a production analytics/integrations hit.
+          docker run --rm -d --name sidecar-smoke -p 45841:45841 \
+            -e HOME=/tmp \
+            -e DO_NOT_TRACK=1 \
+            -e EXECUTOR_DISABLE_ANALYTICS=1 \
+            -e EXECUTOR_DISABLE_INTEGRATIONS_FETCH=1 \
             -v "$PWD/resources/executor:/opt/executor:ro" \
             debian:bookworm-slim /opt/executor/executor daemon run --foreground \
             --port 45841 --hostname 0.0.0.0 --auth-token=ci-smoke
