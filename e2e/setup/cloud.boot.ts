@@ -56,6 +56,18 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
   const dbPath = resolve(cloudDir, ".e2e-stub-db");
   if (options.fresh ?? true) rmSync(dbPath, { recursive: true, force: true });
 
+  // Fresh worker state per boot, for the same reason as the DB: miniflare
+  // persists the Workers Cache API under .wrangler/state across dev-server
+  // runs, and the JWKS L2 cache (auth/jwks-cache.ts) lives there keyed by
+  // URL. The WorkOS emulator binds this checkout's stable port block, so run
+  // N+1's dev server serves run N's cached JWKS (stale-while-revalidate)
+  // against a fresh emulator's keys — every session verify then fails
+  // signature, falls into single-use refresh, and concurrent requests race
+  // each other's rotation into 401s. One run poisons the next.
+  if (options.fresh ?? true) {
+    rmSync(resolve(cloudDir, ".wrangler", "state"), { recursive: true, force: true });
+  }
+
   // MCP access tokens minted by the emulator's OAuth server must carry the
   // app's client id as audience (what the resource server verifies).
   process.env.EMULATE_WORKOS_AUDIENCE = options.workosClientId;
