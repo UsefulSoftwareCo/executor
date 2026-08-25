@@ -24,7 +24,7 @@
 
 import { Data, Effect, Option, Schema } from "effect";
 
-import { Owner } from "./ids";
+import { OAuthClientSlug, Owner } from "./ids";
 import {
   DEFAULT_SUBJECT_TOKEN_TYPE,
   SubjectTokenTypeSchema,
@@ -38,7 +38,6 @@ import {
 import {
   exchangeSubjectTokenForIdJag,
   redeemIdJagAssertion,
-  type ClientAuthMethod,
   type OAuth2Error,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -59,7 +58,7 @@ import {
 
 export const EnterpriseManagedConnectionStateSchema = Schema.Struct({
   /** `oauth_client` slug of the client's registration at the enterprise IdP. */
-  idpClient: Schema.String,
+  idpClient: OAuthClientSlug,
   idpClientOwner: Owner,
   /** The Resource Authorization Server's issuer identifier, as discovered from
    *  its RFC 8414 metadata when the connection was made. */
@@ -178,12 +177,21 @@ export class EmaUpstreamUnavailable extends Data.TaggedError("EmaUpstreamUnavail
   }
 }
 
-export type EnterpriseManagedAuthorizationError =
-  | EmaGrantProfileUnsupported
+/** What running the two-step grant can fail with. Notably NOT
+ *  `EmaGrantProfileUnsupported`: minting never inspects metadata, so it cannot
+ *  reach that verdict, and callers of `mintEnterpriseManagedAccessToken` must
+ *  not be made to write an arm for a case that cannot occur. */
+export type EnterpriseManagedMintError =
   | EmaPolicyDenied
   | EmaSubjectTokenRejected
   | EmaRedemptionRejected
   | EmaUpstreamUnavailable;
+
+/** Everything `runEnterpriseManagedAuthorization` can fail with: the mint
+ *  failures plus the one discovery verdict only it can produce. */
+export type EnterpriseManagedAuthorizationError =
+  | EnterpriseManagedMintError
+  | EmaGrantProfileUnsupported;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -195,11 +203,9 @@ export type EnterpriseManagedAuthorizationError =
 export interface EnterpriseIdentityProvider {
   /** The IdP's token endpoint, where the RFC 8693 exchange is POSTed. */
   readonly tokenUrl: string;
-  readonly issuerUrl?: string | null;
   readonly clientId: string;
   /** Empty or null for a public client the IdP does not authenticate. */
   readonly clientSecret?: string | null;
-  readonly clientAuth?: ClientAuthMethod;
 }
 
 /** The client's registration at the MCP server's Resource Authorization Server
@@ -213,7 +219,6 @@ export interface ResourceAuthorizationServerClient {
   readonly issuer: string;
   readonly clientId: string;
   readonly clientSecret?: string | null;
-  readonly clientAuth?: ClientAuthMethod;
 }
 
 export interface EnterpriseManagedAuthorizationInput {
@@ -244,7 +249,7 @@ export interface EnterpriseManagedGrant {
 // The chain
 // ---------------------------------------------------------------------------
 
-const exchangeFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationError => {
+const exchangeFailure = (cause: OAuth2Error): EnterpriseManagedMintError => {
   // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error declares `message` as a field; this is a typed failure, not an unknown throwable
   const detail = cause.message;
   // RFC 6749 §5.2: `invalid_grant` is the code for a grant that is invalid,
@@ -260,7 +265,7 @@ const exchangeFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationErro
   return new EmaUpstreamUnavailable({ step: "token-exchange", detail });
 };
 
-const redemptionFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationError => {
+const redemptionFailure = (cause: OAuth2Error): EnterpriseManagedMintError => {
   // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: see `exchangeFailure` above
   const detail = cause.message;
   return cause.error === undefined
@@ -279,14 +284,12 @@ const redemptionFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationEr
  *  itself has expired. */
 export const mintEnterpriseManagedAccessToken = (
   input: EnterpriseManagedAuthorizationInput,
-): Effect.Effect<EnterpriseManagedGrant, EnterpriseManagedAuthorizationError> =>
+): Effect.Effect<EnterpriseManagedGrant, EnterpriseManagedMintError> =>
   Effect.gen(function* () {
     const grant = yield* exchangeSubjectTokenForIdJag({
       tokenUrl: input.idp.tokenUrl,
-      issuerUrl: input.idp.issuerUrl,
       clientId: input.idp.clientId,
       clientSecret: input.idp.clientSecret,
-      clientAuth: input.idp.clientAuth,
       subjectToken: input.subjectToken,
       subjectTokenType: input.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
       audience: input.resourceAuthorizationServer.issuer,
@@ -308,7 +311,6 @@ export const mintEnterpriseManagedAccessToken = (
       issuerUrl: input.resourceAuthorizationServer.issuer,
       clientId: input.resourceAuthorizationServer.clientId,
       clientSecret: input.resourceAuthorizationServer.clientSecret,
-      clientAuth: input.resourceAuthorizationServer.clientAuth,
       assertion: grant.assertion,
       resource: input.resource,
       scopes: grantedScopes,
@@ -341,7 +343,7 @@ export const runEnterpriseManagedAuthorization = (
     >;
   },
 ): Effect.Effect<EnterpriseManagedGrant, EnterpriseManagedAuthorizationError> =>
-  Effect.suspend(() => {
+  Effect.suspend<EnterpriseManagedGrant, EnterpriseManagedAuthorizationError, never>(() => {
     const metadata = input.authorizationServerMetadata;
     if (!supportsIdJagGrantProfile(metadata)) {
       return Effect.fail(

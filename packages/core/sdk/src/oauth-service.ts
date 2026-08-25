@@ -14,7 +14,7 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Match, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -53,6 +53,7 @@ import {
   type OAuthService,
   type OAuthStartInput,
   type RegisterDynamicClientInput,
+  type SubjectTokenType,
 } from "./oauth-client";
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
@@ -67,6 +68,7 @@ import {
   runEnterpriseManagedAuthorization,
   type EnterpriseManagedConnectionState,
   type EnterpriseManagedGrant,
+  type EnterpriseManagedMintError,
 } from "./oauth-ema";
 import {
   assertSupportedOAuthEndpointUrl,
@@ -118,6 +120,43 @@ export interface MintOAuthConnectionInput {
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
   readonly oauthTokenUrl?: string | null;
 }
+
+/** Project an enterprise-managed mint failure onto the connect boundary,
+ *  KEEPING the taxonomy structural. `EmaPolicyDenied` is the one verdict a
+ *  console must treat differently from every other start failure: it means the
+ *  administrator declined, so re-authenticating cannot help and the ordinary
+ *  per-server flow must not be offered as a way around it. That decision has to
+ *  be readable as a field — a UI cannot branch on a sentence. */
+const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAuthStartError => {
+  const rendered = (failure: EnterpriseManagedMintError): string =>
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
+    failure.message;
+  return Match.value(cause).pipe(
+    Match.tag(
+      "EmaPolicyDenied",
+      (denied) =>
+        new OAuthStartError({
+          message: rendered(denied),
+          blockedByAdmin: true,
+          oauthErrorCode: denied.error,
+        }),
+    ),
+    Match.tag(
+      "EmaRedemptionRejected",
+      (rejected) =>
+        new OAuthStartError({
+          message: rendered(rejected),
+          ...(rejected.error === undefined ? {} : { oauthErrorCode: rejected.error }),
+        }),
+    ),
+    Match.tag(
+      "EmaSubjectTokenRejected",
+      "EmaUpstreamUnavailable",
+      (failure) => new OAuthStartError({ message: rendered(failure) }),
+    ),
+    Match.exhaustive,
+  );
+};
 
 /** The OAuth scope policy for a `(integration, template)`. Either the
  *  integration declares the scopes to request (`scopes`, possibly empty — an
@@ -583,6 +622,53 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const capScopes = (scopes: readonly string[]): readonly string[] =>
     dedupeScopes(scopes).slice(0, MAX_DISCOVERED_SCOPES);
 
+  // Bound a whole discovery sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
+  // fetches, each with its own request timeout). 30s is larger than a single
+  // request timeout so it bounds the sequence, not a slow-but-valid request.
+  const withDiscoverySequenceTimeout = <A>(
+    sequence: Effect.Effect<A, OAuthDiscoveryError>,
+    message: string,
+  ): Effect.Effect<A, OAuthDiscoveryError> =>
+    sequence.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(30),
+        orElse: () => Effect.fail(new OAuthDiscoveryError({ message, cause: "timeout" })),
+      }),
+    );
+
+  /** Probe, in order, the authorization servers a protected resource named, and
+   *  return the first whose RFC 8414 metadata both reads cleanly and satisfies
+   *  `accept`. Any AS we cannot read clean metadata from — unreachable, 404,
+   *  malformed, or issuer-mismatched — contributes nothing and we move on
+   *  (mirroring the dynamic-registration discovery path). We never probe an
+   *  arbitrary URL: only the hosts the resource itself named, already capped by
+   *  the caller because that list is server-controlled. */
+  const firstReadableAuthorizationServer = (
+    issuers: readonly string[],
+    accept: (metadata: OAuthAuthorizationServerMetadata) => boolean,
+  ): Effect.Effect<OAuthAuthorizationServerMetadata | null> =>
+    Effect.gen(function* () {
+      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
+      for (const issuer of issuers) {
+        const authServer = yield* discoverAuthorizationServerMetadata(
+          issuer,
+          discoveryOptions,
+        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
+        if (authServer && accept(authServer.metadata)) return authServer.metadata;
+      }
+      return null;
+    });
+
+  /** The authorization servers a protected resource names, capped: the list is
+   *  server-controlled and a hostile or buggy server must not be able to make
+   *  us walk an unbounded number of hosts. */
+  const authorizationServerIssuersFor = (
+    protectedResource: {
+      readonly metadata: { readonly authorization_servers?: readonly string[] };
+    } | null,
+  ): readonly string[] =>
+    (protectedResource?.metadata.authorization_servers ?? []).slice(0, MAX_DISCOVERY_AUTH_SERVERS);
+
   // Discover the scopes to request when the integration declares none — only
   // reached for integrations that opt in (MCP-style). The resource's own RFC
   // 9728 `scopes_supported` is authoritative when present, even when empty (§2
@@ -611,39 +697,18 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
       // The resource is silent on scopes — read them from the authorization
       // servers it names, in order. An advertised list is authoritative even
-      // when empty. Any AS we cannot read clean RFC 8414 metadata from —
-      // unreachable, 404, malformed, or issuer-mismatched — contributes nothing
-      // and we move on (mirroring the dynamic-registration discovery path); if
-      // none advertise scopes we request none and let the AS apply its defaults
-      // (RFC 8414 metadata is optional, so its absence is not a failure). The
-      // list is server-controlled, so cap how many of its hosts we probe.
-      for (const issuer of (protectedResource?.metadata.authorization_servers ?? []).slice(
-        0,
-        MAX_DISCOVERY_AUTH_SERVERS,
-      )) {
-        const authServer = yield* discoverAuthorizationServerMetadata(
-          issuer,
-          discoveryOptions,
-        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
-        const scopes = authServer?.metadata.scopes_supported;
-        if (scopes !== undefined) return capScopes(scopes);
-      }
-
-      return [];
-    }).pipe(
-      // Bound the whole sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
-      // fetches, each with its own request timeout). 30s is larger than a single
-      // request timeout so it bounds the sequence, not a slow-but-valid request.
-      Effect.timeoutOrElse({
-        duration: Duration.seconds(30),
-        orElse: () =>
-          Effect.fail(
-            new OAuthDiscoveryError({
-              message: "OAuth scope discovery timed out",
-              cause: "timeout",
-            }),
-          ),
-      }),
+      // when empty, so "advertises scopes at all" is the acceptance test. If
+      // none do we request none and let the AS apply its defaults (RFC 8414
+      // metadata is optional, so its absence is not a failure).
+      const authServer = yield* firstReadableAuthorizationServer(
+        authorizationServerIssuersFor(protectedResource),
+        (metadata) => metadata.scopes_supported !== undefined,
+      );
+      return authServer?.scopes_supported === undefined
+        ? []
+        : capScopes(authServer.scopes_supported);
+    }).pipe((sequence) =>
+      withDiscoverySequenceTimeout(sequence, "OAuth scope discovery timed out"),
     );
 
   /** The RFC 8414 metadata of the authorization server that protects `resource`.
@@ -662,25 +727,21 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             "Cannot discover the authorization server: the OAuth app has no resource configured",
         });
       }
-      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
-      const protectedResource = yield* discoverProtectedResourceMetadata(
-        resource,
-        discoveryOptions,
-      );
-      const issuers = protectedResource?.metadata.authorization_servers ?? [];
-      for (const issuer of issuers.slice(0, MAX_DISCOVERY_AUTH_SERVERS)) {
-        const authServer = yield* discoverAuthorizationServerMetadata(
-          issuer,
-          discoveryOptions,
-        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
-        if (authServer) return authServer.metadata;
-      }
+      const protectedResource = yield* discoverProtectedResourceMetadata(resource, {
+        endpointUrlPolicy: deps.endpointUrlPolicy,
+        httpClientLayer,
+      });
+      const issuers = authorizationServerIssuersFor(protectedResource);
+      const metadata = yield* firstReadableAuthorizationServer(issuers, () => true);
+      if (metadata) return metadata;
       return yield* new OAuthDiscoveryError({
         message: `No authorization-server metadata found for ${resource}${
           issuers.length > 0 ? ` (tried: ${issuers.join(", ")})` : ""
         }`,
       });
-    });
+    }).pipe((sequence) =>
+      withDiscoverySequenceTimeout(sequence, "OAuth authorization-server discovery timed out"),
+    );
 
   // -----------------------------------------------------------------------
   // createClient — write the oauth_client row.
@@ -1366,6 +1427,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
           ),
         );
+        // Resolve the caller's optional assertion type ONCE: the chain sends it
+        // and the connection persists it, and those two must not be able to
+        // disagree about what was presented.
+        const resolvedEnterprise = {
+          ...enterprise,
+          subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+        };
         const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
           authorizationServerMetadata: metadata,
           idp: {
@@ -1377,27 +1445,24 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             clientId: client.clientId,
             clientSecret: client.clientSecret,
           },
-          subjectToken: enterprise.subjectToken,
-          subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+          subjectToken: resolvedEnterprise.subjectToken,
+          subjectTokenType: resolvedEnterprise.subjectTokenType,
           resource: client.resource,
           scopes: requestedScopes,
           endpointUrlPolicy: deps.endpointUrlPolicy,
+          // No `httpClientLayer` here, deliberately: like every other token
+          // request in this service, the ID-JAG chain runs through oauth4webapi
+          // on the configured `fetch`, not Effect's HttpClient. Only discovery
+          // speaks HttpClient. Providing the layer here would claim otherwise.
           fetch,
         }).pipe(
-          Effect.provide(httpClientLayer),
           Effect.map((grant) => ({ supported: true as const, grant })),
           // Only the unsupported-profile failure is recoverable; every other
-          // tag reaches the caller as a start error with its own wording.
+          // tag reaches the caller as a start error carrying its own verdict.
           Effect.catchTag("EmaGrantProfileUnsupported", () =>
             Effect.succeed({ supported: false as const }),
           ),
-          Effect.mapError(
-            (cause) =>
-              new OAuthStartError({
-                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error carries a typed `message` getter
-                message: cause.message,
-              }),
-          ),
+          Effect.mapError(startErrorFromEnterpriseManaged),
         );
         if (enterpriseGrant.supported) {
           const connection = yield* mintEnterpriseManagedConnection(
@@ -1405,13 +1470,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             client,
             input.clientOwner,
             enterpriseGrant.grant,
-            enterprise,
-            {
-              idpClient: String(enterprise.idpClient),
-              idpClientOwner: enterprise.idpClientOwner,
-              audience: metadata.issuer,
-              subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
-            },
+            resolvedEnterprise,
+            metadata.issuer,
           ).pipe(
             Effect.mapError(
               (cause) =>
@@ -1788,8 +1848,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     client: LoadedOAuthClient,
     clientOwner: Owner,
     grant: EnterpriseManagedGrant,
-    enterprise: EnterpriseManagedStartInput,
-    enterpriseState: EnterpriseManagedConnectionState,
+    /** The connect request's enterprise inputs with the assertion type already
+     *  resolved — the persisted state records what was actually presented, so
+     *  it must not re-derive a default the chain might have differed on. */
+    enterprise: EnterpriseManagedStartInput & { readonly subjectTokenType: SubjectTokenType },
+    /** The Resource Authorization Server's issuer identifier, as discovered. */
+    audience: string,
   ): Effect.Effect<Connection, StorageFailure> =>
     Effect.gen(function* () {
       const provider = deps.defaultWritableProvider();
@@ -1823,7 +1887,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         refreshItemId: subjectTokenItemId,
         expiresAt: expiresAtFrom(grant.token),
         oauthScope: grant.scope,
-        enterpriseManaged: enterpriseState,
+        enterpriseManaged: {
+          idpClient: enterprise.idpClient,
+          idpClientOwner: enterprise.idpClientOwner,
+          audience,
+          subjectTokenType: enterprise.subjectTokenType,
+        },
       });
     });
 

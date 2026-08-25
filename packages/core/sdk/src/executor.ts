@@ -172,7 +172,7 @@ import {
   ENTERPRISE_MANAGED_PROVIDER_STATE_KEY,
   enterpriseManagedStateFrom,
   mintEnterpriseManagedAccessToken,
-  type EnterpriseManagedAuthorizationError,
+  type EnterpriseManagedMintError,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome } from "./tool-result";
@@ -1873,11 +1873,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
-    /** The rendered message of a typed enterprise-managed failure. Every member
-     *  of the union declares `message` as a getter over its own typed fields,
-     *  so this is a projection, not a read off an unknown throwable. */
-    const enterpriseManagedMessage = (cause: EnterpriseManagedAuthorizationError): string =>
-      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: see above
+    /** The rendered message of a typed enterprise-managed failure. */
+    const enterpriseManagedMessage = (cause: EnterpriseManagedMintError): string =>
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
       cause.message;
 
     /** Re-mint an enterprise-managed access token: exchange the stored identity
@@ -1986,19 +1984,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ),
             EmaUpstreamUnavailable: (cause) =>
               Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
-            // The profile is confirmed at connect and never re-discovered on
-            // this path, so this arm is unreachable here; surface it as a
-            // reconnect rather than pretending it cannot happen.
-            EmaGrantProfileUnsupported: (cause) =>
-              Effect.fail(
-                new CredentialResolutionError({
-                  owner,
-                  integration: IntegrationSlug.make(row.integration),
-                  name: ConnectionName.make(row.name),
-                  message: enterpriseManagedMessage(cause),
-                  reauthRequired: true,
-                }),
-              ),
           }),
           Effect.tapError((error) =>
             Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
@@ -3173,17 +3158,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // The core-owned per-connection state this mint writes WHOLESALE:
         // whatever a previous grant recorded (a stale reauth verdict, an old
         // missing-scope set) describes a credential that no longer exists.
+        const nextProviderState = {
+          ...(input.missingOAuthScopes === undefined || input.missingOAuthScopes.length === 0
+            ? {}
+            : { missingOAuthScopes: input.missingOAuthScopes }),
+          ...(input.enterpriseManaged === undefined
+            ? {}
+            : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }),
+        };
+        // Null, not `{}`, when this grant records nothing: an empty object would
+        // read back as "state exists and is empty" on a column whose absence is
+        // what every reader tests.
         const providerState =
-          input.missingOAuthScopes === undefined || input.missingOAuthScopes.length === 0
-            ? input.enterpriseManaged === undefined
-              ? null
-              : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }
-            : {
-                missingOAuthScopes: input.missingOAuthScopes,
-                ...(input.enterpriseManaged === undefined
-                  ? {}
-                  : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }),
-              };
+          Object.keys(nextProviderState).length === 0 ? null : nextProviderState;
         yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow(ref);
