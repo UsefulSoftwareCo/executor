@@ -639,10 +639,17 @@ export const findSkill = (name: string, catalog: readonly Skill[] = SKILLS): Ski
 
 /** The index the `skills` tool returns when called without a name (or with an
  *  unknown one): every skill's name and one-line summary, plus how to fetch
- *  the body. */
+ *  the body.
+ *
+ *  It leads with what the catalog IS. A host without a skill tool of its own
+ *  (pi, for one) reads `skills` as the general skill reader it is missing and
+ *  asks it for the user's or the harness's skills; the index is where that
+ *  model lands, so it has to say plainly that this list is the whole of it and
+ *  covers only Executor's own tools. */
 export const renderSkillsIndex = (catalog: readonly Skill[] = SKILLS): string =>
   [
-    'Available skills. Fetch one with `skills({ name: "<name>" })`.',
+    "How-to docs for Executor's own tools — this is the complete list, and there is nothing else to fetch.",
+    'Fetch one with `skills({ name: "<name>" })`. Names outside this list, file paths, and skills belonging to your harness or the user are not served here.',
     "",
     ...catalog.map((skill) => `- \`${skill.name}\` — ${skill.summary}`),
   ].join("\n");

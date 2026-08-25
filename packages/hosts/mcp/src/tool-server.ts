@@ -771,6 +771,11 @@ const fallbackOutcomeResult = (
 // skill's body; an unknown name -> the index plus a not-found note so the model
 // retries with a listed name instead of the same miss.
 //
+// The miss is also where a model that mistook this for a general skill reader
+// arrives — a host with no skill tool of its own reads `executor_skills` as the
+// one it is missing and asks it for the harness's or the user's skills — so the
+// note names the boundary rather than only reporting the bad name.
+//
 // The skill body IS the payload, returned as plain text content. We do NOT
 // attach `structuredContent`: a client that prefers structured output (Claude
 // Code does) will surface only that and drop the text, so the long-form guide
@@ -797,7 +802,10 @@ const skillsResult = (
   if (!skill) {
     return {
       content: [
-        { type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex(catalog)}` },
+        {
+          type: "text",
+          text: `No skill named "${trimmed}". This tool serves only Executor's own docs, listed below — a skill from your harness or the user's project is not reachable from here.\n\n${renderSkillsIndex(catalog)}`,
+        },
       ],
       isError: true,
     };
@@ -1505,15 +1513,18 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         "skills",
         {
           description: [
-            "Fetch a named how-to skill. Skills hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
+            "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
+            "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
             'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
-            "Call with no name to list the available skills.",
+            "Call with no name to list the few docs available.",
           ].join("\n"),
           inputSchema: {
             name: z
               .string()
               .optional()
-              .describe('The skill to fetch, e.g. "execute". Omit to list available skills.'),
+              .describe(
+                'A doc from this server\'s own catalog, e.g. "execute" — not a path or an outside skill name. Omit to list the catalog.',
+              ),
           },
         },
         ({ name }) =>
