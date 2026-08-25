@@ -1,4 +1,4 @@
-import type { IntegrationSlug } from "./ids";
+import type { IntegrationSlug, OAuthClientSlug, Owner } from "./ids";
 
 /* Core knows only an integration's catalog identity — slug + description + which
  * plugin (`kind`) owns it. The type-specific shape (openapi auth templates + spec,
@@ -64,6 +64,20 @@ export interface AuthMethodOAuthDescriptor {
    *  clients. The UI can create a local public OAuth client using this host's
    *  metadata-document URL as `client_id`, with no provider app registration. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** The enterprise identity provider this integration is configured to obtain
+   *  identity assertions from (MCP Enterprise-Managed Authorization). Present
+   *  only when the deployment has declared one for this integration; the
+   *  connect path still verifies at discovery time that the server advertises
+   *  the ID-JAG grant profile, and falls back to the interactive flow when it
+   *  does not. */
+  readonly enterpriseIdentityProvider?: EnterpriseIdentityProviderDescriptor;
+}
+
+/** Which registered OAuth app stands for the enterprise IdP, so a connect
+ *  request can name it. Carries no assertion and no secret — only the pointer. */
+export interface EnterpriseIdentityProviderDescriptor {
+  readonly client: OAuthClientSlug;
+  readonly clientOwner: Owner;
 }
 
 /** A single declared auth method on an integration's catalog response. */

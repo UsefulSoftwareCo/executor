@@ -18,6 +18,8 @@ import {
   IntegrationRemovalNotAllowedError,
   IntegrationSlug,
   InternalError,
+  OAuthClientSlug,
+  Owner,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +56,13 @@ const OAuthDescriptor = Schema.Struct({
   registrationEndpoint: Schema.optional(Schema.String),
   supportsDynamicRegistration: Schema.optional(Schema.Boolean),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  /** MCP Enterprise-Managed Authorization: the registered OAuth app that mints
+   *  this integration's identity assertions. Present only when the deployment
+   *  declared one — the client names it on `oauth.start` alongside the
+   *  assertion it holds. The interactive flow stays available regardless. */
+  enterpriseIdentityProvider: Schema.optional(
+    Schema.Struct({ client: OAuthClientSlug, clientOwner: Owner }),
+  ),
 });
 
 /** A single declared auth method — mirrors the SDK's `AuthMethodDescriptor`. */

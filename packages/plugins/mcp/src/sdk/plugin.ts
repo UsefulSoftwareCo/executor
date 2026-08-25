@@ -710,6 +710,13 @@ export const describeMcpAuthMethods = (
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
           supportsDynamicRegistration: true,
+          // Present only when this server was configured with an enterprise
+          // identity provider. The connect path re-checks the server's metadata
+          // for the ID-JAG grant profile and falls back to interactive OAuth
+          // when it is absent, so this is an opt-in, not an override.
+          ...(method.enterpriseIdentityProvider === undefined
+            ? {}
+            : { enterpriseIdentityProvider: method.enterpriseIdentityProvider }),
         },
       };
     }
