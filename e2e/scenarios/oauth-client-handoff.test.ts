@@ -317,176 +317,178 @@ const requireOAuthClientCredential = (credential: IssuedCredential) =>
 scenario(
   "OAuth client · agent hands off, the human enters the secret in the browser, and the app connects",
   { timeout: 240_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const { client: makeApiClient } = yield* Api;
-    const mcp = yield* Mcp;
-    const browser = yield* Browser;
-    const identity = yield* target.newIdentity();
-    const session = mcp.session(identity);
-    const client = yield* makeApiClient(microsoftApi, identity);
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeApiClient } = yield* Api;
+      const mcp = yield* Mcp;
+      const browser = yield* Browser;
+      const identity = yield* target.newIdentity();
+      const session = mcp.session(identity);
+      const client = yield* makeApiClient(microsoftApi, identity);
 
-    const accountClient = yield* makeApiClient(AccountHttpApi, identity);
-    const me = yield* accountClient.account.me();
-    const orgSlug = me.organization?.slug;
-    expect(orgSlug, "the bound organization advertises a URL slug").toBeTruthy();
+      const accountClient = yield* makeApiClient(AccountHttpApi, identity);
+      const me = yield* accountClient.account.me();
+      const orgSlug = me.organization?.slug;
+      expect(orgSlug, "the bound organization advertises a URL slug").toBeTruthy();
 
-    const integration = unique("msgraph");
-    const clientSlug = unique("msgraph_app");
-    const connection = "machine";
-    const template = MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG;
+      const integration = unique("msgraph");
+      const clientSlug = unique("msgraph_app");
+      const connection = "machine";
+      const template = MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG;
 
-    // A per-run hosted emulator instance mints a real-shaped client-credentials
-    // app and records every token exchange in its own isolated ledger.
-    const emulatorBase = yield* createEmulatorInstance("microsoft", "oauth-handoff");
-    const emulator: EmulatorClient = yield* Effect.promise(() =>
-      connectEmulator({ baseUrl: emulatorBase, service: "microsoft" }),
-    );
-    const minted = yield* Effect.promise(() =>
-      emulator.credentials.mint({ type: "oauth-client-credentials", name: "Executor E2E Graph" }),
-    );
-    const oauth = yield* requireOAuthClientCredential(minted);
+      // A per-run hosted emulator instance mints a real-shaped client-credentials
+      // app and records every token exchange in its own isolated ledger.
+      const emulatorBase = yield* createEmulatorInstance("microsoft", "oauth-handoff");
+      const emulator: EmulatorClient = yield* Effect.promise(() =>
+        connectEmulator({ baseUrl: emulatorBase, service: "microsoft" }),
+      );
+      const minted = yield* Effect.promise(() =>
+        emulator.credentials.mint({ type: "oauth-client-credentials", name: "Executor E2E Graph" }),
+      );
+      const oauth = yield* requireOAuthClientCredential(minted);
 
-    yield* Effect.ensuring(
-      Effect.gen(function* () {
-        // Register the Microsoft Graph integration so the console has an OAuth
-        // method to register a client against.
-        yield* client.openapi.addSpec({
-          payload: {
-            spec: { kind: "url", url: emulator.openapiUrl },
-            slug: integration,
-            name: "Microsoft Graph Emulator",
-            baseUrl: emulator.baseUrl,
-            family: "microsoft",
-            authenticationTemplate: [
-              {
-                slug: template,
-                kind: "oauth2",
-                authorizationUrl: oauth.authorizationUrl,
-                tokenUrl: oauth.tokenUrl,
-                scopes: ["https://graph.microsoft.com/.default"],
-              },
-            ],
-          },
-        });
-
-        // 1. The agent asks for a browser handoff URL — it has the client id and
-        //    endpoints (discovered/known), but never the secret.
-        const handoff = yield* executeJson(
-          session,
-          handoffForBrowserCode({
-            integration,
-            slug: clientSlug,
-            clientId: oauth.clientId,
-            authorizationUrl: oauth.authorizationUrl,
-            tokenUrl: oauth.tokenUrl,
-          }),
-        );
-        expect(handoff.ok, `createHandoff succeeded: ${JSON.stringify(handoff)}`).toBe(true);
-        const handoffUrl = String(handoff.url);
-
-        const parsed = new URL(handoffUrl);
-        expect(parsed.origin, `handoff URL (${handoffUrl}) targets this deployment`).toBe(
-          new URL(target.baseUrl).origin,
-        );
-        expect(parsed.pathname).toBe(`/${orgSlug}/integrations/${integration}`);
-        // The agent's URL carries the client id but NOT the secret.
-        expect(handoffUrl).toContain(oauth.clientId);
-        expect(
-          handoffUrl.includes(oauth.clientSecret),
-          "the handoff URL never carries the client secret",
-        ).toBe(false);
-
-        // 2. The human opens the URL: the Register-OAuth-app form is open and
-        //    pre-filled from the handoff. They type ONLY the secret.
-        yield* browser.session(identity, async ({ page, step }) => {
-          await step("Open the agent's handoff URL", async () => {
-            await visit(page, handoffUrl);
-          });
-
-          await step("The Register-OAuth-app form auto-opens, pre-filled", async () => {
-            await page
-              .getByRole("heading", { name: "Register OAuth app" })
-              .waitFor({ timeout: 20_000 });
-            // The agent's non-secret fields pre-filled — this is the whole point
-            // of the handoff: the human verifies, they don't re-type.
-            await expect
-              .poll(() => page.locator("#oauth-client-id").inputValue())
-              .toBe(oauth.clientId);
-            await expect
-              .poll(() => page.locator("#grant-client_credentials").isChecked())
-              .toBe(true);
-          });
-
-          await step("The human types the client secret (only the secret)", async () => {
-            const secret = page.locator("#oauth-client-secret");
-            await secret.waitFor({ timeout: 15_000 });
-            await secret.fill(oauth.clientSecret);
-          });
-
-          await step("Register the app", async () => {
-            await page.getByRole("button", { name: "Register app", exact: true }).click();
-            // onCreated returns to the Add-connection view — the register form closes.
-            await page
-              .getByRole("heading", { name: "Register OAuth app" })
-              .waitFor({ state: "hidden", timeout: 20_000 });
-          });
-        });
-
-        // 3. The agent discovers the browser-registered client and completes the
-        //    connection — client credentials need no user consent.
-        const listed = yield* executeJson(session, listClientSlugsCode);
-        expect(
-          (listed.slugs as ReadonlyArray<string> | undefined)?.includes(clientSlug),
-          `the agent sees the human-registered client: ${JSON.stringify(listed)}`,
-        ).toBe(true);
-
-        const started = yield* executeJson(
-          session,
-          startConnectionCode({
-            slug: clientSlug,
-            integration,
-            connection,
-            template: String(template),
-          }),
-        );
-        expect(started.ok, `oauth.start succeeded: ${JSON.stringify(started)}`).toBe(true);
-        expect(started.status, "client-credentials OAuth connected without browser consent").toBe(
-          "connected",
-        );
-
-        // 4. The emulator ledger proves Executor exchanged THIS app's credentials.
-        const ledger = yield* Effect.promise(() => emulator.ledger.list());
-        const tokenRequest = ledger.find(
-          (entry) =>
-            entry.path === "/oauth2/v2.0/token" &&
-            JSON.stringify(entry.request.body ?? "").includes(oauth.clientId),
-        );
-        expect(
-          tokenRequest?.response.status,
-          "the emulator recorded a client-credentials token exchange for this app",
-        ).toBe(200);
-        expect(tokenRequest?.request.body).toMatchObject({ grant_type: "client_credentials" });
-      }),
-      // Best-effort teardown: selfhost shares one workspace, so remove everything.
-      Effect.gen(function* () {
-        yield* client.connections
-          .remove({
-            params: {
-              owner: "org",
-              integration: IntegrationSlug.make(integration),
-              name: ConnectionName.make(connection),
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          // Register the Microsoft Graph integration so the console has an OAuth
+          // method to register a client against.
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "url", url: emulator.openapiUrl },
+              slug: integration,
+              name: "Microsoft Graph Emulator",
+              baseUrl: emulator.baseUrl,
+              family: "microsoft",
+              authenticationTemplate: [
+                {
+                  slug: template,
+                  kind: "oauth2",
+                  authorizationUrl: oauth.authorizationUrl,
+                  tokenUrl: oauth.tokenUrl,
+                  scopes: ["https://graph.microsoft.com/.default"],
+                },
+              ],
             },
-          })
-          .pipe(Effect.ignore);
-        yield* client.oauth
-          .removeClient({
-            params: { slug: OAuthClientSlug.make(clientSlug) },
-            payload: { owner: "org" },
-          })
-          .pipe(Effect.ignore);
-        yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
-      }).pipe(Effect.ignore),
-    );
-  }),
+          });
+
+          // 1. The agent asks for a browser handoff URL — it has the client id and
+          //    endpoints (discovered/known), but never the secret.
+          const handoff = yield* executeJson(
+            session,
+            handoffForBrowserCode({
+              integration,
+              slug: clientSlug,
+              clientId: oauth.clientId,
+              authorizationUrl: oauth.authorizationUrl,
+              tokenUrl: oauth.tokenUrl,
+            }),
+          );
+          expect(handoff.ok, `createHandoff succeeded: ${JSON.stringify(handoff)}`).toBe(true);
+          const handoffUrl = String(handoff.url);
+
+          const parsed = new URL(handoffUrl);
+          expect(parsed.origin, `handoff URL (${handoffUrl}) targets this deployment`).toBe(
+            new URL(target.baseUrl).origin,
+          );
+          expect(parsed.pathname).toBe(`/${orgSlug}/integrations/${integration}`);
+          // The agent's URL carries the client id but NOT the secret.
+          expect(handoffUrl).toContain(oauth.clientId);
+          expect(
+            handoffUrl.includes(oauth.clientSecret),
+            "the handoff URL never carries the client secret",
+          ).toBe(false);
+
+          // 2. The human opens the URL: the Register-OAuth-app form is open and
+          //    pre-filled from the handoff. They type ONLY the secret.
+          yield* browser.session(identity, async ({ page, step }) => {
+            await step("Open the agent's handoff URL", async () => {
+              await visit(page, handoffUrl);
+            });
+
+            await step("The Register-OAuth-app form auto-opens, pre-filled", async () => {
+              await page
+                .getByRole("heading", { name: "Register OAuth app" })
+                .waitFor({ timeout: 20_000 });
+              // The agent's non-secret fields pre-filled — this is the whole point
+              // of the handoff: the human verifies, they don't re-type.
+              await expect
+                .poll(() => page.locator("#oauth-client-id").inputValue())
+                .toBe(oauth.clientId);
+              await expect
+                .poll(() => page.locator("#grant-client_credentials").isChecked())
+                .toBe(true);
+            });
+
+            await step("The human types the client secret (only the secret)", async () => {
+              const secret = page.locator("#oauth-client-secret");
+              await secret.waitFor({ timeout: 15_000 });
+              await secret.fill(oauth.clientSecret);
+            });
+
+            await step("Register the app", async () => {
+              await page.getByRole("button", { name: "Register app", exact: true }).click();
+              // onCreated returns to the Add-connection view — the register form closes.
+              await page
+                .getByRole("heading", { name: "Register OAuth app" })
+                .waitFor({ state: "hidden", timeout: 20_000 });
+            });
+          });
+
+          // 3. The agent discovers the browser-registered client and completes the
+          //    connection — client credentials need no user consent.
+          const listed = yield* executeJson(session, listClientSlugsCode);
+          expect(
+            (listed.slugs as ReadonlyArray<string> | undefined)?.includes(clientSlug),
+            `the agent sees the human-registered client: ${JSON.stringify(listed)}`,
+          ).toBe(true);
+
+          const started = yield* executeJson(
+            session,
+            startConnectionCode({
+              slug: clientSlug,
+              integration,
+              connection,
+              template: String(template),
+            }),
+          );
+          expect(started.ok, `oauth.start succeeded: ${JSON.stringify(started)}`).toBe(true);
+          expect(started.status, "client-credentials OAuth connected without browser consent").toBe(
+            "connected",
+          );
+
+          // 4. The emulator ledger proves Executor exchanged THIS app's credentials.
+          const ledger = yield* Effect.promise(() => emulator.ledger.list());
+          const tokenRequest = ledger.find(
+            (entry) =>
+              entry.path === "/oauth2/v2.0/token" &&
+              JSON.stringify(entry.request.body ?? "").includes(oauth.clientId),
+          );
+          expect(
+            tokenRequest?.response.status,
+            "the emulator recorded a client-credentials token exchange for this app",
+          ).toBe(200);
+          expect(tokenRequest?.request.body).toMatchObject({ grant_type: "client_credentials" });
+        }),
+        // Best-effort teardown: selfhost shares one workspace, so remove everything.
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({
+              params: {
+                owner: "org",
+                integration: IntegrationSlug.make(integration),
+                name: ConnectionName.make(connection),
+              },
+            })
+            .pipe(Effect.ignore);
+          yield* client.oauth
+            .removeClient({
+              params: { slug: OAuthClientSlug.make(clientSlug) },
+              payload: { owner: "org" },
+            })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
+        }).pipe(Effect.ignore),
+      );
+    }),
+  ),
 );

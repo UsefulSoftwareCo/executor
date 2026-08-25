@@ -304,7 +304,8 @@ jobs:
         if: matrix.target == 'cloud'
         env:
           MCP_SESSION_TIMEOUT_MS: "3000"
-          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
+          # Must outlive a browser approval; see e2e/setup/mcp-session-timeouts.ts.
+          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "30000"
         run: bun scripts/run-ci-shard.ts cloud ${{ matrix['shard-index'] }}
         working-directory: e2e
 

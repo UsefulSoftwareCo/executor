@@ -23,8 +23,14 @@ Stable contracts live here. Current setup and server mechanics are in
 Tests and demos that need an upstream API, OAuth/OIDC provider, or webhook use
 the published `@executor-js/emulate` emulators rather than stubs. They provide
 wire-level state, real-shaped credentials, OpenAPI descriptions, and request
-ledgers. Create per-run hosted instances through the service's
-`/_emulate/instances` control route.
+ledgers. Spawn a per-scenario instance IN PROCESS — `createEmulatorInstance`
+(`e2e/src/emulator-instance.ts`) for a scenario, `createEmulator` for a target's
+own stack. A scenario that runs entirely on this machine must not need the
+public internet to pass: a hosted instance makes the runner's network, and its
+egress IP's rate limits, part of every assertion. Reach for the hosted
+`/_emulate/instances` control route only when exercising the deployed service
+IS the point of the scenario, and keep an in-process counterpart for the
+contract itself.
 
 Emulate is a separate project. Make emulator changes there and consume the
 published package here; never re-vendor or create a parallel fake inside
