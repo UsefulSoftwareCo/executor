@@ -8,7 +8,7 @@
 //      legitimately retain state in that session. The pool keeps one idle
 //      connection per resolved identity and leases it exclusively per invoke;
 //      stdio and callers without a pool remain strictly per-call.
-//   2. Installing a per-invocation `ElicitRequestSchema` handler that bridges
+//   2. Installing a per-invocation `elicitation/create` handler that bridges
 //      MCP's elicit capability into the host's elicit function threaded via
 //      `InvokeToolInput.elicit`.
 //   3. Calling `client.callTool({ name, arguments })`.
@@ -16,12 +16,7 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import {
-  ElicitRequestSchema,
-  ErrorCode,
-  McpError,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/client";
 
 import {
   ElicitationId,
@@ -66,9 +61,10 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
 
 const isUnknownToolCause = (cause: unknown, toolName: string): boolean =>
   // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK surfaces JSON-RPC protocol errors as this Error subclass
-  cause instanceof McpError &&
-  (cause.code === ErrorCode.InvalidParams || cause.code === ErrorCode.MethodNotFound) &&
-  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: instanceof narrows to the SDK's McpError, whose message carries the only unknown-tool discriminator the protocol provides
+  cause instanceof ProtocolError &&
+  (cause.code === ProtocolErrorCode.InvalidParams ||
+    cause.code === ProtocolErrorCode.MethodNotFound) &&
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: instanceof narrows to the SDK's ProtocolError, whose message carries the only unknown-tool discriminator the protocol provides
   isUnknownToolMessage(cause.message, toolName);
 
 // ---------------------------------------------------------------------------
@@ -93,6 +89,17 @@ const McpElicitParams = Schema.Union([
 type McpElicitParams = typeof McpElicitParams.Type;
 
 const decodeElicitParams = Schema.decodeUnknownSync(McpElicitParams);
+const decodeElicitContent = Schema.decodeUnknownSync(
+  Schema.Record(
+    Schema.String,
+    Schema.Union([
+      Schema.String,
+      Schema.Number,
+      Schema.Boolean,
+      Schema.mutable(Schema.Array(Schema.String)),
+    ]),
+  ),
+);
 
 const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
   params.mode === "url"
@@ -107,7 +114,7 @@ const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
       });
 
 const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
-  client.setRequestHandler(ElicitRequestSchema, async (request: { params: unknown }) => {
+  client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {
     const params = decodeElicitParams(request.params);
     const req = toElicitationRequest(params);
     // Use runPromiseExit so we can inspect typed failures — `elicit`
@@ -119,7 +126,9 @@ const installElicitationHandler = (client: McpConnection["client"], elicit: Elic
       const response = exit.value;
       return {
         action: response.action,
-        ...(response.action === "accept" && response.content ? { content: response.content } : {}),
+        ...(response.action === "accept" && response.content
+          ? { content: decodeElicitContent(response.content) }
+          : {}),
       };
     }
     const failure = exit.cause.reasons.find(Cause.isFailReason);
@@ -149,7 +158,7 @@ const installToolListChangedHandler = (
   onToolListChanged: (() => void) | undefined,
 ): void => {
   if (!onToolListChanged) return;
-  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+  client.setNotificationHandler("notifications/tools/list_changed", () => {
     onToolListChanged();
   });
 };
@@ -189,8 +198,8 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK protocol failures are its McpError subclass; transport failures use other error shapes
-        const protocolFailure = cause instanceof McpError;
+        // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK protocol failures are its ProtocolError subclass; transport failures use other error shapes
+        const protocolFailure = cause instanceof ProtocolError;
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,

@@ -1,9 +1,8 @@
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import * as z from "zod/v4";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
+import { CallToolResultSchema } from "@modelcontextprotocol/core";
 
 import {
   authToolFailure,
@@ -62,6 +61,7 @@ import {
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
+  McpStdioVersionNegotiation,
   parseMcpIntegrationConfig,
   type McpIntegrationConfig as McpIntegrationConfigType,
   type McpStdioEnvMethod,
@@ -208,6 +208,11 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  instead and leaves the values to the connect step. */
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   cwd: Schema.optional(Schema.String),
+  /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
+   *  2026-07-28) for modern-only servers. Defaults to the legacy `initialize`
+   *  handshake — the right call for spawn-per-call servers, where the auto
+   *  probe costs an extra child process per connect. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
   slug: Schema.optional(Schema.String),
 });
 
@@ -371,6 +376,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
+      versionNegotiation: input.versionNegotiation,
       authenticationTemplate:
         vars.length > 0
           ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars }]
@@ -393,7 +399,7 @@ type JsonSchemaObject = Record<string, unknown> & {
   readonly properties?: Record<string, unknown>;
 };
 
-const McpCallToolResultJsonSchema = z.toJSONSchema(CallToolResultSchema) as JsonSchemaObject;
+const McpCallToolResultJsonSchema: JsonSchemaObject = CallToolResultSchema.toJSONSchema();
 
 const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
   const defaultStructuredContentSchema =
@@ -494,7 +500,9 @@ export const userFacingProbeMessage = (
 // MCP-SDK OAuth provider adapter — wraps a pre-resolved access token so the
 // transport sends it as a Bearer header. Refresh is core's responsibility
 // (the connection row carries the OAuth grant); this adapter never initiates
-// a new flow and fails loudly if the SDK tries to.
+// a new flow and fails loudly if the SDK tries to. V2 stamps stored credentials
+// with the authorization-server issuer and offers scoped invalidation; this
+// single-token boundary intentionally persists neither.
 // ---------------------------------------------------------------------------
 
 const makeOAuthProvider = (accessToken: string): OAuthClientProvider => ({
@@ -587,6 +595,7 @@ const buildConnectorInput = (
       args: config.args,
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
+      versionNegotiation: config.versionNegotiation,
     } satisfies McpStdioIntegrationConfig);
   }
 
@@ -1045,6 +1054,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 command: config.command,
                 args: config.args,
                 cwd: config.cwd,
+                versionNegotiation: config.versionNegotiation,
                 authenticationTemplate: hasEnv
                   ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars: envVars }]
                   : [{ slug: "none", kind: "none" }],
