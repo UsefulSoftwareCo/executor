@@ -19,6 +19,8 @@
 import { Data, Effect, Option, Predicate, Schema } from "effect";
 import * as oauth from "oauth4webapi";
 
+import type { SubjectTokenType } from "./oauth-client";
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -57,6 +59,20 @@ export const OAUTH2_REFRESH_SKEW_MS = 60_000;
 
 /** Default token-endpoint timeout. */
 export const OAUTH2_DEFAULT_TIMEOUT_MS = 20_000;
+
+/** RFC 8693 §2.1 token-exchange grant. */
+export const TOKEN_EXCHANGE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/** RFC 7523 §2.1 JWT bearer authorization grant — how an ID-JAG is redeemed
+ *  at the Resource Authorization Server (id-jag draft §4.4). */
+export const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+/** id-jag draft §4.3 `requested_token_type` / §4.3.4 `issued_token_type`. */
+export const ID_JAG_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id-jag";
+
+/** id-jag draft §4.3.4: an ID-JAG is not an OAuth access token, so the token
+ *  exchange response MUST carry this `token_type` sentinel. */
+export const ID_JAG_TOKEN_TYPE_SENTINEL = "N_A";
 
 export interface OAuthEndpointUrlPolicy {
   readonly allowHttp?: boolean;
@@ -439,7 +455,12 @@ const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2E
  *  response URL and a body preview), never token or code material. */
 const withTokenRequestSpan =
   (input: {
-    readonly grantType: "authorization_code" | "client_credentials" | "refresh_token";
+    readonly grantType:
+      | "authorization_code"
+      | "client_credentials"
+      | "refresh_token"
+      | typeof TOKEN_EXCHANGE_GRANT_TYPE
+      | typeof JWT_BEARER_GRANT_TYPE;
     readonly tokenUrl: string;
     readonly clientAuth: ClientAuthMethod | undefined;
     readonly hasResource: boolean;
@@ -951,6 +972,270 @@ export const refreshAccessToken = (
       tokenUrl: input.tokenUrl,
       clientAuth: input.clientAuth,
       hasResource: input.resource !== undefined,
+    }),
+  );
+
+// ---------------------------------------------------------------------------
+// RFC 8693 token exchange → Identity Assertion JWT Authorization Grant
+//
+// The IdP's response is NOT an OAuth access-token response: `token_type` is the
+// `N_A` sentinel (id-jag draft §4.3.4), which `oauth4webapi`'s response
+// processors reject outright. So the request goes out through the library's
+// grant-agnostic `genericTokenEndpointRequest` and the body is parsed here,
+// against the exact shape the draft specifies.
+// ---------------------------------------------------------------------------
+
+const TokenErrorEnvelopeSchema = Schema.Struct({
+  error: Schema.String,
+  error_description: Schema.optional(Schema.String),
+});
+const decodeTokenErrorEnvelope = Schema.decodeUnknownOption(TokenErrorEnvelopeSchema);
+
+const IdJagResponseSchema = Schema.Struct({
+  access_token: Schema.String,
+  issued_token_type: Schema.String,
+  token_type: Schema.String,
+  expires_in: Schema.optional(Schema.Number),
+  scope: Schema.optional(Schema.String),
+}).annotate({ identifier: "IdJagTokenExchangeResponse" });
+const decodeIdJagResponse = Schema.decodeUnknownEffect(IdJagResponseSchema);
+
+/** An Identity Assertion JWT Authorization Grant as returned by the IdP's token
+ *  exchange (id-jag draft §4.3.4). `assertion` is the JWT itself — carried in
+ *  the response's `access_token` field "for historical reasons", per the draft,
+ *  and renamed here so no caller mistakes it for an access token. */
+export type IdJagGrant = {
+  readonly assertion: string;
+  /** Granted scopes echoed by the IdP. Absent when the IdP granted exactly what
+   *  was requested; policy MAY narrow the set (§4.3.3). */
+  readonly scope?: string;
+  readonly expiresIn?: number;
+};
+
+const failOAuth2FromErrorResponse = (
+  response: Response,
+  fallbackMessage: string,
+): Effect.Effect<never, OAuth2Error> =>
+  Effect.promise(async () => {
+    const text = await Promise.resolve()
+      .then(() => response.clone().text())
+      .then(
+        (value) => value,
+        () => "",
+      );
+    const envelope = text.length > 0 ? decodeTokenErrorEnvelope(safeJson(text)) : Option.none();
+    const summary = await tokenEndpointHttpSummary(response);
+    return Option.match(envelope, {
+      onNone: () => new OAuth2Error({ message: `${fallbackMessage} (${summary})` }),
+      onSome: (parsed) =>
+        new OAuth2Error({
+          message: `${fallbackMessage}: ${parsed.error}${
+            parsed.error_description ? ` — ${parsed.error_description}` : ""
+          } (${summary})`,
+          error: parsed.error,
+        }),
+    });
+  }).pipe(Effect.flatMap((error) => Effect.fail(error)));
+
+/** Structurally probe an untrusted upstream body. Returns `undefined` rather
+ *  than a fabricated value when it is not JSON; the caller's schema decode
+ *  decides what an absent envelope means. */
+const safeJson = (text: string): unknown => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted token-endpoint error body; unparseable means "no RFC 6749 envelope"
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is immediately decoded through TokenErrorEnvelopeSchema
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+export type ExchangeSubjectTokenForIdJagInput = {
+  /** The enterprise IdP's token endpoint. */
+  readonly tokenUrl: string;
+  readonly issuerUrl?: string | null;
+  /** The client's registration AT THE IdP — a different relationship from its
+   *  registration at the Resource Authorization Server (id-jag draft §5). */
+  readonly clientId: string;
+  readonly clientSecret?: string | null;
+  readonly clientAuth?: ClientAuthMethod;
+  /** The identity assertion (or IdP refresh token) standing in for the user. */
+  readonly subjectToken: string;
+  readonly subjectTokenType: SubjectTokenType;
+  /** REQUIRED — the issuer identifier of the Resource Authorization Server
+   *  (id-jag draft §4.3; EMA profile §4 narrows it to exactly that). */
+  readonly audience: string;
+  /** OPTIONAL RFC 8707 resource identifier of the MCP server (EMA profile §4). */
+  readonly resource?: string | null;
+  readonly scopes?: readonly string[];
+  readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
+};
+
+/** Exchange an enterprise identity assertion for an ID-JAG at the IdP's token
+ *  endpoint (id-jag draft §4.3).
+ *
+ *  The response is validated STRICTLY: an `issued_token_type` other than the
+ *  id-jag URN, or a `token_type` other than `N_A`, means the IdP answered with
+ *  something that is not an authorization grant. Accepting it would hand a
+ *  bearer token to a Resource Authorization Server as if it were a signed
+ *  assertion, so those responses fail rather than being coerced. */
+export const exchangeSubjectTokenForIdJag = (
+  input: ExchangeSubjectTokenForIdJagInput,
+): Effect.Effect<IdJagGrant, OAuth2Error> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: async () => {
+        const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
+          endpointUrlPolicy: input.endpointUrlPolicy,
+        });
+        const client: oauth.Client = { client_id: input.clientId };
+        const clientAuth = pickClientAuth(
+          input.clientSecret,
+          input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+        );
+        const params = new URLSearchParams({
+          requested_token_type: ID_JAG_TOKEN_TYPE,
+          audience: input.audience,
+          subject_token: input.subjectToken,
+          subject_token_type: input.subjectTokenType,
+        });
+        if (input.resource) params.set("resource", input.resource);
+        if (input.scopes && input.scopes.length > 0) {
+          params.set("scope", input.scopes.join(" "));
+        }
+        return await oauth.genericTokenEndpointRequest(
+          as,
+          client,
+          clientAuth,
+          TOKEN_EXCHANGE_GRANT_TYPE,
+          params,
+          oauth4webapiRequestOptions(
+            input.tokenUrl,
+            input.timeoutMs,
+            input.endpointUrlPolicy,
+            input.fetch,
+          ),
+        );
+      },
+      catch: (cause) => cause,
+    }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+
+    if (!response.ok) {
+      return yield* failOAuth2FromErrorResponse(response, "ID-JAG token exchange was rejected");
+    }
+
+    const body = yield* Effect.promise(() =>
+      response
+        .clone()
+        .json()
+        .then(
+          (value: unknown) => value,
+          () => null,
+        ),
+    );
+    const parsed = yield* decodeIdJagResponse(body).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OAuth2Error({
+            message: "ID-JAG token exchange response did not match RFC 8693 §2.2.1",
+            cause,
+          }),
+      ),
+    );
+    if (parsed.issued_token_type !== ID_JAG_TOKEN_TYPE) {
+      return yield* new OAuth2Error({
+        message: `ID-JAG token exchange returned issued_token_type "${parsed.issued_token_type}", expected "${ID_JAG_TOKEN_TYPE}"`,
+      });
+    }
+    if (parsed.token_type !== ID_JAG_TOKEN_TYPE_SENTINEL) {
+      return yield* new OAuth2Error({
+        message: `ID-JAG token exchange returned token_type "${parsed.token_type}", expected "${ID_JAG_TOKEN_TYPE_SENTINEL}"`,
+      });
+    }
+    return {
+      assertion: parsed.access_token,
+      ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+      ...(parsed.expires_in === undefined ? {} : { expiresIn: parsed.expires_in }),
+    } satisfies IdJagGrant;
+  }).pipe(
+    withTokenRequestSpan({
+      grantType: TOKEN_EXCHANGE_GRANT_TYPE,
+      tokenUrl: input.tokenUrl,
+      clientAuth: input.clientAuth,
+      hasResource: input.resource != null,
+    }),
+  );
+
+// ---------------------------------------------------------------------------
+// RFC 7523 JWT bearer redemption — present the ID-JAG at the Resource
+// Authorization Server (id-jag draft §4.4).
+// ---------------------------------------------------------------------------
+
+export type RedeemIdJagInput = {
+  /** The Resource Authorization Server's token endpoint. */
+  readonly tokenUrl: string;
+  readonly issuerUrl?: string | null;
+  /** The client's registration AT THE RESOURCE AUTHORIZATION SERVER. The ID-JAG's
+   *  `client_id` claim names this same client (§4.4.1 client continuity). */
+  readonly clientId: string;
+  readonly clientSecret?: string | null;
+  readonly clientAuth?: ClientAuthMethod;
+  readonly assertion: string;
+  readonly resource?: string | null;
+  readonly scopes?: readonly string[];
+  readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
+};
+
+/** Redeem an ID-JAG for an access token audience-restricted to the MCP server
+ *  (id-jag draft §4.4). The response IS an ordinary OAuth token response, so it
+ *  goes through the same processing as every other grant here. Per §4.4.3 the
+ *  server SHOULD NOT issue a refresh token; when one arrives anyway it is
+ *  simply not persisted — the ID-JAG chain is the renewal path. */
+export const redeemIdJagAssertion = (
+  input: RedeemIdJagInput,
+): Effect.Effect<OAuth2TokenResponse, OAuth2Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
+        endpointUrlPolicy: input.endpointUrlPolicy,
+      });
+      const client: oauth.Client = { client_id: input.clientId };
+      const clientAuth = pickClientAuth(
+        input.clientSecret,
+        input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+      );
+      const params = new URLSearchParams({ assertion: input.assertion });
+      if (input.resource) params.set("resource", input.resource);
+      if (input.scopes && input.scopes.length > 0) {
+        params.set("scope", input.scopes.join(" "));
+      }
+      const response = await oauth.genericTokenEndpointRequest(
+        as,
+        client,
+        clientAuth,
+        JWT_BEARER_GRANT_TYPE,
+        params,
+        oauth4webapiRequestOptions(
+          input.tokenUrl,
+          input.timeoutMs,
+          input.endpointUrlPolicy,
+          input.fetch,
+        ),
+      );
+      return await processTokenEndpointResponse(as, client, response);
+    },
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch(failOAuth2WithHttpSummary),
+    withTokenRequestSpan({
+      grantType: JWT_BEARER_GRANT_TYPE,
+      tokenUrl: input.tokenUrl,
+      clientAuth: input.clientAuth,
+      hasResource: input.resource != null,
     }),
   );
 

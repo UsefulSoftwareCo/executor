@@ -13,6 +13,31 @@ import {
   type Owner,
 } from "./ids";
 
+/** RFC 8693 §3 security token type identifiers usable as a `subject_token_type`
+ *  when exchanging an enterprise identity assertion for an ID-JAG. The id-jag
+ *  draft §4.3 profiles `id_token` and `saml2` for identity assertions and
+ *  `refresh_token` for the re-issue path; `access_token` is the RFC 8693 base
+ *  type some enterprise IdPs mint their SSO assertion as. */
+export const SUBJECT_TOKEN_TYPES = [
+  "urn:ietf:params:oauth:token-type:id_token",
+  "urn:ietf:params:oauth:token-type:saml2",
+  "urn:ietf:params:oauth:token-type:refresh_token",
+  "urn:ietf:params:oauth:token-type:access_token",
+] as const;
+
+export const SubjectTokenTypeSchema = Schema.Literals(SUBJECT_TOKEN_TYPES).annotate({
+  identifier: "SubjectTokenType",
+  description:
+    "RFC 8693 identifier for the security token presented as `subject_token` when exchanging an enterprise identity assertion for an ID-JAG.",
+});
+export type SubjectTokenType = typeof SubjectTokenTypeSchema.Type;
+
+/** The `subject_token_type` used when a caller does not state one. An OpenID
+ *  Connect ID Token is the identity assertion the id-jag draft §4.3 requires
+ *  every IdP to accept, so it is the only defensible default. */
+export const DEFAULT_SUBJECT_TOKEN_TYPE: SubjectTokenType =
+  "urn:ietf:params:oauth:token-type:id_token";
+
 /* The v2 OAuth surface contracts. OAuth is a credential mechanism, not an
  * integration type. A client is a registered app; running its flow mints a
  * Connection. The client is self-contained (carries its own endpoints) and
@@ -23,7 +48,13 @@ import {
  * `oauth-helpers` / `oauth-discovery` / `oauth-service`; these are the public
  * input/output shapes the executor's `oauth.*` namespace speaks. */
 
-export type OAuthGrant = "authorization_code" | "client_credentials";
+/** `id_jag` is the MCP Enterprise-Managed Authorization profile
+ *  (draft-ietf-oauth-identity-assertion-authz-grant §4): the client presents an
+ *  enterprise identity assertion instead of walking the user through consent.
+ *  Such a client's `clientId`/`clientSecret`/`tokenUrl` are its registration at
+ *  the MCP server's Resource Authorization Server — the IdP registration is a
+ *  second client, named on the connect request. */
+export type OAuthGrant = "authorization_code" | "client_credentials" | "id_jag";
 
 /** Provider OAuth config an integration declares as one of its auth templates —
  *  what to request. (The flow itself runs off the self-contained OAuthClient.)
@@ -220,6 +251,27 @@ export interface OAuthStartInput {
   readonly newConnection?: boolean;
   /** Browser-facing callback URL for this flow. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
+  /** Enterprise-managed authorization inputs, required when `client.grant` is
+   *  `id_jag` and ignored otherwise. Carries the SECOND client registration
+   *  (the one at the enterprise IdP) and the identity assertion the user
+   *  already holds from single sign-on. */
+  readonly enterprise?: EnterpriseManagedStartInput;
+}
+
+/** What an enterprise-managed connect needs beyond the ordinary start inputs.
+ *  The subject token is supplied by the caller because "where the identity
+ *  assertion comes from" is a host concern: a desktop app holds its own SSO
+ *  tokens, a hosted deployment holds the session's. */
+export interface EnterpriseManagedStartInput {
+  /** `oauth_client` slug of the client's registration at the enterprise IdP. */
+  readonly idpClient: OAuthClientSlug;
+  readonly idpClientOwner: Owner;
+  /** The identity assertion from single sign-on with the IdP (an OIDC ID token
+   *  by default). Persisted through the credential provider so token renewal
+   *  needs no further user interaction. */
+  readonly subjectToken: string;
+  /** RFC 8693 §3 type of `subjectToken`. Defaults to an OIDC ID token. */
+  readonly subjectTokenType?: SubjectTokenType;
 }
 
 export interface OAuthCompleteInput {
