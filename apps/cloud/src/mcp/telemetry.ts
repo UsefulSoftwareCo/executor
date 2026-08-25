@@ -102,7 +102,10 @@ const InitializeParams = Schema.Struct({
   capabilities: Schema.optional(UnknownRecord),
 });
 
-const NamedParams = Schema.Struct({ name: Schema.optional(Schema.String) });
+const NamedParams = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  arguments: Schema.optional(UnknownRecord),
+});
 const UriParams = Schema.Struct({ uri: Schema.optional(Schema.String) });
 
 // `notifications/cancelled` carries no JSON-RPC id of its own, but its params
@@ -134,6 +137,29 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
     Effect.withSpan("mcp.request.read_json_rpc"),
   );
 
+// Managed-cloud capture of the executed script, on the `mcp.request` span
+// beside the client fingerprint. This module is cloud-only by construction —
+// local/self-host telemetry never records content — and cloud persists
+// executions for the execution-history feature anyway, so the script is
+// already tenant-visible data. Capped so a pathological payload can't
+// balloon the span.
+const MAX_CODE_ATTR_CHARS = 10_000;
+
+const executeCodeAttrs = (
+  name: string | undefined,
+  args: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  if (name !== "execute" && name !== "execute-action") return {};
+  const code = args?.["code"];
+  if (typeof code !== "string") return {};
+  return {
+    "mcp.execute.code":
+      code.length > MAX_CODE_ATTR_CHARS
+        ? `${code.slice(0, MAX_CODE_ATTR_CHARS)}\n… [truncated ${code.length - MAX_CODE_ATTR_CHARS} chars]`
+        : code,
+  };
+};
+
 const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
   const params = envelope.params ?? {};
   return Match.value(envelope.method).pipe(
@@ -154,7 +180,10 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
     Match.when("tools/call", () =>
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
-        onSome: ({ name }) => (name ? { "mcp.tool.name": name } : {}),
+        onSome: ({ name, arguments: args }) => ({
+          ...(name ? { "mcp.tool.name": name } : {}),
+          ...executeCodeAttrs(name, args),
+        }),
       }),
     ),
     Match.whenOr("resources/read", "resources/subscribe", () =>

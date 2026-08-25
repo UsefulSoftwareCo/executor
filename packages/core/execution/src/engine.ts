@@ -63,18 +63,40 @@ export type ResumeResponse = {
 const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
 
 /**
+ * Approximate size of the value a script returned, before any preview
+ * truncation. This is the "did the model narrow in code or dump the raw
+ * payload" metric: a compact JSON length, not the pretty-printed preview the
+ * model receives, so treat it as magnitude. -1 means unmeasurable (a value
+ * `JSON.stringify` rejects, e.g. a BigInt) — unknown size, not zero.
+ */
+const measureResultChars = (value: unknown): number => {
+  if (value == null) return 0;
+  if (typeof value === "string") return value.length;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort size probe over an arbitrary sandbox value; a stringify rejection must not fail the execution path
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return -1;
+  }
+};
+
+/**
  * Stamp the current `mcp.execute` / `mcp.execute.resume` span with how the
- * execution ended. Sandbox failures ride the success channel as
- * `ExecuteResult.error`, so without this the span reads OK and the failure
- * class is unqueryable. Attributes stay enumerable identifiers — never the
- * error message itself.
+ * execution ended and how much data it sent back toward model context.
+ * Sandbox failures ride the success channel as `ExecuteResult.error`, so
+ * without this the span reads OK and the failure class is unqueryable.
+ * Attributes stay enumerable identifiers and sizes — never the error message
+ * or result content itself.
  */
 const annotateExecuteOutcome = (result: ExecuteResult) =>
-  Effect.annotateCurrentSpan(
-    result.error
+  Effect.annotateCurrentSpan({
+    "mcp.execute.result_chars": measureResultChars(result.result),
+    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
+    "mcp.execute.emitted": result.output?.length ?? 0,
+    ...(result.error
       ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
-      : { "mcp.execute.outcome": "ok" },
-  );
+      : { "mcp.execute.outcome": "ok" }),
+  });
 
 const annotateExecutionOutcome = (execution: ExecutionResult) =>
   execution.status === "paused"
