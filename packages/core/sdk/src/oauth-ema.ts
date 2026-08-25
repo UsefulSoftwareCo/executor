@@ -185,14 +185,6 @@ export type EnterpriseManagedAuthorizationError =
   | EmaRedemptionRejected
   | EmaUpstreamUnavailable;
 
-/** Whether a failure leaves the ordinary interactive OAuth flow available.
- *  Exactly one failure mode does. Everything else is either an enterprise
- *  policy decision that must not be routed around, or a condition an
- *  interactive flow would not fix. */
-export const permitsInteractiveFallback = (
-  error: EnterpriseManagedAuthorizationError,
-): error is EmaGrantProfileUnsupported => error._tag === "EmaGrantProfileUnsupported";
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -253,23 +245,28 @@ export interface EnterpriseManagedGrant {
 // ---------------------------------------------------------------------------
 
 const exchangeFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationError => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error declares `message` as a field; this is a typed failure, not an unknown throwable
+  const detail = cause.message;
   // RFC 6749 §5.2: `invalid_grant` is the code for a grant that is invalid,
   // expired or revoked — here, the identity assertion the client presented. Any
   // OTHER definitive code is the IdP declining to authorize this client for
   // this target, which is an administrator decision.
   if (cause.error === "invalid_grant") {
-    return new EmaSubjectTokenRejected({ detail: cause.message });
+    return new EmaSubjectTokenRejected({ detail });
   }
   if (cause.error !== undefined) {
-    return new EmaPolicyDenied({ error: cause.error, detail: cause.message });
+    return new EmaPolicyDenied({ error: cause.error, detail });
   }
-  return new EmaUpstreamUnavailable({ step: "token-exchange", detail: cause.message });
+  return new EmaUpstreamUnavailable({ step: "token-exchange", detail });
 };
 
-const redemptionFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationError =>
-  cause.error === undefined
-    ? new EmaUpstreamUnavailable({ step: "redemption", detail: cause.message })
-    : new EmaRedemptionRejected({ error: cause.error, detail: cause.message });
+const redemptionFailure = (cause: OAuth2Error): EnterpriseManagedAuthorizationError => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: see `exchangeFailure` above
+  const detail = cause.message;
+  return cause.error === undefined
+    ? new EmaUpstreamUnavailable({ step: "redemption", detail })
+    : new EmaRedemptionRejected({ error: cause.error, detail });
+};
 
 /** Run the two-step grant: exchange the identity assertion for an ID-JAG at the
  *  IdP, then redeem the ID-JAG at the Resource Authorization Server.

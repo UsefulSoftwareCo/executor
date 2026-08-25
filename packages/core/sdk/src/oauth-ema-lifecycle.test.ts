@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -244,7 +244,7 @@ describe("enterprise-managed connections", () => {
           .start(startEnterpriseConnect(servers))
           .pipe(Effect.flip);
 
-        expect(failure._tag).toBe("OAuthStartError");
+        expect(Predicate.isTagged(failure, "OAuthStartError")).toBe(true);
         expect(
           String(failure.message),
           "the user is told their organization declined, not offered a way around it",

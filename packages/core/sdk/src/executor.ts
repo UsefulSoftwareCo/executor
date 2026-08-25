@@ -172,6 +172,7 @@ import {
   ENTERPRISE_MANAGED_PROVIDER_STATE_KEY,
   enterpriseManagedStateFrom,
   mintEnterpriseManagedAccessToken,
+  type EnterpriseManagedAuthorizationError,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome } from "./tool-result";
@@ -1872,6 +1873,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
+    /** The rendered message of a typed enterprise-managed failure. Every member
+     *  of the union declares `message` as a getter over its own typed fields,
+     *  so this is a projection, not a read off an unknown throwable. */
+    const enterpriseManagedMessage = (cause: EnterpriseManagedAuthorizationError): string =>
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: see above
+      cause.message;
+
     /** Re-mint an enterprise-managed access token: exchange the stored identity
      *  assertion for a fresh ID-JAG at the enterprise IdP, then redeem it at the
      *  MCP server's authorization server. Runs with no user interaction, which
@@ -1937,54 +1945,60 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           endpointUrlPolicy: config.oauthEndpointUrlPolicy,
           fetch: config.fetch,
         }).pipe(
-          Effect.mapError((cause) => {
-            // A policy denial and a dead identity assertion are both definitive
-            // — neither retries into success — but they are DIFFERENT products:
-            // one is "your administrator has not allowed this", the other is
-            // "sign in again". Only the transport failure stays a StorageError
-            // so the next invoke retries it.
-            switch (cause._tag) {
-              case "EmaPolicyDenied":
-                return new CredentialResolutionError({
+          // A policy denial and a dead identity assertion are both definitive —
+          // neither retries into success — but they are DIFFERENT products: one
+          // is "your administrator has not allowed this", the other is "sign in
+          // again". Only the transport failure stays a StorageError so the next
+          // invoke retries it.
+          Effect.catchTags({
+            EmaPolicyDenied: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
                   owner,
                   integration: IntegrationSlug.make(row.integration),
                   name: ConnectionName.make(row.name),
-                  message: cause.message,
+                  message: enterpriseManagedMessage(cause),
                   reauthRequired: true,
                   blockedByAdmin: true,
                   oauthErrorCode: cause.error,
-                });
-              case "EmaSubjectTokenRejected":
-                return new CredentialResolutionError({
+                }),
+              ),
+            EmaSubjectTokenRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
                   owner,
                   integration: IntegrationSlug.make(row.integration),
                   name: ConnectionName.make(row.name),
-                  message: cause.message,
+                  message: enterpriseManagedMessage(cause),
                   reauthRequired: true,
-                });
-              case "EmaRedemptionRejected":
-                return new CredentialResolutionError({
+                }),
+              ),
+            EmaRedemptionRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
                   owner,
                   integration: IntegrationSlug.make(row.integration),
                   name: ConnectionName.make(row.name),
-                  message: cause.message,
+                  message: enterpriseManagedMessage(cause),
                   reauthRequired: cause.error === "invalid_grant",
                   ...(cause.error === undefined ? {} : { oauthErrorCode: cause.error }),
-                });
-              case "EmaUpstreamUnavailable":
-                return new StorageError({ message: cause.message, cause });
-              // The profile is confirmed at connect and never re-discovered on
-              // this path, so this constructor is unreachable here; surface it
-              // as a reconnect rather than pretending it cannot happen.
-              case "EmaGrantProfileUnsupported":
-                return new CredentialResolutionError({
+                }),
+              ),
+            EmaUpstreamUnavailable: (cause) =>
+              Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
+            // The profile is confirmed at connect and never re-discovered on
+            // this path, so this arm is unreachable here; surface it as a
+            // reconnect rather than pretending it cannot happen.
+            EmaGrantProfileUnsupported: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
                   owner,
                   integration: IntegrationSlug.make(row.integration),
                   name: ConnectionName.make(row.name),
-                  message: cause.message,
+                  message: enterpriseManagedMessage(cause),
                   reauthRequired: true,
-                });
-            }
+                }),
+              ),
           }),
           Effect.tapError((error) =>
             Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true

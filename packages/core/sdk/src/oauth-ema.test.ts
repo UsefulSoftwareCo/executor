@@ -1,3 +1,6 @@
+// oxlint-disable executor/no-unknown-error-message -- boundary: every `.message`
+// read below is on a TYPED error under test (EMA / OAuth2Error), where the
+// rendered message is the assertion target.
 // ---------------------------------------------------------------------------
 // Protocol conformance for MCP Enterprise-Managed Authorization
 // (draft-ietf-oauth-identity-assertion-authz-grant-04).
@@ -11,14 +14,13 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Ref, Schema } from "effect";
+import { Effect, Predicate, Ref, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import { supportsIdJagGrantProfile } from "./oauth-discovery";
 import {
   EmaGrantProfileUnsupported,
   mintEnterpriseManagedAccessToken,
-  permitsInteractiveFallback,
   runEnterpriseManagedAuthorization,
   type EnterpriseManagedAuthorizationError,
 } from "./oauth-ema";
@@ -98,6 +100,7 @@ const chainInput = (fixture: EnterpriseFixture, scopes: readonly string[]) => ({
 const resourceMetadata = (fixture: EnterpriseFixture) =>
   Effect.gen(function* () {
     const response = yield* Effect.promise(() =>
+      // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: reads the fixture's metadata document exactly as the connect path's discovery does
       globalThis.fetch(`${fixture.resource.issuerUrl}/.well-known/oauth-authorization-server`),
     );
     return yield* Effect.promise(() => response.json() as Promise<never>);
@@ -227,10 +230,9 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           resourceAuthorizationServer: { clientId: CLIENT_AT_RESOURCE },
         }).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaGrantProfileUnsupported");
         expect(
-          permitsInteractiveFallback(error),
-          "a server that does not implement the profile gets the ordinary OAuth flow",
+          Predicate.isTagged(error, "EmaGrantProfileUnsupported"),
+          "the one tag the connect path catches: a server that does not implement the profile gets the ordinary OAuth flow",
         ).toBe(true);
         expect(
           (yield* fixture.idp.requests).some((entry) => entry.body.includes("token-exchange")),
@@ -262,13 +264,12 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           },
         ).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaPolicyDenied");
-        if (error._tag !== "EmaPolicyDenied") return;
-        expect(error.error).toBe("unauthorized_client");
         expect(
-          permitsInteractiveFallback(error),
-          "offering interactive OAuth here would route the user around enterprise policy",
-        ).toBe(false);
+          Predicate.isTagged(error, "EmaPolicyDenied"),
+          "offering interactive OAuth here would route the user around enterprise policy, so this tag is NOT the one the connect path catches",
+        ).toBe(true);
+        if (!Predicate.isTagged(error, "EmaPolicyDenied")) return;
+        expect(error.error).toBe("unauthorized_client");
         expect(
           (yield* fixture.resource.requests).some((entry) => entry.path === "/token"),
           "a denied exchange never reaches the resource authorization server",
@@ -287,8 +288,10 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           chainInput(fixture, ["mcp.read"]),
         ).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaSubjectTokenRejected");
-        expect(permitsInteractiveFallback(error)).toBe(false);
+        expect(
+          Predicate.isTagged(error, "EmaSubjectTokenRejected"),
+          "a dead assertion needs a fresh single sign-on, not the interactive per-server flow",
+        ).toBe(true);
       }),
     ),
   );
@@ -336,7 +339,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           chainInput(fixture, ["mcp.read"]),
         ).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaRedemptionRejected");
+        expect(Predicate.isTagged(error, "EmaRedemptionRejected")).toBe(true);
         expect(error.message).toContain("typ must be oauth-id-jag+jwt");
       }),
     ),
@@ -352,7 +355,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           chainInput(fixture, ["mcp.read"]),
         ).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaRedemptionRejected");
+        expect(Predicate.isTagged(error, "EmaRedemptionRejected")).toBe(true);
         expect(error.message).toContain("has expired");
       }),
     ),
@@ -371,7 +374,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
           chainInput(fixture, ["mcp.read"]),
         ).pipe(Effect.flip);
 
-        expect(error._tag).toBe("EmaRedemptionRejected");
+        expect(Predicate.isTagged(error, "EmaRedemptionRejected")).toBe(true);
         expect(error.message).toContain("does not match the authenticated client");
       }),
     ),
@@ -390,6 +393,7 @@ describe("enterprise-managed authorization: failure taxonomy", () => {
         });
 
         const response = yield* Effect.promise(() =>
+          // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: presents the assertion as a raw bearer token, which no product code path would do
           globalThis.fetch(fixture.resource.mcpResourceUrl, {
             method: "POST",
             headers: { authorization: `Bearer ${grant.assertion}` },
