@@ -52,6 +52,7 @@ import {
 } from "@executor-js/sdk";
 
 import executorConfig from "../../executor.config";
+import { cloudEnterpriseManagedRollout } from "../analytics/ema-rollout";
 import { DbService } from "../db/db";
 import { cloudDbProviderLayer } from "../db/fuma";
 
@@ -192,6 +193,11 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // user-selectable provider surface.
   exposeCredentialProviders: false,
   firstPartyOAuthClients: cloudFirstPartyOAuthClients(),
+  // Enterprise-managed authorization ships behind a PostHog flag. Cloud is the
+  // one host with a flag service, so cloud is the one host that installs a
+  // gate; everywhere else the seam stays empty and the profile is attempted as
+  // before. Gating happens at connect only — see the SDK contract.
+  enterpriseManagedRollout: cloudEnterpriseManagedRollout(),
 }));
 
 export const CloudCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
