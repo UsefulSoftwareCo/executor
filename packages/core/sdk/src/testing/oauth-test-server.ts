@@ -89,6 +89,8 @@ export interface OAuthTestServerOptions {
   /** Act as a Resource Authorization Server for the same profile: advertise it
    *  in RFC 8414 metadata and redeem ID-JAGs presented as RFC 7523 assertions. */
   readonly enterpriseResourceServer?: EnterpriseResourceServerOptions;
+  /** Advertise OAuth Client ID Metadata Document support alongside DCR. */
+  readonly clientIdMetadataDocumentSupported?: boolean;
 }
 
 export interface EnterpriseIdpOptions {
@@ -617,6 +619,9 @@ export const serveOAuthTestServer = (
             authorization_endpoint: `${currentIssuerUrl}/authorize`,
             token_endpoint: `${currentIssuerUrl}/token`,
             registration_endpoint: `${currentIssuerUrl}/register`,
+            ...(options.clientIdMetadataDocumentSupported === true
+              ? { client_id_metadata_document_supported: true }
+              : {}),
             response_types_supported: ["code"],
             grant_types_supported: [
               "authorization_code",
