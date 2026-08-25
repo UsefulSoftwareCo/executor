@@ -223,6 +223,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         resource: token.resource,
         elicitationMode: token.elicitationMode,
         artifactsEnabled: token.artifactsEnabled,
+        searchToolsEnabled: token.searchToolsEnabled,
       } satisfies SessionMeta;
     }).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
@@ -302,6 +303,9 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // persisted without a value restores to the default, same as a fresh
         // connection whose URL says nothing about `?artifacts=`.
         artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Per-integration search tools are off by default, opt-in per
+        // connection (`?search_tools=true`). Same restore rule as artifacts.
+        searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,

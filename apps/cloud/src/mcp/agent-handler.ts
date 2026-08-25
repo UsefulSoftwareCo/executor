@@ -13,6 +13,7 @@ import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
@@ -133,6 +134,7 @@ const propsForPrincipal = (
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
+        searchToolsEnabled: readSearchToolsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },

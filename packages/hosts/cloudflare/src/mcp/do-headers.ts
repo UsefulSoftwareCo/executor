@@ -125,11 +125,13 @@ export const withMcpResponseHeaders = (response: Response): Response => {
 };
 
 // The endpoint query contract — `?elicitation_mode=` (plus the legacy
-// `?allow_model_resume` alias) and the `?artifacts=` opt-in — is shared with
-// every host that serves these connections. Re-exported here so the worker
-// dispatcher's existing import site (`./do-headers`) is unchanged.
+// `?allow_model_resume` alias), the `?artifacts=` opt-out, and the
+// `?search_tools=` opt-in — is shared with every host that serves these
+// connections. Re-exported here so the worker dispatcher's existing import
+// site (`./do-headers`) is unchanged.
 export {
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
   type McpElicitationMode,
 } from "@executor-js/host-mcp/browser-approval";
