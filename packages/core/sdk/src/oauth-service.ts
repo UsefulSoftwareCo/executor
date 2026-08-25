@@ -65,10 +65,15 @@ import {
   type OAuthAuthorizationServerMetadata,
 } from "./oauth-discovery";
 import {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
   runEnterpriseManagedAuthorization,
   type EnterpriseManagedConnectionState,
   type EnterpriseManagedGrant,
   type EnterpriseManagedMintError,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
 } from "./oauth-ema";
 import {
   assertSupportedOAuthEndpointUrl,
@@ -212,6 +217,18 @@ export interface OAuthServiceDeps {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly fetch?: typeof globalThis.fetch;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  /**
+   * Host-owned rollout gate for enterprise-managed authorization (see
+   * {@link EnterpriseManagedRollout}). Consulted ONCE per `id_jag` connect,
+   * before discovery, and never again — not after the IdP has ruled, and not on
+   * the credential-refresh path, which follows the state persisted on the
+   * connection instead.
+   *
+   * OMITTED means enterprise-managed authorization is attempted, which is what
+   * every host did before this seam existed. Only a host that actually operates
+   * a flag service supplies one; core takes no dependency on any.
+   */
+  readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
   /**
    * The OAuth callback URL (`${webBaseUrl}${mountPrefix}/oauth/callback`) the host
    * serves and sends to providers on every authorization request + DCR registration.
@@ -592,6 +609,41 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // callback; redirect-requiring flows fail loudly via `requireRedirectUri`.
   const redirectUri = deps.redirectUri;
   const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy };
+
+  // -------------------------------------------------------------------------
+  // Enterprise-managed rollout seam.
+  //
+  // ROLLOUT SEMANTIC, stated once here because it is the whole reason the gate
+  // sits where it does: the gate answers "may this connect attempt the
+  // enterprise-managed path", and nothing else. It runs once, before discovery,
+  // so a withheld verdict costs no round trip and spends no identity assertion.
+  // The verdict it produces is then FROZEN onto the connection
+  // (`ENTERPRISE_MANAGED_PROVIDER_STATE_KEY`), and the credential-refresh path
+  // reads that state instead of re-asking. Turning the flag off therefore stops
+  // new enterprise-managed connects and leaves every existing one renewing — no
+  // stranded connections, no silent downgrade, and no third-party network
+  // dependency anywhere in credential resolution.
+  // -------------------------------------------------------------------------
+  const rollout = deps.enterpriseManagedRollout;
+
+  /** The gate's verdict, or "enabled" when no host injected a gate. */
+  const decideEnterpriseManagedRollout = (
+    context: EnterpriseManagedRolloutContext,
+  ): Effect.Effect<EnterpriseManagedRolloutDecision> =>
+    rollout === undefined
+      ? Effect.succeed(ENTERPRISE_MANAGED_ROLLOUT_ENABLED)
+      : rollout.decide(context);
+
+  /** Best-effort rollout observation. Failures AND defects are discarded here,
+   *  so no implementation of `record` can fail a connect or change its outcome;
+   *  keeping it off the critical path is the host's side of the contract.
+   *  Mirrors how `afterCommit` treats `onIntegrationChange`. */
+  const recordEnterpriseManagedRollout = (
+    event: EnterpriseManagedRolloutEvent,
+  ): Effect.Effect<void> =>
+    rollout === undefined
+      ? Effect.void
+      : rollout.record(event).pipe(Effect.ignoreCause({ log: false }));
 
   const filterAuthorizationCodeScopes = (
     client: LoadedOAuthClient,
@@ -1405,87 +1457,137 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // policy decision and stops here, because offering the interactive flow
       // instead would let the user route straight around it.
       if (client.grant === "id_jag") {
-        const enterprise = input.enterprise;
-        if (enterprise === undefined) {
-          return yield* new OAuthStartError({
-            message:
-              "This OAuth app uses enterprise-managed authorization, which requires an enterprise identity provider and an identity assertion on the connect request.",
-          });
-        }
-        const idpClient = yield* loadClient(enterprise.idpClientOwner, enterprise.idpClient);
-        if (!idpClient) {
-          return yield* new OAuthStartError({
-            message: `Enterprise identity provider OAuth client not found: ${enterprise.idpClient}`,
-          });
-        }
-        const metadata = yield* discoverResourceAuthorizationServer(client.resource).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OAuthStartError({
-                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
-                message: `Failed to discover the MCP server's authorization server: ${cause.message}`,
-              }),
-          ),
-        );
-        // Resolve the caller's optional assertion type ONCE: the chain sends it
-        // and the connection persists it, and those two must not be able to
-        // disagree about what was presented.
-        const resolvedEnterprise = {
-          ...enterprise,
-          subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+        // The rollout gate, consulted ONCE and BEFORE anything else in this
+        // branch: before the IdP registration is loaded, before discovery,
+        // before a single request leaves the process. A withheld verdict must
+        // therefore cost no round trip and spend no identity assertion.
+        //
+        // Its answer is read exactly here and never again. Once the IdP has
+        // ruled, that verdict is final: re-consulting a flag after a denial
+        // would turn the flag into an escape hatch around the enterprise
+        // control this whole profile exists to enforce.
+        const rolloutContext: EnterpriseManagedRolloutContext = {
+          userId: deps.subject,
+          organizationId: deps.tenant,
+          integration: input.integration,
         };
-        const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
-          authorizationServerMetadata: metadata,
-          idp: {
-            tokenUrl: idpClient.tokenUrl,
-            clientId: idpClient.clientId,
-            clientSecret: idpClient.clientSecret,
-          },
-          resourceAuthorizationServer: {
-            clientId: client.clientId,
-            clientSecret: client.clientSecret,
-          },
-          subjectToken: resolvedEnterprise.subjectToken,
-          subjectTokenType: resolvedEnterprise.subjectTokenType,
-          resource: client.resource,
-          scopes: requestedScopes,
-          endpointUrlPolicy: deps.endpointUrlPolicy,
-          // No `httpClientLayer` here, deliberately: like every other token
-          // request in this service, the ID-JAG chain runs through oauth4webapi
-          // on the configured `fetch`, not Effect's HttpClient. Only discovery
-          // speaks HttpClient. Providing the layer here would claim otherwise.
-          fetch,
-        }).pipe(
-          Effect.map((grant) => ({ supported: true as const, grant })),
-          // Only the unsupported-profile failure is recoverable; every other
-          // tag reaches the caller as a start error carrying its own verdict.
-          Effect.catchTag("EmaGrantProfileUnsupported", () =>
-            Effect.succeed({ supported: false as const }),
-          ),
-          Effect.mapError(startErrorFromEnterpriseManaged),
-        );
-        if (enterpriseGrant.supported) {
-          const connection = yield* mintEnterpriseManagedConnection(
-            { ...input, name },
-            client,
-            input.clientOwner,
-            enterpriseGrant.grant,
-            resolvedEnterprise,
-            metadata.issuer,
-          ).pipe(
+        const rolloutDecision = yield* decideEnterpriseManagedRollout(rolloutContext);
+        // Recorded for BOTH arms, so the funnel below it has a denominator.
+        yield* recordEnterpriseManagedRollout({
+          kind: "attempted",
+          context: rolloutContext,
+          decision: rolloutDecision,
+        });
+
+        if (rolloutDecision.kind === "withheld") {
+          // Withheld takes the SAME exit an authorization server that never
+          // implemented the profile takes: fall through to the ordinary
+          // interactive flow below. There is deliberately no second fallback
+          // path to keep in step with the first.
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.enterprise_managed_fallback": true,
+            "executor.oauth.enterprise_managed_withheld": rolloutDecision.reason,
+          });
+        } else {
+          const enterprise = input.enterprise;
+          if (enterprise === undefined) {
+            return yield* new OAuthStartError({
+              message:
+                "This OAuth app uses enterprise-managed authorization, which requires an enterprise identity provider and an identity assertion on the connect request.",
+            });
+          }
+          const idpClient = yield* loadClient(enterprise.idpClientOwner, enterprise.idpClient);
+          if (!idpClient) {
+            return yield* new OAuthStartError({
+              message: `Enterprise identity provider OAuth client not found: ${enterprise.idpClient}`,
+            });
+          }
+          const metadata = yield* discoverResourceAuthorizationServer(client.resource).pipe(
             Effect.mapError(
               (cause) =>
                 new OAuthStartError({
-                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
-                  message: `Failed to mint OAuth connection: ${cause.message}`,
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                  message: `Failed to discover the MCP server's authorization server: ${cause.message}`,
                 }),
             ),
           );
-          return { status: "connected", connection } as const;
+          // Resolve the caller's optional assertion type ONCE: the chain sends
+          // it and the connection persists it, and those two must not be able
+          // to disagree about what was presented.
+          const resolvedEnterprise = {
+            ...enterprise,
+            subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+          };
+          const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
+            authorizationServerMetadata: metadata,
+            idp: {
+              tokenUrl: idpClient.tokenUrl,
+              clientId: idpClient.clientId,
+              clientSecret: idpClient.clientSecret,
+            },
+            resourceAuthorizationServer: {
+              clientId: client.clientId,
+              clientSecret: client.clientSecret,
+            },
+            subjectToken: resolvedEnterprise.subjectToken,
+            subjectTokenType: resolvedEnterprise.subjectTokenType,
+            resource: client.resource,
+            scopes: requestedScopes,
+            endpointUrlPolicy: deps.endpointUrlPolicy,
+            // No `httpClientLayer` here, deliberately: like every other token
+            // request in this service, the ID-JAG chain runs through oauth4webapi
+            // on the configured `fetch`, not Effect's HttpClient. Only discovery
+            // speaks HttpClient. Providing the layer here would claim otherwise.
+            fetch,
+          }).pipe(
+            Effect.map((grant) => ({ supported: true as const, grant })),
+            // Only the unsupported-profile failure is recoverable; every other
+            // tag reaches the caller as a start error carrying its own verdict.
+            Effect.catchTag("EmaGrantProfileUnsupported", () =>
+              Effect.succeed({ supported: false as const }),
+            ),
+            Effect.mapError(startErrorFromEnterpriseManaged),
+            // OBSERVATION ONLY. This taps the denial on its way out; it does not
+            // recover it, and no branch below reads the rollout decision again.
+            Effect.tapError((failure) =>
+              failure.blockedByAdmin === true
+                ? recordEnterpriseManagedRollout({
+                    kind: "blocked-by-admin",
+                    context: rolloutContext,
+                    decision: rolloutDecision,
+                    oauthErrorCode: failure.oauthErrorCode,
+                  })
+                : Effect.void,
+            ),
+          );
+          if (enterpriseGrant.supported) {
+            const connection = yield* mintEnterpriseManagedConnection(
+              { ...input, name },
+              client,
+              input.clientOwner,
+              enterpriseGrant.grant,
+              resolvedEnterprise,
+              metadata.issuer,
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OAuthStartError({
+                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                    message: `Failed to mint OAuth connection: ${cause.message}`,
+                  }),
+              ),
+            );
+            yield* recordEnterpriseManagedRollout({
+              kind: "connected",
+              context: rolloutContext,
+              decision: rolloutDecision,
+            });
+            return { status: "connected", connection } as const;
+          }
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.enterprise_managed_fallback": true,
+          });
         }
-        yield* Effect.annotateCurrentSpan({
-          "executor.oauth.enterprise_managed_fallback": true,
-        });
       }
 
       // authorization_code requires our callback to receive the code — fail
