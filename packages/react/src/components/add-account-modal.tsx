@@ -44,6 +44,7 @@ import {
   oauthClientWriteKeys,
 } from "../api/reactivity-keys";
 import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { AdminBlockNotice } from "./admin-block-notice";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { messageFromExit } from "../api/error-reporting";
 import { trackEvent } from "../api/analytics";
@@ -1618,6 +1619,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const isBuiltInGoogleClient =
     chosenClient?.origin.kind === "first_party" &&
     String(chosenClient.slug) === "first-party:google";
+  // The server names an enterprise identity provider (MCP Enterprise-Managed
+  // Authorization). Read STRUCTURALLY off the declared method — never from the
+  // grant of a picked app, which an ordinary connection can also carry.
+  const managedByOrganization = isOAuth && method?.oauth?.enterpriseIdentityProvider !== undefined;
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
@@ -2952,11 +2957,33 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 {continueError}
               </p>
             ) : null}
+            {/* The server is declared enterprise-managed. Copy only, and
+                deliberately: whether this connect actually takes the
+                enterprise branch is decided at discovery — the server has to
+                advertise the ID-JAG grant profile — so the notice describes the
+                arrangement rather than promising an outcome the console cannot
+                guarantee. It is withdrawn while an administrator denial stands,
+                where the denial is the more specific truth. */}
+            {managedByOrganization && oauthPopup.adminBlock === null ? (
+              <p
+                data-slot="enterprise-managed-notice"
+                className="mx-1 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+              >
+                Your organization manages this server. Where it supports work identities, you sign
+                in with yours and your identity provider decides the access — no consent screen, and
+                nothing to revoke here.
+              </p>
+            ) : null}
             {/* Above the footer, not inside the method tab: the automatic
                 (CIMD/DCR) flows render no tab panel at all, and putting the
                 sign-in error in there left a blocked popup with nothing on
                 screen but the button returning to "Connect". */}
-            {isOAuth && oauthPopup.error ? (
+            {/* An enterprise policy denial replaces the ordinary error line —
+                it is not a transient fault, and the footer below withdraws
+                every connect action while it stands. */}
+            {isOAuth && oauthPopup.adminBlock !== null ? (
+              <AdminBlockNotice block={oauthPopup.adminBlock} className="mx-1" />
+            ) : isOAuth && oauthPopup.error ? (
               <p role="alert" className="px-1 text-xs text-destructive">
                 {oauthPopup.error}
               </p>
@@ -2978,7 +3005,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
               - registering a BYO app: the form owns its own submit, no footer;
               - picked BYO OAuth app: Connect with OAuth / Connect (client creds);
               - credential/no-auth method: Add connection. */}
-              {cimdActive ? (
+              {/* Blocked by administrator: offer NOTHING that reconnects.
+                  Every branch below is a route to the same authorization the
+                  enterprise just refused, and the interactive one would route
+                  the user around the control outright. Close is the only
+                  action left. */}
+              {isOAuth && oauthPopup.adminBlock !== null ? null : cimdActive ? (
                 <Button
                   type="button"
                   onClick={() => void handleCimdConnect()}
