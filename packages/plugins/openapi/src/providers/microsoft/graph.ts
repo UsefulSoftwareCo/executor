@@ -23,7 +23,9 @@ import {
 import {
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_DELEGATED_AUTH_LABEL,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
@@ -173,6 +175,7 @@ const microsoftOAuthTemplate = (
   {
     slug: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
     kind: "oauth2",
+    label: MICROSOFT_DELEGATED_AUTH_LABEL,
     authorizationUrl: endpoints.authorizationUrl,
     tokenUrl: endpoints.tokenUrl,
     scopes,
@@ -180,6 +183,7 @@ const microsoftOAuthTemplate = (
   {
     slug: AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
     kind: "oauth2",
+    label: MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL,
     authorizationUrl: endpoints.authorizationUrl,
     tokenUrl: endpoints.clientCredentialsTokenUrl,
     scopes: [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],

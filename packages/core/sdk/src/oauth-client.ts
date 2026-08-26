@@ -31,6 +31,10 @@ export type OAuthGrant = "authorization_code" | "client_credentials";
 export interface OAuthAuthentication {
   readonly slug: AuthTemplateSlug;
   readonly kind: "oauth2";
+  /** Display label distinguishing this method when an integration declares
+   *  several oauth2 templates (e.g. delegated vs app-only). UIs fall back to
+   *  "OAuth2" when absent. */
+  readonly label?: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   /** RFC 8707 Resource Indicator to bind the OAuth flow to this protected
