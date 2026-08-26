@@ -176,7 +176,8 @@ import {
   type EnterpriseManagedRollout,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult } from "./tool-result";
+import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
@@ -1663,6 +1664,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const core = makeCoreDb(fuma);
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
+
+    // Runtime-observed output shapes ("muscle memory"): learned on the
+    // execute success path, served by tools.schema when a tool declares no
+    // output schema. Backed by plugin_storage under a reserved system id.
+    const shapeMemory = makeShapeMemory(
+      makePluginStorageFacade({ core, pluginId: SHAPE_MEMORY_PLUGIN_ID, owner: ownerBinding }),
+    );
 
     // Populated once, never mutated after startup.
     const staticTools = new Map<string, StaticTools>();
@@ -4058,6 +4066,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? projected.outputSchema
             : tool.outputSchema;
 
+        // Muscle memory: when neither the catalog row nor the plugin's
+        // projection declares an output schema, serve the shape observed from
+        // live responses instead of letting the type collapse to `unknown`.
+        // The schema's description marks it as observed.
+        const observed =
+          outputSchema === undefined
+            ? yield* shapeMemory.recall(String(address), parsed.owner)
+            : null;
+        const effectiveOutputSchema =
+          outputSchema !== undefined
+            ? outputSchema
+            : observed !== null
+              ? observedShapeToJsonSchema(observed)
+              : undefined;
+
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
@@ -4069,12 +4092,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const defs = new Map<string, unknown>();
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
-        const referenced = collectReferencedDefinitions([inputSchema, outputSchema], defs);
+        const referenced = collectReferencedDefinitions([inputSchema, effectiveOutputSchema], defs);
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
               inputSchema,
-              outputSchema,
+              outputSchema: effectiveOutputSchema,
               defs,
             }),
           catch: (cause) =>
@@ -4087,7 +4110,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           name: tool.name,
           description: tool.description,
           inputSchema,
-          outputSchema,
+          outputSchema: effectiveOutputSchema,
+          ...(observed !== null
+            ? {
+                outputSchemaSource: "observed" as const,
+                outputSchemaObservations: observed.observations,
+              }
+            : {}),
           schemaDefinitions:
             Object.keys(referenced).length > 0
               ? (referenced as Record<string, unknown>)
@@ -4762,6 +4791,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // "tool ran fine" from "user hit an upstream error / auth wall"
         // without parsing response bodies.
         Effect.tap(annotateToolResultOutcome),
+        // Muscle memory: fold successful dynamic-tool payloads into the
+        // observed output shape. Static tools are hand-typed already;
+        // failures teach nothing about the success shape. Runs inline — not
+        // forked — so the write survives Workers request teardown; `observe`
+        // never fails, is size-bounded, and stops writing once the shape
+        // stabilizes, so steady-state cost is one cache lookup.
+        Effect.tap((result) => {
+          if (staticTools.has(String(address))) return Effect.void;
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) return Effect.void;
+          const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
+          if (data === undefined) return Effect.void;
+          return shapeMemory.observe(String(address), parsed.owner, data);
+        }),
         Effect.withSpan("executor.tool.execute", {
           attributes: {
             "mcp.tool.name": String(address),

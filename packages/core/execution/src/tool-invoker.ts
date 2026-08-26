@@ -76,6 +76,7 @@ type DescribedTool = {
   readonly description?: string;
   readonly inputTypeScript?: string;
   readonly outputTypeScript?: string;
+  readonly outputTypeScriptNote?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
   readonly error?: {
@@ -866,6 +867,14 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
     outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    // The compact TS render drops the schema's provenance description, so an
+    // observed (runtime-inferred) shape gets an explicit note: the model
+    // should treat the fields as reliable but not exhaustive.
+    ...(schema.outputSchemaSource === "observed"
+      ? {
+          outputTypeScriptNote: `data type observed from ${schema.outputSchemaObservations ?? 1} live response(s), not declared by the provider; fields may be incomplete.`,
+        }
+      : {}),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
   return described;

@@ -673,3 +673,60 @@ describe("createExecutor", () => {
     }),
   );
 });
+
+describe("muscle memory (observed output shapes)", () => {
+  const provisioned = Effect.fn(function* () {
+    const executor = yield* makeTestExecutor({
+      plugins: [demoPlugin] as const,
+      coreTools: { webBaseUrl: "http://localhost:3000" },
+    });
+    yield* executor.demo.seed();
+    yield* executor.execute(ToolAddress.make("executor.coreTools.connections.create"), {
+      owner: "org",
+      name: String(CONN),
+      integration: String(INTEG),
+      template: String(TEMPLATE),
+      identityLabel: "Demo",
+      from: { provider: "memory", id: "secret-token" },
+    });
+    return executor;
+  });
+
+  it.effect("serves an observed output shape once a schemaless tool has run", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // Cold: `run` declares no output schema, nothing observed yet.
+      const cold = yield* executor.tools.schema(addr("run"));
+      expect(cold?.outputSchema).toBeUndefined();
+      expect(cold?.outputTypeScript).toBeUndefined();
+
+      yield* executor.execute(addr("run"), {});
+
+      // Warm: the live payload `{ ran: "run" }` becomes the served shape,
+      // with provenance marked on the schema.
+      const warm = yield* executor.tools.schema(addr("run"));
+      expect(warm?.outputSchema).toMatchObject({
+        type: "object",
+        properties: { ran: { type: "string" } },
+        required: ["ran"],
+        description: "Observed from 1 live response; fields may be incomplete.",
+      });
+      expect(warm?.outputTypeScript).toContain("ran");
+      expect(warm?.outputTypeScript).not.toBe("unknown");
+    }),
+  );
+
+  it.effect("never overrides a declared output schema with observations", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // `inspect` declares `outputSchema: { $ref: "#/$defs/Owner" }`; running
+      // it observes `{ ran: "inspect" }`, which must not displace the
+      // declared schema.
+      yield* executor.execute(addr("inspect"), { pet: { lives: 9 } });
+      const schema = yield* executor.tools.schema(addr("inspect"));
+      expect(schema?.outputSchema).toEqual({ $ref: "#/$defs/Owner" });
+    }),
+  );
+});
