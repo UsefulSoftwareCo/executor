@@ -15,6 +15,7 @@ import {
 } from "../../sdk/split";
 import type { Authentication } from "../../sdk/types";
 
+import { fetchMicrosoftGraphSlice, microsoftGraphSliceAssetForSelection } from "./slices";
 import {
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_AUTH_TEMPLATE_SLUG,
@@ -759,9 +760,28 @@ export const buildMicrosoftGraphOpenApiSpec = (
 ): Effect.Effect<MicrosoftGraphSpecBuild, OpenApiParseError> =>
   Effect.gen(function* () {
     const selection = yield* validateSelectionUrls(normalizeSelection(input), urlPolicy);
-    const sourceText = yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
-      Effect.provide(httpClientLayer),
-    );
+    // Covered selections read a precomputed slice (sub-MB) instead of the 43MB
+    // monolith: in production, the monolith fetch alone almost never survives
+    // the 128MB isolate (once in the 30 days before 2026-08-26). Slices apply
+    // only to the pinned Microsoft URL — an override (local Graph emulators)
+    // serves its own document. A missing/failed slice (asset not yet published,
+    // release unreachable) falls back to the monolith path, which is the prior
+    // behavior for the selections a slice would have covered.
+    const sliceAsset =
+      selection.specUrl === MICROSOFT_GRAPH_OPENAPI_URL
+        ? microsoftGraphSliceAssetForSelection(selection)
+        : null;
+    const sourceText =
+      sliceAsset !== null
+        ? yield* fetchMicrosoftGraphSlice(sliceAsset).pipe(
+            Effect.catchTag("OpenApiParseError", () =>
+              fetchMicrosoftGraphOpenApiSpec(selection.specUrl),
+            ),
+            Effect.provide(httpClientLayer),
+          )
+        : yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
+            Effect.provide(httpClientLayer),
+          );
 
     // Structural split is the only entry point: parsing the whole 37MB tree
     // OOMs the 128MB Workers isolate (measured: HTTP 503). No fallback. A spec

@@ -6,6 +6,7 @@ import { structuralSplit } from "@executor-js/plugin-openapi";
 import { previewSpecTextStreaming } from "../../sdk/preview";
 import { microsoftGraphAdapter } from "./spec-format-adapter";
 import { MICROSOFT_GRAPH_OPENAPI_URL } from "./presets";
+import { microsoftGraphSliceUrl } from "./slices";
 
 const graphFixture = `
 openapi: 3.0.4
@@ -89,6 +90,80 @@ it.effect("uses catalog URL fragments to select one Graph workload", () =>
       get: { operationId: "me.GetUser" },
     });
     expect(keepPathItem("/irrelevant", { get: { operationId: "irrelevant.Get" } })).toBeNull();
+  }),
+);
+
+// Distinct content at the slice URL so tests can tell which source was read.
+const sliceFixture = `openapi: 3.0.4
+info:
+  title: Microsoft Graph Slice Fixture
+  version: v1.0
+servers:
+  - url: https://graph.microsoft.com/v1.0
+paths:
+  /me:
+    get:
+      operationId: me.GetUser
+      security:
+        - azureAdDelegated:
+            - User.Read
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    azureAdDelegated:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+          tokenUrl: https://login.microsoftonline.com/common/oauth2/v2.0/token
+          scopes:
+            User.Read: Read user profile
+`;
+
+const sliceAwareHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+  HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+    const body =
+      request.url === microsoftGraphSliceUrl("profile")
+        ? sliceFixture
+        : request.url === MICROSOFT_GRAPH_OPENAPI_URL
+          ? graphFixture
+          : null;
+    return Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        new Response(body ?? "not found", { status: body === null ? 404 : 200 }),
+      ),
+    );
+  }),
+);
+
+it.effect("reads the published slice for a covered selection", () =>
+  Effect.gen(function* () {
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
+      httpClientLayer: sliceAwareHttpClientLayer,
+    });
+
+    expect(converted.specText).toBe(sliceFixture);
+    // The catalog URL (with fragment stripped) stays canonical so refresh
+    // re-resolves through the adapter, not the slice hosting.
+    expect(converted.specUrl).toBe(MICROSOFT_GRAPH_OPENAPI_URL);
+  }),
+);
+
+it.effect("falls back to the monolith when the slice asset is unavailable", () =>
+  Effect.gen(function* () {
+    // graphHttpClientLayer 404s everything except the monolith URL, including
+    // the slice URL — the existing selection tests above exercise this same
+    // fallback implicitly.
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
+      httpClientLayer: graphHttpClientLayer,
+    });
+
+    expect(converted.specText).toBe(graphFixture);
   }),
 );
 
