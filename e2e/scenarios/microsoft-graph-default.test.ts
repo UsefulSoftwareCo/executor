@@ -55,6 +55,24 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
+        // The add dialog previews before registering. This must stream: the
+        // whole-document parse of the Graph source OOMs the dev workerd
+        // isolate the same way it did the production one.
+        const preview = yield* client.openapi.previewSpec({
+          payload: {
+            spec: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+            specFormat: "microsoft-graph",
+          },
+        });
+        expect(
+          preview.operationCount,
+          "the preview streams the files selection without a whole-document parse",
+        ).toBeGreaterThan(10);
+        expect(
+          preview.healthCheckCandidates.length,
+          "the preview carries ranked health-check candidates for the selection",
+        ).toBeGreaterThan(0);
+
         const added = yield* client.openapi.addSpec({
           payload: {
             spec: {
