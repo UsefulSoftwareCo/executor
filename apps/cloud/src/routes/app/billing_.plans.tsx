@@ -122,7 +122,7 @@ const PLAN_META: Record<string, { tagline: string; inherits?: string; features: 
     tagline: "For small teams getting started",
     features: [
       "Up to 3 members",
-      "10,000 included executions per month",
+      "100,000 included executions per month",
       "$0.20 per 1,000 additional executions",
       "Unlimited sources",
     ],
