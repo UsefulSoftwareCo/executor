@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Option, Schema } from "effect";
 import { trackEvent } from "../api/analytics";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
@@ -19,6 +20,50 @@ import {
 
 type TransportMode = "stdio" | "http";
 export type McpElicitationMode = "browser" | "model" | "native";
+
+const McpInstallPreferencesSchema = Schema.Struct({
+  mode: Schema.Literals(["stdio", "http"]),
+  httpElicitationMode: Schema.Literals(["browser", "model", "native"]),
+  artifacts: Schema.Boolean,
+  searchTools: Schema.Boolean,
+});
+
+type McpInstallPreferences = typeof McpInstallPreferencesSchema.Type;
+
+const MCP_INSTALL_PREFERENCES_STORAGE_KEY = "executor.mcpInstallPreferences.v1";
+const DEFAULT_MCP_INSTALL_PREFERENCES: McpInstallPreferences = {
+  mode: "http",
+  httpElicitationMode: "model",
+  artifacts: true,
+  searchTools: false,
+};
+const decodeMcpInstallPreferences = Schema.decodeUnknownOption(
+  Schema.fromJsonString(McpInstallPreferencesSchema),
+);
+
+const readMcpInstallPreferences = (): McpInstallPreferences => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
+  try {
+    const raw = globalThis.localStorage?.getItem(MCP_INSTALL_PREFERENCES_STORAGE_KEY);
+    return raw
+      ? Option.getOrElse(decodeMcpInstallPreferences(raw), () => DEFAULT_MCP_INSTALL_PREFERENCES)
+      : DEFAULT_MCP_INSTALL_PREFERENCES;
+  } catch {
+    return DEFAULT_MCP_INSTALL_PREFERENCES;
+  }
+};
+
+const writeMcpInstallPreferences = (preferences: McpInstallPreferences): void => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
+  try {
+    globalThis.localStorage?.setItem(
+      MCP_INSTALL_PREFERENCES_STORAGE_KEY,
+      JSON.stringify(preferences),
+    );
+  } catch {
+    // Best-effort persistence; the options still apply to this rendered command.
+  }
+};
 
 const SUPPORTED_AGENTS = [
   { key: "cursor", label: "Cursor", Icon: CursorIcon },
@@ -143,11 +188,6 @@ export const buildMcpInstallCommand = (input: {
 };
 
 export function McpInstallCard(props: { className?: string }) {
-  const [mode, setMode] = useState<TransportMode>("http");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
-  const [artifacts, setArtifacts] = useState(true);
-  const [searchTools, setSearchTools] = useState(false);
   const organizationSlug = useOrganizationSlug();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
@@ -155,6 +195,13 @@ export function McpInstallCard(props: { className?: string }) {
   // HTTP path there; it routes through the active sidecar connection.
   const showStdio =
     isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
+  const [preferences, setPreferences] = useState<McpInstallPreferences>(readMcpInstallPreferences);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const { mode, httpElicitationMode, artifacts, searchTools } = preferences;
+
+  useEffect(() => {
+    writeMcpInstallPreferences(preferences);
+  }, [preferences]);
 
   const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
 
@@ -225,7 +272,7 @@ export function McpInstallCard(props: { className?: string }) {
           <Switch
             checked={artifacts}
             onCheckedChange={(next) => {
-              setArtifacts(next);
+              setPreferences((current) => ({ ...current, artifacts: next }));
               trackEvent("mcp_install_artifacts_toggled", { artifacts: next });
             }}
             aria-label="Artifacts"
@@ -243,7 +290,7 @@ export function McpInstallCard(props: { className?: string }) {
           <Switch
             checked={searchTools}
             onCheckedChange={(next) => {
-              setSearchTools(next);
+              setPreferences((current) => ({ ...current, searchTools: next }));
               trackEvent("mcp_install_search_tools_toggled", { search_tools: next });
             }}
             aria-label="Integration search tools"
@@ -263,7 +310,7 @@ export function McpInstallCard(props: { className?: string }) {
             value={elicitationMode}
             onChange={(event) => {
               const next = event.target.value as McpElicitationMode;
-              setHttpElicitationMode(next);
+              setPreferences((current) => ({ ...current, httpElicitationMode: next }));
               trackEvent("mcp_install_elicitation_mode_changed", { elicitation_mode: next });
             }}
             aria-label="Elicitation mode"
@@ -352,7 +399,7 @@ export function McpInstallCard(props: { className?: string }) {
           value={mode}
           onValueChange={(v) => {
             const next = v as TransportMode;
-            setMode(next);
+            setPreferences((current) => ({ ...current, mode: next }));
             trackEvent("mcp_install_transport_switched", { transport: next });
           }}
         >
