@@ -164,7 +164,9 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  parseClientAuthMethod,
   shouldRefreshToken,
+  type ClientAuthMethod,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -1777,6 +1779,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenUrl: string;
       readonly grant: string;
       readonly resource: string | null;
+      readonly tokenEndpointAuthMethod: ClientAuthMethod;
     }
 
     /** What drove a refresh: the pre-call expiry check (`proactive`), or an
@@ -1881,6 +1884,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               tokenUrl: firstParty.tokenUrl,
               grant: "authorization_code",
               resource: null,
+              tokenEndpointAuthMethod: "body",
             } satisfies RefreshClient;
           }
           const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
@@ -1895,6 +1899,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tokenUrl: String(stored.token_url),
             grant: String(stored.grant),
             resource: stored.resource ? String(stored.resource) : null,
+            tokenEndpointAuthMethod: parseClientAuthMethod(stored.token_endpoint_auth_method),
           } satisfies RefreshClient;
         });
         if (!clientRow) {
@@ -1913,6 +1918,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // the oauth_client's configured token endpoint.
         const tokenUrl = row.oauth_token_url ? String(row.oauth_token_url) : clientRow.tokenUrl;
 
+        // How this app authenticates to the token endpoint ("body" | "basic").
+        // Null on old rows resolves to "body" (client_secret_post). Threaded
+        // into both the client_credentials re-mint and the refresh_token call so
+        // Basic-only providers keep working across refreshes.
+        const clientAuth = clientRow.tokenEndpointAuthMethod;
+
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
         // path below needs a stored refresh token. Branching on grant here is
@@ -1926,6 +1937,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 clientSecret,
                 scopes: grantedScopes,
                 resource: clientRow.resource ?? undefined,
+                clientAuth,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
               }).pipe(
@@ -1959,6 +1971,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
                   resource: clientRow.resource ?? undefined,
+                  clientAuth,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(

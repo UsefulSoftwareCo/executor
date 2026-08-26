@@ -149,6 +149,7 @@ export {
   isFirstPartyOAuthClientSlug,
   type FirstPartyOAuthClientConfig,
   type OAuthGrant,
+  type ClientAuthMethod,
   type OAuthAuthentication,
   type OAuthClient,
   type OAuthClientOrigin,
