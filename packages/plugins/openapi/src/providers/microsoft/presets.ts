@@ -1,5 +1,7 @@
 import type { IntegrationPreset } from "@executor-js/sdk/core";
 
+import { microsoftGraphSliceUrl } from "./slice-urls";
+
 export interface MicrosoftGraphPreset {
   readonly id: string;
   readonly name: string;
@@ -528,8 +530,10 @@ export const microsoftGraphTagPrefixesForPresetIds = (
 export const microsoftServiceSlug = (presetId: string): string =>
   `microsoft_${presetId.replaceAll("-", "_")}`;
 
-const microsoftGraphCatalogUrl = (presetId: string): string =>
-  `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${encodeURIComponent(presetId)}`;
+// Catalog tiles point at the slice URL itself: the URL a user sees (and the
+// integration stores) is exactly what gets fetched — no server-side source
+// substitution. The slice asset name carries the selection.
+const microsoftGraphCatalogUrl = (presetId: string): string => microsoftGraphSliceUrl(presetId);
 
 const microsoftGraphCatalogAuthTemplate = (preset: MicrosoftGraphScopePreset) => [
   {

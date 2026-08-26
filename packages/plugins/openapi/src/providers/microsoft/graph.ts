@@ -15,7 +15,11 @@ import {
 } from "../../sdk/split";
 import type { Authentication } from "../../sdk/types";
 
-import { fetchMicrosoftGraphSlice, microsoftGraphSliceAssetForSelection } from "./slices";
+import {
+  fetchMicrosoftGraphSlice,
+  microsoftGraphPresetIdsForSliceAsset,
+  microsoftGraphSliceAssetFromUrl,
+} from "./slices";
 import {
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_AUTH_TEMPLATE_SLUG,
@@ -244,6 +248,10 @@ const normalizeMicrosoftGraphSpecUrl = (
   policy?: MicrosoftGraphUrlPolicy,
 ): string | null => {
   if (value === MICROSOFT_GRAPH_OPENAPI_URL) return value;
+  const sliceAsset = microsoftGraphSliceAssetFromUrl(value);
+  if (sliceAsset !== null && microsoftGraphPresetIdsForSliceAsset(sliceAsset) !== null) {
+    return value;
+  }
   return allowUnsafeUrl(value, policy) ?? null;
 };
 
@@ -759,26 +767,26 @@ export const buildMicrosoftGraphOpenApiSpec = (
   urlPolicy?: MicrosoftGraphUrlPolicy,
 ): Effect.Effect<MicrosoftGraphSpecBuild, OpenApiParseError> =>
   Effect.gen(function* () {
-    const selection = yield* validateSelectionUrls(normalizeSelection(input), urlPolicy);
-    // Covered selections read a precomputed slice (sub-MB) instead of the 43MB
-    // monolith: in production, the monolith fetch alone almost never survives
-    // the 128MB isolate (once in the 30 days before 2026-08-26). Slices apply
-    // only to the pinned Microsoft URL — an override (local Graph emulators)
-    // serves its own document. A missing/failed slice (asset not yet published,
-    // release unreachable) falls back to the monolith path, which is the prior
-    // behavior for the selections a slice would have covered.
-    const sliceAsset =
-      selection.specUrl === MICROSOFT_GRAPH_OPENAPI_URL
-        ? microsoftGraphSliceAssetForSelection(selection)
-        : null;
+    // A slice URL carries its own selection: when the caller passes no preset
+    // ids, the asset's selection applies (rather than the default bundle).
+    const inputSliceAsset = input.specUrl
+      ? microsoftGraphSliceAssetFromUrl(input.specUrl.trim())
+      : null;
+    const inputSlicePresetIds =
+      inputSliceAsset !== null ? microsoftGraphPresetIdsForSliceAsset(inputSliceAsset) : null;
+    const selectionInput =
+      inputSlicePresetIds !== null && (!input.presetIds || input.presetIds.length === 0)
+        ? { ...input, presetIds: inputSlicePresetIds }
+        : input;
+    const selection = yield* validateSelectionUrls(normalizeSelection(selectionInput), urlPolicy);
+    // The URL is the byte source, never substituted. Catalog selections point
+    // at precomputed slice URLs (the 43MB monolith cannot be processed in a
+    // 128MB isolate — its fetch completed once in the 30 days before
+    // 2026-08-26); the monolith and emulator-override URLs fetch exactly what
+    // they name.
     const sourceText =
-      sliceAsset !== null
-        ? yield* fetchMicrosoftGraphSlice(sliceAsset).pipe(
-            Effect.catchTag("OpenApiParseError", () =>
-              fetchMicrosoftGraphOpenApiSpec(selection.specUrl),
-            ),
-            Effect.provide(httpClientLayer),
-          )
+      microsoftGraphSliceAssetFromUrl(selection.specUrl) !== null
+        ? yield* fetchMicrosoftGraphSlice(selection.specUrl).pipe(Effect.provide(httpClientLayer))
         : yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
             Effect.provide(httpClientLayer),
           );

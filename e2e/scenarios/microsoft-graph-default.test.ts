@@ -6,10 +6,10 @@ import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_AUTHORIZATION_URL,
-  MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_TOKEN_URL,
   microsoftCatalog,
   microsoftGraphAdapter,
+  microsoftGraphSliceUrl,
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -60,7 +60,7 @@ scenario(
         // isolate the same way it did the production one.
         const preview = yield* client.openapi.previewSpec({
           payload: {
-            spec: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+            spec: microsoftGraphSliceUrl(MICROSOFT_FILES_PRESET_ID),
             specFormat: "microsoft-graph",
           },
         });
@@ -77,7 +77,7 @@ scenario(
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+              url: microsoftGraphSliceUrl(MICROSOFT_FILES_PRESET_ID),
             },
             slug: integration,
             name: "Microsoft Graph Files",

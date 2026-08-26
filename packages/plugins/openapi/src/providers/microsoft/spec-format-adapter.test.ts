@@ -139,31 +139,67 @@ const sliceAwareHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
   }),
 );
 
-it.effect("reads the published slice for a covered selection", () =>
+it.effect("fetches a slice URL as the byte source and derives its selection from the asset", () =>
   Effect.gen(function* () {
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [microsoftGraphSliceUrl("profile")],
+      httpClientLayer: sliceAwareHttpClientLayer,
+    });
+
+    expect(converted.specText).toBe(sliceFixture);
+    // What is stored is what was fetched — no source substitution.
+    expect(converted.specUrl).toBe(microsoftGraphSliceUrl("profile"));
+    // The asset name carries the selection even with no fragment.
+    const keepPathItem = converted.keepPathItem!;
+    expect(keepPathItem("/me", { get: { operationId: "me.GetUser" } })).toEqual({
+      get: { operationId: "me.GetUser" },
+    });
+    expect(keepPathItem("/irrelevant", { get: { operationId: "irrelevant.Get" } })).toBeNull();
+  }),
+);
+
+it.effect("narrows within a slice via the URL fragment", () =>
+  Effect.gen(function* () {
+    const layer = Layer.succeed(HttpClient.HttpClient)(
+      HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              request.url === microsoftGraphSliceUrl("default") ? sliceFixture : "not found",
+              { status: request.url === microsoftGraphSliceUrl("default") ? 200 : 404 },
+            ),
+          ),
+        ),
+      ),
+    );
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [`${microsoftGraphSliceUrl("default")}#preset=profile`],
+      httpClientLayer: layer,
+    });
+
+    expect(converted.specText).toBe(sliceFixture);
+    expect(converted.specUrl).toBe(microsoftGraphSliceUrl("default"));
+    const keepPathItem = converted.keepPathItem!;
+    // Profile keeps /me; a mail-only path from the default bundle is dropped.
+    expect(keepPathItem("/me", { get: { operationId: "me.GetUser" } })).toEqual({
+      get: { operationId: "me.GetUser" },
+    });
+    expect(keepPathItem("/me/messages", { post: { operationId: "me.CreateMessage" } })).toBeNull();
+  }),
+);
+
+it.effect("fetches the monolith URL as given — no silent slice substitution", () =>
+  Effect.gen(function* () {
+    // sliceAwareHttpClientLayer serves both URLs; requesting the monolith with
+    // a preset fragment must read the monolith bytes.
     const converted = yield* microsoftGraphAdapter.fetch({
       urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
       httpClientLayer: sliceAwareHttpClientLayer,
     });
 
-    expect(converted.specText).toBe(sliceFixture);
-    // The catalog URL (with fragment stripped) stays canonical so refresh
-    // re-resolves through the adapter, not the slice hosting.
-    expect(converted.specUrl).toBe(MICROSOFT_GRAPH_OPENAPI_URL);
-  }),
-);
-
-it.effect("falls back to the monolith when the slice asset is unavailable", () =>
-  Effect.gen(function* () {
-    // graphHttpClientLayer 404s everything except the monolith URL, including
-    // the slice URL — the existing selection tests above exercise this same
-    // fallback implicitly.
-    const converted = yield* microsoftGraphAdapter.fetch({
-      urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
-      httpClientLayer: graphHttpClientLayer,
-    });
-
     expect(converted.specText).toBe(graphFixture);
+    expect(converted.specUrl).toBe(MICROSOFT_GRAPH_OPENAPI_URL);
   }),
 );
 
