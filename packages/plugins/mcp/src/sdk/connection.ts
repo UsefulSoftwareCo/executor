@@ -93,6 +93,11 @@ const recordFromHeaders = (headers: Headers): Record<string, string> =>
 const ExternalTransportCause = Schema.Struct({
   code: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Unknown),
+  data: Schema.optional(
+    Schema.Struct({
+      cause: Schema.optional(Schema.Unknown),
+    }),
+  ),
 });
 const decodeExternalTransportCause = Schema.decodeUnknownOption(ExternalTransportCause);
 
@@ -135,6 +140,19 @@ class McpHttpTransportError extends Schema.TaggedErrorClass<McpHttpTransportErro
 ) {}
 const decodeMcpHttpTransportError = Schema.decodeUnknownOption(McpHttpTransportError);
 
+const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTransportError> => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decodedError = decodeMcpHttpTransportError(current);
+    if (Option.isSome(decodedError)) return decodedError;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return Option.none();
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return Option.none();
+  }
+  return Option.none();
+};
+
 const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
   const codes = new Set<string>();
   let current: unknown = cause;
@@ -142,8 +160,8 @@ const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
     const decoded = decodeExternalTransportCause(current);
     if (Option.isNone(decoded)) break;
     if (decoded.value.code !== undefined) codes.add(decoded.value.code);
-    if (decoded.value.cause === undefined) break;
-    current = decoded.value.cause;
+    current = decoded.value.cause ?? decoded.value.data?.cause;
+    if (current === undefined) break;
   }
   return codes;
 };
@@ -311,7 +329,7 @@ const connectionFailure = (
       insufficientScope: true,
     });
   }
-  const httpTransportError = decodeMcpHttpTransportError(cause);
+  const httpTransportError = nestedMcpHttpTransportError(cause);
   if (Option.isSome(httpTransportError)) {
     return new McpConnectionError({
       transport,
