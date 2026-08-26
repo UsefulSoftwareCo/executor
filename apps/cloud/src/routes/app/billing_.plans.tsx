@@ -47,7 +47,17 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
   const [finalizingPlan, setFinalizingPlan] = useState<string | null>(null);
   const plansRef = useRef(plans);
   plansRef.current = plans;
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+  const armedAtRef = useRef(0);
 
+  // One-shot: move the URL marker into state. Only this step is single-shot —
+  // the poll below keys off the STATE, because effects do not live as long as
+  // state: the shell re-runs effects shortly after mount (auth seeds a frame
+  // after first paint and the suspense boundary re-reveals), and when the poll
+  // lived inside this effect its re-run saw the already-stripped URL, so the
+  // cleanup killed the interval and nothing ever refetched — the page sat on
+  // "Activating" forever while the webhook had long landed.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const attachedPlanId = params.get(CHECKOUT_RETURN_PARAM);
@@ -56,25 +66,34 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
     params.delete(CHECKOUT_RETURN_PARAM);
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    armedAtRef.current = Date.now();
     setFinalizingPlan(attachedPlanId);
+  }, []);
+
+  // Poll while a plan is finalizing. Re-armable: if the effect is recycled the
+  // state still says which plan is settling, so the interval comes right back.
+  // The timeout is measured from when the marker was consumed, not from the
+  // current effect run, so recycles cannot extend it. refetch goes through a
+  // ref so the interval always calls the CURRENT client's refetch, even after
+  // the billing provider rebuilds.
+  useEffect(() => {
+    if (!finalizingPlan) return;
 
     const reflected = () =>
-      plansRef.current?.find((p) => p.id === attachedPlanId)?.customerEligibility?.status ===
+      plansRef.current?.find((p) => p.id === finalizingPlan)?.customerEligibility?.status ===
       "active";
 
-    let elapsed = 0;
-    refetch();
+    refetchRef.current();
     const interval = setInterval(() => {
-      elapsed += 1500;
-      if (reflected() || elapsed >= 20_000) {
+      if (reflected() || Date.now() - armedAtRef.current >= 20_000) {
         clearInterval(interval);
         setFinalizingPlan(null);
         return;
       }
-      refetch();
+      refetchRef.current();
     }, 1500);
     return () => clearInterval(interval);
-  }, [refetch]);
+  }, [finalizingPlan]);
 
   // Drop the optimistic state the moment the refetched data reflects the plan,
   // so it does not linger until the next poll tick after the webhook lands.
