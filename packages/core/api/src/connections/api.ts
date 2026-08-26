@@ -62,6 +62,11 @@ const ConnectionResponse = Schema.Struct({
   // Last persisted health-check verdict (written by every checkHealth run),
   // so the list can show alive/expired at a glance without probing.
   lastHealth: Schema.NullOr(HealthCheckResult),
+  // True when the connection was minted through MCP Enterprise-Managed
+  // Authorization: it mirrors organization policy and holds no durable local
+  // grant, so a console must not offer to delete it. Read-only — nothing on
+  // this surface can set it.
+  enterpriseManaged: Schema.Boolean,
 });
 
 const ToolResponse = Schema.Struct({

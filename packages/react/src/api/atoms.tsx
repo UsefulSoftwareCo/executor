@@ -400,6 +400,9 @@ export const addConnectionOptimistic = Atom.family((owner: Owner) =>
             oauthScope: null,
             missingOAuthScopes: [],
             lastHealth: null,
+            // A pasted credential is never enterprise-managed: that state is
+            // only ever written by the ID-JAG connect path.
+            enterpriseManaged: false,
           };
           return [optimistic, ...rows];
         }),

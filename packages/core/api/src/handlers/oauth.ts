@@ -46,6 +46,7 @@ const connectionToResponse = (c: Connection) => ({
   oauthClientOwner: c.oauthClientOwner ?? null,
   oauthScope: c.oauthScope ?? null,
   missingOAuthScopes: c.missingOAuthScopes ?? [],
+  enterpriseManaged: c.enterpriseManaged ?? false,
 });
 
 const startResultToResponse = (result: ConnectResult) =>

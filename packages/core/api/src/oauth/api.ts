@@ -52,6 +52,12 @@ const ConnectionResponse = Schema.Struct({
   oauthClientOwner: Schema.NullOr(Owner),
   oauthScope: Schema.NullOr(Schema.String),
   missingOAuthScopes: Schema.Array(Schema.String),
+  // True when this connect took the enterprise-managed branch (the ID-JAG
+  // chain) rather than the interactive one. A `start` against an `id_jag`
+  // client can still land here as `false` — the profile falls back when the
+  // server does not advertise it — so the caller reads the outcome, not its
+  // own intent.
+  enterpriseManaged: Schema.Boolean,
 });
 
 // ---------------------------------------------------------------------------

@@ -81,6 +81,19 @@ export const HealthCheckResult = Schema.Struct({
   /** Bounded sample of scalar fields from the response body, for the live
    *  preview ("show me what this operation returns"). */
   responseSample: Schema.optional(Schema.Array(HealthCheckResponseSample)),
+  /** True when an enterprise identity provider declined to authorize this
+   *  connection under administrator policy while resolving its credential.
+   *
+   *  Carried as a FIELD beside `status` rather than folded into `detail`,
+   *  because the two verdicts demand different products: an expired grant says
+   *  "sign in again", an administrator decision says "your organization
+   *  decided this", and a console that offered the interactive flow for the
+   *  second would walk the user around the control the IdP just exercised. A
+   *  console must branch on this, never on the wording of `detail`. */
+  blockedByAdmin: Schema.optional(Schema.Boolean),
+  /** The authorization server's RFC 6749 §5.2 error code, when the failure came
+   *  from a token-endpoint refusal. Shown for support traceability. */
+  oauthErrorCode: Schema.optional(Schema.String),
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
