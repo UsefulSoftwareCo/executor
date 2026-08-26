@@ -99,13 +99,25 @@ export const canSubmitOAuthClientForm = (input: {
   readonly clientSecret: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  /** RFC 9728 resource identifier of the protected resource. Required for the
+   *  `id_jag` grant — it is what enterprise-managed discovery starts from — and
+   *  ignored for the other two, where it is a discovery by-product. */
+  readonly resource?: string | null;
 }): boolean =>
   !input.submitting &&
   input.name.trim().length > 0 &&
   input.clientId.trim().length > 0 &&
-  (input.grant === "authorization_code" || input.clientSecret.trim().length > 0) &&
+  // Only client credentials has no other way to authenticate. The
+  // authorization-code grant may be a public PKCE client, and an `id_jag`
+  // client may be public at its Resource Authorization Server too — the ID-JAG
+  // itself is the proof of authorization there (draft §4.4).
+  (input.grant !== "client_credentials" || input.clientSecret.trim().length > 0) &&
   input.tokenUrl.trim().length > 0 &&
-  (input.grant === "client_credentials" || input.authorizationUrl.trim().length > 0);
+  // No browser redirect exists for client credentials, and an enterprise-
+  // managed client never runs one: it presents an assertion instead of walking
+  // the user through consent.
+  (input.grant !== "authorization_code" || input.authorizationUrl.trim().length > 0) &&
+  (input.grant !== "id_jag" || (input.resource ?? "").trim().length > 0);
 
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
@@ -217,6 +229,10 @@ export function OAuthClientForm(props: {
   // client id/secret + owner.
   const endpointsKnown = (prefill?.tokenUrl ?? "").length > 0;
   const [showEndpoints, setShowEndpoints] = useState(!endpointsKnown);
+  // The enterprise-managed grant needs a resource identifier that no prefill
+  // carries (discovery starts from it), so its endpoint panel never collapses —
+  // a required field must not hide behind an "Edit".
+  const endpointsCollapsible = endpointsKnown && grant !== "id_jag";
 
   const doCreate = useAtomSet(createOAuthClientOptimistic, { mode: "promiseExit" });
   const doProbe = useAtomSet(probeOAuth, { mode: "promiseExit" });
@@ -232,6 +248,7 @@ export function OAuthClientForm(props: {
     clientSecret,
     authorizationUrl,
     tokenUrl,
+    resource,
   });
 
   // DCR is offered when the server advertises a registration endpoint AND we
@@ -454,6 +471,16 @@ export function OAuthClientForm(props: {
                 label: "Client credentials",
                 hint: "App-to-app, no user",
               },
+              {
+                // MCP Enterprise-Managed Authorization. The app registered here
+                // is the client's registration at the MCP server's Resource
+                // Authorization Server; the second registration (at the
+                // enterprise identity provider) is the organization's, and the
+                // server points at it separately.
+                value: "id_jag",
+                label: "Enterprise identity assertion",
+                hint: "Your identity provider authorizes, no per-server consent",
+              },
             ] as const
           ).map((option) => (
             <Label
@@ -524,18 +551,18 @@ export function OAuthClientForm(props: {
         <div className="space-y-1.5">
           <Label htmlFor="oauth-client-secret" className="text-xs text-muted-foreground">
             Client secret
-            {grant === "authorization_code" ? (
+            {grant === "client_credentials" ? null : (
               <span className="font-normal text-muted-foreground/70">
                 optional for public clients
               </span>
-            ) : null}
+            )}
           </Label>
           <Input
             id="oauth-client-secret"
             type="password"
             autoComplete="new-password"
             placeholder={
-              grant === "authorization_code" ? "optional client secret" : "required client secret"
+              grant === "client_credentials" ? "required client secret" : "optional client secret"
             }
             value={clientSecret}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientSecret(e.target.value)}
@@ -546,7 +573,7 @@ export function OAuthClientForm(props: {
       </div>
 
       {/* endpoints */}
-      {endpointsKnown && !showEndpoints ? (
+      {endpointsCollapsible && !showEndpoints ? (
         <Button
           type="button"
           variant="outline"
@@ -613,7 +640,32 @@ export function OAuthClientForm(props: {
             />
           </div>
 
-          {endpointsKnown ? (
+          {/* Enterprise-managed only: the RFC 9728 resource identifier of the
+              MCP server. Enterprise-managed connect discovers the Resource
+              Authorization Server FROM this value, and the discovered issuer is
+              what the ID-JAG must name as its audience, so it is required here
+              and not merely a discovery by-product. */}
+          {grant === "id_jag" ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="ema-resource-url" className="text-xs text-muted-foreground">
+                Resource URL
+                <span className="font-normal text-muted-foreground/70">
+                  the MCP server this app is registered at
+                </span>
+              </Label>
+              <Input
+                id="ema-resource-url"
+                placeholder="https://mcp.example.com/mcp"
+                value={resource ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setResource(e.target.value === "" ? null : e.target.value)
+                }
+                className="font-mono"
+              />
+            </div>
+          ) : null}
+
+          {endpointsCollapsible ? (
             <Button
               type="button"
               variant="ghost"
