@@ -173,7 +173,24 @@ export {
   OAuthProbeError,
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
+  type OAuthCallbackCompletion,
+  type WorkIdentityLinkStart,
 } from "./oauth-client";
+
+// Work-identity wire contracts (the link flow's payloads, status projection and
+// tagged error). The persisted record and its custody rules stay server-only.
+export {
+  DEFAULT_WORK_IDENTITY_SCOPES,
+  WorkIdentityLinkError,
+  WorkIdentityRefSchema,
+  WorkIdentityRevocationReasonSchema,
+  WorkIdentityStatusSchema,
+  type CompleteWorkIdentityLinkInput,
+  type StartWorkIdentityLinkInput,
+  type WorkIdentityRef,
+  type WorkIdentityRevocationReason,
+  type WorkIdentityStatus,
+} from "./oauth-work-identity";
 
 // Wire-level HTTP error schema for plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";

@@ -6,6 +6,7 @@
 //   connection:<owner>:<integration>:<name>:<variable>
 //   oauth:<owner>:<integration>:<name>[:refresh]
 //   oauth-client:<owner>:<slug>:secret
+//   work-identity:<owner>:<idp-client-owner>:<idp-client>
 //
 // Credential providers file plugin-storage rows by THIS owner, not the acting
 // caller's binding — an org connection whose OAuth consent completes in one
@@ -21,6 +22,11 @@ export const OWNER_SCOPED_ITEM_ID_PREFIXES: ReadonlySet<string> = new Set([
   "connection",
   "oauth",
   "oauth-client",
+  // A held enterprise identity is filed under the owner its enterprise-managed
+  // connections are made under, for the same reason (#950, #1453): a Workspace
+  // connection linked in one member's browser must stay resolvable by the rest
+  // of the org, and a Personal one must stay private to its subject.
+  "work-identity",
 ]);
 
 /** The owner a logical item id embeds, or null for ids that carry none
