@@ -1267,20 +1267,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
     // `search_<integration>` is `execute` running `tools.search` with the
     // namespace pinned. The code is built HERE, from the slug the tool was
-    // registered under and JSON-encoded arguments — never concatenated from
+    // registered under and a JSON-encoded query — never concatenated from
     // raw model input — and then takes the exact `executeCode` path, so the
     // results, formatting, and telemetry match a hand-written
     // `tools.search({ namespace })` call.
-    const searchNamespaceCode = (
-      integration: string,
-      args: { readonly query?: string; readonly limit?: number; readonly offset?: number },
-    ): string =>
-      `return tools.search(${JSON.stringify({
-        query: args.query ?? "",
-        namespace: integration,
-        ...(args.limit === undefined ? {} : { limit: args.limit }),
-        ...(args.offset === undefined ? {} : { offset: args.offset }),
-      })})`;
+    const searchNamespaceCode = (integration: string, query: string | undefined): string =>
+      `return tools.search(${JSON.stringify({ query: query ?? "", namespace: integration })})`;
 
     /** What the caller could bind an unresolved role to. Best effort: the
      *  connections port is optional, and a failure to enumerate must not
@@ -1627,6 +1619,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // `tools.search({ namespace })` inside `execute` (see searchNamespaceCode).
     // The inventory comes from the same built description the model reads, so
     // the two surfaces cannot list different integrations.
+    //
+    // A session serves up to 50 of these, so every definition byte is paid ~50
+    // times in the client's context. The NAME is the payload; everything else
+    // stays as small as it can: one shared description sentence (the slug
+    // would only repeat the name) and a single bare `query` parameter — no
+    // paging knobs, because anything past the first page belongs in `execute`.
+    // `namespace-search-tools.test.ts` pins the serialized size.
     if (searchToolsEnabled) {
       // The MCP tool-name grammar ([A-Za-z0-9_-]). Integration slugs already
       // conform (they are `tools.<slug>` property names in sandbox code); one
@@ -1640,19 +1639,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           server.registerTool(
             `search_${integration}`,
             {
-              description: `Find \`${integration}\` tools. Same results as \`tools.search({ query, namespace: "${integration}" })\` inside execute; run what you find with execute.`,
-              inputSchema: {
-                query: z
-                  .string()
-                  .optional()
-                  .describe("Keywords to match. Omit to list the whole namespace."),
-                limit: z.number().optional().describe("Max results per page."),
-                offset: z.number().optional().describe("Pagination offset."),
-              },
+              description:
+                "Search this integration's tools; empty query lists all. Run results with execute.",
+              inputSchema: { query: z.string().optional() },
             },
-            ({ query, limit, offset }, extra) =>
+            ({ query }, extra) =>
               runToolEffect(
-                executeCode(searchNamespaceCode(integration, { query, limit, offset }), extra).pipe(
+                executeCode(searchNamespaceCode(integration, query), extra).pipe(
                   Effect.withSpan("mcp.host.tool.namespace_search", {
                     attributes: {
                       "mcp.tool.name": `search_${integration}`,

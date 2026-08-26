@@ -118,12 +118,34 @@ describe("MCP host — per-integration search tools", () => {
         // session.
         expect(names.filter((name) => name.startsWith("search_"))).toHaveLength(2);
 
-        // Minimal descriptions: one line that names the namespace and points
-        // back at the execute flow.
+        // Minimal descriptions: the NAME carries the namespace; the shared
+        // one-line description only points back at the execute flow.
         const gmail = tools.find((tool) => tool.name === "search_google_gmail");
-        expect(gmail?.description).toContain("google_gmail");
         expect(gmail?.description).toContain("execute");
         expect(gmail?.description?.includes("\n")).toBe(false);
+      },
+    );
+  });
+
+  it("keeps each serialized definition small — the whole point is cheap context", async () => {
+    // A session serves one of these per connected integration (up to 50), so
+    // definition bytes multiply. 300 serialized chars/tool keeps the full
+    // surface around ~2k tokens; the original shipped shape was 551 chars/tool
+    // (~5k tokens for 30 integrations), which defeated the feature's purpose.
+    const { engine } = makeRecordingEngine();
+    await withClient(
+      { engine, description: DESCRIPTION_WITH_INVENTORY, searchToolsEnabled: true },
+      async (client) => {
+        const tools = (await client.listTools()).tools.filter((tool) =>
+          tool.name.startsWith("search_"),
+        );
+        expect(tools.length).toBeGreaterThan(0);
+        for (const tool of tools) {
+          expect(
+            JSON.stringify(tool).length,
+            `${tool.name} definition must stay lean`,
+          ).toBeLessThan(300);
+        }
       },
     );
   });
@@ -149,11 +171,9 @@ describe("MCP host — per-integration search tools", () => {
       async (client) => {
         const result = await client.callTool({
           name: "search_github",
-          arguments: { query: "issues", limit: 5 },
+          arguments: { query: "issues" },
         });
-        expect(executed).toEqual([
-          'return tools.search({"query":"issues","namespace":"github","limit":5})',
-        ]);
+        expect(executed).toEqual(['return tools.search({"query":"issues","namespace":"github"})']);
         expect(result.isError ?? false).toBe(false);
       },
     );

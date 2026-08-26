@@ -104,12 +104,17 @@ scenario(
         // The core surface is untouched.
         expect(names, "execute still works on an opted-in session").toContain("execute");
         expect(names, "skills still works on an opted-in session").toContain("skills");
-        // The description is minimal and points back at the execute flow.
+        // The NAME carries the namespace; the description is one shared line
+        // that points back at the execute flow, kept tiny because a session
+        // pays for it once per connected integration.
         const described = optedInTools.find((tool) => tool.name === searchTool);
-        expect(described?.description, "the tool description names its namespace").toContain(slug);
         expect(described?.description, "the tool description points at execute").toContain(
           "execute",
         );
+        expect(
+          (described?.description ?? "").length,
+          "the tool description stays lean",
+        ).toBeLessThan(120);
 
         // A keyword call returns the matching tool, exactly as
         // `tools.search({ query, namespace })` inside execute would.
