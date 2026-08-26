@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { structuralSplit } from "@executor-js/plugin-openapi";
 
+import { previewSpecTextStreaming } from "../../sdk/preview";
 import { microsoftGraphAdapter } from "./spec-format-adapter";
 import { MICROSOFT_GRAPH_OPENAPI_URL } from "./presets";
 
@@ -88,5 +89,24 @@ it.effect("uses catalog URL fragments to select one Graph workload", () =>
       get: { operationId: "me.GetUser" },
     });
     expect(keepPathItem("/irrelevant", { get: { operationId: "irrelevant.Get" } })).toBeNull();
+  }),
+);
+
+it.effect("stream-previews a Graph selection without a whole-document parse", () =>
+  Effect.gen(function* () {
+    const converted = yield* microsoftGraphAdapter.fetch({
+      urls: [`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=profile`],
+      httpClientLayer: graphHttpClientLayer,
+    });
+    const preview = yield* previewSpecTextStreaming(converted.specText, converted.keepPathItem);
+
+    expect(preview.operationCount).toBe(1);
+    expect(preview.operations.map((operation) => operation.operationId)).toEqual(["me.GetUser"]);
+    expect(preview.healthCheckCandidates).toHaveLength(1);
+    expect(preview.healthCheckCandidates[0]?.method).toBe("get");
+    expect(preview.oauth2Presets).toHaveLength(1);
+    expect(preview.servers.map((server) => server.url)).toEqual([
+      "https://graph.microsoft.com/v1.0",
+    ]);
   }),
 );
