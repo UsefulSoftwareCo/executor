@@ -64,6 +64,22 @@ export const EnterpriseManagedConnectionStateSchema = Schema.Struct({
    *  its RFC 8414 metadata when the connection was made. */
   audience: Schema.String,
   subjectTokenType: SubjectTokenTypeSchema,
+  /** Where the subject token in `refresh_item_id` came from, which decides who
+   *  OWNS it and therefore what "it died" means:
+   *
+   *   - `caller` (the default for a connection minted before work identities
+   *     existed, and for every headless caller that passes its own assertion):
+   *     the connection holds a private copy. A rejection kills THIS connection
+   *     and only a reconnect carrying a fresh assertion revives it.
+   *   - `work-identity`: `refresh_item_id` points at the user's shared work
+   *     identity record (`work-identity:…`), not a private copy. A rejection
+   *     kills the IDENTITY — every connection pointing at it is stalled, and one
+   *     re-link revives them all, so nothing may be recorded on the connection
+   *     that a reconnect would have to clear.
+   *
+   *  Optional because rows written before this existed carry none, and their
+   *  custody is by construction the `caller` shape. */
+  subjectSource: Schema.optional(Schema.Literals(["caller", "work-identity"])),
 }).annotate({
   identifier: "EnterpriseManagedConnectionState",
   description:

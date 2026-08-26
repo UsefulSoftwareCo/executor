@@ -175,6 +175,12 @@ import {
   type EnterpriseManagedMintError,
   type EnterpriseManagedRollout,
 } from "./oauth-ema";
+import {
+  decodeWorkIdentityRecord,
+  encodeWorkIdentityRecord,
+  isWorkIdentityUsable,
+  revokedWorkIdentity,
+} from "./oauth-work-identity";
 import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome } from "./tool-result";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
@@ -1913,6 +1919,58 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
+    /** Record that a connection is not currently usable WITHOUT stamping the
+     *  reauth verdict `markRefreshGrantDead` writes.
+     *
+     *  The difference is the whole work-identity lifecycle. `oauthReauthRequiredAt`
+     *  is a standing "this connection's own grant is dead" that ONLY a reconnect
+     *  mint clears — correct when the connection owns the dead credential. A
+     *  connection renewing from a shared work identity owns nothing: the identity
+     *  died, and re-linking it must revive every connection pointing at it with
+     *  no reconnects at all. Stamping the reauth verdict here would block exactly
+     *  that recovery, so this writes health only: the accounts list still shows
+     *  the problem at a glance, and the next resolve after a re-link succeeds. */
+    const markConnectionUnhealthy = (
+      row: ConnectionRow,
+      detail: string,
+    ): Effect.Effect<void, never> => {
+      const health: HealthCheckResult = { status: "expired", checkedAt: Date.now(), detail };
+      return core
+        .updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(row.owner as Owner)(b),
+              b("integration", "=", String(row.integration)),
+              b("name", "=", String(row.name)),
+            ),
+          set: { last_health: health, updated_at: new Date() },
+        })
+        .pipe(Effect.ignore);
+    };
+
+    /** Record the IdP's rejection ON THE WORK IDENTITY, so every other
+     *  enterprise-managed connection backed by it short-circuits instead of
+     *  spending its own doomed exchange, and so the console can offer the one
+     *  action that helps. Best-effort, exactly like `markRefreshGrantDead`: a
+     *  bookkeeping write failure must not mask the failure being reported. */
+    const markWorkIdentityRejected = (
+      provider: CredentialProvider,
+      itemId: string,
+    ): Effect.Effect<void, never> =>
+      Effect.gen(function* () {
+        if (!provider.set) return;
+        const stored = yield* provider.get(ProviderItemId.make(itemId));
+        if (stored === null) return;
+        const record = Option.getOrNull(decodeWorkIdentityRecord(stored));
+        if (record === null || !isWorkIdentityUsable(record)) return;
+        yield* provider.set(
+          ProviderItemId.make(itemId),
+          encodeWorkIdentityRecord(
+            revokedWorkIdentity(record, { at: Date.now(), reason: "rejected" }),
+          ),
+        );
+      }).pipe(Effect.ignore);
+
     /** The rendered message of a typed enterprise-managed failure. */
     const enterpriseManagedMessage = (cause: EnterpriseManagedMintError): string =>
       // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
@@ -1963,12 +2021,53 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             "No enterprise identity assertion is stored for this connection.",
           );
         }
-        const subjectToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
-        if (!subjectToken) {
+        const subjectItemId = row.refresh_item_id;
+        const stored = yield* provider.get(ProviderItemId.make(subjectItemId));
+        if (!stored) {
           return yield* input.reauth(
             "The stored enterprise identity assertion could not be resolved.",
           );
         }
+
+        // WHOSE subject token this is decides what the item holds and what a
+        // rejection means. `work-identity` points at the user's shared record —
+        // a document, not a bare token; `caller` (and every connection minted
+        // before work identities existed) points at this connection's own copy.
+        const fromWorkIdentity = state.subjectSource === "work-identity";
+        const relink = (message: string): CredentialResolutionError =>
+          new CredentialResolutionError({
+            owner,
+            integration: IntegrationSlug.make(row.integration),
+            name: ConnectionName.make(row.name),
+            message,
+            reauthRequired: true,
+            workIdentityRelinkRequired: true,
+          });
+        /** Fail as "re-link", recording the connection's health on the way out
+         *  so the accounts list shows every stalled connection — not only the
+         *  one that happened to meet the rejection first. */
+        const failWithRelink = (message: string): Effect.Effect<never, CredentialResolutionError> =>
+          markConnectionUnhealthy(row, message).pipe(Effect.andThen(Effect.fail(relink(message))));
+        const held = fromWorkIdentity ? Option.getOrNull(decodeWorkIdentityRecord(stored)) : null;
+        if (fromWorkIdentity && held === null) {
+          return yield* failWithRelink(
+            "Your enterprise work identity is missing or unreadable. Link your work identity again to restore this connection.",
+          );
+        }
+        if (held !== null && !isWorkIdentityUsable(held)) {
+          // Already known dead. Short-circuit BEFORE the exchange: the IdP has
+          // already given its verdict on this subject, and re-spending it once
+          // per connection per resolve is precisely the hammering the connection
+          // -level known-dead gate exists to prevent.
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.refresh.skipped_dead_work_identity": true,
+          });
+          return yield* failWithRelink(
+            "Your enterprise work identity was rejected by the identity provider. Link your work identity again to restore this connection.",
+          );
+        }
+        const subjectToken = held === null ? stored : held.token;
+        const subjectTokenType = held === null ? state.subjectTokenType : held.tokenType;
         const idpClientSecret = idpRow.client_secret_item_id
           ? ((yield* provider.get(ProviderItemId.make(String(idpRow.client_secret_item_id)))) ?? "")
           : "";
@@ -1986,7 +2085,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             clientSecret: client.clientSecret,
           },
           subjectToken,
-          subjectTokenType: state.subjectTokenType,
+          subjectTokenType,
           resource: client.resource,
           scopes: input.scopes,
           endpointUrlPolicy: config.oauthEndpointUrlPolicy,
@@ -2010,16 +2109,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   oauthErrorCode: cause.error,
                 }),
               ),
+            // The IdP rejected the SUBJECT. Which product state that is depends
+            // entirely on who owned it: a caller-supplied assertion means this
+            // connection needs a fresh one; a work identity means the IDENTITY
+            // is dead and one re-link revives every connection behind it.
             EmaSubjectTokenRejected: (cause) =>
-              Effect.fail(
-                new CredentialResolutionError({
-                  owner,
-                  integration: IntegrationSlug.make(row.integration),
-                  name: ConnectionName.make(row.name),
-                  message: enterpriseManagedMessage(cause),
-                  reauthRequired: true,
-                }),
-              ),
+              fromWorkIdentity
+                ? markWorkIdentityRejected(provider, subjectItemId).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        relink(
+                          `${enterpriseManagedMessage(cause)} Link your work identity again to restore this connection.`,
+                        ),
+                      ),
+                    ),
+                  )
+                : Effect.fail(
+                    new CredentialResolutionError({
+                      owner,
+                      integration: IntegrationSlug.make(row.integration),
+                      name: ConnectionName.make(row.name),
+                      message: enterpriseManagedMessage(cause),
+                      reauthRequired: true,
+                    }),
+                  ),
             EmaRedemptionRejected: (cause) =>
               Effect.fail(
                 new CredentialResolutionError({
@@ -2034,12 +2147,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             EmaUpstreamUnavailable: (cause) =>
               Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
           }),
-          Effect.tapError((error) =>
-            Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
-              ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-                markRefreshGrantDead(row, error.message)
-              : Effect.void,
-          ),
+          Effect.tapError((error) => {
+            if (!Predicate.isTagged(error, "CredentialResolutionError")) return Effect.void;
+            if (error.reauthRequired !== true) return Effect.void;
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+            const detail = error.message;
+            // A dead WORK IDENTITY must not stamp the connection's reauth
+            // verdict: that verdict is cleared only by a reconnect mint, and
+            // the recovery here is a single re-link that touches no connection.
+            // Health still records it, so nothing goes quiet.
+            return error.workIdentityRelinkRequired === true
+              ? markConnectionUnhealthy(row, detail)
+              : markRefreshGrantDead(row, detail);
+          }),
         );
 
         // Draft §4.4.3: the Resource Authorization Server SHOULD NOT issue a

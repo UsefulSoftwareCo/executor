@@ -30,6 +30,8 @@ import {
   OAuthState,
   Owner,
   ProviderKey,
+  WorkIdentityLinkError,
+  WorkIdentityStatusSchema,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -263,6 +265,64 @@ const CallbackUrlParams = Schema.Struct({
 const HtmlResponse = Schema.String.pipe(HttpApiSchema.asText());
 
 // ---------------------------------------------------------------------------
+// Work identity — acquiring the enterprise assertion an EMA connect presents.
+//
+// A user links their enterprise identity ONCE per (owner, IdP app); every
+// enterprise-managed connect afterwards omits `enterprise.subjectToken` and the
+// server resolves the held identity. The console's loop is:
+//
+//   GET  /oauth/work-identity/status  → `unlinked` / `linked` / `needs_relink`
+//   POST /oauth/work-identity/start   → open `authorizationUrl` in the popup
+//   (the popup lands on the SHARED /oauth/callback and posts back a
+//    `{ workIdentity: <status> }` payload; `complete` below is the direct entry
+//    point for callers that catch the code themselves)
+//   POST /oauth/work-identity/complete
+//   DELETE /oauth/work-identity       → forget it
+//
+// The three routing fields (`owner`, `idpClient`, `idpClientOwner`) are the same
+// on every one of them: the integration catalog projects `idpClient` /
+// `idpClientOwner` on the server's oauth auth method, and `owner` is the owner
+// the connection will be made under.
+// ---------------------------------------------------------------------------
+
+const WorkIdentityRefFields = {
+  /** The owner the identity is held under — the same owner the
+   *  enterprise-managed CONNECTIONS backed by it are made under. */
+  owner: Owner,
+  /** The registered OAuth app standing for the enterprise identity provider, as
+   *  the integration catalog's `enterpriseIdentityProvider` names it. */
+  idpClient: OAuthClientSlug,
+  idpClientOwner: Owner,
+} as const;
+
+const StartWorkIdentityLinkPayload = Schema.Struct({
+  ...WorkIdentityRefFields,
+  /** Replace the default `openid offline_access` request outright. Send only for
+   *  an identity provider that needs different scope names — the defaults are
+   *  what make the link return account claims and a durable refresh token. */
+  scopes: Schema.optional(Schema.Array(Schema.String)),
+  redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const StartWorkIdentityLinkResponse = Schema.Struct({
+  authorizationUrl: Schema.String,
+  state: OAuthState,
+});
+
+const CompleteWorkIdentityLinkPayload = Schema.Struct({
+  state: OAuthState,
+  code: Schema.String,
+});
+
+const WorkIdentityStatusUrlParams = Schema.Struct(WorkIdentityRefFields);
+
+const UnlinkWorkIdentityPayload = Schema.Struct(WorkIdentityRefFields);
+
+const UnlinkWorkIdentityResponse = Schema.Struct({
+  unlinked: Schema.Boolean,
+});
+
+// ---------------------------------------------------------------------------
 // Error schemas with HTTP status annotations
 // ---------------------------------------------------------------------------
 
@@ -271,6 +331,7 @@ const OAuthComplete = OAuthCompleteError.annotate({ httpApiStatus: 400 });
 const OAuthProbe = OAuthProbeError.annotate({ httpApiStatus: 400 });
 const OAuthRegisterDynamic = OAuthRegisterDynamicError.annotate({ httpApiStatus: 400 });
 const OAuthSessionNotFound = OAuthSessionNotFoundError.annotate({ httpApiStatus: 404 });
+const WorkIdentityLink = WorkIdentityLinkError.annotate({ httpApiStatus: 400 });
 
 // ---------------------------------------------------------------------------
 // Group
@@ -331,6 +392,34 @@ export const OAuthApi = HttpApiGroup.make("oauth")
       payload: ProbePayload,
       success: ProbeResponse,
       error: [InternalError, OAuthProbe],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("startWorkIdentityLink", "/oauth/work-identity/start", {
+      payload: StartWorkIdentityLinkPayload,
+      success: StartWorkIdentityLinkResponse,
+      error: [InternalError, WorkIdentityLink],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("completeWorkIdentityLink", "/oauth/work-identity/complete", {
+      payload: CompleteWorkIdentityLinkPayload,
+      success: WorkIdentityStatusSchema,
+      error: [InternalError, WorkIdentityLink, OAuthSessionNotFound],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("workIdentityStatus", "/oauth/work-identity/status", {
+      query: WorkIdentityStatusUrlParams,
+      success: WorkIdentityStatusSchema,
+      error: InternalError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("unlinkWorkIdentity", "/oauth/work-identity", {
+      payload: UnlinkWorkIdentityPayload,
+      success: UnlinkWorkIdentityResponse,
+      error: InternalError,
     }),
   )
   .add(
