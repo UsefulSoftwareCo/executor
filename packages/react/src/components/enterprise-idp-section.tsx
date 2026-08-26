@@ -2,12 +2,18 @@ import { useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { OAuthClientSlug, type OAuthClientSummary, type Owner } from "@executor-js/sdk/shared";
+import {
+  OAuthClientSlug,
+  type EnterpriseIdentityProviderDescriptor,
+  type OAuthClientSummary,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import {
   createOAuthClientOptimistic,
   oauthClientsOptimisticAtom,
+  probeOAuth,
   removeOAuthClientOptimistic,
 } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
@@ -75,31 +81,43 @@ export const findEnterpriseIdentityProvider = (
       String(client.slug) === String(ENTERPRISE_IDENTITY_PROVIDER_CLIENT_SLUG),
   ) ?? null;
 
-/** Registering the provider needs the token endpoint the RFC 8693 exchange is
- *  POSTed to and the client id it authenticates as. The secret is optional: an
- *  IdP may treat the client as public. */
+/** The descriptor a managed server points at — the shape an MCP server's
+ *  `enterpriseIdentityProvider` declaration and `oauth.start`'s `enterprise`
+ *  input both speak. Derived from the reserved identity, never typed by hand. */
+export const ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR: EnterpriseIdentityProviderDescriptor = {
+  client: ENTERPRISE_IDENTITY_PROVIDER_CLIENT_SLUG,
+  clientOwner: ENTERPRISE_IDENTITY_PROVIDER_CLIENT_OWNER,
+};
+
+/** Registering the provider needs the issuer to discover endpoints from and the
+ *  client id the exchange authenticates as. The secret is optional: an identity
+ *  provider may treat the registration as a public client. */
 export const canSubmitEnterpriseIdentityProvider = (input: {
   readonly submitting: boolean;
-  readonly tokenUrl: string;
+  readonly issuerUrl: string;
   readonly clientId: string;
 }): boolean =>
-  !input.submitting && input.tokenUrl.trim().length > 0 && input.clientId.trim().length > 0;
+  !input.submitting && input.issuerUrl.trim().length > 0 && input.clientId.trim().length > 0;
 
 /** The `oauth.createClient` payload for the organization's identity provider.
  *
- *  `authorizationUrl` is empty by construction and that is not an omission: the
- *  enterprise-managed chain never runs a browser redirect through this
- *  registration. It exchanges an assertion the user already holds at the token
- *  endpoint (draft §4.3), so there is no authorization endpoint to record — and
- *  inventing one would claim a flow this app does not run. */
+ *  BOTH endpoints are recorded, and the authorization endpoint is the one worth
+ *  explaining. The RFC 8693 exchange that mints an ID-JAG only ever touches the
+ *  token endpoint — but the exchange needs a subject token ISSUED BY THIS
+ *  PROVIDER and audienced to THIS client, and a WorkOS-brokered login does not
+ *  produce one: there, WorkOS is the client at the customer's identity
+ *  provider, and what executor holds is a WorkOS token. Closing that gap needs
+ *  one authorization-code hop against this registration — the member's "link
+ *  your work identity" step — and that hop needs an authorize endpoint. */
 export const enterpriseIdentityProviderPayload = (input: {
+  readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly clientId: string;
   readonly clientSecret: string;
 }) => ({
   owner: ENTERPRISE_IDENTITY_PROVIDER_CLIENT_OWNER,
   slug: ENTERPRISE_IDENTITY_PROVIDER_CLIENT_SLUG,
-  authorizationUrl: "",
+  authorizationUrl: input.authorizationUrl.trim(),
   tokenUrl: input.tokenUrl.trim(),
   grant: "authorization_code" as const,
   clientId: input.clientId.trim(),
@@ -108,6 +126,22 @@ export const enterpriseIdentityProviderPayload = (input: {
   // enterprise-managed server in the workspace.
   originIntegration: null,
 });
+
+/**
+ * The organization's identity-provider pointer, or null when none is
+ * registered.
+ *
+ * The pointer, deliberately, and not the registration: a server declaration and
+ * a connect request both need to NAME the provider, and neither has any
+ * business holding its endpoints or its client id.
+ */
+export function useEnterpriseIdentityProviderDescriptor(): EnterpriseIdentityProviderDescriptor | null {
+  const clientsResult = useAtomValue(oauthClientsOptimisticAtom);
+  return AsyncResult.isSuccess(clientsResult) &&
+    findEnterpriseIdentityProvider(clientsResult.value) !== null
+    ? ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR
+    : null;
+}
 
 // ---------------------------------------------------------------------------
 // The registration dialog. Self-contained: its form state lives here and dies
@@ -122,19 +156,36 @@ function EnterpriseIdentityProviderDialog(props: {
   readonly current: OAuthClientSummary | null;
 }) {
   const { current } = props;
-  const [tokenUrl, setTokenUrl] = useState(current === null ? "" : current.tokenUrl);
+  const [issuerUrl, setIssuerUrl] = useState(current === null ? "" : current.tokenUrl);
   const [clientId, setClientId] = useState(current === null ? "" : current.clientId);
   const [clientSecret, setClientSecret] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const doCreate = useAtomSet(createOAuthClientOptimistic, { mode: "promiseExit" });
+  const doProbe = useAtomSet(probeOAuth, { mode: "promiseExit" });
 
-  const canSubmit = canSubmitEnterpriseIdentityProvider({ submitting, tokenUrl, clientId });
+  const canSubmit = canSubmitEnterpriseIdentityProvider({ submitting, issuerUrl, clientId });
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
+    // Endpoints are DISCOVERED from the issuer, never typed. An administrator
+    // knows their tenant's issuer; asking them to also transcribe an authorize
+    // and a token path invites the one typo whose only symptom is every
+    // member's connect failing later, at the identity provider, with a message
+    // about the wrong host.
+    const probed = await doProbe({ payload: { url: issuerUrl.trim() }, reactivityKeys: [] });
+    if (Exit.isFailure(probed)) {
+      setSubmitting(false);
+      toast.error("Couldn't read that issuer's OpenID configuration. Check the URL, then retry.");
+      return;
+    }
     const exit = await doCreate({
-      payload: enterpriseIdentityProviderPayload({ tokenUrl, clientId, clientSecret }),
+      payload: enterpriseIdentityProviderPayload({
+        authorizationUrl: probed.value.authorizationUrl,
+        tokenUrl: probed.value.tokenUrl,
+        clientId,
+        clientSecret,
+      }),
       reactivityKeys: oauthClientWriteKeys,
     });
     trackEvent("oauth_client_registered", {
@@ -145,7 +196,7 @@ function EnterpriseIdentityProviderDialog(props: {
     });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
-      toast.error("Couldn't save the identity provider. Check the token URL, then retry.");
+      toast.error("Couldn't save the identity provider. Check the issuer URL, then retry.");
       return;
     }
     toast.success(current === null ? "Identity provider registered" : "Identity provider updated");
@@ -166,23 +217,27 @@ function EnterpriseIdentityProviderDialog(props: {
             {current === null ? "Register Identity Provider" : "Edit Identity Provider"}
           </DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">
-            Executor exchanges each member&apos;s single sign-on assertion at this endpoint for a
-            grant naming one MCP server. Your identity provider decides which members may reach
-            which servers.
+            Register Executor as an application in your own identity provider, then paste its
+            details here. Executor exchanges each member&apos;s work identity there for a grant
+            naming one MCP server, so your identity provider — not the member — decides who reaches
+            which server.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-1">
           <div className="grid gap-1.5">
-            <Label htmlFor="ema-idp-token-url" className="text-xs text-muted-foreground">
-              Token URL
+            <Label htmlFor="ema-idp-issuer-url" className="text-xs text-muted-foreground">
+              Issuer URL
+              <span className="font-normal text-muted-foreground/70">
+                endpoints are read from it
+              </span>
             </Label>
             <Input
-              id="ema-idp-token-url"
+              id="ema-idp-issuer-url"
               autoComplete="off"
-              placeholder="https://example.okta.com/oauth2/default/v1/token"
-              value={tokenUrl}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTokenUrl(e.target.value)}
+              placeholder="https://example.okta.com/oauth2/default"
+              value={issuerUrl}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIssuerUrl(e.target.value)}
               className="font-mono text-sm"
             />
           </div>
@@ -226,7 +281,11 @@ function EnterpriseIdentityProviderDialog(props: {
             </Button>
           </DialogClose>
           <Button size="sm" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-            {submitting ? "Saving…" : current === null ? "Register Provider" : "Save Provider"}
+            {submitting
+              ? "Reading issuer…"
+              : current === null
+                ? "Register Provider"
+                : "Save Provider"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -261,8 +320,9 @@ export function EnterpriseIdentityProviderSection() {
         <div>
           <h2 className="text-sm font-medium text-foreground">Enterprise Identity Provider</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Register the app Executor uses at your identity provider. MCP servers pointed at it
-            connect through your organization instead of asking each member for consent.
+            Register Executor&apos;s application from your own identity provider. MCP servers marked
+            as managed then connect with each member&apos;s work identity, instead of asking them to
+            consent server by server.
           </p>
         </div>
         {provider === null ? (
@@ -282,7 +342,7 @@ export function EnterpriseIdentityProviderSection() {
         onSuccess: () =>
           provider === null ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              No identity provider yet. Register one so MCP servers can authorize members through
+              No identity provider yet. Register one before marking any MCP server as managed by
               your organization.
             </p>
           ) : (
@@ -336,8 +396,8 @@ export function EnterpriseIdentityProviderSection() {
               </div>
               <div className="border-t border-border px-4 py-3">
                 <p className="text-xs text-muted-foreground">
-                  Members never see a consent screen for servers pointed at this provider, and
-                  access is revoked at the provider, not here.
+                  On a managed server, members connect with their work identity instead of a consent
+                  screen — and access is revoked at your identity provider, not here.
                 </p>
               </div>
             </div>

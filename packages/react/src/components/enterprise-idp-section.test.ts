@@ -4,6 +4,7 @@ import { OAuthClientSlug, type OAuthClientSummary } from "@executor-js/sdk/share
 import {
   ENTERPRISE_IDENTITY_PROVIDER_CLIENT_OWNER,
   ENTERPRISE_IDENTITY_PROVIDER_CLIENT_SLUG,
+  ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR,
   canSubmitEnterpriseIdentityProvider,
   enterpriseIdentityProviderPayload,
   findEnterpriseIdentityProvider,
@@ -42,14 +43,20 @@ describe("findEnterpriseIdentityProvider", () => {
 });
 
 describe("canSubmitEnterpriseIdentityProvider", () => {
-  const valid = { submitting: false, tokenUrl: "https://idp.example/token", clientId: "abc" };
+  const valid = {
+    submitting: false,
+    issuerUrl: "https://idp.example/oauth2/default",
+    clientId: "abc",
+  };
 
   it("accepts a public client with no secret", () => {
     expect(canSubmitEnterpriseIdentityProvider(valid)).toBe(true);
   });
 
-  it("requires the token endpoint the assertion exchange is POSTed to", () => {
-    expect(canSubmitEnterpriseIdentityProvider({ ...valid, tokenUrl: "   " })).toBe(false);
+  it("requires the issuer the endpoints are discovered from", () => {
+    // Endpoints are never typed: they are probed off the issuer, so the issuer
+    // is the field the registration cannot proceed without.
+    expect(canSubmitEnterpriseIdentityProvider({ ...valid, issuerUrl: "   " })).toBe(false);
   });
 
   it("requires the client id the exchange authenticates as", () => {
@@ -62,9 +69,14 @@ describe("canSubmitEnterpriseIdentityProvider", () => {
 });
 
 describe("enterpriseIdentityProviderPayload", () => {
+  const discovered = {
+    authorizationUrl: "  https://idp.example/authorize  ",
+    tokenUrl: "  https://idp.example/token  ",
+  };
+
   it("registers the workspace-owned app under the reserved slug", () => {
     const payload = enterpriseIdentityProviderPayload({
-      tokenUrl: "  https://idp.example/token  ",
+      ...discovered,
       clientId: " abc ",
       clientSecret: " shh ",
     });
@@ -75,26 +87,45 @@ describe("enterpriseIdentityProviderPayload", () => {
     expect(payload.clientSecret).toBe("shh");
   });
 
-  it("records no authorization URL, because this app never runs a redirect", () => {
-    // The enterprise-managed chain exchanges an assertion the member already
-    // holds at the token endpoint; there is no authorization endpoint to store,
-    // and inventing one would claim a flow this registration does not run.
+  it("records the authorization endpoint the work-identity link needs", () => {
+    // The ID-JAG exchange itself only touches the token endpoint. The
+    // authorization endpoint is here for the hop that produces the subject
+    // token in the first place: an assertion issued BY this provider and
+    // audienced to THIS client, which a brokered login does not yield.
     expect(
-      enterpriseIdentityProviderPayload({
-        tokenUrl: "https://idp.example/token",
-        clientId: "abc",
-        clientSecret: "",
-      }).authorizationUrl,
-    ).toBe("");
+      enterpriseIdentityProviderPayload({ ...discovered, clientId: "abc", clientSecret: "" })
+        .authorizationUrl,
+    ).toBe("https://idp.example/authorize");
+  });
+
+  it("registers the authorization-code grant, not the enterprise grant", () => {
+    // `id_jag` names the registration at an MCP server's authorization server.
+    // THIS app is the registration at the identity provider — it authenticates
+    // the exchange and runs the work-identity hop, both authorization-code
+    // shaped.
+    expect(
+      enterpriseIdentityProviderPayload({ ...discovered, clientId: "abc", clientSecret: "" }).grant,
+    ).toBe("authorization_code");
   });
 
   it("stamps no originating integration — it backs every managed server", () => {
     expect(
-      enterpriseIdentityProviderPayload({
-        tokenUrl: "https://idp.example/token",
-        clientId: "abc",
-        clientSecret: "",
-      }).originIntegration,
+      enterpriseIdentityProviderPayload({ ...discovered, clientId: "abc", clientSecret: "" })
+        .originIntegration,
     ).toBeNull();
+  });
+});
+
+describe("ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR", () => {
+  it("names the same registration the section writes", () => {
+    // A server declaration and a connect request both point at the provider by
+    // (owner, slug). If this descriptor and the payload ever disagreed, every
+    // managed server would name a registration that does not exist.
+    expect(String(ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR.client)).toBe(
+      String(ENTERPRISE_IDENTITY_PROVIDER_CLIENT_SLUG),
+    );
+    expect(ENTERPRISE_IDENTITY_PROVIDER_DESCRIPTOR.clientOwner).toBe(
+      ENTERPRISE_IDENTITY_PROVIDER_CLIENT_OWNER,
+    );
   });
 });

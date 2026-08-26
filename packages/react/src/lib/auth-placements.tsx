@@ -16,7 +16,10 @@
 // ---------------------------------------------------------------------------
 
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
-import type { AuthMethodDescriptor } from "@executor-js/sdk/shared";
+import type {
+  AuthMethodDescriptor,
+  EnterpriseIdentityProviderDescriptor,
+} from "@executor-js/sdk/shared";
 
 export type Carrier = "header" | "query" | "env";
 
@@ -74,6 +77,17 @@ export interface AuthMethodOAuth {
    *  `client_id` is this host's metadata document URL, with no provider-side app
    *  registration. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** MCP Enterprise-Managed Authorization: which registered OAuth app stands for
+   *  the organization's identity provider for this server. Present only when the
+   *  server declares one.
+   *
+   *  A POINTER, and only a pointer — no assertion, no secret. Its presence means
+   *  "this server is enterprise-managed": the connect path may name the
+   *  organization's identity provider on `oauth.start` instead of walking the
+   *  member through per-server consent. It never removes the interactive route,
+   *  because the server still has to advertise the grant profile for the
+   *  enterprise branch to be taken at all. */
+  readonly enterpriseIdentityProvider?: EnterpriseIdentityProviderDescriptor;
 }
 
 export interface AuthMethod {
@@ -177,6 +191,12 @@ function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod 
         discoveryUrl: oauth?.discoveryUrl,
         supportsDynamicRegistration: oauth?.supportsDynamicRegistration,
         supportsClientIdMetadataDocument: oauth?.supportsClientIdMetadataDocument,
+        // Carried, not re-derived: the deployment declared WHICH app stands for
+        // the organization's identity provider, and the connect path has to
+        // name that exact registration on `oauth.start`. Dropping it here would
+        // silently turn every enterprise-managed server back into an ordinary
+        // one in the console while the backend still expected the pointer.
+        enterpriseIdentityProvider: oauth?.enterpriseIdentityProvider,
       },
     };
   }

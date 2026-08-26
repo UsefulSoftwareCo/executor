@@ -21,6 +21,8 @@ import type {
   McpAuthMethod,
   McpAuthMethodInput,
   McpCanonicalAuthMethodInput,
+  McpEnterpriseIdentityProvider,
+  McpOAuthMethod,
   McpStdioEnvMethod,
 } from "../sdk/types";
 
@@ -48,20 +50,37 @@ export const mcpWireAuthInput = (
   method: McpAuthMethod | McpCanonicalAuthMethodInput,
 ): McpAuthMethodInput => wireAuthInputFromShared(method) as McpAuthMethodInput;
 
-const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
-  id: slug,
+const oauthAuthMethod = (method: McpOAuthMethod, endpoint: string): AuthMethod => ({
+  id: method.slug,
   label: "OAuth",
   kind: "oauth",
-  source: slug.startsWith("custom_") ? "custom" : "spec",
-  template: AuthTemplateSlug.make(slug),
+  source: method.slug.startsWith("custom_") ? "custom" : "spec",
+  template: AuthTemplateSlug.make(method.slug),
   placements: [],
-  oauth: { discoveryUrl: endpoint, supportsDynamicRegistration: true },
+  oauth: {
+    discoveryUrl: endpoint,
+    supportsDynamicRegistration: true,
+    // The server's own enterprise-managed declaration, carried onto the
+    // presentational method. `supportsDynamicRegistration` stays true beside
+    // it on purpose: declaring an identity provider is an ADDITIONAL route, not
+    // a replacement, and a server that turns out not to advertise the ID-JAG
+    // profile must still be connectable the ordinary way.
+    ...(method.enterpriseIdentityProvider === undefined
+      ? {}
+      : { enterpriseIdentityProvider: method.enterpriseIdentityProvider }),
+  },
 });
 
 /** Convert a generic editor value into one MCP auth-method input (no slug —
  *  the backend assigns carrier-derived slugs). An apikey value keeps every
  *  named placement (headers and query params mix freely); one with no usable
- *  placement falls back to `none`. */
+ *  placement falls back to `none`.
+ *
+ *  Deliberately carries NO enterprise-managed declaration: that is server
+ *  policy, not a credential, so it has no editor field to come from. The
+ *  surface that saves a managed server (`EditMcpIntegration`) re-attaches it
+ *  explicitly from its own toggle, which is what keeps `configureMcpAuth`'s
+ *  `replace` mode from erasing it on an unrelated edit. */
 export function mcpAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
 ): McpCanonicalAuthMethodInput {
@@ -70,6 +89,31 @@ export function mcpAuthMethodInputFromEditorValue(
     kind: "none",
   }) as McpCanonicalAuthMethodInput;
 }
+
+/** One oauth2 method input carrying the organization's declaration, or none.
+ *
+ *  The single place an enterprise-managed pointer is attached to a method on
+ *  the way out. Written as a constructor rather than a spread at each call site
+ *  so the absent case stays genuinely ABSENT: an explicit
+ *  `enterpriseIdentityProvider: undefined` is a different value on the wire,
+ *  and the union that decodes it rejects it. */
+export const mcpOAuthMethodInput = (
+  provider: McpEnterpriseIdentityProvider | undefined,
+): McpCanonicalAuthMethodInput =>
+  provider === undefined
+    ? { kind: "oauth2" }
+    : { kind: "oauth2", enterpriseIdentityProvider: provider };
+
+/** Whether two enterprise-managed declarations name the same registration.
+ *  Compared field-by-field because the pointer travels through JSON and a
+ *  decoded copy is never reference-equal to the stored one. */
+export const sameEnterpriseIdentityProvider = (
+  a: McpEnterpriseIdentityProvider | undefined,
+  b: McpEnterpriseIdentityProvider | undefined,
+): boolean =>
+  a === undefined || b === undefined
+    ? a === b
+    : String(a.client) === String(b.client) && a.clientOwner === b.clientOwner;
 
 /** Convert one stored MCP method into the generic editor value. */
 export function editorValueFromMcpAuthMethod(method: McpAuthMethod): AuthTemplateEditorValue {
@@ -89,7 +133,7 @@ export function authMethodsFromConfig(
   endpoint: string,
 ): AuthMethod[] {
   return methods.map((method: McpAuthMethod): AuthMethod => {
-    if (method.kind === "oauth2") return oauthAuthMethod(method.slug, endpoint);
+    if (method.kind === "oauth2") return oauthAuthMethod(method, endpoint);
     if (method.kind === "stdio_env") return stdioEnvAuthMethod(method);
     return authMethodFromSharedTemplate(method);
   });
