@@ -3454,24 +3454,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         })
         .pipe(Effect.ignore);
 
-    const healthFromCredentialResolutionError = (
-      err: CredentialResolutionError,
-    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      err.reauthRequired === true
-        ? Effect.succeed({
-            status: "expired",
-            checkedAt: Date.now(),
-            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-            detail: err.message,
-          })
-        : Effect.fail(
-            new StorageError({
-              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-              message: err.message,
-              cause: err,
-            }),
-          );
-
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
     ): HealthCheckResult =>
@@ -3489,19 +3471,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             detail: failure.message,
           };
 
-    // Genuine storage failures propagate: an infra blip must fail the request,
-    // not persist as a "degraded" verdict on the connection.
+    /** THE one place a credential-resolution failure becomes a health verdict.
+     *  A third party refusing to re-mint a credential is a fact about the
+     *  CONNECTION, not a fault in this service, so it must be answered — and
+     *  then persisted — as `expired`/`degraded`, never raised. The failure
+     *  channel stays reserved for genuine storage faults (an infra blip must
+     *  fail the request rather than persist as a "degraded" verdict). Both
+     *  health paths — credential-only and probing — fold through here, so
+     *  they cannot disagree about what a broken credential means. */
+    const foldCredentialResolutionIntoVerdict = (
+      probe: Effect.Effect<HealthCheckResult, StorageFailure | CredentialResolutionError>,
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
+      probe.pipe(
+        Effect.catchTag("CredentialResolutionError", (failure) =>
+          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+        ),
+      );
+
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
     ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      resolveConnectionValues(row).pipe(
-        Effect.as({
-          status: "healthy" as const,
-          checkedAt: Date.now(),
-          detail: "Credential resolved (no probe configured).",
-        }),
-        Effect.catchTag("CredentialResolutionError", (failure) =>
-          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+      foldCredentialResolutionIntoVerdict(
+        resolveConnectionValues(row).pipe(
+          Effect.as({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "Credential resolved (no probe configured).",
+          }),
         ),
       );
 
@@ -3602,34 +3598,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return result;
         }
 
-        const result = yield* Effect.gen(function* () {
-          const values = yield* resolveConnectionValues(connectionRow);
-          const record = rowToIntegrationRecord(
-            integrationRow,
-            describeAuthMethodsForRow(integrationRow),
-          );
-          const grantedScopes = grantedScopesFromRow(connectionRow);
-          const credential: ToolInvocationCredential = {
-            owner: connectionRow.owner as Owner,
-            integration: ref.integration,
-            connection: ConnectionName.make(connectionRow.name),
-            template: AuthTemplateSlug.make(connectionRow.template),
-            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-            values,
-            config: record.config,
-            ...(grantedScopes ? { grantedScopes } : {}),
-          };
-          // Core resolves the declared spec (its own column) and hands it to the
-          // plugin; plugins no longer read it out of their config.
-          return yield* foldPluginFailure(
-            check({ ctx: runtime.ctx, integration: record, credential, spec }),
-            `Health check for connection "${ref.name}" failed.`,
-          );
-        }).pipe(Effect.catchTag("CredentialResolutionError", healthFromCredentialResolutionError));
+        const result = yield* foldCredentialResolutionIntoVerdict(
+          Effect.gen(function* () {
+            const values = yield* resolveConnectionValues(connectionRow);
+            const record = rowToIntegrationRecord(
+              integrationRow,
+              describeAuthMethodsForRow(integrationRow),
+            );
+            const grantedScopes = grantedScopesFromRow(connectionRow);
+            const credential: ToolInvocationCredential = {
+              owner: connectionRow.owner as Owner,
+              integration: ref.integration,
+              connection: ConnectionName.make(connectionRow.name),
+              template: AuthTemplateSlug.make(connectionRow.template),
+              value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+              values,
+              config: record.config,
+              ...(grantedScopes ? { grantedScopes } : {}),
+            };
+            // Core resolves the declared spec (its own column) and hands it to
+            // the plugin; plugins no longer read it out of their config.
+            return yield* foldPluginFailure(
+              check({ ctx: runtime.ctx, integration: record, credential, spec }),
+              `Health check for connection "${ref.name}" failed.`,
+            );
+          }),
+        );
         yield* annotateHealthVerdict("probe", result);
         // Persist the verdict on the connection row so the accounts list shows
-        // alive/expired at a glance. Best-effort: a write failure must not turn
-        // a successful probe into an error.
+        // alive/expired at a glance, AND so the freshness gate above has
+        // something to serve. A probe that could not resolve its credential
+        // persists too: it is the connection most likely to be re-probed by
+        // every surface on every mount, so leaving it unwritten is what turns
+        // one broken connection into unbounded upstream and error traffic.
+        // Best-effort: a write failure must not turn a verdict into an error.
         yield* persistHealthResult(ref, result);
         return result;
       }).pipe(

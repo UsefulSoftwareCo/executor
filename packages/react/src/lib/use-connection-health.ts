@@ -20,27 +20,43 @@ import { connectionCheckKeys } from "../api/reactivity-keys";
  *  path too, so concurrent tabs collapse to one probe. */
 export const HEALTH_REVALIDATE_MS = 5 * 60 * 1000;
 
+/** Freshness window for a NON-healthy verdict. Short, because an expired dot is
+ *  exactly the verdict the user is waiting to see change — but non-zero,
+ *  because a broken connection is the one every surface wants to re-probe and
+ *  every probe is another request to an upstream that is already refusing.
+ *  Sending this lets the server-side gate collapse repeated mounts and
+ *  concurrent tabs into one probe per window. */
+export const HEALTH_REVALIDATE_UNHEALTHY_MS = 30 * 1000;
+
 const connectionParams = (connection: Connection) => ({
   owner: connection.owner,
   integration: connection.integration,
   name: connection.name,
 });
 
-/** Whether a persisted verdict may render as-is without a background probe.
- *  Healthy-and-fresh renders untouched. Everything else revalidates: stale or
+/** Whether a persisted verdict may render as-is without asking at all.
+ *  Healthy-and-fresh renders untouched. Everything else asks: stale or
  *  never-checked for obvious reasons, and NON-healthy always; an expired dot
  *  is exactly the verdict the user is waiting to see change, so recovery must
- *  show on the next load, not after the freshness window. */
+ *  show on the next load, not after the long window. Asking is not the same as
+ *  probing — the request carries a short `ifStaleMs` (see revalidateQuery), so
+ *  the server answers from the persisted verdict unless it has gone stale. */
 const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
   last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
 
-/** The revalidation query: a healthy (but stale) verdict defers to the
- *  server-enforced window so N open tabs can't stampede the upstream; a
- *  missing or non-healthy verdict forces a fresh probe. */
-const revalidateQuery = (
+/** The revalidation query. ALWAYS defers to the server-enforced freshness
+ *  window, only the width changes: long for a healthy verdict, short for
+ *  anything else. Omitting it for non-healthy verdicts (as this once did)
+ *  bypassed the gate for precisely the connections that were failing — the
+ *  once-per-mount client guard is per MOUNT, not per verdict, so two surfaces
+ *  rendering the same broken connection each sent their own probe, and each
+ *  probe was another refused token request and another captured server error.
+ *  Manual "Check now" is the only unconditional probe, and it passes `{}`. */
+export const revalidateQuery = (
   last: HealthCheckResult | null | undefined,
-): { readonly ifStaleMs?: number } =>
-  last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
+): { readonly ifStaleMs: number } => ({
+  ifStaleMs: last?.status === "healthy" ? HEALTH_REVALIDATE_MS : HEALTH_REVALIDATE_UNHEALTHY_MS,
+});
 
 /** Identity of a persisted verdict, for detecting the reconnect transition.
  *  An OAuth re-mint clears `last_health`, so a verdict giving way to `null`
