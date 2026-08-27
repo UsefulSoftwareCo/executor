@@ -1860,11 +1860,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         .pipe(Effect.ignore);
     };
 
-    /** Write a re-minted token back: the access token into the connection's
-     *  primary provider item, a ROTATED refresh token into the refresh item,
-     *  and the new expiry/scope onto the row. Shared by every grant so their
+    /** Write a re-minted token back: a ROTATED refresh token into the refresh
+     *  item, the access token into the connection's primary provider item, and
+     *  the new expiry/scope onto the row. Shared by every grant so their
      *  persistence stays identical — the grants differ in how they mint, not in
-     *  what a mint means. */
+     *  what a mint means.
+     *
+     *  The refresh token goes FIRST because the writes are not atomic and the
+     *  two credentials are not equally replaceable. Minting rotated the refresh
+     *  token, which spends the one we sent, so the new one is the only thing
+     *  that can mint again; the access token is disposable and one more grant
+     *  re-mints it. Persisting the access token first means a failure in
+     *  between drops a single-use credential the authorization server has
+     *  already consumed, and every later refresh comes back `invalid_grant` —
+     *  a connection that silently disconnects itself. */
     const persistRefreshedToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
@@ -1877,10 +1886,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tokenItemId =
             connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
             `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
           if (token.refresh_token && row.refresh_item_id) {
             yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
           }
+          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
         }
 
         const nextExpiresAt =
