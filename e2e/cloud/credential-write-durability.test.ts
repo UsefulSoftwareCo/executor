@@ -17,14 +17,26 @@
 //
 // Both are pinned here at the product surface, black box. Failures are armed on
 // the WorkOS emulator that the product's own WorkOS client talks to; no product
-// code, stubs, or internals are touched.
+// code, stubs, or internals are touched. Contention is modelled twice, because
+// the two halves of the write policy fail differently: by a COUNT of collisions
+// (does the loop have enough attempts, and does it still land the value when it
+// runs out?) and by a WINDOW of time (does it wait long enough between attempts
+// to still be trying when the peer lets go?). Every scenario also reads the
+// emulator's ledger back to prove the collisions it armed were really served —
+// a fault whose pattern stopped matching would otherwise leave a test that
+// passes without ever contending.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
-import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
+import {
+  type ArmedFault,
+  connectEmulator,
+  type EmulatorClient,
+  type FaultArmInput,
+} from "@executor-js/emulate";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   AuthTemplateSlug,
@@ -46,6 +58,9 @@ const VAULT_CONFLICT_RESPONSE = {
   status: 409,
   body: { code: "conflict", message: "Current version does not match expected version" },
 } as const;
+
+/** Every PUT the vault serves for a stored object — the version-checked write. */
+const VAULT_WRITE = { method: "PUT", pathPattern: "/vault/v1/kv/*" } as const;
 
 type UpstreamHandle = {
   readonly url: string;
@@ -162,6 +177,57 @@ const vaultObjectsFor = (workos: EmulatorClient, slug: string): Effect.Effect<Va
       .filter((object): object is VaultObject => object !== null && object.name.includes(slug));
   });
 
+/** Arm a fault on the shared emulator and take it back down with the scope, by
+ *  id — a blanket `faults.clear()` would also disarm a neighbouring scenario's. */
+const armFault = (workos: EmulatorClient, input: FaultArmInput) =>
+  Effect.acquireRelease(
+    Effect.promise(() => workos.faults.arm(input)),
+    (armed) => Effect.promise(() => workos.faults.clear(armed.id)).pipe(Effect.ignore),
+  );
+
+/** How many responses this armed fault actually injected, read back from the
+ *  emulator's ledger. This is the proof that the failure under test HAPPENED:
+ *  an armed fault whose pattern never matched leaves the product's writes
+ *  untouched, and a scenario asserting only "the call worked" would pass
+ *  without ever exercising the retry it claims to cover. */
+const faultsServed = (workos: EmulatorClient, armed: ArmedFault): Effect.Effect<number> =>
+  Effect.promise(async () => {
+    const entries = await workos.ledger.list(200);
+    return entries.filter((entry) => entry.faultId === armed.id).length;
+  });
+
+/** Keep the vault's version-checked writes losing for a WINDOW of time that
+ *  starts at the first collision the product actually suffers — a peer writer
+ *  that holds the object for a while, rather than a fixed number of collisions.
+ *  This is the shape of the production failure: attempts spaced by a wait
+ *  outlast the peer's round trip; attempts fired back to back all land inside
+ *  it, drain, and the refresh dies.
+ *
+ *  Anchoring on the first collision (not on arming) is what makes it
+ *  deterministic — a refresh only begins several round trips after the fault is
+ *  armed, so a window measured from arming would already be over. */
+const holdWritesInConflict = (workos: EmulatorClient, windowMillis: number) =>
+  Effect.gen(function* () {
+    // Far more conflicts than any bounded retry policy can consume, so the
+    // window — not a counter — is what ends the contention.
+    const armed = yield* armFault(workos, {
+      match: VAULT_WRITE,
+      response: VAULT_CONFLICT_RESPONSE,
+      times: 64,
+    });
+    const released = (async () => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const live = (await workos.faults.list()).find((fault) => fault.id === armed.id);
+        if (!live || live.remaining < armed.times) break;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      await new Promise((resolve) => setTimeout(resolve, windowMillis));
+      await workos.faults.clear(armed.id);
+    })().catch(() => undefined);
+    return { armed, released };
+  });
+
 type CallResult = { readonly ok: boolean; readonly text: string };
 
 type ToolEnvelope = {
@@ -197,8 +263,6 @@ const connectIntegration = Effect.gen(function* () {
   );
   const slug = unique("credwrite");
   const clientSlug = OAuthClientSlug.make(unique("credwriteclient"));
-
-  yield* Effect.addFinalizer(() => Effect.promise(() => workos.faults.clear()).pipe(Effect.ignore));
 
   yield* client.openapi.addSpec({
     payload: {
@@ -343,35 +407,43 @@ scenario(
 
       // Transient contention: the next few version-checked writes lose their
       // race, exactly as a peer writer persisting the same connection's
-      // credential would make them lose it. Three is as many as a tight,
-      // wait-free retry loop could ever absorb — a policy that waits between
-      // attempts outlasts them, one that does not, cannot.
-      yield* Effect.promise(() =>
-        workos.faults.arm({
-          match: { method: "PUT", pathPattern: "/vault/v1/kv/*" },
-          response: VAULT_CONFLICT_RESPONSE,
-          times: 3,
+      // credential would make them lose it. Three is as many as the pre-fix
+      // policy could ever absorb.
+      const transient = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const armed = yield* armFault(workos, {
+            match: VAULT_WRITE,
+            response: VAULT_CONFLICT_RESPONSE,
+            times: 3,
+          });
+          // Revoking upstream forces the very next call to refresh, so the
+          // contended write happens inside a real user-visible request.
+          upstream.revokeSeenBearers();
+          yield* call("transiently-contended-refresh");
+          return yield* faultsServed(workos, armed);
         }),
       );
-      // Revoking upstream forces the very next call to refresh, so the contended
-      // write happens inside a real user-visible request.
-      upstream.revokeSeenBearers();
-      yield* call("transiently-contended-refresh");
-      yield* Effect.promise(() => workos.faults.clear());
+      expect(transient, "the transiently-contended refresh really did collide three times").toBe(3);
 
       // Sustained contention: every version-checked attempt loses. Dropping a
       // credential that has just been minted is the one unrecoverable outcome,
       // so the write still has to land.
-      yield* Effect.promise(() =>
-        workos.faults.arm({
-          match: { method: "PUT", pathPattern: "/vault/v1/kv/*" },
-          response: VAULT_CONFLICT_RESPONSE,
-          times: 5,
+      const sustained = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const armed = yield* armFault(workos, {
+            match: VAULT_WRITE,
+            response: VAULT_CONFLICT_RESPONSE,
+            times: 5,
+          });
+          upstream.revokeSeenBearers();
+          yield* call("continuously-contended-refresh");
+          return yield* faultsServed(workos, armed);
         }),
       );
-      upstream.revokeSeenBearers();
-      yield* call("continuously-contended-refresh");
-      yield* Effect.promise(() => workos.faults.clear());
+      expect(
+        sustained,
+        "the continuously-contended refresh exhausted every version-checked attempt",
+      ).toBe(5);
 
       // The durability half: the credential those contended writes were
       // carrying is the rotated, single-use refresh token. If any of it had been
@@ -383,6 +455,48 @@ scenario(
         (yield* oauth.requests).filter(isRefreshGrant).length,
         "each revocation was absorbed by a real refresh grant",
       ).toBeGreaterThanOrEqual(3);
+    }),
+  ),
+);
+
+// The peer writer's round trip, in milliseconds. Long enough that a retry loop
+// firing its attempts back to back drains all of them (and its last-resort
+// write) inside the window; short enough that a loop waiting between attempts is
+// still trying when the window closes — the shipped policy's fourth and fifth
+// attempts fall no earlier than 175ms and 375ms after the first collision.
+const CONTENTION_WINDOW_MS = 200;
+
+scenario(
+  "Credential persistence · a refresh outlasts contention that lasts longer than a round trip",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { call, oauth, upstream, workos } = yield* connectIntegration;
+
+      yield* call("baseline");
+
+      // Contention bounded by TIME rather than by a count of collisions: this is
+      // the production shape, where the peer holds the object for as long as its
+      // own write takes and the loser has to still be trying when it lets go.
+      const { armed, released } = yield* holdWritesInConflict(workos, CONTENTION_WINDOW_MS);
+      upstream.revokeSeenBearers();
+      yield* call("refresh-under-a-contention-window");
+      yield* Effect.promise(() => released);
+
+      expect(
+        yield* faultsServed(workos, armed),
+        "the refresh really was fighting a contended vault write",
+      ).toBeGreaterThanOrEqual(3);
+
+      // And the credential that survived the window is usable: the next
+      // revocation is absorbed by another real refresh.
+      upstream.revokeSeenBearers();
+      yield* call("post-window");
+
+      expect(
+        (yield* oauth.requests).filter(isRefreshGrant).length,
+        "both revocations were absorbed by real refresh grants",
+      ).toBeGreaterThanOrEqual(2);
     }),
   ),
 );
@@ -408,21 +522,30 @@ scenario(
       );
       expect(accessObject, "the connection stored an access token in the vault").toBeDefined();
 
-      yield* Effect.promise(() =>
-        workos.faults.arm({
-          match: { method: "PUT", pathPattern: `/vault/v1/kv/${accessObject!.id}` },
-          response: { status: 503, body: { code: "unavailable", message: "vault unavailable" } },
-          times: 1,
+      const interrupted = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const armed = yield* armFault(workos, {
+            match: { method: "PUT", pathPattern: `/vault/v1/kv/${accessObject!.id}` },
+            response: {
+              status: 503,
+              body: { code: "unavailable", message: "vault unavailable" },
+            },
+            times: 1,
+          });
+
+          upstream.revokeSeenBearers();
+          const result = yield* attempt();
+          expect(
+            yield* faultsServed(workos, armed),
+            "the access token's write is the one that broke",
+          ).toBe(1);
+          return result;
         }),
       );
-
-      upstream.revokeSeenBearers();
-      const interrupted = yield* attempt();
       expect(
         interrupted.ok,
         `the call whose credential write was interrupted reports the failure (got: ${interrupted.text.slice(0, 200)})`,
       ).toBe(false);
-      yield* Effect.promise(() => workos.faults.clear());
 
       // The interrupted refresh still spent the refresh token it sent: the
       // authorization server rotated it and will not honour the old one again.
