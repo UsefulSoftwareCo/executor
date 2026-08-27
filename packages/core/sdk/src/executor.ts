@@ -4072,7 +4072,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // The schema's description marks it as observed.
         const observed =
           outputSchema === undefined
-            ? yield* shapeMemory.recall(String(address), parsed.owner)
+            ? yield* shapeMemory.recall(String(address), parsed.owner, "direct")
             : null;
         const effectiveOutputSchema =
           outputSchema !== undefined
@@ -4803,7 +4803,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!parsed) return Effect.void;
           const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
           if (data === undefined) return Effect.void;
-          return shapeMemory.observe(String(address), parsed.owner, data);
+          return shapeMemory.observe(String(address), parsed.owner, "direct", data);
         }),
         Effect.withSpan("executor.tool.execute", {
           attributes: {

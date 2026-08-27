@@ -7,12 +7,20 @@
  * by tool-catalog refresh (which deletes and recreates `tool` rows, so the
  * tool row itself is not a viable home). An in-memory read-through cache
  * keeps the hot path off the database: within one executor instance a tool's
- * shape is loaded at most once, and a write happens only when a new
- * observation actually changes the merged shape — after a few calls a stable
- * API stops producing writes entirely.
+ * shape is loaded at most once, and a write happens only when the merged
+ * shape changed, on an observation-count milestone, or when the persisted
+ * record's freshness is stale — so a stable API converges to rare
+ * freshness-only writes instead of a write per call.
  *
- * `observe` never fails and is intended to be forked off the dispatch path;
- * `recall` degrades to "no memory" on any storage failure.
+ * Records carry the `contract` (result encoding) they were observed under:
+ * a recall with a different contract returns nothing and the next
+ * observation starts a fresh record, so a data-contract migration
+ * invalidates stale shapes without a deletion pass. Records also expire —
+ * a shape not reinforced within `EXPIRY_MS` is not served, because a
+ * confidently wrong type is worse than `unknown`.
+ *
+ * `observe` never fails; `recall` degrades to "no memory" on any storage
+ * failure.
  */
 
 import { Clock, Effect } from "effect";
@@ -20,63 +28,122 @@ import { Clock, Effect } from "effect";
 import type { Owner } from "./ids";
 import type { PluginStorageFacade } from "./plugin-storage";
 import { observeShape, type ObservedShape } from "./shape-inference";
+import type { ToolResultEncoding } from "./tool-result-normalization";
 
 /** Reserved system namespace inside `plugin_storage`; not a real plugin. */
 export const SHAPE_MEMORY_PLUGIN_ID = "executor.shape-memory";
 const COLLECTION = "observed-output-shapes";
+
+/** A shape not reinforced for this long stops being served and restarts on
+ *  the next observation. */
+const EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
+/** Persist observation-count/freshness bookkeeping at most this often when
+ *  the schema itself is stable. */
+const FRESHNESS_WRITE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** ... and always on these observation-count milestones. */
+const OBSERVATION_WRITE_MILESTONE = 25;
+
+/** Persisted record: ObservedShape plus the result contract it was learned
+ *  under. Records written before contracts existed default to "direct". */
+type StoredShape = ObservedShape & { readonly contract?: ToolResultEncoding };
 
 export type ShapeMemory = {
   /**
    * Fold one successful tool payload into the tool's remembered shape.
    * Structure only — values never leave this call. Never fails.
    */
-  readonly observe: (address: string, owner: Owner, value: unknown) => Effect.Effect<void>;
-  /** The remembered shape for an address, or null when nothing is known. */
-  readonly recall: (address: string, owner: Owner) => Effect.Effect<ObservedShape | null>;
+  readonly observe: (
+    address: string,
+    owner: Owner,
+    contract: ToolResultEncoding,
+    value: unknown,
+  ) => Effect.Effect<void>;
+  /** The remembered shape for an address under a contract, or null. */
+  readonly recall: (
+    address: string,
+    owner: Owner,
+    contract: ToolResultEncoding,
+  ) => Effect.Effect<ObservedShape | null>;
 };
 
 export const makeShapeMemory = (storage: PluginStorageFacade): ShapeMemory => {
-  const cache = new Map<string, ObservedShape | null>();
-  const persisted = new Map<string, string>();
+  const cache = new Map<string, StoredShape | null>();
+  const persistedSchema = new Map<string, string>();
+  const persistedAt = new Map<string, number>();
 
   const cacheKey = (owner: Owner, address: string) => `${owner}:${address}`;
 
-  const load = (address: string, owner: Owner): Effect.Effect<ObservedShape | null> =>
+  const storedContract = (record: StoredShape): ToolResultEncoding => record.contract ?? "direct";
+
+  const load = (address: string, owner: Owner): Effect.Effect<StoredShape | null> =>
     Effect.gen(function* () {
       const key = cacheKey(owner, address);
       const hit = cache.get(key);
       if (hit !== undefined) return hit;
       const entry = yield* storage
-        .getForOwner<ObservedShape>({ owner, collection: COLLECTION, key: address })
+        .getForOwner<StoredShape>({ owner, collection: COLLECTION, key: address })
         .pipe(Effect.catch(() => Effect.succeed(null)));
       const record = entry?.data ?? null;
       cache.set(key, record);
-      if (record !== null) persisted.set(key, JSON.stringify(record.schema));
+      if (record !== null) {
+        persistedSchema.set(key, JSON.stringify(record.schema));
+        persistedAt.set(key, record.updatedAt);
+      }
       return record;
     });
 
-  const observe = (address: string, owner: Owner, value: unknown): Effect.Effect<void> =>
+  const usable = (
+    record: StoredShape | null,
+    contract: ToolResultEncoding,
+    now: number,
+  ): ObservedShape | null =>
+    record !== null && storedContract(record) === contract && now - record.updatedAt <= EXPIRY_MS
+      ? record
+      : null;
+
+  const observe = (
+    address: string,
+    owner: Owner,
+    contract: ToolResultEncoding,
+    value: unknown,
+  ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const key = cacheKey(owner, address);
-      const prior = yield* load(address, owner);
+      const stored = yield* load(address, owner);
       const now = yield* Clock.currentTimeMillis;
-      const next = observeShape(prior, value, now);
+      // A contract mismatch or expiry means the record describes data this
+      // tool no longer returns — restart rather than merge into it.
+      const prior = usable(stored, contract, now);
+      const next: StoredShape = { ...observeShape(prior, value, now), contract };
       cache.set(key, next);
-      // Write only when the merged shape actually changed — observation
-      // counters alone are bookkeeping, not worth a row write per call.
       const schemaJson = JSON.stringify(next.schema);
-      if (persisted.get(key) === schemaJson) return;
+      const lastWrite = persistedAt.get(key) ?? 0;
+      const shouldWrite =
+        persistedSchema.get(key) !== schemaJson ||
+        stored === null ||
+        prior === null ||
+        next.observations % OBSERVATION_WRITE_MILESTONE === 0 ||
+        now - lastWrite >= FRESHNESS_WRITE_INTERVAL_MS;
+      if (!shouldWrite) return;
       yield* storage
         .put({ owner, collection: COLLECTION, key: address, data: next })
         .pipe(Effect.catch(() => Effect.succeed(null)));
-      persisted.set(key, schemaJson);
+      persistedSchema.set(key, schemaJson);
+      persistedAt.set(key, now);
     }).pipe(Effect.catchCause(() => Effect.void));
 
-  return {
-    observe,
-    recall: (address, owner) =>
-      load(address, owner).pipe(Effect.catchCause(() => Effect.succeed(null))),
-  };
+  const recall = (
+    address: string,
+    owner: Owner,
+    contract: ToolResultEncoding,
+  ): Effect.Effect<ObservedShape | null> =>
+    Effect.gen(function* () {
+      const stored = yield* load(address, owner);
+      const now = yield* Clock.currentTimeMillis;
+      return usable(stored, contract, now);
+    }).pipe(Effect.catchCause(() => Effect.succeed(null)));
+
+  return { observe, recall };
 };
 
 /**

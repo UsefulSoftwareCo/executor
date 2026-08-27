@@ -47,6 +47,40 @@ describe("inferShape", () => {
     });
   });
 
+  it("collapses narrow objects with data-bearing keys to a map", () => {
+    // Two entries is far below the width threshold — the keys themselves are
+    // the tell. None of these may persist as schema "field names".
+    const cases: Record<string, unknown>[] = [
+      { "alice@example.com": { active: true }, "bob@example.com": { active: false } },
+      { "3f2b8c1e-79aa-4f10-8d5c-0a1b2c3d4e5f": 1 },
+      { "2026-08-27T01:00:00Z": "event" },
+      { "12345": { qty: 2 }, "67890": { qty: 1 } },
+      { "https://example.com/page": 3 },
+      { deadbeefdeadbeef00: true },
+    ];
+    for (const value of cases) {
+      const shape = inferShape(value);
+      expect(shape.properties, JSON.stringify(value)).toBeUndefined();
+      expect(shape.additionalProperties, JSON.stringify(value)).toBeDefined();
+    }
+  });
+
+  it("keeps ordinary API field names as properties", () => {
+    const shape = inferShape({
+      id: 1,
+      created_at: "2026-01-01",
+      pageUrl: "https://x",
+      email2fa: true,
+    });
+    expect(shape.properties).toBeDefined();
+    expect(Object.keys(shape.properties ?? {}).sort()).toEqual([
+      "created_at",
+      "email2fa",
+      "id",
+      "pageUrl",
+    ]);
+  });
+
   it("degrades to unknown past the depth bound", () => {
     let value: unknown = "leaf";
     for (let i = 0; i < 10; i++) value = { child: value };
