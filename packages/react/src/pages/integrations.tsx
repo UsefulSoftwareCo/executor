@@ -399,7 +399,7 @@ function PresetGrid(props: {
       setResolvingDomain(null);
       if (Exit.isFailure(exit)) {
         setCatalogError(
-          `Couldn't reach integrations.sh for ${entry.domain}. Paste a URL above instead.`,
+          `Couldn't load connect details for ${entry.domain}. Paste a URL above instead.`,
         );
         return;
       }
@@ -492,11 +492,7 @@ function PresetGrid(props: {
           {showCatalogSection && (
             <>
               <div className="border-t border-border/50 px-4 py-1.5">
-                <p className="font-mono text-[11px] text-muted-foreground">
-                  {catalog.loading && catalogEntries.length === 0
-                    ? "searching integrations.sh…"
-                    : "from integrations.sh"}
-                </p>
+                <p className="font-mono text-[11px] text-muted-foreground">More integrations</p>
               </div>
               {catalogEntries.map((entry) => (
                 <CardStackEntry key={`catalog-${entry.domain}`} asChild>
@@ -532,6 +528,18 @@ function PresetGrid(props: {
                   </Button>
                 </CardStackEntry>
               ))}
+              {catalog.loading &&
+                catalogEntries.length === 0 &&
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={`catalog-skeleton-${i}`} className="flex items-center gap-3 px-4 py-3">
+                    <Skeleton className="size-5 shrink-0 rounded-md" />
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <Skeleton className="h-3.5" style={{ width: `${35 + ((i * 13) % 25)}%` }} />
+                      <Skeleton className="h-3" style={{ width: `${55 + ((i * 9) % 20)}%` }} />
+                    </div>
+                    <Skeleton className="h-5 w-14 rounded-full" />
+                  </div>
+                ))}
             </>
           )}
         </CardStackContent>
