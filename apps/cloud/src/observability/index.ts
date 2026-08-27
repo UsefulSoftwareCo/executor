@@ -30,6 +30,21 @@ export const OTEL_TRACE_ID_TAG = "otel_trace_id";
 export const OTEL_SPAN_ID_TAG = "otel_span_id";
 export const SENTRY_EVENT_ID_ATTRIBUTE = "sentry.event_id";
 
+/**
+ * Set by the MCP session Durable Object when it has finished deciding what to
+ * do about a cause — reported it, or classified it as an expected Cloudflare
+ * platform reset and deliberately not reported it.
+ *
+ * `instrumentDurableObjectWithSentry` wraps the DO's entry points and captures
+ * the same rejection again as it escapes, which is why one platform reset
+ * opened two issues for the same event. The DO is the better owner — it has
+ * the session, the org, the OTEL correlation and the classification — so its
+ * claim wins and the auto-instrumentation's echo is dropped in `beforeSend`.
+ * Nothing the DO does not claim is affected.
+ */
+export const DO_CAUSE_OWNER_TAG = "mcp.do.cause_owner";
+export const DO_CAUSE_OWNER_VALUE = "durable_object";
+
 export type OtelCorrelationContext = {
   readonly traceId: string;
   readonly spanId: string;
@@ -99,10 +114,25 @@ export const tagCurrentSentryScopeWithCurrentOtelSpan: Effect.Effect<OtelCorrela
     return context;
   });
 
+/**
+ * True when this event is the auto-instrumentation's copy of a cause the
+ * Durable Object already claimed.
+ *
+ * Both conditions matter. The tag alone would drop the DO's own report; the
+ * mechanism alone would drop genuinely unhandled DO failures (an alarm crash,
+ * say) that nothing else reports. Together they identify exactly the echo.
+ */
+const isClaimedDurableObjectEcho = (event: ErrorEvent): boolean => {
+  if (event.tags?.[DO_CAUSE_OWNER_TAG] !== DO_CAUSE_OWNER_VALUE) return false;
+  const mechanism = event.exception?.values?.[0]?.mechanism?.type;
+  return typeof mechanism === "string" && mechanism.startsWith("auto.");
+};
+
 export const beforeSendWithOtelCorrelation = (
   event: ErrorEvent,
   options?: { readonly logPayload?: boolean },
-): ErrorEvent => {
+): ErrorEvent | null => {
+  if (isClaimedDurableObjectEcho(event)) return null;
   if (options?.logPayload) {
     console.info(
       JSON.stringify({
@@ -166,6 +196,15 @@ export const captureCauseEffect = (input: unknown): Effect.Effect<string | undef
     }
     return eventId;
   });
+
+/**
+ * Mark the current Sentry scope as "the Durable Object has already dealt with
+ * this cause". Call it AFTER any `captureCauseEffect`, so the DO's own event —
+ * captured against the scope as it was — is not itself mistaken for the echo.
+ */
+export const claimCauseHandledByDurableObject: Effect.Effect<void> = Effect.sync(() => {
+  Sentry.getCurrentScope().setTag(DO_CAUSE_OWNER_TAG, DO_CAUSE_OWNER_VALUE);
+});
 
 export const ErrorCaptureLive: Layer.Layer<ErrorCapture> = Layer.succeed(
   ErrorCapture,

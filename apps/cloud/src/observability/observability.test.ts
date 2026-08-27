@@ -2,8 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect } from "effect";
 import type * as Tracer from "effect/Tracer";
 
+import type { ErrorEvent } from "@sentry/cloudflare";
+
 import {
   addCurrentOtelCorrelationTags,
+  beforeSendWithOtelCorrelation,
+  DO_CAUSE_OWNER_TAG,
+  DO_CAUSE_OWNER_VALUE,
   OTEL_SPAN_ID_TAG,
   OTEL_TRACE_ID_TAG,
   sentryPayloadForCause,
@@ -90,4 +95,71 @@ describe("Sentry OTel correlation", () => {
       expect(event.tags[OTEL_SPAN_ID_TAG]).toBe(spanId);
     }).pipe(Effect.withSpan("test.sentry_capture"), Effect.withTracer(makeFixedTracer())),
   );
+});
+
+// One Durable Object failure used to open two Sentry issues: the DO's own
+// `captureCause` seam reported it (mechanism `generic`), and then
+// `instrumentDurableObjectWithSentry` reported the very same rejection again as
+// it escaped the method (mechanism `auto.faas.cloudflare.durable_object`). The
+// DO is the owner — it has the session, the classification and the OTel
+// correlation — so its claim suppresses the echo and nothing else.
+describe("Durable Object capture ownership", () => {
+  const doEcho = (overrides: Partial<ErrorEvent> = {}): ErrorEvent => ({
+    type: undefined,
+    tags: { [DO_CAUSE_OWNER_TAG]: DO_CAUSE_OWNER_VALUE },
+    exception: {
+      values: [
+        {
+          type: "Error",
+          value: "Durable Object reset because its code was updated.",
+          mechanism: { type: "auto.faas.cloudflare.durable_object", handled: false },
+        },
+      ],
+    },
+    ...overrides,
+  });
+
+  it("drops the auto-instrumentation's copy of a cause the DO already claimed", () => {
+    expect(beforeSendWithOtelCorrelation(doEcho())).toBeNull();
+  });
+
+  it("keeps the DO's own report, which carries no auto mechanism", () => {
+    const own = doEcho({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "Durable Object reset because its code was updated.",
+            mechanism: { type: "generic", handled: true },
+          },
+        ],
+      },
+    });
+    expect(beforeSendWithOtelCorrelation(own)).not.toBeNull();
+  });
+
+  // An alarm crash or a transport fault is never claimed by the DO seam, and
+  // the auto-instrumentation is the ONLY thing that reports it. Dropping those
+  // would trade duplicate noise for silence.
+  it("keeps an unclaimed Durable Object failure", () => {
+    const unclaimed = doEcho({ tags: {} });
+    expect(beforeSendWithOtelCorrelation(unclaimed)).not.toBeNull();
+  });
+
+  it("keeps ordinary worker events untouched", () => {
+    const workerEvent: ErrorEvent = {
+      type: undefined,
+      tags: { [OTEL_TRACE_ID_TAG]: traceId },
+      exception: {
+        values: [
+          {
+            type: "TypeError",
+            value: "x is not a function",
+            mechanism: { type: "auto.http.cloudflare", handled: false },
+          },
+        ],
+      },
+    };
+    expect(beforeSendWithOtelCorrelation(workerEvent)).not.toBeNull();
+  });
 });

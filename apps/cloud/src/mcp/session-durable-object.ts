@@ -71,6 +71,7 @@ import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry
 import {
   captureCause as reportCause,
   captureCauseEffect as reportCauseEffect,
+  claimCauseHandledByDurableObject,
   tagCurrentSentryScopeWithCurrentOtelSpan,
 } from "../observability";
 import { parseTraceparent } from "./traceparent";
@@ -366,6 +367,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override prepareErrorCaptureScope(): Effect.Effect<void> {
     return Effect.asVoid(tagCurrentSentryScopeWithCurrentOtelSpan);
+  }
+
+  // The DO owns this cause; `instrumentDurableObjectWithSentry` (server.ts) must
+  // not report it a second time when the rejection escapes the method.
+  protected override claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
+    return claimCauseHandledByDurableObject;
   }
 
   // Best-effort export the DO isolate's buffered spans after the RPC settles,

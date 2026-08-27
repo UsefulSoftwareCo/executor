@@ -1,3 +1,4 @@
+// oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -481,5 +482,158 @@ describe("McpAgentSessionDOBase transport restore", () => {
     });
     expect(onStartCalls).toBe(1);
     expect(restoredEngine.calls).toEqual([{ executionId: "exec-model", response: approval }]);
+  });
+});
+
+// Every Cloudflare deploy resets live Durable Objects: workerd aborts whatever
+// storage operation is in flight with "Durable Object reset because its code was
+// updated." That is the guaranteed consequence of shipping, not a defect — but
+// it lands on whichever write `init()` happens to be doing, and the last thing
+// `init()` does is `markActivity`, which writes a timestamp and arms the idle
+// alarm. Nothing about a session depends on that write succeeding: the in-memory
+// clock is already set, and every later touch re-arms the alarm. Losing a fully
+// built, working session over it — and paging for the privilege — is the bug.
+describe("McpAgentSessionDOBase init survives a platform reset of its bookkeeping write", () => {
+  const CODE_UPDATE_RESET = "Durable Object reset because its code was updated.";
+
+  class ResettingStorage extends MemoryStorage {
+    /** Storage keys whose `put` should fail, and with what. */
+    readonly putFailures = new Map<string, () => Error>();
+    setAlarmFailure: (() => Error) | null = null;
+
+    override async put(key: string, value: unknown): Promise<void> {
+      const failure = this.putFailures.get(key);
+      if (failure) {
+        this.putFailures.delete(key);
+        throw failure();
+      }
+      await super.put(key, value);
+    }
+
+    override async setAlarm(time: number | Date): Promise<void> {
+      if (this.setAlarmFailure) {
+        const failure = this.setAlarmFailure;
+        this.setAlarmFailure = null;
+        throw failure();
+      }
+      await super.setAlarm(time);
+    }
+  }
+
+  type InitSession = {
+    ctx: ResettingStorage;
+    captureCause: (cause: Cause.Cause<unknown>) => void;
+    dbHandle: { readonly end: () => void } | null;
+    engine: ExecutionEngine<Cause.YieldableError> | null;
+    getSessionId: () => string;
+    init: () => Promise<void>;
+    initialized: boolean;
+    lastActivityMs: number;
+    pendingApprovalLeases: Map<string, never>;
+    props: Record<string, unknown>;
+    server?: McpServer;
+    sessionTimeoutMs: () => number;
+    buildMcpServer: () => Effect.Effect<{ mcpServer: McpServer; engine: unknown }>;
+    openSessionDb: () => { readonly end: () => void };
+    resolveSessionMeta: () => Effect.Effect<SessionMeta>;
+    validateMcpSessionOwner: (identity: McpApprovalOwner) => Promise<string>;
+  };
+
+  const sessionMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const makeInitSession = (): {
+    session: InitSession;
+    storage: ResettingStorage;
+    captured: Cause.Cause<unknown>[];
+  } => {
+    const storage = new ResettingStorage();
+    const captured: Cause.Cause<unknown>[] = [];
+    const session = Object.create(McpAgentSessionDOBase.prototype) as InitSession;
+    session.ctx = storage;
+    session.captureCause = (cause) => {
+      captured.push(cause);
+    };
+    session.dbHandle = null;
+    session.engine = null;
+    session.getSessionId = () => "session-init";
+    session.initialized = false;
+    session.lastActivityMs = 0;
+    session.pendingApprovalLeases = new Map<string, never>();
+    session.props = { session: { organizationId: "org-1", userId: "user-1" } };
+    session.sessionTimeoutMs = () => 60_000;
+    session.resolveSessionMeta = () => Effect.succeed(sessionMeta);
+    session.openSessionDb = () => ({ end: () => undefined });
+    session.buildMcpServer = () =>
+      Effect.succeed({ mcpServer: makeServer(), engine: makeEngine().engine });
+    return { session, storage, captured };
+  };
+
+  it("keeps the session when a deploy resets the last-activity write", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("last-activity-ms", () => new Error(CODE_UPDATE_RESET));
+
+    await expect(
+      session.init(),
+      "a healthy session is not torn down by a lost timestamp",
+    ).resolves.toBeUndefined();
+
+    expect(session.initialized, "the runtime stays installed").toBe(true);
+    expect(session.engine, "the execution engine survives").not.toBeNull();
+    expect(session.server, "the MCP server survives").toBeDefined();
+    expect(captured, "a platform reset of bookkeeping is not paged as a defect").toEqual([]);
+  });
+
+  it("keeps the session when a deploy resets the idle-alarm write", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.setAlarmFailure = () => new Error(CODE_UPDATE_RESET);
+
+    await expect(session.init()).resolves.toBeUndefined();
+
+    expect(session.initialized).toBe(true);
+    expect(captured).toEqual([]);
+  });
+
+  // The alarm is the only durable consequence of a dropped markActivity, and it
+  // must self-heal: the next request re-arms it. Otherwise "best effort" would
+  // quietly mean "this session never times out".
+  it("re-arms the idle alarm on the next touch after a lost bookkeeping write", async () => {
+    const { session, storage } = makeInitSession();
+    storage.setAlarmFailure = () => new Error(CODE_UPDATE_RESET);
+
+    await session.init();
+    expect(storage.alarm, "the write that failed left no alarm").toBeUndefined();
+
+    await expect(
+      session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
+    ).resolves.toBe("ok");
+    expect(storage.alarm, "the next request re-establishes the idle clock").toBeGreaterThan(0);
+  });
+
+  // Best-effort is scoped to the platform's own resets. A bookkeeping write that
+  // fails for any other reason is still a defect and must still be reported —
+  // otherwise this change trades a noisy bug for a silent one.
+  it("still fails and reports when the bookkeeping write breaks for an unknown reason", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("last-activity-ms", () => new Error("quota exceeded for namespace"));
+
+    await expect(session.init()).rejects.toThrow(/quota exceeded/);
+    expect(captured.length, "an unrecognized failure is still captured").toBe(1);
+  });
+
+  // Session meta is not bookkeeping — ownership validation reads it back — so a
+  // reset there must still fail init. What it must NOT do is escape as an
+  // unclassified defect: the caller renders it as a retryable error, and the DO
+  // stops paging for a condition every deploy guarantees.
+  it("fails a meta write reset without paging, so the caller can render a retry", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("session-meta", () => new Error(CODE_UPDATE_RESET));
+
+    await expect(session.init()).rejects.toThrow(/code was updated/);
+    expect(captured, "a deploy reset is expected platform behaviour, not a defect").toEqual([]);
   });
 });
