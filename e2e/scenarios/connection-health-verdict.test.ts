@@ -17,11 +17,17 @@
 // a credential — and must answer with a verdict, persist it, and let a
 // freshness window keep the next check off the wire. Both refusals are
 // covered: a retryable one (`degraded`) and a dead grant (`expired`).
+//
+// A second scenario in this file walks the same broken connection through the
+// real UI, because the other half of the symptom was the number of SURFACES:
+// see its header.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import type { HttpApiClient } from "effect/unstable/httpapi";
+import type { Response } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -33,9 +39,11 @@ import {
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
-import { Api, Target } from "../src/services";
+import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
+type Client = HttpApiClient.ForApi<typeof api>;
 
 const unique = (prefix: string) => `${prefix}${randomBytes(4).toString("hex")}`;
 
@@ -48,7 +56,9 @@ const serveUpstream = () =>
       const server = createServer((request, response) => {
         if (request.method === "GET" && (request.url ?? "").startsWith("/me")) {
           const authorized = (request.headers["authorization"] ?? "").startsWith("Bearer at_");
-          response.writeHead(authorized ? 200 : 401, { "content-type": "application/json" });
+          response.writeHead(authorized ? 200 : 401, {
+            "content-type": "application/json",
+          });
           response.end(JSON.stringify(authorized ? { email: "probe@example.test" } : {}));
           return;
         }
@@ -74,7 +84,10 @@ const serveUpstream = () =>
 
 const spec = (
   baseUrl: string,
-  oauth: { readonly authorizationEndpoint: string; readonly tokenEndpoint: string },
+  oauth: {
+    readonly authorizationEndpoint: string;
+    readonly tokenEndpoint: string;
+  },
 ): string =>
   JSON.stringify({
     openapi: "3.0.3",
@@ -106,6 +119,149 @@ const spec = (
     },
   });
 
+/** One integration with a declared health check, one OAuth client, one
+ *  connection completed through a real authorization-code flow — against an
+ *  authorization server that refuses every refresh grant in the given way.
+ *  Instantly-expiring access tokens mean every credential resolution must
+ *  refresh, so the refusal is what the probe meets. */
+const connectRefusing = (
+  client: Client,
+  upstream: { readonly url: string },
+  options: {
+    readonly name: ConnectionName;
+    readonly errorCode: string;
+    readonly description: string;
+  },
+) =>
+  Effect.gen(function* () {
+    const oauth = yield* serveOAuthTestServer({
+      scopes: ["identity.read"],
+      tokenExpiresInSeconds: 0,
+      supportRefresh: false,
+      invalidRefreshTokenErrorCode: options.errorCode,
+      invalidRefreshTokenDescription: options.description,
+    });
+    const slug = IntegrationSlug.make(unique("healthverdict"));
+    const clientSlug = OAuthClientSlug.make(unique("healthverdictc"));
+
+    yield* Effect.addFinalizer(() =>
+      Effect.all(
+        [
+          client.connections
+            .remove({
+              params: { owner: "org", integration: slug, name: options.name },
+            })
+            .pipe(Effect.ignore),
+          client.oauth
+            .removeClient({
+              params: { slug: clientSlug },
+              payload: { owner: "org" },
+            })
+            .pipe(Effect.ignore),
+          client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+        ],
+        { discard: true },
+      ),
+    );
+
+    yield* client.openapi.addSpec({
+      payload: {
+        spec: { kind: "blob", value: spec(upstream.url, oauth) },
+        slug,
+        baseUrl: upstream.url,
+        authenticationTemplate: [
+          {
+            slug: "oauth",
+            kind: "oauth2",
+            authorizationUrl: oauth.authorizationEndpoint,
+            tokenUrl: oauth.tokenEndpoint,
+            scopes: ["identity.read"],
+          },
+        ],
+      },
+    });
+
+    // Configure the probe, the way the user does in the editor: the
+    // ranked candidates offer the identity GET, and picking it is what
+    // sends this connection down the probing path.
+    const candidates = yield* client.integrations.healthCheckCandidates({
+      params: { slug },
+    });
+    const getMe = candidates.find((candidate) => candidate.method === "get");
+    if (!getMe) return yield* Effect.die("the identity spec exposed no GET candidate");
+    yield* client.integrations.healthCheckSet({
+      params: { slug },
+      payload: { spec: { operation: getMe.operation, identityField: "email" } },
+    });
+
+    yield* client.oauth.createClient({
+      payload: {
+        owner: "org",
+        slug: clientSlug,
+        grant: "authorization_code",
+        authorizationUrl: oauth.authorizationEndpoint,
+        tokenUrl: oauth.tokenEndpoint,
+        clientId: "test-client",
+        clientSecret: "test-secret",
+        originIntegration: slug,
+      },
+    });
+
+    const started = yield* client.oauth.start({
+      payload: {
+        client: clientSlug,
+        clientOwner: "org",
+        owner: "org",
+        name: options.name,
+        integration: slug,
+        template: AuthTemplateSlug.make("oauth"),
+      },
+    });
+    expect(started.status, "oauth.start redirects to the authorization server").toBe("redirect");
+    if (started.status !== "redirect") return yield* Effect.die("no redirect");
+
+    // Drive the test IdP's consent by hand (authorize → login → code).
+    const code = yield* Effect.promise(async () => {
+      const authorize = await fetch(started.authorizationUrl, {
+        redirect: "manual",
+      });
+      const loginUrl = authorize.headers.get("location");
+      if (!loginUrl) throw new Error(`authorize did not redirect: ${authorize.status}`);
+      const login = await fetch(loginUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
+        },
+        redirect: "manual",
+      });
+      const callbackUrl = login.headers.get("location");
+      if (!callbackUrl) throw new Error(`login did not redirect: ${login.status}`);
+      const minted = new URL(callbackUrl).searchParams.get("code");
+      if (!minted) throw new Error("callback carried no authorization code");
+      return minted;
+    });
+    yield* client.oauth.complete({ payload: { state: started.state, code } });
+    yield* oauth.clearRequests;
+
+    return {
+      slug,
+      /** Refresh grants the authorization server has actually received.
+       *  This is the number the whole fix is about: probing must not
+       *  scale with the number of surfaces asking. */
+      refreshGrants: oauth.requests.pipe(
+        Effect.map(
+          (all) =>
+            all.filter(
+              (request) =>
+                request.path === "/token" &&
+                request.method === "POST" &&
+                request.body.includes("grant_type=refresh_token"),
+            ).length,
+        ),
+      ),
+    };
+  });
+
 scenario(
   "Health checks · a connection whose refresh is refused reports a persisted verdict instead of failing the request",
   {},
@@ -117,144 +273,12 @@ scenario(
       const client = yield* makeClient(api, identity);
       const upstream = yield* serveUpstream();
 
-      /** One integration with a declared health check, one OAuth client, one
-       *  connection completed through a real authorization-code flow — against
-       *  an authorization server that refuses every refresh grant in the given
-       *  way. Instantly-expiring access tokens mean every credential
-       *  resolution must refresh, so the refusal is what the probe meets. */
-      const connectRefusing = (options: {
-        readonly name: ConnectionName;
-        readonly errorCode: string;
-        readonly description: string;
-      }) =>
-        Effect.gen(function* () {
-          const oauth = yield* serveOAuthTestServer({
-            scopes: ["identity.read"],
-            tokenExpiresInSeconds: 0,
-            supportRefresh: false,
-            invalidRefreshTokenErrorCode: options.errorCode,
-            invalidRefreshTokenDescription: options.description,
-          });
-          const slug = IntegrationSlug.make(unique("healthverdict"));
-          const clientSlug = OAuthClientSlug.make(unique("healthverdictc"));
-
-          yield* Effect.addFinalizer(() =>
-            Effect.all(
-              [
-                client.connections
-                  .remove({ params: { owner: "org", integration: slug, name: options.name } })
-                  .pipe(Effect.ignore),
-                client.oauth
-                  .removeClient({ params: { slug: clientSlug }, payload: { owner: "org" } })
-                  .pipe(Effect.ignore),
-                client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
-              ],
-              { discard: true },
-            ),
-          );
-
-          yield* client.openapi.addSpec({
-            payload: {
-              spec: { kind: "blob", value: spec(upstream.url, oauth) },
-              slug,
-              baseUrl: upstream.url,
-              authenticationTemplate: [
-                {
-                  slug: "oauth",
-                  kind: "oauth2",
-                  authorizationUrl: oauth.authorizationEndpoint,
-                  tokenUrl: oauth.tokenEndpoint,
-                  scopes: ["identity.read"],
-                },
-              ],
-            },
-          });
-
-          // Configure the probe, the way the user does in the editor: the
-          // ranked candidates offer the identity GET, and picking it is what
-          // sends this connection down the probing path.
-          const candidates = yield* client.integrations.healthCheckCandidates({ params: { slug } });
-          const getMe = candidates.find((candidate) => candidate.method === "get");
-          if (!getMe) return yield* Effect.die("the identity spec exposed no GET candidate");
-          yield* client.integrations.healthCheckSet({
-            params: { slug },
-            payload: { spec: { operation: getMe.operation, identityField: "email" } },
-          });
-
-          yield* client.oauth.createClient({
-            payload: {
-              owner: "org",
-              slug: clientSlug,
-              grant: "authorization_code",
-              authorizationUrl: oauth.authorizationEndpoint,
-              tokenUrl: oauth.tokenEndpoint,
-              clientId: "test-client",
-              clientSecret: "test-secret",
-              originIntegration: slug,
-            },
-          });
-
-          const started = yield* client.oauth.start({
-            payload: {
-              client: clientSlug,
-              clientOwner: "org",
-              owner: "org",
-              name: options.name,
-              integration: slug,
-              template: AuthTemplateSlug.make("oauth"),
-            },
-          });
-          expect(started.status, "oauth.start redirects to the authorization server").toBe(
-            "redirect",
-          );
-          if (started.status !== "redirect") return yield* Effect.die("no redirect");
-
-          // Drive the test IdP's consent by hand (authorize → login → code).
-          const code = yield* Effect.promise(async () => {
-            const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
-            const loginUrl = authorize.headers.get("location");
-            if (!loginUrl) throw new Error(`authorize did not redirect: ${authorize.status}`);
-            const login = await fetch(loginUrl, {
-              method: "POST",
-              headers: {
-                authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
-              },
-              redirect: "manual",
-            });
-            const callbackUrl = login.headers.get("location");
-            if (!callbackUrl) throw new Error(`login did not redirect: ${login.status}`);
-            const minted = new URL(callbackUrl).searchParams.get("code");
-            if (!minted) throw new Error("callback carried no authorization code");
-            return minted;
-          });
-          yield* client.oauth.complete({ payload: { state: started.state, code } });
-          yield* oauth.clearRequests;
-
-          return {
-            slug,
-            /** Refresh grants the authorization server has actually received.
-             *  This is the number the whole fix is about: probing must not
-             *  scale with the number of surfaces asking. */
-            refreshGrants: oauth.requests.pipe(
-              Effect.map(
-                (all) =>
-                  all.filter(
-                    (request) =>
-                      request.path === "/token" &&
-                      request.method === "POST" &&
-                      request.body.includes("grant_type=refresh_token"),
-                  ).length,
-              ),
-            ),
-          };
-        });
-
       // ── A refusal that is not "re-auth required" ────────────────────────
       // The AS answers the refresh with a code OTHER than invalid_grant, so
       // retrying could in principle work. This is the shape that used to
       // escape the probe as a server error.
       const degradedName = ConnectionName.make("healthverdictrefused");
-      const refused = yield* connectRefusing({
+      const refused = yield* connectRefusing(client, upstream, {
         name: degradedName,
         errorCode: "invalid_request",
         description: "Refresh temporarily unavailable",
@@ -295,7 +319,11 @@ scenario(
       // persisted verdict: the authorization server sees nothing more.
       for (let mount = 0; mount < 3; mount++) {
         const remount = yield* client.connections.checkHealth({
-          params: { owner: "org", integration: refused.slug, name: degradedName },
+          params: {
+            owner: "org",
+            integration: refused.slug,
+            name: degradedName,
+          },
           query: { ifStaleMs: 30_000 },
         });
         expect(remount.status, "a repeat check inside the window keeps the verdict").toBe(
@@ -314,7 +342,7 @@ scenario(
       // invalid_grant means the user must re-authenticate: a different verdict
       // through the same probing path, and it persists the same way.
       const expiredName = ConnectionName.make("healthverdictdead");
-      const revoked = yield* connectRefusing({
+      const revoked = yield* connectRefusing(client, upstream, {
         name: expiredName,
         errorCode: "invalid_grant",
         description: "Grant revoked",
@@ -336,6 +364,120 @@ scenario(
       expect(storedDead?.lastHealth?.status, "the expired verdict is persisted too").toBe(
         "expired",
       );
+    }),
+  ),
+);
+
+// ===========================================================================
+// The other half of the production symptom, through the real UI: the refresh
+// traffic scaled with the number of SURFACES showing the broken connection.
+// The once-per-mount client guard is per mount, not per connection, so the
+// integration page and the integrations list each sent their own health
+// request — and because the client omitted `ifStaleMs` for exactly the
+// non-healthy verdicts, each of those requests was a full probe and another
+// refused refresh grant at the third party.
+//
+// Nothing here touches the hook: the browser navigates between the two
+// surfaces a user actually visits, and the authorization server's own request
+// ledger is the judge. Skips on targets with no browser surface.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · a second surface showing a broken connection reads the verdict instead of re-probing",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const upstream = yield* serveUpstream();
+
+      const name = ConnectionName.make("healthverdictui");
+      const refused = yield* connectRefusing(client, upstream, {
+        name,
+        errorCode: "invalid_request",
+        description: "Refresh temporarily unavailable",
+      });
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        const connections = page.locator("section").filter({
+          has: page.getByRole("heading", { level: 3, name: "Connections" }),
+        });
+        // Every health request the app sends, in order, with its query string:
+        // the client's own wire contract, observed from outside.
+        const healthRequests: string[] = [];
+        page.on("request", (request) => {
+          if (request.method() === "POST" && request.url().includes("/health")) {
+            healthRequests.push(request.url());
+          }
+        });
+        const isHealthResponse = (response: Response) =>
+          response.request().method() === "POST" && response.url().includes("/health");
+        const refreshGrants = () => Effect.runPromise(refused.refreshGrants);
+
+        // Surface 1. No verdict is persisted yet, so this load's automatic
+        // check is the probe that discovers the broken credential — the badge
+        // appearing is proof it completed and was written down.
+        await step("Open the integration: the broken connection reads Degraded", async () => {
+          const settled = page.waitForResponse(isHealthResponse, {
+            timeout: 30_000,
+          });
+          await visit(page, `/integrations/${refused.slug}`);
+          await settled;
+          await connections.getByText("Degraded", { exact: true }).waitFor({ timeout: 30_000 });
+        });
+
+        // The baseline is taken AFTER that probe, so the freshness window is
+        // running from a verdict written moments ago and the assertion below
+        // does not depend on how long the browser took to start.
+        const baseline = await refreshGrants();
+        expect(baseline, "the first surface did probe the authorization server").toBeGreaterThan(0);
+        const afterFirstSurface = healthRequests.length;
+
+        // Surface 2: the integrations list summarises the same connection's
+        // health, and mounts its own revalidation.
+        await step("Open the integrations list, which shows the same connection", async () => {
+          const settled = page.waitForResponse(isHealthResponse, {
+            timeout: 30_000,
+          });
+          await visit(page, "/");
+          await settled;
+        });
+
+        // Surface 3: back to the integration page — a fresh mount again.
+        await step("Return to the integration page: another mount, another ask", async () => {
+          const settled = page.waitForResponse(isHealthResponse, {
+            timeout: 30_000,
+          });
+          await visit(page, `/integrations/${refused.slug}`);
+          await settled;
+          await connections.getByText("Degraded", { exact: true }).waitFor({ timeout: 30_000 });
+        });
+
+        // THE production symptom, stated as the third party experiences it:
+        // two more surfaces rendered the same broken connection and the
+        // authorization server heard nothing more about it.
+        expect(
+          await refreshGrants(),
+          "no later surface reached the authorization server again",
+        ).toBe(baseline);
+
+        const laterRequests = healthRequests.slice(afterFirstSurface);
+        expect(
+          laterRequests.length,
+          "and they did ask about the connection's health — silence would be the wrong cure",
+        ).toBeGreaterThan(0);
+        // Asking is fine. Asking WITHOUT a freshness window is what turned one
+        // broken connection into unbounded refresh traffic.
+        for (const url of laterRequests) {
+          expect(
+            new URL(url).searchParams.get("ifStaleMs"),
+            `an automatic health request carries a freshness window (${url})`,
+          ).not.toBeNull();
+        }
+      });
     }),
   ),
 );
