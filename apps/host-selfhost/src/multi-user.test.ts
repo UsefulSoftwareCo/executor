@@ -149,14 +149,25 @@ test("multiple accounts share one org but isolate per-user connections", async (
   // The integration is tenant-scoped; register it once.
   expect((await addIntegration(alice, "tiny")).status).toBe(200);
 
-  // A plain member cannot register integrations or mint workspace-shared
-  // connections — 403 from the executor's workspace-write gate.
+  // A plain member cannot register integrations or mint connections in either
+  // scope — 403 from the executor's workspace-write gate.
   expect((await addIntegration(bob, "tiny2")).status).toBe(403);
   expect(
     (
       await createConnection(bob, {
         owner: "org",
         name: "bob-shared",
+        integration: "tiny",
+        template: "bearer",
+        value: "bob-token",
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await createConnection(bob, {
+        owner: "user",
+        name: "bob-private",
         integration: "tiny",
         template: "bearer",
         value: "bob-token",

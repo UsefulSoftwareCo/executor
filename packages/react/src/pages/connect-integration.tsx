@@ -9,6 +9,7 @@ import { ErrorState } from "../components/error-state";
 import { Skeleton } from "../components/skeleton";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { useCanCreateConnections } from "../multiplayer/use-admin-nav";
 
 // ---------------------------------------------------------------------------
 // `/connect/<integration slug>` — the stable, shareable deep link that drops a
@@ -34,6 +35,7 @@ export function ConnectIntegrationPage(props: { readonly integrationSlug: string
   const integration = useAtomValue(integrationAtom(slug));
   const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
   const navigate = useNavigate();
+  const canCreateConnections = useCanCreateConnections();
 
   useExecutorDocumentTitle("Connect");
 
@@ -46,7 +48,7 @@ export function ConnectIntegrationPage(props: { readonly integrationSlug: string
   const missing = !loading && !failed && resolved === null;
 
   useEffect(() => {
-    if (resolved === null) return;
+    if (resolved === null || !canCreateConnections) return;
     void navigate({
       to: "/{-$orgSlug}/integrations/$namespace",
       params: { namespace: String(resolved.slug) },
@@ -56,7 +58,7 @@ export function ConnectIntegrationPage(props: { readonly integrationSlug: string
       search: { tab: "accounts", addAccount: 1 },
       replace: true,
     });
-  }, [resolved, navigate]);
+  }, [resolved, navigate, canCreateConnections]);
 
   if (failed) {
     return (
@@ -75,6 +77,25 @@ export function ConnectIntegrationPage(props: { readonly integrationSlug: string
           </p>
           <p className="mb-5 text-xs text-muted-foreground">
             This integration is not in your workspace.
+          </p>
+          <Link
+            to="/{-$orgSlug}"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Back to integrations
+          </Link>
+        </div>
+      </ConnectStateFrame>
+    );
+  }
+
+  if (resolved !== null && !canCreateConnections) {
+    return (
+      <ConnectStateFrame>
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-20 text-center">
+          <p className="mb-1 text-sm font-medium text-foreground/70">Workspace admin required</p>
+          <p className="mb-5 text-xs text-muted-foreground">
+            Ask a workspace admin to add a connection for {resolved.name}.
           </p>
           <Link
             to="/{-$orgSlug}"

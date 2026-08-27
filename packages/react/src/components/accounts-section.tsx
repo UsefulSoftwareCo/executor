@@ -19,6 +19,7 @@ import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
+import { useCanCreateConnections } from "../multiplayer/use-admin-nav";
 import type { AuthMethod } from "../lib/auth-placements";
 import {
   connectionNeedsReconsent,
@@ -86,6 +87,7 @@ function AccountRow(props: {
    *  reconnect to grant the newly-needed access (e.g. after a service was added). */
   readonly needsReconsent: boolean;
   readonly showOwnerLabel: boolean;
+  readonly canReconnect: boolean;
   readonly onEdit: () => void;
   readonly onReconnect: () => void;
   readonly onRemove: () => void;
@@ -213,9 +215,11 @@ function AccountRow(props: {
             <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
               Edit
             </DropdownMenuItem>
-            <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
-              Reconnect
-            </DropdownMenuItem>
+            {props.canReconnect ? (
+              <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
+                Reconnect
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem variant="destructive" className="text-sm" onClick={props.onRemove}>
               Remove
             </DropdownMenuItem>
@@ -230,6 +234,7 @@ function OwnerAccounts(props: {
   readonly integration: IntegrationSlug;
   readonly owner: Owner;
   readonly showOwnerLabels: boolean;
+  readonly canCreateConnections: boolean;
   readonly methods: readonly AuthMethod[];
   readonly onEdit: (connection: Connection) => void;
   readonly onDcrReconnect: (connection: Connection) => void;
@@ -392,6 +397,7 @@ function OwnerAccounts(props: {
             connection={connection}
             needsReconsent={connectionNeedsReconsent(connection, props.declaredScopes)}
             showOwnerLabel={props.showOwnerLabels}
+            canReconnect={props.canCreateConnections || reconnectMode(connection) !== "oauth"}
             onEdit={() => props.onEdit(connection)}
             onReconnect={() => void handleReconnect(connection)}
             onRemove={() => setRemovingConnection(connection)}
@@ -453,13 +459,15 @@ export function AccountsSection(props: {
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [reconnectHandoff, setReconnectHandoff] = useState<IntegrationAccountHandoff | null>(null);
   const ownerDisplay = useOwnerDisplay();
-  const canAddConnection = methods.length > 0 || createCustomMethod !== undefined;
+  const canCreateConnections = useCanCreateConnections();
+  const canAddConnection =
+    canCreateConnections && (methods.length > 0 || createCustomMethod !== undefined);
 
   useEffect(() => {
-    if (accountHandoff) {
+    if (accountHandoff && canAddConnection) {
       setAdding(true);
     }
-  }, [accountHandoff]);
+  }, [accountHandoff, canAddConnection]);
 
   // The integration's declared oauth scopes — what connections need granted. A
   // connection granted fewer is flagged to reconnect (e.g. after a service was
@@ -531,14 +539,8 @@ export function AccountsSection(props: {
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Connections
         </h3>
-        {!showEmptyState ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={openAddConnection}
-            disabled={!canAddConnection}
-          >
+        {!showEmptyState && canAddConnection ? (
+          <Button type="button" variant="outline" size="sm" onClick={openAddConnection}>
             Add connection
           </Button>
         ) : null}
@@ -553,17 +555,15 @@ export function AccountsSection(props: {
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
           <p className="text-sm font-medium text-foreground">No connections yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Add a connection to make this integration's tools available.
+            {canCreateConnections
+              ? "Add a connection to make this integration's tools available."
+              : "Ask a workspace admin to add a connection for this integration."}
           </p>
-          <Button
-            type="button"
-            className="mt-4"
-            size="sm"
-            onClick={openAddConnection}
-            disabled={!canAddConnection}
-          >
-            Add connection
-          </Button>
+          {canAddConnection ? (
+            <Button type="button" className="mt-4" size="sm" onClick={openAddConnection}>
+              Add connection
+            </Button>
+          ) : null}
         </div>
       ) : (
         <div className="space-y-4">
@@ -573,6 +573,7 @@ export function AccountsSection(props: {
               integration={integration}
               owner={owner}
               showOwnerLabels={ownerDisplay.showOwnerLabels}
+              canCreateConnections={canCreateConnections}
               methods={methods}
               onEdit={setEditingConnection}
               onDcrReconnect={(connection: Connection) => {

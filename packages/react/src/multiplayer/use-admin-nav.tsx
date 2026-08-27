@@ -2,7 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { orgMembersAtom } from "../api/account-atoms";
-import { isTenantAdminMember, type TenantMemberRow } from "../lib/admin-access";
+import { useOrganizationId } from "../api/organization-context";
+import {
+  canCreateConnectionsForHost,
+  isTenantAdminMember,
+  type TenantMemberRow,
+} from "../lib/admin-access";
 import type { ShellNavItem } from "./shell";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +41,13 @@ export const useIsTenantAdmin = (): boolean => {
     onFailure: () => false,
     onSuccess: ({ value }) => isTenantAdminMember(value.members as readonly TenantMemberRow[]),
   });
+};
+
+/** Whether this host and active role allow adding connection credentials. */
+export const useCanCreateConnections = (): boolean => {
+  const organizationId = useOrganizationId();
+  const isAdmin = useIsTenantAdmin();
+  return canCreateConnectionsForHost(organizationId, isAdmin);
 };
 
 /**

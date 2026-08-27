@@ -189,9 +189,9 @@ export interface OAuthServiceDeps {
     readonly subject: string;
   };
   /** Workspace-settings gate from the executor binding
-   *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
-   *  user-intent client/connect surfaces. */
-  readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
+   *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets, or every
+   *  connection create when called without an owner. */
+  readonly guardOrgWrite: (owner?: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
   readonly recordAuditEvent: (input: AuditEventInput) => Effect.Effect<void, StorageFailure>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */
@@ -1344,10 +1344,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: OAuthStartInput,
   ): Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
-      // Gate BEFORE any session row or upstream exchange: minting a Workspace
-      // connection (including a reconnect that would replace its credential)
-      // is a workspace-level change.
-      yield* deps.guardOrgWrite(input.owner);
+      // Starting OAuth mints or re-mints connection credentials. Gate before
+      // reading client state, creating a session, or making an upstream call.
+      yield* deps.guardOrgWrite();
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>

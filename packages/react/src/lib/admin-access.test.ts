@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { isTenantAdminMember, type TenantMemberRow } from "./admin-access";
+import {
+  canCreateConnectionsForHost,
+  isTenantAdminMember,
+  type TenantMemberRow,
+} from "./admin-access";
 
 const member = (overrides: Partial<TenantMemberRow> = {}): TenantMemberRow => ({
   role: "member",
@@ -48,5 +52,16 @@ describe("isTenantAdminMember", () => {
 
   it("an unknown role is not an admin", () => {
     expect(isTenantAdminMember([member({ role: "billing", isCurrentUser: true })])).toBe(false);
+  });
+});
+
+describe("canCreateConnectionsForHost", () => {
+  it("allows connection creation on single-user hosts", () => {
+    expect(canCreateConnectionsForHost(null, false)).toBe(true);
+  });
+
+  it("allows organization admins and refuses organization members", () => {
+    expect(canCreateConnectionsForHost("org_123", true)).toBe(true);
+    expect(canCreateConnectionsForHost("org_123", false)).toBe(false);
   });
 });

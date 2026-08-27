@@ -44,3 +44,10 @@ export const isTenantAdminMember = (members: readonly TenantMemberRow[]): boolea
     (member) =>
       member.isCurrentUser && member.status === "active" && TENANT_ADMIN_ROLES.has(member.role),
   );
+
+/** Connection creation is unrestricted on single-user hosts. Organization
+ * hosts require the active member to be an admin or owner. */
+export const canCreateConnectionsForHost = (
+  organizationId: string | null,
+  isTenantAdmin: boolean,
+): boolean => organizationId === null || isTenantAdmin;

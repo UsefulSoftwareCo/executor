@@ -142,10 +142,10 @@ export class IntegrationRemovalNotAllowedError extends Schema.TaggedErrorClass<I
   }
 }
 
-/** A workspace-level mutation (an `owner: "org"` row, or the tenant-shared
- *  integration catalog) was attempted on an executor bound with
- *  `orgWrites: "denied"` — a member who may USE workspace resources but not
- *  configure them. Reads, tool execution, and operational writes (token
+/** A connection create or workspace-level mutation (an `owner: "org"` row, or
+ *  the tenant-shared integration catalog) was attempted on an executor bound
+ *  with `orgWrites: "denied"` — a member who may USE workspace resources but
+ *  not configure them. Reads, tool execution, and operational writes (token
  *  refresh, catalog re-sync) are unaffected; only the user-intent settings
  *  surfaces raise this. */
 export class OrgWriteDeniedError
@@ -160,7 +160,7 @@ export class OrgWriteDeniedError
   readonly code = "org_write_denied";
 
   override get message(): string {
-    return "Workspace-level changes require a workspace admin.";
+    return "Adding connections or changing workspace settings requires a workspace admin.";
   }
 
   get userMessage(): string {

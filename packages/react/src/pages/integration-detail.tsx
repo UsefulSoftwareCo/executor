@@ -44,6 +44,7 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useConnectionsHealth } from "../lib/use-connection-health";
+import { useCanCreateConnections } from "../multiplayer/use-admin-nav";
 import {
   integrationDetailInternalTabFromSearch,
   type IntegrationDetailInternalTab,
@@ -91,6 +92,7 @@ export function IntegrationDetailPage(props: {
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
   const navigate = useNavigate();
+  const canCreateConnections = useCanCreateConnections();
 
   // HMR: refresh integration tools when the backend is hot-reloaded
   useEffect(() => {
@@ -453,6 +455,7 @@ export function IntegrationDetailPage(props: {
   };
 
   const handleOpenAddConnection = () => {
+    if (!canCreateConnections) return;
     setActiveTab("accounts");
     setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
   };
@@ -628,7 +631,8 @@ export function IntegrationDetailPage(props: {
                     ) : !isBuiltInIntegration && integrationConnections.length === 0 ? (
                       <NoConnectionToolsEmptyState
                         onAddConnection={handleOpenAddConnection}
-                        canAddConnection={accountsMethods.length > 0}
+                        canCreateConnections={canCreateConnections}
+                        canAddConnection={canCreateConnections && accountsMethods.length > 0}
                       />
                     ) : hasToolSyncIssue ? (
                       <ToolDetailEmpty
@@ -672,6 +676,7 @@ export function IntegrationDetailPage(props: {
 
 function NoConnectionToolsEmptyState(props: {
   readonly onAddConnection: () => void;
+  readonly canCreateConnections: boolean;
   readonly canAddConnection: boolean;
 }) {
   return (
@@ -679,17 +684,15 @@ function NoConnectionToolsEmptyState(props: {
       <div className="max-w-sm text-center">
         <p className="text-sm font-medium text-foreground">No tools yet</p>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Add a connection to unlock this integration's tools.
+          {props.canCreateConnections
+            ? "Add a connection to unlock this integration's tools."
+            : "Ask a workspace admin to add a connection for this integration."}
         </p>
-        <Button
-          type="button"
-          size="sm"
-          className="mt-4"
-          onClick={props.onAddConnection}
-          disabled={!props.canAddConnection}
-        >
-          Add connection
-        </Button>
+        {props.canAddConnection ? (
+          <Button type="button" size="sm" className="mt-4" onClick={props.onAddConnection}>
+            Add connection
+          </Button>
+        ) : null}
       </div>
     </div>
   );

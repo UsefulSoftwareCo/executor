@@ -12,6 +12,7 @@ import { connectionsAllAtom } from "@executor-js/react/api/atoms";
 import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
 import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
+import { useCanCreateConnections } from "@executor-js/react/multiplayer/use-admin-nav";
 
 import { mcpServerAtom } from "./atoms";
 import type { McpAuthMethod } from "../sdk/types";
@@ -34,6 +35,7 @@ export default function McpSignInButton(props: { integrationId: string; owner?: 
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const connectionsResult = useAtomValue(connectionsAllAtom);
   const [modalOpen, setModalOpen] = useState(false);
+  const canCreateConnections = useCanCreateConnections();
 
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
   const remote = server !== null && server.config.transport === "remote" ? server.config : null;
@@ -77,7 +79,7 @@ export default function McpSignInButton(props: { integrationId: string; owner?: 
     [modalOpen, oauthMethod, server, slug, targetOwner],
   );
 
-  if (oauthMethod === null) return null;
+  if (oauthMethod === null || !canCreateConnections) return null;
 
   return (
     <>
