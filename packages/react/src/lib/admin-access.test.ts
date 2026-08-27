@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  canCreateConnectionsForHost,
+  canCreateWorkspaceConnectionsForHost,
   isTenantAdminMember,
   type TenantMemberRow,
 } from "./admin-access";
@@ -55,13 +55,13 @@ describe("isTenantAdminMember", () => {
   });
 });
 
-describe("canCreateConnectionsForHost", () => {
-  it("allows connection creation on single-user hosts", () => {
-    expect(canCreateConnectionsForHost(null, false)).toBe(true);
+describe("canCreateWorkspaceConnectionsForHost", () => {
+  it("allows Workspace connection creation on single-user hosts", () => {
+    expect(canCreateWorkspaceConnectionsForHost(null, false)).toBe(true);
   });
 
   it("allows organization admins and refuses organization members", () => {
-    expect(canCreateConnectionsForHost("org_123", true)).toBe(true);
-    expect(canCreateConnectionsForHost("org_123", false)).toBe(false);
+    expect(canCreateWorkspaceConnectionsForHost("org_123", true)).toBe(true);
+    expect(canCreateWorkspaceConnectionsForHost("org_123", false)).toBe(false);
   });
 });

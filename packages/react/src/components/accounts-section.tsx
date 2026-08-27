@@ -19,7 +19,7 @@ import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
-import { useCanCreateConnections } from "../multiplayer/use-admin-nav";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import type { AuthMethod } from "../lib/auth-placements";
 import {
   connectionNeedsReconsent,
@@ -459,9 +459,9 @@ export function AccountsSection(props: {
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [reconnectHandoff, setReconnectHandoff] = useState<IntegrationAccountHandoff | null>(null);
   const ownerDisplay = useOwnerDisplay();
-  const canCreateConnections = useCanCreateConnections();
+  const canCreateWorkspaceConnections = useCanCreateWorkspaceConnections();
   const canAddConnection =
-    canCreateConnections && (methods.length > 0 || createCustomMethod !== undefined);
+    methods.length > 0 || (canCreateWorkspaceConnections && createCustomMethod !== undefined);
 
   useEffect(() => {
     if (accountHandoff && canAddConnection) {
@@ -555,9 +555,9 @@ export function AccountsSection(props: {
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
           <p className="text-sm font-medium text-foreground">No connections yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {canCreateConnections
+            {canAddConnection
               ? "Add a connection to make this integration's tools available."
-              : "Ask a workspace admin to add a connection for this integration."}
+              : "Ask a workspace admin to configure an authentication method for this integration."}
           </p>
           {canAddConnection ? (
             <Button type="button" className="mt-4" size="sm" onClick={openAddConnection}>
@@ -573,7 +573,7 @@ export function AccountsSection(props: {
               integration={integration}
               owner={owner}
               showOwnerLabels={ownerDisplay.showOwnerLabels}
-              canCreateConnections={canCreateConnections}
+              canCreateConnections={owner === "user" || canCreateWorkspaceConnections}
               methods={methods}
               onEdit={setEditingConnection}
               onDcrReconnect={(connection: Connection) => {

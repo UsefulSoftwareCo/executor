@@ -149,8 +149,8 @@ test("multiple accounts share one org but isolate per-user connections", async (
   // The integration is tenant-scoped; register it once.
   expect((await addIntegration(alice, "tiny")).status).toBe(200);
 
-  // A plain member cannot register integrations or mint connections in either
-  // scope — 403 from the executor's workspace-write gate.
+  // A plain member cannot register integrations or mint Workspace connections,
+  // but may still add a Personal credential.
   expect((await addIntegration(bob, "tiny2")).status).toBe(403);
   expect(
     (
@@ -173,7 +173,7 @@ test("multiple accounts share one org but isolate per-user connections", async (
         value: "bob-token",
       })
     ).status,
-  ).toBe(403);
+  ).toBe(200);
 
   // Alice attaches a USER-owned connection (private to her) and an ORG-owned
   // connection (shared across the tenant).
@@ -209,13 +209,16 @@ test("multiple accounts share one org but isolate per-user connections", async (
     aliceConns.some((a) => a.includes("org") && a.includes(connectionName("team-shared"))),
   ).toBe(true);
 
-  // Bob — a different user in the SAME org — sees the org connection but NOT
-  // Alice's user-owned one.
+  // Bob — a different user in the SAME org — sees the org connection and his
+  // own Personal connection, but NOT Alice's user-owned one.
   const bobConns = await connectionAddresses(bob);
   expect(bobConns.some((a) => a.includes("org") && a.includes(connectionName("team-shared")))).toBe(
     true,
   );
   expect(bobConns.some((a) => a.includes(connectionName("alice-private")))).toBe(false);
+  expect(
+    bobConns.some((a) => a.includes("user") && a.includes(connectionName("bob-private"))),
+  ).toBe(true);
 });
 
 test("each account can execute code in its own scoped sandbox", async () => {

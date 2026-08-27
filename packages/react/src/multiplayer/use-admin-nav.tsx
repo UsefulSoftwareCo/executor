@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { orgMembersAtom } from "../api/account-atoms";
 import { useOrganizationId } from "../api/organization-context";
 import {
-  canCreateConnectionsForHost,
+  canCreateWorkspaceConnectionsForHost,
   isTenantAdminMember,
   type TenantMemberRow,
 } from "../lib/admin-access";
@@ -43,11 +43,12 @@ export const useIsTenantAdmin = (): boolean => {
   });
 };
 
-/** Whether this host and active role allow adding connection credentials. */
-export const useCanCreateConnections = (): boolean => {
+/** Whether this host and active role allow adding Workspace credentials.
+ * Personal connection creation is available to every active member. */
+export const useCanCreateWorkspaceConnections = (): boolean => {
   const organizationId = useOrganizationId();
   const isAdmin = useIsTenantAdmin();
-  return canCreateConnectionsForHost(organizationId, isAdmin);
+  return canCreateWorkspaceConnectionsForHost(organizationId, isAdmin);
 };
 
 /**

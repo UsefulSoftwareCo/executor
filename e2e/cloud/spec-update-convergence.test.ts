@@ -1,5 +1,5 @@
 // Cloud-only (needs real multi-user organizations): when one member refreshes
-// a shared integration's spec, a DIFFERENT admin's OWN connection converges to
+// a shared integration's spec, a DIFFERENT member's OWN connection converges to
 // the new tool catalog on that member's next read — not just the editor's.
 //
 // This is the lazy-convergence design. Tools are stored per connection. The
@@ -143,16 +143,15 @@ const withRefreshedSession = (
   };
 };
 
-/** Invite a co-admin into `admin`'s org and accept — the real invite flow.
- *  Their requests inherit the admin's org selector (org-scoped reads
+/** Invite `member` into `admin`'s org and accept — the real invite flow.
+ *  The member's requests inherit the admin's org selector (org-scoped reads
  *  fail closed without the header). */
-const joinOrgAsAdmin = (target: TargetShape, admin: Identity, member: Identity) =>
+const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
     const adminSelector = admin.headers?.[ORG_SELECTOR_HEADER];
     if (!adminSelector) throw new Error("admin identity carries no org selector header");
     const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
       email: member.credentials?.email,
-      roleSlug: "admin",
     });
     const invitation = (yield* Effect.promise(() => inviteResponse.json())) as { id: string };
     const acceptResponse = yield* postJson(target, "/api/auth/accept-invitation", member, {
@@ -186,7 +185,7 @@ const ownToolNames = (client: Client, integration: IntegrationSlug) =>
   );
 
 scenario(
-  "Convergence · a spec refresh reaches a co-admin's own connection on their next read",
+  "Convergence · a spec refresh reaches a co-worker's own connection on their next read",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -195,7 +194,7 @@ scenario(
 
       const admin = yield* target.newIdentity();
       const invitee = yield* target.newIdentity({ org: false });
-      const colleague = yield* joinOrgAsAdmin(target, admin, invitee);
+      const colleague = yield* joinOrg(target, admin, invitee);
 
       const adminClient = yield* client(api, admin);
       const colleagueClient = yield* client(api, colleague);
@@ -217,9 +216,7 @@ scenario(
             },
           });
 
-          // Both admins bind their OWN personal connection to it. Plain members
-          // cannot create connections; this scenario needs two subjects with
-          // credentials to exercise lazy cross-subject convergence.
+          // Each member binds their OWN personal connection to it.
           yield* personalConnection(adminClient, slug, adminConn);
           yield* personalConnection(colleagueClient, slug, colleagueConn);
 

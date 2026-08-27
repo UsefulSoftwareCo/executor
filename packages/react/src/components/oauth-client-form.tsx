@@ -14,12 +14,13 @@ import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } f
 import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
 import { optimisticDcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
-  connectionOwnerOptionsForHost,
+  connectionOwnerOptionsForAccess,
   normalizeConnectionOwner,
 } from "../plugins/connection-owner";
 import { Button } from "./button";
@@ -160,9 +161,10 @@ export function OAuthClientForm(props: {
   // Non-org hosts (local/desktop) have one local workspace. Offer only Local,
   // so the owner dropdown (which hides on a single option) disappears.
   const organizationId = useOrganizationId();
+  const canCreateWorkspaceConnections = useCanCreateWorkspaceConnections();
   const ownerOptions = useMemo(
-    () => connectionOwnerOptionsForHost(organizationId),
-    [organizationId],
+    () => connectionOwnerOptionsForAccess(organizationId, canCreateWorkspaceConnections),
+    [canCreateWorkspaceConnections, organizationId],
   );
 
   // The browser-facing callback the OAuth flow uses (this host's
@@ -172,9 +174,9 @@ export function OAuthClientForm(props: {
   // it is automatically correct per platform (cloud / self-host / local).
   const callbackUrl = useMemo(() => oauthCallbackUrl(), []);
 
-  // Explicit create-time choice (no ambient owner). Default Workspace (`org`) on
-  // an org host, Local (`org`) on a non-org host, or the locked owner when
-  // editing.
+  // Explicit create-time choice (no ambient owner). Admins default to Workspace
+  // (`org`) on an org host; members are clamped to Personal (`user`); non-org
+  // hosts use Local (`org`). Editing may lock the existing owner.
   const [owner, setOwner] = useState<Owner>(
     normalizeConnectionOwner(fixedOwner ?? "org", ownerOptions),
   );

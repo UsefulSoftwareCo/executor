@@ -4,12 +4,12 @@
 // member of the tenant instead of binding to one.
 //
 // Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation), the admin connects a credential, and then reads
-// the joined view — the exact shape a customer dashboard's icon grid consumes.
-// The guarantees pinned here:
+// invite → accept-invitation), each connects their own Personal credential, and
+// the admin then reads the joined view — the exact shape a customer dashboard's
+// icon grid consumes. The guarantees pinned here:
 //
-//   1. the joined view reports BOTH members and their connection inventories,
-//      including the plain member's empty inventory;
+//   1. the joined view reports BOTH members and each one's own connections,
+//      even though no single product-view caller can see another member's;
 //   2. it never carries credential material;
 //   3. a plain member is refused (403) and an anonymous caller too (401);
 //   4. another tenant's admin sees none of it.
@@ -75,7 +75,7 @@ const registerIntegration = (client: Client) =>
 const freshConnectionName = () => ConnectionName.make(`conn${randomBytes(4).toString("hex")}`);
 
 scenario(
-  "Admin · the owner sees every member and each member's connection inventory",
+  "Admin · the owner sees every member of the workspace and what each has connected",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -92,13 +92,12 @@ scenario(
 
     const integration = yield* registerIntegration(adminClient);
     const adminConnection = freshConnectionName();
+    const memberConnection = freshConnectionName();
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Only admins can add credentials. The member still appears in the
-        // administrative inventory with an empty connection list after their
-        // first read registers their Executor-side subject row.
-        yield* memberClient.connections.list({ query: {} });
+        // Each member stores their OWN Personal credential. Neither can see the
+        // other's through the product plane — that is the admin view's job.
         yield* adminClient.connections.create({
           payload: {
             owner: "user",
@@ -108,9 +107,18 @@ scenario(
             value: "admin-personal-token",
           },
         });
+        yield* memberClient.connections.create({
+          payload: {
+            owner: "user",
+            name: memberConnection,
+            integration,
+            template: TEMPLATE_API_KEY,
+            value: "member-personal-token",
+          },
+        });
         const client = yield* apiClient(AdminUsersHttpApi, admin);
 
-        // (1) The joined view: both members and their connection inventories.
+        // (1) The joined view: both members, each with their own connection.
         const joined = yield* client.adminUsers.listUsersWithConnections({ query: {} });
         const byId = new Map(joined.users.map((user) => [user.externalId, user]));
 
@@ -123,8 +131,8 @@ scenario(
         ).toContain(adminConnection);
         expect(
           byId.get(memberId)?.connections.map((connection) => connection.name),
-          "the member is represented even though they cannot add connections",
-        ).toEqual([]);
+          "the member's connection is visible to the owner, though not to the admin's product view",
+        ).toContain(memberConnection);
 
         // The host identity join: the WorkOS email lands on the right row.
         //
@@ -157,8 +165,8 @@ scenario(
         });
         expect(
           memberConnections.connections.map((connection) => connection.name),
-          "the member's empty inventory is readable by external id",
-        ).toEqual([]);
+          "the member's connections are readable by external id",
+        ).toContain(memberConnection);
 
         // The single-user read, addressed by EMAIL, against real WorkOS-shaped
         // identity: the reverse directory lookup (email → user id) has to agree
@@ -172,8 +180,8 @@ scenario(
         expect(single.user.email, "and carries the identity the list reported").toBe(memberEmail);
         expect(
           single.user.connections.map((connection) => connection.name),
-          "with their empty inventory joined in the same response",
-        ).toEqual([]);
+          "with their connections joined in the same response",
+        ).toContain(memberConnection);
 
         // The same read by opaque id agrees, so neither identifier is a
         // different code path with a different answer.
@@ -198,7 +206,8 @@ scenario(
         expect(
           JSON.stringify(joined),
           "the admin view never carries a stored credential",
-        ).not.toContain("admin-personal-token");
+        ).not.toContain("member-personal-token");
+        expect(JSON.stringify(joined)).not.toContain("admin-personal-token");
 
         // (3) A plain member is refused: this plane reports on everyone.
         const asMember = yield* Effect.promise(() =>
@@ -218,6 +227,9 @@ scenario(
         [
           adminClient.connections
             .remove({ params: { owner: "user", integration, name: adminConnection } })
+            .pipe(Effect.ignore),
+          memberClient.connections
+            .remove({ params: { owner: "user", integration, name: memberConnection } })
             .pipe(Effect.ignore),
           adminClient.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
         ],

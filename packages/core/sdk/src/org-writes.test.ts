@@ -21,10 +21,10 @@ import { makeTestConfig } from "./testing";
 //
 // A `"denied"` binding (a plain member) may USE workspace resources — read
 // them, execute tools over org connections — but every user-intent
-// workspace-level mutation refuses with `OrgWriteDeniedError`: all new
+// workspace-level mutation refuses with `OrgWriteDeniedError`: Workspace
 // connections, org-owned policies / OAuth clients, and the tenant-shared
-// integration catalog. `"allowed"` (admins, and hosts with no role model)
-// behaves exactly as before.
+// integration catalog. Personal connections and OAuth apps remain member-owned.
+// `"allowed"` (admins, and hosts with no role model) behaves exactly as before.
 //
 // The fixtures build TWO executors over ONE test database: an admin
 // (default `orgWrites`) that seeds the workspace, and a member
@@ -119,7 +119,7 @@ describe("orgWrites: denied", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("refuses new workspace and personal connections", () =>
+  it.effect("refuses Workspace connections but accepts Personal connections", () =>
     Effect.gen(function* () {
       const { admin, member } = yield* setup();
       yield* expectOrgWriteDenied(
@@ -131,15 +131,16 @@ describe("orgWrites: denied", () => {
           value: "org-token",
         }),
       );
-      yield* expectOrgWriteDenied(
-        member.connections.create({
-          owner: "user",
-          name: ConnectionName.make("mine"),
-          integration: INTEG,
-          template: TEMPLATE,
-          value: "user-token",
-        }),
-      );
+      const mine = yield* member.connections.create({
+        owner: "user",
+        name: ConnectionName.make("mine"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+      const mineRef = { owner: mine.owner, integration: mine.integration, name: mine.name };
+      yield* member.connections.update(mineRef, { description: "my credential" });
+      yield* member.connections.remove(mineRef);
 
       const shared = yield* admin.connections.create({
         owner: "org",
@@ -198,7 +199,7 @@ describe("orgWrites: denied", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("refuses org OAuth clients and all new connect flows", () =>
+  it.effect("refuses org OAuth clients/connect flows but accepts Personal ones", () =>
     Effect.gen(function* () {
       const { member } = yield* setup();
       yield* expectOrgWriteDenied(
@@ -236,17 +237,17 @@ describe("orgWrites: denied", () => {
         clientSecret: "",
       });
       expect(String(slug)).toBe("my-app");
-      yield* expectOrgWriteDenied(
-        member.oauth.start({
-          owner: "user",
-          clientOwner: "user",
-          client: slug,
-          integration: INTEG,
-          template: TEMPLATE,
-          name: ConnectionName.make("mine"),
-          newConnection: true,
-        }),
-      );
+      const started = yield* member.oauth.start({
+        owner: "user",
+        clientOwner: "user",
+        client: slug,
+        integration: INTEG,
+        template: TEMPLATE,
+        name: ConnectionName.make("mine"),
+        newConnection: true,
+      });
+      expect(started.status).toBe("redirect");
+      yield* member.oauth.removeClient("user", slug);
     }).pipe(Effect.scoped),
   );
 });

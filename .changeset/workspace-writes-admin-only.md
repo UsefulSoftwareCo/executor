@@ -12,10 +12,10 @@ The executor binding gains `orgWrites: "allowed" | "denied"`. Hosts derive it
 from the acting member's role (cloud: WorkOS membership role; self-host:
 Better Auth org membership role), and a plain member's binding refuses every
 user-intent workspace-level mutation with the new `OrgWriteDeniedError`
-(HTTP 403): all new connections (Personal and Workspace), org-owned tool
-policies, org OAuth apps, and integration-catalog changes (add, update, remove,
-health check). The console removes add/connect affordances for non-admins and
-explains that a workspace admin is required.
+(HTTP 403): Workspace connections, org-owned tool policies, org OAuth apps and
+org connect flows, and integration-catalog changes (add, update, remove, health
+check). Plain members can still add and manage Personal connections; the
+console removes the Workspace choice while retaining the Personal flow.
 
 Using workspace resources is unchanged for members: reads, tool execution over
 shared connections, and the operational writes those imply (token refresh,

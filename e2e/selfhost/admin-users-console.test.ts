@@ -34,11 +34,12 @@ declare global {
 }
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const INTEGRATION_TITLE = "Ping API";
 
 /** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
 const pingSpec = JSON.stringify({
   openapi: "3.0.3",
-  info: { title: "Ping API", version: "1.0.0" },
+  info: { title: INTEGRATION_TITLE, version: "1.0.0" },
   paths: {
     "/ping": {
       get: { operationId: "ping", summary: "Ping", responses: { "200": { description: "pong" } } },
@@ -94,12 +95,12 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Connection creation is admin-only even for Personal scope. The
-        // refused request still sights this principal for the admin directory.
+        // Members may add Personal credentials, but the API refuses the same
+        // request in Workspace scope even if they bypass the owner picker.
         const refusal = yield* memberClient.connections
           .create({
             payload: {
-              owner: "user",
+              owner: "org",
               name: memberConnection,
               integration,
               template: TEMPLATE_API_KEY,
@@ -108,6 +109,15 @@ scenario(
           })
           .pipe(Effect.flip);
         expect(refusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
+        yield* memberClient.connections.create({
+          payload: {
+            owner: "user",
+            name: memberConnection,
+            integration,
+            template: TEMPLATE_API_KEY,
+            value: "member-personal-token",
+          },
+        });
 
         yield* browser.session(owner, async ({ page, step }) => {
           await step("Open Users from the sidebar as the instance owner", async () => {
@@ -122,12 +132,14 @@ scenario(
               .waitFor({ state: "visible", timeout: 30_000 });
           });
 
-          await step("The invited member is listed without a connection", async () => {
+          await step("The invited member is listed with their Personal connection", async () => {
             // Selfhost shares one org across scenarios, so this asserts the
             // member's own row exists — never a count of the whole instance.
             const row = page
               .locator("[data-slot='admin-user-row']")
-              .filter({ hasText: member.credentials?.email ?? "" })
+              .filter({
+                has: page.locator(`[data-integration='${integration}'][data-connected='true']`),
+              })
               .first();
             await row.waitFor({ state: "visible", timeout: 30_000 });
 
@@ -145,10 +157,9 @@ scenario(
 
             const detail = page.getByRole("dialog");
             await detail.waitFor({ state: "visible", timeout: 30_000 });
-            expect(
-              await detail.getByText(memberConnection, { exact: true }).count(),
-              "the refused credential was not stored",
-            ).toBe(0);
+            await detail
+              .getByText(memberConnection, { exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
           });
 
           await step("The detail header copies the member's email and their id", async () => {
@@ -315,26 +326,36 @@ scenario(
             ).toBe(0);
           });
 
-          await step("A member has no add-connection affordance", async () => {
+          await step("A member can add Personal connections without a scope dropdown", async () => {
             await visit(page, `/integrations/${availableIntegration}?tab=accounts`);
-            await page
-              .getByText("Ask a workspace admin to add a connection for this integration.")
+            const add = page.getByRole("button", { name: "Add connection" });
+            await add.waitFor({ state: "visible", timeout: 30_000 });
+            await add.click();
+            const dialog = page.getByRole("dialog");
+            await dialog
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
               .waitFor({ state: "visible", timeout: 30_000 });
             expect(
-              await page.getByRole("button", { name: "Add connection" }).count(),
-              "the accounts surface does not advertise an action the API refuses",
+              await dialog.getByText("Workspace", { exact: true }).count(),
+              "the member is forced to Personal rather than offered a scope picker",
             ).toBe(0);
+            await page.keyboard.press("Escape");
           });
 
-          await step("A member's connect deep link stops at the admin explanation", async () => {
+          await step("A member's connect deep link opens the Personal add flow", async () => {
             await visit(page, `/connect/${availableIntegration}`);
-            await page
-              .getByText("Workspace admin required", { exact: true })
-              .waitFor({ state: "visible", timeout: 30_000 });
+            await page.waitForURL(
+              (url) => url.pathname.endsWith(`/integrations/${availableIntegration}`),
+              { timeout: 30_000 },
+            );
             expect(
-              new URL(page.url()).pathname.endsWith(`/connect/${availableIntegration}`),
-              "the deep link does not enter the add-account flow",
-            ).toBe(true);
+              new URL(page.url()).searchParams.get("addAccount"),
+              "the deep link enters the member's forced-Personal add flow",
+            ).toBe("1");
+            await page
+              .getByRole("dialog")
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
           });
         });
       }),

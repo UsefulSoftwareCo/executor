@@ -45,9 +45,10 @@ export const isTenantAdminMember = (members: readonly TenantMemberRow[]): boolea
       member.isCurrentUser && member.status === "active" && TENANT_ADMIN_ROLES.has(member.role),
   );
 
-/** Connection creation is unrestricted on single-user hosts. Organization
- * hosts require the active member to be an admin or owner. */
-export const canCreateConnectionsForHost = (
+/** Workspace connection creation is unrestricted on single-user hosts.
+ * Organization hosts require the active member to be an admin or owner;
+ * Personal connection creation remains available to every active member. */
+export const canCreateWorkspaceConnectionsForHost = (
   organizationId: string | null,
   isTenantAdmin: boolean,
 ): boolean => organizationId === null || isTenantAdmin;

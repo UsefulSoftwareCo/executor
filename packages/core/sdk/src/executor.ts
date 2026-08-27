@@ -732,20 +732,20 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly platformView?: boolean;
   /**
-   * Whether this binding may add connections or CONFIGURE workspace-level
-   * state: `owner: "org"` rows (shared connections, org tool policies, org
-   * OAuth clients) and the tenant-shared integration catalog. Hosts derive it
-   * from the acting member's role — admins bind `"allowed"`, plain members
-   * `"denied"`.
+   * Whether this binding may CONFIGURE workspace-level state: `owner: "org"`
+   * rows (shared connections, org tool policies, org OAuth clients) and the
+   * tenant-shared integration catalog. Hosts derive it from the acting
+   * member's role — admins bind `"allowed"`, plain members `"denied"`.
    * Defaults to `"allowed"` for hosts with no role model (local's single
    * user, the CLI, tests).
    *
    * `"denied"` gates only the USER-INTENT settings surfaces (`policies`,
-   * `connections` create in either scope plus org update/remove,
-   * `integrations` update/remove/healthCheck, OAuth client CRUD and connect
-   * flows, new-integration registration). Members still USE workspace
-   * resources: reads, tool execution over org connections, and the operational
-   * writes those imply (token refresh, tool-catalog re-sync) are deliberately
+   * `connections` create/update/remove in Workspace scope, `integrations`
+   * update/remove/healthCheck, OAuth client CRUD and connect flows in Workspace
+   * scope, new-integration registration). Members may still create and manage
+   * Personal connections and OAuth apps. They also USE workspace resources:
+   * reads, tool execution over org connections, and the operational writes
+   * those imply (token refresh, tool-catalog re-sync) are deliberately
    * untouched — which is why this is a surface gate, not a storage-policy axis
    * like `platformView`'s blanket `writes: "denied"`.
    */
@@ -1657,9 +1657,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Workspace-settings gate (`ExecutorConfig.orgWrites`). Called at the top
     // of every user-intent workspace-level mutation: with an explicit owner it
     // refuses only `"org"` targets; with no owner it guards a tenant-shared
-    // surface or connection creation in either scope outright. Deliberately NOT
-    // wired into the storage owner policy — operational org-row writes (token
-    // refresh, tool-catalog re-sync) must keep working for a denied member.
+    // surface outright. Deliberately NOT wired into the storage owner policy —
+    // operational org-row writes (token refresh, tool-catalog re-sync) must
+    // keep working for a denied member.
     const guardOrgWrite = (owner?: Owner): Effect.Effect<void, OrgWriteDeniedError> =>
       config.orgWrites === "denied" && (owner === undefined || owner === "org")
         ? Effect.fail(new OrgWriteDeniedError())
@@ -3076,9 +3076,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       | StorageFailure
     > =>
       Effect.gen(function* () {
-        // This API creates or replaces connection credentials. Both scopes are
-        // admin-only; metadata updates and removal use their own, narrower APIs.
-        yield* guardOrgWrite();
+        yield* guardOrgWrite(input.owner);
         const name = connectionIdentifier(String(input.name));
         // Typed (not StorageError) so the HTTP edge can answer 400 with the
         // reason instead of an opaque 500 — callers can act on it.
@@ -4968,7 +4966,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       tenant,
       subject,
       ownedKeys: (owner: Owner) => ownedKeys(owner),
-      guardOrgWrite: (owner?: Owner) => guardOrgWrite(owner),
+      guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
       recordAuditEvent,
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),

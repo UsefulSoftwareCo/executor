@@ -9,9 +9,9 @@
 // access rather than shown an empty workspace.
 //
 // Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation, in `./support/session`). The admin connects their
-// own credential; the plain member's attempt is refused, so the directory also
-// proves the new admin-only connection rule is reflected honestly.
+// invite → accept-invitation, in `./support/session`). Each connects a Personal
+// credential; the plain member's Workspace attempt is refused, so the directory
+// and connection UI prove the owner-aware permission boundary together.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -39,11 +39,12 @@ declare global {
 }
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const INTEGRATION_TITLE = "Ping API";
 
 /** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
 const pingSpec = JSON.stringify({
   openapi: "3.0.3",
-  info: { title: "Ping API", version: "1.0.0" },
+  info: { title: INTEGRATION_TITLE, version: "1.0.0" },
   paths: {
     "/ping": {
       get: { operationId: "ping", summary: "Ping", responses: { "200": { description: "pong" } } },
@@ -99,7 +100,8 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // The admin may store a Personal credential; the plain member may not.
+        // Both roles may store Personal credentials. A member cannot promote
+        // theirs into a Workspace credential by bypassing the owner picker.
         yield* adminClient.connections.create({
           payload: {
             owner: "user",
@@ -109,10 +111,10 @@ scenario(
             value: "admin-personal-token",
           },
         });
-        const refusal = yield* memberClient.connections
+        const workspaceRefusal = yield* memberClient.connections
           .create({
             payload: {
-              owner: "user",
+              owner: "org",
               name: memberConnection,
               integration: connectedIntegration,
               template: TEMPLATE_API_KEY,
@@ -120,7 +122,16 @@ scenario(
             },
           })
           .pipe(Effect.flip);
-        expect(refusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
+        expect(workspaceRefusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
+        yield* memberClient.connections.create({
+          payload: {
+            owner: "user",
+            name: memberConnection,
+            integration: connectedIntegration,
+            template: TEMPLATE_API_KEY,
+            value: "member-personal-token",
+          },
+        });
 
         // ── The admin's view ────────────────────────────────────────────────
         yield* browser.session(forBrowser(admin), async ({ page, step }) => {
@@ -189,17 +200,17 @@ scenario(
             await summary.waitFor({ state: "visible", timeout: 30_000 });
             expect(
               await summary.textContent(),
-              "neither connectable integration is connected, with the built-in out of both numbers",
-            ).toBe("0/2");
+              "one connectable integration is connected, with the built-in out of both numbers",
+            ).toBe("1/2");
             expect(
               await memberRow.locator("[data-integration='executor']").count(),
               "the built-in integration has no connect flow, so it gets no slot",
             ).toBe(0);
             expect(
               await memberRow
-                .locator(`[data-integration='${connectedIntegration}'][data-connected='false']`)
+                .locator(`[data-integration='${connectedIntegration}'][data-connected='true']`)
                 .count(),
-              "the member's refused credential is not lit in their summary",
+              "the member's Personal credential is lit in their summary",
             ).toBe(1);
             expect(
               await memberRow
@@ -209,7 +220,7 @@ scenario(
             ).toBe(1);
           });
 
-          await step("Open the member's detail and confirm no credential was stored", async () => {
+          await step("Open the member's detail and confirm their Personal connection", async () => {
             await page
               .locator("[data-slot='admin-user-row']")
               .filter({ has: page.locator(`[data-slot='admin-user-id'][title='${memberId}']`) })
@@ -217,10 +228,9 @@ scenario(
             const detail = page.getByRole("dialog");
             await detail.waitFor({ state: "visible", timeout: 30_000 });
 
-            expect(
-              await detail.getByText(memberConnection, { exact: true }).count(),
-              "the refused connection is absent",
-            ).toBe(0);
+            await detail
+              .getByText(memberConnection, { exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
             // The other member's credential is not this member's business.
             expect(
               await detail.getByText(adminConnection, { exact: true }).count(),
@@ -280,12 +290,13 @@ scenario(
                 .count(),
               "the org-free form is never rendered on a host that has orgs",
             ).toBe(0);
-            // Both connectable integrations are available; the built-in still
+            // Only the unconnected integration is available; the member's
+            // Personal connection consumes the other slot. The built-in still
             // offers no link at all.
             expect(
               await detail.getByRole("button", { name: "Copy link" }).count(),
-              "one link per not-connected connectable integration, and none for the built-in",
-            ).toBe(2);
+              "one link for the not-connected integration, and none for the built-in",
+            ).toBe(1);
             expect(
               await detail.getByText("/connect/executor", { exact: false }).count(),
               "the built-in integration is never offered as a connect link",
@@ -358,20 +369,36 @@ scenario(
             },
           );
 
-          await step("Connection creation is not offered to the member", async () => {
-            await visit(page, `/${slug}/integrations/${availableIntegration}?tab=accounts`);
-            await page
-              .getByText("Ask a workspace admin to add a connection for this integration.")
-              .waitFor({ state: "visible", timeout: 30_000 });
-            expect(await page.getByRole("button", { name: "Add connection" }).count()).toBe(0);
-          });
+          await step(
+            "The member can add Personal connections without a scope dropdown",
+            async () => {
+              await visit(page, `/${slug}/integrations/${availableIntegration}?tab=accounts`);
+              const add = page.getByRole("button", { name: "Add connection" });
+              await add.waitFor({ state: "visible", timeout: 30_000 });
+              await add.click();
+              const dialog = page.getByRole("dialog");
+              await dialog
+                .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+                .waitFor({ state: "visible", timeout: 30_000 });
+              expect(
+                await dialog.getByText("Workspace", { exact: true }).count(),
+                "the member is forced to Personal rather than offered a scope picker",
+              ).toBe(0);
+              await page.keyboard.press("Escape");
+            },
+          );
 
-          await step("Their connect deep link stops at the admin explanation", async () => {
+          await step("Their connect deep link opens the Personal add flow", async () => {
             await visit(page, `/${slug}/connect/${availableIntegration}`);
+            await page.waitForURL(
+              (url) => url.pathname === `/${slug}/integrations/${availableIntegration}`,
+              { timeout: 30_000 },
+            );
+            expect(new URL(page.url()).searchParams.get("addAccount")).toBe("1");
             await page
-              .getByText("Workspace admin required", { exact: true })
+              .getByRole("dialog")
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
               .waitFor({ state: "visible", timeout: 30_000 });
-            expect(new URL(page.url()).pathname).toBe(`/${slug}/connect/${availableIntegration}`);
           });
         });
       }),
