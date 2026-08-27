@@ -30,10 +30,11 @@ const TOOL_ERROR_TYPESCRIPT =
 const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: string; } }";
 const TOOL_FILE_TYPESCRIPT =
   '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
-const TOOL_CONTENT_BLOCK_TYPESCRIPT = "{ type: string; [k: string]: unknown }";
-
+// Inlined rather than a named definition: a provider's own schema may
+// legitimately define `$defs.ToolContentBlock`, and the definitions map must
+// never shadow provider types.
 const wrapOutputTypeScript = (outputTypeScript?: string, marker?: string): string =>
-  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; content?: ToolContentBlock[]; meta?: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; content?: { type: string; [k: string]: unknown }[]; meta?: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
 
 /** Inline provenance for observed types — a model that copies only the type
  *  string still sees the hint, since the compact render drops descriptions. */
@@ -46,7 +47,6 @@ const withToolResultDefinitions = (
   ToolError: TOOL_ERROR_TYPESCRIPT,
   ToolHttpMeta: TOOL_HTTP_META_TYPESCRIPT,
   ToolFile: TOOL_FILE_TYPESCRIPT,
-  ToolContentBlock: TOOL_CONTENT_BLOCK_TYPESCRIPT,
 });
 
 const ADDRESS_PREFIX = "tools.";
