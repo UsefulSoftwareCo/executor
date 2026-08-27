@@ -16,6 +16,7 @@ import { Cause, Effect, Layer } from "effect";
 import type * as Tracer from "effect/Tracer";
 
 import { ErrorCapture } from "@executor-js/api";
+import { stableGroupingFingerprint, type GroupingEvent } from "@executor-js/sdk/sentry-grouping";
 
 // Drizzle/postgres-js include the failing SQL (params + bound values) in
 // their error message. For OpenAPI source inserts that's 1MB+ of spec
@@ -144,6 +145,35 @@ export const beforeSendWithOtelCorrelation = (
     );
   }
   return event;
+};
+
+/**
+ * The worker ships as content-hashed chunks and its frames are not resolved
+ * back to source, so Sentry's default grouping keys on names like
+ * `execution-rate-limit-<hash>` and re-opens every issue on the next deploy.
+ * Pin a fingerprint with the hash normalized out; events with no hashed
+ * grouping input are left on the default algorithm.
+ */
+export const withStableGroupingFingerprint = <T extends GroupingEvent>(event: T): T => {
+  const fingerprint = stableGroupingFingerprint(event);
+  return fingerprint ? { ...event, fingerprint: [...fingerprint] } : event;
+};
+
+/**
+ * The single `beforeSend` the worker and its Durable Objects install.
+ *
+ * The two stages are independent and compose in this order: the capture-owner
+ * pass decides WHETHER the event is reported at all (a cause the Durable
+ * Object already claimed is dropped, and a dropped event is never
+ * fingerprinted), and the grouping pass then decides HOW whatever survives is
+ * grouped.
+ */
+export const beforeSendCloudEvent = (
+  event: ErrorEvent,
+  options?: { readonly logPayload?: boolean },
+): ErrorEvent | null => {
+  const reported = beforeSendWithOtelCorrelation(event, options);
+  return reported === null ? null : withStableGroupingFingerprint(reported);
 };
 
 export const addCurrentOtelCorrelationTags = <

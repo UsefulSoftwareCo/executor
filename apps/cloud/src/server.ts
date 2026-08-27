@@ -19,7 +19,7 @@ import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import {
-  beforeSendWithOtelCorrelation,
+  beforeSendCloudEvent,
   captureCause,
   otelCorrelationContextFromOpenTelemetrySpan,
   SENTRY_EVENT_ID_ATTRIBUTE,
@@ -39,7 +39,7 @@ const sentryOptions = (env: Env) => ({
   sendDefaultPii: true,
   skipOpenTelemetrySetup: true,
   beforeSend: (event: ErrorEvent) =>
-    beforeSendWithOtelCorrelation(event, {
+    beforeSendCloudEvent(event, {
       logPayload: !env.SENTRY_DSN || env.SENTRY_OTEL_LOG_PAYLOAD === "true",
     }),
   // NOTE: do NOT enable `instrumentPrototypeMethods`. It walks the DO prototype

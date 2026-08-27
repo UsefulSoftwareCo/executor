@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { app, crashReporter, dialog, shell } from "electron";
 import log from "electron-log/main.js";
 import * as Sentry from "@sentry/electron/main";
+import { crashReportFingerprint } from "./crash-fingerprint";
 import { getServerSettings } from "./settings";
 
 const sentryDsn = __EXECUTOR_SENTRY_DSN__;
@@ -88,6 +89,11 @@ export const initErrorReporting = () => {
           arch: process.arch,
           runId,
         },
+      },
+      // Grouping only — the event is forwarded untouched otherwise.
+      beforeSend: (event) => {
+        const fingerprint = crashReportFingerprint(event);
+        return fingerprint ? { ...event, fingerprint: [...fingerprint] } : event;
       },
     });
   } else {
