@@ -98,8 +98,9 @@ const diagnoseWedge = async <T>(
           }),
           sleep(3_000).then(() => "hangs"),
         ]).catch(() => "errors");
-        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test boundary: adapt the deadline to the assertion path with the diagnosis attached
+        // oxlint-disable-next-line executor/no-promise-reject -- test boundary: adapt the deadline to the assertion path with the diagnosis attached
         reject(
+          // oxlint-disable-next-line executor/no-error-constructor -- test boundary: the diagnosis rides the assertion failure
           new Error(
             `bystander wedged for ${deadlineMs}ms; server stats=${stats}; fresh startup ${freshStartup}`,
           ),
