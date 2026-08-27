@@ -491,9 +491,6 @@ function PresetGrid(props: {
           )}
           {showCatalogSection && (
             <>
-              <div className="border-t border-border/50 px-4 py-1.5">
-                <p className="font-mono text-[11px] text-muted-foreground">More integrations</p>
-              </div>
               {catalogEntries.map((entry) => (
                 <CardStackEntry key={`catalog-${entry.domain}`} asChild>
                   <Button

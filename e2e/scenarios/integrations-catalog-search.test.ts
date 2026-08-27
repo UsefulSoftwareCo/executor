@@ -57,7 +57,6 @@ scenario(
         const dialog = page.getByRole("dialog", { name: "Connect an integration" });
         await clickToReveal(page.getByRole("button", { name: "Connect" }), dialog);
         await dialog.getByPlaceholder(/Search or paste a URL/).fill("todoist");
-        await dialog.getByText("More integrations").waitFor();
         // The CLI-only surface is not offered; the connectable kind is.
         await dialog
           .getByRole("button", { name: /todoist\.com/ })
