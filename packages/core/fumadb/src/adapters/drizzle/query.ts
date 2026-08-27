@@ -369,6 +369,7 @@ export function fromDrizzle(
         ]),
       );
 
+      const statements: unknown[] = [];
       for (let i = 0; i < values.length; i += batchSize) {
         const batch = values.slice(i, i + batchSize);
         const insert = db.insert(drizzleTable).values(batch) as unknown as {
@@ -376,13 +377,31 @@ export function fromDrizzle(
             readonly target: typeof target;
             readonly set: typeof set;
             readonly where?: typeof where;
-          }) => Promise<unknown>;
+          }) => unknown;
         };
-        await insert.onConflictDoUpdate({
-          target,
-          set,
-          ...(where === undefined ? {} : { where }),
-        });
+        statements.push(
+          insert.onConflictDoUpdate({
+            target,
+            set,
+            ...(where === undefined ? {} : { where }),
+          }),
+        );
+      }
+
+      // D1 rejects interactive transactions but its native batch API executes
+      // prepared statements as one transaction. Drizzle exposes that API on
+      // the database handle, so keep parameter-bounded upserts atomic instead
+      // of auto-committing each statement independently.
+      const nativeBatch = db as unknown as {
+        readonly batch?: (statements: readonly unknown[]) => Promise<unknown>;
+      };
+      if (!interactiveTransactions && statements.length > 1 && nativeBatch.batch) {
+        await nativeBatch.batch(statements);
+        return;
+      }
+
+      for (const statement of statements) {
+        await statement;
       }
     },
     async findMany(table, v) {
