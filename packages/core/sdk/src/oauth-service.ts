@@ -18,6 +18,7 @@ import { Duration, Effect, Layer, Match, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
+import type { AuditEventInput } from "./audit";
 import type { Connection } from "./connection";
 import type { OrgWriteDeniedError } from "./errors";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
@@ -191,6 +192,7 @@ export interface OAuthServiceDeps {
    *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
    *  user-intent client/connect surfaces. */
   readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
+  readonly recordAuditEvent: (input: AuditEventInput) => Effect.Effect<void, StorageFailure>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */
   readonly mintOAuthConnection: (
@@ -845,42 +847,54 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         yield* provider.set(ProviderItemId.make(clientSecretItemIdValue), input.clientSecret);
       }
 
-      yield* deps.fuma
-        .use("oauth_client.deleteExisting", (db) =>
-          looseDb(db).deleteMany("oauth_client", {
-            where: (b: any) =>
-              b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
-          }),
-        )
-        .pipe(Effect.catch(() => Effect.void));
-      yield* deps.fuma.use("oauth_client.create", (db) =>
-        looseDb(db).create("oauth_client", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          slug: String(input.slug),
-          authorization_url: input.authorizationUrl,
-          token_url: input.tokenUrl,
-          grant: input.grant,
-          client_id: input.clientId,
-          client_secret_item_id: clientSecretItemIdValue,
-          resource: input.resource ?? null,
-          origin_kind: input.origin?.kind ?? "manual",
-          // Recorded intent, kept for BOTH origins: a manual app registered from
-          // an integration's dialog stamps its integration so the picker can
-          // match it exactly, the same way a DCR client records the integration
-          // that requested it.
-          origin_integration:
-            input.origin?.integration == null ? null : String(input.origin.integration),
-          origin_issuer:
-            input.origin?.kind === "dynamic_client_registration"
-              ? (canonicalIssuerUrl(input.originIssuer) ?? null)
-              : null,
-          origin_redirect_uri:
-            input.origin?.kind === "dynamic_client_registration"
-              ? (input.originRedirectUri ?? null)
-              : null,
-          created_at: now,
+      yield* deps.fuma.transaction(
+        Effect.gen(function* () {
+          const existing = yield* deps.fuma.use("oauth_client.findExisting", (db) =>
+            looseDb(db).findFirst("oauth_client", {
+              where: (b: any) =>
+                b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+            }),
+          );
+          yield* deps.fuma
+            .use("oauth_client.deleteExisting", (db) =>
+              looseDb(db).deleteMany("oauth_client", {
+                where: (b: any) =>
+                  b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+              }),
+            )
+            .pipe(Effect.catch(() => Effect.void));
+          yield* deps.fuma.use("oauth_client.create", (db) =>
+            looseDb(db).create("oauth_client", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              slug: String(input.slug),
+              authorization_url: input.authorizationUrl,
+              token_url: input.tokenUrl,
+              grant: input.grant,
+              client_id: input.clientId,
+              client_secret_item_id: clientSecretItemIdValue,
+              resource: input.resource ?? null,
+              origin_kind: input.origin?.kind ?? "manual",
+              origin_integration:
+                input.origin?.integration == null ? null : String(input.origin.integration),
+              origin_issuer:
+                input.origin?.kind === "dynamic_client_registration"
+                  ? (canonicalIssuerUrl(input.originIssuer) ?? null)
+                  : null,
+              origin_redirect_uri:
+                input.origin?.kind === "dynamic_client_registration"
+                  ? (input.originRedirectUri ?? null)
+                  : null,
+              created_at: now,
+            }),
+          );
+          yield* deps.recordAuditEvent({
+            action: existing ? "updated" : "created",
+            resourceType: "oauth_client",
+            resourceOwner: input.owner,
+            resourceId: String(input.slug),
+          });
         }),
       );
       return input.slug;
@@ -915,16 +929,34 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       yield* deps.guardOrgWrite(owner);
-      yield* deps.fuma
-        .use("oauth_client.delete", (db) =>
-          looseDb(db).deleteMany("oauth_client", {
-            where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
-          }),
-        )
-        .pipe(Effect.asVoid);
+      const removed = yield* deps.fuma.transaction(
+        Effect.gen(function* () {
+          const existing = yield* deps.fuma.use("oauth_client.findForRemoval", (db) =>
+            looseDb(db).findFirst("oauth_client", {
+              where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
+            }),
+          );
+          yield* deps.fuma
+            .use("oauth_client.delete", (db) =>
+              looseDb(db).deleteMany("oauth_client", {
+                where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
+              }),
+            )
+            .pipe(Effect.asVoid);
+          if (existing) {
+            yield* deps.recordAuditEvent({
+              action: "removed",
+              resourceType: "oauth_client",
+              resourceOwner: owner,
+              resourceId: String(slug),
+            });
+          }
+          return existing !== null;
+        }),
+      );
       // Best-effort: drop the secret from the provider so it isn't orphaned.
       const provider = deps.defaultWritableProvider();
-      if (provider?.delete) {
+      if (removed && provider?.delete) {
         yield* provider
           .delete(ProviderItemId.make(clientSecretItemId(owner, slug)))
           .pipe(Effect.catch(() => Effect.void));

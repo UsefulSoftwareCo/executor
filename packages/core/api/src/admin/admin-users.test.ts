@@ -20,6 +20,7 @@ import { AdminUsersHandlers } from "./handlers";
 import { AdminUsersProvider, type AdminUsersHeaders } from "./service";
 import {
   getUser,
+  listAuditEvents,
   listUserConnections,
   listUsers,
   listUsersWithConnections,
@@ -158,6 +159,40 @@ const insertConnection = (
     });
   });
 
+const insertAuditEvent = (
+  db: SqliteTestFumaDb,
+  row: {
+    readonly id: string;
+    readonly tenant: string;
+    readonly actorId: string | null;
+    readonly action: "created" | "updated" | "removed";
+    readonly resourceType: "connection" | "integration" | "oauth_client";
+    readonly resourceOwner: "org" | "user" | null;
+    readonly resourceId: string;
+    readonly createdAt: number;
+  },
+): Effect.Effect<void> =>
+  Effect.promise(async () => {
+    await db.client.execute({
+      sql: `INSERT INTO audit_event (
+          row_id, tenant, id, actor_id, action, resource_type, resource_owner,
+          resource_parent, resource_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        `row-${row.id}`,
+        row.tenant,
+        row.id,
+        row.actorId,
+        row.action,
+        row.resourceType,
+        row.resourceOwner,
+        row.resourceType === "connection" ? "github" : null,
+        row.resourceId,
+        row.createdAt,
+      ],
+    });
+  });
+
 /** Two users with connections under tenant A, plus a whole separate tenant B
  *  that A's admin plane must never see. */
 const seed = (db: SqliteTestFumaDb): Effect.Effect<void> =>
@@ -231,6 +266,15 @@ const stubProvider = (
   directory?: AdminIdentityDirectory | AdminUserDirectory,
 ) =>
   Layer.succeed(AdminUsersProvider)({
+    listAuditEvents: (headers, options) =>
+      authorize(headers).pipe(
+        Effect.flatMap(executorFor),
+        Effect.flatMap((executor) =>
+          platformViewOf(executor).pipe(
+            Effect.flatMap((admin) => listAuditEvents(admin, options, directory)),
+          ),
+        ),
+      ),
     listUsers: (headers, options) =>
       authorize(headers).pipe(
         Effect.flatMap(executorFor),
@@ -359,6 +403,20 @@ type UsersWithConnectionsBody = {
     }>;
   }>;
 };
+type AuditEventsBody = {
+  readonly events: ReadonlyArray<{
+    readonly id: string;
+    readonly actorId: string | null;
+    readonly actorEmail: string | null;
+    readonly actorDisplayName: string | null;
+    readonly action: string;
+    readonly resourceType: string;
+    readonly resourceOwner: string | null;
+    readonly resourceParent: string | null;
+    readonly resourceId: string;
+    readonly createdAt: number;
+  }>;
+};
 
 const ORG_A = "Bearer org_a_key";
 
@@ -420,6 +478,75 @@ const failingDirectory: AdminIdentityDirectory = () =>
   Effect.fail(new DirectoryUnavailable({ message: "member directory unavailable" }));
 
 describe("admin users API", () => {
+  it.effect("lists filtered audit events with actor identity and tenant isolation", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* insertAuditEvent(db, {
+          id: "aud-a-old",
+          tenant: TENANT_A,
+          actorId: USER_A1,
+          action: "created",
+          resourceType: "connection",
+          resourceOwner: "org",
+          resourceId: "shared",
+          createdAt: 100,
+        });
+        yield* insertAuditEvent(db, {
+          id: "aud-a-new",
+          tenant: TENANT_A,
+          actorId: USER_A1,
+          action: "removed",
+          resourceType: "connection",
+          resourceOwner: "user",
+          resourceId: "personal",
+          createdAt: 200,
+        });
+        yield* insertAuditEvent(db, {
+          id: "aud-b",
+          tenant: TENANT_B,
+          actorId: USER_B1,
+          action: "removed",
+          resourceType: "connection",
+          resourceOwner: "user",
+          resourceId: "other-tenant-secret-name",
+          createdAt: 300,
+        });
+
+        const seen: string[][] = [];
+        const web = yield* webHandlerFor(
+          stubProvider(
+            (tenant) => platformExecutorFor(db, tenant),
+            headerAuthorize,
+            stubUserDirectory({ seen }),
+          ),
+        );
+        const response = yield* get(
+          web,
+          "/admin/audit-events?action=removed&resourceOwner=user&limit=1",
+          ORG_A,
+        );
+        expect(response.status).toBe(200);
+        const body = yield* jsonOf<AuditEventsBody>(response);
+        expect(body.events).toEqual([
+          {
+            id: "aud-a-new",
+            actorId: USER_A1,
+            actorEmail: A1_EMAIL_STORED,
+            actorDisplayName: "User A1",
+            action: "removed",
+            resourceType: "connection",
+            resourceOwner: "user",
+            resourceParent: "github",
+            resourceId: "personal",
+            createdAt: 200_000,
+          },
+        ]);
+        expect(seen).toEqual([[USER_A1]]);
+        expect(JSON.stringify(body)).not.toContain("other-tenant-secret-name");
+      }),
+    ),
+  );
+
   it.effect("lists every user of the tenant for an authorized org caller", () =>
     withDb((db) =>
       Effect.gen(function* () {
@@ -499,6 +626,7 @@ describe("admin users API", () => {
         );
 
         for (const path of [
+          "/admin/audit-events",
           "/admin/users",
           "/admin/users/with-connections",
           `/admin/users/${USER_A1}/connections`,
@@ -569,6 +697,9 @@ describe("admin users API", () => {
         // plane serves the whole tenant.
         const member = yield* get(web, "/admin/users", "Bearer user_scoped_key");
         expect(member.status, "a non-admin caller → forbidden").toBe(403);
+
+        expect((yield* get(web, "/admin/audit-events")).status).toBe(401);
+        expect((yield* get(web, "/admin/audit-events", "Bearer user_scoped_key")).status).toBe(403);
 
         const memberJoined = yield* get(web, "/admin/users/with-connections", "Bearer user_key");
         expect(memberJoined.status).toBe(403);
@@ -1097,6 +1228,10 @@ const A_SUBJECT: AdminSubject = {
 /** An `ExecutorAdmin` that answers everything and records the reads it was
  *  asked for, so a test can assert the call the filter chose. */
 const recordingAdmin = (calls: string[]): ExecutorAdmin => ({
+  listAuditEvents: () => {
+    calls.push("listAuditEvents");
+    return Effect.succeed([]);
+  },
   listSubjects: () => {
     calls.push("listSubjects");
     return Effect.succeed([A_SUBJECT]);

@@ -1,6 +1,12 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest } from "effect/unstable/http";
 import { Effect } from "effect";
+import type {
+  AdminListAuditEventsOptions,
+  AuditEventAction,
+  AuditResourceType,
+  Owner,
+} from "@executor-js/sdk";
 
 import { AdminUsersHttpApi } from "./api";
 import { normalizeEmail } from "./reads";
@@ -34,11 +40,36 @@ const listOptions = (query: {
   ...(query.email === undefined ? {} : { email: normalizeEmail(query.email) }),
 });
 
+const auditListOptions = (query: {
+  readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
+  readonly actorId?: string | undefined;
+  readonly action?: AuditEventAction | undefined;
+  readonly resourceType?: AuditResourceType | undefined;
+  readonly resourceOwner?: Owner | undefined;
+}): AdminListAuditEventsOptions => ({
+  ...(query.limit === undefined ? {} : { limit: query.limit }),
+  ...(query.offset === undefined ? {} : { offset: query.offset }),
+  ...(query.actorId === undefined ? {} : { actorId: query.actorId }),
+  ...(query.action === undefined ? {} : { action: query.action }),
+  ...(query.resourceType === undefined ? {} : { resourceType: query.resourceType }),
+  ...(query.resourceOwner === undefined ? {} : { resourceOwner: query.resourceOwner }),
+});
+
 export const AdminUsersHandlers = HttpApiBuilder.group(
   AdminUsersHttpApi,
   "adminUsers",
   (handlers) =>
     handlers
+      .handle("listAuditEvents", ({ query }) =>
+        Effect.gen(function* () {
+          const headers = yield* requestHeaders;
+          return yield* (yield* AdminUsersProvider).listAuditEvents(
+            headers,
+            auditListOptions(query),
+          );
+        }),
+      )
       .handle("listUsers", ({ query }) =>
         Effect.gen(function* () {
           const headers = yield* requestHeaders;

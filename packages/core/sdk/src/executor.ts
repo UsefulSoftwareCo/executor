@@ -37,11 +37,19 @@ import {
   type ConnectionRow,
   type CoreSchema,
   type IntegrationRow,
+  type AuditEventRow,
   type OAuthClientRow,
   type ToolInvocationRow,
   type ToolRow,
   type ToolPolicyRow,
 } from "./core-schema";
+import type {
+  AdminAuditEvent,
+  AdminListAuditEventsOptions,
+  AuditEventInput,
+  AuditEventAction,
+  AuditResourceType,
+} from "./audit";
 import {
   ElicitationDeclinedError,
   ElicitationResponse,
@@ -552,6 +560,11 @@ const normalizeAdminPaging = (
 };
 
 export interface ExecutorAdmin {
+  /** Newest-first tenant audit history. Identifiers only: no credential
+   * material or free-form configuration is exposed. */
+  readonly listAuditEvents: (
+    options?: AdminListAuditEventsOptions,
+  ) => Effect.Effect<readonly AdminAuditEvent[], StorageFailure>;
   /** One page of subjects under the tenant, oldest first (stable: ties break on
    *  `external_id`). ALWAYS bounded: no arguments means
    *  {@link ADMIN_DEFAULT_PAGE_SIZE} rows from offset 0, and `limit` is clamped
@@ -1705,6 +1718,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
+    const recordAuditEvent = (input: AuditEventInput): Effect.Effect<void, StorageFailure> => {
+      const createdAt = new Date();
+      const id = `aud_${createdAt.getTime().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+      return core
+        .create("audit_event", {
+          tenant,
+          id,
+          actor_id: subject,
+          action: input.action,
+          resource_type: input.resourceType,
+          resource_owner: input.resourceOwner ?? null,
+          resource_parent: input.resourceParent ?? null,
+          resource_id: input.resourceId,
+          created_at: createdAt,
+        })
+        .pipe(Effect.asVoid);
+    };
+
     // Runtime-observed output shapes ("muscle memory"): learned on the
     // execute success path, served by tools.schema when a tool declares no
     // output schema. Backed by plugin_storage under a reserved system id.
@@ -2636,6 +2667,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             created_at: now,
             updated_at: now,
           });
+          yield* recordAuditEvent({
+            action: "created",
+            resourceType: "integration",
+            resourceId: String(input.slug),
+          });
           return true;
         }),
       ).pipe(
@@ -2655,25 +2691,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         readonly config?: IntegrationConfig;
       },
     ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
-      Effect.gen(function* () {
-        yield* guardOrgWrite();
-        const now = new Date();
-        const set: Record<string, unknown> = { updated_at: now };
-        if (patch.name !== undefined) set.name = patch.name;
-        if (patch.description !== undefined) set.description = patch.description;
-        if (patch.config !== undefined) {
-          set.config = patch.config;
-          // A config change can change the derived tools. The writer can only
-          // rebuild catalogs in its own partition (owner policy), so revise
-          // the integration: other subjects' connections compare this stamp
-          // against their `tools_synced_at` and lazily rebuild on next read.
-          set.config_revised_at = now.getTime();
-        }
-        yield* core.updateMany("integration", {
-          where: (b: AnyCb) => b("slug", "=", String(slug)),
-          set,
-        });
-      });
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite();
+          const now = new Date();
+          const set: Record<string, unknown> = { updated_at: now };
+          if (patch.name !== undefined) set.name = patch.name;
+          if (patch.description !== undefined) set.description = patch.description;
+          if (patch.config !== undefined) {
+            set.config = patch.config;
+            // A config change can change the derived tools. The writer can only
+            // rebuild catalogs in its own partition (owner policy), so revise
+            // the integration: other subjects' connections compare this stamp
+            // against their `tools_synced_at` and lazily rebuild on next read.
+            set.config_revised_at = now.getTime();
+          }
+          yield* core.updateMany("integration", {
+            where: (b: AnyCb) => b("slug", "=", String(slug)),
+            set,
+          });
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "integration",
+            resourceId: String(slug),
+          });
+        }),
+      );
 
     const integrationsUpdatePublic = (
       slug: IntegrationSlug,
@@ -2719,6 +2762,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.deleteMany("connection", { where });
           yield* core.deleteMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
+          });
+          yield* recordAuditEvent({
+            action: "removed",
+            resourceType: "integration",
+            resourceId: String(slug),
           });
           return existing.plugin_id;
         }),
@@ -3165,6 +3213,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 updated_at: now,
               });
             }
+            yield* recordAuditEvent({
+              action: existing ? "updated" : "created",
+              resourceType: "connection",
+              resourceOwner: input.owner,
+              resourceParent: String(input.integration),
+              resourceId: String(name),
+            });
           }),
         );
 
@@ -3320,6 +3375,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 updated_at: now,
               });
             }
+            yield* recordAuditEvent({
+              action: existing ? "updated" : "created",
+              resourceType: "connection",
+              resourceOwner: input.owner,
+              resourceParent: String(input.integration),
+              resourceId: String(name),
+            });
           }),
         );
 
@@ -3392,31 +3454,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ref: ConnectionRef,
       input: UpdateConnectionInput,
     ): Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure> =>
-      Effect.gen(function* () {
-        yield* guardOrgWrite(ref.owner);
-        const row = yield* findConnectionRow(ref);
-        if (!row) {
-          return yield* new ConnectionNotFoundError({
-            owner: ref.owner,
-            integration: ref.integration,
-            name: ref.name,
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite(ref.owner);
+          const row = yield* findConnectionRow(ref);
+          if (!row) {
+            return yield* new ConnectionNotFoundError({
+              owner: ref.owner,
+              integration: ref.integration,
+              name: ref.name,
+            });
+          }
+          const set: Record<string, unknown> = { updated_at: new Date() };
+          if (input.description !== undefined) set.description = input.description;
+          if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
+          yield* core.updateMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(ref.owner)(b),
+                b("integration", "=", String(ref.integration)),
+                b("name", "=", String(ref.name)),
+              ),
+            set,
           });
-        }
-        const set: Record<string, unknown> = { updated_at: new Date() };
-        if (input.description !== undefined) set.description = input.description;
-        if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
-        yield* core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(ref.owner)(b),
-              b("integration", "=", String(ref.integration)),
-              b("name", "=", String(ref.name)),
-            ),
-          set,
-        });
-        const updated = yield* findConnectionRow(ref);
-        return rowToConnection(updated ?? row);
-      });
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "connection",
+            resourceOwner: ref.owner,
+            resourceParent: String(ref.integration),
+            resourceId: String(ref.name),
+          });
+          const updated = yield* findConnectionRow(ref);
+          return rowToConnection(updated ?? row);
+        }),
+      );
 
     const connectionsRemove = (
       ref: ConnectionRef,
@@ -3462,6 +3533,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 b("integration", "=", String(ref.integration)),
                 b("name", "=", String(ref.name)),
               ),
+          });
+          yield* recordAuditEvent({
+            action: "removed",
+            resourceType: "connection",
+            resourceOwner: ref.owner,
+            resourceParent: String(ref.integration),
+            resourceId: String(ref.name),
           });
         }),
       );
@@ -4888,6 +4966,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       subject,
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
+      recordAuditEvent,
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
       connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),
@@ -5151,6 +5230,44 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         };
       };
 
+      const rowToAdminAuditEvent = (row: AuditEventRow): AdminAuditEvent => ({
+        id: row.id,
+        actorId: row.actor_id == null ? null : String(row.actor_id),
+        action: row.action as AuditEventAction,
+        resourceType: row.resource_type as AuditResourceType,
+        resourceOwner: row.resource_owner == null ? null : (row.resource_owner as Owner),
+        resourceParent: row.resource_parent == null ? null : String(row.resource_parent),
+        resourceId: String(row.resource_id),
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+      });
+
+      const listAuditEvents = (
+        options?: AdminListAuditEventsOptions,
+      ): Effect.Effect<readonly AdminAuditEvent[], StorageFailure> => {
+        const { limit, offset } = normalizeAdminPaging(options);
+        return platformCore
+          .findMany("audit_event", {
+            where: (b: AnyCb) =>
+              b.and(
+                options?.actorId === undefined ? true : b("actor_id", "=", options.actorId),
+                options?.action === undefined ? true : b("action", "=", options.action),
+                options?.resourceType === undefined
+                  ? true
+                  : b("resource_type", "=", options.resourceType),
+                options?.resourceOwner === undefined
+                  ? true
+                  : b("resource_owner", "=", options.resourceOwner),
+              ),
+            orderBy: [
+              ["created_at", "desc"],
+              ["id", "desc"],
+            ],
+            limit,
+            offset,
+          })
+          .pipe(Effect.map((rows) => rows.map(rowToAdminAuditEvent)));
+      };
+
       const listSubjects = (
         options?: AdminListSubjectsOptions,
       ): Effect.Effect<readonly AdminSubject[], StorageFailure> => {
@@ -5262,6 +5379,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
 
       return {
+        listAuditEvents,
         listSubjects,
         getSubject,
         listSubjectConnections,

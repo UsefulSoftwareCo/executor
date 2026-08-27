@@ -263,6 +263,38 @@ export const connectLinkUrl = (
   return org ? `${base}/${org}/connect/${integration}` : `${base}/connect/${integration}`;
 };
 
+// ── Audit activity ─────────────────────────────────────────────────────────
+
+export interface AdminAuditActorRow {
+  readonly actorId: string | null;
+  readonly actorEmail: string | null;
+  readonly actorDisplayName: string | null;
+}
+
+/** Human-readable actor, with the stable id retained as the final fallback. */
+export const adminAuditActorLabel = (event: AdminAuditActorRow): string =>
+  event.actorEmail ?? event.actorDisplayName ?? event.actorId ?? "System";
+
+export const adminAuditResourceLabel = (event: {
+  readonly resourceType: "connection" | "integration" | "oauth_client";
+  readonly resourceParent: string | null;
+  readonly resourceId: string;
+}): string => {
+  const kind =
+    event.resourceType === "oauth_client"
+      ? "OAuth app"
+      : event.resourceType === "integration"
+        ? "Integration"
+        : "Connection";
+  const identifier = event.resourceParent
+    ? `${event.resourceParent} / ${event.resourceId}`
+    : event.resourceId;
+  return `${kind}: ${identifier}`;
+};
+
+export const adminAuditScopeLabel = (owner: Owner | null): string =>
+  owner === "user" ? "Personal" : "Workspace";
+
 // ── Paging ──────────────────────────────────────────────────────────────────
 
 /**

@@ -197,6 +197,28 @@ export const coreTables = defineTables({
     ["tenant", "external_id"],
   ),
 
+  // Append-only configuration audit history. Tenant-scoped so the platform
+  // view can read every actor's events without widening any credential-bearing
+  // owner-scoped table. Rows contain identifiers only — never credential
+  // values, provider item ids, OAuth tokens, or free-form descriptions.
+  audit_event: tenantExecutorTable(
+    "audit_event",
+    {
+      id: keyColumn("id"),
+      actor_id: nullableKeyColumn("actor_id"),
+      action: keyColumn("action"),
+      resource_type: keyColumn("resource_type"),
+      resource_owner: nullableKeyColumn("resource_owner"),
+      resource_parent: nullableTextColumn("resource_parent"),
+      resource_id: textColumn("resource_id"),
+      created_at: dateColumn("created_at"),
+    },
+    // The unique index doubles as the newest-first admin read index. `id` is
+    // globally unique in practice and remains the final tie-breaker for events
+    // written in the same millisecond.
+    ["tenant", "created_at", "id"],
+  ),
+
   // THE saved credential, one per (owner, integration, name). Resolves each named
   // input via `provider` + the `item_ids` map (variable → provider item id). A
   // single-secret connection is `{ "token": <id> }`; an apiKey method with two
@@ -431,6 +453,7 @@ export type CoreSchema = typeof coreTables;
 
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
 export type SubjectRow = FumaRow<CoreSchema["subject"]>;
+export type AuditEventRow = FumaRow<CoreSchema["audit_event"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;

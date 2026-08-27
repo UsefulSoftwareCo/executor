@@ -17,6 +17,7 @@ import type { DrizzleDb } from "./db";
 import { organizations } from "./schema";
 import {
   artifact,
+  audit_event,
   blob,
   connection,
   definition,
@@ -50,6 +51,7 @@ export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Pr
     await tx.delete(oauth_session).where(eq(oauth_session.tenant, organizationId));
     await tx.delete(tool_policy).where(eq(tool_policy.tenant, organizationId));
     await tx.delete(plugin_storage).where(eq(plugin_storage.tenant, organizationId));
+    await tx.delete(audit_event).where(eq(audit_event.tenant, organizationId));
     await tx.delete(subject).where(eq(subject.tenant, organizationId));
     await tx.delete(artifact).where(eq(artifact.tenant, organizationId));
 

@@ -20,6 +20,8 @@ export {
   AdminUsersError,
   AdminUsersForbidden,
   AdminUsersUnauthorized,
+  AdminAuditEvent,
+  AdminAuditEventsResponse,
   AdminUser,
   AdminUserConnection,
   AdminUserWithConnections,

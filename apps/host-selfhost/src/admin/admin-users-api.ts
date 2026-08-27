@@ -28,6 +28,7 @@ import {
   HostConfig,
   PluginsProvider,
   getAdminUser,
+  listAdminAuditEvents,
   listAdminUserConnections,
   listAdminUsers,
   listAdminUsersWithConnections,
@@ -159,6 +160,14 @@ export const betterAuthAdminUsersProvider: Layer.Layer<
     const context = yield* Effect.context<BetterAuth | DbProvider | PluginsProvider | HostConfig>();
     const { auth, organizationId } = yield* BetterAuth;
     return AdminUsersProvider.of({
+      listAuditEvents: (headers, options) =>
+        withPlatformView(headers, organizationId, (executor) =>
+          platformViewOf(executor).pipe(
+            Effect.flatMap((admin) =>
+              listAdminAuditEvents(admin, options, userDirectory(auth, headers)),
+            ),
+          ),
+        ).pipe(Effect.provideContext(context)),
       listUsers: (headers, options) =>
         withPlatformView(headers, organizationId, (executor) =>
           platformViewOf(executor).pipe(
