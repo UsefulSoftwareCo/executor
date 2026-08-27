@@ -84,10 +84,7 @@ describe("MCP owner isolation", () => {
         { marker: "from-org" },
         { onElicitation: "accept-all" },
       );
-      expect(orgResult).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "ok:from-org" }] },
-      });
+      expect(orgResult).toMatchObject({ ok: true, data: "ok:from-org" });
       expect(
         (yield* server.requests)
           .slice(beforeOrg)
@@ -102,10 +99,7 @@ describe("MCP owner isolation", () => {
         { marker: "from-user" },
         { onElicitation: "accept-all" },
       );
-      expect(userResult).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "ok:from-user" }] },
-      });
+      expect(userResult).toMatchObject({ ok: true, data: "ok:from-user" });
       const userRequests = (yield* server.requests).slice(beforeUser);
       expect(userRequests.some((request) => request.authorization === "Bearer token-user")).toBe(
         true,

@@ -136,14 +136,9 @@ describe("MCP elicitation (end-to-end)", () => {
       );
       yield* executor.close();
 
-      expect(accepted).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "approved:hello" }] },
-      });
-      expect(declined).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "denied:nope" }] },
-      });
+      // v2 result contract: a lone prose text block IS the data.
+      expect(accepted).toMatchObject({ ok: true, data: "approved:hello" });
+      expect(declined).toMatchObject({ ok: true, data: "denied:nope" });
       expect(acceptedMessages).toEqual(['Approve echo for "hello"?']);
       expect(declinedMessages).toEqual(['Approve echo for "nope"?']);
       expect(capturedAddress).toBe(String(gatedEcho.address));
@@ -180,67 +175,41 @@ describe("MCP elicitation (end-to-end)", () => {
         { onElicitation: "accept-all" },
       );
 
-      expect(result).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "plain" }] },
-      });
+      expect(result).toMatchObject({ ok: true, data: "plain" });
     }),
   );
 
-  it.effect("registered tools without MCP outputSchema still describe CallToolResult", () =>
+  it.effect("tools without a declared MCP output schema serve the observed payload shape", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const simpleEcho = findTool(tools, "simple_echo");
-      const schema = yield* executor.tools.schema(simpleEcho.address);
 
-      expect(schema?.outputSchema).toMatchObject({
-        type: "object",
-        properties: {
-          content: { type: "array" },
-          structuredContent: {},
-          isError: { const: false },
-          _meta: { type: "object" },
-        },
-        required: ["content"],
-      });
-      const outputSchema = schema?.outputSchema as {
-        readonly properties: {
-          readonly content: {
-            readonly items: {
-              readonly anyOf: readonly unknown[];
-            };
-          };
-        };
-      };
-      expect(outputSchema.properties.content.items.anyOf).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            properties: expect.objectContaining({
-              type: { const: "text", type: "string" },
-              text: { type: "string" },
-            }),
-            required: ["type", "text"],
-          }),
-        ]),
-      );
-      expect(schema?.outputTypeScript).toContain('type: "text"');
-      expect(schema?.outputTypeScript).toContain("structuredContent?: unknown;");
+      // Cold: nothing declared, nothing observed — no envelope schema is
+      // synthesized any more.
+      const cold = yield* executor.tools.schema(simpleEcho.address);
+      expect(cold?.outputSchema).toBeUndefined();
+      expect(cold?.outputTypeScript).toBeUndefined();
 
       const result = yield* executor.execute(
         simpleEcho.address,
         { value: "plain" },
         { onElicitation: "accept-all" },
       );
+      expect(result).toMatchObject({ ok: true, data: "plain" });
 
+      // Warm: the observed semantic payload (a prose string) is served.
+      const warm = yield* executor.tools.schema(simpleEcho.address);
+      expect(warm?.outputSchemaSource).toBe("observed");
+      expect(warm?.outputSchema).toMatchObject({ type: "string" });
       const data = expectToolResultOkData(result);
-      expectMatchesOutputSchema(schema?.outputSchema, data);
-      expect(typeCheckOutputTypeScript(schema, data)).toEqual([]);
+      expectMatchesOutputSchema(warm?.outputSchema, data);
+      expect(typeCheckOutputTypeScript(warm, data)).toEqual([]);
     }),
   );
 
-  it.effect("successful tool invocation preserves structured MCP result fields", () =>
+  it.effect("structured MCP results become semantic data with supplemental content beside", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
@@ -248,23 +217,17 @@ describe("MCP elicitation (end-to-end)", () => {
       const structuredEcho = findTool(tools, "structured_echo");
       const schema = yield* executor.tools.schema(structuredEcho.address);
 
+      // The server's declared output schema types `data` directly — no
+      // CallToolResult wrapper.
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
         properties: {
-          content: { type: "array" },
-          structuredContent: {
-            type: "object",
-            properties: {
-              value: { type: "string" },
-              upper: { type: "string" },
-            },
-          },
-          _meta: { type: "object" },
+          value: { type: "string" },
+          upper: { type: "string" },
         },
-        required: ["content", "structuredContent"],
       });
-      expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("value: string");
+      expect(schema?.outputTypeScript).not.toContain("structuredContent");
 
       const result = yield* executor.execute(
         structuredEcho.address,
@@ -272,13 +235,13 @@ describe("MCP elicitation (end-to-end)", () => {
         { onElicitation: "accept-all" },
       );
 
+      // structuredContent IS the data; the non-duplicate text block rides in
+      // `content`; envelope `_meta` moves to `meta`.
       expect(result).toMatchObject({
         ok: true,
-        data: {
-          content: [{ type: "text", text: "plain" }],
-          structuredContent: { value: "plain", upper: "PLAIN" },
-          _meta: { trace: "kept" },
-        },
+        data: { value: "plain", upper: "PLAIN" },
+        content: [{ type: "text", text: "plain" }],
+        meta: { trace: "kept" },
       });
       const data = expectToolResultOkData(result);
       expectMatchesOutputSchema(schema?.outputSchema, data);
@@ -286,7 +249,7 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("connections.refresh keeps MCP outputSchema nested under structuredContent", () =>
+  it.effect("connections.refresh keeps the declared schema semantic", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
@@ -302,18 +265,10 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
         properties: {
-          content: { type: "array" },
-          structuredContent: {
-            type: "object",
-            properties: {
-              value: { type: "string" },
-              upper: { type: "string" },
-            },
-          },
+          value: { type: "string" },
+          upper: { type: "string" },
         },
-        required: ["content", "structuredContent"],
       });
-      expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("upper: string");
 
       const result = yield* executor.execute(

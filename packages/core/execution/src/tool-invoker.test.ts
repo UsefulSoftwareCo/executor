@@ -865,7 +865,7 @@ describe("tool discovery", () => {
       expect(described.description).toBe("List issues for a repository");
       expect(described.inputTypeScript).toBe("{ owner: string; repo: string; }");
       expect(described.outputTypeScript).toBe(
-        "{ ok: true; data: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+        "{ ok: true; data: unknown; content?: { type: string; [k: string]: unknown }[]; meta?: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
       );
       expect(described.typeScriptDefinitions).toEqual({
         ToolError:
@@ -898,7 +898,7 @@ describe("tool discovery", () => {
       // both inline and via the note.
       const warm = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
       expect(warm.outputTypeScript).toBe(
-        "{ ok: true; data: unknown[] /* observed; may be incomplete */; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+        "{ ok: true; data: unknown[] /* observed; may be incomplete */; content?: { type: string; [k: string]: unknown }[]; meta?: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
       );
       expect(warm.outputTypeScriptNote).toContain("observed from 1 live response");
     }),
@@ -983,7 +983,7 @@ describe("tool discovery", () => {
       const described = yield* describeTool(executor, "github.org.main.getRepositoryDetails");
 
       expect(described.outputTypeScript).toBe(
-        "{ ok: true; data: { defaultBranch: string; }; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+        "{ ok: true; data: { defaultBranch: string; }; content?: { type: string; [k: string]: unknown }[]; meta?: unknown; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
       );
       expect(described.typeScriptDefinitions).toEqual({
         ToolError:

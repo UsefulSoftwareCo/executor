@@ -53,16 +53,16 @@ describe("MCP image content", () => {
         {},
         { onElicitation: "accept-all" },
       );
+      // v2 contract: structuredContent IS the data; the image block rides
+      // beside it in `content` rather than being buried in an envelope.
       expect(imageOnly).toMatchObject({
         ok: true,
         data: {
-          content: [imageBlock],
-          structuredContent: {
-            name: "mcp-image-fixture.png",
-            mimeType: TEST_IMAGE_MIME_TYPE,
-            byteLength: 70,
-          },
+          name: "mcp-image-fixture.png",
+          mimeType: TEST_IMAGE_MIME_TYPE,
+          byteLength: 70,
         },
+        content: [imageBlock],
       });
 
       const mixed = yield* executor.execute(
@@ -70,17 +70,22 @@ describe("MCP image content", () => {
         {},
         { onElicitation: "accept-all" },
       );
+      // structuredContent IS the data; the prose caption and image ride in
+      // `content` beside it.
       expect(mixed).toMatchObject({
         ok: true,
         data: {
-          content: [
-            {
-              type: "text",
-              text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
-            },
-            imageBlock,
-          ],
+          name: "mcp-image-fixture.png",
+          mimeType: TEST_IMAGE_MIME_TYPE,
+          byteLength: 70,
         },
+        content: [
+          {
+            type: "text",
+            text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
+          },
+          imageBlock,
+        ],
       });
     }),
   );

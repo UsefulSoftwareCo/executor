@@ -176,7 +176,12 @@ import {
   type EnterpriseManagedRollout,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome, isToolResult } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult, ToolResult } from "./tool-result";
+import {
+  applyResultEncoding,
+  isToolResultEncoding,
+  type ToolResultEncoding,
+} from "./tool-result-normalization";
 import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
@@ -927,6 +932,7 @@ const rowToTool = (
     description: row.description,
     inputSchema: decodeJsonColumn(row.input_schema),
     outputSchema: decodeJsonColumn(row.output_schema),
+    ...(isToolResultEncoding(row.result_encoding) ? { resultEncoding: row.result_encoding } : {}),
     annotations: annotations ?? (decodeJsonColumn(row.annotations) as ToolAnnotations | undefined),
   };
 };
@@ -2914,6 +2920,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           input_schema: tool.inputSchema ?? null,
           output_schema: tool.outputSchema ?? null,
           annotations: tool.annotations ?? null,
+          result_encoding: tool.resultEncoding ?? null,
           created_at: now,
           updated_at: now,
         }));
@@ -2954,6 +2961,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               input_schema: tool.inputSchema ?? null,
               output_schema: tool.outputSchema ?? null,
               annotations: tool.annotations ?? null,
+              result_encoding: tool.resultEncoding ?? null,
               created_at: now,
               updated_at: now,
             } as ConnectionToolRow,
@@ -4069,10 +4077,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Muscle memory: when neither the catalog row nor the plugin's
         // projection declares an output schema, serve the shape observed from
         // live responses instead of letting the type collapse to `unknown`.
-        // The schema's description marks it as observed.
+        // Recall is contract-scoped: shapes learned under another result
+        // encoding describe data this tool no longer returns.
+        const rowEncoding = isToolResultEncoding(row.result_encoding)
+          ? row.result_encoding
+          : "direct";
         const observed =
           outputSchema === undefined
-            ? yield* shapeMemory.recall(String(address), parsed.owner, "direct")
+            ? yield* shapeMemory.recall(String(address), parsed.owner, rowEncoding)
             : null;
         const effectiveOutputSchema =
           outputSchema !== undefined
@@ -4574,45 +4586,121 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       options?: InvokeOptions,
     ): Effect.Effect<unknown, ExecuteError> => {
       const handler = pickHandler(options);
-      return Effect.gen(function* () {
-        // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
-        const formatInvocationCauseMessage = (cause: unknown): string => {
-          if (cause instanceof Error && cause.message.length > 0) return cause.message;
-          // Non-Error / empty-message causes: `String(plainObject)` renders
-          // "[object Object]", which is what telemetry then shows as the only
-          // label for the failure. Prefer the tag, else stringify structurally.
-          if (typeof cause === "object" && cause !== null) {
-            const tag = (cause as { readonly _tag?: unknown })._tag;
-            if (typeof tag === "string") return tag;
-            return Inspectable.toStringUnknown(cause, 0);
-          }
-          return String(cause);
-        };
-        // oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check
-        const wrapInvocationError = <A, E>(
-          effect: Effect.Effect<A, E>,
-        ): Effect.Effect<A, ToolInvocationError> =>
-          effect.pipe(
-            Effect.mapError(
-              (cause) =>
-                new ToolInvocationError({
-                  address,
-                  message: formatInvocationCauseMessage(cause),
-                  cause,
-                }),
-            ),
+      // Effect values are reusable, so per-invocation state lives inside a
+      // suspend: every run gets its own encoding slot, and two concurrent
+      // runs can never see each other's row read.
+      return Effect.suspend(() => {
+        // Set once the tool row loads; read by the invocation wrapper and the
+        // shape-observation tap. Static tools never reach either.
+        let resolvedEncoding: ToolResultEncoding = "direct";
+        // Decode the raw invocation value into semantic `data` per the row's
+        // encoding: transport envelopes (MCP CallToolResult) never reach the
+        // sandbox, telemetry, or shape inference as `data`.
+        const decodeInvocationValue = (value: unknown): unknown => {
+          if (resolvedEncoding === "direct") return value;
+          return applyResultEncoding(
+            resolvedEncoding,
+            isToolResult(value) ? value : ToolResult.ok(value),
           );
+        };
+        return Effect.gen(function* () {
+          // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
+          const formatInvocationCauseMessage = (cause: unknown): string => {
+            if (cause instanceof Error && cause.message.length > 0) return cause.message;
+            // Non-Error / empty-message causes: `String(plainObject)` renders
+            // "[object Object]", which is what telemetry then shows as the only
+            // label for the failure. Prefer the tag, else stringify structurally.
+            if (typeof cause === "object" && cause !== null) {
+              const tag = (cause as { readonly _tag?: unknown })._tag;
+              if (typeof tag === "string") return tag;
+              return Inspectable.toStringUnknown(cause, 0);
+            }
+            return String(cause);
+          };
+          // oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check
+          const wrapInvocationError = <A, E>(
+            effect: Effect.Effect<A, E>,
+          ): Effect.Effect<A, ToolInvocationError> =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ToolInvocationError({
+                    address,
+                    message: formatInvocationCauseMessage(cause),
+                    cause,
+                  }),
+              ),
+            );
 
-        // Static path — O(1) map lookup for plugin-contributed static tools
-        // (core-tools, plugin executor namespaces). Addressed by their fqid,
-        // not the 5-segment dynamic form.
-        const staticEntry = staticTools.get(String(address));
-        if (staticEntry) {
+          // Static path — O(1) map lookup for plugin-contributed static tools
+          // (core-tools, plugin executor namespaces). Addressed by their fqid,
+          // not the 5-segment dynamic form.
+          const staticEntry = staticTools.get(String(address));
+          if (staticEntry) {
+            const policyRules = yield* listActivePolicyRuleSet();
+            const policy = yield* resolvePolicyFromRuleSet(
+              String(address),
+              policyRules,
+              staticEntry.tool.annotations?.requiresApproval,
+            );
+            if (policy.action === "block") {
+              return yield* new ToolBlockedError({
+                address,
+                pattern: policy.pattern ?? "*",
+              });
+            }
+            yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
+            return yield* wrapInvocationError(
+              staticEntry.tool.handler({
+                ctx: staticEntry.ctx,
+                args,
+                elicit: buildElicit(address, args, handler),
+              }),
+            );
+          }
+
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) {
+            return yield* new ToolNotFoundError({ address });
+          }
+
+          // Find the tool row — projected: invoke needs routing/policy fields
+          // only, never the multi-KB input/output schema JSON (`tools.schema`
+          // is the schema-bearing surface).
+          const row = yield* core.findFirst("tool", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(parsed.owner)(b),
+                b("integration", "=", String(parsed.integration)),
+                b("connection", "=", String(parsed.connection)),
+                b("name", "=", String(parsed.tool)),
+              ),
+            select: TOOL_INVOCATION_COLUMNS,
+          });
+          if (!row) {
+            const searchMatches = yield* searchToolRowsForConnection(parsed);
+            const connectionTools =
+              searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
+            return yield* new ToolNotFoundError({
+              address,
+              suggestions: toolSuggestions(connectionTools),
+            });
+          }
+
+          // How this tool's raw invocation value decodes into semantic `data`.
+          // Shared with the shape-observation tap below via the closure.
+          resolvedEncoding = isToolResultEncoding(row.result_encoding)
+            ? row.result_encoding
+            : "direct";
+
+          // Resolve policy (owner-ranked).
+          const toolForPolicy = rowToTool(row);
           const policyRules = yield* listActivePolicyRuleSet();
+          const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
           const policy = yield* resolvePolicyFromRuleSet(
-            String(address),
+            normalizedPolicyId(toolForPolicy),
             policyRules,
-            staticEntry.tool.annotations?.requiresApproval,
+            annotations?.requiresApproval,
           );
           if (policy.action === "block") {
             return yield* new ToolBlockedError({
@@ -4620,199 +4708,147 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               pattern: policy.pattern ?? "*",
             });
           }
-          yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
-          return yield* wrapInvocationError(
-            staticEntry.tool.handler({
-              ctx: staticEntry.ctx,
-              args,
-              elicit: buildElicit(address, args, handler),
-            }),
-          );
-        }
 
-        const parsed = parseToolAddress(String(address));
-        if (!parsed) {
-          return yield* new ToolNotFoundError({ address });
-        }
+          const runtime = runtimes.get(row.plugin_id);
+          if (!runtime) {
+            return yield* new PluginNotLoadedError({
+              address,
+              pluginId: row.plugin_id,
+            });
+          }
+          if (!runtime.plugin.invokeTool) {
+            return yield* new NoHandlerError({
+              address,
+              pluginId: row.plugin_id,
+            });
+          }
 
-        // Find the tool row — projected: invoke needs routing/policy fields
-        // only, never the multi-KB input/output schema JSON (`tools.schema`
-        // is the schema-bearing surface).
-        const row = yield* core.findFirst("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
-        if (!row) {
-          const searchMatches = yield* searchToolRowsForConnection(parsed);
-          const connectionTools =
-            searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
-          return yield* new ToolNotFoundError({
-            address,
-            suggestions: toolSuggestions(connectionTools),
-          });
-        }
-
-        // Resolve policy (owner-ranked).
-        const toolForPolicy = rowToTool(row);
-        const policyRules = yield* listActivePolicyRuleSet();
-        const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
-        const policy = yield* resolvePolicyFromRuleSet(
-          normalizedPolicyId(toolForPolicy),
-          policyRules,
-          annotations?.requiresApproval,
-        );
-        if (policy.action === "block") {
-          return yield* new ToolBlockedError({
-            address,
-            pattern: policy.pattern ?? "*",
-          });
-        }
-
-        const runtime = runtimes.get(row.plugin_id);
-        if (!runtime) {
-          return yield* new PluginNotLoadedError({
-            address,
-            pluginId: row.plugin_id,
-          });
-        }
-        if (!runtime.plugin.invokeTool) {
-          return yield* new NoHandlerError({
-            address,
-            pluginId: row.plugin_id,
-          });
-        }
-
-        // Find the connection row.
-        const connectionRow = yield* findConnectionRow({
-          owner: parsed.owner,
-          integration: parsed.integration,
-          name: parsed.connection,
-        });
-        if (!connectionRow) {
-          return yield* new ConnectionNotFoundError({
+          // Find the connection row.
+          const connectionRow = yield* findConnectionRow({
             owner: parsed.owner,
             integration: parsed.integration,
             name: parsed.connection,
           });
-        }
+          if (!connectionRow) {
+            return yield* new ConnectionNotFoundError({
+              owner: parsed.owner,
+              integration: parsed.integration,
+              name: parsed.connection,
+            });
+          }
 
-        // Resolve annotations + enforce approval.
-        let resolvedAnnotations = annotations;
-        if (policy.action !== "approve" && runtime.plugin.resolveAnnotations) {
-          const map = yield* runtime.plugin
-            .resolveAnnotations({
-              ctx: runtime.ctx,
+          // Resolve annotations + enforce approval.
+          let resolvedAnnotations = annotations;
+          if (policy.action !== "approve" && runtime.plugin.resolveAnnotations) {
+            const map = yield* runtime.plugin
+              .resolveAnnotations({
+                ctx: runtime.ctx,
+                integration: parsed.integration,
+                connection: parsed.connection,
+                toolRows: [row],
+              })
+              .pipe(wrapInvocationError);
+            resolvedAnnotations = map[String(parsed.tool)] ?? annotations;
+          }
+          // When this call is about to pause for approval, validate args
+          // first: a call that can only fail (missing required path param /
+          // body) must be rejected here, not after the user grants an approval
+          // that then goes to waste. Non-pausing calls skip this — invokeTool
+          // raises the identical failure moments later without the extra pass.
+          if (approvalRequired(resolvedAnnotations, policy) && runtime.plugin.validateToolArgs) {
+            yield* runtime.plugin
+              .validateToolArgs({ ctx: runtime.ctx, toolRow: row, args })
+              .pipe(wrapInvocationError);
+          }
+          yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
+
+          // Resolve every named credential input (`variable → value`); `value` is
+          // the primary `token` for single-input + OAuth callers.
+          const values = yield* resolveConnectionValues(connectionRow);
+          const integrationRow = yield* findIntegrationRow(parsed.integration);
+          const grantedScopes = grantedScopesFromRow(connectionRow);
+          const invokeTool = runtime.plugin.invokeTool;
+          const invokeWith = (
+            resolved: Record<string, string | null>,
+          ): Effect.Effect<unknown, ToolInvocationError> => {
+            const credential: ToolInvocationCredential = {
+              owner: parsed.owner,
               integration: parsed.integration,
               connection: parsed.connection,
-              toolRows: [row],
-            })
-            .pipe(wrapInvocationError);
-          resolvedAnnotations = map[String(parsed.tool)] ?? annotations;
-        }
-        // When this call is about to pause for approval, validate args
-        // first: a call that can only fail (missing required path param /
-        // body) must be rejected here, not after the user grants an approval
-        // that then goes to waste. Non-pausing calls skip this — invokeTool
-        // raises the identical failure moments later without the extra pass.
-        if (approvalRequired(resolvedAnnotations, policy) && runtime.plugin.validateToolArgs) {
-          yield* runtime.plugin
-            .validateToolArgs({ ctx: runtime.ctx, toolRow: row, args })
-            .pipe(wrapInvocationError);
-        }
-        yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
-
-        // Resolve every named credential input (`variable → value`); `value` is
-        // the primary `token` for single-input + OAuth callers.
-        const values = yield* resolveConnectionValues(connectionRow);
-        const integrationRow = yield* findIntegrationRow(parsed.integration);
-        const grantedScopes = grantedScopesFromRow(connectionRow);
-        const invokeTool = runtime.plugin.invokeTool;
-        const invokeWith = (
-          resolved: Record<string, string | null>,
-        ): Effect.Effect<unknown, ToolInvocationError> => {
-          const credential: ToolInvocationCredential = {
-            owner: parsed.owner,
-            integration: parsed.integration,
-            connection: parsed.connection,
-            template: AuthTemplateSlug.make(connectionRow.template),
-            value: resolved[PRIMARY_INPUT_VARIABLE] ?? null,
-            values: resolved,
-            config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
-            ...(grantedScopes ? { grantedScopes } : {}),
+              template: AuthTemplateSlug.make(connectionRow.template),
+              value: resolved[PRIMARY_INPUT_VARIABLE] ?? null,
+              values: resolved,
+              config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
+              ...(grantedScopes ? { grantedScopes } : {}),
+            };
+            return wrapInvocationError(
+              invokeTool({
+                ctx: runtime.ctx,
+                toolRow: row,
+                credential,
+                args,
+                elicit: buildElicit(address, args, handler),
+                invokeOptions: options,
+              }),
+            ).pipe(Effect.map(decodeInvocationValue));
           };
-          return wrapInvocationError(
-            invokeTool({
-              ctx: runtime.ctx,
-              toolRow: row,
-              credential,
-              args,
-              elicit: buildElicit(address, args, handler),
-              invokeOptions: options,
-            }),
-          );
-        };
 
-        const first = yield* invokeWith(values);
-        // Reactive refresh. `expires_at` is only ever the AS's ADVERTISED
-        // lifetime; the upstream rejecting the token is the authoritative word
-        // on whether it is still good. The two diverge routinely: server-side
-        // revocation, an identity provider's idle-timeout policy shorter than
-        // the token lifetime, and connections whose AS omitted `expires_in`
-        // entirely (null expiry → the proactive check never fires, so this is
-        // their ONLY route back to a working token short of a reconnect).
-        //
-        // Deliberately narrow: exactly one retry, only on the 401 that means
-        // "this credential is not valid", and only for a connection holding a
-        // refresh token. A 403 is excluded — it means authenticated-but-not-
-        // permitted, and re-minting the same grant returns the same answer.
-        // If the retry also fails its result stands, so a genuinely dead grant
-        // still surfaces the upstream's own auth failure and its reconnect
-        // guidance rather than a masked one.
-        if (!isUnauthorizedToolFailure(first)) return first;
-        const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
-          // A failed re-mint is not this call's failure to report: the upstream
-          // already produced an auth failure with recovery guidance, which is
-          // strictly more actionable than a refresh-plumbing error. Keep it.
-          Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
+          const first = yield* invokeWith(values);
+          // Reactive refresh. `expires_at` is only ever the AS's ADVERTISED
+          // lifetime; the upstream rejecting the token is the authoritative word
+          // on whether it is still good. The two diverge routinely: server-side
+          // revocation, an identity provider's idle-timeout policy shorter than
+          // the token lifetime, and connections whose AS omitted `expires_in`
+          // entirely (null expiry → the proactive check never fires, so this is
+          // their ONLY route back to a working token short of a reconnect).
+          //
+          // Deliberately narrow: exactly one retry, only on the 401 that means
+          // "this credential is not valid", and only for a connection holding a
+          // refresh token. A 403 is excluded — it means authenticated-but-not-
+          // permitted, and re-minting the same grant returns the same answer.
+          // If the retry also fails its result stands, so a genuinely dead grant
+          // still surfaces the upstream's own auth failure and its reconnect
+          // guidance rather than a masked one.
+          if (!isUnauthorizedToolFailure(first)) return first;
+          const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
+            // A failed re-mint is not this call's failure to report: the upstream
+            // already produced an auth failure with recovery guidance, which is
+            // strictly more actionable than a refresh-plumbing error. Keep it.
+            Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
+          );
+          if (!refreshed) return first;
+          yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
+          return yield* invokeWith(refreshed);
+        }).pipe(
+          // Expected tool failures (`ToolResult.fail`) resolve through the
+          // success channel, so the tracer alone would record them as healthy
+          // spans. Stamp the outcome + error code so telemetry can distinguish
+          // "tool ran fine" from "user hit an upstream error / auth wall"
+          // without parsing response bodies.
+          Effect.tap(annotateToolResultOutcome),
+          // Muscle memory: fold successful dynamic-tool payloads into the
+          // observed output shape. Static tools are hand-typed already;
+          // failures teach nothing about the success shape. Runs inline — not
+          // forked — so the write survives Workers request teardown; `observe`
+          // never fails, is size-bounded, and stops writing once the shape
+          // stabilizes, so steady-state cost is one cache lookup.
+          Effect.tap((result) => {
+            if (staticTools.has(String(address))) return Effect.void;
+            const parsed = parseToolAddress(String(address));
+            if (!parsed) return Effect.void;
+            const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
+            if (data === undefined) return Effect.void;
+            return shapeMemory.observe(String(address), parsed.owner, resolvedEncoding, data);
+          }),
+          Effect.withSpan("executor.tool.execute", {
+            attributes: {
+              "mcp.tool.name": String(address),
+              "executor.tenant": tenant,
+              ...(subject != null ? { "executor.subject": subject } : {}),
+            },
+          }),
         );
-        if (!refreshed) return first;
-        yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
-        return yield* invokeWith(refreshed);
-      }).pipe(
-        // Expected tool failures (`ToolResult.fail`) resolve through the
-        // success channel, so the tracer alone would record them as healthy
-        // spans. Stamp the outcome + error code so telemetry can distinguish
-        // "tool ran fine" from "user hit an upstream error / auth wall"
-        // without parsing response bodies.
-        Effect.tap(annotateToolResultOutcome),
-        // Muscle memory: fold successful dynamic-tool payloads into the
-        // observed output shape. Static tools are hand-typed already;
-        // failures teach nothing about the success shape. Runs inline — not
-        // forked — so the write survives Workers request teardown; `observe`
-        // never fails, is size-bounded, and stops writing once the shape
-        // stabilizes, so steady-state cost is one cache lookup.
-        Effect.tap((result) => {
-          if (staticTools.has(String(address))) return Effect.void;
-          const parsed = parseToolAddress(String(address));
-          if (!parsed) return Effect.void;
-          const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
-          if (data === undefined) return Effect.void;
-          return shapeMemory.observe(String(address), parsed.owner, "direct", data);
-        }),
-        Effect.withSpan("executor.tool.execute", {
-          attributes: {
-            "mcp.tool.name": String(address),
-            "executor.tenant": tenant,
-            ...(subject != null ? { "executor.subject": subject } : {}),
-          },
-        }),
-      );
+      });
     };
 
     // ------------------------------------------------------------------

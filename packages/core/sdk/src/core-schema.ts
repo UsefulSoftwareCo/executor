@@ -323,6 +323,11 @@ export const coreTables = defineTables({
       input_schema: nullableJsonColumn("input_schema"),
       output_schema: nullableJsonColumn("output_schema"),
       annotations: nullableJsonColumn("annotations"),
+      // How `executor.execute` decodes this tool's raw invocation value into
+      // semantic `data` (see tool-result-normalization.ts). NULL = "direct":
+      // the value already is the payload. Stamped at catalog sync, so a
+      // contract rollout converges with the catalog's own refresh cycle.
+      result_encoding: nullableTextColumn("result_encoding"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -451,6 +456,7 @@ export const TOOL_INVOCATION_COLUMNS = [
   "name",
   "description",
   "annotations",
+  "result_encoding",
   "created_at",
   "updated_at",
 ] as const satisfies readonly (keyof ToolRow)[];

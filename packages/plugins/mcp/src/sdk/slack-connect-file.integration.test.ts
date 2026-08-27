@@ -167,14 +167,13 @@ describe("Slack Connect file fallback", () => {
           { onElicitation: "accept-all" },
         );
 
+        // v2 contract: a multi-block result is the ordered block array.
         expect(result).toMatchObject({
           ok: true,
-          data: {
-            content: [
-              { type: "text", text: expect.stringContaining(FILE_ID) },
-              { type: "image", mimeType: "image/png" },
-            ],
-          },
+          data: [
+            { type: "text", text: expect.stringContaining(FILE_ID) },
+            { type: "image", mimeType: "image/png" },
+          ],
         });
       }),
     ),
