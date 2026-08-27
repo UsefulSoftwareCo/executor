@@ -71,7 +71,13 @@ const sessionFlag = (): Pick<Storage, "getItem" | "setItem"> | null => {
   }
 };
 
-const browserEnvironment = (): PreloadErrorEnvironment => {
+/**
+ * The real browser half of the environment `respondToPreloadError` consumes.
+ * Exported so a test can check the mapping itself — an inverted probe or a
+ * reload guard that never latches would leave every behavioural test green
+ * while the app reload-loops.
+ */
+export const browserEnvironment = (): PreloadErrorEnvironment => {
   const storage = sessionFlag();
   return {
     target: window,
