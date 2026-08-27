@@ -2,6 +2,7 @@ import { expect, test } from "@effect/vitest";
 
 import {
   crashReportFingerprint,
+  mainCrashReportingOptions,
   withCrashReportFingerprint,
   type CrashEvent,
 } from "./crash-fingerprint";
@@ -107,6 +108,20 @@ test("the main-process beforeSend pins the key and forwards the event", () => {
     exception: { values: [{ type: "EXC_CRASH", stacktrace: { frames: [{ function: "abort" }] } }] },
   };
   expect(withCrashReportFingerprint(untouched)).toBe(untouched);
+});
+
+// The wiring check: this is the exact object handed to `Sentry.init` in
+// diagnostics.ts. If the hook is ever dropped from the main process, this
+// fails.
+test("the options the main process installs carry the fingerprinting hook", () => {
+  const options = mainCrashReportingOptions({
+    dsn: "https://public@example.invalid/1",
+    release: "executor-desktop@0.0.0",
+    environment: "production",
+    runId: "abcdef123456",
+  });
+  const sent = options.beforeSend(softAssertEvent("0x00000001a2b3c4d5"));
+  expect(sent.fingerprint).toEqual(["chromium-dump-without-crashing"]);
 });
 
 test("events with no volatile grouping input are left alone", () => {

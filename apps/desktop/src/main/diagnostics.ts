@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 import { app, crashReporter, dialog, shell } from "electron";
 import log from "electron-log/main.js";
 import * as Sentry from "@sentry/electron/main";
-import { withCrashReportFingerprint } from "./crash-fingerprint";
+import { mainCrashReportingOptions } from "./crash-fingerprint";
 import { getServerSettings } from "./settings";
 
 const sentryDsn = __EXECUTOR_SENTRY_DSN__;
@@ -79,20 +79,14 @@ export const sidecarCrashReportingEnv = (): Record<string, string> =>
  */
 export const initErrorReporting = () => {
   if (errorReportingEnabled) {
-    Sentry.init({
-      dsn: sentryDsn,
-      release: releaseTag(),
-      environment: environmentTag(),
-      initialScope: {
-        tags: {
-          platform: process.platform,
-          arch: process.arch,
-          runId,
-        },
-      },
-      // Grouping only — the event is forwarded untouched otherwise.
-      beforeSend: withCrashReportFingerprint,
-    });
+    Sentry.init(
+      mainCrashReportingOptions({
+        dsn: sentryDsn,
+        release: releaseTag(),
+        environment: environmentTag(),
+        runId,
+      }),
+    );
   } else {
     // No DSN baked in — keep native crash dumps local so a user-reported
     // crash still leaves minidumps for the diagnostics zip to collect.

@@ -50,3 +50,31 @@ export const withCrashReportFingerprint = <T extends CrashEvent>(event: T): T =>
   }
   return withStableGroupingFingerprint(event);
 };
+
+/**
+ * The Sentry options the Electron main process installs, assembled here rather
+ * than inline at the `Sentry.init` call so the `beforeSend` wiring is covered
+ * by crash-fingerprint.test.ts. `diagnostics.ts` only passes this through.
+ *
+ * Typed structurally on purpose: this module stays importable without pulling
+ * in electron, which is what keeps it unit-testable at all.
+ */
+export const mainCrashReportingOptions = (config: {
+  readonly dsn: string;
+  readonly release: string;
+  readonly environment: string;
+  readonly runId: string;
+}) => ({
+  dsn: config.dsn,
+  release: config.release,
+  environment: config.environment,
+  initialScope: {
+    tags: {
+      platform: process.platform,
+      arch: process.arch,
+      runId: config.runId,
+    },
+  },
+  // Grouping only — the event is forwarded untouched otherwise.
+  beforeSend: withCrashReportFingerprint,
+});
