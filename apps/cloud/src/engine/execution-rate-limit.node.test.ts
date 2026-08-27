@@ -189,7 +189,7 @@ describe("execution rate limiter — paid exemption", () => {
 // Counter observability — the production DO wiring.
 //
 // The counter increment used to be a bare one-argument `Effect.tryPromise`
-// with no span, so a Durable Object fault reached Sentry as
+// with no span, so a Durable Object fault reached error reporting as
 // `UnknownError: An error occurred in Effect.tryPromise` with no application
 // frames, and the 2s check budget was invisible in traces. These tests pin
 // the named spans, the typed/classified failure, and the timeout override —

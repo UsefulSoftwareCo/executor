@@ -80,7 +80,7 @@ class RateLimitCheckTimeoutError extends Data.TaggedError("RateLimitCheckTimeout
  * Why a counter DO call failed, as a small closed vocabulary.
  *
  * The counter's failures are overwhelmingly transient Cloudflare platform
- * faults, and they used to arrive in Sentry as one untyped
+ * faults, and they used to arrive at error reporting as one untyped
  * `UnknownError: An error occurred in Effect.tryPromise` with no application
  * frames — a group that says nothing and would eventually swallow a real
  * misconfiguration too. The code is what makes a storage reset (retryable,
@@ -212,8 +212,8 @@ export class ExecutionRateLimiterDO extends DurableObject {
  * Count one execution for (organizationId, windowId); returns the new count.
  *
  * The failure channel is typed rather than `unknown` so the fail-open path can
- * tell a counter fault from a blown budget by tag, and so Sentry groups by
- * cause instead of one opaque `UnknownError`.
+ * tell a counter fault from a blown budget by tag, and so error reporting
+ * groups by cause instead of by one opaque `UnknownError`.
  */
 export type RateLimitIncrement = (
   organizationId: string,
@@ -456,8 +456,8 @@ export const makeCloudExecutionRateLimiter = (
  * The span is the whole point: this call is a blocking, cold-startable hop on
  * the execute hot path, and until it had one nothing about its duration was
  * measurable — the only evidence it was slow was the fail-open warning 2s
- * later. The typed error replaces Effect's generic `UnknownError`, which gave
- * Sentry no org, no window, and no hint that a Durable Object was involved.
+ * later. The typed error replaces Effect's generic `UnknownError`, which
+ * reported no org, no window, and no hint that a Durable Object was involved.
  */
 const counterIncrement =
   (namespace: RateLimiterNamespace): RateLimitIncrement =>
