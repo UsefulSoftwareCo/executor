@@ -1,11 +1,19 @@
 import { expect, test } from "@effect/vitest";
 
-import { crashReportFingerprint, type CrashEvent } from "./crash-fingerprint";
+import {
+  crashReportFingerprint,
+  withCrashReportFingerprint,
+  type CrashEvent,
+} from "./crash-fingerprint";
+
+/** A crash event as Sentry hands it to `beforeSend` — with the grouping key
+ * slot the hook is allowed to fill. */
+type SentCrashEvent = CrashEvent & { readonly fingerprint?: readonly string[] | undefined };
 
 // Chromium's soft-assert path (`NOTREACHED()`/`DCHECK`) dumps and keeps
 // running. Sentry titles each one with the faulting load address, so one
 // condition arrives as a new issue every time the address moves.
-const softAssertEvent = (address: string): CrashEvent => ({
+const softAssertEvent = (address: string): SentCrashEvent => ({
   exception: {
     values: [
       {
@@ -84,6 +92,21 @@ test("renderer chunk hashes are normalized out of the fingerprint", () => {
 
   expect(release1).toEqual(["TypeError", "loadConnections@atoms"]);
   expect(release1).toEqual(release2);
+});
+
+// `withCrashReportFingerprint` is the function object diagnostics.ts installs
+// as its `beforeSend`, so these assertions cover the main-process wiring and
+// not just the classifier behind it.
+test("the main-process beforeSend pins the key and forwards the event", () => {
+  const collapsed = withCrashReportFingerprint(softAssertEvent("0x00000001a2b3c4d5"));
+  expect(collapsed.fingerprint).toEqual(["chromium-dump-without-crashing"]);
+  // Nothing else about the event is touched — this is grouping only.
+  expect(collapsed.exception?.values?.[0]?.value).toBe("Simulated Exception / 0x00000001a2b3c4d5");
+
+  const untouched: SentCrashEvent = {
+    exception: { values: [{ type: "EXC_CRASH", stacktrace: { frames: [{ function: "abort" }] } }] },
+  };
+  expect(withCrashReportFingerprint(untouched)).toBe(untouched);
 });
 
 test("events with no volatile grouping input are left alone", () => {

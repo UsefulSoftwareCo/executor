@@ -12,7 +12,7 @@
  * once initialized — no reporter rewiring needed.
  */
 
-import { stableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
+import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
 
 interface CrashReportingConfig {
   readonly dsn: string;
@@ -51,10 +51,7 @@ export const initDesktopCrashReporting = (): void => {
         // `atoms-<hash>` and one bug re-groups on every release. Pin a
         // fingerprint with the hash normalized out; the event itself keeps its
         // hashed filenames so sourcemap resolution is unaffected.
-        beforeSend: (event) => {
-          const fingerprint = stableGroupingFingerprint(event);
-          return fingerprint ? { ...event, fingerprint: [...fingerprint] } : event;
-        },
+        beforeSend: withStableGroupingFingerprint,
       });
     } catch {
       // Reporting failures stay silent — there is nowhere left to report them.

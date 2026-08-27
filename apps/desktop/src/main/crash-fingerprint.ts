@@ -16,6 +16,7 @@
 
 import {
   stableGroupingFingerprint,
+  withStableGroupingFingerprint,
   type GroupingEvent,
   type GroupingFrame,
 } from "@executor-js/sdk/sentry-grouping";
@@ -36,4 +37,16 @@ export const crashReportFingerprint = (event: CrashEvent): readonly string[] | u
   const frames = (event.exception?.values ?? []).flatMap((value) => value.stacktrace?.frames ?? []);
   if (frames.some(isSoftAssertFrame)) return [CHROMIUM_SOFT_ASSERT_FINGERPRINT];
   return stableGroupingFingerprint(event);
+};
+
+/**
+ * The `beforeSend` the Electron main process installs. Grouping only — an
+ * event with no volatile grouping input is forwarded unchanged.
+ */
+export const withCrashReportFingerprint = <T extends CrashEvent>(event: T): T => {
+  const frames = (event.exception?.values ?? []).flatMap((value) => value.stacktrace?.frames ?? []);
+  if (frames.some(isSoftAssertFrame)) {
+    return { ...event, fingerprint: [CHROMIUM_SOFT_ASSERT_FINGERPRINT] };
+  }
+  return withStableGroupingFingerprint(event);
 };

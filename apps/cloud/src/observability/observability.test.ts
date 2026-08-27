@@ -8,6 +8,7 @@ import {
   addCurrentOtelCorrelationTags,
   beforeSendCloudEvent,
   beforeSendWithOtelCorrelation,
+  cloudSentryOptions,
   DO_CAUSE_OWNER_TAG,
   DO_CAUSE_OWNER_VALUE,
   OTEL_SPAN_ID_TAG,
@@ -86,8 +87,10 @@ describe("sentryPayloadForCause", () => {
 });
 
 // Grouping keys are decided inside the Sentry SDK and never appear on any
-// product surface, so the e2e harness cannot observe them; the running
-// beforeSend itself is covered by e2e/cloud/sentry-otel-correlation.test.ts.
+// product surface, so the e2e harness cannot observe them. The split is:
+// e2e/cloud/sentry-otel-correlation.test.ts proves the worker really installs
+// `cloudSentryOptions.beforeSend` (its correlation payload only exists if that
+// hook ran), and the tests here prove the hook it installs fingerprints.
 describe("Sentry grouping", () => {
   // The worker bundle ships as content-hashed chunks, so the only module name
   // Sentry ever sees for a given frame changes on every deploy.
@@ -142,6 +145,21 @@ describe("Sentry grouping", () => {
 
     expect(sent).not.toBeNull();
     expect(sent?.fingerprint).toBeUndefined();
+  });
+
+  // The wiring check: this is the exact object handed to `Sentry.withSentry`
+  // and `instrumentDurableObjectWithSentry` in server.ts. If the normalizer is
+  // ever dropped from the hook the worker installs, this fails.
+  it("the options the worker and DOs install carry the fingerprinting hook", () => {
+    const options = cloudSentryOptions({ SENTRY_DSN: "https://public@example.invalid/1" } as Env);
+    const sent = options.beforeSend(workerEvent("BAuwphPA"));
+
+    expect(sent?.fingerprint).toEqual([
+      "GateCheckTimeoutError",
+      "timeoutOrElse@execution-rate-limit",
+    ]);
+    // Same source, next deploy, new chunk hash — one issue, not two.
+    expect(options.beforeSend(workerEvent("DkcPBbWe"))?.fingerprint).toEqual(sent?.fingerprint);
   });
 });
 

@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { SpanKind, SpanStatusCode, context, trace, type SpanContext } from "@opentelemetry/api";
-import type { ErrorEvent } from "@sentry/cloudflare";
 import {
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_RESPONSE_STATUS_CODE,
@@ -19,7 +18,7 @@ import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import {
-  beforeSendCloudEvent,
+  cloudSentryOptions,
   captureCause,
   otelCorrelationContextFromOpenTelemetrySpan,
   SENTRY_EVENT_ID_ATTRIBUTE,
@@ -29,28 +28,6 @@ import { browserTracesResponse } from "./observability/browser-traces";
 import { flushTracerProvider, installTracerProvider } from "./observability/telemetry";
 
 // ---------------------------------------------------------------------------
-// Sentry config
-// ---------------------------------------------------------------------------
-
-const sentryOptions = (env: Env) => ({
-  dsn: env.SENTRY_DSN,
-  tracesSampleRate: 0,
-  enableLogs: true,
-  sendDefaultPii: true,
-  skipOpenTelemetrySetup: true,
-  beforeSend: (event: ErrorEvent) =>
-    beforeSendCloudEvent(event, {
-      logPayload: !env.SENTRY_DSN || env.SENTRY_OTEL_LOG_PAYLOAD === "true",
-    }),
-  // NOTE: do NOT enable `instrumentPrototypeMethods`. It walks the DO prototype
-  // and reads every property — including accessors — to find methods to wrap,
-  // which invokes the `sessionId` getter with `this` bound to the prototype
-  // (where `ctx` is undefined) and throws during construction, 500ing every
-  // session create / cold restore. The DO captures its own errors via the
-  // `captureCause` seam (→ Sentry) instead.
-});
-
-// ---------------------------------------------------------------------------
 // Durable Object — wrapped with Sentry so DO errors land in Sentry (inits the
 // client inside the DO isolate, which plain `Sentry.captureException` cannot
 // do on its own). OTEL is installed through Effect layers (observability/telemetry),
@@ -58,7 +35,7 @@ const sentryOptions = (env: Env) => ({
 // ---------------------------------------------------------------------------
 
 export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
-  sentryOptions,
+  cloudSentryOptions,
   McpSessionDOBase,
 );
 
@@ -458,4 +435,4 @@ const cloudflareHandler: ExportedHandler<Env> = {
   },
 };
 
-export default Sentry.withSentry(sentryOptions, cloudflareHandler);
+export default Sentry.withSentry(cloudSentryOptions, cloudflareHandler);

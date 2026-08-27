@@ -155,3 +155,15 @@ export const stableGroupingFingerprint = (event: GroupingEvent): readonly string
   if (keys.length > 0) return [type, ...keys];
   return culprit ? [type, stripContentHashes(culprit)] : undefined;
 };
+
+/**
+ * The whole `beforeSend` contract: pin the deploy-stable fingerprint when the
+ * event has a volatile grouping input, and forward the event untouched when it
+ * does not. Every call site (cloud worker/DO, desktop main, desktop renderer)
+ * installs this one symbol rather than its own copy, so the wiring is covered
+ * by the tests below instead of being retyped per process.
+ */
+export const withStableGroupingFingerprint = <T extends GroupingEvent>(event: T): T => {
+  const fingerprint = stableGroupingFingerprint(event);
+  return fingerprint ? { ...event, fingerprint: [...fingerprint] } : event;
+};
