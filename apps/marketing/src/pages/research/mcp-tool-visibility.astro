@@ -1,0 +1,598 @@
+---
+import Layout from "../../layouts/Layout.astro";
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const title = "How agents actually see your MCP tools";
+const description =
+  "The same MCP server was connected to five coding agents and the model-bound traffic was measured. Each harness shows the model something different: full definitions, bare names, or nothing at all.";
+
+// Δ prompt tokens for the 31 per-integration search tools, provider-reported.
+const costs = [
+  { name: "Claude Code", detail: "2.1.247 · inline", delta: 3464, plain: "36,013", search: "39,477" },
+  { name: "opencode (beta)", detail: "default · inline", delta: 3400, plain: "22,118", search: "25,518" },
+  { name: "opencode", detail: "1.18.15 · inline", delta: 3399, plain: "17,458", search: "20,857" },
+  { name: "opencode (beta)", detail: "code mode · TS signatures", delta: 1280, plain: "16,126", search: "17,406" },
+  { name: "Cursor CLI", detail: "2026.07.23 · names only", delta: 170, plain: "16,140", search: "16,310" },
+  { name: "Codex CLI", detail: "0.147.0 · code mode", delta: 0, plain: "15,776", search: "15,776" },
+];
+const max = Math.max(...costs.map((c) => c.delta));
+---
+
+<Layout title={`${title} — Executor`} description={description}>
+  <main class="bg-soft relative min-h-dvh antialiased">
+    <div
+      class="pattern-bg pattern-graph"
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:1;pointer-events:none;"
+    >
+    </div>
+    <div
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:2;pointer-events:none;background:linear-gradient(180deg,transparent 0%,transparent 55%,var(--color-surface) 100%);"
+    >
+    </div>
+
+    <div class="relative z-10">
+      <nav>
+        <div class="mx-auto flex h-14 max-w-[1200px] items-center justify-between px-6 sm:px-10">
+          <a href="/" class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-5 w-5" />
+            <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink">executor</span>
+          </a>
+          <div class="flex items-center gap-5">
+            <a href="/blog" class="text-[14px] font-medium text-ink-2 transition-colors hover:text-ink">Blog</a>
+            <a
+              href="https://executor.sh/docs"
+              class="hidden text-[14px] font-medium text-ink-2 transition-colors hover:text-ink sm:inline">Docs</a
+            >
+            <a href={GH} class="text-[14px] font-medium text-ink-2 transition-colors hover:text-ink">GitHub</a>
+            <a href="/#install" class="btn-primary">Get started →</a>
+          </div>
+        </div>
+      </nav>
+
+      {/* ─── HEADER ─── */}
+      <section class="px-6 pt-16 pb-10 sm:px-10 sm:pt-24 sm:pb-14">
+        <div class="mx-auto max-w-[820px]">
+          <span class="eyebrow">Research · August 2026</span>
+          <h1
+            class="mt-5 text-[clamp(2.2rem,5vw,3.6rem)] font-semibold leading-[1.05] tracking-[-0.025em] text-ink text-balance"
+          >
+            {title}
+          </h1>
+          <p class="mt-5 max-w-[62ch] text-[17px] leading-[1.6] text-ink-2 text-pretty">
+            {description} We connected one Executor workspace — 31 integrations — to Claude Code,
+            Cursor's CLI, Codex, and two versions of opencode, twice each: once plain, once with
+            Executor's <code class="mono-inline">?search_tools=true</code> option, which adds one
+            minimal <code class="mono-inline">search_&lt;integration&gt;</code> tool per connected
+            integration. The difference between those two sessions is exactly what 31 extra tool
+            definitions cost, and where they end up.
+          </p>
+        </div>
+      </section>
+
+      {/* ─── THE THREE REALITIES ─── */}
+      <section class="border-t border-rule px-6 py-14 sm:px-10 sm:py-20">
+        <div class="mx-auto max-w-[1100px]">
+          <span class="eyebrow">What each harness shows the model</span>
+          <h2 class="section-title mt-4 max-w-[24ch]">Five harnesses, three different realities</h2>
+          <p class="section-sub mt-4 max-w-[62ch]">
+            "The model sees your tools" hides three different mechanisms. Every card below is one
+            harness's view of the same server, drawn from the captured request that actually went
+            to the model. Solid blocks are in the context window on every turn; dashed blocks are
+            fetched on demand; crossed-out blocks never reach the model at all.
+          </p>
+
+          <div class="mt-10 grid gap-6">
+            {/* Inliners */}
+            <div class="persp surface-card">
+              <div class="persp-head">
+                <div>
+                  <span class="persp-name">Claude Code · opencode</span>
+                  <span class="persp-family">family: inline — every definition, every turn</span>
+                </div>
+                <span class="persp-cost">+3,399–3,464 tokens</span>
+              </div>
+              <div class="persp-body">
+                <div class="ctx">
+                  <div class="ctx-label">the model's context window</div>
+                  <div class="ctx-block ctx-quiet">system prompt</div>
+                  <div class="ctx-block ctx-loud">
+                    <b>38 tool definitions — full JSON schema each</b>
+                    <span>name + description + parameters for every tool, inlined as API function tools</span>
+                  </div>
+                  <div class="ctx-block ctx-quiet">conversation</div>
+                </div>
+                <div class="persp-detail">
+                  <div class="code-window">
+                    <div class="code-titlebar">
+                      <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+                      <span class="code-filename">tools[7] of 38 — as sent to the model</span>
+                    </div>
+                    <pre
+                      class="code-body">{`{
+  "name": "mcp__executor__search_mcp_linear_app",
+  "description": "Search this integration's tools;
+    empty query lists all. Run results with execute.",
+  "input_schema": {
+    "type": "object",
+    "properties": { "query": { "type": "string" } }
+  }
+}`}</pre>
+                  </div>
+                  <p class="persp-path">
+                    <span class="persp-path-label">To search Linear’s tools</span>
+                    one call — <code class="mono-inline">search_mcp_linear_app({"{ query }"})</code>,
+                    the definition is already in context.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* opencode code mode */}
+            <div class="persp surface-card">
+              <div class="persp-head">
+                <div>
+                  <span class="persp-name">opencode · code mode</span>
+                  <span class="persp-family">family: code mode, transparent — tools become typed signatures</span>
+                </div>
+                <span class="persp-cost">+1,280 tokens</span>
+              </div>
+              <div class="persp-body">
+                <div class="ctx">
+                  <div class="ctx-label">the model's context window</div>
+                  <div class="ctx-block ctx-quiet">system prompt</div>
+                  <div class="ctx-block ctx-quiet">13 built-in tools</div>
+                  <div class="ctx-block ctx-loud">
+                    <b>one <code class="mono-inline">execute</code> tool</b>
+                    <span>its description lists every MCP tool as a TypeScript signature — 2.7× denser than JSON definitions</span>
+                  </div>
+                  <div class="ctx-block ctx-quiet">conversation</div>
+                </div>
+                <div class="persp-detail">
+                  <div class="code-window">
+                    <div class="code-titlebar">
+                      <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+                      <span class="code-filename">inside execute's description</span>
+                    </div>
+                    <pre
+                      class="code-body">{`- tools.executor.search_google_gmail(input: {
+    query?: string,
+  }): Promise<unknown> // Search this integration's
+    tools; empty query lists all. Run results
+    with execute.`}</pre>
+                  </div>
+                  <p class="persp-path">
+                    <span class="persp-path-label">To search Linear’s tools</span>
+                    one call through code —
+                    <code class="mono-inline">execute("await tools.executor.search_mcp_linear_app(…)")</code>.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Cursor */}
+            <div class="persp surface-card">
+              <div class="persp-head">
+                <div>
+                  <span class="persp-name">Cursor CLI</span>
+                  <span class="persp-family">family: virtualized — a names-only catalog</span>
+                </div>
+                <span class="persp-cost">+170 tokens</span>
+              </div>
+              <div class="persp-body">
+                <div class="ctx">
+                  <div class="ctx-label">the model's context window</div>
+                  <div class="ctx-block ctx-quiet">system prompt</div>
+                  <div class="ctx-block ctx-quiet">19 first-party tools, incl. <code class="mono-inline">GetDynamicTools</code> / <code class="mono-inline">CallDynamicTool</code></div>
+                  <div class="ctx-block ctx-loud">
+                    <b>catalog: bare tool names, grouped by server</b>
+                    <span>≈5.5 tokens per tool — the name is all the model gets</span>
+                  </div>
+                  <div class="ctx-block ctx-dashed">
+                    descriptions &amp; schemas — fetched on demand via <code class="mono-inline">GetDynamicTools</code>
+                  </div>
+                  <div class="ctx-block ctx-quiet">conversation</div>
+                </div>
+                <div class="persp-detail">
+                  <div class="code-window">
+                    <div class="code-titlebar">
+                      <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+                      <span class="code-filename">the model's catalog view</span>
+                    </div>
+                    <pre
+                      class="code-body">{`executor: execute · skills · resume ·
+  search_axiom_mcp · search_github_rest ·
+  search_google_gmail · search_mcp_linear_app · …
+
+(full definition available via GetDynamicTools —
+ not fetched unless the model asks)`}</pre>
+                  </div>
+                  <p class="persp-path">
+                    <span class="persp-path-label">To search Linear’s tools</span>
+                    the name is visible; call it through
+                    <code class="mono-inline">CallDynamicTool("search_mcp_linear_app", …)</code>,
+                    optionally fetching the schema first.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Codex */}
+            <div class="persp surface-card">
+              <div class="persp-head">
+                <div>
+                  <span class="persp-name">Codex CLI</span>
+                  <span class="persp-family">family: code mode, opaque — nothing reaches the prompt</span>
+                </div>
+                <span class="persp-cost">+0 tokens</span>
+              </div>
+              <div class="persp-body">
+                <div class="ctx">
+                  <div class="ctx-label">the model's context window</div>
+                  <div class="ctx-block ctx-quiet">system prompt</div>
+                  <div class="ctx-block ctx-quiet">9 native tools — <code class="mono-inline">exec</code>, collaboration, …</div>
+                  <div class="ctx-block ctx-never">
+                    <b>your MCP tools</b>
+                    <span>carried only in request metadata the model never reads; prompts were byte-identical with 7 vs 38 tools</span>
+                  </div>
+                  <div class="ctx-block ctx-quiet">conversation</div>
+                </div>
+                <div class="persp-detail">
+                  <div class="code-window">
+                    <div class="code-titlebar">
+                      <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+                      <span class="code-filename">request metadata — not model-visible</span>
+                    </div>
+                    <pre
+                      class="code-body">{`"code_mode_tool_names": {
+  "search_google_gmail":
+    { "namespace": "mcp__executor" },
+  … 37 more
+}`}</pre>
+                  </div>
+                  <p class="persp-path">
+                    <span class="persp-path-label">To search Linear’s tools</span>
+                    the model must call <code class="mono-inline">exec</code> and write code —
+                    <code class="mono-inline">await tools.mcp__executor__search_mcp_linear_app(…)</code> —
+                    discovering what exists only from inside the sandbox.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── COST ─── */}
+      <section class="border-t border-rule px-6 py-14 sm:px-10 sm:py-20">
+        <div class="mx-auto max-w-[1100px]">
+          <span class="eyebrow">Measured, not estimated</span>
+          <h2 class="section-title mt-4 max-w-[26ch]">What 31 tool definitions cost, by harness</h2>
+          <p class="section-sub mt-4 max-w-[62ch]">
+            Δ prompt tokens between the plain and <code class="mono-inline">?search_tools=true</code> sessions,
+            as reported by the provider's usage accounting (input + cache write + cache read). Same
+            workspace, same prompt; only the endpoint query differs.
+          </p>
+          <div class="mt-10 surface-card cost-card">
+            {
+              costs.map((c) => (
+                <div class="cost-row">
+                  <div class="cost-name">
+                    {c.name}
+                    <span class="cost-detail">{c.detail}</span>
+                  </div>
+                  <div class="cost-track" title={`plain ${c.plain} → search ${c.search}`}>
+                    <div
+                      class={`cost-bar${c.delta === 0 ? " cost-bar--zero" : ""}`}
+                      style={`width:${(c.delta / max) * 100}%`}
+                    />
+                  </div>
+                  <div class="cost-val">{c.delta === 0 ? "0" : `+${c.delta.toLocaleString()}`}</div>
+                </div>
+              ))
+            }
+          </div>
+          <p class="mt-4 text-[13px] leading-[1.6] text-ink-3">
+            Cursor's model traffic terminates at its backend, so its pair comes from Cursor's own
+            per-request usage meter rather than a captured prompt. JSON tool definitions tokenize at
+            roughly 2.4 characters per token — schema punctuation is token-dense.
+          </p>
+        </div>
+      </section>
+
+      {/* ─── TAKEAWAYS ─── */}
+      <section class="border-t border-rule px-6 py-14 sm:px-10 sm:py-20">
+        <div class="mx-auto max-w-[1100px]">
+          <span class="eyebrow">If you ship an MCP server</span>
+          <h2 class="section-title mt-4 max-w-[24ch]">Design for the weakest channel</h2>
+          <div class="cap-grid mt-10" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));">
+            <div class="cap-card">
+              <span class="cap-num">01</span>
+              <h3>The name is the only universal channel</h3>
+              <p>
+                Every harness that shows tools at all shows the name. Descriptions reach only the
+                inliners; schemas effectively reach only the inliners. If information must arrive,
+                put it in the name.
+              </p>
+            </div>
+            <div class="cap-card">
+              <span class="cap-num">02</span>
+              <h3>Schema tricks don't travel</h3>
+              <p>
+                An enum of options inside a parameter looks clever and costs less — and is invisible
+                in Cursor and Codex, the two harnesses where you'd need it most.
+              </p>
+            </div>
+            <div class="cap-card">
+              <span class="cap-num">03</span>
+              <h3>Keep definitions small anyway</h3>
+              <p>
+                Where tools are inlined, every byte is paid on every turn, multiplied by tool count.
+                One shared description sentence and a single parameter cut this surface by more than half.
+              </p>
+            </div>
+            <div class="cap-card">
+              <span class="cap-num">04</span>
+              <h3>Measure with provider usage, not estimates</h3>
+              <p>
+                Client-side token meters and character counts both mislead. Run the same session
+                twice and diff what the provider bills — that number is the truth.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── BOTTOM CTA ─── */}
+      <section class="border-t border-rule py-16 sm:py-20">
+        <div class="mx-auto max-w-[720px] px-6 text-center sm:px-10">
+          <h2 class="section-title mx-auto mb-7 max-w-[20ch]">
+            Connect any agent to <span class="serif-italic">everything</span>.
+          </h2>
+          <div class="flex flex-wrap items-center justify-center gap-3">
+            <a href="/#install" class="btn-primary btn-primary--hero">Get started →</a>
+            <a href={GH} class="btn-secondary">Star on GitHub</a>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FOOTER ─── */}
+      <footer class="border-t border-rule py-10">
+        <div
+          class="mx-auto flex max-w-[1200px] flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center sm:px-10"
+        >
+          <div class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-4 w-4 opacity-80" />
+            <span class="text-[13px] font-medium text-ink-2">executor</span>
+            <span class="ml-2 text-[12px] text-ink-3">© {new Date().getFullYear()}</span>
+          </div>
+          <div class="flex items-center gap-6 text-[13px] text-ink-2">
+            <a href="/blog" class="transition-colors hover:text-ink">Blog</a>
+            <a href="https://executor.sh/docs" class="transition-colors hover:text-ink">Docs</a>
+            <a href={GH} class="transition-colors hover:text-ink">GitHub</a>
+            <a href="/privacy" class="transition-colors hover:text-ink">Privacy</a>
+            <a href="/terms" class="transition-colors hover:text-ink">Terms</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </main>
+</Layout>
+
+<style>
+  .mono-inline {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-rule);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  /* ── perspective cards ── */
+  .persp {
+    padding: 0;
+    overflow: hidden;
+  }
+  .persp-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .persp-name {
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+  }
+  .persp-family {
+    display: block;
+    margin-top: 3px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+  .persp-cost {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--color-ink);
+    white-space: nowrap;
+  }
+  .persp-body {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 0;
+  }
+  @media (max-width: 820px) {
+    .persp-body {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* context-window schematic */
+  .ctx {
+    padding: 20px 24px;
+    border-right: 1px solid var(--color-rule);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  @media (max-width: 820px) {
+    .ctx {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+  }
+  .ctx-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+    margin-bottom: 4px;
+  }
+  .ctx-block {
+    border-radius: 6px;
+    padding: 9px 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .ctx-quiet {
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface-2);
+    color: var(--color-ink-2);
+  }
+  .ctx-loud {
+    border: 1px solid var(--color-rule-strong);
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+  .ctx-loud b {
+    display: block;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .ctx-loud span {
+    display: block;
+    margin-top: 2px;
+    color: var(--color-ink-2);
+    font-size: 12px;
+  }
+  .ctx-dashed {
+    border: 1px dashed var(--color-rule-strong);
+    color: var(--color-ink-3);
+    background: transparent;
+  }
+  .ctx-never {
+    border: 1px dashed var(--color-rule);
+    background: transparent;
+    color: var(--color-ink-3);
+  }
+  .ctx-never b {
+    display: block;
+    font-weight: 500;
+    font-size: 13px;
+    text-decoration: line-through;
+    color: var(--color-ink-3);
+  }
+  .ctx-never span {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+  }
+
+  .persp-detail {
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+  .persp-detail .code-window {
+    margin: 0;
+  }
+  .persp-detail .code-body {
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+  }
+  .persp-path {
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--color-ink-2);
+  }
+  .persp-path-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+    margin-bottom: 3px;
+  }
+
+  /* ── cost chart ── */
+  .cost-card {
+    padding: 10px 24px;
+  }
+  .cost-row {
+    display: grid;
+    grid-template-columns: 240px 1fr 84px;
+    align-items: center;
+    gap: 16px;
+    padding: 11px 0;
+  }
+  .cost-row + .cost-row {
+    border-top: 1px solid var(--color-rule);
+  }
+  @media (max-width: 640px) {
+    .cost-row {
+      grid-template-columns: 1fr 84px;
+    }
+    .cost-track {
+      display: none;
+    }
+  }
+  .cost-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-ink);
+  }
+  .cost-detail {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--color-ink-3);
+    margin-top: 2px;
+  }
+  .cost-track {
+    position: relative;
+    height: 20px;
+  }
+  .cost-bar {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 0;
+    background: var(--color-ink);
+    border-radius: 0 4px 4px 0;
+    min-width: 3px;
+  }
+  .cost-bar--zero {
+    background: transparent;
+    border-left: 2px solid var(--color-ink);
+    border-radius: 0;
+    min-width: 0;
+  }
+  .cost-val {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-align: right;
+    color: var(--color-ink);
+  }
+</style>
