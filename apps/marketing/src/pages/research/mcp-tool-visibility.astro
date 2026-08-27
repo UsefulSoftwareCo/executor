@@ -77,6 +77,11 @@ const max = Math.max(...costs.map((c) => c.delta));
         <div class="mx-auto max-w-[1100px]">
           <span class="eyebrow">The model's context window, per harness</span>
           <h2 class="section-title mt-4 max-w-[26ch]">Same server, four context windows</h2>
+          <p class="section-sub mt-4 max-w-[66ch]">
+            Everything below is verbatim from the captured request each harness sent to its model.
+            For these runs the server also returned an MCP <code class="mono-inline">instructions</code>
+            field carrying a tracer string, to pin down where server instructions surface.
+          </p>
 
           <div class="viewer surface-card mt-10">
             <div class="viewer-tabs" role="tablist" aria-label="Harness">
@@ -109,94 +114,156 @@ const max = Math.max(...costs.map((c) => c.delta));
 
             {/* Claude Code */}
             <div class="pane" data-pane="claude">
-              <div class="blk blk-quiet"><span class="blk-tag">system prompt</span></div>
-              <div class="blk blk-quiet"><span class="blk-tag">built-in tools</span> 12 — Bash, Read, Edit, …</div>
+              <div class="blk blk-quiet">
+                <span class="blk-tag">system · 27,294 chars</span>
+                <pre>{`You are a Claude agent, built on Anthropic's Claude Agent SDK.
+
+You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+⋮ (no MCP content anywhere in the system prompt)`}</pre>
+              </div>
               <div class="blk blk-loud">
-                <span class="blk-tag">your MCP tools · 38 of 38 in context</span>
+                <span class="blk-tag">tools · 50 entries — 12 built-in + 38 from your server, verbatim</span>
                 <pre>{`{
   "name": "mcp__executor__search_mcp_linear_app",
-  "description": "Search this integration's tools; empty query lists all.
-    Run results with execute.",
-  "input_schema": { "type": "object",
-    "properties": { "query": { "type": "string" } } }
-}`}</pre>
-                <span class="blk-note">full name + description + schema, × 38, resent every turn</span>
+  "description": "Search this integration's tools; empty query lists all. Run results with execute.",
+  "input_schema": {
+    "type": "object",
+    "properties": { "query": { "type": "string" } },
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}
+⋮ × 38, resent every turn`}</pre>
               </div>
-              <div class="blk blk-quiet"><span class="blk-tag">conversation</span></div>
+              <div class="blk blk-loud">
+                <span class="blk-tag">messages[0] · your server's instructions, injected into the first user turn</span>
+                <pre>{`<system-reminder>
+# MCP Server Instructions
+
+The following MCP servers have provided instructions for how to use their tools and resources:
+
+## executor
+Executor exposes every connected integration through search and execute. INSTRUCTIONS-MARKER-9F3 Prefer the search tools for discovery.
+</system-reminder>`}</pre>
+              </div>
+              <div class="elems">
+                <span>server instructions → <b>first message</b></span>
+                <span>tool descriptions → <b>tools array</b></span>
+                <span>tool arguments → <b>tools array, full JSON Schema</b></span>
+              </div>
               <div class="pane-measure">prompt 36,013 → 39,477 tokens · Δ +3,464</div>
             </div>
 
             {/* opencode, code mode off */}
             <div class="pane" data-pane="opencode-off" hidden>
-              <div class="blk blk-quiet"><span class="blk-tag">system prompt</span></div>
-              <div class="blk blk-quiet"><span class="blk-tag">built-in tools</span> 13</div>
+              <div class="blk blk-quiet">
+                <span class="blk-tag">system · 30,060 chars — your server's instructions embedded at char 8,577</span>
+                <pre>{`You are OpenCode, the best coding agent on the planet.
+⋮
+<mcp_instructions>
+  <server name="executor">
+    Executor exposes every connected integration through search and execute. INSTRUCTIONS-MARKER-9F3 Prefer the search tools for discovery.
+  </server>
+</mcp_instructions>
+⋮`}</pre>
+              </div>
               <div class="blk blk-loud">
-                <span class="blk-tag">your MCP tools · 38 of 38 in context</span>
+                <span class="blk-tag">tools · 51 entries — 13 built-in + 38 from your server, verbatim</span>
                 <pre>{`{
   "name": "executor_search_mcp_linear_app",
-  "description": "Search this integration's tools; empty query lists all.
-    Run results with execute.",
-  "inputSchema": { "type": "object",
-    "properties": { "query": { "type": "string" } } }
-}`}</pre>
-                <span class="blk-note">full name + description + schema, × 38, resent every turn</span>
+  "description": "Search this integration's tools; empty query lists all. Run results with execute.",
+  "input_schema": {
+    "type": "object",
+    "properties": { "query": { "type": "string" } },
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false
+  },
+  "eager_input_streaming": true
+}
+⋮ × 38, resent every turn`}</pre>
               </div>
-              <div class="blk blk-quiet"><span class="blk-tag">conversation</span></div>
+              <div class="elems">
+                <span>server instructions → <b>system prompt</b></span>
+                <span>tool descriptions → <b>tools array</b></span>
+                <span>tool arguments → <b>tools array, full JSON Schema</b></span>
+              </div>
               <div class="pane-measure">prompt 17,458 → 20,857 tokens · Δ +3,399</div>
             </div>
 
             {/* opencode, code mode on */}
             <div class="pane" data-pane="opencode-on" hidden>
-              <div class="blk blk-quiet"><span class="blk-tag">system prompt</span></div>
-              <div class="blk blk-quiet"><span class="blk-tag">built-in tools</span> 13</div>
-              <div class="blk blk-loud">
-                <span class="blk-tag">one execute tool — your 38 MCP tools inside its description</span>
-                <pre>{`- tools.executor.search_mcp_linear_app(input: {
-    query?: string,
-  }): Promise<unknown> // Search this integration's tools;
-    empty query lists all. Run results with execute.`}</pre>
-                <span class="blk-note">TypeScript signatures — 2.7× denser than JSON definitions</span>
+              <div class="blk blk-quiet">
+                <span class="blk-tag">system · 30,034 chars — same <code class="mono-inline">&lt;mcp_instructions&gt;</code> block as code mode off</span>
               </div>
-              <div class="blk blk-quiet"><span class="blk-tag">conversation</span></div>
+              <div class="blk blk-loud">
+                <span class="blk-tag">tools · 14 entries — your 38 MCP tools live inside execute's 10,182-char description</span>
+                <pre>{`"name": "execute",
+"description": "Run a confined orchestration script with access to connected MCP tools.
+This is a restricted JavaScript language for calling tools, not a general-purpose runtime.
+⋮
+  - tools.executor.search_mcp_linear_app(input: {
+    query?: string,
+  }): Promise<unknown> // Search this integration's tools; empty query lists all. Run results with execute.
+⋮ × 38 signatures`}</pre>
+              </div>
+              <div class="elems">
+                <span>server instructions → <b>system prompt</b></span>
+                <span>tool descriptions → <b>comments in execute's description</b></span>
+                <span>tool arguments → <b>TypeScript types in execute's description</b></span>
+              </div>
               <div class="pane-measure">prompt 16,126 → 17,406 tokens · Δ +1,280</div>
             </div>
 
             {/* Cursor */}
             <div class="pane" data-pane="cursor" hidden>
-              <div class="blk blk-quiet"><span class="blk-tag">system prompt</span></div>
               <div class="blk blk-quiet">
-                <span class="blk-tag">built-in tools</span> 19 — incl. <code class="mono-inline">GetDynamicTools</code> / <code class="mono-inline">CallDynamicTool</code>
+                <span class="blk-tag">prompt — not directly observable; composed by Cursor's backend</span>
+                What follows is the model's own account of its context, corroborated by the MCP
+                wire capture and Cursor's per-request usage meter.
               </div>
               <div class="blk blk-loud">
-                <span class="blk-tag">your MCP tools · names only</span>
-                <pre>{`executor: execute · skills · resume ·
+                <span class="blk-tag">namespace catalog · the model's quoted view of your server</span>
+                <pre>{`name="executor"  source="mcp"
+namespaceUseInstructions:
+  "Executor exposes every connected integration through search and execute. INSTRUCTIONS-MARKER-9F3 Prefer the search tools for discovery."
+tools: execute · skills · resume ·
   search_axiom_mcp · search_github_rest · search_google_gmail ·
-  search_mcp_linear_app · …`}</pre>
-                <span class="blk-note">≈5.5 tokens per tool</span>
+  search_mcp_linear_app · … (names only, ≈5.5 tokens each)`}</pre>
               </div>
               <div class="blk blk-dashed">
-                descriptions &amp; schemas — sent only when the model calls
-                <code class="mono-inline">GetDynamicTools</code>
+                descriptions &amp; schemas — fetched by the model via
+                <code class="mono-inline">GetDynamicTools</code>; the wire shows Cursor downloads
+                them all at session start but withholds them from the prompt
               </div>
-              <div class="blk blk-quiet"><span class="blk-tag">conversation</span></div>
+              <div class="elems">
+                <span>server instructions → <b>namespace catalog</b></span>
+                <span>tool descriptions → <b>on demand only</b></span>
+                <span>tool arguments → <b>on demand only</b></span>
+              </div>
               <div class="pane-measure">prompt 16,140 → 16,310 tokens · Δ +170 (Cursor's usage meter)</div>
             </div>
 
             {/* Codex */}
             <div class="pane" data-pane="codex" hidden>
-              <div class="blk blk-quiet"><span class="blk-tag">system prompt</span></div>
               <div class="blk blk-quiet">
-                <span class="blk-tag">native tools</span> 9 — <code class="mono-inline">exec</code>, collaboration, …
+                <span class="blk-tag">input · additional_tools + 6 messages — no system field, no tools array</span>
+                <pre>{`input[0]  type: "additional_tools"   9 native tools: exec, wait,
+          request_user_input, collaboration.* — 24,220 chars, none yours
+input[1…] type: "message"            developer + user turns
+⋮ your server appears in NONE of it — prompts byte-identical with 7 vs 38 tools`}</pre>
               </div>
               <div class="blk blk-never">
-                <span class="blk-tag"><s>your MCP tools</s></span>
-                <pre>{`"code_mode_tool_names": {
-  "search_mcp_linear_app": { "namespace": "mcp__executor" },
-  … 37 more
-}`}</pre>
-                <span class="blk-note">request metadata — never rendered into the prompt; callable only from code inside <code class="mono-inline">exec</code></span>
+                <span class="blk-tag"><s>your MCP tools · request metadata the model never reads</s></span>
+                <pre>{`"client_metadata": { "code_mode_tool_names": {
+  "search_google_gmail": { "name": "search_google_gmail", "namespace": "mcp__executor" },
+  ⋮ 37 more
+} }`}</pre>
+                <span class="blk-note">callable only as JS inside <code class="mono-inline">exec</code>; server instructions dropped too — the marker appears nowhere</span>
               </div>
-              <div class="blk blk-quiet"><span class="blk-tag">conversation</span></div>
+              <div class="elems">
+                <span>server instructions → <b>dropped</b></span>
+                <span>tool descriptions → <b>dropped</b></span>
+                <span>tool arguments → <b>dropped</b></span>
+              </div>
               <div class="pane-measure">prompt 15,776 → 15,776 tokens · Δ 0, byte-identical</div>
             </div>
           </div>
@@ -553,6 +620,22 @@ const max = Math.max(...costs.map((c) => c.delta));
     font-size: 12px;
     color: var(--color-ink-3);
     text-align: right;
+  }
+  .elems {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    padding: 12px 14px;
+    border: 1px solid var(--color-rule);
+    border-radius: 6px;
+    background: var(--color-surface-2);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--color-ink-3);
+  }
+  .elems b {
+    font-weight: 500;
+    color: var(--color-ink);
   }
 
   /* ── cost chart ── */
