@@ -11,13 +11,13 @@ import { createExecutionEngine } from "./engine";
 const emptyPlugin = definePlugin(() => ({
   id: "observer-test" as const,
   storage: () => ({}),
-  staticSources: () => [],
+  staticIntegrations: () => [],
 }));
 
 const approvalPlugin = definePlugin(() => ({
   id: "observer-approval-test" as const,
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "approval.ctl",
       kind: "control" as const,
