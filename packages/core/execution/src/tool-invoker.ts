@@ -31,8 +31,12 @@ const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: str
 const TOOL_FILE_TYPESCRIPT =
   '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
 
-const wrapOutputTypeScript = (outputTypeScript?: string): string =>
-  `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+const wrapOutputTypeScript = (outputTypeScript?: string, marker?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+
+/** Inline provenance for observed types — a model that copies only the type
+ *  string still sees the hint, since the compact render drops descriptions. */
+const OBSERVED_TYPE_MARKER = " /* observed; may be incomplete */";
 
 const withToolResultDefinitions = (
   definitions?: Record<string, string>,
@@ -866,7 +870,10 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    outputTypeScript: wrapOutputTypeScript(
+      schema.outputTypeScript,
+      schema.outputSchemaSource === "observed" ? OBSERVED_TYPE_MARKER : undefined,
+    ),
     // The compact TS render drops the schema's provenance description, so an
     // observed (runtime-inferred) shape gets an explicit note: the model
     // should treat the fields as reliable but not exhaustive.

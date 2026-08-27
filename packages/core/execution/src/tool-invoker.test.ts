@@ -894,10 +894,11 @@ describe("tool discovery", () => {
         args: { owner: "executor", repo: "executor" },
       });
 
-      // Warm: the live `[]` payload becomes the served type, marked observed.
+      // Warm: the live `[]` payload becomes the served type, marked observed
+      // both inline and via the note.
       const warm = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
       expect(warm.outputTypeScript).toBe(
-        "{ ok: true; data: unknown[]; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+        "{ ok: true; data: unknown[] /* observed; may be incomplete */; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
       );
       expect(warm.outputTypeScriptNote).toContain("observed from 1 live response");
     }),
