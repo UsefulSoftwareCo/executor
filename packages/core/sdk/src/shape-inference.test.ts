@@ -57,6 +57,10 @@ describe("inferShape", () => {
       { "12345": { qty: 2 }, "67890": { qty: 1 } },
       { "https://example.com/page": 3 },
       { deadbeefdeadbeef00: true },
+      { U012ABCDEF: { presence: "active" } },
+      { cus_9s6XKzkNRiz8i3: { plan: "pro" } },
+      { "10.0.0.7": "reachable" },
+      { sk4bcD3fGh1jKlMnOpQr: true },
     ];
     for (const value of cases) {
       const shape = inferShape(value);
@@ -71,13 +75,19 @@ describe("inferShape", () => {
       created_at: "2026-01-01",
       pageUrl: "https://x",
       email2fa: true,
+      "@odata.context": "ctx",
+      organizationMembershipSettings: {},
+      sha256Fingerprint: "…",
     });
     expect(shape.properties).toBeDefined();
     expect(Object.keys(shape.properties ?? {}).sort()).toEqual([
+      "@odata.context",
       "created_at",
       "email2fa",
       "id",
+      "organizationMembershipSettings",
       "pageUrl",
+      "sha256Fingerprint",
     ]);
   });
 

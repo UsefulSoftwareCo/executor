@@ -86,6 +86,22 @@ describe("normalizeMcpCallToolResult", () => {
     expect(normalized.meta).toEqual({ "io.modelcontextprotocol/serverInfo": { name: "s" } });
   });
 
+  it("survives adversarially deep valid JSON without blowing the stack", () => {
+    const deep = "[".repeat(50_000) + "]".repeat(50_000);
+    // Deep duplicate-detection degrades to "not a duplicate" (block kept);
+    // it must never throw from inside the invocation path.
+    const normalized = normalizeMcpCallToolResult({
+      content: [text(deep)],
+      structuredContent: { safe: true },
+    });
+    expect(normalized.data).toEqual({ safe: true });
+    expect(normalized.content).toEqual([text(deep)]);
+    // The lone-text parse path is equally safe: a stack-exceeding parse is
+    // simply "not JSON" and the text stays a string.
+    const lone = normalizeMcpCallToolResult({ content: [text(deep)] });
+    expect(typeof lone.data === "string" || Array.isArray(lone.data)).toBe(true);
+  });
+
   it("passes non-envelope values through untouched", () => {
     expect(normalizeMcpCallToolResult({ rows: [1] }).data).toEqual({ rows: [1] });
     expect(normalizeMcpCallToolResult("plain").data).toBe("plain");

@@ -27,6 +27,7 @@ const makeStubStorage = () => {
       updatedAt: new Date(0),
     };
   };
+  let failNextWrites = 0;
   const unsupported = (member: string) => () =>
     Effect.die(`stub storage does not implement ${member}`);
   const storage: PluginStorageFacade = {
@@ -43,16 +44,27 @@ const makeStubStorage = () => {
     getForOwner: (input) => Effect.sync(() => entryFor(input.key)),
     list: unsupported("list"),
     put: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        if (failNextWrites > 0) {
+          failNextWrites -= 1;
+          return Effect.fail({ _tag: "StorageError" as const }) as never;
+        }
         writes += 1;
         rows.set(input.key, input.data);
-        return entryFor(input.key) as never;
+        return Effect.sync(() => entryFor(input.key) as never);
       }),
     putMany: unsupported("putMany"),
     remove: unsupported("remove"),
     removeMany: unsupported("removeMany"),
   };
-  return { storage, rows, writeCount: () => writes };
+  return {
+    storage,
+    rows,
+    writeCount: () => writes,
+    failWrites: (count: number) => {
+      failNextWrites = count;
+    },
+  };
 };
 
 const HOUR = 60 * 60 * 1000;
@@ -117,6 +129,24 @@ describe("makeShapeMemory", () => {
       const fresh = yield* memory.recall(ADDRESS, OWNER, "mcp-call-tool-result-v2");
       expect(fresh?.observations).toBe(1);
       expect(Object.keys(fresh?.schema.properties ?? {})).toEqual(["issues"]);
+    }),
+  );
+
+  it.effect("retries after a failed write instead of pretending it persisted", () =>
+    Effect.gen(function* () {
+      const stub = makeStubStorage();
+      const memory = makeShapeMemory(stub.storage);
+
+      stub.failWrites(1);
+      yield* memory.observe(ADDRESS, OWNER, "direct", { id: 1 });
+      expect(stub.rows.has(ADDRESS), "the failed write stored nothing").toBe(false);
+
+      // The very next observation retries — no waiting out the freshness
+      // interval on bookkeeping that lied about persisting.
+      yield* memory.observe(ADDRESS, OWNER, "direct", { id: 2 });
+      expect(stub.rows.has(ADDRESS), "the retry persisted").toBe(true);
+      const stored = stub.rows.get(ADDRESS) as { observations: number };
+      expect(stored.observations).toBe(2);
     }),
   );
 

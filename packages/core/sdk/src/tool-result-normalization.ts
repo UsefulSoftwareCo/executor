@@ -77,21 +77,30 @@ const parseJsonPayload = (text: string): unknown | undefined => {
   }
 };
 
+/** Depth bound for duplicate detection. Beyond it two values are treated as
+ *  DIFFERENT — the safe direction: the block is kept rather than dropped —
+ *  and, critically, an adversarially deep (but valid) upstream JSON cannot
+ *  blow the stack inside the invocation path. */
+const MAX_EQUALITY_DEPTH = 64;
+
 /** Structural equality against the parsed form of a text block, used to
  *  suppress the spec-mandated serialized duplicate of `structuredContent`.
- *  Key-order insensitive; bounded by the same size guard as payload parsing. */
-const structurallyEquals = (left: unknown, right: unknown): boolean => {
+ *  Key-order insensitive; depth-bounded. */
+const structurallyEquals = (left: unknown, right: unknown, depth = 0): boolean => {
   if (Object.is(left, right)) return true;
+  if (depth >= MAX_EQUALITY_DEPTH) return false;
   if (Array.isArray(left) && Array.isArray(right)) {
     return (
       left.length === right.length &&
-      left.every((item, index) => structurallyEquals(item, right[index]))
+      left.every((item, index) => structurallyEquals(item, right[index], depth + 1))
     );
   }
   if (isRecord(left) && isRecord(right)) {
     const leftKeys = Object.keys(left);
     if (leftKeys.length !== Object.keys(right).length) return false;
-    return leftKeys.every((key) => key in right && structurallyEquals(left[key], right[key]));
+    return leftKeys.every(
+      (key) => key in right && structurallyEquals(left[key], right[key], depth + 1),
+    );
   }
   return false;
 };

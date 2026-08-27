@@ -125,9 +125,16 @@ export const makeShapeMemory = (storage: PluginStorageFacade): ShapeMemory => {
         next.observations % OBSERVATION_WRITE_MILESTONE === 0 ||
         now - lastWrite >= FRESHNESS_WRITE_INTERVAL_MS;
       if (!shouldWrite) return;
-      yield* storage
+      // Advance the persisted-state bookkeeping only on a successful write:
+      // otherwise a transient storage failure would silence retries for the
+      // whole freshness interval while nothing is actually stored.
+      const wrote = yield* storage
         .put({ owner, collection: COLLECTION, key: address, data: next })
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(
+          Effect.map(() => true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+      if (!wrote) return;
       persistedSchema.set(key, schemaJson);
       persistedAt.set(key, now);
     }).pipe(Effect.catchCause(() => Effect.void));

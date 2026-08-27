@@ -55,12 +55,28 @@ const isUnknown = (shape: InferredShape): boolean =>
  * collapsing.
  */
 const DATA_KEY_PATTERNS: readonly RegExp[] = [
-  /@/,
+  // Email addresses (full-string — `@odata.context`-style annotation keys are
+  // legitimate API surface and must NOT collapse).
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  // UUIDs.
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  // Timestamps / dates.
   /^\d{4}-\d{2}-\d{2}/,
+  // Bare numbers and IPv4 addresses.
   /^\d+$/,
+  /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+  // URLs.
   /^https?:\/\//,
+  // Long hex tokens (hashes, ids).
   /^[0-9a-f]{16,}$/i,
+  // Platform opaque ids: Slack-style ALL-CAPS ids (U012ABCDEF), and
+  // prefix_body ids (cus_..., price_..., asst_...). Real field names in
+  // snake_case are lowercase words, not lowercase prefix + mixed-case body.
+  /^[A-Z][A-Z0-9]{8,}$/,
+  /^[a-z]{1,6}_(?=.*[A-Z0-9])[A-Za-z0-9]{10,}$/,
+  // Generic digit-bearing opaque tokens (API keys, base62/base64 ids). Long
+  // camelCase field names rarely contain digits at this length.
+  /^(?=.*\d)[A-Za-z0-9+/=_-]{20,}$/,
 ];
 
 const looksLikeDataKey = (key: string): boolean =>
