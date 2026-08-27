@@ -19,8 +19,10 @@ export class UniqueViolationError extends Data.TaggedError("UniqueViolationError
  * bug that must stay loud.
  *
  * `retryable` says which. It is a property of the fault, not a policy:
- *   - `true` — the socket died underneath a live pool (`CONNECTION_CLOSED`,
- *     `CONNECT_TIMEOUT`, `ECONNRESET`). Reconnecting can succeed.
+ *   - `true` — the socket died underneath a live pool, or was never
+ *     established because the backend was unreachable (`CONNECTION_CLOSED`,
+ *     `CONNECT_TIMEOUT`, `ECONNREFUSED`, `ECONNRESET`). Reconnecting can
+ *     succeed.
  *   - `false` — the pool was already torn down or the socket belongs to a
  *     different request context (`CONNECTION_ENDED`, `CONNECTION_DESTROYED`,
  *     the workerd cross-request I/O rejection). Retrying is futile by
@@ -94,6 +96,7 @@ const isUniqueViolation = (cause: unknown): boolean => {
 const RETRYABLE_CONNECTION_CODES: ReadonlySet<string> = new Set([
   "CONNECTION_CLOSED",
   "CONNECT_TIMEOUT",
+  "ECONNREFUSED",
   "ECONNRESET",
 ]);
 const FATAL_CONNECTION_CODES: ReadonlySet<string> = new Set([

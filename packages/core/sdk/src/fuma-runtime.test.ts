@@ -143,6 +143,11 @@ describe("fumaFailureFromCause — classification", () => {
     ["CONNECTION_CLOSED"],
     ["CONNECTION_DESTROYED"],
     ["CONNECT_TIMEOUT"],
+    // A backend that is simply down: postgres.js surfaces the socket errno
+    // verbatim, so `connect ECONNREFUSED …` is the ordinary "database
+    // unreachable" fault and must classify like the rest.
+    ["ECONNREFUSED"],
+    ["ECONNRESET"],
   ])("classifies postgres.js %s as a storage connection fault", (code) => {
     const failure = fumaFailureFromCause(
       "plugin_storage.findFirst",
