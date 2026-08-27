@@ -1,0 +1,1 @@
+ALTER TABLE `tool` ADD `result_encoding` text;

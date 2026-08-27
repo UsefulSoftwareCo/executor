@@ -153,6 +153,7 @@ export const tool = pgTable(
     input_schema: json("input_schema"),
     output_schema: json("output_schema"),
     annotations: json("annotations"),
+    result_encoding: text("result_encoding"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })

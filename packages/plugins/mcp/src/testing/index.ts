@@ -9,6 +9,7 @@ export {
   makeGreetingMcpServer,
   makeImageMcpServer,
   makeMutableCatalogMcpServer,
+  makeUndeclaredStructuredMcpServer,
   serveMcpServer,
   serveMcpServerWithOAuth,
   type McpTestRequest,

@@ -3,8 +3,6 @@ import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 
-import { callToolResultJsonSchema } from "./call-tool-result-schema.gen";
-
 import {
   authToolFailure,
   AuthTemplateSlug,
@@ -396,35 +394,6 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
   };
 };
 
-type JsonSchemaObject = Record<string, unknown> & {
-  readonly properties?: Record<string, unknown>;
-};
-
-// Baked at generation time rather than derived from @modelcontextprotocol/core
-// at module scope — importing core costs ~8.6MB of heap per Cloudflare isolate
-// (see client-module.ts), and this schema is the only thing the plugin needs
-// from it outside a live connection.
-const McpCallToolResultJsonSchema: JsonSchemaObject = callToolResultJsonSchema;
-
-const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
-  const defaultStructuredContentSchema =
-    McpCallToolResultJsonSchema.properties?.structuredContent ?? {};
-
-  return {
-    ...McpCallToolResultJsonSchema,
-    properties: {
-      ...McpCallToolResultJsonSchema.properties,
-      structuredContent:
-        structuredContentSchema === undefined
-          ? defaultStructuredContentSchema
-          : structuredContentSchema,
-      isError: { const: false },
-    },
-    required:
-      structuredContentSchema === undefined ? ["content"] : ["content", "structuredContent"],
-  };
-};
-
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
  *  real MCP tool name + upstream annotations into the persisted annotations so
  *  they survive to invokeTool with no plugin-side store. */
@@ -443,7 +412,12 @@ const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
     name: ToolName.make(entry.toolId),
     description: entry.description ?? `MCP tool: ${entry.toolName}`,
     inputSchema: entry.inputSchema,
-    outputSchema: mcpCallToolResultOutputSchema(entry.outputSchema),
+    // The server's declared output schema types `structuredContent` — which
+    // IS the semantic payload once the v2 result encoding normalizes the
+    // CallToolResult envelope away. No declared schema → undefined, and the
+    // executor serves the runtime-observed payload shape instead.
+    outputSchema: entry.outputSchema,
+    resultEncoding: "mcp-call-tool-result-v2",
     annotations: annotations as ToolAnnotations,
   };
 };

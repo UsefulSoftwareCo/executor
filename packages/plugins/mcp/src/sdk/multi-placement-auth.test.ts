@@ -71,10 +71,7 @@ describe("MCP multi-placement auth", () => {
         { marker: "mixed" },
         { onElicitation: "accept-all" },
       );
-      expect(result).toMatchObject({
-        ok: true,
-        data: { content: [{ type: "text", text: "ok:mixed" }] },
-      });
+      expect(result).toMatchObject({ ok: true, data: "ok:mixed" });
 
       const requests = (yield* server.requests).slice(before);
       expect(requests.length).toBeGreaterThan(0);

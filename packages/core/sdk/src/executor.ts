@@ -176,7 +176,12 @@ import {
   type EnterpriseManagedRollout,
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome, isToolResult } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult, ToolResult } from "./tool-result";
+import {
+  applyResultEncoding,
+  isToolResultEncoding,
+  type ToolResultEncoding,
+} from "./tool-result-normalization";
 import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
@@ -927,6 +932,7 @@ const rowToTool = (
     description: row.description,
     inputSchema: decodeJsonColumn(row.input_schema),
     outputSchema: decodeJsonColumn(row.output_schema),
+    ...(isToolResultEncoding(row.result_encoding) ? { resultEncoding: row.result_encoding } : {}),
     annotations: annotations ?? (decodeJsonColumn(row.annotations) as ToolAnnotations | undefined),
   };
 };
@@ -2914,6 +2920,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           input_schema: tool.inputSchema ?? null,
           output_schema: tool.outputSchema ?? null,
           annotations: tool.annotations ?? null,
+          result_encoding: tool.resultEncoding ?? null,
           created_at: now,
           updated_at: now,
         }));
@@ -2954,6 +2961,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               input_schema: tool.inputSchema ?? null,
               output_schema: tool.outputSchema ?? null,
               annotations: tool.annotations ?? null,
+              result_encoding: tool.resultEncoding ?? null,
               created_at: now,
               updated_at: now,
             } as ConnectionToolRow,
@@ -4069,10 +4077,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Muscle memory: when neither the catalog row nor the plugin's
         // projection declares an output schema, serve the shape observed from
         // live responses instead of letting the type collapse to `unknown`.
-        // The schema's description marks it as observed.
+        // Recall is contract-scoped: shapes learned under another result
+        // encoding describe data this tool no longer returns.
+        const rowEncoding = isToolResultEncoding(row.result_encoding)
+          ? row.result_encoding
+          : "direct";
         const observed =
           outputSchema === undefined
-            ? yield* shapeMemory.recall(String(address), parsed.owner, "direct")
+            ? yield* shapeMemory.recall(String(address), parsed.owner, rowEncoding)
             : null;
         const effectiveOutputSchema =
           outputSchema !== undefined
@@ -4574,6 +4586,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       options?: InvokeOptions,
     ): Effect.Effect<unknown, ExecuteError> => {
       const handler = pickHandler(options);
+      // Set once the tool row loads; read by the invocation wrapper and the
+      // shape-observation tap. Static tools never reach either.
+      let resolvedEncoding: ToolResultEncoding = "direct";
+      // Decode the raw invocation value into semantic `data` per the row's
+      // encoding: transport envelopes (MCP CallToolResult) never reach the
+      // sandbox, telemetry, or shape inference as `data`.
+      const decodeInvocationValue = (value: unknown): unknown => {
+        if (resolvedEncoding === "direct") return value;
+        return applyResultEncoding(
+          resolvedEncoding,
+          isToolResult(value) ? value : ToolResult.ok(value),
+        );
+      };
       return Effect.gen(function* () {
         // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
         const formatInvocationCauseMessage = (cause: unknown): string => {
@@ -4657,6 +4682,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             suggestions: toolSuggestions(connectionTools),
           });
         }
+
+        // How this tool's raw invocation value decodes into semantic `data`.
+        // Shared with the shape-observation tap below via the closure.
+        resolvedEncoding = isToolResultEncoding(row.result_encoding)
+          ? row.result_encoding
+          : "direct";
 
         // Resolve policy (owner-ranked).
         const toolForPolicy = rowToTool(row);
@@ -4755,7 +4786,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               elicit: buildElicit(address, args, handler),
               invokeOptions: options,
             }),
-          );
+          ).pipe(Effect.map(decodeInvocationValue));
         };
 
         const first = yield* invokeWith(values);
@@ -4803,7 +4834,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!parsed) return Effect.void;
           const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
           if (data === undefined) return Effect.void;
-          return shapeMemory.observe(String(address), parsed.owner, "direct", data);
+          return shapeMemory.observe(String(address), parsed.owner, resolvedEncoding, data);
         }),
         Effect.withSpan("executor.tool.execute", {
           attributes: {

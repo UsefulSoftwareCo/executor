@@ -121,6 +121,7 @@ export const tool = sqliteTable(
     input_schema: text("input_schema"),
     output_schema: text("output_schema"),
     annotations: text("annotations"),
+    result_encoding: text("result_encoding"),
     created_at: integer("created_at").notNull(),
     updated_at: integer("updated_at").notNull(),
     row_id: text("row_id").primaryKey().notNull(),

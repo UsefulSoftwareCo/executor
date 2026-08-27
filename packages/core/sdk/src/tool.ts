@@ -1,4 +1,5 @@
 import type { ConnectionName, IntegrationSlug, Owner, ToolAddress, ToolName } from "./ids";
+import type { ToolResultEncoding } from "./tool-result-normalization";
 
 /* Tools belong to a connection and are PERSISTED, like v1 — not resolved live on
  * every list. A plugin produces them at create/refresh (openapi from the
@@ -20,7 +21,11 @@ export interface ToolDef {
   readonly name: ToolName;
   readonly description?: string;
   readonly inputSchema?: unknown;
+  /** The schema of the tool's SEMANTIC payload (`ToolResult.data` after any
+   *  result encoding is applied), never a transport envelope. */
   readonly outputSchema?: unknown;
+  /** How raw invocation values decode into `data`; omitted = "direct". */
+  readonly resultEncoding?: ToolResultEncoding;
   readonly annotations?: ToolAnnotations;
 }
 
@@ -36,6 +41,7 @@ export interface Tool {
   readonly description: string;
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
+  readonly resultEncoding?: ToolResultEncoding;
   readonly annotations?: ToolAnnotations;
   /** True for plugin-contributed static tools (for example Executor's own
    *  configuration tools). Static tools have no backing connection even though

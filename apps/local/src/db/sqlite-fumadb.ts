@@ -106,6 +106,14 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
     await client.execute("ALTER TABLE oauth_client ADD COLUMN origin_redirect_uri TEXT");
   }
 
+  const toolColumns = await client.execute("PRAGMA table_info(tool)");
+  if (
+    toolColumns.rows.length > 0 &&
+    !toolColumns.rows.some((column) => column["name"] === "result_encoding")
+  ) {
+    await client.execute("ALTER TABLE tool ADD COLUMN result_encoding TEXT");
+  }
+
   const { db, fuma } = createExecutorFumaDb(drizzleDb, {
     tables: options.tables,
     namespace: options.namespace,
