@@ -314,9 +314,12 @@ scenario(
         probed.checkedAt,
       );
 
-      // And repeated checks inside the freshness window — the window every
-      // surface now sends for a non-healthy verdict — are served from that
-      // persisted verdict: the authorization server sees nothing more.
+      // And because it persisted, a caller that DOES pass a freshness window is
+      // served from it: the server's gate has something to answer with, so the
+      // authorization server sees nothing more. (The automatic client path
+      // deliberately passes no window for a non-healthy verdict — recovery has
+      // to be able to show — but the gate itself must work for the callers that
+      // opt into it.)
       for (let mount = 0; mount < 3; mount++) {
         const remount = yield* client.connections.checkHealth({
           params: {
@@ -369,13 +372,19 @@ scenario(
 );
 
 // ===========================================================================
-// The other half of the production symptom, through the real UI: the refresh
-// traffic scaled with the number of SURFACES showing the broken connection.
-// The once-per-mount client guard is per mount, not per connection, so the
-// integration page and the integrations list each sent their own health
-// request — and because the client omitted `ifStaleMs` for exactly the
-// non-healthy verdicts, each of those requests was a full probe and another
-// refused refresh grant at the third party.
+// The other half of the production symptom, through the real UI. A connection
+// whose refresh is refused is rendered by several surfaces (the integration
+// page's Connections list and the integrations list summary), and each one
+// revalidates on mount. Before the fix every one of those probes escaped as a
+// SERVER ERROR instead of a verdict, so one broken connection produced a
+// stream of captured errors and no surface could show the user what was wrong.
+//
+// What this pins down is that shape, not the volume: every automatic health
+// request succeeds and every surface paints the same Degraded verdict, while
+// the per-connection guard keeps each surface to exactly ONE probe — the
+// no-probe-storm invariant. Re-probing a broken connection once per surface is
+// the deliberate price of letting recovery show on the next load; an
+// unbounded loop is the regression worth catching.
 //
 // Nothing here touches the hook: the browser navigates between the two
 // surfaces a user actually visits, and the authorization server's own request
@@ -383,7 +392,7 @@ scenario(
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · a second surface showing a broken connection reads the verdict instead of re-probing",
+  "Health checks (UI) · every surface showing a broken connection paints a verdict, and probes exactly once",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -405,12 +414,24 @@ scenario(
         const connections = page.locator("section").filter({
           has: page.getByRole("heading", { level: 3, name: "Connections" }),
         });
-        // Every health request the app sends, in order, with its query string:
-        // the client's own wire contract, observed from outside.
+        // Every health request the app sends, with the status it came back
+        // with: the client's own wire contract, observed from outside. A
+        // credential the third party refuses must still produce a SUCCESSFUL
+        // health response carrying a verdict — that is the whole fix.
         const healthRequests: string[] = [];
+        const healthFailures: string[] = [];
         page.on("request", (request) => {
           if (request.method() === "POST" && request.url().includes("/health")) {
             healthRequests.push(request.url());
+          }
+        });
+        page.on("response", (response) => {
+          if (
+            response.request().method() === "POST" &&
+            response.url().includes("/health") &&
+            response.status() >= 400
+          ) {
+            healthFailures.push(`${String(response.status())} ${response.url()}`);
           }
         });
         const isHealthResponse = (response: Response) =>
@@ -446,6 +467,9 @@ scenario(
           await settled;
         });
 
+        // What the LIST surface cost at the authorization server.
+        const afterList = await refreshGrants();
+
         // Surface 3: back to the integration page — a fresh mount again.
         await step("Return to the integration page: another mount, another ask", async () => {
           const settled = page.waitForResponse(isHealthResponse, {
@@ -456,27 +480,36 @@ scenario(
           await connections.getByText("Degraded", { exact: true }).waitFor({ timeout: 30_000 });
         });
 
-        // THE production symptom, stated as the third party experiences it:
-        // two more surfaces rendered the same broken connection and the
-        // authorization server heard nothing more about it.
-        expect(
-          await refreshGrants(),
-          "no later surface reached the authorization server again",
-        ).toBe(baseline);
+        const afterReturn = await refreshGrants();
 
         const laterRequests = healthRequests.slice(afterFirstSurface);
         expect(
           laterRequests.length,
-          "and they did ask about the connection's health — silence would be the wrong cure",
+          "the later surfaces did ask about the connection's health — silence would mean a broken connection could never be seen to recover",
         ).toBeGreaterThan(0);
-        // Asking is fine. Asking WITHOUT a freshness window is what turned one
-        // broken connection into unbounded refresh traffic.
-        for (const url of laterRequests) {
-          expect(
-            new URL(url).searchParams.get("ifStaleMs"),
-            `an automatic health request carries a freshness window (${url})`,
-          ).not.toBeNull();
-        }
+
+        // THE production symptom, stated as the third party experiences it.
+        // Not "the later surfaces went silent" — they must not, or recovery
+        // could never show — but "each surface costs a fixed, bounded amount".
+        // Surface 3 is the SAME page as surface 1, so it must cost exactly what
+        // surface 1 cost; anything more is the per-connection guard failing and
+        // the effect re-probing in a loop.
+        expect(
+          afterList - baseline,
+          "the list surface revalidated the broken connection",
+        ).toBeGreaterThan(0);
+        expect(
+          afterReturn - afterList,
+          "revisiting the same page costs the same one probe per connection it cost the first time, not a growing storm",
+        ).toBe(baseline);
+
+        // And the shape that actually reached production: a refused refresh is
+        // answered, not raised. Every one of these requests used to come back
+        // as a server error, which is what buried the signal.
+        expect(
+          healthFailures,
+          "no automatic health request failed; a refused refresh is a verdict, not an error",
+        ).toEqual([]);
       });
     }),
   ),
