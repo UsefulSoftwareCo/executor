@@ -61,6 +61,21 @@ export interface Connection {
    *  "has this expired?" at a glance in the connections list without probing.
    *  Null/absent = never checked. */
   readonly lastHealth?: HealthCheckResult | null;
+  /** True when this connection was minted through MCP Enterprise-Managed
+   *  Authorization and renews itself from the enterprise identity assertion
+   *  persisted alongside it (`ENTERPRISE_MANAGED_PROVIDER_STATE_KEY`).
+   *
+   *  A BOOLEAN, deliberately: the wiring behind it (which IdP registration,
+   *  which audience) is a server concern, and a console needs exactly one fact
+   *  from it — that this connection mirrors organization policy rather than a
+   *  grant the user holds. That single fact changes what the UI may offer:
+   *  there is no durable local grant to delete, so a local "remove" would be a
+   *  lie, and revocation belongs at the identity provider.
+   *
+   *  It is NOT derivable client-side from `oauthClient`: a client whose grant
+   *  is `id_jag` still falls back to the interactive flow against a server that
+   *  does not advertise the profile, and such a connection is ordinary. */
+  readonly enterpriseManaged?: boolean;
 }
 
 /** Identify one connection — unique by (owner, integration, name). */

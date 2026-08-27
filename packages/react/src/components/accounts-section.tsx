@@ -15,6 +15,12 @@ import {
 } from "../api/atoms";
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import {
+  MANAGED_CONNECTION_BADGE,
+  MANAGED_CONNECTION_BLOCKED_LABEL,
+  MANAGED_CONNECTION_REVOCATION_HINT,
+  connectionRowPolicy,
+} from "../lib/managed-connection";
 import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
@@ -114,8 +120,19 @@ function AccountRow(props: {
       : null) ?? (probe?.identity && probe.identity.length > 0 ? probe.identity : null);
   const displayLabel = identity ?? String(connection.name);
 
+  // What this row may OFFER, decided from the connection's persisted
+  // enterprise-managed state and the structured administrator verdict on its
+  // freshest health result — never from a status word or a message.
+  const policy = connectionRowPolicy(connection, probe);
+
   const expired = status === "expired";
+  // An administrator decision outranks the health word. "Expired" would invite
+  // a reconnect that cannot succeed, because the route it re-runs is exactly
+  // the one the identity provider just closed.
   const needsHealthAttention = status === "expired" || status === "degraded";
+  const statusLabel = policy.blockedByAdmin
+    ? MANAGED_CONNECTION_BLOCKED_LABEL
+    : HEALTH_STATUS_LABEL[status];
   const healthDetail = needsHealthAttention ? probe?.detail : undefined;
   const missingOAuthScopes = connection.missingOAuthScopes ?? [];
 
@@ -152,9 +169,26 @@ function AccountRow(props: {
             className={`size-2 shrink-0 rounded-full ${indicator.dot}`}
           />
           <span className="truncate">{displayLabel}</span>
+          {policy.managed ? (
+            // Grayscale, a word, no hue — this is a fact about the connection,
+            // not a fault (design.md, "Status and semantics"). It reads
+            // distinctly from the personal rows beside it, which is the point:
+            // an additional personal account on the same integration stays
+            // possible and must stay visibly different.
+            <Badge
+              variant="outline"
+              className="shrink-0 border-border text-muted-foreground"
+              data-slot="managed-connection-badge"
+            >
+              {MANAGED_CONNECTION_BADGE}
+            </Badge>
+          ) : null}
           {needsHealthAttention ? (
-            <Badge variant={expired ? "destructive" : "outline"} className="shrink-0">
-              {HEALTH_STATUS_LABEL[status]}
+            <Badge
+              variant={expired && !policy.blockedByAdmin ? "destructive" : "outline"}
+              className="shrink-0"
+            >
+              {statusLabel}
             </Badge>
           ) : null}
           {needsReconsent ? (
@@ -183,6 +217,16 @@ function AccountRow(props: {
             Missing scopes: {missingOAuthScopes.join(", ")}
           </CardStackEntryDescription>
         ) : null}
+        {policy.managed ? (
+          <CardStackEntryDescription className="mt-1 overflow-visible whitespace-normal text-clip text-xs text-muted-foreground">
+            {MANAGED_CONNECTION_REVOCATION_HINT}
+          </CardStackEntryDescription>
+        ) : null}
+        {policy.oauthErrorCode === null ? null : (
+          <CardStackEntryDescription className="mt-1 font-mono text-[11px] text-muted-foreground">
+            Reference: {policy.oauthErrorCode}
+          </CardStackEntryDescription>
+        )}
       </CardStackEntryContent>
       <CardStackEntryActions className="self-start pt-0.5">
         {props.showOwnerLabel ? (
@@ -213,12 +257,22 @@ function AccountRow(props: {
             <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
               Edit
             </DropdownMenuItem>
-            <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
-              Reconnect
-            </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" className="text-sm" onClick={props.onRemove}>
-              Remove
-            </DropdownMenuItem>
+            {/* Reconnect and Remove are WITHHELD, not disabled, for an
+                enterprise-managed connection. Reconnect re-runs the interactive
+                consent this profile has no step for, and Remove would claim the
+                member revoked access they cannot revoke here — the identity
+                provider still authorizes them, and the next call would hand it
+                straight back. Both live at the provider. */}
+            {policy.canReconnect ? (
+              <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
+                Reconnect
+              </DropdownMenuItem>
+            ) : null}
+            {policy.canRemove ? (
+              <DropdownMenuItem variant="destructive" className="text-sm" onClick={props.onRemove}>
+                Remove
+              </DropdownMenuItem>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
       </CardStackEntryActions>

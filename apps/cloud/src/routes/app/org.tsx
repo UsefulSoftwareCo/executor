@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@executor-js/react/components/dropdown-menu";
 import { orgMembersAtom } from "@executor-js/react/api/account-atoms";
+import { EnterpriseIdentityProviderSection } from "@executor-js/react/components/enterprise-idp-section";
 import { OrgPage as SharedOrgPage } from "@executor-js/react/pages/org";
 import { orgDomainsAtom, getDomainVerificationLink, deleteDomain } from "../../web/org-atoms";
 import { deleteOrganization, useAuth } from "../../web/auth";
@@ -61,6 +62,7 @@ function OrgPage() {
       {/* Shared members / roles / invite / org-name surface. */}
       <SharedOrgPage
         domainsSection={<DomainsSection />}
+        enterpriseIdpSection={<EnterpriseIdpSection />}
         upgradeAction={
           <Link to="/{-$orgSlug}/billing/plans">
             <Button size="sm">Upgrade plan</Button>
@@ -72,29 +74,44 @@ function OrgPage() {
   );
 }
 
+/** Whether the caller administers this organization, derived from the members
+ *  list already loaded for this page. False while it loads, so an admin-only
+ *  control never flashes for someone who cannot use it.
+ *
+ *  CLIENT-SIDE UX GATING ONLY: every endpoint behind these controls enforces
+ *  its own authorization. Hiding a control the server would refuse is a
+ *  courtesy, not the boundary. */
+function useIsOrgAdmin(): boolean {
+  const membersResult = useAtomValue(orgMembersAtom);
+  return AsyncResult.match(membersResult, {
+    onInitial: () => false,
+    onFailure: () => false,
+    onSuccess: ({ value }) =>
+      value.members.some((m) => m.isCurrentUser && m.status === "active" && m.role === "admin"),
+  });
+}
+
+// The organization's enterprise identity provider (MCP Enterprise-Managed
+// Authorization). Admin-only, on the same gate as the danger zone: registering
+// it decides how every member of the workspace authorizes to enterprise-managed
+// MCP servers, which is an administrator's call, not a member's.
+function EnterpriseIdpSection() {
+  return useIsOrgAdmin() ? <EnterpriseIdentityProviderSection /> : null;
+}
+
 // Destructive org teardown, admin-only. Hidden entirely for non-admins (the
 // backend enforces admin + name-confirmation regardless). Deleting the org
 // removes the workspace and all of its data for every member, cancels billing,
 // and logs the caller out.
 function DangerZoneSection() {
   const auth = useAuth();
-  const membersResult = useAtomValue(orgMembersAtom);
+  const isAdmin = useIsOrgAdmin();
   const doDelete = useAtomSet(deleteOrganization, { mode: "promiseExit" });
   const [open, setOpen] = useState(false);
   const [confirmText, setConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
 
   const organizationName = auth.status === "authenticated" ? auth.organization?.name : undefined;
-
-  // Only admins may delete. Derive the caller's role from the members list
-  // (already loaded for this page); render nothing while it loads or for
-  // members, so a delete control never flashes for someone who can't use it.
-  const isAdmin = AsyncResult.match(membersResult, {
-    onInitial: () => false,
-    onFailure: () => false,
-    onSuccess: ({ value }) =>
-      value.members.some((m) => m.isCurrentUser && m.status === "active" && m.role === "admin"),
-  });
 
   if (!isAdmin || !organizationName) return null;
 

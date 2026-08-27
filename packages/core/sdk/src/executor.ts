@@ -819,6 +819,22 @@ const missingOAuthScopesFromProviderState = (value: unknown): readonly string[] 
     : [];
 };
 
+/** Project a credential-resolution failure's ADMINISTRATOR verdict onto the
+ *  health result, so the console reads "your organization declined this" as
+ *  structure rather than parsing the sentence in `detail`. Empty for every
+ *  ordinary failure — an expired grant, a dead refresh token — which keeps the
+ *  blocked branch impossible to reach by accident. */
+export const healthAdministratorVerdict = (failure: {
+  readonly blockedByAdmin?: boolean;
+  readonly oauthErrorCode?: string;
+}): { readonly blockedByAdmin?: true; readonly oauthErrorCode?: string } =>
+  failure.blockedByAdmin === true
+    ? {
+        blockedByAdmin: true,
+        ...(failure.oauthErrorCode === undefined ? {} : { oauthErrorCode: failure.oauthErrorCode }),
+      }
+    : {};
+
 /** The definitive refresh rejection recorded on `provider_state`, or null.
  *  Set when the AS rejects the grant itself (RFC 6749 invalid_grant — retrying
  *  cannot change the verdict); cleared by the reconnect mint, which rewrites
@@ -853,6 +869,10 @@ const rowToConnection = (row: ConnectionRow): Connection => {
     oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
     missingOAuthScopes: missingOAuthScopesFromProviderState(row.provider_state),
     lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
+    // Read from the SAME persisted state the renewal path follows, so the
+    // console and the credential lifecycle can never disagree about which
+    // connections are enterprise-managed.
+    enterpriseManaged: enterpriseManagedStateFrom(decodeJsonColumn(row.provider_state)) !== null,
   };
 };
 
@@ -3463,6 +3483,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: err.message,
+            ...healthAdministratorVerdict(err),
           })
         : Effect.fail(
             new StorageError({
@@ -3481,6 +3502,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
+            ...healthAdministratorVerdict(failure),
           }
         : {
             status: "degraded",

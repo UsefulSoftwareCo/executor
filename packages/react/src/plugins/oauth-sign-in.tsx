@@ -16,6 +16,7 @@ import {
 } from "../api/oauth-popup";
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { getActiveOrgSlug } from "../api/server-connection";
+import { adminBlockFromExit, type OAuthAdminBlock } from "./oauth-admin-block";
 
 export type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
@@ -193,6 +194,10 @@ export function useOAuthPopupFlow<
   const blockedMessage = popupBlockedMessage ?? POPUP_BLOCKED_MESSAGE;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The enterprise verdict, held apart from `error` on purpose: a renderer must
+  // be able to tell "this failed, try again" from "your organization decided
+  // this" WITHOUT reading either string.
+  const [adminBlock, setAdminBlock] = useState<OAuthAdminBlock | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<{ readonly state: string } | null>(null);
   // A window reserved on the click but not yet handed to a flow owns nothing
@@ -274,6 +279,7 @@ export function useOAuthPopupFlow<
       }
       setBusy(true);
       setError(null);
+      setAdminBlock(null);
       // Desktop hosts open the auth URL in the user's real browser, so they
       // reserve no in-page window and rely on the polling channel for the
       // result.
@@ -294,6 +300,12 @@ export function useOAuthPopupFlow<
       );
       if (Exit.isFailure(startExit)) {
         const message = messageFromExit(startExit, startErrorMessage ?? "Failed to start sign-in");
+        // Read the enterprise verdict off the failure BEFORE it is reduced to a
+        // string. Present means the identity provider refused under
+        // administrator policy, and this flow ends here: the popup closes and
+        // no retry is offered, because retrying is the route the enterprise
+        // just closed.
+        const blocked = adminBlockFromExit(startExit);
         reportHandledError(startExit.cause, {
           surface: "oauth",
           action: "start",
@@ -302,6 +314,7 @@ export function useOAuthPopupFlow<
         });
         reservedPopup?.popup.close();
         setBusy(false);
+        setAdminBlock(blocked);
         setError(message);
         input.onError?.(message);
         return;
@@ -455,29 +468,37 @@ export function useOAuthPopupFlow<
               newConnection: input.payload.newConnection,
               redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
             },
-          }).then((exit) =>
-            Exit.isSuccess(exit)
-              ? // The redirect branch carries `authorizationUrl` + `state`; the
-                // inline "connected" (client_credentials) branch has no URL to
-                // open and no redirect, so `state` is intentionally empty — it
-                // is never read for an already-minted connection.
-                exit.value.status === "redirect"
+          }).then((exit) => {
+            if (Exit.isSuccess(exit)) {
+              // The redirect branch carries `authorizationUrl` + `state`; the
+              // inline "connected" (client_credentials / enterprise-managed)
+              // branch has no URL to open and no redirect, so `state` is
+              // intentionally empty — it is never read for an already-minted
+              // connection.
+              return exit.value.status === "redirect"
                 ? { state: exit.value.state, authorizationUrl: exit.value.authorizationUrl }
-                : { state: "", authorizationUrl: null }
-              : Effect.runPromise(
-                  Effect.fail({
-                    message: messageFromExit(exit, startErrorMessage ?? "Failed to start sign-in"),
-                  }),
-                ),
-          ),
+                : { state: "", authorizationUrl: null };
+            }
+            // Reject with the server's OWN typed failure, cause and all — not
+            // with a message extracted from it. `openAuthorization` wraps this
+            // as the `cause` of its start error, and that is where the
+            // enterprise verdict (`blockedByAdmin`) is read from; flattening it
+            // to a string here would leave the console with only a sentence to
+            // branch on, which is exactly what it must not decide from.
+            return Effect.runPromise(Effect.failCause(exit.cause));
+          }),
       });
     },
-    [callbackPath, doStartOAuth, openAuthorization, startErrorMessage],
+    [callbackPath, doStartOAuth, openAuthorization],
   );
 
   return {
     busy,
     error,
+    /** The enterprise policy denial behind `error`, when there was one. A
+     *  renderer branches on this — never on `error`'s wording — and must not
+     *  offer a retry while it is set. */
+    adminBlock,
     setError,
     start,
     openAuthorization,

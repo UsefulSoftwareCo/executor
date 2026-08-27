@@ -14,18 +14,24 @@ import {
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
 import { Badge } from "@executor-js/react/components/badge";
+import { Label } from "@executor-js/react/components/label";
+import { Switch } from "@executor-js/react/components/switch";
+import { useEnterpriseIdentityProviderDescriptor } from "@executor-js/react/components/enterprise-idp-section";
 import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
 import { configureMcpAuth, mcpServerAtom } from "./atoms";
 import type {
   McpAuthMethod,
   McpCanonicalAuthMethodInput,
+  McpEnterpriseIdentityProvider,
   McpIntegrationConfig,
 } from "../sdk/types";
 import {
   editorValueFromMcpAuthMethod,
   mcpAuthMethodInputFromEditorValue,
+  mcpOAuthMethodInput,
   mcpWireAuthInput,
+  sameEnterpriseIdentityProvider,
 } from "./auth-method-config";
 
 type McpServer = {
@@ -95,16 +101,44 @@ function RemoteEdit(props: {
 
   const [error, setError] = useState<string | null>(null);
 
+  // Whether this server is declared enterprise-managed, and by which
+  // registration. Read off the stored oauth2 method rather than kept as a
+  // parallel flag: the declaration IS the state, and the toggle below only
+  // decides whether the organization's registration is attached to it.
+  const declaredProvider = useMemo<McpEnterpriseIdentityProvider | undefined>(() => {
+    for (const method of server.config.authenticationTemplate) {
+      if (method.kind === "oauth2" && method.enterpriseIdentityProvider !== undefined) {
+        return method.enterpriseIdentityProvider;
+      }
+    }
+    return undefined;
+  }, [server.config.authenticationTemplate]);
+
+  const organizationProvider = useEnterpriseIdentityProviderDescriptor() ?? undefined;
+  const [managed, setManaged] = useState(declaredProvider !== undefined);
+  // The declaration this save would write: the organization's registration
+  // while the toggle is on, and — when the organization has since removed its
+  // registration — whatever the server already names, so an unrelated edit
+  // cannot quietly un-manage a live server.
+  const nextProvider: McpEnterpriseIdentityProvider | undefined = managed
+    ? (organizationProvider ?? declaredProvider)
+    : undefined;
+
   // The edited methods, slugs preserved for seeded rows so existing
   // connections (bound by template slug) stay attached. New rows omit the
-  // slug — the backend assigns kind-based ones.
+  // slug — the backend assigns kind-based ones. Each row is reconciled against
+  // the method it was seeded from, because `configureMcpAuth` runs in `replace`
+  // mode here: anything the credential editor cannot express — the
+  // enterprise-managed declaration above all — has to be carried forward
+  // deliberately or it is erased by an unrelated edit.
   const editedMethods = useMemo<readonly McpCanonicalAuthMethodInput[]>(
     () =>
       list.rows.map((row: AuthMethodRow): McpCanonicalAuthMethodInput => {
-        const input = mcpAuthMethodInputFromEditorValue(row.value);
-        return row.seedSlug !== undefined ? { ...input, slug: row.seedSlug } : input;
+        const edited = mcpAuthMethodInputFromEditorValue(row.value);
+        const declared = edited.kind === "oauth2" ? mcpOAuthMethodInput(nextProvider) : edited;
+        return row.seedSlug !== undefined ? { ...declared, slug: row.seedSlug } : declared;
       }),
-    [list.rows],
+    [list.rows, nextProvider],
   );
 
   const methodsChanged = useMemo(() => {
@@ -118,9 +152,24 @@ function RemoteEdit(props: {
       if (method.kind === "apikey" && current.kind === "apikey") {
         return !samePlacements(method.placements, current.placements);
       }
+      if (method.kind === "oauth2" && current.kind === "oauth2") {
+        return !sameEnterpriseIdentityProvider(
+          method.enterpriseIdentityProvider,
+          current.enterpriseIdentityProvider,
+        );
+      }
       return false;
     });
   }, [editedMethods, server.config.authenticationTemplate]);
+
+  const hasOAuthMethod = server.config.authenticationTemplate.some(
+    (method: McpAuthMethod) => method.kind === "oauth2",
+  );
+  // Offered only where it can mean something: this server authenticates with
+  // OAuth, and either the organization has registered an identity provider or
+  // this server is already managed by one (so it can still be turned off).
+  const canDeclareManaged =
+    hasOAuthMethod && (organizationProvider !== undefined || declaredProvider !== undefined);
 
   // Staged apply, run by the sheet's Save when the method list changed.
   const applyStaged = useCallback(async (): Promise<EditSheetApplyResult> => {
@@ -167,6 +216,38 @@ function RemoteEdit(props: {
         emptyHint="No methods declared. Add one, or save to mark this server as open (no authentication)."
         footerHint="Connections pick one of these methods. Removing a method detaches connections created against it."
       />
+
+      {/* Enterprise-Managed Authorization, per server. The organization's
+          identity provider is registered once (Organization settings); this is
+          where an administrator says WHICH servers authorize through it.
+          Declaring it can never take an ordinary server off the interactive
+          flow — the connect path still requires the server to advertise the
+          grant profile — so the copy promises a route, not an outcome. */}
+      {canDeclareManaged ? (
+        <div className="flex items-start gap-3 rounded-md border border-border/60 px-3 py-3">
+          <Switch
+            id="ema-managed-server"
+            checked={managed}
+            onCheckedChange={setManaged}
+            className="mt-0.5"
+          />
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor="ema-managed-server" className="text-sm font-medium text-foreground">
+              Managed by your organization
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Members connect with their work identity instead of consenting to this server. Your
+              identity provider decides who gets access, and revokes it.
+            </p>
+            {organizationProvider === undefined ? (
+              <p className="text-xs text-muted-foreground">
+                Your organization no longer has an identity provider registered. This server keeps
+                the one it already names until you turn this off.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {error && <FormErrorAlert message={error} />}
     </div>

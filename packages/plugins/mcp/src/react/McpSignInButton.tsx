@@ -2,18 +2,14 @@ import { useMemo, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import {
-  AuthTemplateSlug,
-  IntegrationSlug,
-  type Connection,
-  type Owner,
-} from "@executor-js/sdk/shared";
+import { IntegrationSlug, type Connection, type Owner } from "@executor-js/sdk/shared";
 import { connectionsAllAtom } from "@executor-js/react/api/atoms";
 import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
 import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
 
 import { mcpServerAtom } from "./atoms";
+import { authMethodsFromConfig } from "./auth-method-config";
 import type { McpAuthMethod } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
@@ -47,21 +43,15 @@ export default function McpSignInButton(props: { integrationId: string; owner?: 
     (connection: Connection) => connection.integration === slug,
   );
 
+  // Projected through the plugin's ONE codec rather than assembled here: the
+  // server's enterprise-managed declaration rides on this method, and a
+  // hand-built copy silently dropped it — leaving this button offering
+  // per-server consent for a server the organization manages.
   const methods = useMemo<readonly AuthMethod[]>(
     () =>
       remote === null || oauthMethod === null
         ? []
-        : [
-            {
-              id: oauthMethod.slug,
-              label: "OAuth",
-              kind: "oauth",
-              source: "spec",
-              template: AuthTemplateSlug.make(oauthMethod.slug),
-              placements: [],
-              oauth: { discoveryUrl: remote.endpoint, supportsDynamicRegistration: true },
-            },
-          ],
+        : authMethodsFromConfig([oauthMethod], remote.endpoint),
     [remote, oauthMethod],
   );
   const initialState = useMemo(

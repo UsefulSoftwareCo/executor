@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { OAuthClientSlug } from "@executor-js/sdk/shared";
 import type { AuthTemplateEditorValue } from "@executor-js/react/components/auth-template-editor";
 
 import {
@@ -6,6 +7,8 @@ import {
   editorValueFromMcpAuthMethod,
   mcpAuthMethodInputFromEditorValue,
   mcpAuthMethodInputsFromPlacements,
+  mcpOAuthMethodInput,
+  sameEnterpriseIdentityProvider,
 } from "./auth-method-config";
 
 describe("mcpAuthMethodInputFromEditorValue", () => {
@@ -172,6 +175,112 @@ describe("authMethodsFromConfig", () => {
       { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "api_token" },
       { carrier: "query", name: "team_id", prefix: "", variable: "team_id" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enterprise-Managed Authorization: the per-server declaration.
+//
+// The declaration is a POINTER at the organization's identity-provider
+// registration, and it is what puts a server on the work-identity route
+// instead of per-server consent. Two things must hold or the feature silently
+// stops working: it has to reach the console (a dropped pointer means the
+// connect path offers ordinary consent for a managed server), and it must not
+// be invented by any surface that cannot see the organization's registration.
+// ---------------------------------------------------------------------------
+
+const PROVIDER = {
+  client: OAuthClientSlug.make("enterprise-identity-provider"),
+  clientOwner: "org",
+} as const;
+
+describe("authMethodsFromConfig · enterprise-managed declaration", () => {
+  it("carries the server's identity-provider pointer onto the rendered method", () => {
+    const methods = authMethodsFromConfig(
+      [{ slug: "oauth2", kind: "oauth2", enterpriseIdentityProvider: PROVIDER }],
+      "https://mcp.example.com/mcp",
+    );
+    expect(methods[0]?.oauth?.enterpriseIdentityProvider).toEqual(PROVIDER);
+  });
+
+  it("leaves the interactive route advertised beside it", () => {
+    // Declaring a provider asks the connect path to TRY the enterprise branch.
+    // Whether it is taken still depends on the server advertising the grant
+    // profile, so the ordinary route must remain available.
+    const methods = authMethodsFromConfig(
+      [{ slug: "oauth2", kind: "oauth2", enterpriseIdentityProvider: PROVIDER }],
+      "https://mcp.example.com/mcp",
+    );
+    expect(methods[0]?.oauth?.supportsDynamicRegistration).toBe(true);
+    expect(methods[0]?.oauth?.discoveryUrl).toBe("https://mcp.example.com/mcp");
+  });
+
+  it("declares nothing for an ordinary oauth2 server", () => {
+    const methods = authMethodsFromConfig(
+      [{ slug: "oauth2", kind: "oauth2" }],
+      "https://mcp.example.com/mcp",
+    );
+    expect(methods[0]?.oauth?.enterpriseIdentityProvider).toBeUndefined();
+  });
+});
+
+describe("mcpOAuthMethodInput", () => {
+  it("attaches the organization's registration when the server is managed", () => {
+    expect(mcpOAuthMethodInput(PROVIDER)).toEqual({
+      kind: "oauth2",
+      enterpriseIdentityProvider: PROVIDER,
+    });
+  });
+
+  it("omits the key entirely when it is not — never an explicit undefined", () => {
+    // `configureMcpAuth` decodes this against a union; an explicit
+    // `enterpriseIdentityProvider: undefined` is a different wire value and is
+    // rejected, so absence has to be real absence.
+    const input = mcpOAuthMethodInput(undefined);
+    expect(input).toEqual({ kind: "oauth2" });
+    expect(Object.hasOwn(input, "enterpriseIdentityProvider")).toBe(false);
+  });
+});
+
+describe("mcpAuthMethodInputFromEditorValue · enterprise-managed declaration", () => {
+  it("invents no declaration from the credential editor", () => {
+    // The editor edits credentials. Server policy is not one, and a surface
+    // that cannot see the organization's registration must not guess at it —
+    // the save path re-attaches it deliberately instead.
+    expect(
+      mcpAuthMethodInputFromEditorValue({
+        kind: "oauth",
+        authorizationUrl: "",
+        tokenUrl: "",
+        scopes: [],
+      }),
+    ).toEqual({ kind: "oauth2" });
+  });
+});
+
+describe("sameEnterpriseIdentityProvider", () => {
+  it("compares the pointer by value, not by reference", () => {
+    // The stored copy is decoded from JSON, so it is never the same object as
+    // the one the console just built; a reference check would report every
+    // save as a change.
+    expect(sameEnterpriseIdentityProvider({ ...PROVIDER }, { ...PROVIDER })).toBe(true);
+  });
+
+  it("distinguishes a different registration", () => {
+    expect(sameEnterpriseIdentityProvider(PROVIDER, { ...PROVIDER, clientOwner: "user" })).toBe(
+      false,
+    );
+    expect(
+      sameEnterpriseIdentityProvider(PROVIDER, {
+        ...PROVIDER,
+        client: OAuthClientSlug.make("other"),
+      }),
+    ).toBe(false);
+  });
+
+  it("treats declaring and not declaring as different", () => {
+    expect(sameEnterpriseIdentityProvider(PROVIDER, undefined)).toBe(false);
+    expect(sameEnterpriseIdentityProvider(undefined, undefined)).toBe(true);
   });
 });
 

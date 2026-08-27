@@ -30,6 +30,7 @@ const toResponse = (c: Connection) => ({
   oauthScope: c.oauthScope ?? null,
   missingOAuthScopes: c.missingOAuthScopes ?? [],
   lastHealth: c.lastHealth ?? null,
+  enterpriseManaged: c.enterpriseManaged ?? false,
 });
 
 const toolToResponse = (t: Tool) => ({

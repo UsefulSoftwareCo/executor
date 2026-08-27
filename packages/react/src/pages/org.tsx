@@ -135,6 +135,11 @@ function formatLastActive(lastActiveAt: string | null): string {
 
 export function OrgPage(props: {
   domainsSection?: React.ReactNode;
+  // Cloud injects the enterprise identity provider registration here (MCP
+  // Enterprise-Managed Authorization). Self-host has no organization-admin
+  // model to gate it behind, so it omits the slot entirely rather than
+  // rendering an ungated enterprise control.
+  enterpriseIdpSection?: React.ReactNode;
   // Cloud injects the plan-upgrade call to action (a link to billing/plans).
   // When set and the org is at its seat limit, clicking "Invite member" opens
   // an upgrade prompt instead of the invite form. Self-host has no seat limit,
@@ -253,6 +258,7 @@ export function OrgPage(props: {
         </div>
       </section>
       {props.domainsSection && props.domainsSection}
+      {props.enterpriseIdpSection}
 
       <section className="mb-10">
         <div className="flex items-center justify-between mb-4">

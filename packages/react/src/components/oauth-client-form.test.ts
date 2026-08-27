@@ -112,6 +112,60 @@ describe("canSubmitOAuthClientForm", () => {
       }),
     ).toBe(false);
   });
+
+  // MCP Enterprise-Managed Authorization (`id_jag`). The app registered here is
+  // the client's registration at the MCP server's Resource Authorization
+  // Server; discovery starts from the resource identifier, so that field — not
+  // the authorization URL — is what the grant cannot do without.
+  it("requires a resource URL for enterprise identity assertion clients", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "id_jag",
+        authorizationUrl: "",
+        resource: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts an enterprise identity assertion client with no authorization URL", () => {
+    // There is no browser redirect in this profile: the client presents an
+    // identity assertion instead of walking the user through consent.
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "id_jag",
+        authorizationUrl: "",
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a public enterprise identity assertion client with no secret", () => {
+    // The ID-JAG itself is the proof of authorization at the Resource
+    // Authorization Server (draft §4.4), so a secret is not mandatory.
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "id_jag",
+        clientSecret: "",
+        authorizationUrl: "",
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).toBe(true);
+  });
+
+  it("still requires a token URL for enterprise identity assertion clients", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "id_jag",
+        authorizationUrl: "",
+        tokenUrl: "",
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("oauthAppSetupFor", () => {
