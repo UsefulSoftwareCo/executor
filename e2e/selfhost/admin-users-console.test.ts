@@ -94,17 +94,20 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // The member stores their own credential, so the owner's view has
-        // something to report that the owner's product view cannot see.
-        yield* memberClient.connections.create({
-          payload: {
-            owner: "user",
-            name: memberConnection,
-            integration,
-            template: TEMPLATE_API_KEY,
-            value: "member-personal-token",
-          },
-        });
+        // Connection creation is admin-only even for Personal scope. The
+        // refused request still sights this principal for the admin directory.
+        const refusal = yield* memberClient.connections
+          .create({
+            payload: {
+              owner: "user",
+              name: memberConnection,
+              integration,
+              template: TEMPLATE_API_KEY,
+              value: "member-personal-token",
+            },
+          })
+          .pipe(Effect.flip);
+        expect(refusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
 
         yield* browser.session(owner, async ({ page, step }) => {
           await step("Open Users from the sidebar as the instance owner", async () => {
@@ -119,14 +122,12 @@ scenario(
               .waitFor({ state: "visible", timeout: 30_000 });
           });
 
-          await step("The invited member's connection is attributed to them", async () => {
+          await step("The invited member is listed without a connection", async () => {
             // Selfhost shares one org across scenarios, so this asserts the
             // member's own row exists — never a count of the whole instance.
             const row = page
               .locator("[data-slot='admin-user-row']")
-              .filter({
-                has: page.locator(`[data-integration='${integration}'][data-connected='true']`),
-              })
+              .filter({ hasText: member.credentials?.email ?? "" })
               .first();
             await row.waitFor({ state: "visible", timeout: 30_000 });
 
@@ -144,9 +145,10 @@ scenario(
 
             const detail = page.getByRole("dialog");
             await detail.waitFor({ state: "visible", timeout: 30_000 });
-            await detail
-              .getByText(memberConnection, { exact: true })
-              .waitFor({ state: "visible", timeout: 30_000 });
+            expect(
+              await detail.getByText(memberConnection, { exact: true }).count(),
+              "the refused credential was not stored",
+            ).toBe(0);
           });
 
           await step("The detail header copies the member's email and their id", async () => {
@@ -311,6 +313,28 @@ scenario(
               await page.locator("[data-slot='admin-users-table']").count(),
               "the refusal replaces the table rather than rendering it empty",
             ).toBe(0);
+          });
+
+          await step("A member has no add-connection affordance", async () => {
+            await visit(page, `/integrations/${availableIntegration}?tab=accounts`);
+            await page
+              .getByText("Ask a workspace admin to add a connection for this integration.")
+              .waitFor({ state: "visible", timeout: 30_000 });
+            expect(
+              await page.getByRole("button", { name: "Add connection" }).count(),
+              "the accounts surface does not advertise an action the API refuses",
+            ).toBe(0);
+          });
+
+          await step("A member's connect deep link stops at the admin explanation", async () => {
+            await visit(page, `/connect/${availableIntegration}`);
+            await page
+              .getByText("Workspace admin required", { exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
+            expect(
+              new URL(page.url()).pathname.endsWith(`/connect/${availableIntegration}`),
+              "the deep link does not enter the add-account flow",
+            ).toBe(true);
           });
         });
       }),
