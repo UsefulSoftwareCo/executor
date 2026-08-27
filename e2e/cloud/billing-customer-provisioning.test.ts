@@ -21,7 +21,7 @@
 // 404 `customer_not_found` per billing endpoint — because the emulator, like
 // real Autumn's SDK flow, otherwise auto-creates customers on contact.
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Autumn, Billing, Mcp, Target } from "../src/services";
@@ -119,13 +119,19 @@ scenario(
       expect(result.text, "it returns its value").toContain("42");
 
       // Both billing calls really did reach Autumn and really were rejected —
-      // without this the scenario could pass on a fault that never armed.
-      const checks = yield* autumn.ledgerFor("balances.check");
+      // without this the scenario could pass on a fault that never armed. The
+      // ledger is shared by the whole run, so attribute to THIS org: another
+      // scenario's faulted call must not stand in for this one's.
+      const checks = (yield* autumn.ledgerFor("balances.check")).filter(
+        (entry) => entry.customerId === customerId,
+      );
       expect(
         checks.some((entry) => entry.faulted),
         "the balance check reached Autumn and was answered customer_not_found",
       ).toBe(true);
-      const tracks = yield* autumn.ledgerFor("balances.track");
+      const tracks = (yield* autumn.ledgerFor("balances.track")).filter(
+        (entry) => entry.customerId === customerId,
+      );
       expect(
         tracks.some((entry) => entry.faulted),
         "the usage track reached Autumn and was answered customer_not_found",
@@ -200,6 +206,76 @@ scenario(
 
       const metered = yield* autumn.usageEvents({ customerId, featureId: "executions" });
       expect(metered.length, "only the unfaulted execution reaches the meter").toBe(1);
+    }).pipe(Effect.ensuring(autumn.clearFaults().pipe(Effect.ignore)));
+  }),
+);
+
+scenario(
+  "Billing · a customer that cannot be provisioned is given up on, not retried in a loop",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    yield* Billing;
+    const autumn = yield* Autumn;
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+    const customerId = orgIdOf(bearer);
+
+    // Attempts against THIS org's meter, polled until the seam has settled on
+    // `atLeast` of them — the ledger is the only place the retry is visible.
+    const trackAttempts = (atLeast: number) =>
+      autumn.ledgerFor("balances.track").pipe(
+        Effect.map((entries) => entries.filter((entry) => entry.customerId === customerId)),
+        Effect.filterOrFail(
+          (entries) => entries.length >= atLeast,
+          (entries) => `only ${entries.length}/${atLeast} usage-track attempts for ${customerId}`,
+        ),
+        Effect.retry(Schedule.both(Schedule.spaced("250 millis"), Schedule.recurs(40))),
+      );
+
+    yield* Effect.gen(function* () {
+      // "No such customer" that does NOT go away when the customer is created —
+      // a provisioning gap the repair genuinely cannot close (a rejected id, a
+      // provider that never materializes the record). The seam must repair,
+      // retry ONCE, report, and stop: a repair loop here runs in a forked,
+      // untimed fibre, so an unbounded one hammers the provider forever for a
+      // single execution.
+      yield* autumn.armFault({
+        match: { operationId: "balances.track" },
+        response: CUSTOMER_NOT_FOUND,
+        times: 20,
+      });
+
+      const session = mcp.session(identity);
+      const stuck = yield* session.call("execute", { code: "return 7 * 6;" });
+      expect(stuck.ok, "the execution runs — billing never blocks a customer").toBe(true);
+      expect(stuck.text, "it returns its value").toContain("42");
+
+      // The original attempt plus the one post-repair retry.
+      yield* trackAttempts(2);
+
+      // Clearing the fault re-opens the meter, and the next execution's usage
+      // landing is the barrier: whatever the first execution was going to do to
+      // the ledger is finished by then, so the count below is settled without
+      // waiting on a clock.
+      yield* autumn.clearFaults();
+      const clean = yield* session.call("execute", { code: "return 2 + 2;" });
+      expect(clean.ok, "the follow-up execution runs too").toBe(true);
+      yield* autumn.expectUsage({ customerId, featureId: "executions", count: 1 });
+
+      const tracks = (yield* autumn.ledgerFor("balances.track")).filter(
+        (entry) => entry.customerId === customerId,
+      );
+      expect(
+        tracks.filter((entry) => entry.faulted).length,
+        "the unrepairable customer is attempted exactly twice: once, then once after the repair",
+      ).toBe(2);
+      expect(tracks.length, "and no further attempt beyond the next execution's own").toBe(3);
+
+      const metered = yield* autumn.usageEvents({ customerId, featureId: "executions" });
+      expect(metered.length, "only the execution Autumn accepted reaches the meter").toBe(1);
     }).pipe(Effect.ensuring(autumn.clearFaults().pipe(Effect.ignore)));
   }),
 );
