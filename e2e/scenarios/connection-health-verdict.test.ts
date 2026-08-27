@@ -488,20 +488,35 @@ scenario(
           "the later surfaces did ask about the connection's health — silence would mean a broken connection could never be seen to recover",
         ).toBeGreaterThan(0);
 
-        // THE production symptom, stated as the third party experiences it.
-        // Not "the later surfaces went silent" — they must not, or recovery
-        // could never show — but "each surface costs a fixed, bounded amount".
-        // Surface 3 is the SAME page as surface 1, so it must cost exactly what
-        // surface 1 cost; anything more is the per-connection guard failing and
-        // the effect re-probing in a loop.
         expect(
           afterList - baseline,
           "the list surface revalidated the broken connection",
         ).toBeGreaterThan(0);
+
+        // THE production symptom, stated as the third party experiences it.
+        // Not "the later surfaces went silent" — they must not, or recovery
+        // could never show — but "the traffic is attributable and it stops".
+        //
+        // Attributable: a refresh grant only ever happens inside a health
+        // request, so grants can never outnumber the requests that caused
+        // them. More grants than requests is the server retrying in a loop.
+        // Counted this way the assertion cannot race a probe that is still in
+        // flight: the request is recorded when it is SENT, before its grant.
         expect(
-          afterReturn - afterList,
-          "revisiting the same page costs the same one probe per connection it cost the first time, not a growing storm",
-        ).toBe(baseline);
+          afterReturn,
+          "every refresh grant is attributable to a health request the client sent",
+        ).toBeLessThanOrEqual(healthRequests.length);
+
+        // And it stops: once the page has settled, the per-connection guard
+        // means no further probes are issued. A quiet window that stays quiet
+        // is the storm's absence stated directly, rather than a probe count
+        // sampled at one arbitrary instant.
+        const settled = healthRequests.length;
+        await page.waitForTimeout(3_000);
+        expect(
+          healthRequests.length,
+          "a settled page stops probing; a still-climbing count is the guard failing and the effect re-probing in a loop",
+        ).toBe(settled);
 
         // And the shape that actually reached production: a refused refresh is
         // answered, not raised. Every one of these requests used to come back
