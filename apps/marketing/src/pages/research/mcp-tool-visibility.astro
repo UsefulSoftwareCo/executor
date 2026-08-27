@@ -88,19 +88,20 @@ const max = Math.max(...costs.map((c) => c.delta));
           <div class="mt-10 grid gap-6">
             {/* Inliners */}
             <div class="persp surface-card">
-              <div class="persp-head">
-                <div class="persp-id">
-                  <span class="persp-icons">
-                    <img src={claudeLogo} alt="Claude" width="20" height="20" />
-                    <img src={opencodeLogo} alt="opencode" width="20" height="20" />
-                  </span>
-                  <div>
-                    <span class="persp-name">Claude Code · opencode</span>
-                    <span class="persp-family">family: inline — every definition, every turn</span>
-                  </div>
-                </div>
+              <div class="persp-bar">
+                <span class="persp-dot"></span><span class="persp-dot"></span><span class="persp-dot"></span>
+                <span class="persp-icons">
+                  <img src={claudeLogo} alt="Claude" width="18" height="18" />
+                  <img src={opencodeLogo} alt="opencode" width="18" height="18" />
+                </span>
+                <span class="persp-name">Claude Code · opencode</span>
+                <span class="persp-ver">2.1.247 · 1.18.15</span>
                 <span class="persp-cost">+3,399–3,464 tokens</span>
               </div>
+              <p class="persp-lede">
+                Every definition is pasted into the prompt, every turn — name, description, and
+                schema for all 38 tools.
+              </p>
               <div class="persp-body">
                 <div class="ctx">
                   <div class="ctx-label">the model's context window</div>
@@ -139,18 +140,19 @@ const max = Math.max(...costs.map((c) => c.delta));
 
             {/* opencode code mode */}
             <div class="persp surface-card">
-              <div class="persp-head">
-                <div class="persp-id">
-                  <span class="persp-icons">
-                    <img src={opencodeLogo} alt="opencode" width="20" height="20" />
-                  </span>
-                  <div>
-                    <span class="persp-name">opencode · code mode</span>
-                    <span class="persp-family">family: code mode, transparent — tools become typed signatures</span>
-                  </div>
-                </div>
+              <div class="persp-bar">
+                <span class="persp-dot"></span><span class="persp-dot"></span><span class="persp-dot"></span>
+                <span class="persp-icons">
+                  <img src={opencodeLogo} alt="opencode" width="18" height="18" />
+                </span>
+                <span class="persp-name">opencode · code mode</span>
+                <span class="persp-ver">OPENCODE_EXPERIMENTAL_CODE_MODE</span>
                 <span class="persp-cost">+1,280 tokens</span>
               </div>
+              <p class="persp-lede">
+                Your tools collapse into one <code class="mono-inline">execute</code> tool and
+                reappear inside its description as typed signatures — still readable, 2.7× denser.
+              </p>
               <div class="persp-body">
                 <div class="ctx">
                   <div class="ctx-label">the model's context window</div>
@@ -186,18 +188,19 @@ const max = Math.max(...costs.map((c) => c.delta));
 
             {/* Cursor */}
             <div class="persp surface-card">
-              <div class="persp-head">
-                <div class="persp-id">
-                  <span class="persp-icons">
-                    <img src={cursorLogo} alt="Cursor" width="20" height="20" />
-                  </span>
-                  <div>
-                    <span class="persp-name">Cursor CLI</span>
-                    <span class="persp-family">family: virtualized — a names-only catalog</span>
-                  </div>
-                </div>
+              <div class="persp-bar">
+                <span class="persp-dot"></span><span class="persp-dot"></span><span class="persp-dot"></span>
+                <span class="persp-icons">
+                  <img src={cursorLogo} alt="Cursor" width="18" height="18" />
+                </span>
+                <span class="persp-name">Cursor CLI</span>
+                <span class="persp-ver">2026.07.23</span>
                 <span class="persp-cost">+170 tokens</span>
               </div>
+              <p class="persp-lede">
+                The model gets a names-only catalog. Descriptions and schemas exist on Cursor's
+                side, but the model has to ask for them.
+              </p>
               <div class="persp-body">
                 <div class="ctx">
                   <div class="ctx-label">the model's context window</div>
@@ -238,18 +241,19 @@ const max = Math.max(...costs.map((c) => c.delta));
 
             {/* Codex */}
             <div class="persp surface-card">
-              <div class="persp-head">
-                <div class="persp-id">
-                  <span class="persp-icons">
-                    <img src={codexLogo} alt="Codex" width="20" height="20" />
-                  </span>
-                  <div>
-                    <span class="persp-name">Codex CLI</span>
-                    <span class="persp-family">family: code mode, opaque — nothing reaches the prompt</span>
-                  </div>
-                </div>
+              <div class="persp-bar">
+                <span class="persp-dot"></span><span class="persp-dot"></span><span class="persp-dot"></span>
+                <span class="persp-icons">
+                  <img src={codexLogo} alt="Codex" width="18" height="18" />
+                </span>
+                <span class="persp-name">Codex CLI</span>
+                <span class="persp-ver">0.147.0</span>
                 <span class="persp-cost">+0 tokens</span>
               </div>
+              <p class="persp-lede">
+                Nothing about your tools reaches the prompt. They exist only as callables inside
+                Codex's code sandbox — the model discovers them by writing code.
+              </p>
               <div class="persp-body">
                 <div class="ctx">
                   <div class="ctx-label">the model's context window</div>
@@ -422,51 +426,75 @@ const max = Math.max(...costs.map((c) => c.delta));
     padding: 0;
     overflow: hidden;
   }
-  .persp-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 18px 24px;
-    border-bottom: 1px solid var(--color-rule);
-  }
-  .persp-name {
-    font-weight: 600;
-    font-size: 17px;
-    letter-spacing: -0.01em;
-    color: var(--color-ink);
-  }
-  .persp-family {
-    display: block;
-    margin-top: 3px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--color-ink-3);
-  }
-  .persp-cost {
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--color-ink);
-    white-space: nowrap;
-  }
-  .persp-id {
+  /* window titlebar — the card IS the harness's window */
+  .persp-bar {
     display: flex;
     align-items: center;
-    gap: 12px;
-    min-width: 0;
+    gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--color-rule);
+    background: var(--color-surface-2);
+  }
+  .persp-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 9999px;
+    background: var(--color-rule-strong);
+    flex-shrink: 0;
+  }
+  .persp-dot + .persp-dot {
+    margin-left: -3px;
   }
   .persp-icons {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
     flex-shrink: 0;
+    margin-left: 8px;
   }
   .persp-icons img {
     display: block;
-    height: 20px;
-    width: 20px;
+    height: 18px;
+    width: 18px;
+  }
+  .persp-name {
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+    white-space: nowrap;
+  }
+  .persp-ver {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--color-ink-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .persp-cost {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--color-ink);
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  @media (max-width: 640px) {
+    .persp-ver {
+      display: none;
+    }
+  }
+  .persp-lede {
+    padding: 16px 24px 0;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--color-ink-2);
+    max-width: 72ch;
+  }
+  /* one window chrome per card: inner excerpts keep a filename bar, no dots */
+  .persp-detail .code-dot {
+    display: none;
   }
   .persp-body {
     display: grid;
