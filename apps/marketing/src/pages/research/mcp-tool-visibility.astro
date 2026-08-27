@@ -1,5 +1,9 @@
 ---
 import Layout from "../../layouts/Layout.astro";
+import claudeLogo from "../../assets/logos/claude.svg?url";
+import codexLogo from "../../assets/logos/codex.svg?url";
+import cursorLogo from "../../assets/logos/cursor.svg?url";
+import opencodeLogo from "../../assets/logos/opencode.svg?url";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 const title = "How agents actually see your MCP tools";
@@ -8,12 +12,12 @@ const description =
 
 // Δ prompt tokens for the 31 per-integration search tools, provider-reported.
 const costs = [
-  { name: "Claude Code", detail: "2.1.247 · inline", delta: 3464, plain: "36,013", search: "39,477" },
-  { name: "opencode (beta)", detail: "default · inline", delta: 3400, plain: "22,118", search: "25,518" },
-  { name: "opencode", detail: "1.18.15 · inline", delta: 3399, plain: "17,458", search: "20,857" },
-  { name: "opencode (beta)", detail: "code mode · TS signatures", delta: 1280, plain: "16,126", search: "17,406" },
-  { name: "Cursor CLI", detail: "2026.07.23 · names only", delta: 170, plain: "16,140", search: "16,310" },
-  { name: "Codex CLI", detail: "0.147.0 · code mode", delta: 0, plain: "15,776", search: "15,776" },
+  { name: "Claude Code", icon: claudeLogo, detail: "2.1.247 · inline", delta: 3464, plain: "36,013", search: "39,477" },
+  { name: "opencode (beta)", icon: opencodeLogo, detail: "default · inline", delta: 3400, plain: "22,118", search: "25,518" },
+  { name: "opencode", icon: opencodeLogo, detail: "1.18.15 · inline", delta: 3399, plain: "17,458", search: "20,857" },
+  { name: "opencode (beta)", icon: opencodeLogo, detail: "code mode · TS signatures", delta: 1280, plain: "16,126", search: "17,406" },
+  { name: "Cursor CLI", icon: cursorLogo, detail: "2026.07.23 · names only", delta: 170, plain: "16,140", search: "16,310" },
+  { name: "Codex CLI", icon: codexLogo, detail: "0.147.0 · code mode", delta: 0, plain: "15,776", search: "15,776" },
 ];
 const max = Math.max(...costs.map((c) => c.delta));
 ---
@@ -85,9 +89,15 @@ const max = Math.max(...costs.map((c) => c.delta));
             {/* Inliners */}
             <div class="persp surface-card">
               <div class="persp-head">
-                <div>
-                  <span class="persp-name">Claude Code · opencode</span>
-                  <span class="persp-family">family: inline — every definition, every turn</span>
+                <div class="persp-id">
+                  <span class="persp-icons">
+                    <img src={claudeLogo} alt="Claude" width="20" height="20" />
+                    <img src={opencodeLogo} alt="opencode" width="20" height="20" />
+                  </span>
+                  <div>
+                    <span class="persp-name">Claude Code · opencode</span>
+                    <span class="persp-family">family: inline — every definition, every turn</span>
+                  </div>
                 </div>
                 <span class="persp-cost">+3,399–3,464 tokens</span>
               </div>
@@ -130,9 +140,14 @@ const max = Math.max(...costs.map((c) => c.delta));
             {/* opencode code mode */}
             <div class="persp surface-card">
               <div class="persp-head">
-                <div>
-                  <span class="persp-name">opencode · code mode</span>
-                  <span class="persp-family">family: code mode, transparent — tools become typed signatures</span>
+                <div class="persp-id">
+                  <span class="persp-icons">
+                    <img src={opencodeLogo} alt="opencode" width="20" height="20" />
+                  </span>
+                  <div>
+                    <span class="persp-name">opencode · code mode</span>
+                    <span class="persp-family">family: code mode, transparent — tools become typed signatures</span>
+                  </div>
                 </div>
                 <span class="persp-cost">+1,280 tokens</span>
               </div>
@@ -172,9 +187,14 @@ const max = Math.max(...costs.map((c) => c.delta));
             {/* Cursor */}
             <div class="persp surface-card">
               <div class="persp-head">
-                <div>
-                  <span class="persp-name">Cursor CLI</span>
-                  <span class="persp-family">family: virtualized — a names-only catalog</span>
+                <div class="persp-id">
+                  <span class="persp-icons">
+                    <img src={cursorLogo} alt="Cursor" width="20" height="20" />
+                  </span>
+                  <div>
+                    <span class="persp-name">Cursor CLI</span>
+                    <span class="persp-family">family: virtualized — a names-only catalog</span>
+                  </div>
                 </div>
                 <span class="persp-cost">+170 tokens</span>
               </div>
@@ -219,9 +239,14 @@ const max = Math.max(...costs.map((c) => c.delta));
             {/* Codex */}
             <div class="persp surface-card">
               <div class="persp-head">
-                <div>
-                  <span class="persp-name">Codex CLI</span>
-                  <span class="persp-family">family: code mode, opaque — nothing reaches the prompt</span>
+                <div class="persp-id">
+                  <span class="persp-icons">
+                    <img src={codexLogo} alt="Codex" width="20" height="20" />
+                  </span>
+                  <div>
+                    <span class="persp-name">Codex CLI</span>
+                    <span class="persp-family">family: code mode, opaque — nothing reaches the prompt</span>
+                  </div>
                 </div>
                 <span class="persp-cost">+0 tokens</span>
               </div>
@@ -277,8 +302,11 @@ const max = Math.max(...costs.map((c) => c.delta));
               costs.map((c) => (
                 <div class="cost-row">
                   <div class="cost-name">
-                    {c.name}
-                    <span class="cost-detail">{c.detail}</span>
+                    <img src={c.icon} alt="" width="16" height="16" class="cost-icon" />
+                    <span>
+                      {c.name}
+                      <span class="cost-detail">{c.detail}</span>
+                    </span>
                   </div>
                   <div class="cost-track" title={`plain ${c.plain} → search ${c.search}`}>
                     <div
@@ -423,6 +451,23 @@ const max = Math.max(...costs.map((c) => c.delta));
     color: var(--color-ink);
     white-space: nowrap;
   }
+  .persp-id {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .persp-icons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .persp-icons img {
+    display: block;
+    height: 20px;
+    width: 20px;
+  }
   .persp-body {
     display: grid;
     grid-template-columns: 340px 1fr;
@@ -559,9 +604,18 @@ const max = Math.max(...costs.map((c) => c.delta));
     }
   }
   .cost-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-size: 14px;
     font-weight: 500;
     color: var(--color-ink);
+  }
+  .cost-icon {
+    display: block;
+    height: 16px;
+    width: 16px;
+    flex-shrink: 0;
   }
   .cost-detail {
     display: block;
