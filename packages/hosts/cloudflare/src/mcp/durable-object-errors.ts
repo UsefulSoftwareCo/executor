@@ -37,6 +37,8 @@ export type DurableObjectFailureKind =
   | "storage_internal"
   /** `blockConcurrencyWhile()` ran past its cap and was cancelled. */
   | "concurrency_reset"
+  /** An invocation ran past the per-invocation CPU ceiling; the object was reset. */
+  | "cpu_limit"
   /** A generic platform blip: `internal error; reference = <id>`. */
   | "internal_error"
   /** The runtime itself flagged the error as retryable. */
@@ -87,9 +89,30 @@ const MESSAGE_PATTERNS: ReadonlyArray<{
     failure: { kind: "concurrency_reset", disposition: "transient" },
   },
   {
+    // Deliberately starts at the verb, not at "Durable Object": the runtime's
+    // resource-limit messages disagree about the subject noun (the memory
+    // variant says "Durable Object's isolate exceeded its memory limit"), and
+    // pinning a subject here would let a rewording defeat the match. From
+    // "exceeded its CPU time limit" onward the phrase is the runtime's alone.
+    //
+    // Transient, not a defect: the invocation was cut off but the object's
+    // durable storage is untouched and the session id still routes, so the next
+    // attempt — a smaller unit of work, or the same one under a warm isolate —
+    // can succeed. Retrying the same id is strictly better than the unhandled
+    // 500 this produced before.
+    fragment: "exceeded its cpu time limit and was reset",
+    failure: { kind: "cpu_limit", disposition: "transient" },
+  },
+  {
     fragment: "internal error; reference =",
     failure: { kind: "internal_error", disposition: "transient" },
   },
+  // Not listed, on purpose: the sibling memory-limit reset ("Durable Object's
+  // isolate exceeded its memory limit due to overflowing the storage cache …
+  // All objects in the isolate were reset."). The runtime tags that one as a
+  // user error, and it names its own cause — too many un-awaited writes, or one
+  // oversized read. Retrying reproduces it, so calling it transient would bury
+  // an application defect behind a 503 instead of surfacing it.
 ];
 
 /**

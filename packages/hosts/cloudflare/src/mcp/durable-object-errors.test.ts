@@ -53,6 +53,28 @@ describe("classifyDurableObjectError", () => {
     ).toEqual({ kind: "concurrency_reset", disposition: "transient" });
   });
 
+  it("reads a CPU-limit reset as transient", () => {
+    expect(
+      classifyDurableObjectError(
+        new Error("Durable Object exceeded its CPU time limit and was reset."),
+      ),
+    ).toEqual({ kind: "cpu_limit", disposition: "transient" });
+  });
+
+  // The memory-limit reset is the CPU limit's sibling and is deliberately NOT
+  // classified: the runtime names the application as the cause (un-awaited
+  // writes, an oversized read), so a retry reproduces it. It has to keep being
+  // rethrown and reported rather than disappearing into a 503.
+  it("refuses to classify the sibling memory-limit reset as retryable", () => {
+    expect(
+      classifyDurableObjectError(
+        new Error(
+          "Durable Object's isolate exceeded its memory limit due to overflowing the storage cache. All objects in the isolate were reset.",
+        ),
+      ),
+    ).toBeNull();
+  });
+
   it("reads a platform blip as transient, ignoring the reference id", () => {
     // The reference id differs on every event; it must not defeat the match.
     expect(
@@ -184,5 +206,21 @@ describe("durableObjectFailureResponse", () => {
       expect(result.status, message).toBe(503);
       expect(result.retryAfter, message).not.toBeNull();
     }
+  });
+
+  // An invocation cut off at the CPU ceiling reaches the handler as the same
+  // untyped Error as every other reset, and used to fall out of the worker as
+  // an unhandled 500. It must land on the retry-the-same-id envelope instead.
+  it("tells the client to retry the same session after a CPU-limit reset", async () => {
+    const result = await envelope(
+      new Error("Durable Object exceeded its CPU time limit and was reset."),
+    );
+
+    expect(result.status, "HTTP status is the discriminator clients act on").toBe(503);
+    expect(result.body.jsonrpc).toBe("2.0");
+    expect(result.body.error?.code).toBe(-32001);
+    expect(result.retryAfter, "the client is told how long to back off").toBe(
+      String(UNAVAILABLE_RETRY_AFTER_SECONDS),
+    );
   });
 });
