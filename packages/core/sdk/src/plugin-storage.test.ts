@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Schema } from "effect";
 
-import { StorageError } from "./fuma-runtime";
+import { createExecutor } from "./executor";
+import { StorageError, type FumaDb } from "./fuma-runtime";
 import { Owner } from "./ids";
 import { definePlugin } from "./plugin";
 import {
@@ -10,7 +11,7 @@ import {
   type PluginStorageCollectionQueryInput,
   type PluginStorageCollectionWhere,
 } from "./plugin-storage";
-import { makeTestExecutor } from "./testing";
+import { makeTestConfig, makeTestExecutor } from "./testing";
 
 const ToolCall = Schema.Struct({
   runId: Schema.String,
@@ -108,6 +109,48 @@ const call = (input: {
   startedAt: input.startedAt,
   durationMs: input.durationMs ?? 0,
 });
+
+const failPluginStorageBulkWriteAfterFirstRow = (db: FumaDb): FumaDb => {
+  const wrap = (source: FumaDb, failBulkWrite: boolean): FumaDb =>
+    new Proxy(source, {
+      get(target, property, receiver) {
+        if (property === "withContext") {
+          const withContext = target.withContext;
+          return withContext === undefined
+            ? undefined
+            : (context: unknown) => wrap(withContext(context), failBulkWrite);
+        }
+        if (property === "transaction") {
+          const transaction: FumaDb["transaction"] = (run) =>
+            target.transaction((transactionDb) => run(wrap(transactionDb, true)));
+          return transaction;
+        }
+        if (property === "upsertMany" && failBulkWrite) {
+          const upsertMany: FumaDb["upsertMany"] = async (table, options) => {
+            if (table !== "plugin_storage" || options.values.length < 2) {
+              return target.upsertMany(table, options);
+            }
+
+            await target.upsertMany(table, {
+              ...options,
+              values: options.values.slice(0, 1),
+            });
+            // oxlint-disable-next-line executor/no-promise-reject -- boundary: fault-injecting FumaDB adapter must reject to exercise transaction rollback
+            return Promise.reject(
+              new StorageError({
+                message: "Injected plugin storage bulk-write failure.",
+                cause: undefined,
+              }),
+            );
+          };
+          return upsertMany;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+  return wrap(db, false);
+};
 
 describe("plugin storage collections", () => {
   it.effect("queries declared indexes through the executor's SQLite FumaDB target", () =>
@@ -215,6 +258,57 @@ describe("plugin storage collections", () => {
       );
       const remaining = yield* executor.executionHistory.query({ where: { runId: "run-bulk" } });
       expect(remaining).toEqual([]);
+    }),
+  );
+
+  it.effect("rolls back every plugin storage row when a bulk write fails", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const executor = yield* Effect.acquireRelease(
+        createExecutor({
+          ...config,
+          db: failPluginStorageBulkWriteAfterFirstRow(config.db),
+        }),
+        (instance) =>
+          instance
+            .close()
+            .pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.promise(() => config.testDb.close()).pipe(Effect.ignore)),
+            ),
+      );
+
+      const exit = yield* Effect.exit(
+        executor.executionHistory.recordMany("org", [
+          {
+            key: "call-first",
+            data: call({
+              runId: "run-rollback",
+              toolId: "browser",
+              status: "ok",
+              startedAt: "2026-05-29T12:00:00.000Z",
+            }),
+          },
+          {
+            key: "call-second",
+            data: call({
+              runId: "run-rollback",
+              toolId: "shell",
+              status: "ok",
+              startedAt: "2026-05-29T12:01:00.000Z",
+            }),
+          },
+        ]),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const stored = yield* executor.executionHistory.query({
+        where: { runId: "run-rollback" },
+      });
+      expect(stored).toEqual([]);
     }),
   );
 

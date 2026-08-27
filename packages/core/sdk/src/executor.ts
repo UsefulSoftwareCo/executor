@@ -996,6 +996,8 @@ type LooseStorageDb = {
 const asLooseStorageDb = (db: unknown): LooseStorageDb => db as LooseStorageDb;
 
 const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
+  transaction: <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | StorageFailure> =>
+    fuma.transaction(effect),
   count: <TName extends CoreTableName>(
     tableName: TName,
     options?: { readonly where?: CoreWhere },
@@ -1358,44 +1360,46 @@ const makePluginStorageFacade = (input: {
       readonly data: unknown;
     }[],
   ) =>
-    Effect.gen(function* () {
-      const os = ownerSubject(owner);
-      if (!os) {
-        return yield* new StorageError({
-          message: `Cannot write plugin storage for owner "user": executor has no subject.`,
-          cause: undefined,
-        });
-      }
-      const entriesById = new Map(
-        entries.map((entry) => [
-          pluginStorageId({
-            pluginId: input.pluginId,
+    input.core.transaction(
+      Effect.gen(function* () {
+        const os = ownerSubject(owner);
+        if (!os) {
+          return yield* new StorageError({
+            message: `Cannot write plugin storage for owner "user": executor has no subject.`,
+            cause: undefined,
+          });
+        }
+        const entriesById = new Map(
+          entries.map((entry) => [
+            pluginStorageId({
+              pluginId: input.pluginId,
+              collection: entry.collection,
+              key: entry.key,
+            }),
+            entry,
+          ]),
+        );
+        const uniqueEntries = [...entriesById.values()];
+        if (uniqueEntries.length === 0) return;
+
+        const now = new Date();
+        yield* input.core.upsertMany("plugin_storage", {
+          target: ["tenant", "owner", "subject", "plugin_id", "collection", "key"],
+          update: ["data", "updated_at"],
+          values: uniqueEntries.map((entry) => ({
+            tenant,
+            owner: os.owner,
+            subject: os.subject,
+            plugin_id: input.pluginId,
             collection: entry.collection,
             key: entry.key,
-          }),
-          entry,
-        ]),
-      );
-      const uniqueEntries = [...entriesById.values()];
-      if (uniqueEntries.length === 0) return;
-
-      const now = new Date();
-      yield* input.core.upsertMany("plugin_storage", {
-        target: ["tenant", "owner", "subject", "plugin_id", "collection", "key"],
-        update: ["data", "updated_at"],
-        values: uniqueEntries.map((entry) => ({
-          tenant,
-          owner: os.owner,
-          subject: os.subject,
-          plugin_id: input.pluginId,
-          collection: entry.collection,
-          key: entry.key,
-          data: entry.data,
-          created_at: now,
-          updated_at: now,
-        })),
-      });
-    });
+            data: entry.data,
+            created_at: now,
+            updated_at: now,
+          })),
+        });
+      }),
+    );
 
   const removeManyImpl = (
     owner: Owner,
