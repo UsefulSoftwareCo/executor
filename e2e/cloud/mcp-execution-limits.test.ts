@@ -21,7 +21,7 @@ import {
   RATE_LIMIT_BLOCKED_MESSAGE,
 } from "../../apps/cloud/src/engine/execution-limit-messages";
 import { scenario } from "../src/scenario";
-import { Autumn, Billing, Mcp, Target } from "../src/services";
+import { Autumn, Billing, Mcp, Target, Telemetry } from "../src/services";
 import { E2E_EXECUTION_RATE_LIMIT } from "../setup/execution-limits";
 import type { Identity } from "../src/target";
 
@@ -196,6 +196,62 @@ scenario(
     expect(metered.length, "only the allowed executions are metered — the blocked one is not").toBe(
       RATE_LIMIT,
     );
+  }),
+);
+
+scenario(
+  "Billing · the rate-limit counter check is visible in the exported spans",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    // The backstop's counter is a blocking Durable Object hop on the execute
+    // hot path. It used to run untraced, so the only production evidence it
+    // was slow was a fail-open warning arriving 2s later — and a counter fault
+    // reached the error reporter as an untyped wrapper with no application
+    // frames. This pins the measurement seam where it is actually read: the
+    // spans the worker EXPORTS, over the real workerd + Durable Object
+    // topology, not a span object built in a unit test.
+    yield* Billing;
+    const telemetry = yield* Telemetry;
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+    const customerId = orgIdOf(bearer);
+
+    const session = mcp.session(identity);
+    const ok = yield* session.call("execute", { code: "return 4 + 5;" });
+    expect(ok.ok, "the execution runs").toBe(true);
+    expect(ok.text, "it returns its value").toContain("9");
+
+    const check = yield* telemetry.expectSpan({
+      operation: "rate_limit.check",
+      attributes: { "rate_limit.organization_id": customerId },
+    });
+    expect(
+      check.span.tags["rate_limit.count"],
+      "the org's count for the window is on the span",
+    ).toBe("1");
+    expect(check.span.tags["rate_limit.limit"], "so is the cap it was measured against").toBe(
+      String(RATE_LIMIT),
+    );
+    expect(check.span.tags["rate_limit.blocked"], "an allowed execution is recorded as such").toBe(
+      "false",
+    );
+    // The two attributes production alerting reads. Both false on a healthy
+    // check; a step change in either is the signal that used to arrive only as
+    // a stream of untyped error reports.
+    expect(check.span.tags["rate_limit.check.failed_open"], "the check did not fail open").toBe(
+      "false",
+    );
+    expect(check.span.tags["rate_limit.check.timeout_ms"], "the budget is recorded").toBe("2000");
+
+    // The DO round trip itself is timed, as a child of the check.
+    const increments = yield* telemetry.searchSpans({
+      operation: "rate_limit.increment",
+      traceId: check.traceId,
+    });
+    expect(increments.length, "the counter DO call is its own span").toBeGreaterThan(0);
   }),
 );
 

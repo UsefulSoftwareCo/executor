@@ -27,7 +27,7 @@
 // ---------------------------------------------------------------------------
 
 import { DurableObject, env } from "cloudflare:workers";
-import { Data, Effect } from "effect";
+import { Data, Effect, Predicate } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { ExecutionEngine } from "@executor-js/execution";
@@ -76,6 +76,66 @@ class RateLimitCheckTimeoutError extends Data.TaggedError("RateLimitCheckTimeout
   readonly timeoutMs: number;
 }> {}
 
+/**
+ * Why a counter DO call failed, as a small closed vocabulary.
+ *
+ * The counter's failures are overwhelmingly transient Cloudflare platform
+ * faults, and they used to arrive in Sentry as one untyped
+ * `UnknownError: An error occurred in Effect.tryPromise` with no application
+ * frames — a group that says nothing and would eventually swallow a real
+ * misconfiguration too. The code is what makes a storage reset (retryable,
+ * expected) distinguishable from an overload or an outright unknown fault.
+ */
+export type RateLimitCounterErrorCode =
+  | "storage_reset"
+  | "overloaded"
+  | "exceeded_memory"
+  | "network"
+  | "unknown";
+
+/** A counter DO call that failed, carrying the classification and the org. */
+export class RateLimitCounterError extends Data.TaggedError("RateLimitCounterError")<{
+  readonly organizationId: string;
+  readonly code: RateLimitCounterErrorCode;
+  readonly reason: string;
+  readonly cause: unknown;
+}> {}
+
+// Cloudflare surfaces these as plain `Error`s with documented message text;
+// there is no structured code to read, so the message is the only signal.
+// (A shared `classifyDurableObjectError` would be the right home for this once
+// one exists.)
+const counterErrorCode = (reason: string): RateLimitCounterErrorCode => {
+  if (/caused object to be reset/i.test(reason)) return "storage_reset";
+  if (/overloaded/i.test(reason)) return "overloaded";
+  if (/exceeded (its )?memory|out of memory/i.test(reason)) return "exceeded_memory";
+  if (/network connection lost|connection.*(lost|reset)/i.test(reason)) return "network";
+  return "unknown";
+};
+
+/**
+ * The fail-open landing: record the outcome on the check span, warn, and allow
+ * the execution. Only failures that are NOT deliberate degradation reach the
+ * error reporter — see the call sites in `decide`.
+ */
+const failOpen = (
+  error: unknown,
+  outcome: { readonly errorTag: string; readonly timedOut: boolean },
+): Effect.Effect<GateDecision> =>
+  Effect.gen(function* () {
+    yield* Effect.annotateCurrentSpan({
+      "rate_limit.blocked": false,
+      "rate_limit.check.failed_open": true,
+      "rate_limit.check.timed_out": outcome.timedOut,
+      "rate_limit.check.error_tag": outcome.errorTag,
+    });
+    yield* Effect.sync(() => {
+      console.warn("[rate-limit] execution rate limit check failed open:", error);
+    });
+    if (!outcome.timedOut) yield* captureCauseEffect(error);
+    return { blocked: false } as const satisfies GateDecision;
+  });
+
 /** Internal sentinel for an exemption lookup that exceeded its time budget. */
 class ExemptionCheckTimeoutError extends Data.TaggedError("ExemptionCheckTimeoutError")<{
   readonly timeoutMs: number;
@@ -106,6 +166,12 @@ type WindowRecord = {
 
 export class ExecutionRateLimiterDO extends DurableObject {
   private readonly counterStorage: DurableObjectState["storage"];
+  /**
+   * The window this instance has already armed the purge alarm for. In-memory
+   * on purpose: it costs no storage read, and a fresh instance (eviction, cold
+   * start) simply re-arms on its first increment.
+   */
+  private purgeArmedForWindow: number | null = null;
 
   constructor(ctx: DurableObjectState, doEnv: Env) {
     super(ctx, doEnv);
@@ -119,11 +185,21 @@ export class ExecutionRateLimiterDO extends DurableObject {
     const stored = await this.counterStorage.get<WindowRecord>(WINDOW_RECORD_KEY);
     const count = stored && stored.windowId === windowId ? stored.count + 1 : 1;
     await this.counterStorage.put(WINDOW_RECORD_KEY, { windowId, count });
-    await this.counterStorage.setAlarm(Date.now() + COUNTER_PURGE_AFTER_MS);
+    // The alarm only has to outlive the window, and it is set two windows out,
+    // so once per window is enough — rewriting it on every increment put a
+    // second durable write and an alarm-manager update on the hot path of
+    // every execution, with the input gate closed across all three. `count`
+    // back at 1 means the window rolled (or a purge already ran), so the
+    // deadline moves with it.
+    if (count === 1 || this.purgeArmedForWindow !== windowId) {
+      await this.counterStorage.setAlarm(Date.now() + COUNTER_PURGE_AFTER_MS);
+      this.purgeArmedForWindow = windowId;
+    }
     return count;
   }
 
   async alarm(): Promise<void> {
+    this.purgeArmedForWindow = null;
     await this.counterStorage.deleteAll();
   }
 }
@@ -132,11 +208,17 @@ export class ExecutionRateLimiterDO extends DurableObject {
 // Client
 // ---------------------------------------------------------------------------
 
-/** Count one execution for (organizationId, windowId); returns the new count. */
+/**
+ * Count one execution for (organizationId, windowId); returns the new count.
+ *
+ * The failure channel is typed rather than `unknown` so the fail-open path can
+ * tell a counter fault from a blown budget by tag, and so Sentry groups by
+ * cause instead of one opaque `UnknownError`.
+ */
 export type RateLimitIncrement = (
   organizationId: string,
   windowId: number,
-) => Effect.Effect<number, unknown>;
+) => Effect.Effect<number, RateLimitCounterError>;
 
 export type ExecutionRateLimiter = {
   readonly decorate: <E extends Cause.YieldableError>(
@@ -239,9 +321,25 @@ export const makeExecutionRateLimiter = (
         }),
         Effect.flatMap((count): Effect.Effect<GateDecision> => {
           // Under the cap: no exemption lookup, no extra I/O.
-          if (count <= limit) return Effect.succeed({ blocked: false });
+          if (count <= limit)
+            return Effect.as(
+              Effect.annotateCurrentSpan({
+                "rate_limit.count": count,
+                "rate_limit.blocked": false,
+                "rate_limit.check.failed_open": false,
+              }),
+              { blocked: false },
+            );
           return Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan({
+              "rate_limit.count": count,
+              "rate_limit.check.failed_open": false,
+            });
             if (yield* resolveExemption(organizationId)) {
+              yield* Effect.annotateCurrentSpan({
+                "rate_limit.blocked": false,
+                "rate_limit.exempt": true,
+              });
               return { blocked: false } as const satisfies GateDecision;
             }
             // The only record that the backstop fired. A blocked execution is
@@ -256,6 +354,10 @@ export const makeExecutionRateLimiter = (
                 `[rate-limit] blocked execution for ${organizationId}: ${count} > ${limit} in window ${windowId}`,
               );
             });
+            yield* Effect.annotateCurrentSpan({
+              "rate_limit.blocked": true,
+              "rate_limit.exempt": false,
+            });
             return {
               blocked: true,
               error: new ExecutionRateLimitExceededError({
@@ -267,15 +369,36 @@ export const makeExecutionRateLimiter = (
         }),
         // FAIL OPEN: the backstop must never block executions because its
         // counter is unreachable or slow.
+        //
+        // A check that blew its own budget is DELIBERATE degradation, not an
+        // exception — the timeout exists precisely so a slow counter can't
+        // stall a user-facing execution. It is measured on the span
+        // (`rate_limit.check.timed_out`), where a step change in the rate is
+        // alertable, rather than paged per occurrence, which is what buried
+        // real counter failures under one opaque group. Everything else (RPC
+        // faults, a missing binding) still reports.
+        Effect.catchTag("RateLimitCheckTimeoutError", (error) =>
+          failOpen(error, { errorTag: "RateLimitCheckTimeoutError", timedOut: true }),
+        ),
+        // A catch-all rather than a second `catchTag`: fail-open is a hard
+        // requirement and must not depend on the failure being one the types
+        // predicted.
         Effect.catch((error: unknown) =>
-          Effect.gen(function* () {
-            yield* Effect.sync(() => {
-              console.warn("[rate-limit] execution rate limit check failed open:", error);
-            });
-            yield* captureCauseEffect(error);
-            return { blocked: false } as const satisfies GateDecision;
+          failOpen(error, {
+            errorTag: Predicate.isTagged(error, "RateLimitCounterError")
+              ? "RateLimitCounterError"
+              : "unknown",
+            timedOut: false,
           }),
         ),
+        Effect.withSpan("rate_limit.check", {
+          attributes: {
+            "rate_limit.organization_id": organizationId,
+            "rate_limit.window_id": windowId,
+            "rate_limit.limit": limit,
+            "rate_limit.check.timeout_ms": timeoutMs,
+          },
+        }),
       );
     });
 
@@ -320,17 +443,53 @@ export const makeCloudExecutionRateLimiter = (
     );
     return makeExecutionRateLimiter(() => Effect.succeed(0));
   }
-  return makeExecutionRateLimiter(
-    (organizationId, windowId) =>
-      Effect.tryPromise(() => {
+  return makeExecutionRateLimiter(counterIncrement(namespace), {
+    limit,
+    timeoutMs: resolveCheckTimeoutMs(),
+    isExempt,
+  });
+};
+
+/**
+ * The counter DO RPC, as a traced and typed increment.
+ *
+ * The span is the whole point: this call is a blocking, cold-startable hop on
+ * the execute hot path, and until it had one nothing about its duration was
+ * measurable — the only evidence it was slow was the fail-open warning 2s
+ * later. The typed error replaces Effect's generic `UnknownError`, which gave
+ * Sentry no org, no window, and no hint that a Durable Object was involved.
+ */
+const counterIncrement =
+  (namespace: RateLimiterNamespace): RateLimitIncrement =>
+  (organizationId, windowId) =>
+    Effect.tryPromise({
+      try: () => {
         const stub = namespace.get(
           namespace.idFromName(organizationId),
         ) as ExecutionRateLimiterStub;
         return stub.increment(windowId);
+      },
+      catch: (cause) => {
+        // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: the Durable Object RPC rejects with a plain platform Error whose message text is the only classification signal Cloudflare gives
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        return new RateLimitCounterError({
+          organizationId,
+          code: counterErrorCode(reason),
+          reason,
+          cause,
+        });
+      },
+    }).pipe(
+      Effect.tapError((error) =>
+        Effect.annotateCurrentSpan({
+          "rate_limit.counter.error_tag": "RateLimitCounterError",
+          "rate_limit.counter.error_code": error.code,
+        }),
+      ),
+      Effect.withSpan("rate_limit.increment", {
+        attributes: { "rate_limit.window_id": windowId },
       }),
-    { limit, isExempt },
-  );
-};
+    );
 
 /**
  * The per-org hourly cap: the `EXECUTION_RATE_LIMIT_PER_HOUR` env override
@@ -343,4 +502,19 @@ const resolveRateLimit = (): number => {
   if (raw === undefined) return EXECUTIONS_PER_ORG_PER_HOUR;
   const parsed = Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : EXECUTIONS_PER_ORG_PER_HOUR;
+};
+
+/**
+ * The counter's time budget: the `EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS` env
+ * override or `RATE_LIMIT_CHECK_TIMEOUT_MS` when it's unset or unparseable.
+ * Same precedent and same purpose as `EXECUTION_RATE_LIMIT_PER_HOUR`: the
+ * production 2s budget can't be blown on demand, so tests set a tiny one to
+ * drive the fail-open path deterministically. Production leaves it unset.
+ */
+const resolveCheckTimeoutMs = (): number => {
+  const raw = (env as { EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS?: string })
+    .EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS;
+  if (raw === undefined) return RATE_LIMIT_CHECK_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : RATE_LIMIT_CHECK_TIMEOUT_MS;
 };
