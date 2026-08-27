@@ -459,19 +459,35 @@ scenario(
     { status: 503, contentType: "text/plain; charset=utf-8", body: "upstream unavailable" },
     ({ callTool, refreshGrantsSent, connectionHealth }) =>
       Effect.gen(function* () {
+        /** The call did not deliver a result — whichever shape the failure
+         *  wore. A transient failure is deliberately left unclassified, so
+         *  today it degrades into an MCP-level error; that shape is a separate
+         *  contract (and a separate change), and pinning it here would make
+         *  this scenario fail for improving it. What this scenario owns is
+         *  that a stumble is not read as a DEAD GRANT. */
+        const expectFailed = (call: McpCall, label: string) => {
+          if (!call.ok) return;
+          const envelope = JSON.parse(call.text) as ToolEnvelope;
+          expect(envelope.ok, label).toBe(false);
+        };
+        const expectNoReconnectDemanded = (call: McpCall, label: string) =>
+          expect(
+            call.text,
+            `${label}: a server that stumbled is not a grant that died — no reconnect is demanded of the user`,
+          ).not.toContain("oauth_reauth_required");
+
         const first = yield* callTool();
-        expect(first.ok, "the tool call did not succeed").toBe(false);
-        expect(
-          first.text,
-          "a server that stumbled is not a grant that died — no reconnect is demanded of the user",
-        ).not.toContain("oauth_reauth_required");
+        expectFailed(first, "the tool call did not succeed");
+        expectNoReconnectDemanded(first, "first call");
         expect(yield* refreshGrantsSent, "the refresh was attempted once").toBe(1);
 
         // THE guarantee for this half: the grant is still good, so every later
         // use tries again. A classifier that read 5xx as permanent would leave
         // this at 1 and strand a healthy connection on a transient outage.
-        yield* callTool();
-        yield* callTool();
+        for (const [index, call] of [yield* callTool(), yield* callTool()].entries()) {
+          expectFailed(call, `follow-up call ${index + 1} still failed`);
+          expectNoReconnectDemanded(call, `follow-up call ${index + 1}`);
+        }
         expect(
           yield* refreshGrantsSent,
           "each later use retries the refresh rather than giving up on the grant",
