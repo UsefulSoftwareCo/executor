@@ -39,6 +39,13 @@ export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
 export interface McpSessionInit {
   readonly organizationId: string;
+  /** The organization's display name, as the worker resolved it while
+   *  authorizing this very request. Carried so the session DO never has to
+   *  re-read a row the request already loaded. Absent when the auth plane could
+   *  not name the org, in which case the host resolves it itself. */
+  readonly organizationName?: string;
+  /** The organization's URL slug, from the same resolved record. */
+  readonly organizationSlug?: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
   /** Whether this session serves artifacts, read off `?artifacts=` at connect
@@ -247,7 +254,20 @@ export abstract class McpAgentSessionDOBase<
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
-  protected abstract resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta>;
+  /**
+   * Build the session's {@link SessionMeta} for this init.
+   *
+   * `storedMeta` is what this DO already persisted for the SAME organization on
+   * an earlier init, or `null`. It is offered first so a host never has to
+   * re-resolve an org identity it is already holding — on cloud that resolution
+   * is a fresh Postgres connection, and a cold restore used to die on it. Every
+   * field the CONNECT carries (resource, elicitation mode, capability flags)
+   * still comes from `token`; only the org identity may be reused.
+   */
+  protected abstract resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta>;
 
   protected abstract buildMcpServer(
     sessionMeta: SessionMeta,
@@ -524,12 +544,21 @@ export abstract class McpAgentSessionDOBase<
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
     const self = this;
     return Effect.gen(function* () {
-      const resolved = yield* self.resolveSessionMeta(token);
-      // `init` runs again on every cold restore, and `resolveSessionMeta`
-      // rebuilds meta from the bearer token — which carries no negotiated
-      // capabilities. Carry the stored value forward, or restoring the session
-      // would erase the very bit that survives the restore.
+      // Read what this DO already knows BEFORE asking the host to resolve
+      // anything. `init` runs again on every cold restore, and the stored meta
+      // is this session's own durable record of the organization it was minted
+      // for — re-deriving that identity from the host's backing store is the
+      // single most failure-prone step of a restore (on cloud, a brand-new
+      // Postgres connection) and it is redundant for a session that already
+      // exists. It is offered only for the SAME organization; a token naming a
+      // different org resolves from scratch.
       const stored = yield* self.loadSessionMeta();
+      const reusable = stored && stored.organizationId === token.organizationId ? stored : null;
+      // The stored meta also carries the capabilities negotiated at
+      // `initialize`, which the bearer token knows nothing about. Carry them
+      // forward, or restoring the session would erase the very bit that
+      // survives the restore.
+      const resolved = yield* self.resolveSessionMeta(token, reusable);
       const sessionMeta: SessionMeta = {
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
@@ -803,6 +832,11 @@ export abstract class McpAgentSessionDOBase<
         .bestEffortBookkeeping("init.mark_activity", () => self.markActivity())
         .pipe(Effect.withSpan("McpSessionDO.markActivity"));
     }).pipe(
+      // ONE capture owner for an init defect. `init` can only reject its
+      // Promise, and the host's DO-level error instrumentation captures that
+      // rejection too — so the DO claims the cause below and the host drops its
+      // own echo, rather than both filing the same failure as two issues with
+      // the same trace id and span id.
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
           // A Cloudflare platform reset of an in-flight init is not a defect —

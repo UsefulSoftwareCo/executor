@@ -27,8 +27,11 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
+import { isMcpSessionMetaUnavailable } from "./session-meta";
 import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
+
+const MCP_SESSION_UNAVAILABLE_MESSAGE = "Session storage temporarily unavailable - please retry";
 
 const corsPreflightResponse = (): Response =>
   new Response(null, {
@@ -171,6 +174,13 @@ const propsForPrincipal = (
     return {
       session: {
         organizationId: principal.organizationId,
+        // The org record the live membership check resolved microseconds ago,
+        // handed to the session DO so it never opens a connection of its own to
+        // re-read it. An unnamed org (no auth plane could resolve one) is
+        // omitted rather than sent empty, so the DO can tell "not carried" from
+        // "carried, and blank".
+        ...(principal.organizationName ? { organizationName: principal.organizationName } : {}),
+        ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
@@ -306,6 +316,23 @@ export const makeCloudMcpAgentHandler = () => {
       // vocabulary — a deploy, a storage timeout, a cancelled
       // blockConcurrencyWhile — which reaches here through the agents SDK's own
       // `getServerByName` retry and used to 500 identically.
+      // The session DO could not reach the organization directory to name the
+      // org (after its own bounded retry). Transient by construction, so it
+      // gets the same retryable envelope a WorkOS blip gets on the auth path —
+      // not an unclassified 500 the agents SDK then retries the whole DO
+      // operation over, which is what turned a 10s connect timeout into a
+      // half-minute client hang.
+      //
+      // Checked BEFORE the platform classifier: this is an application failure
+      // that merely escapes through the same seam, and it names its own cause.
+      // The classifier only recognizes the runtime's own reset vocabulary, so
+      // the two never contend — the order just keeps it that way if either
+      // vocabulary grows.
+      if (isMcpSessionMetaUnavailable(error)) {
+        return jsonRpcErrorBody(503, -32001, MCP_SESSION_UNAVAILABLE_MESSAGE, {
+          retryAfterSeconds: UNAVAILABLE_RETRY_AFTER_SECONDS,
+        });
+      }
       const failure = classifyDurableObjectError(error);
       if (!failure) {
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't a recognized platform failure to the Workers runtime unchanged

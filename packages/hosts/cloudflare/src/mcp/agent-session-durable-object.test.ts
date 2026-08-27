@@ -1,6 +1,6 @@
 // oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
@@ -305,6 +305,119 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
 
     await expect(Effect.runPromise(session.persistAppsEnabled(true))).resolves.toBeUndefined();
     expect(await storage.get<SessionMeta>("session-meta")).toBeUndefined();
+  });
+});
+
+// A cold restore used to re-resolve the org identity through the host's backing
+// store (on cloud: a brand-new Postgres connection) BEFORE it ever looked at
+// the meta this DO had already persisted for the very session it is restoring.
+// A transient failure of that lookup killed `init` and the restore with it —
+// for a row the DO was already holding. The DO's own storage is the
+// authoritative copy of the org identity of a session it already minted, so it
+// is offered to the host first; the host still rebuilds everything the CONNECT
+// carries (resource, elicitation mode, capability flags) from the token.
+describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
+  type RestoreSession = {
+    ctx: MemoryStorage;
+    getSessionId: () => string;
+    loadSessionMeta: () => Effect.Effect<SessionMeta | null>;
+    resolveSessionMeta: (
+      token: unknown,
+      storedMeta: SessionMeta | null,
+    ) => Effect.Effect<SessionMeta>;
+    resolveAndStoreSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+  };
+
+  const storedMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org One",
+    organizationSlug: "org-one",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const token = {
+    organizationId: "org-1",
+    userId: "user-1",
+    elicitationMode: "model" as const,
+    resource: defaultMcpResource,
+  };
+
+  const makeRestoreSession = async (
+    stored: SessionMeta | null,
+  ): Promise<{ session: RestoreSession; storage: MemoryStorage }> => {
+    const storage = new MemoryStorage();
+    if (stored) await storage.put("session-meta", stored);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as RestoreSession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-restore";
+    return { session, storage };
+  };
+
+  // The host stands in for cloud with an unreachable database: it can only
+  // answer when the DO hands it what it already knows.
+  const hostWithUnreachableStore =
+    (seen: { storedMeta: SessionMeta | null; calls: number }) =>
+    (tokenIn: unknown, stored: SessionMeta | null): Effect.Effect<SessionMeta> => {
+      seen.calls += 1;
+      seen.storedMeta = stored;
+      if (!stored) return Effect.die("organization lookup: CONNECT_TIMEOUT");
+      const t = tokenIn as { readonly userId: string; readonly organizationId: string };
+      return Effect.succeed({
+        organizationId: t.organizationId,
+        organizationName: stored.organizationName,
+        organizationSlug: stored.organizationSlug,
+        userId: t.userId,
+        resource: defaultMcpResource,
+      } satisfies SessionMeta);
+    };
+
+  it("restores from its own stored meta when the backing store is unreachable", async () => {
+    const { session } = await makeRestoreSession(storedMeta);
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = hostWithUnreachableStore(seen);
+
+    const resolved = await Effect.runPromise(session.resolveAndStoreSessionMeta(token));
+
+    expect(seen.calls).toBe(1);
+    expect(seen.storedMeta).toMatchObject({ organizationId: "org-1", organizationName: "Org One" });
+    expect(resolved.organizationName).toBe("Org One");
+    expect(resolved.organizationSlug).toBe("org-one");
+  });
+
+  // Stored meta is only a shortcut for the SAME organization. A session id
+  // reused across orgs must never inherit the previous org's identity.
+  it("offers nothing when the stored meta belongs to another organization", async () => {
+    const { session } = await makeRestoreSession({ ...storedMeta, organizationId: "org-other" });
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = hostWithUnreachableStore(seen);
+
+    const exit = await Effect.runPromiseExit(session.resolveAndStoreSessionMeta(token));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(seen.storedMeta).toBeNull();
+  });
+
+  // A brand-new session has nothing stored; the host must resolve from scratch.
+  it("offers nothing on a first init", async () => {
+    const { session } = await makeRestoreSession(null);
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = (tokenIn, stored) => {
+      seen.calls += 1;
+      seen.storedMeta = stored;
+      const t = tokenIn as { readonly userId: string; readonly organizationId: string };
+      return Effect.succeed({
+        organizationId: t.organizationId,
+        organizationName: "Freshly Resolved",
+        userId: t.userId,
+        resource: defaultMcpResource,
+      } satisfies SessionMeta);
+    };
+
+    const resolved = await Effect.runPromise(session.resolveAndStoreSessionMeta(token));
+
+    expect(seen.storedMeta).toBeNull();
+    expect(resolved.organizationName).toBe("Freshly Resolved");
   });
 });
 

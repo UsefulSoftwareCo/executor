@@ -174,14 +174,61 @@ export const sentryPayloadForCause = (
   return { primary: input, pretty: null };
 };
 
+// Safe classification fields our tagged errors carry (`UserStoreError.operation`
+// / `.reason`, `WorkOSError.status`). They are promoted to Sentry TAGS because
+// the pretty cause is only an `extra`, and Sentry's server-side scrubber
+// replaces that extra with "[Filtered]" — leaving an issue with no failing
+// operation and no reason in it at all. Tags survive, group, and are
+// searchable. Values are failure modes and operation names; never a query, a
+// value, or anything customer-derived.
+const CLASSIFICATION_TAG_FIELDS = ["operation", "reason", "status"] as const;
+
+const MAX_CLASSIFICATION_TAG_CHARS = 120;
+
+const MAX_CAUSE_NESTING = 3;
+
+/** Every error value a cause carries, failures and defects alike. A defect can
+ *  itself be a `Cause` (an inner `runPromise` rejecting with its own squashed
+ *  cause), so the walk unwraps a few levels. */
+const errorValuesOf = (input: unknown, depth = 0): readonly unknown[] => {
+  if (depth >= MAX_CAUSE_NESTING) return [];
+  if (!Cause.isCause(input)) return [input];
+  const values: unknown[] = [];
+  for (const reason of input.reasons) {
+    if (Cause.isFailReason(reason)) values.push(reason.error);
+    else if (Cause.isDieReason(reason)) values.push(...errorValuesOf(reason.defect, depth + 1));
+  }
+  return values;
+};
+
+/** Read the classification fields off the tagged errors inside a cause. First
+ *  writer wins, so the innermost reported error names the issue. */
+const classificationTagsOf = (input: unknown): Readonly<Record<string, string>> => {
+  const tags: Record<string, string> = {};
+  for (const candidate of errorValuesOf(input)) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const tagged = candidate as Record<string, unknown>;
+    for (const field of CLASSIFICATION_TAG_FIELDS) {
+      const value = tagged[field];
+      if (tags[field] !== undefined) continue;
+      if (typeof value === "string" || typeof value === "number") {
+        tags[field] = String(value).slice(0, MAX_CLASSIFICATION_TAG_CHARS);
+      }
+    }
+  }
+  return tags;
+};
+
 export const captureCause = (
   input: unknown,
   context: OtelCorrelationContext | null = null,
 ): string | undefined => {
   const { primary, pretty } = sentryPayloadForCause(input);
+  const classification = classificationTagsOf(input);
   tagCurrentSentryScopeWithOtelContext(context);
   return Sentry.captureException(primary, (scope) => {
     tagSentryScopeWithOtelContext(scope, context);
+    for (const [key, value] of Object.entries(classification)) scope.setTag(key, value);
     if (pretty !== null) scope.setExtra("cause", pretty);
     return scope;
   });
