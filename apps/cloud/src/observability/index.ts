@@ -12,7 +12,7 @@
 
 import * as Sentry from "@sentry/cloudflare";
 import type { ErrorEvent, Scope } from "@sentry/cloudflare";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Effect, Layer, Predicate } from "effect";
 import type * as Tracer from "effect/Tracer";
 
 import { ErrorCapture } from "@executor-js/api";
@@ -183,6 +183,14 @@ export const sentryPayloadForCause = (
 // value, or anything customer-derived.
 const CLASSIFICATION_TAG_FIELDS = ["operation", "reason", "status"] as const;
 
+/** The errors those fields are read from. An allowlist, because the fields are
+ *  only known to be safe on the errors this app defines. */
+const CLASSIFIED_ERROR_TAGS = [
+  "UserStoreError",
+  "WorkOSError",
+  "McpSessionMetaUnavailableError",
+] as const;
+
 const MAX_CLASSIFICATION_TAG_CHARS = 120;
 
 const MAX_CAUSE_NESTING = 3;
@@ -207,6 +215,12 @@ const classificationTagsOf = (input: unknown): Readonly<Record<string, string>> 
   const tags: Record<string, string> = {};
   for (const candidate of errorValuesOf(input)) {
     if (typeof candidate !== "object" || candidate === null) continue;
+    // Only the errors whose fields we know are safe classifications. Without
+    // this, any foreign object in the cause that happens to carry an
+    // `operation` / `reason` / `status` field would have that value promoted
+    // onto a tag, and a foreign field is not known to be free of a query, a
+    // value, or anything customer-derived.
+    if (!CLASSIFIED_ERROR_TAGS.some((tag) => Predicate.isTagged(candidate, tag))) continue;
     const tagged = candidate as Record<string, unknown>;
     for (const field of CLASSIFICATION_TAG_FIELDS) {
       const value = tagged[field];
