@@ -2204,9 +2204,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     // (re-auth required); every other code must still reach
                     // the caller as an auth failure, because a StorageError
                     // is scrubbed to "Internal tool error [id]" at the
-                    // sandbox boundary (the Pylon prod regression: the AS
-                    // rejected refreshes with a non-invalid_grant 400 and
-                    // callers saw only the opaque defect).
+                    // sandbox boundary (a prod regression: the AS rejected
+                    // refreshes with a non-invalid_grant 400 and callers saw
+                    // only the opaque defect).
                     if (cause.error !== undefined) {
                       return new CredentialResolutionError({
                         owner,
