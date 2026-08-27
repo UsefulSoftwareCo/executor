@@ -344,7 +344,7 @@ type DefaultFunction<Type extends keyof TypeMap> =
   | (Type extends keyof DefaultFunctionMap ? DefaultFunctionMap[Type] : never)
   | (() => TypeMap[Type]);
 
-type IdColumnType = `varchar(${number})` | "uuid";
+type IdColumnType = `varchar(${number})` | "string" | "uuid";
 
 export type TypeMap = {
   string: string;

@@ -10,6 +10,12 @@ test("idColumn accepts uuid type", () => {
   expect(col.id).toBe(true);
 });
 
+test("idColumn accepts unbounded string type", () => {
+  const col = idColumn("id", "string").defaultTo$("auto");
+  expect(col.type).toBe("string");
+  expect(col.id).toBe(true);
+});
+
 test("column accepts uuid type", () => {
   const col = column("token", "uuid");
   expect(col.type).toBe("uuid");
@@ -86,6 +92,21 @@ test("Drizzle MySQL generates UUID schema correctly", () => {
 test("Drizzle SQLite generates UUID schema correctly", () => {
   const generated = Drizzle.generateSchema(uuidSchema, "sqlite");
 
+  expect(generated).toContain('text("id")');
+  expect(generated).toContain("primaryKey()");
+});
+
+test("Drizzle PostgreSQL generates a text primary id correctly", () => {
+  const stringIdSchema = schema({
+    version: "1.0.0",
+    tables: {
+      audit: table("audit", {
+        id: idColumn("id", "string").defaultTo$("auto"),
+      }),
+    },
+  });
+
+  const generated = Drizzle.generateSchema(stringIdSchema, "postgresql");
   expect(generated).toContain('text("id")');
   expect(generated).toContain("primaryKey()");
 });

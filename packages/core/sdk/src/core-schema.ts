@@ -57,11 +57,12 @@ const tenantExecutorTable = <const TColumns extends UserColumns>(
   name: string,
   columns: TColumns,
   uniqueKey: readonly string[],
+  keyStorage: "varchar(255)" | "string" = "varchar(255)",
 ) => {
   const out = table(name, {
     ...columns,
-    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
-    tenant: keyColumn("tenant"),
+    row_id: idColumn("row_id", keyStorage).defaultTo$("auto"),
+    tenant: column("tenant", keyStorage),
   });
   out.unique(`${name}_uidx`, [...uniqueKey]);
   return out.policy<ExecutorOwnerPolicyContext>({
@@ -204,11 +205,11 @@ export const coreTables = defineTables({
   audit_event: tenantExecutorTable(
     "audit_event",
     {
-      id: keyColumn("id"),
-      actor_id: nullableKeyColumn("actor_id"),
-      action: keyColumn("action"),
-      resource_type: keyColumn("resource_type"),
-      resource_owner: nullableKeyColumn("resource_owner"),
+      id: textColumn("id"),
+      actor_id: nullableTextColumn("actor_id"),
+      action: textColumn("action"),
+      resource_type: textColumn("resource_type"),
+      resource_owner: nullableTextColumn("resource_owner"),
       resource_parent: nullableTextColumn("resource_parent"),
       resource_id: textColumn("resource_id"),
       created_at: dateColumn("created_at"),
@@ -217,6 +218,9 @@ export const coreTables = defineTables({
     // globally unique in practice and remains the final tie-breaker for events
     // written in the same millisecond.
     ["tenant", "created_at", "id"],
+    // Audit identifiers are unbounded text by design. This table is currently
+    // backed by PostgreSQL/SQLite, both of which index text values directly.
+    "string",
   ),
 
   // THE saved credential, one per (owner, integration, name). Resolves each named

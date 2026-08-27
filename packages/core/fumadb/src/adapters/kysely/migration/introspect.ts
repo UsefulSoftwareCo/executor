@@ -181,13 +181,19 @@ export async function introspectSchema(
 
     let col: AnyColumn;
     if (isPrimaryKey) {
-      if (!columnType.startsWith("varchar") && columnType !== "uuid")
+      if (
+        !columnType.startsWith("varchar") &&
+        columnType !== "string" &&
+        columnType !== "uuid"
+      )
         throw new Error(
-          `ID column only supports varchar and uuid at the moment, found ${columnType}.`
+          `ID column only supports string, varchar, and uuid at the moment, found ${columnType}.`
         );
 
       if (columnType === "uuid") {
         col = idColumn(dbColumn.name, "uuid");
+      } else if (columnType === "string") {
+        col = idColumn(dbColumn.name, "string");
       } else {
         col = idColumn(dbColumn.name, columnType as `varchar(${number})`);
       }

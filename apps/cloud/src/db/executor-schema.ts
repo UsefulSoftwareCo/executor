@@ -52,19 +52,19 @@ export const subject = pgTable(
 export const audit_event = pgTable(
   "audit_event",
   {
-    id: varchar("id", { length: 255 }).notNull(),
-    actor_id: varchar("actor_id", { length: 255 }),
-    action: varchar("action", { length: 255 }).notNull(),
-    resource_type: varchar("resource_type", { length: 255 }).notNull(),
-    resource_owner: varchar("resource_owner", { length: 255 }),
+    id: text("id").notNull(),
+    actor_id: text("actor_id"),
+    action: text("action").notNull(),
+    resource_type: text("resource_type").notNull(),
+    resource_owner: text("resource_owner"),
     resource_parent: text("resource_parent"),
     resource_id: text("resource_id").notNull(),
     created_at: timestamp("created_at").notNull(),
-    row_id: varchar("row_id", { length: 255 })
+    row_id: text("row_id")
       .primaryKey()
       .notNull()
       .$defaultFn(() => createId()),
-    tenant: varchar("tenant", { length: 255 }).notNull(),
+    tenant: text("tenant").notNull(),
   },
   (table) => [uniqueIndex("audit_event_uidx").on(table.tenant, table.created_at, table.id)],
 );
