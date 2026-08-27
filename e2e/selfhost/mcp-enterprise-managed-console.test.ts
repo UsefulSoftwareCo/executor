@@ -1,49 +1,44 @@
-// Selfhost (browser, recorded): the CONSOLE half of MCP Enterprise-Managed
-// Authorization. The protocol half — the ID-JAG chain itself and the
-// administrator denial — is `mcp-enterprise-managed-auth.test.ts`; this
-// scenario is about what an administrator and a member can see and do.
+// Selfhost (browser, recorded): MCP Enterprise-Managed Authorization, END TO
+// END THROUGH THE CONSOLE. Every step below happens in a real browser — there is
+// no typed-API shortcut anywhere in the journey, which is the point: the two
+// parent branches each proved half of this profile against the API, and the leg
+// neither could reach was the one a customer actually walks.
 //
-// Three claims, in the order a workspace meets them:
+// The journey, in the order a workspace meets it:
 //
-//   1. An administrator marks a server as managed FROM THE UI, and that
-//      declaration survives `configureMcpAuth`. It is written through the same
-//      replace-mode save that rewrites the whole auth-method list, so a
-//      declaration the credential editor cannot express is one unrelated edit
-//      away from being erased — the assertion below is that it is not.
-//   2. A member's managed connection is visibly managed and offers NO local
-//      revocation. Remove would claim a revocation that did not happen (the
-//      identity provider still authorizes them, and the next call hands access
-//      straight back), and Reconnect re-runs a consent step this profile does
-//      not have. Both belong at the identity provider.
-//   3. An administrator's denial stops the connect and does NOT fall back to
-//      the interactive per-server flow. The MCP emulator's ledger is the proof:
-//      it shows the requests executor did NOT make.
+//   1. An administrator registers the organization's identity provider by
+//      ISSUER — the console probes it and records the endpoints, so nobody
+//      transcribes an authorize path whose only symptom would be every member's
+//      connect failing later at the wrong host.
+//   2. They mark an ordinary MCP server "Managed by your organization", and the
+//      declaration survives the replace-mode save that rewrites the whole
+//      auth-method list.
+//   3. They register the server's enterprise (`id_jag`) app from the connect
+//      modal, which is where the console TELLS them it is missing rather than
+//      quietly registering an interactive client and asking for consent.
+//   4. A member clicks connect. Executor asks for a work identity, the sign-in
+//      window lands on the identity provider's real login page, and after the
+//      link the connection is minted with NO consent screen — proven by absence
+//      in the MCP server's own ledger.
+//   5. A tool call rides the result.
+//   6. An administrator denies the client at the identity provider, and a fresh
+//      connect shows the blocked-by-administrator state IN THE BROWSER, with no
+//      interactive fallback offered.
 //
 // Two emulators stand in for the pilot's real parties: `okta` is the customer's
-// identity provider (it runs the real OIDC sign-on, mints ID-JAGs over RFC 8693
-// and enforces an administrator policy table), `mcp` is the third-party server
+// identity provider (real OIDC discovery, a real sign-in page, RFC 8693
+// exchanges, and an administrator policy table), `mcp` is the third-party server
 // and its Resource Authorization Server.
-//
-// GAP, deliberately not papered over: minting the connection below goes through
-// the typed API, not the console, because `oauth.start`'s `enterprise` input
-// requires the caller to HOLD the identity assertion and no browser surface can
-// obtain one. See the branch's report; the console work here is everything
-// around that one leg.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 
-import { assert, expect } from "@effect/vitest";
-import { Effect, Predicate } from "effect";
+import { expect } from "@effect/vitest";
+import { Effect } from "effect";
 import type { Page } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
 import { createEmulator, type Emulator } from "@executor-js/emulate";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-  OAuthClientSlug,
-} from "@executor-js/sdk/shared";
+import { IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
@@ -53,14 +48,10 @@ const api = composePluginApi([mcpHttpPlugin()] as const);
 
 const OKTA_USER = "testuser@okta.local";
 const OKTA_AUTH_SERVER = "default";
-const SSO_REDIRECT_URI = "http://localhost:3000/callback";
-const ID_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id_token";
 
-// The reserved (owner, slug) the organization's identity provider is registered
-// under — the SAME identity the org settings section writes, so a server marked
-// managed in the console names exactly this app. Self-host has no organization
-// admin page, so the registration is seeded through the typed API here; the
-// browser drives everything downstream of it.
+// The reserved (owner, slug) the console registers the organization's identity
+// provider under. Fixed by the product, not by this scenario — a managed server
+// names exactly this app, with no slug typed anywhere.
 const IDP_CLIENT = OAuthClientSlug.make("enterprise-identity-provider");
 
 const MANAGED_BADGE = "Managed by your organization";
@@ -96,66 +87,25 @@ const requireString = (value: string | undefined | null, what: string): string =
   return value;
 };
 
-/** Single sign-on at the identity provider, ending with the ID token the host
- *  holds on the member's behalf. THE one step this console cannot yet perform
- *  for itself — see the header. */
-const singleSignOn = (input: {
-  readonly issuerBaseUrl: string;
-  readonly clientId: string;
-  readonly clientSecret: string;
-}) =>
-  Effect.promise(async (): Promise<string> => {
-    const authorize = await fetch(
-      `${input.issuerBaseUrl}/oauth2/${OKTA_AUTH_SERVER}/v1/authorize/callback`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        redirect: "manual",
-        body: new URLSearchParams({
-          user_ref: OKTA_USER,
-          redirect_uri: SSO_REDIRECT_URI,
-          scope: "openid profile email",
-          client_id: input.clientId,
-          response_mode: "query",
-          auth_server_id: OKTA_AUTH_SERVER,
-        }),
-      },
-    );
-    if (authorize.status !== 302) {
-      throw new Error(`IdP authorize answered ${authorize.status}, expected a 302`);
-    }
-    const location = requireString(authorize.headers.get("location"), "authorize redirect");
-    const code = requireString(new URL(location).searchParams.get("code"), "authorization code");
-
-    const token = await fetch(`${input.issuerBaseUrl}/oauth2/${OKTA_AUTH_SERVER}/v1/token`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: SSO_REDIRECT_URI,
-        client_id: input.clientId,
-        client_secret: input.clientSecret,
-      }),
-    });
-    if (!token.ok) throw new Error(`IdP token endpoint answered ${token.status}`);
-    const body = (await token.json()) as { readonly id_token?: string };
-    return requireString(body.id_token, "id_token");
-  });
-
 const connectionsSection = (page: Page) =>
   page.locator("section").filter({
     has: page.getByRole("heading", { level: 3, name: "Connections" }),
   });
 
-const callGetMeCode = (slug: string, connection: string) => `
-const result = await tools.${slug}.org.${connection}.get_me({});
+const callGetMeCode = (slug: string, owner: string, connection: string) => `
+const result = await tools.${slug}.${owner}.${connection}.get_me({});
 return { ok: result.ok, payload: result.ok ? result.data : result.error };
 `;
 
+/** Open the add-connection modal on an integration page. */
+const openConnectModal = async (page: Page): Promise<void> => {
+  await page.getByRole("button", { name: "Add connection" }).first().click();
+  await page.getByRole("heading", { name: /Add connection/ }).waitFor({ timeout: 30_000 });
+};
+
 scenario(
-  "MCP enterprise-managed authorization (console) · an administrator marks a server managed, and the managed connection offers no local revocation",
-  { timeout: 240_000 },
+  "MCP enterprise-managed authorization (console) · an administrator sets a server up and a member connects with their work identity, entirely in the browser",
+  { timeout: 300_000 },
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
@@ -167,6 +117,14 @@ scenario(
       const okta = yield* emulator("okta");
       const mcp = yield* emulator("mcp");
       const mcpEndpoint = `${mcp.url}/mcp`;
+      // The link comes back to executor's OWN OAuth callback — the same one
+      // every interactive connect uses, so an enterprise allow-lists one
+      // redirect URI and not two. The emulator matches it exactly, so this
+      // scenario fails loudly if the console ever asks for a different one.
+      const executorCallback = new URL("/api/oauth/callback", target.baseUrl).toString();
+      // What an administrator actually knows: their tenant's issuer. Everything
+      // else about the provider is discovered from it, in the browser.
+      const issuerUrl = `${okta.url}/oauth2/${OKTA_AUTH_SERVER}`;
 
       // One client identity across both registrations (draft §5 client
       // continuity): the app the member signs in to at the identity provider is
@@ -175,29 +133,19 @@ scenario(
         okta.credentials.mint({
           type: "oauth-authorization-code",
           name: "Executor E2E enterprise client",
-          redirect_uris: [SSO_REDIRECT_URI],
+          redirect_uris: [executorCallback],
         }),
       );
       const clientId = requireString(credential.client_id, "IdP client_id");
       const clientSecret = requireString(credential.client_secret, "IdP client_secret");
-      const idpTokenUrl = requireString(credential.token_url, "IdP token endpoint");
-      const idpAuthorizationUrl = requireString(credential.authorization_url, "IdP authorize URL");
-
-      const subjectToken = yield* singleSignOn({
-        issuerBaseUrl: okta.url,
-        clientId,
-        clientSecret,
-      });
 
       const integration = IntegrationSlug.make(freshSlug("mcp_ema_ui"));
-      const serverClient = OAuthClientSlug.make(freshSlug("ema_server"));
-      const template = AuthTemplateSlug.make("oauth2");
-      const managedConnection = ConnectionName.make("main");
 
       // The server starts life ORDINARY — a plain oauth2 MCP server with no
-      // enterprise declaration. Marking it managed is the browser's job below,
-      // which is the whole point: a declaration that only ever arrives through
-      // `addServer` would never exercise the save path that can erase it.
+      // enterprise declaration. Everything that makes it managed happens in the
+      // browser below, which is the whole point: a declaration that only ever
+      // arrived through `addServer` would never exercise the save path that can
+      // erase it, nor the connect path that has to notice it.
       yield* client.mcp.addServer({
         payload: {
           transport: "remote",
@@ -210,41 +158,39 @@ scenario(
 
       yield* Effect.ensuring(
         Effect.gen(function* () {
-          // The organization's identity provider, under the reserved identity
-          // the org settings section owns. Both endpoints are recorded exactly
-          // as that section records them.
-          yield* client.oauth.createClient({
-            payload: {
-              owner: "org",
-              slug: IDP_CLIENT,
-              authorizationUrl: idpAuthorizationUrl,
-              tokenUrl: idpTokenUrl,
-              grant: "authorization_code",
-              clientId,
-              clientSecret,
-            },
-          });
-          // The server-side registration an administrator makes through the
-          // OAuth app form's "Enterprise identity assertion" grant: `id_jag`
-          // plus the RFC 9728 resource discovery starts from.
-          yield* client.oauth.createClient({
-            payload: {
-              owner: "org",
-              slug: serverClient,
-              authorizationUrl: `${mcp.url}/authorize`,
-              tokenUrl: `${mcp.url}/token`,
-              grant: "id_jag",
-              clientId,
-              clientSecret,
-              resource: mcpEndpoint,
-            },
-          });
-
-          // -----------------------------------------------------------------
-          // 1. The administrator marks the server managed, in the console.
-          // -----------------------------------------------------------------
           yield* browser.session(identity, async ({ page, step }) => {
-            await step("An administrator opens the MCP server they want to manage", async () => {
+            // ---------------------------------------------------------------
+            // 1. The organization's identity provider, registered by issuer.
+            // ---------------------------------------------------------------
+            await step("An administrator opens the instance admin console", async () => {
+              await visit(page, "/admin");
+              await page
+                .getByRole("heading", {
+                  name: "Enterprise Identity Provider",
+                })
+                .waitFor({ timeout: 30_000 });
+            });
+
+            await step("Register the identity provider from its issuer URL", async () => {
+              await page.getByRole("button", { name: "Register Provider" }).first().click();
+              const dialog = page.getByRole("dialog");
+              await dialog.waitFor({ timeout: 30_000 });
+              await dialog.locator("#ema-idp-issuer-url").fill(issuerUrl);
+              await dialog.locator("#ema-idp-client-id").fill(clientId);
+              await dialog.locator("#ema-idp-client-secret").fill(clientSecret);
+              await dialog.getByRole("button", { name: "Register Provider" }).click();
+              // The endpoints were DISCOVERED: the row shows the token endpoint
+              // the console read out of the issuer's OpenID configuration, which
+              // nobody typed.
+              await page
+                .getByText(`${issuerUrl}/v1/token`, { exact: true })
+                .waitFor({ timeout: 30_000 });
+            });
+
+            // ---------------------------------------------------------------
+            // 2. The server is marked managed, and the declaration sticks.
+            // ---------------------------------------------------------------
+            await step("Open the MCP server they want to manage", async () => {
               await visit(page, `/integrations/${String(integration)}`);
               await page.getByRole("button", { name: "Edit" }).first().waitFor({ timeout: 30_000 });
             });
@@ -258,14 +204,11 @@ scenario(
                 "an ordinary server starts unmanaged",
               ).toBe("unchecked");
               await toggle.click();
-              // Waited for on the DOM rather than read once: the switch
-              // animates, and this step's screenshot should show the state the
+              // Waited for on the DOM rather than read once: the switch animates,
+              // and this step's screenshot should show the state the
               // administrator sees, not a frame mid-transition.
               await page
                 .locator('#ema-managed-server[data-state="checked"]')
-                .waitFor({ timeout: 10_000 });
-              await page
-                .locator('#ema-managed-server [data-slot="switch-thumb"][data-state="checked"]')
                 .waitFor({ timeout: 10_000 });
             });
 
@@ -276,109 +219,102 @@ scenario(
                 .waitFor({ timeout: 30_000 });
             });
 
-            await step("Reopening the server shows it is still managed", async () => {
-              // Not a repeat of the save assertion: this reads the toggle back
-              // from the SERVER's stored declaration on a fresh mount, which is
-              // the state a second administrator would arrive at.
-              await page.getByRole("button", { name: "Edit" }).first().click();
-              const reopened = page.locator('#ema-managed-server[data-state="checked"]');
-              await reopened.waitFor({ timeout: 30_000 });
-              // Left open, and scrolled to: this step's screenshot is the
-              // artifact showing the stored declaration as an administrator
-              // finds it.
-              await reopened.scrollIntoViewIfNeeded();
-            });
-          });
-
-          // The declaration reached storage AND survived the replace-mode save
-          // that rewrote the whole method list. Read back through the catalog,
-          // which is where every connect path learns of it.
-          const catalog = yield* client.integrations.get({ params: { slug: integration } });
-          const declared = catalog.authMethods.find((method) => method.kind === "oauth");
-          expect(
-            declared?.oauth?.enterpriseIdentityProvider,
-            "the console's toggle declared the organization's identity provider on this server",
-          ).toEqual({ client: String(IDP_CLIENT), clientOwner: "org" });
-          expect(
-            declared?.oauth?.supportsDynamicRegistration,
-            "declaring an identity provider leaves the interactive route advertised",
-          ).toBe(true);
-          const enterprise = declared?.oauth?.enterpriseIdentityProvider;
-          assert(enterprise, "the connect below drives off the projected pointer");
-
-          // -----------------------------------------------------------------
-          // 2. A member connects with their work identity, and uses the server.
-          //    This leg goes through the typed API — see the file header.
-          // -----------------------------------------------------------------
-          const connected = yield* client.oauth.start({
-            payload: {
-              owner: "org",
-              client: serverClient,
-              clientOwner: "org",
-              name: managedConnection,
-              integration,
-              template,
-              enterprise: {
-                idpClient: enterprise.client,
-                idpClientOwner: enterprise.clientOwner,
-                subjectToken,
-                subjectTokenType: ID_TOKEN_TYPE,
-              },
-            },
-          });
-          assert(
-            connected.status === "connected",
-            "the enterprise grant connects with no authorize redirect",
-          );
-          expect(
-            connected.connection.enterpriseManaged,
-            "the connection reports itself managed, which is what the console branches on",
-          ).toBe(true);
-
-          const executed = yield* client.executions.execute({
-            payload: {
-              code: callGetMeCode(String(integration), String(managedConnection)),
-              autoApprove: true,
-            },
-          });
-          expect(executed.status, "the tool call completed").toBe("completed");
-          expect((JSON.parse(executed.text) as { readonly ok: boolean }).ok, executed.text).toBe(
-            true,
-          );
-
-          // -----------------------------------------------------------------
-          // 3. The member's view of the managed connection.
-          // -----------------------------------------------------------------
-          yield* browser.session(identity, async ({ page, step }) => {
-            const connections = connectionsSection(page);
-            const menuTrigger = connections.locator('button[aria-haspopup="menu"]').first();
-
-            await step("A member opens the managed server's connections", async () => {
-              await visit(page, `/integrations/${String(integration)}`);
-              await connections
-                .getByText(String(managedConnection), { exact: true })
+            // ---------------------------------------------------------------
+            // 3. The connect modal NAMES the missing piece instead of routing
+            //    around it, and the enterprise app is registered from there.
+            // ---------------------------------------------------------------
+            await step("Connect says the enterprise app is missing, not nothing", async () => {
+              await openConnectModal(page);
+              await page
+                .locator('[data-slot="enterprise-app-missing-notice"]')
                 .waitFor({ timeout: 30_000 });
             });
 
-            await step("The connection is visibly managed by the organization", async () => {
-              await connections.getByText(MANAGED_BADGE, { exact: true }).waitFor({
+            await step("Register the server's enterprise app", async () => {
+              await page.getByRole("button", { name: "Register Enterprise App" }).click();
+              // The grant is not a choice here, and the resource is already the
+              // server's own endpoint — both come from the declaration.
+              const resource = page.locator("#ema-resource-url");
+              await resource.waitFor({ timeout: 30_000 });
+              expect(
+                await resource.inputValue(),
+                "the enterprise app is registered against the server's own endpoint",
+              ).toBe(mcpEndpoint);
+              await page.locator("#oauth-client-id").fill(clientId);
+              await page.locator("#oauth-client-secret").fill(clientSecret);
+              await page.locator("#oauth-token-url").fill(`${mcp.url}/token`);
+              // No Authorization URL field, and that is the form telling the
+              // truth: an enterprise-managed client never runs a browser
+              // redirect at the server, and its real endpoints are discovered
+              // from the resource above.
+              expect(
+                await page.locator("#oauth-authorization-url").count(),
+                "an enterprise app has no authorize redirect to register",
+              ).toBe(0);
+              await page.getByRole("button", { name: "Register app", exact: true }).click();
+            });
+
+            // ---------------------------------------------------------------
+            // 4. The connect: a work-identity sign-in, then a minted connection
+            //    with no consent screen anywhere.
+            // ---------------------------------------------------------------
+            await step("The connect becomes the work identity route", async () => {
+              // The button IS the assertion: registering the enterprise app is
+              // what flips this server off the interactive path, and the copy is
+              // what tells the member which identity they are about to use.
+              await page
+                .getByRole("button", { name: "Connect with Work Identity" })
+                .waitFor({ timeout: 30_000 });
+              await page
+                .locator('[data-slot="enterprise-managed-notice"]')
+                .waitFor({ timeout: 30_000 });
+            });
+
+            await step("Sign in at the identity provider's own login page", async () => {
+              const popupPromise = page.waitForEvent("popup", {
+                timeout: 60_000,
+              });
+              await page.getByRole("button", { name: "Connect with Work Identity" }).click();
+              const popup = await popupPromise;
+              // The window was reserved on the click and navigated once
+              // `oauth.start` reported that no work identity is held yet.
+              await popup.waitForURL((url) => url.origin === new URL(okta.url).origin, {
+                timeout: 60_000,
+              });
+              await popup.waitForLoadState("domcontentloaded", {
                 timeout: 30_000,
               });
-              // The badge is a claim; this is the consequence of it, said in
-              // words the member can act on.
+              expect(
+                new URL(popup.url()).pathname,
+                "the sign-in lands on the identity provider's authorize endpoint",
+              ).toBe(`/oauth2/${OKTA_AUTH_SERVER}/v1/authorize`);
+              await popup
+                .getByRole("button", { name: new RegExp(OKTA_USER) })
+                .click({ timeout: 30_000 });
+            });
+
+            await step("The connection appears, managed by the organization", async () => {
+              // The modal completed the link, retried the connect once, and
+              // closed itself. No consent screen was shown at any point — the
+              // MCP server's ledger proves that below.
+              const connections = connectionsSection(page);
+              await connections
+                .getByText(MANAGED_BADGE, { exact: true })
+                .waitFor({ timeout: 60_000 });
               await connections
                 .getByText(/Revoke access at your identity provider, not here\./)
                 .waitFor({ timeout: 30_000 });
             });
 
             await step("Its menu offers no Remove and no Reconnect", async () => {
-              await menuTrigger.click();
-              // Present: the actions that are still the member's to take.
+              await connectionsSection(page)
+                .locator('button[aria-haspopup="menu"]')
+                .first()
+                .click();
+              // Present: the actions that are still the member's to take. Waited
+              // for BEFORE counting absences, or an unopened menu would make
+              // every absence assertion pass for the wrong reason.
               await page.getByRole("menuitem", { name: "Check now" }).waitFor({ timeout: 30_000 });
-              await page.getByRole("menuitem", { name: "Edit" }).waitFor({ timeout: 30_000 });
-              // Absent: WITHHELD, not disabled. A local Remove would claim a
-              // revocation that did not happen, and Reconnect re-runs a consent
-              // step this profile does not have.
               expect(
                 await page.getByRole("menuitem", { name: "Remove" }).count(),
                 "an enterprise-managed connection cannot be removed locally",
@@ -387,62 +323,140 @@ scenario(
                 await page.getByRole("menuitem", { name: "Reconnect" }).count(),
                 "an enterprise-managed connection has no interactive flow to re-run",
               ).toBe(0);
-              // Left open on purpose: this step's screenshot is the artifact
-              // that shows the menu as the member sees it.
+              await page.keyboard.press("Escape");
             });
           });
 
-          // -----------------------------------------------------------------
-          // 4. The administrator denies this client at the identity provider.
+          // ---------------------------------------------------------------
+          // What the browser journey actually produced.
+          // ---------------------------------------------------------------
+          const connections = yield* client.connections.list({
+            query: { integration },
+          });
+          expect(connections.length, "the browser connect minted exactly one connection").toBe(1);
+          const connection = connections[0]!;
+          expect(
+            connection.enterpriseManaged,
+            "and it reports itself managed, which is what the console branches on",
+          ).toBe(true);
+
+          // THE anti-consent claim, proven by absence: had executor fallen back
+          // to the ordinary per-server flow, the MCP server would have seen an
+          // authorize request or a dynamic registration.
+          const mcpEntries = yield* Effect.promise(() => mcp.ledger.list());
+          expect(
+            mcpEntries.filter((entry) => entry.path === "/authorize" || entry.path === "/register"),
+            "no per-server consent screen and no interactive client registration",
+          ).toEqual([]);
+          expect(
+            mcpEntries.some((entry) => entry.operationId === "mcp.oauth.jwtBearer"),
+            "the connection was minted by redeeming an ID-JAG at the resource authorization server",
+          ).toBe(true);
+
+          // The ONE identity event: the member signed in at their identity
+          // provider, once, through the browser.
+          const oktaEntries = yield* Effect.promise(() => okta.ledger.list());
+          expect(
+            oktaEntries.filter((entry) => entry.path.endsWith("/v1/authorize")).length,
+            "the member was asked to sign in exactly once, at their own identity provider",
+          ).toBe(1);
+          const codeExchange = oktaEntries.find(
+            (entry) =>
+              entry.path.endsWith("/v1/token") &&
+              (entry.request.body as { readonly grant_type?: string } | undefined)?.grant_type ===
+                "authorization_code",
+          );
+          expect(
+            codeExchange?.response.status,
+            "and executor — not the browser — redeemed the code, which is the only place the IdP app's secret may be used",
+          ).toBe(200);
+          expect(
+            oktaEntries.some((entry) => entry.operationId === "okta.oauth.tokenExchange"),
+            "the connect exchanged that custody for an ID-JAG",
+          ).toBe(true);
+
+          // The connection works.
+          const executed = yield* client.executions.execute({
+            payload: {
+              code: callGetMeCode(
+                String(integration),
+                String(connection.owner),
+                String(connection.name),
+              ),
+              autoApprove: true,
+            },
+          });
+          expect(executed.status, "the tool call completed").toBe("completed");
+          expect((JSON.parse(executed.text) as { readonly ok: boolean }).ok, executed.text).toBe(
+            true,
+          );
+
+          // ---------------------------------------------------------------
+          // 6. The administrator denies this client at the identity provider.
           //    Clear both ledgers first so every entry below belongs to the
           //    blocked attempt.
-          // -----------------------------------------------------------------
+          // ---------------------------------------------------------------
           yield* Effect.promise(() => okta.ledger.clear());
           yield* Effect.promise(() => mcp.ledger.clear());
           yield* Effect.promise(() =>
             okta.seed({
               token_exchange_policies: [
-                { name: "Block the executor client", client_id: clientId, effect: "DENY" },
+                {
+                  name: "Block the executor client",
+                  client_id: clientId,
+                  effect: "DENY",
+                },
               ],
             }),
           );
 
-          const blocked = yield* client.oauth
-            .start({
-              payload: {
-                owner: "org",
-                client: serverClient,
-                clientOwner: "org",
-                name: ConnectionName.make("blocked"),
-                integration,
-                template,
-                enterprise: {
-                  idpClient: enterprise.client,
-                  idpClientOwner: enterprise.clientOwner,
-                  subjectToken,
-                  subjectTokenType: ID_TOKEN_TYPE,
-                },
+          yield* browser.session(identity, async ({ page, step }) => {
+            await step("Connect now says which work identity they are signed in as", async () => {
+              await visit(page, `/integrations/${String(integration)}`);
+              await openConnectModal(page);
+              // The link is held, so the modal names the account rather than
+              // asking again — the steady state this profile is for.
+              await page
+                .locator('[data-slot="work-identity-label"]')
+                .getByText(`linked as ${OKTA_USER}`, { exact: true })
+                .waitFor({ timeout: 30_000 });
+            });
+
+            await step("A member tries to connect again after the denial", async () => {
+              await page
+                .getByRole("button", { name: "Connect with Work Identity" })
+                .click({ timeout: 30_000 });
+            });
+
+            await step(
+              "The console shows the organization's decision, and no way around it",
+              async () => {
+                const notice = page.locator('[data-slot="admin-block-notice"]');
+                await notice.waitFor({ timeout: 60_000 });
+                await notice
+                  .getByText("Blocked by your organization", { exact: true })
+                  .waitFor({ timeout: 30_000 });
+                // The provider's own code, so a member can quote it to whoever
+                // administers the policy.
+                await notice
+                  .getByText("Reference: invalid_target", { exact: true })
+                  .waitFor({ timeout: 30_000 });
+                // Nothing that reconnects. Every one of these is a route to the
+                // authorization the identity provider just refused, and the
+                // interactive one would route the member around it outright.
+                expect(
+                  await page.getByRole("button", { name: "Connect with Work Identity" }).count(),
+                  "a denial is not a retry",
+                ).toBe(0);
+                expect(
+                  await page.getByRole("button", { name: "Connect", exact: true }).count(),
+                  "and no interactive fallback is offered in its place",
+                ).toBe(0);
               },
-            })
-            .pipe(Effect.flip);
+            );
+          });
 
-          assert(
-            Predicate.isTagged(blocked, "OAuthStartError"),
-            "a policy denial is a start failure, not a transport or decoding fault",
-          );
-          // The two fields the console branches on. It must never decide this
-          // from the wording of a message: getting it wrong means offering the
-          // interactive flow, which walks the member around the control the
-          // identity provider just exercised.
-          expect(blocked.blockedByAdmin, "the denial reaches the console as a FIELD").toBe(true);
-          expect(
-            blocked.oauthErrorCode,
-            "the provider's own code travels structurally, so support can trace it",
-          ).toBe("invalid_target");
-
-          // THE anti-fallback claim, proven by absence: had executor quietly
-          // offered the ordinary per-server flow, the MCP server would have seen
-          // an authorize request, a registration, or another redemption.
+          // Proven by absence again, on the blocked attempt this time.
           const afterDenial = yield* Effect.promise(() => mcp.ledger.list());
           expect(
             afterDenial.filter(
@@ -453,53 +467,63 @@ scenario(
             ),
             "a policy denial does not fall back to interactive OAuth",
           ).toEqual([]);
-
-          const connections = yield* client.connections.list({ query: { integration } });
-          expect(
-            connections.map((connection) => String(connection.name)).sort(),
-            "the blocked attempt minted no connection",
-          ).toEqual([String(managedConnection)]);
-
-          // -----------------------------------------------------------------
-          // 5. The denial changes nothing the console offers: the managed row
-          //    still has no route around the identity provider's decision.
-          // -----------------------------------------------------------------
-          yield* browser.session(identity, async ({ page, step }) => {
-            const rows = connectionsSection(page);
-            await step("After the denial, the console still offers no way around it", async () => {
-              await visit(page, `/integrations/${String(integration)}`);
-              await rows
-                .getByText(String(managedConnection), { exact: true })
-                .waitFor({ timeout: 30_000 });
-              await rows.getByText(MANAGED_BADGE, { exact: true }).waitFor({ timeout: 30_000 });
-              await rows.locator('button[aria-haspopup="menu"]').first().click();
-              // Wait for a menu item that IS there before counting the ones
-              // that are not: an unopened menu would make every absence
-              // assertion below pass for the wrong reason.
-              await page.getByRole("menuitem", { name: "Check now" }).waitFor({ timeout: 30_000 });
-              expect(
-                await page.getByRole("menuitem", { name: "Reconnect" }).count(),
-                "the interactive route is exactly what the identity provider closed",
-              ).toBe(0);
-              expect(
-                await page.getByRole("menuitem", { name: "Remove" }).count(),
-                "and a denial does not turn revocation into a local action either",
-              ).toBe(0);
-            });
+          const afterDenialConnections = yield* client.connections.list({
+            query: { integration },
           });
+          expect(afterDenialConnections.length, "the blocked attempt minted no connection").toBe(1);
         }),
         Effect.gen(function* () {
-          yield* client.connections
-            .remove({
-              params: { owner: "org", integration, name: managedConnection },
+          const rows = yield* client.connections
+            .list({ query: { integration } })
+            .pipe(Effect.orElseSucceed(() => []));
+          yield* Effect.forEach(
+            rows,
+            (row) =>
+              client.connections
+                .remove({
+                  params: { owner: row.owner, integration, name: row.name },
+                })
+                .pipe(Effect.ignore),
+            { discard: true },
+          );
+          yield* client.oauth
+            .unlinkWorkIdentity({
+              payload: {
+                owner: "org",
+                idpClient: IDP_CLIENT,
+                idpClientOwner: "org",
+              },
             })
             .pipe(Effect.ignore);
           yield* client.oauth
-            .removeClient({ params: { slug: serverClient }, payload: { owner: "org" } })
+            .unlinkWorkIdentity({
+              payload: {
+                owner: "user",
+                idpClient: IDP_CLIENT,
+                idpClientOwner: "org",
+              },
+            })
             .pipe(Effect.ignore);
           yield* client.oauth
-            .removeClient({ params: { slug: IDP_CLIENT }, payload: { owner: "org" } })
+            .removeClient({
+              params: { slug: IDP_CLIENT },
+              payload: { owner: "org" },
+            })
             .pipe(Effect.ignore);
+          // The enterprise app's slug is derived by the FORM from the server's
+          // name, so it is not a constant here — find it by what it is.
+          const clients = yield* client.oauth.listClients().pipe(Effect.orElseSucceed(() => []));
+          yield* Effect.forEach(
+            clients.filter((app) => app.grant === "id_jag" && app.resource === mcpEndpoint),
+            (app) =>
+              client.oauth
+                .removeClient({
+                  params: { slug: app.slug },
+                  payload: { owner: app.owner },
+                })
+                .pipe(Effect.ignore),
+            { discard: true },
+          );
           yield* client.mcp.removeServer({ params: { slug: integration } }).pipe(Effect.ignore);
         }),
       );

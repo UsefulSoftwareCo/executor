@@ -36,6 +36,7 @@ import {
   startOAuth,
   updateConnection,
   validateConnection,
+  workIdentityStatusAtom,
 } from "../api/atoms";
 import {
   connectionCheckKeys,
@@ -44,6 +45,13 @@ import {
   oauthClientWriteKeys,
 } from "../api/reactivity-keys";
 import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { enterpriseConnectPlan, type EnterpriseConnectPlan } from "../lib/enterprise-connect";
+import {
+  adminBlockFromExit,
+  workIdentityLinkRequiredFromExit,
+  type OAuthAdminBlock,
+} from "../plugins/oauth-admin-block";
+import { useWorkIdentityLink, workIdentityLinkedLabel } from "../plugins/work-identity";
 import { AdminBlockNotice } from "./admin-block-notice";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { messageFromExit } from "../api/error-reporting";
@@ -1181,6 +1189,54 @@ function RequestCheckPanel(props: {
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// The enterprise-managed connect notice.
+//
+// Rendered ONLY on the enterprise branch, which is what lets it read the held
+// work identity: the status query is addressed by (owner, IdP app), and there is
+// no such address on a server the organization does not manage. Mounting it
+// conditionally is also what keeps the poll from running for every ordinary
+// connect in the console.
+//
+// What it says changes with custody, and deliberately says nothing about the
+// outcome: whether this connect takes the ID-JAG chain is settled at discovery,
+// against the server.
+// ---------------------------------------------------------------------------
+function EnterpriseManagedNotice(props: {
+  readonly owner: Owner;
+  readonly identityProvider: {
+    readonly client: OAuthClientSlug;
+    readonly clientOwner: Owner;
+  };
+}) {
+  const statusResult = useAtomValue(
+    workIdentityStatusAtom({
+      owner: props.owner,
+      idpClient: props.identityProvider.client,
+      idpClientOwner: props.identityProvider.clientOwner,
+    }),
+  );
+  const held = AsyncResult.isSuccess(statusResult)
+    ? workIdentityLinkedLabel(statusResult.value)
+    : null;
+  return (
+    <div
+      data-slot="enterprise-managed-notice"
+      className="mx-1 space-y-1 rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+    >
+      <p className="text-xs text-muted-foreground">
+        Your organization manages this server. You sign in with your work identity and your identity
+        provider decides the access — no consent screen, and nothing to revoke here.
+      </p>
+      {held === null ? null : (
+        <p data-slot="work-identity-label" className="font-mono text-[11px] text-muted-foreground">
+          {held}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
@@ -1257,6 +1313,17 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // the modal to the bring-your-own-app picker if auto setup is unavailable.
   const [dcrBusy, setDcrBusy] = useState(false);
   const [dcrFailed, setDcrFailed] = useState(false);
+  // Enterprise-managed connect: busy across `oauth.start` → (maybe) the work
+  // identity link → the one retry. Its verdicts are held apart from the popup
+  // flow's because this route mints INLINE — there is no redirect and no popup
+  // to carry them, right up until a link turns out to be needed.
+  const [enterpriseBusy, setEnterpriseBusy] = useState(false);
+  const [enterpriseBlock, setEnterpriseBlock] = useState<OAuthAdminBlock | null>(null);
+  const [enterpriseError, setEnterpriseError] = useState<string | null>(null);
+  // The register-an-app sub-view is opened for the ENTERPRISE app: the server is
+  // declared managed but no `id_jag` client is registered for it, so the form
+  // opens on that grant with the server's resource already filled in.
+  const [registeringEnterpriseApp, setRegisteringEnterpriseApp] = useState(false);
   const [oauthFallbackProbe, setOAuthFallbackProbe] = useState<DcrProbeResult | null>(null);
   // When transparent DCR is rejected with an actionable reason (e.g. the server
   // refuses our redirect URI), surface it as an inline error card on the
@@ -1522,7 +1589,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // URL, so we can create a public local client and skip provider app
   // registration entirely.
   const isCimd = isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true;
-  const cimdActive = isCimd;
+  // MCP Enterprise-Managed Authorization. Decided from the METHOD's declaration
+  // plus the registered `id_jag` apps, in one pure function, so the route this
+  // click takes is inspectable and testable rather than emergent from the order
+  // of the branches below.
+  const enterprisePlan = useMemo<EnterpriseConnectPlan>(
+    () => enterpriseConnectPlan({ method, integration, clients: clientSummaries }),
+    [method, integration, clientSummaries],
+  );
+  // Registered and declared: this connect names the organization's identity
+  // provider. It OUTRANKS both automatic routes — a server the organization
+  // manages must not quietly register a fresh interactive client and walk the
+  // member through the per-server consent the declaration exists to remove.
+  const enterpriseActive = enterprisePlan.kind === "enterprise";
+  const cimdActive = isCimd && !enterpriseActive;
   // Single-input header/query methods: the placement's lead + prefix (e.g.
   // "Authorization: Bearer ") merges INTO the credential field as a non-editable
   // affix, so the input reads as the header value being built and the separate
@@ -1542,10 +1622,18 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // and not yet fallen back, we skip the app picker entirely (Option A).
   const isDcr =
     !cimdActive &&
+    !enterpriseActive &&
     isOAuth &&
     (method?.oauth?.supportsDynamicRegistration === true || method?.oauth?.discoveryUrl != null);
   const dcrActive = isDcr && !dcrFailed;
-  const automaticOAuthActive = cimdActive || dcrActive;
+  // "Automatic" means the console sets the connection up with no app picker and
+  // no pasted client — true of all three of these, which is what the owner
+  // picker and the name preview below key off.
+  const automaticOAuthActive = cimdActive || dcrActive || enterpriseActive;
+  // Routes with nothing to pick and nothing to paste render no auth panel at
+  // all. CIMD is excluded: it has a panel, and it is the one explaining that no
+  // app registration is needed.
+  const authPanelHidden = dcrActive || enterpriseActive;
 
   // OAuth apps usable for this integration (user-owned first). Hooks run
   // unconditionally; in DCR mode the result is ignored until/unless we fall back.
@@ -1596,6 +1684,13 @@ function AddAccountModalView(props: AddAccountModalProps) {
     detectPopupClosed: false,
     startErrorMessage: "Failed to start OAuth",
   });
+  // The work-identity sign-in, on its own popup name so it can never reuse (and
+  // so close) the connect window. Like `oauthPopup` it lives INSIDE this view:
+  // closing the modal unmounts it, which cancels a dangling link session and
+  // shuts the sign-in window.
+  const workIdentity = useWorkIdentityLink({
+    popupName: "add-account-work-identity",
+  });
 
   // Default to the first app ONLY when the apps are endpoint-matched; when they
   // are not (host filter matched nothing), leave the selection empty so the
@@ -1619,14 +1714,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const isBuiltInGoogleClient =
     chosenClient?.origin.kind === "first_party" &&
     String(chosenClient.slug) === "first-party:google";
-  // The server names an enterprise identity provider (MCP Enterprise-Managed
-  // Authorization). Read STRUCTURALLY off the declared method — never from the
-  // grant of a picked app, which an ordinary connection can also carry.
-  const managedByOrganization = isOAuth && method?.oauth?.enterpriseIdentityProvider !== undefined;
+  // One administrator verdict for the whole modal, whichever route met it: the
+  // popup flow reads it off a redirect start, the enterprise route off its own
+  // inline start. The footer withholds every connect action while either stands.
+  const adminBlock = oauthPopup.adminBlock ?? enterpriseBlock;
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
-  const automaticOAuthConnecting = cimdConnecting || dcrConnecting;
+  const enterpriseConnecting = enterpriseBusy || workIdentity.busy;
+  const automaticOAuthConnecting = cimdConnecting || dcrConnecting || enterpriseConnecting;
 
   // "Connection saved to" for a PICKED BYO OAuth app. Cloud: a Workspace (`org`)
   // app can mint Personal or Workspace connections; a Personal (`user`) app can
@@ -2122,6 +2218,117 @@ function AddAccountModalView(props: AddAccountModalProps) {
     });
   };
 
+  // -------------------------------------------------------------------------
+  // Enterprise-managed connect (MCP EMA).
+  //
+  // `oauth.start` names the organization's identity provider and carries NO
+  // subject token: the server resolves the member's held work identity. Three
+  // outcomes, and each has exactly one right response:
+  //
+  //   connected            → the ID-JAG chain ran; no popup, no consent screen.
+  //   workIdentityLinkRequired → nothing is held yet. Sign in at the identity
+  //                          provider ONCE, then retry the start ONCE. Not a
+  //                          loop: a second link-required after a link that just
+  //                          succeeded is a real failure, not a race to spin on.
+  //   blockedByAdmin       → the identity provider refused under policy. No
+  //                          retry, and emphatically no interactive fallback,
+  //                          which is the route it just closed.
+  // -------------------------------------------------------------------------
+  const handleEnterpriseConnect = async () => {
+    if (!method || enterprisePlan.kind !== "enterprise") return;
+    const { client, identityProvider } = enterprisePlan;
+    const connectionOwner = owner;
+    const identityLabel = typedIdentityLabel(label);
+    const payload = {
+      client: client.slug,
+      clientOwner: client.owner,
+      owner: connectionOwner,
+      name: previewConnectionName(label, connectionOwner),
+      newConnection: true,
+      integration,
+      template: method.template,
+      ...(identityLabel !== undefined ? { identityLabel } : {}),
+      // No `subjectToken`. Nothing in this payload could authorize anything —
+      // the held work identity is resolved server-side, which is the entire
+      // reason this path is reachable from a browser at all.
+      enterprise: {
+        idpClient: identityProvider.client,
+        idpClientOwner: identityProvider.clientOwner,
+      },
+    };
+
+    // Claim the sign-in window on THIS click. A link only becomes necessary
+    // after `oauth.start` has answered, by which time the browser's user
+    // activation is gone and `window.open` is refused silently. Released again
+    // on every path that turns out not to need it.
+    const reservation = workIdentity.reserve();
+    if (reservation.kind === "blocked") return;
+    setEnterpriseBusy(true);
+    setEnterpriseBlock(null);
+    setEnterpriseError(null);
+    oauthPopup.setError(null);
+
+    const attempt = () => doStartOAuth({ payload, reactivityKeys: connectionWriteKeys });
+
+    const settle = async (
+      exit: Awaited<ReturnType<typeof attempt>>,
+      linked: boolean,
+    ): Promise<void> => {
+      trackEvent("connection_oauth_started", {
+        integration_slug: String(integration),
+        owner: connectionOwner,
+        flow: "enterprise",
+        success: Exit.isSuccess(exit),
+        work_identity_linked: linked,
+      });
+      if (Exit.isFailure(exit)) {
+        setEnterpriseBusy(false);
+        setEnterpriseBlock(adminBlockFromExit(exit));
+        setEnterpriseError(messageFromExit(exit, "Failed to connect"));
+        return;
+      }
+      if (exit.value.status !== "connected") {
+        // An enterprise-managed start never redirects: it presents an assertion
+        // instead of walking the member through consent. Landing here means the
+        // server did not advertise the profile and the connect fell back — say
+        // so rather than silently opening the consent screen the declaration
+        // exists to avoid.
+        setEnterpriseBusy(false);
+        setEnterpriseError(
+          "This server did not accept your organization's identity provider. Ask an administrator to check the server's enterprise app.",
+        );
+        return;
+      }
+      setEnterpriseBusy(false);
+      await probeAndAutoNameOAuthConnection(exit.value.connection, label);
+      toast.success("Connection added");
+      close();
+    };
+
+    const first = await attempt();
+    if (Exit.isSuccess(first) || !workIdentityLinkRequiredFromExit(first)) {
+      workIdentity.releaseReservation();
+      await settle(first, false);
+      return;
+    }
+
+    await workIdentity.link({
+      ref: {
+        owner: connectionOwner,
+        idpClient: identityProvider.client,
+        idpClientOwner: identityProvider.clientOwner,
+      },
+      reservation,
+      onError: (message: string) => {
+        setEnterpriseBusy(false);
+        setEnterpriseError(message);
+      },
+      onLinked: async () => {
+        await settle(await attempt(), true);
+      },
+    });
+  };
+
   const handleCimdConnect = async () => {
     const authorizationUrl = method?.oauth?.authorizationUrl;
     const tokenUrl = method?.oauth?.tokenUrl;
@@ -2416,6 +2623,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     undefined,
                   tokenEndpointAuthMethodsSupported:
                     oauthFallbackProbe?.tokenEndpointAuthMethodsSupported,
+                  // Registering the ENTERPRISE app: the grant is not a choice
+                  // here — it is what makes this the enterprise registration at
+                  // all. The resource it requires is already seeded above from
+                  // the server's own discovery URL, which is the identity the
+                  // ID-JAG is audienced to.
+                  ...(registeringEnterpriseApp ? { grant: "id_jag" as const } : {}),
                   ...(oauthHandoffPrefill?.grant ? { grant: oauthHandoffPrefill.grant } : {}),
                   ...(oauthHandoffPrefill?.clientId
                     ? { clientId: oauthHandoffPrefill.clientId }
@@ -2432,10 +2645,19 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     : undefined
                 }
                 onCreated={(result: { readonly owner: Owner; readonly slug: OAuthClientSlug }) => {
-                  setPickedApp(String(result.slug));
+                  // An enterprise app is never the PICKED app: it is not in the
+                  // picker's lists, and selecting it would put an `id_jag` slug
+                  // behind the ordinary Connect. Registering it flips the route
+                  // instead — `enterpriseConnectPlan` finds it on the next
+                  // render and the footer becomes the work-identity connect.
+                  if (!registeringEnterpriseApp) setPickedApp(String(result.slug));
+                  setRegisteringEnterpriseApp(false);
                   setRegisteringOAuthClient(false);
                 }}
-                onCancel={() => setRegisteringOAuthClient(false)}
+                onCancel={() => {
+                  setRegisteringEnterpriseApp(false);
+                  setRegisteringOAuthClient(false);
+                }}
                 surface="plain"
               />
             </div>
@@ -2459,7 +2681,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             </DialogHeader>
 
             <div className="flex w-full min-w-0 flex-col gap-5">
-              {(!dcrActive || createCustomMethod) && showValidateStep && (
+              {(!authPanelHidden || createCustomMethod) && showValidateStep && (
                 <Tabs
                   value={methodId}
                   onValueChange={selectMethod}
@@ -2518,7 +2740,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     </div>
                   </TabsList>
 
-                  {dcrActive ? null : (
+                  {authPanelHidden ? null : (
                     <TabsContent
                       value={methodId}
                       className={cn(
@@ -2957,22 +3179,43 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 {continueError}
               </p>
             ) : null}
-            {/* The server is declared enterprise-managed. Copy only, and
-                deliberately: whether this connect actually takes the
-                enterprise branch is decided at discovery — the server has to
-                advertise the ID-JAG grant profile — so the notice describes the
-                arrangement rather than promising an outcome the console cannot
-                guarantee. It is withdrawn while an administrator denial stands,
-                where the denial is the more specific truth. */}
-            {managedByOrganization && oauthPopup.adminBlock === null ? (
-              <p
-                data-slot="enterprise-managed-notice"
-                className="mx-1 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+            {/* The server is declared enterprise-managed. Withdrawn while an
+                administrator denial stands, where the denial is the more
+                specific truth. */}
+            {adminBlock !== null ? null : enterprisePlan.kind === "enterprise" ? (
+              <EnterpriseManagedNotice
+                owner={owner}
+                identityProvider={enterprisePlan.identityProvider}
+              />
+            ) : enterprisePlan.kind === "unregistered" ? (
+              // Declared managed, but the `id_jag` app the enterprise branch
+              // needs does not exist yet. The connect below still works the
+              // ordinary way — a member must not be stranded by a half-finished
+              // setup — and this says, to whoever can act on it, exactly what is
+              // missing. Naming the gap is the point: silently taking the
+              // interactive route here is how a "managed" server ends up asking
+              // every member for per-server consent.
+              <div
+                data-slot="enterprise-app-missing-notice"
+                className="mx-1 space-y-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2"
               >
-                Your organization manages this server. Where it supports work identities, you sign
-                in with yours and your identity provider decides the access — no consent screen, and
-                nothing to revoke here.
-              </p>
+                <p className="text-xs text-muted-foreground">
+                  Your organization manages this server, but no enterprise app is registered for it
+                  yet — so this connect asks {integrationName} for your consent instead. An
+                  administrator can register one to switch it over.
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => {
+                    setRegisteringEnterpriseApp(true);
+                    setRegisteringOAuthClient(true);
+                  }}
+                >
+                  Register Enterprise App
+                </Button>
+              </div>
             ) : null}
             {/* Above the footer, not inside the method tab: the automatic
                 (CIMD/DCR) flows render no tab panel at all, and putting the
@@ -2981,11 +3224,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
             {/* An enterprise policy denial replaces the ordinary error line —
                 it is not a transient fault, and the footer below withdraws
                 every connect action while it stands. */}
-            {isOAuth && oauthPopup.adminBlock !== null ? (
-              <AdminBlockNotice block={oauthPopup.adminBlock} className="mx-1" />
-            ) : isOAuth && oauthPopup.error ? (
+            {isOAuth && adminBlock !== null ? (
+              <AdminBlockNotice block={adminBlock} className="mx-1" />
+            ) : isOAuth && (oauthPopup.error ?? workIdentity.error ?? enterpriseError) ? (
               <p role="alert" className="px-1 text-xs text-destructive">
-                {oauthPopup.error}
+                {oauthPopup.error ?? workIdentity.error ?? enterpriseError}
               </p>
             ) : null}
             <DialogFooter>
@@ -3010,7 +3253,24 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   enterprise just refused, and the interactive one would route
                   the user around the control outright. Close is the only
                   action left. */}
-              {isOAuth && oauthPopup.adminBlock !== null ? null : cimdActive ? (
+              {isOAuth && adminBlock !== null ? null : enterpriseActive ? (
+                // The organization's route, and the only one offered while it
+                // applies: the ordinary "Connect" would register a fresh
+                // interactive client and ask this server for consent, which is
+                // exactly what being managed removes.
+                <Button
+                  type="button"
+                  data-slot="enterprise-connect"
+                  onClick={() => void handleEnterpriseConnect()}
+                  disabled={enterpriseConnecting}
+                >
+                  {enterpriseConnecting
+                    ? workIdentity.busy
+                      ? "Signing in…"
+                      : "Connecting…"
+                    : "Connect with Work Identity"}
+                </Button>
+              ) : cimdActive ? (
                 <Button
                   type="button"
                   onClick={() => void handleCimdConnect()}

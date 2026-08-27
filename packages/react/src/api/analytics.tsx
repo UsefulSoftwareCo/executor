@@ -67,9 +67,17 @@ export interface AnalyticsEvents {
   connection_oauth_started: {
     integration_slug: string;
     owner: Owner;
-    flow: "byo" | "dcr" | "cimd";
+    /** Which connect route the click took. `enterprise` is MCP
+     *  Enterprise-Managed Authorization: the ID-JAG chain against the
+     *  organization's identity provider, with no per-server consent. */
+    flow: "byo" | "dcr" | "cimd" | "enterprise";
     success: boolean;
     dcr_fallback?: boolean;
+    /** `enterprise` only: whether this connect had to walk the member through a
+     *  work-identity sign-in first. Distinguishes the one-time setup cost from
+     *  the steady state, which is the number that says whether the profile is
+     *  delivering "no consent screen". */
+    work_identity_linked?: boolean;
   };
   connection_reconnected: {
     integration_slug: string;

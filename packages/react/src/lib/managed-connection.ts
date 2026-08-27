@@ -47,6 +47,11 @@ export interface ConnectionRowPolicy {
   readonly canRemove: boolean;
   /** Whether the row may offer to re-run an interactive OAuth flow. */
   readonly canReconnect: boolean;
+  /** The connection is stalled because the shared WORK IDENTITY behind it died,
+   *  not because anything about this connection did. The row's recovery is one
+   *  re-link — which revives every connection pointing at the same identity —
+   *  and emphatically not N reconnects, none of which could succeed. */
+  readonly needsWorkIdentityRelink: boolean;
 }
 
 /**
@@ -74,5 +79,18 @@ export const connectionRowPolicy = (
     // A blocked connection is never reconnectable either, managed or not: the
     // interactive flow is exactly the route the enterprise just closed.
     canReconnect: !managed && !blockedByAdmin,
+    // An administrator denial outranks it: both stall the connection, but only
+    // one of them is fixable by the member, and offering a link against a
+    // client the identity provider has denied would waste a sign-in.
+    needsWorkIdentityRelink: health?.workIdentityRelinkRequired === true && !blockedByAdmin,
   };
 };
+
+/** The one action a stalled work identity offers, and the whole reason it is
+ *  not "Reconnect": it is about the IDENTITY, and it is not per connection. */
+export const MANAGED_CONNECTION_RELINK_ACTION = "Re-link Work Identity";
+
+/** Said in full where there is room for a sentence, because "re-link" alone
+ *  reads as a per-row repair and this is the opposite of one. */
+export const MANAGED_CONNECTION_RELINK_HINT =
+  "Your work identity was rejected. One re-link restores every connection your organization manages.";

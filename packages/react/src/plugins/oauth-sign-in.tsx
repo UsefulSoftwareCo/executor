@@ -77,7 +77,7 @@ export type OAuthStartPayload = {
   readonly redirectUri?: string;
 };
 
-export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {
+export type StartOAuthPopupInput<TPayload> = {
   readonly payload: OAuthStartPayload;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
   readonly onError?: (error: string) => void;
@@ -118,7 +118,7 @@ class OAuthAuthorizationStartError extends Data.TaggedError("OAuthAuthorizationS
   readonly message: string;
 }> {}
 
-export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload> = {
+export type StartOAuthAuthorizationInput<TPayload> = {
   readonly owner: Owner;
   readonly run: () => Promise<OAuthAuthorizationStartResult>;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
@@ -167,9 +167,19 @@ export function oauthClientIdMetadataDocumentUrl(options?: {
   return url.toString();
 }
 
-export function useOAuthPopupFlow<
-  TPayload extends OAuthCompletionPayload = OAuthCompletionPayload,
->(options: {
+/**
+ * Drive one browser authorization through a popup: reserve the window on the
+ * click, run whatever mints the authorization URL, then settle on the message
+ * the same-origin callback posts back.
+ *
+ * `TPayload` is what that callback posts. It defaults to a minted CONNECTION
+ * (`start` below builds one), and is deliberately unconstrained because the
+ * shared `/api/oauth/callback` completes two different flows: a connect posts
+ * the connection's fields flat, and a WORK-IDENTITY LINK posts
+ * `{ workIdentity }`. Both want this hook's window reservation, single-settle
+ * guarantee, and unmount cleanup; only the connect arm wants `start`.
+ */
+export function useOAuthPopupFlow<TPayload = OAuthCompletionPayload>(options: {
   readonly popupName: string;
   readonly callbackPath?: string;
   readonly noAuthorizationUrlMessage?: string;

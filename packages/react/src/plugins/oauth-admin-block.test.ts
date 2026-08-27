@@ -2,7 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Exit from "effect/Exit";
 import { OAuthStartError } from "@executor-js/sdk/shared";
 
-import { adminBlockFrom, adminBlockFromExit, adminBlockReference } from "./oauth-admin-block";
+import {
+  adminBlockFrom,
+  adminBlockFromExit,
+  adminBlockReference,
+  workIdentityLinkRequiredFromExit,
+} from "./oauth-admin-block";
 
 // The claim these tests defend is a product claim, not a parsing one: a console
 // may only withdraw the interactive route when the identity provider actually
@@ -86,6 +91,44 @@ describe("adminBlockFromExit", () => {
 
   it("has no verdict for a successful exit", () => {
     expect(adminBlockFromExit(Exit.succeed({ status: "connected" }))).toBeNull();
+  });
+});
+
+describe("workIdentityLinkRequiredFromExit", () => {
+  const unlinked = new OAuthStartError({
+    message: "No work identity is linked for this identity provider.",
+    workIdentityLinkRequired: true,
+  });
+
+  it("reads the remedy off the typed field", () => {
+    expect(workIdentityLinkRequiredFromExit(Exit.fail(unlinked))).toBe(true);
+  });
+
+  it("survives the popup flow's one level of wrapping", () => {
+    expect(
+      workIdentityLinkRequiredFromExit(
+        Exit.fail({ message: "Failed to start sign-in", cause: unlinked }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is not asked for by an administrator denial", () => {
+    // The two verdicts are disjoint upstream, and the console must keep them
+    // that way: opening a sign-in against a client the identity provider has
+    // denied spends the member's time to reach the same refusal.
+    expect(workIdentityLinkRequiredFromExit(Exit.fail(denial))).toBe(false);
+  });
+
+  it("is not inferred from an ordinary failure", () => {
+    expect(
+      workIdentityLinkRequiredFromExit(
+        Exit.fail(new OAuthStartError({ message: "Token endpoint 502." })),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a successful start", () => {
+    expect(workIdentityLinkRequiredFromExit(Exit.succeed({ status: "connected" }))).toBe(false);
   });
 });
 

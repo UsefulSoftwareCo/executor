@@ -18,6 +18,8 @@ import {
 } from "@executor-js/react/api/account-atoms";
 import { orgMemberWriteKeys } from "@executor-js/react/api/reactivity-keys";
 
+import { EnterpriseIdentityProviderSection } from "@executor-js/react/components/enterprise-idp-section";
+
 import { createInvite, invitesAtom, inviteWriteKeys, revokeInvite } from "../../admin-atoms";
 
 export const Route = createFileRoute("/{-$orgSlug}/admin")({
@@ -37,11 +39,16 @@ function AdminPage() {
         <header className="space-y-1">
           <h1 className="font-display text-3xl tracking-tight text-foreground">Admin</h1>
           <p className="text-sm text-muted-foreground">
-            Manage members and invite links for this instance.
+            Manage members, invite links, and enterprise identity for this instance.
           </p>
         </header>
         <MembersSection />
         <InvitesSection />
+        {/* MCP Enterprise-Managed Authorization. Cloud registers the identity
+            provider from its organization page; self-host has no such page, and
+            THIS is where its admin gate lives — the same owner/admin check the
+            sections above rely on, enforced by the API for every control here. */}
+        <EnterpriseIdentityProviderSection />
       </div>
     </div>
   );

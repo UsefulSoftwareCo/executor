@@ -94,6 +94,17 @@ export const HealthCheckResult = Schema.Struct({
   /** The authorization server's RFC 6749 §5.2 error code, when the failure came
    *  from a token-endpoint refusal. Shown for support traceability. */
   oauthErrorCode: Schema.optional(Schema.String),
+  /** True when this connection renews from a shared WORK IDENTITY and that
+   *  identity — not this connection — is what died.
+   *
+   *  The console's whole recovery decision hangs on it. An ordinary expiry says
+   *  "reconnect this connection"; this says "re-link your work identity once,
+   *  and every connection behind it recovers". Offering N reconnects here would
+   *  be wrong twice over: each connection is intact, and no reconnect can revive
+   *  a subject the identity provider has rejected. Mirrors
+   *  `CredentialResolutionError.workIdentityRelinkRequired`, which is where it
+   *  is decided. */
+  workIdentityRelinkRequired: Schema.optional(Schema.Boolean),
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 

@@ -32,6 +32,11 @@ export const ReactivityKey = {
   oauthClients: "oauth-clients",
   /** An integration's declared health check (the operation/identity-field spec). */
   healthChecks: "health-checks",
+  /** The caller's held enterprise work identities (MCP Enterprise-Managed
+   *  Authorization). Its own key, not `connections`: one link changes the state
+   *  of every enterprise-managed connection at once, and nothing about a single
+   *  connection changes it back. */
+  workIdentities: "work-identities",
   // cloud-only resources
   orgMembers: "org:members",
   orgDomains: "org:domains",
@@ -63,6 +68,15 @@ export const connectionCheckKeys = [ReactivityKey.connections] as const;
 
 /** Mutations that register / replace an OAuth client (app). */
 export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
+
+/** Linking or forgetting a work identity. Touches `connections` (and so tools)
+ *  because a single link can revive every enterprise-managed connection backed
+ *  by that identity — the rows' health verdicts are stale the moment it lands. */
+export const workIdentityWriteKeys = [
+  ReactivityKey.workIdentities,
+  ReactivityKey.connections,
+  ReactivityKey.tools,
+] as const;
 
 /** Mutations that set/clear an integration's health check. Touches `integrations`
  *  so any integration view re-reads (the spec is derived from integration config). */

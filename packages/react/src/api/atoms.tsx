@@ -19,7 +19,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Effect from "effect/Effect";
 
 import { ExecutorApiClient } from "./client";
-import { connectionWriteKeys, ReactivityKey } from "./reactivity-keys";
+import { connectionWriteKeys, ReactivityKey, workIdentityWriteKeys } from "./reactivity-keys";
 
 // ---------------------------------------------------------------------------
 // Query atoms — typed, cached, reactive. v2: owner-scoped (org | user) instead
@@ -256,6 +256,49 @@ export const oauthConnectionCompleted = ExecutorApiClient.runtime.fn<{
   readonly reactivityKeys: typeof connectionWriteKeys;
 }>()(() => Effect.void, {
   reactivityKeys: connectionWriteKeys,
+});
+
+// ---------------------------------------------------------------------------
+// Work identity — the enterprise assertion an enterprise-managed connect
+// presents. Linked ONCE per (owner, IdP app); every managed connect afterwards
+// resolves the held identity server-side and carries no assertion at all.
+//
+// There is deliberately no `complete` atom here. The link's browser leg lands on
+// the SHARED `/api/oauth/callback`, which completes it server-side and posts
+// `{ workIdentity }` back to the opener — so the console reads the outcome off
+// the popup message rather than redeeming a code it never sees.
+// ---------------------------------------------------------------------------
+
+/** Whether a usable enterprise identity is held for this (owner, IdP app), and
+ *  which account it is. Never returns credential material. */
+export const workIdentityStatusAtom = Atom.family(
+  (ref: {
+    readonly owner: Owner;
+    readonly idpClient: OAuthClientSlug;
+    readonly idpClientOwner: Owner;
+  }) =>
+    ExecutorApiClient.query("oauth", "workIdentityStatus", {
+      query: ref,
+      timeToLive: "30 seconds",
+      reactivityKeys: [ReactivityKey.workIdentities],
+    }),
+);
+
+/** Begin a work-identity link: build the IdP authorization URL and open the
+ *  in-flight session. Pass `reactivityKeys: []` — starting a link changes
+ *  nothing until the callback completes it. */
+export const startWorkIdentityLink = ExecutorApiClient.mutation("oauth", "startWorkIdentityLink");
+
+/** Forget a held identity. Pass `reactivityKeys: workIdentityWriteKeys`. */
+export const unlinkWorkIdentity = ExecutorApiClient.mutation("oauth", "unlinkWorkIdentity");
+
+/** Fire-and-forget reactivity bump after a work-identity link completes
+ *  out-of-band (the popup completes through the server callback, exactly as an
+ *  OAuth connect does). The body is a no-op; the keys are the point. */
+export const workIdentityLinkCompleted = ExecutorApiClient.runtime.fn<{
+  readonly reactivityKeys: typeof workIdentityWriteKeys;
+}>()(() => Effect.void, {
+  reactivityKeys: workIdentityWriteKeys,
 });
 
 export const createPolicy = ExecutorApiClient.mutation("policies", "create");

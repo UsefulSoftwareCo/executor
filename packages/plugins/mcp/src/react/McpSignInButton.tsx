@@ -47,6 +47,12 @@ export default function McpSignInButton(props: { integrationId: string; owner?: 
   // server's enterprise-managed declaration rides on this method, and a
   // hand-built copy silently dropped it — leaving this button offering
   // per-server consent for a server the organization manages.
+  //
+  // Carrying the declaration is the whole of this button's EMA support: the
+  // route is decided inside `AddAccountModal` from the method, so a server
+  // declared managed gets the work-identity connect here for exactly the same
+  // reason it does from the connections list, with no second decision to keep
+  // in step.
   const methods = useMemo<readonly AuthMethod[]>(
     () =>
       remote === null || oauthMethod === null

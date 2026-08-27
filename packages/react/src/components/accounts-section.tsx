@@ -18,9 +18,12 @@ import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-displ
 import {
   MANAGED_CONNECTION_BADGE,
   MANAGED_CONNECTION_BLOCKED_LABEL,
+  MANAGED_CONNECTION_RELINK_ACTION,
+  MANAGED_CONNECTION_RELINK_HINT,
   MANAGED_CONNECTION_REVOCATION_HINT,
   connectionRowPolicy,
 } from "../lib/managed-connection";
+import { useWorkIdentityLink } from "../plugins/work-identity";
 import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
@@ -95,6 +98,10 @@ function AccountRow(props: {
   readonly onEdit: () => void;
   readonly onReconnect: () => void;
   readonly onRemove: () => void;
+  /** Re-link the shared work identity this connection renews from. Present only
+   *  when the integration still names an identity provider to link against —
+   *  absent, the row says what happened but offers no button that would fail. */
+  readonly onRelinkWorkIdentity?: () => void;
 }) {
   const { connection, needsReconsent } = props;
   const [checking, setChecking] = useState(false);
@@ -222,6 +229,17 @@ function AccountRow(props: {
             {MANAGED_CONNECTION_REVOCATION_HINT}
           </CardStackEntryDescription>
         ) : null}
+        {policy.needsWorkIdentityRelink ? (
+          // Said in the row, not only in the menu: the fix is not per
+          // connection, and a member looking at three stalled rows has to be
+          // able to see that one sign-in clears all of them.
+          <CardStackEntryDescription
+            data-slot="work-identity-relink-hint"
+            className="mt-1 overflow-visible whitespace-normal text-clip text-xs text-muted-foreground"
+          >
+            {MANAGED_CONNECTION_RELINK_HINT}
+          </CardStackEntryDescription>
+        ) : null}
         {policy.oauthErrorCode === null ? null : (
           <CardStackEntryDescription className="mt-1 font-mono text-[11px] text-muted-foreground">
             Reference: {policy.oauthErrorCode}
@@ -263,6 +281,19 @@ function AccountRow(props: {
                 member revoked access they cannot revoke here — the identity
                 provider still authorizes them, and the next call would hand it
                 straight back. Both live at the provider. */}
+            {/* The recovery a stalled work identity DOES have. It stands where
+                Reconnect would, because it is the answer to the same question —
+                but it is about the identity, not this row, so it never appears
+                beside a Reconnect that would fix a different thing. */}
+            {policy.needsWorkIdentityRelink && props.onRelinkWorkIdentity ? (
+              <DropdownMenuItem
+                className="text-sm"
+                data-slot="relink-work-identity"
+                onClick={props.onRelinkWorkIdentity}
+              >
+                {MANAGED_CONNECTION_RELINK_ACTION}
+              </DropdownMenuItem>
+            ) : null}
             {policy.canReconnect ? (
               <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
                 Reconnect
@@ -312,9 +343,54 @@ function OwnerAccounts(props: {
     detectPopupClosed: false,
     startErrorMessage: "Failed to reconnect",
   });
+  // Re-linking a dead work identity. One flow for the whole owner group, like
+  // the reconnect popup beside it: a re-link is not per row — it repairs every
+  // enterprise-managed connection backed by that identity at once — so hosting
+  // more than one here would be actively misleading.
+  const workIdentity = useWorkIdentityLink({
+    popupName: "relink-work-identity",
+  });
 
   const rows: readonly Connection[] = AsyncResult.isSuccess(connections) ? connections.value : [];
   if (rows.length === 0) return null;
+
+  /** The identity provider this connection's server names, or null when the
+   *  declaration is gone (an administrator un-managed the server). Read off the
+   *  connection's OWN auth method — a connection is bound to one template, and
+   *  linking against a different server's provider would sign the member in to
+   *  the wrong organization app. */
+  const identityProviderFor = (connection: Connection) =>
+    props.methods.find(
+      (candidate: AuthMethod) =>
+        candidate.kind === "oauth" && String(candidate.template) === String(connection.template),
+    )?.oauth?.enterpriseIdentityProvider ?? null;
+
+  const handleRelinkWorkIdentity = async (connection: Connection): Promise<void> => {
+    const identityProvider = identityProviderFor(connection);
+    if (identityProvider === null) return;
+    // Claim the sign-in window on the click, before `startWorkIdentityLink`'s
+    // round trip spends the browser's user activation.
+    const reservation = workIdentity.reserve();
+    if (reservation.kind === "blocked") {
+      toast.error("Your browser blocked the work identity sign-in window");
+      return;
+    }
+    await workIdentity.link({
+      ref: {
+        owner: connection.owner,
+        idpClient: identityProvider.client,
+        idpClientOwner: identityProvider.clientOwner,
+      },
+      reservation,
+      onError: (message: string) => toast.error(message),
+      // No per-connection repair follows. The link's reactivity keys invalidate
+      // the connection list, so every row backed by this identity re-reads and
+      // its next health check succeeds — which is the claim the copy makes.
+      onLinked: () => {
+        toast.success("Work identity linked");
+      },
+    });
+  };
 
   const handleReconnect = async (connection: Connection) => {
     // OAuth connection → re-run the OAuth flow (re-consent + widened scopes +
@@ -449,6 +525,11 @@ function OwnerAccounts(props: {
             onEdit={() => props.onEdit(connection)}
             onReconnect={() => void handleReconnect(connection)}
             onRemove={() => setRemovingConnection(connection)}
+            {...(identityProviderFor(connection) === null
+              ? {}
+              : {
+                  onRelinkWorkIdentity: () => void handleRelinkWorkIdentity(connection),
+                })}
           />
         ))}
       </CardStackContent>

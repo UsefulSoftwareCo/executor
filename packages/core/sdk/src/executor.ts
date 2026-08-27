@@ -824,21 +824,32 @@ const missingOAuthScopesFromProviderState = (value: unknown): readonly string[] 
     : [];
 };
 
-/** Project a credential-resolution failure's ADMINISTRATOR verdict onto the
- *  health result, so the console reads "your organization declined this" as
- *  structure rather than parsing the sentence in `detail`. Empty for every
- *  ordinary failure — an expired grant, a dead refresh token — which keeps the
- *  blocked branch impossible to reach by accident. */
+/** Project a credential-resolution failure's POLICY verdicts onto the health
+ *  result, so the console reads "your organization declined this" and "your work
+ *  identity died" as structure rather than parsing the sentence in `detail`.
+ *
+ *  Empty for every ordinary failure — an expired grant, a dead refresh token —
+ *  which keeps both branches impossible to reach by accident. The two are
+ *  disjoint by construction upstream: an administrator denial is a refusal to
+ *  mint against a live subject, a re-link is a dead subject with nothing asked
+ *  of the identity provider. */
 export const healthAdministratorVerdict = (failure: {
   readonly blockedByAdmin?: boolean;
   readonly oauthErrorCode?: string;
-}): { readonly blockedByAdmin?: true; readonly oauthErrorCode?: string } =>
-  failure.blockedByAdmin === true
+  readonly workIdentityRelinkRequired?: boolean;
+}): {
+  readonly blockedByAdmin?: true;
+  readonly oauthErrorCode?: string;
+  readonly workIdentityRelinkRequired?: true;
+} => ({
+  ...(failure.blockedByAdmin === true
     ? {
         blockedByAdmin: true,
         ...(failure.oauthErrorCode === undefined ? {} : { oauthErrorCode: failure.oauthErrorCode }),
       }
-    : {};
+    : {}),
+  ...(failure.workIdentityRelinkRequired === true ? { workIdentityRelinkRequired: true } : {}),
+});
 
 /** The definitive refresh rejection recorded on `provider_state`, or null.
  *  Set when the AS rejects the grant itself (RFC 6749 invalid_grant — retrying
@@ -1934,7 +1945,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       row: ConnectionRow,
       detail: string,
     ): Effect.Effect<void, never> => {
-      const health: HealthCheckResult = { status: "expired", checkedAt: Date.now(), detail };
+      // The verdict travels with the health row, not only with the failure that
+      // produced it: the accounts list renders `lastHealth` before it probes
+      // anything, and a row that said only "expired" there would offer a
+      // reconnect for the seconds before the probe corrected it.
+      const health: HealthCheckResult = {
+        status: "expired",
+        checkedAt: Date.now(),
+        detail,
+        workIdentityRelinkRequired: true,
+      };
       return core
         .updateMany("connection", {
           where: (b: AnyCb) =>

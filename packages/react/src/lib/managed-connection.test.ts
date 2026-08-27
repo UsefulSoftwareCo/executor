@@ -90,6 +90,40 @@ describe("connectionRowPolicy", () => {
     });
   });
 
+  it("offers a re-link, not a reconnect, when the shared work identity died", () => {
+    // The connection is intact; the identity behind it is not. Reconnecting
+    // would re-run a flow that cannot succeed, N times, for one dead subject.
+    const policy = connectionRowPolicy(
+      connection({ enterpriseManaged: true }),
+      health({ status: "expired", workIdentityRelinkRequired: true }),
+    );
+    expect(policy.needsWorkIdentityRelink).toBe(true);
+    expect(policy.canReconnect).toBe(false);
+  });
+
+  it("does not offer a re-link while an administrator denial stands", () => {
+    // Both stall the connection, but only one is the member's to fix; a sign-in
+    // against a client the identity provider has denied ends in the same
+    // refusal.
+    expect(
+      connectionRowPolicy(
+        connection({ enterpriseManaged: true }),
+        health({
+          status: "expired",
+          blockedByAdmin: true,
+          workIdentityRelinkRequired: true,
+        }),
+      ).needsWorkIdentityRelink,
+    ).toBe(false);
+  });
+
+  it("does not infer a dead work identity from an ordinary expiry", () => {
+    expect(
+      connectionRowPolicy(connection({ enterpriseManaged: true }), health({ status: "expired" }))
+        .needsWorkIdentityRelink,
+    ).toBe(false);
+  });
+
   it("does not infer managed state from an absent field", () => {
     // `enterpriseManaged` is projected server-side from the connection's
     // persisted state. An older row that carries nothing is ordinary, not

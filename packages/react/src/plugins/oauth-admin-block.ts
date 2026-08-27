@@ -36,31 +36,56 @@ const decodeStartError = Schema.decodeUnknownOption(OAuthStartError);
  *  that hop. Exactly one level — a `cause` chain is not a search space. */
 const decodeWrapped = Schema.decodeUnknownOption(Schema.Struct({ cause: Schema.Unknown }));
 
-const directAdminBlock = (error: unknown): OAuthAdminBlock | null =>
-  Option.match(decodeStartError(error), {
+/** The typed `oauth.start` failure behind a value, whether it arrived bare or
+ *  wrapped once by the popup flow's own error. Every verdict below reads from
+ *  HERE, so a new one can never accidentally be looked for in a different set
+ *  of places than the others. */
+const startErrorFrom = (error: unknown): OAuthStartError | null => {
+  const direct = Option.getOrNull(decodeStartError(error));
+  if (direct !== null) return direct;
+  return Option.match(decodeWrapped(error), {
     onNone: () => null,
-    onSome: (start) =>
-      start.blockedByAdmin === true
-        ? { message: start.message, oauthErrorCode: start.oauthErrorCode ?? null }
-        : null,
+    onSome: (wrapper) => Option.getOrNull(decodeStartError(wrapper.cause)),
+  });
+};
+
+/** The typed `oauth.start` failure behind an `Exit`, or null. */
+const startErrorFromExit = (exit: Exit.Exit<unknown, unknown>): OAuthStartError | null =>
+  Option.match(Exit.findErrorOption(exit), {
+    onNone: () => null,
+    onSome: startErrorFrom,
   });
 
 /** The administrator verdict carried by a failed `oauth.start`, or null when
  *  the failure is anything else — including every other OAuth start failure,
  *  which leaves the interactive route open. */
-export const adminBlockFrom = (error: unknown): OAuthAdminBlock | null =>
-  directAdminBlock(error) ??
-  Option.match(decodeWrapped(error), {
-    onNone: () => null,
-    onSome: (wrapper) => directAdminBlock(wrapper.cause),
-  });
+export const adminBlockFrom = (error: unknown): OAuthAdminBlock | null => {
+  const start = startErrorFrom(error);
+  return start !== null && start.blockedByAdmin === true
+    ? { message: start.message, oauthErrorCode: start.oauthErrorCode ?? null }
+    : null;
+};
 
 /** `adminBlockFrom` over an `Exit`, for the mutation call sites that hold one. */
-export const adminBlockFromExit = (exit: Exit.Exit<unknown, unknown>): OAuthAdminBlock | null =>
-  Option.match(Exit.findErrorOption(exit), {
-    onNone: () => null,
-    onSome: adminBlockFrom,
-  });
+export const adminBlockFromExit = (exit: Exit.Exit<unknown, unknown>): OAuthAdminBlock | null => {
+  const start = startErrorFromExit(exit);
+  return start === null ? null : adminBlockFrom(start);
+};
+
+/**
+ * Whether a failed enterprise-managed `oauth.start` is asking for a WORK
+ * IDENTITY LINK.
+ *
+ * The third verdict a start can carry, and the only one with a remedy inside
+ * this console: nothing was asked of the identity provider, the member simply
+ * holds no usable identity for the named app. Read as a field for the same
+ * reason as `blockedByAdmin` — mistaking it for an ordinary failure means
+ * telling a member to retry a connect that will fail identically forever, and
+ * mistaking it for a denial means telling them to go find an administrator who
+ * has nothing to fix. The server never sets it beside `blockedByAdmin`.
+ */
+export const workIdentityLinkRequiredFromExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
+  startErrorFromExit(exit)?.workIdentityLinkRequired === true;
 
 /** What the user is told. Sentence case per the design system's voice rules:
  *  what happened, then what to do next — and the next step is a person, not a
