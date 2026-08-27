@@ -22,7 +22,10 @@ import {
 } from "../../apps/cloud/src/engine/execution-limit-messages";
 import { scenario } from "../src/scenario";
 import { Autumn, Billing, Mcp, Target, Telemetry } from "../src/services";
-import { E2E_EXECUTION_RATE_LIMIT } from "../setup/execution-limits";
+import {
+  E2E_EXECUTION_RATE_LIMIT,
+  E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS,
+} from "../setup/execution-limits";
 import type { Identity } from "../src/target";
 
 const emailOf = (identity: Identity): string => identity.credentials?.email ?? identity.label;
@@ -162,6 +165,7 @@ scenario(
   Effect.gen(function* () {
     yield* Billing;
     const autumn = yield* Autumn;
+    const telemetry = yield* Telemetry;
     const target = yield* Target;
     const mcp = yield* Mcp;
 
@@ -196,6 +200,27 @@ scenario(
     expect(metered.length, "only the allowed executions are metered — the blocked one is not").toBe(
       RATE_LIMIT,
     );
+
+    // The block is also legible in telemetry, not just to the client. This is
+    // the OTHER branch of the check — the allowed path is pinned by the span
+    // scenario below — and it is the one an operator reaches for when a
+    // customer reports being cut off mid-workload.
+    const blockedCheck = yield* telemetry.expectSpan({
+      operation: "rate_limit.check",
+      attributes: { "rate_limit.organization_id": customerId, "rate_limit.blocked": "true" },
+    });
+    expect(
+      blockedCheck.span.tags["rate_limit.count"],
+      "the span carries the count that crossed the cap",
+    ).toBe(String(RATE_LIMIT + 1));
+    expect(
+      blockedCheck.span.tags["rate_limit.exempt"],
+      "the org was not exempt — that is why it was blocked",
+    ).toBe("false");
+    expect(
+      blockedCheck.span.tags["rate_limit.check.failed_open"],
+      "a real block is not a degraded check wearing a block's clothes",
+    ).toBe("false");
   }),
 );
 
@@ -224,6 +249,15 @@ scenario(
     expect(ok.ok, "the execution runs").toBe(true);
     expect(ok.text, "it returns its value").toContain("9");
 
+    // A second RPC on the same session, deliberately NOT an execute (it must
+    // not move the counter this scenario asserts on). The session DO ships its
+    // spans on a bounded, best-effort `waitUntil` flush after each RPC — a
+    // session that makes exactly one call in its whole life is asserting on
+    // that one flush winning a race, which it loses often enough on a loaded
+    // machine to be useless. A real client keeps talking to its session; so
+    // does this one.
+    yield* session.listTools();
+
     const check = yield* telemetry.expectSpan({
       operation: "rate_limit.check",
       attributes: { "rate_limit.organization_id": customerId },
@@ -244,14 +278,31 @@ scenario(
     expect(check.span.tags["rate_limit.check.failed_open"], "the check did not fail open").toBe(
       "false",
     );
-    expect(check.span.tags["rate_limit.check.timeout_ms"], "the budget is recorded").toBe("2000");
+    // The budget on the span is the boot's OVERRIDE, not the compiled-in 2000ms
+    // default — the only end-to-end proof that
+    // EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS actually reaches the worker and
+    // retunes the check. A knob that silently falls back to the constant would
+    // read as healthy here and as a working knob everywhere else.
+    expect(
+      check.span.tags["rate_limit.check.timeout_ms"],
+      "the budget on the span is the one the worker was booted with",
+    ).toBe(String(E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS));
 
-    // The DO round trip itself is timed, as a child of the check.
-    const increments = yield* telemetry.searchSpans({
+    // The DO round trip itself is timed, inside the same trace as the check.
+    // Polled, not read once: the parent and the child ride different export
+    // batches, so a one-shot read here races the exporter and fails ~1 run in 5.
+    const increment = yield* telemetry.expectSpan({
       operation: "rate_limit.increment",
       traceId: check.traceId,
     });
-    expect(increments.length, "the counter DO call is its own span").toBeGreaterThan(0);
+    expect(
+      increment.span.tags["rate_limit.window_id"],
+      "the counter span is for the window the check decided against",
+    ).toBe(check.span.tags["rate_limit.window_id"]);
+    expect(
+      increment.span.tags["rate_limit.counter.error_code"],
+      "a healthy counter call carries no fault classification",
+    ).toBeUndefined();
   }),
 );
 
@@ -265,6 +316,7 @@ scenario(
     // blocks a free org (the scenario above) must sail past the cap here.
     yield* Billing;
     const autumn = yield* Autumn;
+    const telemetry = yield* Telemetry;
     const target = yield* Target;
     const mcp = yield* Mcp;
 
@@ -301,5 +353,25 @@ scenario(
       count: overCap,
     });
     expect(metered.length, "every execution past the cap is still metered").toBe(overCap);
+
+    // Third branch of the check: over the cap AND allowed. Without the reason
+    // on the span, this is indistinguishable in production from a check that
+    // never ran — which is exactly the ambiguity that made the 2026-08-18
+    // block hard to explain.
+    const exemptCheck = yield* telemetry.expectSpan({
+      operation: "rate_limit.check",
+      attributes: { "rate_limit.organization_id": customerId, "rate_limit.exempt": "true" },
+    });
+    expect(
+      Number(exemptCheck.span.tags["rate_limit.count"]),
+      "the exemption was recorded on a check that was genuinely over the cap",
+    ).toBeGreaterThan(RATE_LIMIT);
+    expect(exemptCheck.span.tags["rate_limit.blocked"], "and it allowed the execution").toBe(
+      "false",
+    );
+    expect(
+      exemptCheck.span.tags["rate_limit.check.failed_open"],
+      "the org ran because it is exempt, not because the counter fell over",
+    ).toBe("false");
   }),
 );
