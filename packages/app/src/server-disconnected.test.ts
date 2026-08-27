@@ -7,8 +7,22 @@
  * behavioural test still green.
  */
 
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 import { browserEnvironment } from "./server-disconnected";
+
+const BROWSER_GLOBALS = ["window", "document", "fetch", "reportError"] as const;
+const originalGlobals = new Map<string, unknown>(
+  BROWSER_GLOBALS.map((key) => [key, (globalThis as Record<string, unknown>)[key]]),
+);
+
+afterEach(() => {
+  // The fakes below are installed on the real global object; leaving them there
+  // would silently hand the next test a browser that does not exist.
+  for (const [key, value] of originalGlobals) {
+    if (value === undefined) delete (globalThis as Record<string, unknown>)[key];
+    else (globalThis as Record<string, unknown>)[key] = value;
+  }
+});
 
 class FakeElement {
   id = "";
