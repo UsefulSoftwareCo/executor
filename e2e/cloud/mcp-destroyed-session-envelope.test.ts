@@ -1,15 +1,19 @@
-// Cloud: a terminated MCP session id must keep answering in the protocol's own
-// vocabulary for its whole death sequence — not just in the first instant.
+// Cloud: a session id must keep answering in the MCP protocol's own vocabulary
+// for the whole time its Durable Object is being torn down — not just in the
+// first instant.
 //
-// `DELETE /mcp` condemns the session DO with a durable marker and defers the
-// real teardown to an alarm ~1s later; that alarm's `destroy()` wipes storage
-// and then `ctx.abort("destroyed")`s the isolate. e2e/cloud/mcp-protocol.test.ts
-// already covers the FIRST millisecond of that window (the marker is read and a
-// 404 reconnect comes back). This scenario covers the rest of it: a client that
-// keeps talking to the dead id across the alarm and the abort — exactly what a
-// retrying MCP client does — must always get a well-formed JSON-RPC envelope,
-// either 404 (the id is dead, reconnect) or a retryable 503, and never a bare
-// unhandled 500 from a Durable Object platform error escaping the handler.
+// `DELETE /mcp` condemns the session object with a durable marker and defers
+// the real teardown to an immediate alarm; that alarm wipes the object's
+// storage and then aborts the isolate. e2e/cloud/mcp-protocol.test.ts covers
+// the calm case (terminate, then ask again, get a 404 reconnect). This scenario
+// covers the violent middle of it: a client whose requests are ALREADY IN
+// FLIGHT when the termination lands, which is what a real client with an open
+// tool loop looks like when a session ends underneath it.
+//
+// Every one of those in-flight requests must come back as a well-formed
+// JSON-RPC error — 404 (this id is dead, reconnect) or 503 (the object is
+// restarting, retry the same id, here is how long to wait) — and never as a
+// bare unhandled 500 from a platform failure escaping the request handler.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -97,105 +101,140 @@ const jsonRpcError = (body: string): { readonly code: number; readonly message: 
   }
 };
 
+const describeProbe = (probe: Probe): string =>
+  `+${probe.atMs}ms ${probe.status} ${probe.body.slice(0, 200)}`;
+
 scenario(
-  "MCP protocol · a terminated session id stays a protocol error while its Durable Object is torn down",
+  "MCP protocol · in-flight requests survive their session's teardown as protocol errors",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
     const mcp = yield* Mcp;
-    const identity = yield* target.newIdentity();
-    const bearer = yield* mcp.mintBearer(emailOf(identity));
 
-    // Several sessions, because the fatal window is the isolate abort that
-    // follows the deferred destroy alarm and one session only crosses it once.
-    const sessions = 3;
-    // The destroy alarm is deferred ~1s; keep probing well past it so the
-    // probes straddle the alarm, the storage wipe and the abort that follows.
-    const probeWindowMs = 2_500;
-    const probeIntervalMs = 25;
-    const probeFanOut = 4;
+    // The fatal instant is the isolate abort at the end of the teardown, and a
+    // session only crosses it once — so cross it several times. Before the fix
+    // roughly one teardown in four leaked an unhandled 500.
+    const sessions = 6;
+    // Requests are kept continuously in flight rather than polled on a timer:
+    // the point is to have work ALREADY inside the session object when the
+    // termination lands, not to sample the window from outside it.
+    const concurrency = 8;
+    // Covers the deferred destroy alarm, the storage wipe and the abort that
+    // follows, and then stops. Kept tight on purpose: the traffic only has to
+    // straddle the teardown, and a longer stream just piles avoidable load onto
+    // the shared auth path for no extra coverage.
+    const streamAfterDeleteMs = 1_600;
+    // Enough in-flight requests to be mid-teardown, without racing the DELETE
+    // itself before the session is fully established.
+    const warmupMs = 250;
 
     const probes: Probe[] = [];
 
-    for (let attempt = 0; attempt < sessions; attempt += 1) {
+    // One identity per teardown, all minted BEFORE any load starts. Two
+    // reasons, both about keeping this scenario's traffic off the shared auth
+    // path: a single identity carrying every teardown's requests degrades the
+    // org-membership lookup into a 403, and signing new users in while the
+    // probe stream is running fails the sign-in itself. Neither has anything to
+    // do with what is being tested here.
+    const bearers: string[] = [];
+    for (let index = 0; index < sessions; index += 1) {
+      const identity = yield* target.newIdentity();
+      bearers.push(yield* mcp.mintBearer(emailOf(identity)));
+    }
+
+    for (const bearer of bearers) {
       const sessionId = yield* Effect.promise(() => openSession(target.mcpUrl, bearer));
-      const terminate = yield* Effect.promise(() =>
-        fetch(target.mcpUrl, {
+
+      yield* Effect.promise(async () => {
+        const startedAt = Date.now();
+        let stopAt = Number.POSITIVE_INFINITY;
+
+        const probeOnce = async (): Promise<void> => {
+          const at = Date.now() - startedAt;
+          const response = await mcpPost(target.mcpUrl, {
+            bearer,
+            sessionId,
+            body: TOOLS_LIST_REQUEST,
+          });
+          probes.push({
+            atMs: at,
+            status: response.status,
+            body: await response.text(),
+            retryAfter: response.headers.get("retry-after"),
+          });
+        };
+
+        // One worker replenishes its request the moment the previous one
+        // settles, so the session object is never idle and the DELETE has to
+        // land on top of real traffic.
+        const worker = async (): Promise<void> => {
+          while (Date.now() < stopAt) await probeOnce();
+        };
+        const workers = Array.from({ length: concurrency }, () => worker());
+
+        await new Promise((resolve) => setTimeout(resolve, warmupMs));
+        // Terminate WITHOUT draining the stream: this is the whole scenario.
+        const terminate = await fetch(target.mcpUrl, {
           method: "DELETE",
           headers: { authorization: `Bearer ${bearer}`, "mcp-session-id": sessionId },
-        }),
-      );
-      expect(terminate.status, "the client can terminate its session").toBe(200);
-      yield* Effect.promise(() => terminate.text());
+        });
+        await terminate.text();
+        expect(terminate.status, "the client can terminate its session").toBe(200);
 
-      const startedAt = Date.now();
-      const probe = async (): Promise<void> => {
-        const at = Date.now() - startedAt;
-        const response = await mcpPost(target.mcpUrl, {
-          bearer,
-          sessionId,
-          body: TOOLS_LIST_REQUEST,
-        });
-        probes.push({
-          atMs: at,
-          status: response.status,
-          body: await response.text(),
-          retryAfter: response.headers.get("retry-after"),
-        });
-      };
-      // Concurrent, not sequential: the fatal moment is `ctx.abort("destroyed")`
-      // itself, which kills whatever is in flight. A one-at-a-time poll almost
-      // always misses it, so keep a fan of requests open across the whole
-      // teardown.
-      yield* Effect.promise(async () => {
-        const inFlight: Promise<void>[] = [];
-        while (Date.now() - startedAt < probeWindowMs) {
-          for (let i = 0; i < probeFanOut; i += 1) inFlight.push(probe());
-          await new Promise((resolve) => setTimeout(resolve, probeIntervalMs));
-        }
-        await Promise.all(inFlight);
+        stopAt = Date.now() + streamAfterDeleteMs;
+        await Promise.all(workers);
       });
     }
 
-    // What the dead id actually answered, so a reviewer can see the shape of
-    // the teardown window and not just the verdict.
+    // What the dying session actually answered, so a reviewer can see the shape
+    // of the teardown window and not just the verdict.
     const bucket = new Map<string, number>();
     for (const probe of probes) {
       const key = `${probe.status} ${jsonRpcError(probe.body)?.message ?? probe.body.slice(0, 80)}`;
       bucket.set(key, (bucket.get(key) ?? 0) + 1);
     }
     console.info(
-      `[destroyed-session-envelope] ${probes.length} probes: ${[...bucket]
+      `[destroyed-session-envelope] ${probes.length} probes across ${sessions} teardowns: ${[
+        ...bucket,
+      ]
         .map(([key, count]) => `${count}× ${key}`)
         .join(" | ")}`,
     );
 
+    expect(probes.length, "the stream actually exercised the teardown").toBeGreaterThan(sessions);
+
     const unhandled = probes.filter((probe) => probe.status >= 500 && probe.status !== 503);
     expect(
-      unhandled.map((probe) => `+${probe.atMs}ms ${probe.status} ${probe.body.slice(0, 200)}`),
-      "no probe on a dead session id produces an unhandled server error",
+      unhandled.map(describeProbe),
+      "no request on a terminating session produces an unhandled server error",
     ).toEqual([]);
 
-    const malformed = probes.filter((probe) => jsonRpcError(probe.body) === null);
+    // Only rejections are asserted on: a request the session still served
+    // answers 200 over SSE, which is not a JSON-RPC error body and not what
+    // this scenario is about.
+    const malformed = probes.filter(
+      (probe) => probe.status !== 200 && jsonRpcError(probe.body) === null,
+    );
     expect(
-      malformed.map((probe) => `+${probe.atMs}ms ${probe.status} ${probe.body.slice(0, 200)}`),
-      "every rejection is a JSON-RPC error envelope",
+      malformed.map(describeProbe),
+      "every rejection is a JSON-RPC error envelope the client can parse",
     ).toEqual([]);
 
-    for (const probe of probes) {
-      expect([404, 503], `+${probe.atMs}ms is a reconnect or a retry verdict`).toContain(
-        probe.status,
-      );
-    }
+    // Proves the traffic actually straddled the teardown rather than finishing
+    // before it: the dead id has to have been reported dead at least once.
+    const reconnectVerdicts = probes.filter((probe) => probe.status === 404);
+    expect(
+      reconnectVerdicts.length,
+      "the stream reached the terminated session and was told to reconnect",
+    ).toBeGreaterThan(0);
 
-    // A 503 in this window means "the platform is mid-reset, come back" — it is
-    // only actionable if the client is told how long to wait, so the retryable
-    // envelope must carry Retry-After.
+    // A 503 here means "the platform is mid-reset, come back" — only actionable
+    // if the client is told how long to wait, so it must carry Retry-After.
     const retryableWithoutBackoff = probes.filter(
       (probe) => probe.status === 503 && probe.retryAfter === null,
     );
     expect(
-      retryableWithoutBackoff.map((probe) => `+${probe.atMs}ms`),
+      retryableWithoutBackoff.map(describeProbe),
       "every retryable rejection tells the client how long to back off",
     ).toEqual([]);
   }),

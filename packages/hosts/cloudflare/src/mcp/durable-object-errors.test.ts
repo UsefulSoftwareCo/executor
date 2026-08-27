@@ -102,6 +102,18 @@ describe("classifyDurableObjectError", () => {
     expect(classifyDurableObjectError({})).toBeNull();
   });
 
+  // A callback that throws also resets the object, so an application defect
+  // raised inside `blockConcurrencyWhile` can carry the method's name. Only the
+  // runtime's own cancellation message is a platform reset; the rest is a bug
+  // and must keep being rethrown and reported.
+  it("does not read an application defect inside blockConcurrencyWhile as a platform reset", () => {
+    expect(
+      classifyDurableObjectError(
+        new Error("Error in blockConcurrencyWhile(): TypeError: x is not a function"),
+      ),
+    ).toBeNull();
+  });
+
   // "destroyed" is the abort reason and nothing else. A message that merely
   // mentions the word describes a different failure and must not be allowed to
   // condemn a live session id.
@@ -113,11 +125,14 @@ describe("classifyDurableObjectError", () => {
 });
 
 // What a client actually receives when the platform takes a session Durable
-// Object away mid-request. The cloud e2e suite proves the reachable half of
-// this black-box — a terminated session id always answers with a protocol
-// envelope, never a bare 500 — but the dev stack never produces the platform
-// errors themselves (an isolate abort, a deploy reset, a storage timeout), so
-// the mapping from those errors to the wire response is pinned here.
+// Object away mid-request.
+//
+// The self-abort at the end of a session teardown IS reachable black-box, and
+// e2e/cloud/mcp-destroyed-session-envelope.test.ts owns that case end to end —
+// it is deliberately not re-tested here. The remaining platform resets (a
+// deploy replacing the script, a storage timeout, a backend blip, a cancelled
+// blockConcurrencyWhile) cannot be provoked on the dev stack at all, so the
+// mapping from those errors to the wire response is pinned here instead.
 describe("durableObjectFailureResponse", () => {
   const envelope = async (
     error: unknown,
@@ -142,18 +157,6 @@ describe("durableObjectFailureResponse", () => {
       body: await response.json(),
     };
   };
-
-  // `destroy()` ends in `ctx.abort("destroyed")`. That rejection used to escape
-  // the unguarded ownership RPC in the cloud MCP handler, so a client got a
-  // bare 500 for a session it had itself just terminated.
-  it("tells the client to reconnect when the session object is gone for good", async () => {
-    const result = await envelope(new Error("destroyed"));
-
-    expect(result.status, "the id is dead, not retryable").toBe(404);
-    expect(result.body.jsonrpc).toBe("2.0");
-    expect(result.body.error?.code).toBe(-32001);
-    expect(result.body.error?.message).toBe("Session timed out, please reconnect");
-  });
 
   // A deploy resets every live Durable Object. The session id is still valid,
   // so the client must be told to retry it — and told how long to wait, or the

@@ -79,7 +79,11 @@ const MESSAGE_PATTERNS: ReadonlyArray<{
     failure: { kind: "storage_internal", disposition: "transient" },
   },
   {
-    fragment: "blockconcurrencywhile",
+    // Deliberately the whole phrase, not the bare method name: an application
+    // defect thrown from inside a `blockConcurrencyWhile` callback also resets
+    // the object, and a message that merely names the method must not be read
+    // as a platform reset and quietly turned into a retry.
+    fragment: "blockconcurrencywhile() in a durable object waited for too long",
     failure: { kind: "concurrency_reset", disposition: "transient" },
   },
   {
