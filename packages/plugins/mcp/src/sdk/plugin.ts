@@ -1175,6 +1175,20 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      const updateStdioServer = (slug: string, config: McpStdioIntegrationConfig) =>
+        Effect.gen(function* () {
+          const integration = slugFrom(slug);
+          yield* ctx.core.integrations.update(integration, { config });
+          const connections = yield* ctx.connections.list({ integration });
+          yield* Effect.forEach(connections, (connection) => ctx.connections.refresh(connection), {
+            discard: true,
+          });
+        }).pipe(
+          Effect.withSpan("mcp.plugin.update_stdio_server", {
+            attributes: { "mcp.integration.slug": slug },
+          }),
+        );
+
       /** Merge-append auth methods onto the integration's existing
        *  `authenticationTemplate` (custom-method-create flow), mirroring the
        *  OpenAPI/GraphQL `configureAuth`. Returns the merged array. A no-op
@@ -1220,6 +1234,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         reconcileStdioConnections,
         getServer,
         configureServer,
+        updateStdioServer,
         configureAuth,
       };
     },
@@ -1718,6 +1733,10 @@ export interface McpPluginExtension {
   readonly configureServer: (
     slug: string,
     config: McpIntegrationConfigType,
+  ) => Effect.Effect<void, McpExtensionFailure>;
+  readonly updateStdioServer: (
+    slug: string,
+    config: McpStdioIntegrationConfig,
   ) => Effect.Effect<void, McpExtensionFailure>;
   readonly configureAuth: (
     slug: string,

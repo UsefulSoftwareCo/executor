@@ -6,5 +6,6 @@ export {
   addMcpServer,
   removeMcpServer,
   configureMcpServer,
+  updateStdioServer,
   mcpServerAtom,
 } from "./atoms";

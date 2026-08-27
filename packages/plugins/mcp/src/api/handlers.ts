@@ -146,6 +146,15 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
         }),
       ),
     )
+    .handle("updateStdioServer", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          yield* ext.updateStdioServer(path.slug, payload.config);
+          return { config: payload.config };
+        }),
+      ),
+    )
     .handle("configureAuth", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
