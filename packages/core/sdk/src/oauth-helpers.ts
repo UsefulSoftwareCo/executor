@@ -34,8 +34,45 @@ export class OAuth2Error extends Data.TaggedError("OAuth2Error")<{
    * the AS no longer honours → re-auth required) from transient ones.
    */
   readonly error?: string;
+  /**
+   * HTTP status the token endpoint answered with, when this failure came from
+   * a complete HTTP response at all. Absent for transport failures (DNS, TLS,
+   * timeout, reset) — which is precisely what separates "the server said no"
+   * from "we never got an answer", a distinction `error` cannot express
+   * because the majority of real refusals carry no RFC 6749 §5.2 code.
+   */
+  readonly status?: number;
   readonly cause?: unknown;
 }> {}
+
+/**
+ * The token endpoint answered 2xx and still handed back no usable access token.
+ * Whatever verdict such a body carries is about THIS grant rather than the app
+ * registration: an authorization server that reports a real error inside a
+ * response it called successful is naming a dead credential (GitHub answers a
+ * dead refresh token with HTTP 200 and `{"error":"bad_refresh_token"}`). On a
+ * 4xx the §5.2 code alone decides, so a fleet-wide `invalid_client` is never
+ * mistaken for one user's dead grant.
+ */
+export const isUnusableSuccessTokenResponse = (error: OAuth2Error): boolean =>
+  error.status !== undefined && error.status < 300;
+
+/**
+ * Did the token endpoint answer in a way that re-sending the identical grant
+ * cannot change?
+ *
+ * Yes for a 4xx — §5.2 mandates 400 for a grant the authorization server will
+ * not honour, 401/403 are refusals, and a token endpoint answering 404 does not
+ * start existing on the next attempt — and yes for a 2xx that carried no usable
+ * token, because the server called it a success and still issued nothing.
+ *
+ * No for a 5xx (the AS is having a bad minute) and no when there is no response
+ * at all (transport). Those are exactly the failures a later attempt survives,
+ * so they must stay retryable.
+ */
+export const isPermanentTokenRejection = (error: OAuth2Error): boolean =>
+  isUnusableSuccessTokenResponse(error) ||
+  (error.status !== undefined && error.status >= 400 && error.status < 500);
 
 // ---------------------------------------------------------------------------
 // Token response shape (RFC 6749 §5.1)
@@ -302,6 +339,26 @@ const responseFromOAuthErrorCause = (cause: unknown): Response | undefined => {
   return undefined;
 };
 
+/** oauth4webapi's OTHER failure shape: when a response it already accepted as
+ *  successful turns out not to describe a token, it throws with the ALREADY
+ *  PARSED body as `cause.cause.body` and attaches no `Response` at all
+ *  (`assertString(json.access_token, …, { body: json })`). Without this probe
+ *  that whole class is invisible — no status, no body, no verdict — which is
+ *  how a GitHub-style `HTTP 200 {"error":"bad_refresh_token"}` reached
+ *  classification as an unreadable parse failure. */
+const parsedBodyFromOAuthErrorCause = (cause: unknown): unknown => {
+  if (typeof cause !== "object" || cause === null) return undefined;
+  const inner = (cause as { readonly cause?: unknown }).cause;
+  if (typeof inner !== "object" || inner === null || inner instanceof Response) return undefined;
+  return (inner as { readonly body?: unknown }).body;
+};
+
+/** The status such a parsed-body failure came from. oauth4webapi only reaches
+ *  the body asserts AFTER `checkOAuthBodyError` confirmed the exact expected
+ *  status, which at the token endpoint is 200 — so the status is known even
+ *  though the Response itself never made it into the error. */
+const PARSED_BODY_CAUSE_STATUS = 200;
+
 const redactTokenEndpointBody = (body: string): string =>
   body
     .replaceAll(
@@ -356,11 +413,27 @@ const safeJsonFromResponse = async (response: Response): Promise<unknown> => {
   return text === null ? undefined : safeJson(text);
 };
 
-const bodyPreviewFromResponse = async (response: Response): Promise<string | undefined> => {
-  const text = (await safeBodyText(() => response.clone().text()))?.trim() ?? "";
+/** A bounded, secret-free rendering of an upstream body, for the failure
+ *  message and thereby for telemetry. */
+const redactedBodyPreview = (body: string): string | undefined => {
+  const text = body.trim();
   if (!text) return undefined;
   const redacted = redactTokenEndpointBody(text.replaceAll(/\s+/g, " "));
   return redacted.length > 500 ? `${redacted.slice(0, 500)}...` : redacted;
+};
+
+const bodyPreviewFromResponse = async (response: Response): Promise<string | undefined> =>
+  redactedBodyPreview((await safeBodyText(() => response.clone().text())) ?? "");
+
+/** Render an already-parsed body back to text for the preview. A value that
+ *  cannot be serialised simply has no preview — never a thrown defect. */
+const safeStringify = (value: unknown): string => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: previewing an untrusted upstream body; an unserialisable value means "no preview"
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
 };
 
 // RFC 6749 §5.2's closed set. Only these are ever recovered from a
@@ -479,7 +552,27 @@ const toOAuth2ErrorWithHttpSummary = (
   if (isOAuth2Error(cause)) return Effect.succeed(cause);
   const base = toOAuth2Error(cause);
   const response = responseFromOAuthErrorCause(cause);
-  if (!response) return Effect.succeed(base);
+  if (!response) {
+    // No Response, but possibly a body the library already parsed off one it
+    // had accepted as successful. A 2xx access-token response has no legitimate
+    // `error` field, so a string one here is the AS naming its own verdict —
+    // read through the CONFORM envelope decode rather than the closed free-text
+    // recovery, whose closed set exists only to stop prose masquerading as a
+    // code and has nothing to say about a discrete field.
+    const parsedBody = parsedBodyFromOAuthErrorCause(cause);
+    if (parsedBody === undefined) return Effect.succeed(base);
+    const envelope = Option.getOrUndefined(decodeTokenErrorEnvelope(parsedBody));
+    const preview = redactedBodyPreview(safeStringify(parsedBody));
+    const summary = [`HTTP ${PARSED_BODY_CAUSE_STATUS}`, ...(preview ? [`body: ${preview}`] : [])];
+    return Effect.succeed(
+      new OAuth2Error({
+        message: `${options?.fallbackMessage ?? base.message} (${summary.join("; ")})`,
+        error: base.error ?? envelope?.error,
+        status: PARSED_BODY_CAUSE_STATUS,
+        cause,
+      }),
+    );
+  }
   return Effect.promise(async () => {
     const summary = await tokenEndpointHttpSummary(response);
     // A 4xx the spec parser refused may still carry the AS's verdict in its
@@ -500,6 +593,10 @@ const toOAuth2ErrorWithHttpSummary = (
     return new OAuth2Error({
       message: `${described} (${summary})`,
       error: base.error ?? recovered?.code,
+      // Carried even when no code was recovered: the status is what tells a
+      // caller whether the AS refused (4xx — permanent, stop) or stumbled (5xx
+      // — retry). Most real refusals arrive with no code at all.
+      status: response.status,
       cause,
     });
   });

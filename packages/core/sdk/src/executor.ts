@@ -164,6 +164,8 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  isPermanentTokenRejection,
+  isUnusableSuccessTokenResponse,
   shouldRefreshToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -2204,9 +2206,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     // is scrubbed to "Internal tool error [id]" at the
                     // sandbox boundary (the Pylon prod regression: the AS
                     // rejected refreshes with a non-invalid_grant 400 and
-                    // callers saw only the opaque defect). Code-less
-                    // failures (transport blips, non-OAuth-shaped responses)
-                    // stay StorageError so the next invoke retries.
+                    // callers saw only the opaque defect).
                     if (cause.error !== undefined) {
                       return new CredentialResolutionError({
                         owner,
@@ -2214,10 +2214,37 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                         name: ConnectionName.make(row.name),
                         // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                         message: `OAuth token refresh was rejected (${cause.error}): ${cause.message}`,
-                        reauthRequired: cause.error === "invalid_grant",
+                        // A verdict delivered inside a response the endpoint
+                        // called a SUCCESS is this grant's death certificate
+                        // whatever the code spells (GitHub: HTTP 200
+                        // `bad_refresh_token`). On a 4xx the code alone
+                        // decides, so a rotated app secret (invalid_client —
+                        // fleet-wide) is not mistaken for one user's dead
+                        // grant.
+                        reauthRequired:
+                          cause.error === "invalid_grant" || isUnusableSuccessTokenResponse(cause),
                         oauthErrorCode: cause.error,
                       });
                     }
+                    // No §5.2 code — but most real refusals carry none. A
+                    // text/plain 400 ("your session has expired"), a 404, or a
+                    // 200 with no access token are all the endpoint answering
+                    // definitively, and re-sending the same grant cannot change
+                    // any of them. Treating that as retryable is what put a
+                    // dead grant back on the wire on every single use, forever.
+                    if (isPermanentTokenRejection(cause)) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected: ${cause.message}`,
+                        reauthRequired: true,
+                      });
+                    }
+                    // What is left is genuinely transient — a 5xx or a
+                    // transport failure — and stays a StorageError so the next
+                    // invoke retries.
                     return new StorageError({
                       // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                       message: `OAuth token refresh failed: ${cause.message}`,
