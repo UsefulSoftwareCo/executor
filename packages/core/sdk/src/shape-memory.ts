@@ -19,7 +19,7 @@ import { Clock, Effect } from "effect";
 
 import type { Owner } from "./ids";
 import type { PluginStorageFacade } from "./plugin-storage";
-import { observeShape, type ObservedShape } from "./shape-inference";
+import { observeShape, type InferredShape, type ObservedShape } from "./shape-inference";
 
 /** Reserved system namespace inside `plugin_storage`; not a real plugin. */
 export const SHAPE_MEMORY_PLUGIN_ID = "executor.shape-memory";
@@ -88,3 +88,92 @@ export const observedShapeToJsonSchema = (record: ObservedShape): unknown => ({
   ...record.schema,
   description: `Observed from ${record.observations} live response${record.observations === 1 ? "" : "s"}; fields may be incomplete.`,
 });
+
+// ---------------------------------------------------------------------------
+// Placeholder slots — partial serving inside a DECLARED schema.
+//
+// Some plugins must declare an output schema even when the upstream said
+// nothing about the payload: the MCP plugin's CallToolResult envelope is
+// genuinely declared (content blocks, isError), but its `structuredContent`
+// slot is a synthesized "some object" placeholder whenever the server
+// declared no output schema. A plugin marks such a slot with
+// `SHAPE_SLOT_KEY: true` (typically at projection time), and serving splices
+// the observed shape's counterpart into exactly that slot, keeping the
+// declared structure around it.
+// ---------------------------------------------------------------------------
+
+/** Vendor-extension marker a plugin puts on a placeholder subschema. */
+export const SHAPE_SLOT_KEY = "x-executor-shape-slot";
+
+const OBSERVED_SLOT_DESCRIPTION = "Observed from live responses; fields may be incomplete.";
+
+/** Slot scanning/splicing depth bound — marked slots live near the root. */
+const MAX_SLOT_DEPTH = 8;
+
+type SchemaNode = Record<string, unknown>;
+
+const isSchemaNode = (value: unknown): value is SchemaNode =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+export const hasShapeSlots = (schema: unknown, depth = 0): boolean => {
+  if (!isSchemaNode(schema) || depth >= MAX_SLOT_DEPTH) return false;
+  if (schema[SHAPE_SLOT_KEY] === true) return true;
+  const properties = schema["properties"];
+  if (
+    isSchemaNode(properties) &&
+    Object.values(properties).some((child) => hasShapeSlots(child, depth + 1))
+  ) {
+    return true;
+  }
+  return hasShapeSlots(schema["items"], depth + 1);
+};
+
+const isInformativeShape = (shape: InferredShape): boolean =>
+  shape.type !== undefined || shape.anyOf !== undefined;
+
+/**
+ * Replace marked placeholder slots in a declared schema with the observed
+ * shape's counterpart at the same path (descending `properties` by name and
+ * `items`). Slots with no informative observed counterpart keep their
+ * declared placeholder; markers are stripped either way so they never reach
+ * schema consumers. `filled` reports how many slots actually got a shape.
+ */
+export const spliceObservedSlots = (
+  declared: unknown,
+  observed: InferredShape | null,
+): { readonly schema: unknown; readonly filled: number } => {
+  let filled = 0;
+  const walk = (node: unknown, shape: InferredShape | null, depth: number): unknown => {
+    if (!isSchemaNode(node) || depth >= MAX_SLOT_DEPTH) return node;
+    if (node[SHAPE_SLOT_KEY] === true) {
+      const { [SHAPE_SLOT_KEY]: _slot, ...placeholder } = node;
+      if (shape !== null && isInformativeShape(shape)) {
+        filled += 1;
+        return { ...shape, description: OBSERVED_SLOT_DESCRIPTION };
+      }
+      return placeholder;
+    }
+    let next: SchemaNode = node;
+    const properties = node["properties"];
+    if (isSchemaNode(properties)) {
+      const walkedProperties: Record<string, unknown> = {};
+      let changed = false;
+      for (const [key, child] of Object.entries(properties)) {
+        const counterpart = shape?.type === "object" ? (shape.properties?.[key] ?? null) : null;
+        const walked = walk(child, counterpart, depth + 1);
+        walkedProperties[key] = walked;
+        if (walked !== child) changed = true;
+      }
+      if (changed) next = { ...next, properties: walkedProperties };
+    }
+    const items = node["items"];
+    if (items !== undefined) {
+      const counterpart = shape?.type === "array" ? (shape.items ?? null) : null;
+      const walked = walk(items, counterpart, depth + 1);
+      if (walked !== items) next = { ...next, items: walked };
+    }
+    return next;
+  };
+  const schema = walk(declared, observed, 0);
+  return { schema, filled };
+};

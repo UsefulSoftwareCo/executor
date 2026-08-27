@@ -177,7 +177,13 @@ import {
 } from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome, isToolResult } from "./tool-result";
-import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
+import {
+  hasShapeSlots,
+  makeShapeMemory,
+  observedShapeToJsonSchema,
+  SHAPE_MEMORY_PLUGIN_ID,
+  spliceObservedSlots,
+} from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
@@ -4066,20 +4072,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? projected.outputSchema
             : tool.outputSchema;
 
-        // Muscle memory: when neither the catalog row nor the plugin's
-        // projection declares an output schema, serve the shape observed from
-        // live responses instead of letting the type collapse to `unknown`.
-        // The schema's description marks it as observed.
+        // Muscle memory serve paths: a wholly-undeclared output schema is
+        // replaced by the observed shape; a declared schema carrying marked
+        // placeholder slots (e.g. the MCP result envelope's synthesized
+        // `structuredContent`) gets the observed counterpart spliced into
+        // exactly those slots, keeping the declared structure around them.
+        const slotted = outputSchema !== undefined && hasShapeSlots(outputSchema);
         const observed =
-          outputSchema === undefined
+          outputSchema === undefined || slotted
             ? yield* shapeMemory.recall(String(address), parsed.owner)
             : null;
-        const effectiveOutputSchema =
-          outputSchema !== undefined
-            ? outputSchema
-            : observed !== null
-              ? observedShapeToJsonSchema(observed)
-              : undefined;
+        let effectiveOutputSchema = outputSchema;
+        let observedServed = false;
+        if (outputSchema === undefined) {
+          if (observed !== null) {
+            effectiveOutputSchema = observedShapeToJsonSchema(observed);
+            observedServed = true;
+          }
+        } else if (slotted) {
+          const spliced = spliceObservedSlots(outputSchema, observed?.schema ?? null);
+          effectiveOutputSchema = spliced.schema;
+          observedServed = spliced.filled > 0;
+        }
 
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
@@ -4111,7 +4125,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           description: tool.description,
           inputSchema,
           outputSchema: effectiveOutputSchema,
-          ...(observed !== null
+          ...(observedServed && observed !== null
             ? {
                 outputSchemaSource: "observed" as const,
                 outputSchemaObservations: observed.observations,

@@ -27,7 +27,11 @@ import { createMcpConnector } from "./connection";
 import { mcpPlugin, userFacingProbeMessage } from "./plugin";
 import { McpInvocationError } from "./errors";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
-import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
+import {
+  makeAnnotationsMcpServer,
+  makeUndeclaredStructuredMcpServer,
+  serveMcpServer,
+} from "../testing";
 
 // removed: the v1 addSource / scopes / secrets / credential-binding / usages /
 // sources.configure / multi-scope shadowing suites. v2 has no scope stack, no
@@ -1032,5 +1036,53 @@ describe("mcpPlugin detect URL-token fallback", () => {
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
       expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
     }),
+  );
+});
+
+describe("muscle memory — structuredContent slot splice", () => {
+  it.effect("serves the observed structuredContent shape for a server that declared none", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMcpServer(makeUndeclaredStructuredMcpServer);
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+        yield* executor.mcp.addServer({
+          transport: "remote",
+          name: "Undeclared structured MCP",
+          endpoint: server.url,
+          slug: "shape_mcp",
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("shape_mcp"),
+          template: AuthTemplateSlug.make("none"),
+          value: "",
+        });
+        const address = ToolAddress.make("tools.shape_mcp.org.main.undeclared_structured_echo");
+
+        // Cold: the declared envelope survives, its placeholder slot is
+        // untyped, the marker never leaks, and nothing claims to be observed.
+        const cold = yield* executor.tools.schema(address);
+        expect(cold?.outputSchemaSource).toBeUndefined();
+        expect(JSON.stringify(cold?.outputSchema)).not.toContain("x-executor-shape-slot");
+        expect(cold?.outputTypeScript).toContain("structuredContent");
+        expect(cold?.outputTypeScript).not.toContain("length: number");
+
+        const result = yield* executor.execute(address, { value: "hi" });
+        expect(result).toMatchObject({ ok: true });
+
+        // Warm: the observed payload shape is spliced into exactly the
+        // structuredContent slot; the declared envelope stays around it.
+        const warm = yield* executor.tools.schema(address);
+        expect(warm?.outputSchemaSource).toBe("observed");
+        expect(warm?.outputSchemaObservations).toBe(1);
+        expect(warm?.outputTypeScript).toContain("value: string");
+        expect(warm?.outputTypeScript).toContain("length: number");
+        expect(warm?.outputTypeScript).toContain("ok: boolean");
+        expect(warm?.outputTypeScript).toContain("content");
+      }),
+    ),
   );
 });

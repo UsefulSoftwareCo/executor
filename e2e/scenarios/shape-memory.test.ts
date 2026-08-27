@@ -11,13 +11,15 @@ import { createServer } from "node:http";
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
+import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
+import { makeUndeclaredStructuredMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
-const api = composePluginApi([openApiHttpPlugin()] as const);
+const api = composePluginApi([openApiHttpPlugin(), mcpHttpPlugin()] as const);
 
 /** One GET operation whose 200 declares no response schema — the shape the
  *  model would otherwise have to guess. */
@@ -171,6 +173,107 @@ return { ok: result.ok };
             })
             .pipe(Effect.ignore);
           yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// The MCP variant — the Blacksmith post's exact case. MCP tools always carry
+// a declared CallToolResult envelope, but when the server declares no output
+// schema its `structuredContent` slot is an untyped placeholder. One live
+// call splices the observed payload shape into exactly that slot.
+// ---------------------------------------------------------------------------
+
+const mcpDescribeCode = (slug: string) => `
+const details = await tools.describe.tool({ path: "${slug}.org.main.undeclared_structured_echo" });
+return {
+  outputTypeScript: details.outputTypeScript ?? null,
+  note: details.outputTypeScriptNote ?? null,
+  error: details.error ?? null,
+};
+`;
+
+scenario(
+  "Muscle memory · an MCP server's undeclared structuredContent shape reaches describe",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+      const slug = IntegrationSlug.make(`shape_mcp_${randomBytes(4).toString("hex")}`);
+
+      const server = yield* serveMcpServer(makeUndeclaredStructuredMcpServer);
+
+      yield* client.mcp.addServer({
+        payload: {
+          transport: "remote",
+          name: "Undeclared structured MCP",
+          endpoint: server.url,
+          slug,
+        },
+      });
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: slug,
+              template: AuthTemplateSlug.make("none"),
+              value: "",
+            },
+          });
+
+          const describe = Effect.gen(function* () {
+            const executed = yield* client.executions.execute({
+              payload: { code: mcpDescribeCode(String(slug)), autoApprove: true },
+            });
+            expect(executed.status, executed.text).toBe("completed");
+            return JSON.parse(executed.text) as DescribeOutcome;
+          });
+
+          // Cold: the declared envelope is served, but its structuredContent
+          // slot carries no payload type and nothing claims to be observed.
+          const cold = yield* describe;
+          expect(cold.error, "the tool resolves").toBeNull();
+          expect(cold.outputTypeScript, "the envelope is declared").toContain("structuredContent");
+          expect(cold.outputTypeScript, "the payload is untyped cold").not.toContain(
+            "length: number",
+          );
+          expect(cold.note, "cold describe carries no provenance note").toBeNull();
+
+          // One real call teaches the payload shape.
+          const invoked = yield* client.executions.execute({
+            payload: {
+              code: `
+const result = await tools.${slug}.org.main.undeclared_structured_echo({ value: "hi" });
+return { ok: result.ok };
+`,
+              autoApprove: true,
+            },
+          });
+          expect(invoked.status, invoked.text).toBe("completed");
+          expect(JSON.parse(invoked.text), "the teaching call succeeded").toEqual({ ok: true });
+
+          // Warm: the observed shape fills exactly the structuredContent slot.
+          const warm = yield* describe;
+          expect(warm.outputTypeScript, "the payload type is served").toContain("length: number");
+          expect(warm.outputTypeScript, "the payload type is served").toContain("value: string");
+          expect(warm.outputTypeScript, "the declared envelope survives").toContain("content");
+          expect(warm.note, "provenance is explicit").toContain("observed from 1 live response");
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({
+              params: { owner: "org", integration: slug, name: ConnectionName.make("main") },
+            })
+            .pipe(Effect.ignore);
+          yield* client.mcp.removeServer({ params: { slug } }).pipe(Effect.ignore);
         }),
       );
     }),

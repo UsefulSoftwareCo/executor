@@ -433,6 +433,7 @@ export {
 
 // The one TS-preview generator plugins assert against.
 export { buildToolTypeScriptPreview } from "./schema-types";
+export { SHAPE_SLOT_KEY } from "./shape-memory";
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";

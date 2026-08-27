@@ -25,6 +25,7 @@ import {
   type OAuthClientSummary,
   type Owner,
   type PluginCtx,
+  SHAPE_SLOT_KEY,
   type StaticToolSchema,
   type StorageFailure,
   type ToolAnnotations,
@@ -422,6 +423,45 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
     },
     required:
       structuredContentSchema === undefined ? ["content"] : ["content", "structuredContent"],
+  };
+};
+
+/** The persisted envelope for a server that declared no output schema: the
+ *  builder above only lists `structuredContent` in `required` when the server
+ *  declared one, so its absence identifies the synthesized placeholder. */
+const isGenericStructuredContentEnvelope = (
+  outputSchema: unknown,
+): outputSchema is JsonSchemaObject => {
+  if (typeof outputSchema !== "object" || outputSchema === null || Array.isArray(outputSchema)) {
+    return false;
+  }
+  const schema = outputSchema as JsonSchemaObject;
+  const required = schema.required;
+  return (
+    schema.properties?.content !== undefined &&
+    schema.properties?.structuredContent !== undefined &&
+    Array.isArray(required) &&
+    !required.includes("structuredContent")
+  );
+};
+
+/** Mark the synthesized `structuredContent` placeholder as a shape slot so
+ *  serving can splice the runtime-observed payload shape into it. Read-time
+ *  only — the persisted row is untouched, so every existing catalog row gets
+ *  the behavior without a refresh. */
+const markStructuredContentSlot = (schema: JsonSchemaObject): JsonSchemaObject => {
+  const slot = schema.properties?.structuredContent;
+  return {
+    ...schema,
+    properties: {
+      ...schema.properties,
+      structuredContent: {
+        ...(typeof slot === "object" && slot !== null && !Array.isArray(slot)
+          ? (slot as Record<string, unknown>)
+          : {}),
+        [SHAPE_SLOT_KEY]: true,
+      },
+    },
   };
 };
 
@@ -1278,6 +1318,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
         StorageFailure
       >,
+
+    // Read-time projection: when the persisted envelope's `structuredContent`
+    // is the synthesized placeholder (server declared no output schema), mark
+    // it as a shape slot so core serving can splice the runtime-observed
+    // payload shape into exactly that slot.
+    projectToolSchema: ({ outputSchema }) =>
+      Effect.succeed(
+        isGenericStructuredContentEnvelope(outputSchema)
+          ? { outputSchema: markStructuredContentSlot(outputSchema) }
+          : {},
+      ),
 
     invokeTool: ({ ctx, toolRow, credential, args, elicit }) =>
       Effect.gen(function* () {

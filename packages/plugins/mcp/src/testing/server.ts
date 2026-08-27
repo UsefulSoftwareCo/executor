@@ -514,6 +514,30 @@ export const makeElicitationMcpServer = () => {
   return server;
 };
 
+/** The muscle-memory case: a server returning structured data at runtime with
+ *  NO declared output schema, like most real MCP servers. The advertised
+ *  catalog entry gives the client nothing to type `structuredContent` with. */
+export const makeUndeclaredStructuredMcpServer = () => {
+  const server = new McpServer(
+    { name: "undeclared-structured-test-server", version: "1.0.0" },
+    { capabilities: {} },
+  );
+
+  server.registerTool(
+    "undeclared_structured_echo",
+    {
+      description: "Returns structured data it never declared a schema for",
+      inputSchema: { value: z.string() },
+    },
+    async ({ value }: { value: string }) => ({
+      content: [{ type: "text" as const, text: value }],
+      structuredContent: { value, length: value.length, ok: true },
+    }),
+  );
+
+  return server;
+};
+
 /**
  * A server whose tool catalog mutates at runtime. `renameTool` renames the
  * advertised tool from `initialToolName` to `renamedToolName` via the SDK's
