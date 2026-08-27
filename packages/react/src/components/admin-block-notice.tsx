@@ -30,7 +30,6 @@ export function AdminBlockNotice(props: {
       className={`space-y-1 rounded-lg border border-border bg-muted/40 p-3 ${props.className ?? ""}`}
     >
       <p className="text-sm font-medium text-foreground">{ADMIN_BLOCK_TITLE}</p>
-      <p className="text-xs text-muted-foreground">{props.block.message}</p>
       <p className="text-xs text-muted-foreground">{ADMIN_BLOCK_NEXT_STEP}</p>
       {reference === null ? null : (
         <p className="font-mono text-[11px] text-muted-foreground">{reference}</p>

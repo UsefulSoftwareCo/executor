@@ -22,7 +22,9 @@ import { OAuthStartError } from "@executor-js/sdk/shared";
  *  policy. Terminal by construction: there is no retry and no alternative
  *  route to offer, only the decision and a code support can trace. */
 export interface OAuthAdminBlock {
-  /** The failure's own message, shown verbatim. */
+  /** The failure's own message — carried for logs and support surfaces, not
+   *  rendered to members: it embeds the upstream HTTP exchange, and the notice
+   *  says what happened and what to do next in its own words. */
   readonly message: string;
   /** The identity provider's RFC 6749 §5.2 code (`unauthorized_client`,
    *  `invalid_target`, …), when it returned one. Null otherwise. */
