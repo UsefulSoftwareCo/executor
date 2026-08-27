@@ -67,6 +67,54 @@ const openWireClient = async (port: number): Promise<Socket> => {
   return socket;
 };
 
+/**
+ * Run a bystander's query with a bounded deadline and, on the deadline, fail
+ * with the server's internals instead of vitest's bare 30s timeout.
+ *
+ * The reap/ghost scenarios have each wedged ONCE in CI (runs 32933818134 and
+ * 33019527020: the bystander's startup was served, then its query hung until
+ * the test timeout) while ~800 replays of the isolated scenarios on macOS and
+ * Linux, idle and CPU-starved, never reproduced it. Until it fires again there
+ * is nothing to fix, so make the next occurrence carry its own diagnosis:
+ * the queue/handler stats at wedge time, plus whether a FRESH connection still
+ * completes startup (a latched queue serves nobody; per-handler affinity
+ * pinning still answers new startups).
+ */
+const diagnoseWedge = async <T>(
+  run: () => Promise<T>,
+  context: { readonly server: PGLiteSocketServer; readonly port: number },
+  deadlineMs = 20_000,
+): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void (async () => {
+        const stats = JSON.stringify(context.server.getStats());
+        // oxlint-disable-next-line executor/no-promise-catch -- test boundary: the probe outcome is diagnostic text, never a failure path
+        const freshStartup = await Promise.race([
+          openWireClient(context.port).then((socket) => {
+            socket.destroy();
+            return "completes";
+          }),
+          sleep(3_000).then(() => "hangs"),
+        ]).catch(() => "errors");
+        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test boundary: adapt the deadline to the assertion path with the diagnosis attached
+        reject(
+          new Error(
+            `bystander wedged for ${deadlineMs}ms; server stats=${stats}; fresh startup ${freshStartup}`,
+          ),
+        );
+      })();
+    }, deadlineMs);
+  });
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: the deadline timer must be cleared on every path
+  try {
+    return await Promise.race([run(), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 // A Parse frame for an unnamed statement: opens an extended-protocol pipeline
 // that only a later Sync (or the server's recovery) closes.
 const parseFrame = (query: string): Buffer => {
@@ -248,7 +296,9 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
       try {
         // Connects and queries only once the staller is reaped (~250ms).
-        expect((await bystander.unsafe(`select 4 as four`))[0]).toEqual({ four: 4 });
+        expect(
+          (await diagnoseWedge(() => bystander.unsafe(`select 4 as four`), { server, port }))[0],
+        ).toEqual({ four: 4 });
       } finally {
         // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
         await bystander.end({ timeout: 5 }).catch(() => {});
@@ -346,7 +396,9 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       const bystander = makeClient(port);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
       try {
-        expect((await bystander.unsafe(`select 5 as five`))[0]).toEqual({ five: 5 });
+        expect(
+          (await diagnoseWedge(() => bystander.unsafe(`select 5 as five`), { server, port }))[0],
+        ).toEqual({ five: 5 });
       } finally {
         // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
         await bystander.end({ timeout: 5 }).catch(() => {});
