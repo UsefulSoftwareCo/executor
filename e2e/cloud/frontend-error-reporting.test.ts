@@ -21,6 +21,10 @@ import { revisit, visit } from "../src/surfaces/browser";
 type ReportedException = {
   readonly type?: string;
   readonly value?: string;
+  // The reporter marks an exception `synthetic` when it was handed something
+  // that was not a real error and had to invent a stack for it — the stack of
+  // whatever frame did the reporting.
+  readonly mechanism?: { readonly synthetic?: boolean };
 };
 
 type ReportedEvent = {
@@ -110,6 +114,15 @@ scenario(
         expect(failure.value ?? "", "no report is a bag of keys").not.toMatch(
           /captured as exception with keys/,
         );
+        // The other half of the bug, and the half a readable message can hide:
+        // handed a non-error, the reporter still has no stack of its own to
+        // group on and invents one from the reporting frame, so unrelated
+        // failures keep merging into a single bucket. Only a real error clears
+        // this flag.
+        expect(
+          failure.mechanism?.synthetic ?? false,
+          "the report carries the failure's own stack, not the reporter's frame",
+        ).toBe(false);
       }
 
       await page.unroute("**/api/integrations");
