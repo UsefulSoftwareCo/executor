@@ -61,6 +61,9 @@ export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider. MCP oauth carries no
 //            stored endpoints: metadata is discovered live at connect time.
+//            A non-empty scope list may be declared when a server does not
+//            expose scopes through protected-resource metadata; otherwise they
+//            are discovered too.
 // ---------------------------------------------------------------------------
 
 /** Enterprise-Managed Authorization opt-in: which registered OAuth app plays the
@@ -80,6 +83,7 @@ export type McpEnterpriseIdentityProvider = typeof McpEnterpriseIdentityProvider
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
   enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
@@ -147,6 +151,7 @@ export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({
     slug: Schema.optional(Schema.String),
     kind: Schema.Literal("oauth2"),
+    scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
     enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
   }),
   // Credential methods are authored request-shaped — the ONE apikey input

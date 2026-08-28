@@ -81,7 +81,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "GitHub REST",
     summary: "Repos, issues, pull requests, actions, and users.",
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-    icon: "https://svgl.app/library/github_dark.svg",
+    icon: "https://integrations.sh/logo/github.com",
     featured: true,
     authTemplate: [GITHUB_OAUTH_TEMPLATE],
   },
@@ -106,7 +106,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "OpenAI",
     summary: "Models, files, responses, and fine-tuning.",
     url: "https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml",
-    icon: "https://svgl.app/library/openai_dark.svg",
+    icon: "https://integrations.sh/logo/openai.com",
     featured: true,
   },
   {

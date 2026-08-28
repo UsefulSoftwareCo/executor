@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate } from "effect";
+import { Deferred, Effect, Fiber, Predicate } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -7,15 +7,18 @@ import {
   IntegrationSlug,
   OAuthClientSlug,
   OAuthState,
+  ProviderKey,
   ToolAddress,
   ToolName,
 } from "./ids";
 import { authToolFailure } from "./auth-tool-failure";
+import { createExecutor } from "./executor";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
 import { missingGrantedOAuthScopes } from "./oauth-service";
 import { definePlugin } from "./plugin";
-import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
+import type { CredentialProvider } from "./provider";
+import { makeTestConfig, makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { ToolResult } from "./tool-result";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
@@ -882,6 +885,165 @@ describe("oauth token refresh in resolveConnectionValue", () => {
         );
       }),
     ),
+  );
+
+  // Two product instances, one connection, one credential store. The in-flight
+  // refresh gate serialises refreshes WITHIN an instance and cannot see across
+  // them, so nothing but the store itself stands between two refreshers and
+  // the same rotated token. The provider below opens a seam exactly where the
+  // danger is — between the read of the stored refresh token and whatever the
+  // reader writes next — because a probe that "tests" the store by rewriting
+  // the value it just read would put the spent token back over the peer's
+  // rotated one, and kill the connection it was added to protect.
+  it.effect(
+    "a refresher paused after reading the stored token never writes it back over a peer's rotated one",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+
+          const store = new Map<string, string>();
+          // Every item id written, in order — the tape that says WHICH item a
+          // refresher touched, which is the whole question here.
+          const writes: string[] = [];
+          const pausedAtRead = yield* Deferred.make<void>();
+          const resumeFromRead = yield* Deferred.make<void>();
+          // One-shot: the FIRST read of a refresh token stops there; the
+          // peer's read, moments later, runs straight through.
+          let pauseNextRefreshRead = false;
+
+          const sharedStore: CredentialProvider = {
+            key: ProviderKey.make("shared-memory"),
+            writable: true,
+            get: (id) =>
+              Effect.gen(function* () {
+                const value = store.get(String(id)) ?? null;
+                if (pauseNextRefreshRead && String(id).endsWith(":refresh")) {
+                  pauseNextRefreshRead = false;
+                  yield* Deferred.succeed(pausedAtRead, undefined);
+                  yield* Deferred.await(resumeFromRead);
+                }
+                return value;
+              }),
+            set: (id, value) =>
+              Effect.sync(() => {
+                writes.push(String(id));
+                store.set(String(id), value);
+              }),
+            delete: (id) => Effect.sync(() => void store.delete(String(id))),
+          };
+
+          // One database and one credential store, two executors over them —
+          // the deployment this race needs and the one a single harness
+          // cannot express.
+          const config = {
+            ...makeTestConfig({ plugins: [oauthPlugin] as const }),
+            providers: [sharedStore],
+          };
+          const instanceA = yield* createExecutor(config);
+          const instanceB = yield* createExecutor(config);
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(() => config.testDb.close()).pipe(Effect.ignore),
+          );
+          yield* Effect.addFinalizer(() => instanceA.close().pipe(Effect.ignore));
+          yield* Effect.addFinalizer(() => instanceB.close().pipe(Effect.ignore));
+
+          yield* instanceA.acme.seed();
+          yield* instanceA.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+          });
+          const started = yield* instanceA.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          yield* instanceA.oauth.complete({ state: started.state, code: callback.code });
+
+          const refreshItemId = [...store.keys()].find((key) => key.endsWith(":refresh"));
+          expect(refreshItemId, "the completed connection stored a refresh token").toBeDefined();
+          const spentRefreshToken = store.get(refreshItemId!);
+
+          // Expire the access token so both instances must refresh.
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b("name", "=", "main"),
+              set: { expires_at: Date.now() - 60_000 },
+            }),
+          );
+
+          // A begins a refresh and stops the instant it has the stored refresh
+          // token in hand. This is the window.
+          pauseNextRefreshRead = true;
+          const refresherA = yield* Effect.forkChild(
+            Effect.exit(instanceA.execute(ToolAddress.make("tools.acme.org.main.whoami"), {})),
+          );
+          yield* Deferred.await(pausedAtRead);
+
+          // B refreshes on that same token, to completion. The authorization
+          // server rotates it, so what the store holds afterwards is the only
+          // value left that can ever mint again.
+          yield* instanceB.execute(ToolAddress.make("tools.acme.org.main.whoami"), {});
+          const rotatedByB = store.get(refreshItemId!);
+          expect(rotatedByB, "the peer's refresh rotated the stored token").not.toBe(
+            spentRefreshToken,
+          );
+          const writesBeforeAResumes = writes.length;
+
+          // A resumes into a world where the token it is holding is already
+          // spent — and still has to prove the store is writable before it
+          // tries to spend it.
+          yield* Deferred.succeed(resumeFromRead, undefined);
+          yield* Fiber.join(refresherA);
+
+          expect(
+            store.get(refreshItemId!),
+            "the peer's rotated refresh token is still what the store holds",
+          ).toBe(rotatedByB);
+          expect(
+            [...store.entries()]
+              .filter(([, value]) => value === spentRefreshToken)
+              .map(([key]) => key),
+            "the spent refresh token was not written back anywhere",
+          ).toEqual([]);
+
+          // The gate did still run for A — on an item of its own, holding no
+          // credential. Its grant then failed on the spent token, so it
+          // persisted nothing: this one write is everything A wrote.
+          const writtenByA = writes.slice(writesBeforeAResumes);
+          expect(writtenByA, "the resumed refresher wrote exactly one item").toHaveLength(1);
+          expect(writtenByA[0], "and it was not the refresh token's own item").not.toBe(
+            refreshItemId,
+          );
+          expect(
+            [spentRefreshToken, rotatedByB],
+            "the item it wrote carries no credential",
+          ).not.toContain(store.get(writtenByA[0]!));
+
+          // Both instances really did reach the authorization server, so the
+          // interleaving under test happened rather than being short-circuited.
+          expect(
+            (yield* server.requests).filter(
+              (request) =>
+                request.path === "/token" && request.body.includes("grant_type=refresh_token"),
+            ),
+            "both instances sent a refresh grant",
+          ).toHaveLength(2);
+        }),
+      ),
   );
 
   it.effect(

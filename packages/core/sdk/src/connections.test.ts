@@ -1,5 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Result, Schema } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  Inspectable,
+  Logger,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+} from "effect";
 
 import {
   AuthTemplateSlug,
@@ -11,6 +21,7 @@ import {
   ToolName,
 } from "./ids";
 import { createExecutor } from "./executor";
+import { StorageError, type FumaDb } from "./fuma-runtime";
 import { HealthCheckResult } from "./health-check";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
@@ -43,6 +54,38 @@ const memoryProvider = (): CredentialProvider => {
 
 const INTEG = IntegrationSlug.make("vercel");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
+
+/** Wrap a test `FumaDb` so every transaction it opens is observable. The
+ *  executor re-binds its own owner context onto the handle it is given, so the
+ *  wrapper must forward `withContext` re-wrapped — otherwise the instrument is
+ *  dropped before any executor query runs. */
+const instrumentTransactions = (
+  db: FumaDb,
+  hooks: { readonly enter: () => void; readonly exit: () => void },
+): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "transaction") {
+          return async (run: Parameters<FumaDb["transaction"]>[0]) => {
+            hooks.enter();
+            // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test instrument must unwind on both outcomes
+            try {
+              return await target.transaction(run);
+            } finally {
+              hooks.exit();
+            }
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
 
 const ConnectionListHealthOutput = Schema.Struct({
   connections: Schema.Array(Schema.Struct({ lastHealth: Schema.NullOr(HealthCheckResult) })),
@@ -419,6 +462,74 @@ describe("connections.refresh", () => {
 });
 
 describe("tool catalog sync safety", () => {
+  it.effect("single-flights concurrent refreshes of the same stale connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refreshStarted = yield* Deferred.make<void>();
+        const releaseRefresh = yield* Deferred.make<void>();
+        let resolutions = 0;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          resolveTools: () =>
+            Effect.gen(function* () {
+              resolutions += 1;
+              if (resolutions > 1) {
+                yield* Deferred.succeed(refreshStarted, undefined);
+                yield* Deferred.await(releaseRefresh);
+              }
+              return {
+                tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+
+        const readsFiber = yield* Effect.forkChild(
+          Effect.all(
+            [
+              executor.tools.list({ integration: INTEG }),
+              executor.tools.list({ integration: INTEG }),
+            ],
+            { concurrency: "unbounded" },
+          ),
+        );
+        yield* Deferred.await(refreshStarted);
+        yield* Deferred.succeed(releaseRefresh, undefined);
+        const reads = yield* Fiber.join(readsFiber);
+
+        expect(reads).toHaveLength(2);
+        expect(resolutions).toBe(2);
+      }),
+    ),
+  );
+
   it.effect(
     "background sync preserves a nonzero remote catalog when a plugin returns authoritative empty",
     () =>
@@ -732,6 +843,200 @@ describe("tool catalog sync safety", () => {
         });
 
         expect(connection?.lastHealth).toMatchObject(health);
+      }),
+    ),
+  );
+
+  // A tools read rebuilds every stale connection it finds, and those rebuilds
+  // run their upstream listings together. Their catalog WRITES must not: the
+  // self-host database is a single libSQL connection issuing raw BEGIN/COMMIT,
+  // where a second transaction opened while one is live fails outright. The
+  // test observes real transactions through the db handle, so it fails if the
+  // persist step ever loses its permit.
+  it.effect("overlaps stale discovery but never overlaps catalog persistence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const STALE_CONNECTIONS = 4;
+        const CONNECTION_NAMES = ["alpha", "beta", "gamma", "delta"] as const;
+
+        let openTransactions = 0;
+        let maxOpenTransactions = 0;
+        let discovering = 0;
+        let latched = false;
+        const allDiscovering = yield* Deferred.make<void>();
+
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          // Once latched, no listing answers until every stale connection is
+          // discovering. A serial fan-out parks on the first one forever, so
+          // this also proves discovery still overlaps after the restructure.
+          resolveTools: ({ connection }) =>
+            Effect.gen(function* () {
+              if (latched) {
+                discovering += 1;
+                if (discovering >= STALE_CONNECTIONS) {
+                  yield* Deferred.succeed(allDiscovering, undefined);
+                }
+                yield* Deferred.await(allDiscovering);
+              }
+              return {
+                tools: [
+                  { name: ToolName.make(`deploy_${String(connection.name)}`), description: "d" },
+                ],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: instrumentTransactions(config.db, {
+            enter: () => {
+              openTransactions += 1;
+              maxOpenTransactions = Math.max(maxOpenTransactions, openTransactions);
+            },
+            exit: () => {
+              openTransactions -= 1;
+            },
+          }),
+        });
+        yield* executor.guarded.seed();
+        for (const name of CONNECTION_NAMES) {
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make(name),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+        }
+
+        // Mark the whole set stale, then arm the latch so the next read is
+        // purely the stale-refresh fan-out.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+            set: { tools_synced_at: null },
+          }),
+        );
+        latched = true;
+
+        // Well inside the harness timeout: a serial fan-out never releases the
+        // latch and fails the assertion below instead of the whole runner.
+        const tools = yield* executor.tools
+          .list({ integration: INTEG })
+          .pipe(Effect.timeoutOption("10 seconds"));
+
+        expect(Option.isSome(tools)).toBe(true);
+        expect(discovering).toBe(STALE_CONNECTIONS);
+        // The load-bearing assertion: concurrent discovery, single-file writes.
+        expect(maxOpenTransactions).toBe(1);
+      }),
+    ),
+  );
+
+  // Partial failure must stay partial AND stay visible. A rebuild that cannot
+  // reach its upstream keeps the stale-but-working catalog, lets its peers
+  // finish, and leaves a warning naming the connection — otherwise a
+  // permanently broken connection re-fails on every read with no trace.
+  it.effect("a failed stale rebuild warns and neither fails nor blocks the read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let latched = false;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          // The realistic failure shape: a plugin reports a StorageError whose
+          // `cause` carries the actionable upstream detail, exactly as the MCP
+          // plugin does when a server cannot be reached.
+          resolveTools: ({ connection }) =>
+            latched && String(connection.name) === "broken"
+              ? Effect.fail(
+                  new StorageError({
+                    message: "upstream listing refused",
+                    // oxlint-disable-next-line executor/no-error-constructor -- boundary: the fixture reproduces a real plugin cause, which is a built-in Error
+                    cause: new Error("connect ECONNREFUSED"),
+                  }),
+                )
+              : Effect.succeed({
+                  tools: [
+                    { name: ToolName.make(`deploy_${String(connection.name)}`), description: "d" },
+                  ],
+                }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        for (const name of ["broken", "healthy"]) {
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make(name),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+        }
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+            set: { tools_synced_at: null },
+          }),
+        );
+        latched = true;
+
+        const warnings: string[] = [];
+        const capture = Logger.make<unknown, void>((options) => {
+          if (options.logLevel === "Warn") {
+            warnings.push(Inspectable.toStringUnknown(options.message, 0));
+          }
+        });
+        const tools = yield* executor.tools
+          .list({ integration: INTEG })
+          .pipe(Effect.provide(Logger.layer([capture])));
+
+        // The read succeeds, and the failing connection keeps its previously
+        // persisted catalog rather than being wiped by a failed listing.
+        expect(tools.map((tool) => String(tool.name)).sort()).toEqual([
+          "deploy_broken",
+          "deploy_healthy",
+        ]);
+
+        const failureWarning = warnings.find((line) =>
+          line.includes("executor stale tool sync failed"),
+        );
+        expect(failureWarning).toBeDefined();
+        expect(failureWarning).toContain("broken");
+        // Both halves: the failure and the cause that names what to fix. A bare
+        // structural render of the error drops the cause entirely.
+        expect(failureWarning).toContain("upstream listing refused");
+        expect(failureWarning).toContain("connect ECONNREFUSED");
+        // The healthy peer is not swept into the failure.
+        expect(failureWarning).not.toContain("healthy");
       }),
     ),
   );

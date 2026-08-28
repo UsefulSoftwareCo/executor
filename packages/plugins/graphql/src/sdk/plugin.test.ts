@@ -886,6 +886,56 @@ describe("graphqlPlugin real protocol server", () => {
     }),
   );
 
+  it.effect("reports an unparseable endpoint as a config problem, not a credential one", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: "not a url",
+        slug: "health_bad_endpoint",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_bad_endpoint"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result).toMatchObject({
+        status: "unknown",
+        detail:
+          "The GraphQL endpoint URL is invalid. Edit the integration configuration, then try again.",
+      });
+      // No request was ever sent, so nothing upstream judged the credential.
+      // Telling the operator to check it would send them down a dead end.
+      expect(result.detail).not.toContain("credential");
+    }),
+  );
+
+  it.effect("reports an endpoint with embedded userinfo as a config problem", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: "https://svc:hunter2@graph.example.test/graphql",
+        slug: "health_userinfo_endpoint",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_userinfo_endpoint"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result).toMatchObject({
+        status: "unknown",
+        detail:
+          "The GraphQL endpoint URL is invalid. Edit the integration configuration, then try again.",
+      });
+      expect(result.detail).not.toContain("hunter2");
+    }),
+  );
+
   it.effect("persists the introspection failure when tool sync is incomplete", () =>
     Effect.gen(function* () {
       const server = yield* serveTestHttpApp(() =>

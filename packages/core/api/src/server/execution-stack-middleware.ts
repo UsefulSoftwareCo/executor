@@ -178,6 +178,13 @@ export const makeExecutionStackMiddleware = <
       | PluginExtensionServices<TPlugins>;
   }>()(
     Effect.gen(function* () {
+      // Captured ONCE, at layer-build time, so the per-request body can carry
+      // the boot-scoped `RCapture` services. Note what else rides along: a
+      // captured context also holds Effect's `CurrentMemoMap`, and the
+      // `Effect.provideContext(captured)` below re-applies it to every request
+      // fiber — overwriting the fresh per-request map the host installed. Every
+      // per-request `Effect.provide` in this body must therefore build with
+      // `{ local: true }`; see the two `options.stackLayer` sites.
       const captured = yield* Effect.context<RCapture>();
       return (httpEffect) =>
         Effect.gen(function* () {
@@ -216,7 +223,7 @@ export const makeExecutionStackMiddleware = <
             const { executor } = yield* makePlatformExecutionStack<TPlugins>(
               resolved.organizationId,
             ).pipe(
-              Effect.provide(options.stackLayer),
+              Effect.provide(options.stackLayer, { local: true }),
               Effect.withSpan("executor.stack.http.resolve_platform"),
             );
             return yield* httpEffect.pipe(
@@ -240,7 +247,7 @@ export const makeExecutionStackMiddleware = <
             resolved.organizationId,
             resolved.organizationName,
           ).pipe(
-            Effect.provide(options.stackLayer),
+            Effect.provide(options.stackLayer, { local: true }),
             Effect.provideService(RequestWebOrigin, {
               origin: requestWebOriginFromRequest(webRequest),
             }),
@@ -259,9 +266,32 @@ export const makeExecutionStackMiddleware = <
             Effect.provideService(ExecutorService, executor),
             Effect.provideService(ExecutionEngineService, engine),
             provideExecutorExtensions(executor),
+            // This engine belongs to THIS request: the stack above was built
+            // from the host's request-scoped DB handle, and `executeWithPause`
+            // forks its sandbox as a daemon that would otherwise outlive the
+            // handler. The host closes the connection when the request scope
+            // closes — which happens AFTER this effect returns — so ending the
+            // engine here is what keeps a sandbox fiber from waking up on a
+            // closed pool.
+            //
+            // Nothing is lost by ending it: on a per-request engine the paused
+            // fiber is already unreachable once the response is written (a
+            // resume lands on a different engine and replays the call instead),
+            // so the fiber could only ever have failed. The MCP session Durable
+            // Object does NOT come through here — it builds its own stack over a
+            // session-lifetime handle, so its pauses still survive between
+            // requests, which is the whole point of that plane.
+            //
+            // `ensuring`, not `tap`: interruption and failure have to end the
+            // fiber too, and it must not run before the response is produced.
+            Effect.ensuring(engine.shutdown),
           );
           // Provide the boot-captured context; uncaptured deps (cloud's
           // request-scoped `DbService`) remain residual and flow through here.
+          // This also reinstates the BOOT `CurrentMemoMap` on the request
+          // fiber, which is why the stack builds above are `{ local: true }`:
+          // without that, concurrent requests memoize into one shared map and
+          // reuse a single stack build — and so a single database connection.
         }).pipe(Effect.provideContext(captured as Context.Context<RCapture>));
     }),
   );
@@ -315,6 +345,9 @@ const readOnlyExecutionEngine: ExecutionEngine<Cause.YieldableError> = {
   getPausedExecution: () => Effect.succeed(null),
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
+  // Nothing is ever forked here — the platform branch cannot execute — so there
+  // is no sandbox fiber to end.
+  shutdown: Effect.void,
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: only the MCP tool server reads this, and the MCP plane never serves a platform credential
   getDescription: Effect.die(new PlatformEngineUnavailable({ member: "getDescription" })),
 };

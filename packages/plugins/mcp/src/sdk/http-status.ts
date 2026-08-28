@@ -17,6 +17,8 @@ import { mcpClientSdkIfLoaded } from "./client-module";
 
 const SsePostErrorCause = Schema.Struct({ message: Schema.String });
 const decodeSsePostErrorCause = Schema.decodeUnknownOption(SsePostErrorCause);
+const NumericHttpCodeCause = Schema.Struct({ code: Schema.Number });
+const decodeNumericHttpCodeCause = Schema.decodeUnknownOption(NumericHttpCodeCause);
 
 // V2 still constructs this exact message in SSEClientTransport._send. A format
 // drift just yields undefined (generic error, no crash).
@@ -41,8 +43,32 @@ const statusFromTypedTransportError = (cause: unknown): number | undefined => {
   return undefined;
 };
 
+const statusFromNumericHttpCode = (cause: unknown): number | undefined =>
+  Option.match(decodeNumericHttpCodeCause(cause), {
+    onNone: () => undefined,
+    onSome: ({ code }) => (code >= 100 && code <= 599 ? code : undefined),
+  });
+
 export const httpStatusFromCause = (cause: unknown): number | undefined =>
   statusFromTypedTransportError(cause) ?? statusFromSsePostError(cause);
+
+/** Connection handshakes may receive the SDK's SSE error, whose numeric code
+ * is an HTTP status. Keep this connection-only: JSON-RPC invocation errors
+ * also have numeric `code` fields which are not HTTP statuses. */
+export const connectionHttpStatusFromCause = (cause: unknown): number | undefined =>
+  httpStatusFromCause(cause) ?? statusFromNumericHttpCode(cause);
+
+/** The SDK uses code -1 when Streamable HTTP reached the endpoint but its
+ * response did not implement the protocol (for example an unexpected content
+ * type). This is transport incompatibility, not a network outage. */
+export const isStreamableHttpProtocolError = (cause: unknown): boolean => {
+  const sdk = mcpClientSdkIfLoaded();
+  return (
+    sdk !== undefined &&
+    sdk.client.SdkError.isInstance(cause) &&
+    cause.code === sdk.client.SdkErrorCode.ClientHttpUnexpectedContent
+  );
+};
 
 // The SDK embeds the upstream response text in the transport error message
 // ("Error POSTing to endpoint: <body>"), which is the only place a 403's body

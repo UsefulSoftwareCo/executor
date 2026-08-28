@@ -170,6 +170,32 @@ describe("discoverAuthorizationServerMetadata", () => {
     ),
   );
 
+  it.effect("tries the OIDC path-appended well-known when the issuer is mounted on a path", () =>
+    withOAuthFixture(
+      (request, baseUrl) => {
+        // Only the OIDC path-appended location is served, the way an
+        // authorization server mounted under a path commonly does it.
+        if (request.url === "/mcp/oauth/.well-known/openid-configuration") {
+          return sendJson({
+            issuer: `${baseUrl}/mcp/oauth`,
+            authorization_endpoint: `${baseUrl}/mcp/oauth/authorize`,
+            token_endpoint: `${baseUrl}/mcp/oauth/token`,
+            code_challenge_methods_supported: ["S256"],
+            response_types_supported: ["code"],
+          });
+        }
+        return notFound();
+      },
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* discoverAuthorizationServerMetadata(`${baseUrl}/mcp/oauth`);
+          expect(result).not.toBeNull();
+          expect(result!.metadataUrl).toBe(`${baseUrl}/mcp/oauth/.well-known/openid-configuration`);
+          expect(result!.metadata.token_endpoint).toBe(`${baseUrl}/mcp/oauth/token`);
+        }),
+    ),
+  );
+
   it.effect("requires issuer + authorize + token endpoints", () =>
     withOAuthFixture(
       () => sendJson({ issuer: "http://127.0.0.1" }),

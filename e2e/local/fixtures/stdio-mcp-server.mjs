@@ -11,6 +11,12 @@
 // It exposes one tool, `echo_tool`, and (when EXECUTOR_E2E_SECRET is set in the
 // child env) a second `whoami` tool that returns that env value — so a scenario
 // can prove a per-connection secret env var actually reached the subprocess.
+//
+// It also reports its own environment the same way: for each variable in
+// ENV_PROBES below it advertises a tool ONLY when that variable is present in
+// the child's env. Gating the tool NAME rather than returning a value means the
+// answer survives the whole discovery path unaltered — a scenario reads it off
+// the tools API, and "absent" cannot be confused with "empty string".
 
 import { createInterface } from "node:readline";
 
@@ -34,6 +40,25 @@ if (process.env.EXECUTOR_E2E_SECRET) {
   TOOLS.push({
     name: "whoami",
     description: "Returns the secret env value the server was launched with",
+    inputSchema: { type: "object", properties: {} },
+  });
+}
+
+// Each entry advertises `saw_<name>` when its variable reached this process.
+// The three cover the three ways a variable can be handed to a stdio server:
+// declared on the source, allowlisted infrastructure inherited from the host,
+// and — the leak — an unrelated host variable that must never travel.
+const ENV_PROBES = [
+  { tool: "saw_declared_env", key: "EXECUTOR_E2E_SECRET" },
+  { tool: "saw_proxy_env", key: "NO_PROXY" },
+  { tool: "saw_host_secret", key: "EXECUTOR_E2E_HOST_ONLY_SECRET" },
+];
+
+for (const probe of ENV_PROBES) {
+  if (process.env[probe.key] === undefined) continue;
+  TOOLS.push({
+    name: probe.tool,
+    description: `Present only because ${probe.key} is set in this server's environment`,
     inputSchema: { type: "object", properties: {} },
   });
 }
