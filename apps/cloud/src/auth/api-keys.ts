@@ -1,7 +1,18 @@
-import { Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Context, Data, Deferred, Effect, Layer, Option, Schema } from "effect";
+
+import { sha256Hex } from "@executor-js/sdk";
 
 import { ApiKeyManagementError } from "./errors";
-import { WorkOSClient } from "./workos";
+import { WorkOSClient, type WorkOSClientService } from "./workos";
+
+// WorkOS validation is a remote call on every bearer-authenticated request.
+// Keep the revocation window for organization-owned machine credentials
+// deliberately short while allowing an active Worker isolate to reuse the
+// same positive result across a burst of platform reads. A revoked org key can
+// remain accepted by one isolate for at most this TTL. User keys, invalid keys,
+// and upstream failures are never cached.
+const API_KEY_VALIDATION_CACHE_TTL_MS = 10_000;
+const API_KEY_VALIDATION_CACHE_MAX_ENTRIES = 1_000;
 
 /**
  * Which view a validated key resolves to.
@@ -196,6 +207,78 @@ const ownerFromResponse = (value: unknown): ApiKeyOwner | null =>
     onSome: ({ apiKey }) => (apiKey ? ownerFromApiKey(apiKey) : null),
   });
 
+type ApiKeyValidationCacheOptions = {
+  readonly now?: () => number;
+  readonly ttlMs?: number;
+  readonly maxEntries?: number;
+};
+
+/**
+ * Positive, process-local WorkOS validation cache for organization-owned keys.
+ * Cache keys are SHA-256 digests so bearer credentials are never retained as
+ * map keys. Concurrent validation of any one key joins the same in-flight
+ * request; a user-owned/null result or failure is shared only with those
+ * waiters and is not retained.
+ */
+export const makeApiKeyValidator = (
+  workos: WorkOSClientService,
+  options: ApiKeyValidationCacheOptions = {},
+) => {
+  const now = options.now ?? Date.now;
+  const ttlMs = options.ttlMs ?? API_KEY_VALIDATION_CACHE_TTL_MS;
+  const maxEntries = options.maxEntries ?? API_KEY_VALIDATION_CACHE_MAX_ENTRIES;
+  const cache = new Map<string, { readonly owner: ApiKeyOwner; readonly expiresAtMs: number }>();
+  const inFlight = new Map<string, Deferred.Deferred<ApiKeyOwner | null, ApiKeyValidationError>>();
+
+  const writeCache = (key: string, owner: ApiKeyOwner): void => {
+    const nowMs = now();
+    if (cache.size >= maxEntries) {
+      for (const [cachedKey, entry] of cache) {
+        if (entry.expiresAtMs <= nowMs) cache.delete(cachedKey);
+      }
+      if (cache.size >= maxEntries) cache.clear();
+    }
+    cache.set(key, { owner, expiresAtMs: nowMs + ttlMs });
+  };
+
+  return {
+    validate: (value: string): Effect.Effect<ApiKeyOwner | null, ApiKeyValidationError> =>
+      sha256Hex(value).pipe(
+        Effect.flatMap((key) =>
+          Effect.suspend(() => {
+            const cached = cache.get(key);
+            if (cached && cached.expiresAtMs > now()) return Effect.succeed(cached.owner);
+            if (cached) cache.delete(key);
+
+            const pending = inFlight.get(key);
+            if (pending) return Deferred.await(pending);
+
+            const latch = Deferred.makeUnsafe<ApiKeyOwner | null, ApiKeyValidationError>();
+            inFlight.set(key, latch);
+            return workos.validateApiKey(value).pipe(
+              Effect.map(ownerFromResponse),
+              Effect.mapError((cause) => new ApiKeyValidationError({ cause })),
+              Effect.tap((owner) =>
+                owner?.scope === "org" ? Effect.sync(() => writeCache(key, owner)) : Effect.void,
+              ),
+              Effect.onExit((exit) =>
+                Effect.gen(function* () {
+                  inFlight.delete(key);
+                  yield* Deferred.done(latch, exit);
+                }),
+              ),
+            );
+          }),
+        ),
+      ),
+    invalidate: (keyId: string): void => {
+      for (const [key, entry] of cache) {
+        if (entry.owner.keyId === keyId) cache.delete(key);
+      }
+    },
+  };
+};
+
 const summaryFromApiKey = (apiKey: typeof ApiKey.Type): ApiKeySummary | null => {
   const organizationId = apiKey.owner.organizationId ?? apiKey.owner.organization_id;
   if (!organizationId) return null;
@@ -320,12 +403,9 @@ export class ApiKeyService extends Context.Service<
   static WorkOS = Layer.effect(this)(
     Effect.gen(function* () {
       const workos = yield* WorkOSClient;
+      const validator = makeApiKeyValidator(workos);
       return {
-        validate: (value: string) =>
-          workos.validateApiKey(value).pipe(
-            Effect.map(ownerFromResponse),
-            Effect.mapError((cause) => new ApiKeyValidationError({ cause })),
-          ),
+        validate: validator.validate,
         listUserKeys: ({ accountId, organizationId }) =>
           workos.listUserApiKeys(accountId, organizationId).pipe(
             Effect.map(listFromResponse),
@@ -378,6 +458,7 @@ export class ApiKeyService extends Context.Service<
             yield* workos
               .deleteApiKey(keyId)
               .pipe(Effect.mapError((cause) => new ApiKeyManagementError({ cause })));
+            validator.invalidate(keyId);
           }),
       };
     }),
