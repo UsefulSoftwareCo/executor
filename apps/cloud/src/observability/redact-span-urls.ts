@@ -24,6 +24,7 @@ import type { ReadableSpan, Span, SpanProcessor } from "@opentelemetry/sdk-trace
 
 import {
   redactSpanUrlAttributes,
+  redactStringElements,
   redactUrlsInText,
   STRIPPED_QUERY_ATTRIBUTE,
 } from "@executor-js/sdk";
@@ -109,6 +110,12 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
       if (name !== event.name) event.name = name;
       if (event.attributes === undefined) continue;
       for (const [key, value] of Object.entries(event.attributes)) {
+        // Event attributes permit string[] exactly as span attributes do, so
+        // array elements get the same free-text scrub, in place.
+        if (Array.isArray(value)) {
+          redactStringElements(value, redactUrlsInText);
+          continue;
+        }
         if (typeof value !== "string") continue;
         const redacted = redactUrlsInText(value);
         if (redacted !== value) event.attributes[key] = redacted;

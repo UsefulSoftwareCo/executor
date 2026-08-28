@@ -519,6 +519,7 @@ export { endpointForTelemetry, endpointTelemetryAttributes } from "./telemetry-e
 export {
   redactOtlpTraceExport,
   redactSpanUrlAttributes,
+  redactStringElements,
   redactUrlForTelemetry,
   redactUrlsInText,
   STRIPPED_QUERY_ATTRIBUTE,

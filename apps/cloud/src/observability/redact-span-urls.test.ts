@@ -171,6 +171,39 @@ describe("UrlRedactingSpanProcessor", () => {
     expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBe("key,userinfo");
   });
 
+  it("scrubs a credential URL inside an array attribute on a span event", () => {
+    // Event attributes permit string[] exactly as span and link attributes do,
+    // and the event walk redacts free text — so an array element is the same
+    // channel one level down. Planted by direct mutation for the same reason
+    // as the span/link array canary: `addEvent` sanitization would drop a
+    // mixed-type array, but upstream bridges hand the processor arbitrary bags.
+    const SECRET = "synthetic-event-array-canary-secret";
+    const exported = exportSpanWith({}, (span) => {
+      // The placeholder attribute keeps the event's bag defined; the canary is
+      // planted by mutation.
+      span.addEvent("canary", { "event.kind": "canary" });
+      // oxlint-disable-next-line executor/no-double-cast -- boundary: planting an out-of-contract attribute bag on the SDK span IS the fixture; no public API accepts a mixed-type array
+      const bags = span as unknown as {
+        events: ReadonlyArray<{ attributes?: Record<string, unknown> }>;
+      };
+      const eventAttributes = bags.events[0]?.attributes;
+      expect(eventAttributes).toBeDefined();
+      if (eventAttributes !== undefined) {
+        eventAttributes["event.urls"] = [
+          `https://canary:${SECRET}@api.test/graphql?key=${SECRET}`,
+          42,
+        ];
+      }
+    });
+
+    expect(JSON.stringify(exported?.events)).not.toContain(SECRET);
+    // Non-vacuous: the scrubbed URL and the non-string element survive.
+    expect(exported?.events[0]?.attributes?.["event.urls"]).toEqual([
+      "https://api.test/graphql",
+      42,
+    ]);
+  });
+
   it("scrubs the URL out of exception events and the status message", () => {
     // The shape `@effect/opentelemetry` exports for a failed request:
     // `TransportError.message` embeds the raw URL, and the bridge copies it

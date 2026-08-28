@@ -143,8 +143,12 @@ export const redactUrlsInText = (text: string): string =>
  *  non-string elements untouched. OTel attributes permit string[] values, so
  *  an array element carries a URL exactly as a scalar does. In-place mutation
  *  preserves the array's identity, which is how the change reaches a span
- *  whose bag was shallow-copied before redaction. */
-const redactStringElements = (values: unknown[], redact: (value: string) => string): void => {
+ *  whose bag was shallow-copied before redaction. Exported for the cloud
+ *  span-processor's event-attribute walk, which redacts the same shapes. */
+export const redactStringElements = (
+  values: unknown[],
+  redact: (value: string) => string,
+): void => {
   for (let index = 0; index < values.length; index += 1) {
     const element = values[index];
     if (typeof element === "string") values[index] = redact(element);
