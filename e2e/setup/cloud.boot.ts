@@ -12,7 +12,10 @@ import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForBoot, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
-import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
+import {
+  E2E_EXECUTION_RATE_LIMIT,
+  E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS,
+} from "./execution-limits";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -56,6 +59,18 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
   const dbPath = resolve(cloudDir, ".e2e-stub-db");
   if (options.fresh ?? true) rmSync(dbPath, { recursive: true, force: true });
 
+  // Fresh worker state per boot, for the same reason as the DB: miniflare
+  // persists the Workers Cache API under .wrangler/state across dev-server
+  // runs, and the JWKS L2 cache (auth/jwks-cache.ts) lives there keyed by
+  // URL. The WorkOS emulator binds this checkout's stable port block, so run
+  // N+1's dev server serves run N's cached JWKS (stale-while-revalidate)
+  // against a fresh emulator's keys — every session verify then fails
+  // signature, falls into single-use refresh, and concurrent requests race
+  // each other's rotation into 401s. One run poisons the next.
+  if (options.fresh ?? true) {
+    rmSync(resolve(cloudDir, ".wrangler", "state"), { recursive: true, force: true });
+  }
+
   // MCP access tokens minted by the emulator's OAuth server must carry the
   // app's client id as audience (what the resource server verifies).
   process.env.EMULATE_WORKOS_AUDIENCE = options.workosClientId;
@@ -90,7 +105,6 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // The AuthKit domain (MCP OAuth metadata + JWKS) is the emulator too.
     MCP_AUTHKIT_DOMAIN: workosUrl,
     MCP_RESOURCE_ORIGIN: options.publicUrl,
-    MCP_REQUEST_STATE_KEY: "e2e-mcp-request-state-key-0123456789abcdef",
     MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
     MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
     ALLOW_LOCAL_NETWORK: "true",
@@ -115,6 +129,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // scenario's per-org execute count. Reaches the worker via
     // CLOUDFLARE_INCLUDE_PROCESS_ENV, same as ALLOW_LOCAL_NETWORK.
     EXECUTION_RATE_LIMIT_PER_HOUR: String(E2E_EXECUTION_RATE_LIMIT),
+    // Set to a value that is NOT the compiled-in default, so the span the
+    // worker exports proves this override was actually read rather than
+    // silently ignored (execution-limits.ts explains why it is longer, not
+    // shorter, than the default).
+    EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS: String(E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS),
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(options.dbPort),
     DEV_DB_PATH: dbPath,

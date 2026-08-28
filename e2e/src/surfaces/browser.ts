@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { Effect } from "effect";
-import { chromium, type Locator, type Page } from "playwright";
+import { chromium, type Locator, type Page, type Response } from "playwright";
 
 import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
@@ -36,10 +36,103 @@ const slug = (text: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
 
+// How long a navigation may wait for the network to go quiet before giving up
+// on quiet and letting the scenario's own assertion decide. Long enough to
+// cover a cold vite compile's request burst, short enough that a page which
+// never goes quiet costs seconds instead of the 30s navigation timeout.
+const SETTLE_TIMEOUT_MS = 5_000;
+
+/**
+ * Wait for the network to go quiet, but only for `SETTLE_TIMEOUT_MS`.
+ *
+ * Playwright's `networkidle` — 500ms with zero in-flight requests — cannot be
+ * a hard gate in this suite, because the suite itself keeps the network busy:
+ * every browser session exports OTel spans to the run's motel through
+ * packages/react's `OtlpTracer` on a one-second interval (wired by
+ * `setup/motel.ts` via VITE_PUBLIC_OTLP_TRACES_URL). A page that keeps
+ * producing spans — a console retrying an org-scoped query that 403s, say —
+ * feeds that exporter indefinitely, so the 500ms window never opens and the
+ * wait burns its full timeout on a page that is, visibly, completely loaded.
+ *
+ * The quiet is worth waiting for when it comes (it usually arrives in
+ * milliseconds, and it lets a step's screenshot catch a settled page), so keep
+ * it — bounded. Readiness is asserted by whatever the scenario does next:
+ * Playwright's locators auto-wait, so `getByRole(...).waitFor()` is a real,
+ * page-specific readiness signal where `networkidle` was only ever a proxy.
+ */
+export const settle = async (page: Page): Promise<void> => {
+  await page
+    .waitForLoadState("networkidle", { timeout: SETTLE_TIMEOUT_MS })
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: quiet is best-effort, the scenario's next assertion is the gate
+    .catch(() => {});
+};
+
+/**
+ * Wait until React owns the document — the readiness `networkidle` was standing
+ * in for, asked directly.
+ *
+ * React DOM stamps `__reactContainer$<id>` on the element it roots at the
+ * moment `hydrateRoot` runs, so its presence says the SSR markup is under a
+ * live root rather than inert HTML. That matters because it is the line either
+ * side of which an interaction has a different meaning: before it, a click or
+ * a `fill` goes to markup nobody is listening to and is lost without a trace;
+ * after it, React records the event and replays it as hydration reaches that
+ * subtree. Locators can't see the difference — the element is visible and
+ * enabled either way — which is why a swallowed interaction surfaces 20
+ * seconds later as "the thing it should have opened never appeared".
+ *
+ * Best-effort, like `settle`: plenty of pages the suite visits are not this
+ * app at all (a provider's authorize screen, an OAuth callback result), and
+ * they are none the worse for having no React root.
+ */
+const HYDRATION_TIMEOUT_MS = 10_000;
+
+export const hydrated = async (page: Page): Promise<void> => {
+  await page
+    .waitForFunction(
+      () =>
+        [...document.body.children].some((element) =>
+          Object.keys(element).some((key) => key.startsWith("__reactContainer$")),
+        ),
+      undefined,
+      { timeout: HYDRATION_TIMEOUT_MS },
+    )
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: a page with no React root is a legitimate destination
+    .catch(() => {});
+};
+
+/**
+ * Navigate, then wait for the page to be interactive. The drop-in for a `goto`
+ * that waited on `networkidle`, and a better one: it waits for React to take
+ * the document (`hydrated`) and for the network to go quiet (`settle`), both
+ * bounded, instead of one unbounded wait that proved neither. `timeout` bounds
+ * the navigation itself, exactly as `goto`'s does.
+ */
+export const visit = async (
+  page: Page,
+  url: string,
+  options: { readonly timeout?: number } = {},
+): Promise<Response | null> => {
+  const response = await page.goto(url, { waitUntil: "load", ...options });
+  await hydrated(page);
+  await settle(page);
+  return response;
+};
+
+/** `visit` for a reload — the drop-in for `reload({ waitUntil: "networkidle" })`. */
+export const revisit = async (
+  page: Page,
+  options: { readonly timeout?: number } = {},
+): Promise<void> => {
+  await page.reload({ waitUntil: "load", ...options });
+  await hydrated(page);
+  await settle(page);
+};
+
 /**
  * Click `trigger` until `revealed` is visible.
  *
- * `waitUntil: "networkidle"` does not mean the console has hydrated: a click
+ * A settled network does not mean the console has hydrated: a click
  * that lands between the SSR paint and React attaching the handler is
  * swallowed without a trace, and whatever the click was meant to open never
  * appears (the "Connect an integration" dialog no-show flake). Re-clicking a

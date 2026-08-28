@@ -38,7 +38,7 @@ import { chromium, type Browser, type Frame, type Page } from "playwright-core";
 import { createServer as createViteServer } from "vite";
 import type * as Cause from "effect/Cause";
 
-import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
+import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 
 import { loadMcpAppsShellHtml } from "../shell-html";
 
@@ -1241,12 +1241,8 @@ const startMcpHarnessForEngine = async <E extends Cause.YieldableError>(
   engine: ExecutionEngine<E>,
 ): Promise<McpHarness> => {
   const mcpServer = await Effect.runPromise(
-    buildMcpServer({
+    createExecutorMcpServer({
       engine,
-      appsEnabled: false,
-      requestStateSigningKey: new Uint8Array(32).fill(19),
-      requestStatePrincipal: "mcp-app-browser-test-principal",
-      sessionful: true,
       loadAppShellHtml: loadMcpAppsShellHtml,
       artifacts: makeInMemoryArtifacts(),
       // Artifacts are opt-in per connection; this harness drives the artifact
@@ -1315,6 +1311,8 @@ const startMcpHarness = async (openApi: OpenApiServer): Promise<McpHarness> => {
 const startSchemaElicitationMcpHarness = (): Promise<McpHarness> =>
   startMcpHarnessForEngine({
     getDescription: Effect.succeed("schema elicitation test executor"),
+    // The fake forks nothing, so there is no sandbox fiber to end.
+    shutdown: Effect.void,
     execute: () => Effect.succeed({ result: null }),
     executeWithPause: () =>
       Effect.succeed(

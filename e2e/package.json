@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/e2e",
-  "version": "0.0.39",
+  "version": "0.0.40",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",
-    "@executor-js/emulate": "^0.13.9",
+    "@executor-js/emulate": "^0.14.0",
     "@executor-js/mcporter": "^0.11.4",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
@@ -31,10 +31,7 @@
     "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@kitlangton/terminal-control": "^0.3.0",
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@modelcontextprotocol/server": "2.0.0",
     "asciinema-player": "^3.15.1",
     "effect": "catalog:",
     "monaco-editor": "^0.55.1",

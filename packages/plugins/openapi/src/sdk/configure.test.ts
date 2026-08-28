@@ -29,7 +29,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { openApiPlugin } from "./plugin";
 import type { APIKeyAuthentication, Authentication, AuthenticationInput } from "./types";
-import { variable } from "@executor-js/sdk/http-auth";
+import { variable, type ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 import {
   makeOpenApiHttpApiTestIntegrationConfig,
   serveOpenApiHttpApiTestServer,
@@ -83,7 +83,7 @@ const customApiKey: AuthenticationInput = {
 // omits it, which `configure` should backfill with a generated `custom_<id>`.
 // The cast is confined to this one boundary helper.
 const sluglessApiKey = (
-  template: Omit<AuthenticationInput & { type: "apiKey" }, "slug" | "type">,
+  template: Omit<ApiKeyAuthTemplate, "slug" | "type">,
 ): AuthenticationInput => ({ type: "apiKey", ...template });
 
 describe("OpenAPI Plugin — configure (custom auth method)", () => {

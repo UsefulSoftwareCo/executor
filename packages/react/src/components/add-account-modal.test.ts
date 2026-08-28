@@ -5,10 +5,12 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  type OAuthProbeResult,
   type Owner,
 } from "@executor-js/sdk/shared";
 
 import type { AuthMethod } from "../lib/auth-placements";
+import type { OAuthPopupReservation } from "../plugins/oauth-sign-in";
 import {
   connectionNameFrom,
   connectionLabel,
@@ -17,8 +19,8 @@ import {
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
   oauthIdentityLabelFromHealth,
+  runAutomaticOAuthConnect,
   runCimdConnect,
-  runDcrConnect,
   typedIdentityLabel,
   uniqueConnectionName,
 } from "./add-account-modal";
@@ -32,15 +34,7 @@ const apiKeyMethod = (id: string, source: "spec" | "custom", template = id): Aut
   placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
 });
 
-type ProbeResult = {
-  readonly issuer?: string | null;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly resource?: string | null;
-  readonly scopesSupported?: readonly string[];
-  readonly registrationEndpoint?: string | null;
-  readonly tokenEndpointAuthMethodsSupported?: readonly string[];
-};
+type ProbeResult = OAuthProbeResult;
 
 type RegisterArgs = {
   readonly owner: Owner;
@@ -57,7 +51,59 @@ type RegisterArgs = {
   readonly originIntegration?: IntegrationSlug;
 };
 
-type StartArgs = { readonly client: OAuthClientSlug; readonly owner: Owner };
+type StartArgs = {
+  readonly client: OAuthClientSlug;
+  readonly owner: Owner;
+  readonly reservation: OAuthPopupReservation;
+};
+
+// A reservation the browser honoured. The desktop shape is the one that carries
+// no `Window`, so the orchestrators' ordering is testable without a DOM.
+const RESERVED: OAuthPopupReservation = {
+  kind: "desktop",
+  bridge: { openExternal: (): Promise<void> => Promise.resolve() },
+};
+
+/** Records the reserve/release calls alongside the network steps, so a test can
+ *  assert the window is claimed BEFORE the first round trip and closed again
+ *  whenever the flow ends without signing in. */
+const popupSpy = (reservation: OAuthPopupReservation = RESERVED) => {
+  const calls: string[] = [];
+  return {
+    calls,
+    reserve: (): OAuthPopupReservation => {
+      calls.push("reserve");
+      return reservation;
+    },
+    release: (): void => {
+      calls.push("release");
+    },
+  };
+};
+
+type AutomaticOAuthDeps = Parameters<typeof runAutomaticOAuthConnect>[0];
+type AutomaticOAuthInput = Parameters<typeof runAutomaticOAuthConnect>[1];
+
+/** DCR-focused tests use defaults for the CIMD branch they intentionally do
+ *  not exercise. Discovery-level tests call the orchestrator directly. */
+const runDcrConnect = (
+  deps: Omit<AutomaticOAuthDeps, "createCimdClient">,
+  input: Omit<AutomaticOAuthInput, "cimd">,
+) =>
+  runAutomaticOAuthConnect(
+    {
+      ...deps,
+      createCimdClient: (): Promise<OAuthClientSlug | null> => Promise.resolve(null),
+    },
+    {
+      ...input,
+      cimd: {
+        integrationName: "Test MCP",
+        clientIdMetadataDocumentUrl: "https://executor.example/api/oauth/client-id-metadata.json",
+        existingClients: [],
+      },
+    },
+  );
 
 type CimdCreateArgs = {
   readonly owner: Owner;
@@ -70,7 +116,11 @@ type CimdCreateArgs = {
   readonly clientSecret: "";
 };
 
-type CimdStartArgs = { readonly client: OAuthClientSlug; readonly owner: Owner };
+type CimdStartArgs = {
+  readonly client: OAuthClientSlug;
+  readonly owner: Owner;
+  readonly reservation: OAuthPopupReservation;
+};
 
 const TEST_INTEGRATION = IntegrationSlug.make("linear_mcp");
 
@@ -310,6 +360,8 @@ describe("runCimdConnect", () => {
 
     const outcome = await runCimdConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         createClient: (args: CimdCreateArgs): Promise<OAuthClientSlug | null> => {
           createArgs = args;
           return Promise.resolve(args.slug);
@@ -352,6 +404,8 @@ describe("runCimdConnect", () => {
 
     const outcome = await runCimdConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         createClient: (): Promise<OAuthClientSlug | null> => {
           created = true;
           return Promise.resolve(OAuthClientSlug.make("new-client"));
@@ -383,7 +437,279 @@ describe("runCimdConnect", () => {
 
     expect(outcome).toEqual({ kind: "started", client: existingSlug, reused: true });
     expect(created).toBe(false);
-    expect(startArgs).toEqual({ client: existingSlug, owner: "user" });
+    expect(startArgs).toEqual({ client: existingSlug, owner: "user", reservation: RESERVED });
+  });
+});
+
+describe("runAutomaticOAuthConnect", () => {
+  it("prefers advertised CIMD over DCR and keeps the original popup reservation", async () => {
+    const popup = popupSpy();
+    const calls: string[] = [];
+    let createArgs: CimdCreateArgs | null = null;
+    let startArgs: StartArgs | null = null;
+
+    const outcome = await runAutomaticOAuthConnect(
+      {
+        ...popup,
+        probe: (): Promise<ProbeResult> => {
+          calls.push("probe");
+          return Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            resource: "https://mcp.example.com/mcp",
+            registrationEndpoint: "https://auth.example.com/register",
+            clientIdMetadataDocumentSupported: true,
+          });
+        },
+        createCimdClient: (args: CimdCreateArgs): Promise<OAuthClientSlug> => {
+          calls.push("create-cimd");
+          createArgs = args;
+          return Promise.resolve(args.slug);
+        },
+        register: (): Promise<OAuthClientSlug> => {
+          calls.push("register-dcr");
+          return Promise.resolve(OAuthClientSlug.make("unexpected-dcr-client"));
+        },
+        start: (args: StartArgs): void => {
+          calls.push("start");
+          startArgs = args;
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        resourceFallback: "https://mcp.example.com/mcp",
+        owner: "user",
+        integration: TEST_INTEGRATION,
+        cimd: {
+          integrationName: "Test MCP",
+          clientIdMetadataDocumentUrl: "https://executor.example/api/oauth/client-id-metadata.json",
+          existingClients: [],
+        },
+      },
+    );
+
+    expect(outcome).toEqual({ kind: "started", flow: "cimd" });
+    expect(calls).toEqual(["probe", "create-cimd", "start"]);
+    expect(createArgs).toMatchObject({
+      clientId: "https://executor.example/api/oauth/client-id-metadata.json",
+      clientSecret: "",
+      resource: "https://mcp.example.com/mcp",
+    });
+    expect(startArgs!.reservation).toBe(RESERVED);
+  });
+});
+
+describe("runDcrConnect popup reservation", () => {
+  const probeOk = (): Promise<ProbeResult> =>
+    Promise.resolve({
+      authorizationUrl: "https://auth.example.com/authorize",
+      tokenUrl: "https://auth.example.com/token",
+      registrationEndpoint: "https://auth.example.com/register",
+    });
+  const dcrInput = {
+    discoveryUrl: "https://mcp.example.com/mcp",
+    owner: "user" as Owner,
+    integration: TEST_INTEGRATION,
+  };
+
+  // The regression: probe and register are two round trips, and a browser stops
+  // honouring `window.open` about five seconds after the click. Opening the
+  // window after them is refused, so the connect ends with no popup, no error,
+  // and the button back on "Connect". The window has to be claimed up front.
+  it("claims the sign-in window BEFORE the first network call", async () => {
+    const popup = popupSpy();
+    const outcome = await runDcrConnect(
+      {
+        ...popup,
+        probe: (): Promise<ProbeResult> => {
+          popup.calls.push("probe");
+          return probeOk();
+        },
+        register: (): Promise<OAuthClientSlug> => {
+          popup.calls.push("register");
+          return Promise.resolve(OAuthClientSlug.make("mcp-app"));
+        },
+        start: (): void => {
+          popup.calls.push("start");
+        },
+      },
+      dcrInput,
+    );
+
+    expect(outcome).toEqual({ kind: "started", flow: "dcr" });
+    expect(popup.calls).toEqual(["reserve", "probe", "register", "start"]);
+  });
+
+  it("hands the reserved window to start, so the flow navigates it rather than opening a new one", async () => {
+    let startArgs: StartArgs | null = null;
+    const outcome = await runDcrConnect(
+      {
+        ...popupSpy(),
+        probe: probeOk,
+        register: (): Promise<OAuthClientSlug> => Promise.resolve(OAuthClientSlug.make("mcp-app")),
+        start: (args: StartArgs): void => {
+          startArgs = args;
+        },
+      },
+      dcrInput,
+    );
+
+    expect(outcome).toEqual({ kind: "started", flow: "dcr" });
+    expect(startArgs!.reservation).toBe(RESERVED);
+  });
+
+  it("gives up before any network call when the browser refuses the window", async () => {
+    const popup = popupSpy({ kind: "blocked" });
+    let probed = false;
+    const outcome = await runDcrConnect(
+      {
+        ...popup,
+        probe: (): Promise<ProbeResult> => {
+          probed = true;
+          return probeOk();
+        },
+        register: (): Promise<OAuthClientSlug> => Promise.resolve(OAuthClientSlug.make("mcp-app")),
+        start: (): void => {},
+      },
+      dcrInput,
+    );
+
+    // No BYO fallback: registering an app by hand cannot open a window either.
+    expect(outcome).toEqual({ kind: "popup-blocked" });
+    expect(probed).toBe(false);
+    expect(popup.calls).toEqual(["reserve"]);
+  });
+
+  // Reserving early means a flow that ends without signing in is holding an
+  // about:blank window the user never asked for.
+  it("closes the reserved window when the probe fails", async () => {
+    const popup = popupSpy();
+    const outcome = await runDcrConnect(
+      {
+        ...popup,
+        probe: (): Promise<ProbeResult | null> => Promise.resolve(null),
+        register: (): Promise<OAuthClientSlug> => Promise.resolve(OAuthClientSlug.make("mcp-app")),
+        start: (): void => {},
+      },
+      dcrInput,
+    );
+
+    expect(outcome).toEqual({ kind: "fallback", reason: "probe-failed" });
+    expect(popup.calls).toEqual(["reserve", "release"]);
+  });
+
+  it("closes the reserved window when the server advertises no registration endpoint", async () => {
+    const popup = popupSpy();
+    const outcome = await runDcrConnect(
+      {
+        ...popup,
+        probe: (): Promise<ProbeResult> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+          }),
+        register: (): Promise<OAuthClientSlug> => Promise.resolve(OAuthClientSlug.make("mcp-app")),
+        start: (): void => {},
+      },
+      dcrInput,
+    );
+
+    expect(outcome.kind).toBe("fallback");
+    expect(popup.calls).toEqual(["reserve", "release"]);
+  });
+
+  it("closes the reserved window when registration is rejected", async () => {
+    const popup = popupSpy();
+    const outcome = await runDcrConnect(
+      {
+        ...popup,
+        probe: probeOk,
+        register: (): Promise<{ readonly error: string }> =>
+          Promise.resolve({ error: "redirect_uri not allowed" }),
+        start: (): void => {},
+      },
+      dcrInput,
+    );
+
+    expect(outcome).toMatchObject({ reason: "registration-failed" });
+    expect(popup.calls).toEqual(["reserve", "release"]);
+  });
+
+  it("keeps the reserved window open on the path that signs in", async () => {
+    const popup = popupSpy();
+    await runDcrConnect(
+      {
+        ...popup,
+        probe: probeOk,
+        register: (): Promise<OAuthClientSlug> => Promise.resolve(OAuthClientSlug.make("mcp-app")),
+        start: (): void => {},
+      },
+      dcrInput,
+    );
+
+    expect(popup.calls).not.toContain("release");
+  });
+});
+
+describe("runCimdConnect popup reservation", () => {
+  const cimdInput = {
+    owner: "user" as Owner,
+    integrationName: "PostHog API",
+    authorizationUrl: "https://us.posthog.com/oauth/authorize/",
+    tokenUrl: "https://us.posthog.com/oauth/token/",
+    resource: null,
+    clientIdMetadataDocumentUrl: "https://executor.example/api/oauth/client-id-metadata.json",
+    existingClients: [],
+  };
+
+  it("claims the sign-in window before minting the client", async () => {
+    const popup = popupSpy();
+    const outcome = await runCimdConnect(
+      {
+        ...popup,
+        createClient: (args: CimdCreateArgs): Promise<OAuthClientSlug> => {
+          popup.calls.push("createClient");
+          return Promise.resolve(args.slug);
+        },
+        start: (): void => {
+          popup.calls.push("start");
+        },
+      },
+      cimdInput,
+    );
+
+    expect(outcome.kind).toBe("started");
+    expect(popup.calls).toEqual(["reserve", "createClient", "start"]);
+  });
+
+  it("closes the reserved window when minting the client fails", async () => {
+    const popup = popupSpy();
+    const outcome = await runCimdConnect(
+      {
+        ...popup,
+        createClient: (): Promise<OAuthClientSlug | null> => Promise.resolve(null),
+        start: (): void => {},
+      },
+      cimdInput,
+    );
+
+    expect(outcome).toEqual({ kind: "failed", reason: "create-failed" });
+    expect(popup.calls).toEqual(["reserve", "release"]);
+  });
+
+  it("never claims a window when the method is missing its endpoints", async () => {
+    const popup = popupSpy();
+    const outcome = await runCimdConnect(
+      {
+        ...popup,
+        createClient: (): Promise<OAuthClientSlug | null> => Promise.resolve(null),
+        start: (): void => {},
+      },
+      { ...cimdInput, tokenUrl: "  " },
+    );
+
+    expect(outcome).toEqual({ kind: "failed", reason: "missing-endpoints" });
+    expect(popup.calls).toEqual([]);
   });
 });
 
@@ -416,7 +742,13 @@ describe("runDcrConnect", () => {
     };
 
     const outcome = await runDcrConnect(
-      { probe, register, start },
+      {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
+        probe,
+        register,
+        start,
+      },
       {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
@@ -454,6 +786,8 @@ describe("runDcrConnect", () => {
     let registerArgs: RegisterArgs | null = null;
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> =>
           Promise.resolve({
             authorizationUrl: "https://auth.example.com/authorize",
@@ -490,6 +824,8 @@ describe("runDcrConnect", () => {
     let registerArgs: RegisterArgs | null = null;
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> =>
           Promise.resolve({
             authorizationUrl: "https://auth.example.com/authorize",
@@ -517,6 +853,8 @@ describe("runDcrConnect", () => {
     const calls: string[] = [];
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> => {
           calls.push("probe");
           return Promise.resolve({
@@ -554,6 +892,8 @@ describe("runDcrConnect", () => {
     const calls: string[] = [];
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> => {
           calls.push("probe");
           return Promise.resolve(null);
@@ -580,6 +920,8 @@ describe("runDcrConnect", () => {
     const calls: string[] = [];
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> =>
           Promise.resolve({
             authorizationUrl: "https://auth.example.com/authorize",
@@ -620,6 +962,8 @@ describe("runDcrConnect", () => {
     let started = false;
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> =>
           Promise.resolve({
             authorizationUrl: "https://auth.example.com/authorize",
@@ -659,6 +1003,8 @@ describe("runDcrConnect", () => {
     let registerArgs: RegisterArgs | null = null;
     const outcome = await runDcrConnect(
       {
+        reserve: (): OAuthPopupReservation => RESERVED,
+        release: (): void => {},
         probe: (): Promise<ProbeResult | null> =>
           Promise.resolve({
             issuer: "https://auth.example.com",

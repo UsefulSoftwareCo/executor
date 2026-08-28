@@ -10,6 +10,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# CI is not a user. Without this, executor's own product telemetry reports to the
+# production PostHog project from every e2e shard: the analytics layer
+# (integration_added, execution_completed, artifact_*) and the
+# integrations-registry fetch, which lands as a `hit` event. Each shard is a
+# fresh container, so it mints a fresh anonymous id and arrives on a fresh
+# runner IP — inflating machine and user counts by roughly an order of
+# magnitude. Both opt-outs are the packages' documented CI/test hooks.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   changes:
     name: Changed paths
@@ -18,6 +30,7 @@ jobs:
     outputs:
       desktop_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop_smoke == 'true' }}
       selfhost_docker_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.selfhost_docker_smoke == 'true' }}
+      cloud_closure: ${{ github.event_name != 'pull_request' || steps.filter.outputs.cloud_closure == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +54,14 @@ jobs:
               - "packages/kernel/runtime-quickjs/**"
               - "packages/plugins/**"
               - "packages/react/**"
+            cloud_closure:
+              - ".github/workflows/**"
+              - "bun.lock"
+              - "package.json"
+              - "turbo.json"
+              - "apps/cloud/**"
+              - "packages/**"
+
             selfhost_docker_smoke:
               - ".github/workflows/**"
               - ".dockerignore"
@@ -283,7 +304,9 @@ jobs:
         if: matrix.target == 'cloud'
         env:
           MCP_SESSION_TIMEOUT_MS: "3000"
-          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
+          # Still 18x shorter than production, but long enough for a cold Vite
+          # resume route to compile under a fully loaded CI runner.
+          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "30000"
         run: bun scripts/run-ci-shard.ts cloud ${{ matrix['shard-index'] }}
         working-directory: e2e
 
@@ -301,6 +324,50 @@ jobs:
           name: e2e-runs-${{ matrix.target }}${{ matrix['shard-name'] && format('-{0}', matrix['shard-name']) || '' }}
           path: e2e/runs/
           retention-days: 7
+
+  cloud-closure:
+    name: Cloud evaluated closure
+    needs: changes
+    if: needs.changes.outputs.cloud_closure == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    env:
+      TURBO_API: ${{ vars.TURBO_API }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+      # Every cold isolate evaluates this closure before it can answer a
+      # request, and it only ever grows by accident - a barrel export or a new
+      # module-scope import quietly pulls megabytes into the server graph. The
+      # budget is a ratchet just above today's size, not a discovered limit:
+      # when it trips, make the new dependency lazy rather than raising it.
+      START_CLOSURE_BUDGET_MB: 13.5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build
+        working-directory: apps/cloud
+
+      - run: node scripts/start-closure.mjs
+        working-directory: apps/cloud
 
   desktop-smoke:
     name: Desktop smoke build
@@ -352,7 +419,13 @@ jobs:
       - name: Run sidecar outside the workspace
         working-directory: apps/desktop
         run: |
-          docker run --rm -d --name sidecar-smoke -p 45841:45841 -e HOME=/tmp \
+          # Containers do not inherit the job environment. Keep the compiled
+          # product smoke from becoming a production analytics/integrations hit.
+          docker run --rm -d --name sidecar-smoke -p 45841:45841 \
+            -e HOME=/tmp \
+            -e DO_NOT_TRACK=1 \
+            -e EXECUTOR_DISABLE_ANALYTICS=1 \
+            -e EXECUTOR_DISABLE_INTEGRATIONS_FETCH=1 \
             -v "$PWD/resources/executor:/opt/executor:ro" \
             debian:bookworm-slim /opt/executor/executor daemon run --foreground \
             --port 45841 --hostname 0.0.0.0 --auth-token=ci-smoke

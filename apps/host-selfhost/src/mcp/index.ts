@@ -4,7 +4,6 @@ import { IdentityProvider } from "@executor-js/api/server";
 import type {
   McpAuthProvider,
   McpErrorReporter,
-  McpModernServerBuilder,
   McpSessionStore,
   Principal,
 } from "@executor-js/host-mcp";
@@ -15,7 +14,6 @@ import { loadConfig } from "../config";
 import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
-  makeSelfHostMcpModernServerBuilder,
   selfHostMcpReporter,
   selfHostMcpSessions,
 } from "./session-store";
@@ -23,7 +21,6 @@ import {
 export { selfHostMcpAuth } from "./auth";
 export {
   makeSelfHostMcpSessionStore,
-  makeSelfHostMcpModernServerBuilder,
   selfHostMcpReporter,
   selfHostMcpSessions,
   McpEngineBuildError,
@@ -38,15 +35,13 @@ export {
 // own auth + session handling and is mounted OUTSIDE the API's execution
 // middleware, like /api/auth.
 //
-// Self-host provides both era seams plus auth and an error-reporter override:
+// Self-host provides the TWO envelope seams plus an error-reporter override:
 //   - McpAuthProvider  -> `selfHostMcpAuth` (Better Auth mcp() OAuth). It still
 //                         requires `IdentityProvider`, which `make` provides from
 //                         the resolved identity seam.
 //   - McpSessionStore  -> `selfHostMcpSessions`: in-process Map. The store owns
 //                         dispatch (create + forward + ownership) and builds its
 //                         engine internally over the shared SelfHostDb.
-//   - McpModernServerBuilder -> one stateless MCP server per request over
-//                         the same scoped execution stack and tool config.
 //   - McpErrorReporter -> `selfHostMcpReporter`: route 500 defects through the
 //                         host's console capture.
 //
@@ -59,8 +54,6 @@ export interface SelfHostMcpSeams {
   readonly auth: Layer.Layer<McpAuthProvider, never, IdentityProvider>;
   /** The in-process session store seam (dispatch + lifetime). */
   readonly sessions: Layer.Layer<McpSessionStore>;
-  /** Stateless MCP server construction for modern requests. */
-  readonly modern: Layer.Layer<McpModernServerBuilder>;
   /** Route 500 defects through the host's console `ErrorCapture`. */
   readonly reporter: Layer.Layer<McpErrorReporter>;
   /**
@@ -134,14 +127,13 @@ const makeApprovalHandler =
  * Build the self-host MCP serving seams over the long-lived DB handle. The auth
  * seam is `selfHostMcpAuth` (Better Auth mcp() OAuth), with the Better Auth
  * instance provided; it still requires `IdentityProvider` from the resolved
- * identity seam. Returns the four seam Layers plus the `close()` lifetime hook
+ * identity seam. Returns the three seam Layers plus the `close()` lifetime hook
  * the app wires into shutdown.
  */
 export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
   webBaseUrl?: string,
-  modernEnabled = true,
 ): SelfHostMcpSeams => {
   const sessionStore = makeSelfHostMcpSessionStore(
     dbHandle,
@@ -154,7 +146,6 @@ export const makeSelfHostMcpSeams = (
   return {
     auth,
     sessions: selfHostMcpSessions(sessionStore),
-    modern: makeSelfHostMcpModernServerBuilder(dbHandle, modernEnabled),
     reporter: selfHostMcpReporter,
     approvalHandler: makeApprovalHandler(sessionStore, betterAuth),
     close: sessionStore.close,

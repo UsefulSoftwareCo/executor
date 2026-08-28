@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/local",
-  "version": "1.5.42",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -46,7 +46,7 @@
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
     "@libsql/client": "catalog:",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tanstack/react-router": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
@@ -55,8 +55,6 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@rhyssul/portless": "^0.13.0",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",

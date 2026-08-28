@@ -32,8 +32,6 @@ export interface SelfHostConfig {
    * internal network unless an operator opts in.
    */
   readonly allowLocalNetwork: boolean;
-  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-  readonly mcp20260728Enabled: boolean;
   // Better Auth session secret. Always resolved (env, else generated + persisted
   // under the data dir) so a single-container deploy boots with no env; the auth
   // layer still validates an explicitly-set env secret is long enough.
@@ -153,7 +151,6 @@ export const loadConfig = (): SelfHostConfig => {
     dbPath: process.env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
     webBaseUrl: resolveWebBaseUrl(port),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
-    mcp20260728Enabled: process.env.MCP_2026_07_28_ENABLED !== "false",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,

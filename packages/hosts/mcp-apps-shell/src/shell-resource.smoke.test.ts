@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
-import { buildMcpServer } from "@executor-js/host-mcp/tool-server";
+import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 import { MCP_APPS_SHELL_RESOURCE_URI } from "@executor-js/host-mcp/create-artifact";
 import type { ExecutionEngine } from "@executor-js/execution";
 
@@ -28,6 +28,8 @@ const stubEngine: ExecutionEngine<never> = {
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed("smoke"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 };
 
 // oxlint-disable-next-line executor/no-double-cast -- boundary: MCP SDK ClientCapabilities predates the ext-apps `extensions` field
@@ -40,12 +42,8 @@ describe("MCP-Apps shell resource", () => {
     const mcpServer = await Effect.runPromise(
       // Artifacts are opt-in per connection; the shell resource only exists on
       // a session that asked for them.
-      buildMcpServer({
+      createExecutorMcpServer({
         engine: stubEngine,
-        appsEnabled: false,
-        requestStateSigningKey: new Uint8Array(32).fill(17),
-        requestStatePrincipal: "shell-resource-test-principal",
-        sessionful: true,
         loadAppShellHtml: loadMcpAppsShellHtml,
         artifactsEnabled: true,
       }),

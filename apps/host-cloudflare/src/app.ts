@@ -16,7 +16,6 @@ import { ErrorCaptureLive } from "./observability";
 import { cloudflareAccountMiddleware } from "./account/account-provider";
 import { makeCloudflareApprovalHandler } from "./mcp";
 import { makeCloudflareMcpAgentHandler } from "./mcp/agent-handler";
-import { makeCloudflareModernMcpServerBuilder } from "./mcp/session-durable-object";
 import { preloadQuickJs } from "./quickjs";
 
 // ===========================================================================
@@ -46,9 +45,7 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
   // handle the per-request scoped executor reads through the DbProvider seam.
   const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
   const identityLayer = cloudflareAccessIdentityLayer(config);
-  const mcpAgentHandler = makeCloudflareMcpAgentHandler(config, {
-    makeModernServerBuilder: makeCloudflareModernMcpServerBuilder,
-  });
+  const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
   const approvalHandler = makeCloudflareApprovalHandler(config, env);
 
   const { appLayer, toWebHandler } = ExecutorApp.make({

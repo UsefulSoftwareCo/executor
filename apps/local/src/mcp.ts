@@ -1,27 +1,17 @@
 import { Effect, type Cause } from "effect";
-import {
-  createMcpHandler,
-  isLegacyRequest,
-  McpServer,
-  WebStandardStreamableHTTPServerTransport,
-  type McpHttpHandler,
-} from "@modelcontextprotocol/server";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import {
   defaultMcpResource,
   jsonRpcErrorBody,
-  mcpModernDisabledResponse,
   mcpResourceKey,
   type McpResource,
 } from "@executor-js/host-mcp";
 import {
-  appsEnabledForClientCapabilities,
-  buildMcpServer,
-  clientCapabilitiesFromRequest,
-  mcpRequestStateBindingFromBody,
-  requestBodyFromRequest,
-  type ExecutorMcpToolConfig,
+  createExecutorMcpServer,
+  type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
 import {
   approvalUrlForRequest,
@@ -29,6 +19,7 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -55,14 +46,12 @@ export type McpRequestHandler = {
 };
 
 export interface LocalMcpServerConfig {
-  readonly config: ExecutorMcpToolConfig;
+  readonly config: ExecutorMcpServerConfig;
   readonly close?: () => Promise<void>;
 }
 
 export interface LocalMcpRequestHandlerConfig {
-  readonly defaultConfig: ExecutorMcpToolConfig;
-  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-  readonly modernEnabled?: boolean;
+  readonly defaultConfig: ExecutorMcpServerConfig;
   readonly createConfigForResource?: (
     resource: McpResource,
   ) => Promise<LocalMcpServerConfig> | LocalMcpServerConfig;
@@ -125,15 +114,15 @@ const resourceFromRequest = (request: Request): McpResource | null => {
   return { kind: "toolkit", slug: decodeURIComponent(match[1]) };
 };
 
-const engineFromConfig = (config: ExecutorMcpToolConfig): AnyExecutionEngine | null =>
+const engineFromConfig = (config: ExecutorMcpServerConfig): AnyExecutionEngine | null =>
   "engine" in config ? config.engine : null;
 
 const normalizeHandlerConfig = (
-  input: ExecutorMcpToolConfig | LocalMcpRequestHandlerConfig,
+  input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
 ): LocalMcpRequestHandlerConfig => ("defaultConfig" in input ? input : { defaultConfig: input });
 
 export const createMcpRequestHandler = (
-  input: ExecutorMcpToolConfig | LocalMcpRequestHandlerConfig,
+  input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
 ): McpRequestHandler => {
   const handlerConfig = normalizeHandlerConfig(input);
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -141,14 +130,8 @@ export const createMcpRequestHandler = (
   const resources = new Map<string, McpResource>();
   const sessionEngines = new Map<string, AnyExecutionEngine>();
   const sessionClosers = new Map<string, () => Promise<void>>();
-  const modernHandlers = new Map<string, McpHttpHandler>();
-  const modernRequestBodies = new WeakMap<Request, unknown>();
   const approvals = makeInProcessBrowserApprovalStore();
   const defaultEngine = engineFromConfig(handlerConfig.defaultConfig);
-  let requestStateSigningKey: Uint8Array | undefined;
-
-  const signingKey = (): Uint8Array =>
-    (requestStateSigningKey ??= crypto.getRandomValues(new Uint8Array(32)));
 
   const pausedDetail = (
     sessionId: string,
@@ -182,71 +165,10 @@ export const createMcpRequestHandler = (
     await ignoreClose(close);
   };
 
-  const modernHandlerFor = (resource: McpResource): McpHttpHandler => {
-    const key = mcpResourceKey(resource);
-    const cached = modernHandlers.get(key);
-    if (cached) return cached;
-
-    const handler = createMcpHandler(
-      (context) => {
-        const request = context.requestInfo;
-        if (!request) {
-          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party McpServerFactory Promise contract has no typed failure channel; missing documented request context is an SDK defect
-          return Effect.runPromise(Effect.die("Modern MCP request context has no request"));
-        }
-        const parsedBody = modernRequestBodies.get(request);
-        return Effect.runPromise(
-          Effect.gen(function* () {
-            const resourceConfig = yield* Effect.promise(() => configForResource(resource));
-            const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
-            const requestStateBinding = yield* Effect.promise(() =>
-              mcpRequestStateBindingFromBody({
-                body: parsedBody,
-                principal: "local",
-                resource,
-              }),
-            );
-            const server = yield* buildMcpServer({
-              ...resourceConfig.config,
-              artifactsEnabled: readArtifactsEnabled(request),
-              appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
-              requestStateSigningKey: signingKey(),
-              requestStatePrincipal: "local",
-              ...(requestStateBinding === null ? {} : { requestStateBinding }),
-            });
-            if (resourceConfig.close) {
-              const closeServer = server.close.bind(server);
-              const closeConfig = resourceConfig.close;
-              let closed = false;
-              server.close = async () => {
-                if (closed) return;
-                closed = true;
-                await ignoreClose(closeServer);
-                await ignoreClose(closeConfig);
-              };
-            }
-            return server;
-          }),
-        );
-      },
-      { legacy: "reject" },
-    );
-    modernHandlers.set(key, handler);
-    return handler;
-  };
-
   return {
     handleRequest: async (request) => {
       const resource = resourceFromRequest(request);
       if (!resource) return jsonError(404, -32001, "MCP resource not found");
-      if (!(await isLegacyRequest(request))) {
-        if (handlerConfig.modernEnabled === false) {
-          return mcpModernDisabledResponse({ cors: false });
-        }
-        const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
-        modernRequestBodies.set(request, parsedBody);
-        return modernHandlerFor(resource).fetch(request, { parsedBody });
-      }
       const sessionId = request.headers.get("mcp-session-id");
 
       if (sessionId) {
@@ -295,14 +217,11 @@ export const createMcpRequestHandler = (
         const elicitationMode = readElicitationMode(request);
         resourceConfig = await configForResource(resource);
         created = await Effect.runPromise(
-          buildMcpServer({
+          createExecutorMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
-            appsEnabled: resourceConfig.config.restoredAppsEnabled ?? false,
-            requestStateSigningKey: signingKey(),
-            requestStatePrincipal: "local",
-            sessionful: true,
+            searchToolsEnabled: readSearchToolsEnabled(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {
@@ -366,10 +285,7 @@ export const createMcpRequestHandler = (
 
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
-      await Promise.all([
-        ...[...ids].map((id) => dispose(id, { transport: true, server: true })),
-        ...[...modernHandlers.values()].map((handler) => handler.close()),
-      ]);
+      await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };
 };
@@ -378,21 +294,11 @@ export const createMcpRequestHandler = (
 // Stdio transport
 // ---------------------------------------------------------------------------
 
-export const runMcpStdioServer = async (config: ExecutorMcpToolConfig): Promise<void> => {
+export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
-  const requestStateSigningKey = crypto.getRandomValues(new Uint8Array(32));
-  const stdio = serveStdio(() =>
-    Effect.runPromise(
-      buildMcpServer({
-        ...config,
-        appsEnabled: config.restoredAppsEnabled ?? false,
-        requestStateSigningKey,
-        requestStatePrincipal: "local",
-        sessionful: true,
-      }),
-    ),
-  );
+  const server = await Effect.runPromise(createExecutorMcpServer(config));
+  const transport = new StdioServerTransport();
 
   const waitForExit = () =>
     new Promise<void>((resolve) => {
@@ -411,8 +317,10 @@ export const runMcpStdioServer = async (config: ExecutorMcpToolConfig): Promise<
 
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: stdio server lifetime uses Promise-based SDK/process APIs and always closes resources
   try {
+    await server.connect(transport);
     await waitForExit();
   } finally {
-    await ignoreClose(() => stdio.close());
+    await ignoreClose(() => transport.close());
+    await ignoreClose(() => server.close());
   }
 };

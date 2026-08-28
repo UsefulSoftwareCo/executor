@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Data, Effect } from "effect";
-import { Client } from "@modelcontextprotocol/client";
-import { InMemoryTransport, type ClientCapabilities } from "@modelcontextprotocol/server";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type * as Cause from "effect/Cause";
 
 import {
@@ -16,8 +18,7 @@ import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 import type { BindableConnection } from "./artifact-bindings";
 import { readArtifactsEnabled } from "./browser-approval";
 import { MCP_APPS_SHELL_RESOURCE_URI, artifactUrlFor } from "./create-artifact";
-import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "./mcp-apps";
-import { buildMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
+import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
 
 /** The caller's connection inventory, as `create-artifact` sees it when it
  *  binds an artifact's integration roles. */
@@ -53,6 +54,8 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed("test executor"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 });
 
 /**
@@ -129,14 +132,6 @@ const makeArtifactStore = () => {
   };
 };
 
-const TEST_REQUEST_STATE_KEY = new Uint8Array(32).fill(11);
-const SESSION_SERVER_OPTIONS = {
-  appsEnabled: false,
-  requestStateSigningKey: TEST_REQUEST_STATE_KEY,
-  requestStatePrincipal: "artifact-test-principal",
-  sessionful: true,
-} as const;
-
 const withClient = async <E extends Cause.YieldableError>(
   engine: ExecutionEngine<E>,
   capabilities: ClientCapabilities,
@@ -144,9 +139,8 @@ const withClient = async <E extends Cause.YieldableError>(
   config?: Partial<ExecutorMcpServerConfig<E>>,
 ) => {
   const mcpServer = await Effect.runPromise(
-    buildMcpServer({
+    createExecutorMcpServer({
       engine,
-      ...SESSION_SERVER_OPTIONS,
       loadAppShellHtml: () => Promise.resolve(SHELL_HTML),
       // Artifacts are on by default and nearly every test in this file
       // exercises the artifact surface; spelled out here anyway so the cases
@@ -172,10 +166,13 @@ const withClient = async <E extends Cause.YieldableError>(
 
 const SHELL_HTML = "<!doctype html><html><body><div id='root'></div></body></html>";
 
-// What a client that renders MCP Apps advertises at `initialize`.
+// What a client that renders MCP Apps advertises at `initialize`. The SDK's
+// `ClientCapabilities` has no `extensions` field yet (pending SEP-1724), which
+// is exactly why ext-apps ships `getUiCapability` to read it.
+// oxlint-disable-next-line executor/no-double-cast -- boundary: MCP SDK ClientCapabilities predates the ext-apps `extensions` field
 const APPS_CAPS = {
   extensions: { [EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } },
-} satisfies ClientCapabilities;
+} as unknown as ClientCapabilities;
 
 const NO_APPS_CAPS: ClientCapabilities = {};
 
@@ -249,9 +246,8 @@ describe("MCP host — artifact tool visibility", () => {
   it("keeps the app-only tools visible on a cold restore that replays no initialize", async () => {
     const store = makeArtifactStore();
     const mcpServer = await Effect.runPromise(
-      buildMcpServer({
+      createExecutorMcpServer({
         engine: makeStubEngine({}),
-        ...SESSION_SERVER_OPTIONS,
         artifacts: store.port,
         artifactsEnabled: true,
         loadAppShellHtml: () => Promise.resolve(SHELL_HTML),
@@ -313,9 +309,8 @@ describe("MCP host — artifact tool visibility", () => {
   it("renders inline on a restore that replays initialize without the initialized notification", async () => {
     const store = makeArtifactStore();
     const mcpServer = await Effect.runPromise(
-      buildMcpServer({
+      createExecutorMcpServer({
         engine: makeStubEngine({}),
-        ...SESSION_SERVER_OPTIONS,
         artifacts: store.port,
         artifactsEnabled: true,
         loadAppShellHtml: () => Promise.resolve(SHELL_HTML),
@@ -467,9 +462,8 @@ describe("MCP host — artifact tool visibility", () => {
   it("registers no ui tools at all when no shell loader is configured", async () => {
     const store = makeArtifactStore();
     const mcpServer = await Effect.runPromise(
-      buildMcpServer({
+      createExecutorMcpServer({
         engine: makeStubEngine({}),
-        ...SESSION_SERVER_OPTIONS,
         artifacts: store.port,
         // Opted in, so the only thing withholding the surface is the missing
         // shell loader — otherwise this would pass on the connection default.
@@ -1311,7 +1305,7 @@ describe("MCP host — artifact retrieval", () => {
 
         await client.callTool({
           name: "create-artifact",
-          arguments: { code: COUNTER_CODE, title: "Revised dashboard", artifactId: "art_1" },
+          arguments: { code: COUNTER_CODE, title: "Dashboard v2", artifactId: "art_1" },
         });
         expect(usage).toEqual(["created", "updated"]);
 

@@ -14,6 +14,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -77,7 +78,7 @@ scenario(
           const confirm = page.getByRole("alertdialog");
 
           await step("Open the integration's connections", async () => {
-            await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+            await visit(page, `/integrations/${slug}`);
             await row.waitFor();
           });
 

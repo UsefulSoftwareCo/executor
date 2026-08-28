@@ -60,6 +60,13 @@ declare global {
       // number to drive the backstop. Production leaves it unset.
       EXECUTION_RATE_LIMIT_PER_HOUR?: string;
 
+      // Optional override for the counter DO's check budget in milliseconds
+      // (defaults to RATE_LIMIT_CHECK_TIMEOUT_MS = 2000 when unset or
+      // unparseable). Same purpose as the cap override: the production budget
+      // can't be blown on demand, so tests set a tiny one to exercise the
+      // fail-open path. Production leaves it unset.
+      EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS?: string;
+
       // First-party OAuth apps (executor-owned provider registrations). Each
       // pair enables one-click connect through `first-party:<provider>`; an
       // unset pair simply ships no first-party app for that provider. The
@@ -91,10 +98,6 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
-      /** HMAC key for MCP 2026-07-28 continuation state (32+ byte secret). */
-      MCP_REQUEST_STATE_KEY?: string;
-      /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
-      MCP_2026_07_28_ENABLED?: string;
       NODE_ENV?: string;
 
       // Shared with frontend

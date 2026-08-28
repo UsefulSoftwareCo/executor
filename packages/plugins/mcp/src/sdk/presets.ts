@@ -134,8 +134,11 @@ export const mcpPresets: readonly McpPreset[] = [
     id: "cloudflare",
     name: "Cloudflare",
     summary: "Workers, KV, D1, R2, and DNS management via MCP.",
-    url: "https://mcp.cloudflare.com/mcp",
-    endpoint: "https://mcp.cloudflare.com/mcp",
+    // `codemode=false` opts out of Cloudflare's code mode, which replaces the
+    // tool catalog with a single code-execution tool. Executor is already a
+    // code-execution surface, so nesting it would hide every real tool.
+    url: "https://mcp.cloudflare.com/mcp?codemode=false",
+    endpoint: "https://mcp.cloudflare.com/mcp?codemode=false",
     icon: "https://integrations.sh/logo/cloudflare.com",
   },
   {

@@ -1,84 +1,49 @@
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
-import { Effect, Layer, Predicate } from "effect";
+import { Effect, Predicate } from "effect";
 
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  mcpModernDisabledResponse,
   defaultMcpResource,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
-  type McpModernServerBuilder,
   type McpResource,
 } from "@executor-js/host-mcp";
-import { requestBodyFromRequest } from "@executor-js/host-mcp/tool-server";
 import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
-  withMcpResponseHeaders,
-  withPropagationHeaders,
+  readSearchToolsEnabled,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
 import {
-  classifyMcpProtocolEra,
-  makeMcpModernRequestRouter,
-  mcpCorsPreflightResponse,
-  requireMcpRequestStateKey,
-} from "@executor-js/cloudflare/mcp/modern-request-router";
-import { mcpExecutionOwnerDirectoryFromNamespace } from "@executor-js/cloudflare/mcp/execution-owner-directory";
-import { createMcpSessionStub, mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+  classifyDurableObjectError,
+  durableObjectFailureResponse,
+  type DurableObjectFailure,
+} from "@executor-js/cloudflare/mcp/durable-object-errors";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
+import { isMcpSessionMetaUnavailable } from "./session-meta";
+import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
 
-const DEAD_SESSION_CACHE_TTL_MS = 5 * 60 * 1_000;
-const DEAD_SESSION_CACHE_MAX_ENTRIES = 4_096;
-const deadSessionExpiries = new Map<string, number>();
-const timedOutSessionIds = new Set<string>();
+const MCP_SESSION_UNAVAILABLE_MESSAGE = "Session storage temporarily unavailable - please retry";
 
-type DeadSessionReason = "not_found" | "timed_out";
-
-const isDeadSessionCached = (sessionId: string, now = Date.now()): boolean => {
-  const expiry = deadSessionExpiries.get(sessionId);
-  if (expiry === undefined) return false;
-  if (expiry > now) return true;
-  deadSessionExpiries.delete(sessionId);
-  timedOutSessionIds.delete(sessionId);
-  return false;
-};
-
-const cacheDeadSession = (sessionId: string, reason: DeadSessionReason, now = Date.now()): void => {
-  deadSessionExpiries.delete(sessionId);
-  if (deadSessionExpiries.size >= DEAD_SESSION_CACHE_MAX_ENTRIES) {
-    const oldestSessionId = deadSessionExpiries.keys().next().value;
-    if (oldestSessionId !== undefined) {
-      deadSessionExpiries.delete(oldestSessionId);
-      timedOutSessionIds.delete(oldestSessionId);
-    }
-  }
-  deadSessionExpiries.set(sessionId, now + DEAD_SESSION_CACHE_TTL_MS);
-  if (reason === "timed_out") timedOutSessionIds.add(sessionId);
-  else timedOutSessionIds.delete(sessionId);
-};
-
-const cachedDeadSessionMessage = (sessionId: string): string =>
-  timedOutSessionIds.has(sessionId) ? "Session timed out, please reconnect" : "Session not found";
-
-/** Test-only access to reset and verify the isolate-local dead-session cache. */
-export const cloudDeadSessionCacheForTest = {
-  clear: (): void => {
-    deadSessionExpiries.clear();
-    timedOutSessionIds.clear();
-  },
-  remember: (sessionId: string, now?: number): void =>
-    cacheDeadSession(sessionId, "not_found", now),
-  has: isDeadSessionCached,
-  size: (): number => deadSessionExpiries.size,
-};
+const corsPreflightResponse = (): Response =>
+  new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+      "access-control-allow-headers":
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
+    },
+  });
 
 const jsonRpcResponse = (
   status: number,
@@ -89,25 +54,6 @@ const jsonRpcResponse = (
   challenge === undefined
     ? jsonRpcErrorBody(status, code, message)
     : jsonRpcErrorBody(status, code, message, { challenge });
-
-/**
- * A dead session id answers by request method. POST/DELETE keep the 404 that
- * tells a compliant client to re-initialize. A standalone GET gets 405: the
- * v1 SDK treats that as "no SSE stream offered" and stops retrying quietly,
- * which breaks the reconnect loops of pre-cutover always-on deployments —
- * their GET-404 path never re-initialized, it just retried forever.
- */
-const deadSessionResponse = (method: string, message: string): Response =>
-  method === "GET"
-    ? new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message }, id: null }), {
-        status: 405,
-        headers: {
-          "content-type": "application/json",
-          allow: "POST, DELETE",
-          "access-control-allow-origin": "*",
-        },
-      })
-    : jsonRpcResponse(404, -32001, message);
 
 const renderAuthError = (
   auth: McpAuthProvider["Service"],
@@ -142,14 +88,49 @@ const renderAuthError = (
   });
 };
 
-const authenticate = (request: Request, authProvider: Layer.Layer<McpAuthProvider>) =>
+/**
+ * A Cloudflare *platform* Durable Object failure happened at one of this
+ * handler's stub touchpoints. Record what kind it was — on an exported span and
+ * in a structured log — so the production volume stays countable per cause
+ * (deploy reset vs storage timeout vs destroyed session) now that it is no
+ * longer a pile of 500s.
+ *
+ * Talking to a session DO means talking to a process the platform can reset out
+ * from under us: a deploy, a storage timeout, a backend blip, the session's own
+ * `ctx.abort("destroyed")`. None of those are application defects. An
+ * unrecognized failure never reaches here and keeps escaping as before.
+ */
+const recordDurableObjectFailure = (
+  failure: DurableObjectFailure,
+  operation: string,
+): Effect.Effect<void> =>
+  Effect.sync(() => {
+    console.warn(
+      JSON.stringify({
+        event: "mcp_durable_object_platform_failure",
+        operation,
+        resetKind: failure.kind,
+        disposition: failure.disposition,
+      }),
+    );
+  }).pipe(
+    Effect.withSpan("mcp.do.platform_failure", {
+      attributes: {
+        "mcp.do.reset_kind": failure.kind,
+        "mcp.do.reset_disposition": failure.disposition,
+        "mcp.do.reset_operation": operation,
+      },
+    }),
+  );
+
+const authenticate = (request: Request) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(authProvider));
+  }).pipe(Effect.provide(cloudMcpAuth));
 
-// The earlier shared envelope ran the MCP auth path inside the Effect app, whose
+// The pre-Agents envelope ran the MCP auth path inside the Effect app, whose
 // HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
 // span (client fingerprint, rpc method, auth outcome) exported from. This
 // handler dispatches from the raw worker entry instead, so a bare
@@ -170,21 +151,6 @@ const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> =
     ),
   );
 };
-
-type TraceCloudMcpRequest = (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  handle: (tracedRequest: Request) => Promise<Response>,
-) => Promise<Response>;
-
-interface CloudMcpAgentHandlerOptions {
-  readonly makeModernServerBuilder: (
-    session: McpSessionProps["session"],
-  ) => McpModernServerBuilder["Service"];
-  readonly authProvider?: Layer.Layer<McpAuthProvider>;
-  readonly traceRequest?: TraceCloudMcpRequest;
-}
 
 // The MCP resource the request targets. `server.ts` routes both the bare `/mcp`
 // and `/mcp/toolkits/<slug>` to this handler (`prepareMcpOrgScope` strips the org
@@ -208,9 +174,17 @@ const propsForPrincipal = (
     return {
       session: {
         organizationId: principal.organizationId,
+        // The org record the live membership check resolved microseconds ago,
+        // handed to the session DO so it never opens a connection of its own to
+        // re-read it. An unnamed org (no auth plane could resolve one) is
+        // omitted rather than sent empty, so the DO can tell "not carried" from
+        // "carried, and blank".
+        ...(principal.organizationName ? { organizationName: principal.organizationName } : {}),
+        ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
+        searchToolsEnabled: readSearchToolsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },
@@ -218,25 +192,36 @@ const propsForPrincipal = (
     };
   });
 
-/** Build the cloud worker's authenticated legacy/modern MCP request handler. */
-export const makeCloudMcpAgentHandler = (options: CloudMcpAgentHandlerOptions) => {
-  const authProvider = options.authProvider ?? cloudMcpAuth;
-  const traceRequest = options.traceRequest ?? ((request, _env, _ctx, handle) => handle(request));
-  const modern = makeMcpModernRequestRouter();
+export const makeCloudMcpAgentHandler = () => {
+  const serveOptions = {
+    binding: "MCP_SESSION",
+    transport: "streamable-http",
+  } as const;
+  // The agents SDK builds an exact-match `URLPattern` from the path handed to
+  // `serve` (see `createStreamingHttpHandler` in `agents/dist/mcp/index.js`) —
+  // a single `/mcp` handler never matches `/mcp/toolkits/<slug>` and falls
+  // through to its own internal 404. A second `serve` mounted on the
+  // parameterized path picks it up (`URLPattern` supports `:slug` segments);
+  // the auth/ownership/props logic above is unchanged and shared, only the
+  // final dispatch target differs.
+  const serve = McpSessionDOSqlite.serve("/mcp", serveOptions);
+  const serveToolkit = McpSessionDOSqlite.serve("/mcp/toolkits/:slug", serveOptions);
+
   const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
-  const handle = async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
-    if (request.method === "OPTIONS") {
-      return mcpCorsPreflightResponse(request.headers.get("access-control-request-headers"));
-    }
-    // Preserve the old envelope's JSON-RPC 405 before authenticating, so
-    // unsupported methods never reach the session engine.
+  return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
+    if (request.method === "OPTIONS") return corsPreflightResponse();
+    // The old envelope (packages/hosts/mcp/src/envelope.ts) answered anything
+    // outside GET/POST/DELETE/OPTIONS with a JSON-RPC 405; the agents SDK
+    // handler only understands its own transport verbs and falls through to
+    // a bare 404. Reject before authenticating so PUT/PATCH/etc never reach
+    // the session engine.
     if (!ALLOWED_METHODS.has(request.method)) {
       return jsonRpcResponse(405, -32001, "Method not allowed");
     }
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await runTraced(request, authenticate(request, authProvider));
+    const { auth, outcome } = await runTraced(request, authenticate(request));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       // Destroying a live session on auth grounds requires a POSITIVE
       // determination that access is genuinely gone — only `Forbidden` carries
@@ -244,47 +229,15 @@ export const makeCloudMcpAgentHandler = (options: CloudMcpAgentHandlerOptions) =
       // / JWKS failure) and `Unauthorized` (retry with a fresh token) must leave
       // the session intact, so the condemn path is gated on `Forbidden` alone.
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
-        const session = mcpSessionStub(env.MCP_SESSION, sessionId);
         await Effect.runPromise(
           Effect.ignore(
-            session ? Effect.tryPromise(() => session._cf_scheduleDestroy()) : Effect.void,
+            Effect.tryPromise(() =>
+              mcpSessionStub(env.MCP_SESSION, sessionId)._cf_scheduleDestroy(),
+            ),
           ),
         );
       }
       return renderAuthError(auth, request, outcome);
-    }
-
-    const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
-    const era = await classifyMcpProtocolEra(request, parsedBody);
-    if (era === "modern") {
-      if (env.MCP_2026_07_28_ENABLED === "false") {
-        return mcpModernDisabledResponse();
-      }
-      const resource = resourceFromPath(request);
-      const props = await runTraced(
-        request,
-        propsForPrincipal(request, outcome.principal, resource),
-      );
-      (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-      const forwarded = withVerifiedIdentityHeaders(
-        request,
-        {
-          accountId: outcome.principal.accountId,
-          organizationId: outcome.principal.organizationId,
-        },
-        resource,
-      );
-      return modern.fetch({
-        request: forwarded,
-        parsedBody,
-        principal: outcome.principal,
-        resource,
-        props,
-        requestStateSigningKey: requireMcpRequestStateKey(env.MCP_REQUEST_STATE_KEY),
-        builder: options.makeModernServerBuilder(props.session),
-        sessions: env.MCP_SESSION,
-        executionOwners: mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER),
-      });
     }
 
     if (!sessionId && request.method === "DELETE") {
@@ -297,25 +250,36 @@ export const makeCloudMcpAgentHandler = (options: CloudMcpAgentHandlerOptions) =
       });
     }
 
-    const existingSession = sessionId ? mcpSessionStub(env.MCP_SESSION, sessionId) : null;
-    if (sessionId && !existingSession) {
-      return deadSessionResponse(request.method, "Session not found");
-    }
-    if (existingSession && sessionId) {
-      const owner = await existingSession.validateMcpSessionOwner({
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      });
+    if (sessionId) {
+      let owner: "ok" | "not_found" | "forbidden" | "terminated";
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a Durable Object stub RPC rejects with a plain platform Error, never a typed failure
+      try {
+        owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        });
+      } catch (error) {
+        // The sibling stub touchpoints in this handler are both guarded — the
+        // `_cf_scheduleDestroy` call above with `Effect.ignore`, the
+        // `target.fetch` below with a catch — and this one was not, so a session
+        // whose DO had been destroyed or reset by the platform 500ed here before
+        // any of that handling could run.
+        const failure = classifyDurableObjectError(error);
+        if (!failure) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: an unrecognized failure is a real defect and must reach the runtime unchanged
+          throw error;
+        }
+        await runTraced(request, recordDurableObjectFailure(failure, "validate_session_owner"));
+        return durableObjectFailureResponse(failure);
+      }
       if (owner === "not_found") {
-        cacheDeadSession(sessionId, "not_found");
-        return deadSessionResponse(request.method, "Session not found");
+        return jsonRpcResponse(404, -32001, "Session not found");
       }
       if (owner === "terminated") {
         // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
         // yet. Same envelope as the post-destroy race below: the client must
         // treat the id as dead and reconnect.
-        cacheDeadSession(sessionId, "timed_out");
-        return deadSessionResponse(request.method, "Session timed out, please reconnect");
+        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
       }
       if (owner === "forbidden") {
         return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
@@ -323,56 +287,65 @@ export const makeCloudMcpAgentHandler = (options: CloudMcpAgentHandlerOptions) =
     }
 
     const resource = resourceFromPath(request);
-    const propagation = await runTraced(request, currentPropagationHeaders(request));
-    const forwarded = withPropagationHeaders(
-      withVerifiedIdentityHeaders(
-        request,
-        {
-          accountId: outcome.principal.accountId,
-          organizationId: outcome.principal.organizationId,
-        },
-        resource,
-      ),
-      propagation,
+    const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
+    (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
+    const forwarded = withVerifiedIdentityHeaders(
+      request,
+      {
+        accountId: outcome.principal.accountId,
+        organizationId: outcome.principal.organizationId,
+      },
+      resource,
     );
-    const target = existingSession ?? createMcpSessionStub(env.MCP_SESSION).stub;
+    const target = resource.kind === "toolkit" ? serveToolkit : serve;
     let response: Response;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a condemned DO abort can reject its direct fetch
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the agents SDK aborts the isolate (throws) instead of returning a response for a condemned session
     try {
-      response = await target.fetch(forwarded);
+      response = await target.fetch(forwarded, env, ctx);
     } catch (error) {
       // `_cf_scheduleDestroy` (called above via DELETE) marks the DO
-      // condemned and schedules its alarm; the alarm's storage wipe then
+      // condemned and schedules its alarm; the alarm's `destroy()` then
       // `ctx.abort("destroyed")`s the isolate. A request that lands after the
       // alarm has already fired — same DO, same tick budget as the DELETE in
-      // tests — throws that abort reason out of `stub.fetch` instead of the
+      // tests — throws that abort reason out of `serve.fetch` instead of the
       // DO ever getting to answer. Map it to the old envelope's reconnect
       // error for a dead session (e2e/cloud/mcp-protocol.test.ts expects the
       // client to be told to reconnect, matching a timed-out session).
-      // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message IS the signal
-      if (Predicate.isError(error) && error.message === "destroyed") {
-        if (sessionId) cacheDeadSession(sessionId, "timed_out");
-        return deadSessionResponse(request.method, "Session timed out, please reconnect");
+      //
+      // The same catch now also covers the rest of the platform's reset
+      // vocabulary — a deploy, a storage timeout, a cancelled
+      // blockConcurrencyWhile — which reaches here through the agents SDK's own
+      // `getServerByName` retry and used to 500 identically.
+      // The session DO could not reach the organization directory to name the
+      // org (after its own bounded retry). Transient by construction, so it
+      // gets the same retryable envelope a WorkOS blip gets on the auth path —
+      // not an unclassified 500 the agents SDK then retries the whole DO
+      // operation over, which is what turned a 10s connect timeout into a
+      // half-minute client hang.
+      //
+      // Checked BEFORE the platform classifier: this is an application failure
+      // that merely escapes through the same seam, and it names its own cause.
+      // The classifier only recognizes the runtime's own reset vocabulary, so
+      // the two never contend — the order just keeps it that way if either
+      // vocabulary grows.
+      if (isMcpSessionMetaUnavailable(error)) {
+        return jsonRpcErrorBody(503, -32001, MCP_SESSION_UNAVAILABLE_MESSAGE, {
+          retryAfterSeconds: UNAVAILABLE_RETRY_AFTER_SECONDS,
+        });
       }
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
-      throw error;
+      const failure = classifyDurableObjectError(error);
+      if (!failure) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't a recognized platform failure to the Workers runtime unchanged
+        throw error;
+      }
+      await runTraced(request, recordDurableObjectFailure(failure, "session_fetch"));
+      return durableObjectFailureResponse(failure);
     }
-    return withMcpResponseHeaders(wrapMcpSseResponse(request, env, response));
-  };
-
-  return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
-    const sessionId = request.headers.get("mcp-session-id");
-    const cacheEligible = request.method !== "OPTIONS" && ALLOWED_METHODS.has(request.method);
-    if (cacheEligible && sessionId && isDeadSessionCached(sessionId)) {
-      return Effect.runPromise(
-        Effect.gen(function* () {
-          const { auth, outcome } = yield* authenticate(request, authProvider);
-          return Predicate.isTagged(outcome, "Authenticated")
-            ? deadSessionResponse(request.method, cachedDeadSessionMessage(sessionId))
-            : renderAuthError(auth, request, outcome);
-        }).pipe(Effect.withTracerEnabled(false)),
-      );
+    // The agents SDK answers a bare DELETE with 204; the old envelope's
+    // contract (see above) was 200 — rewrite for consistency.
+    if (request.method === "DELETE" && response.status === 204) {
+      return new Response(null, { status: 200, headers: response.headers });
     }
-    return traceRequest(request, env, ctx, (tracedRequest) => handle(tracedRequest, env, ctx));
+    return wrapMcpSseResponse(request, env, response);
   };
 };

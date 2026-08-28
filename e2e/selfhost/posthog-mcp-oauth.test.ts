@@ -22,6 +22,7 @@ import { OAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
@@ -48,7 +49,7 @@ scenario(
           await step("Open the add-MCP flow pointed at the OAuth server", async () => {
             const addUrl = new URL("/integrations/add/mcp", target.baseUrl);
             addUrl.searchParams.set("url", server.endpoint);
-            await page.goto(addUrl.toString(), { waitUntil: "networkidle" });
+            await visit(page, addUrl.toString());
             await page.getByText("How does this server authenticate?").waitFor({ timeout: 30_000 });
             await page.getByText("Method 1 · Detected").waitFor();
             await page.getByText("OAuth metadata is discovered from this server").waitFor();

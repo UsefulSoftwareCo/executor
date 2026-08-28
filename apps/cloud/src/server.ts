@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { SpanKind, SpanStatusCode, context, trace, type SpanContext } from "@opentelemetry/api";
-import type { ErrorEvent } from "@sentry/cloudflare";
 import {
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_RESPONSE_STATUS_CODE,
@@ -11,18 +10,15 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
-import { isAppOwnedPath } from "./app-paths";
+import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
+import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import {
-  makeCloudModernMcpServerBuilder,
-  McpSessionDOSqlite as McpSessionDOBase,
-} from "./mcp/session-durable-object";
-import {
-  beforeSendWithOtelCorrelation,
+  cloudSentryOptions,
   captureCause,
   otelCorrelationContextFromOpenTelemetrySpan,
   SENTRY_EVENT_ID_ATTRIBUTE,
@@ -32,28 +28,6 @@ import { browserTracesResponse } from "./observability/browser-traces";
 import { flushTracerProvider, installTracerProvider } from "./observability/telemetry";
 
 // ---------------------------------------------------------------------------
-// Sentry config
-// ---------------------------------------------------------------------------
-
-const sentryOptions = (env: Env) => ({
-  dsn: env.SENTRY_DSN,
-  tracesSampleRate: 0,
-  enableLogs: true,
-  sendDefaultPii: true,
-  skipOpenTelemetrySetup: true,
-  beforeSend: (event: ErrorEvent) =>
-    beforeSendWithOtelCorrelation(event, {
-      logPayload: !env.SENTRY_DSN || env.SENTRY_OTEL_LOG_PAYLOAD === "true",
-    }),
-  // NOTE: do NOT enable `instrumentPrototypeMethods`. It walks the DO prototype
-  // and reads every property — including accessors — to find methods to wrap,
-  // which invokes the `sessionId` getter with `this` bound to the prototype
-  // (where `ctx` is undefined) and throws during construction, 500ing every
-  // session create / cold restore. The DO captures its own errors via the
-  // `captureCause` seam (→ Sentry) instead.
-});
-
-// ---------------------------------------------------------------------------
 // Durable Object — wrapped with Sentry so DO errors land in Sentry (inits the
 // client inside the DO isolate, which plain `Sentry.captureException` cannot
 // do on its own). OTEL is installed through Effect layers (observability/telemetry),
@@ -61,7 +35,7 @@ const sentryOptions = (env: Env) => ({
 // ---------------------------------------------------------------------------
 
 export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
-  sentryOptions,
+  cloudSentryOptions,
   McpSessionDOBase,
 );
 
@@ -103,11 +77,25 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const fetchHandler = handler.fetch as (
+const rawFetchHandler = handler.fetch as (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
+
+/**
+ * Every entry into TanStack Start goes through here so `startGraphEntered`
+ * reflects whether this isolate has already paid the lazy `loadEntries`
+ * import — the cost that dominates a cold page request.
+ */
+const fetchHandler = (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Response | Promise<Response> => {
+  markStartGraphEntered();
+  return rawFetchHandler(request, env, ctx);
+};
 
 const tracer = trace.getTracer("executor-cloud-worker");
 
@@ -173,13 +161,106 @@ const traceCloudMcpRequest = async (
   );
 };
 
-const mcpAgentHandler = makeCloudMcpAgentHandler({
-  makeModernServerBuilder: makeCloudModernMcpServerBuilder,
-  traceRequest: traceCloudMcpRequest,
-});
+const mcpAgentHandler = makeCloudMcpAgentHandler();
+
+// ---------------------------------------------------------------------------
+// Isolate lifecycle signals
+// ---------------------------------------------------------------------------
+//
+// The Aug 2026 page-latency hunt kept stalling on one blind spot: every span we
+// emit starts INSIDE the fetch handler, so nothing could distinguish "this
+// isolate is cold and paying Start's lazy `loadEntries` import" from "this
+// isolate came up slowly before our code ran at all". Both look like one slow
+// span. These three attributes make the distinction queryable:
+//
+//   executor.isolate.request_seq  - 1 means this request is the isolate's
+//                                   first; page requests measured 1.04 per
+//                                   isolate, which is why nearly every one
+//                                   pays the cold cost.
+//   executor.start_graph.entered  - whether anything had already driven
+//                                   TanStack Start in this isolate. /mcp and
+//                                   the passthrough proxies return before
+//                                   `fetchHandler`, so an isolate can serve
+//                                   plenty of traffic and still be cold here.
+// Measured with a temporary entry-lag probe correlated against `wrangler tail`
+// event timestamps: a cold isolate (`request_seq` 1) spends **840-1844ms**
+// coming up before our first line runs, while a reused one spends **0-2ms**.
+// That startup is invisible to every span we emit, and it sits on top of the
+// ~3.1s `loadEntries` import — together the 3-5s a signed-in page costs.
+//
+//   executor.isolate.id           - identifies the isolate itself, so reuse can
+//                                   be counted directly instead of inferred.
+//   executor.isolate.age_ms       - ms since this isolate served its first
+//                                   request.
+//
+// The last two exist because the Aug 2026 hunt inferred "isolates stopped being
+// reused" from a latency cutoff (requests slower than 1s were called cold) and
+// then built a size-based theory on top of that proxy. The theory was wrong:
+// reverting the offending packages restored production while moving the
+// evaluated module closure by 0.02 MB (see scripts/start-closure.mjs). Grouping
+// by isolate id answers "how many requests did this isolate serve, and were the
+// slow ones its first?" directly, which no latency threshold can.
+//
+// All of it is cheap: two increments, one lazy uuid, and no I/O.
+let isolateRequestSeq = 0;
+let startGraphEntered = false;
+// Minted on first request rather than at module scope: Workers reject random
+// number generation during global-scope evaluation.
+let isolateId: string | undefined;
+let isolateFirstSeenAt = 0;
+
+const identifyIsolate = (): { readonly id: string; readonly ageMs: number } => {
+  if (isolateId === undefined) {
+    isolateId = crypto.randomUUID();
+    isolateFirstSeenAt = Date.now();
+  }
+  return { id: isolateId, ageMs: Date.now() - isolateFirstSeenAt };
+};
+
+const markStartGraphEntered = (): void => {
+  startGraphEntered = true;
+};
+
+// ---------------------------------------------------------------------------
+// Serving `/api/*` without entering TanStack Start.
+// ---------------------------------------------------------------------------
+//
+// Everything under `/api` is the Effect app (`ExecutorApp.make`'s web handler)
+// and uses no part of the router, React, or SSR. But it was dispatched from a
+// Start *request middleware*, so reaching it meant paying Start's lazy
+// `loadEntries` import of the whole server graph first. Measured on production
+// 2026-08-19, splitting `/api/*` by whether the isolate had already loaded that
+// graph: warm p50 **186ms**, cold p50 **2129ms**, with 28% of API requests cold.
+// The dashboard fires many `/api/*` calls in parallel and waits for the slowest,
+// so that cold tail is what the app actually feels like.
+//
+// So `/api` joins marketing, `/docs`, the PostHog proxy and `/mcp` at the Worker
+// entry: classify and dispatch before anything touches Start. The evaluated
+// closure for an API request drops from the full Start graph to the Worker's own
+// (see `scripts/start-closure.mjs`).
+//
+// `servedByAppPlane` (./app-paths) decides which paths qualify — two under
+// `/api` are claimed by Start's middleware first and must keep their old route.
+
+// Instantiated on the first request that needs it and memoized per isolate,
+// mirroring `start.ts`'s `getApp`. The import stays dynamic so an isolate that
+// only serves pages or proxies never evaluates the app graph at all.
+let appPlane: ReturnType<typeof import("./app").cloudApiHandler> | undefined;
+let appGraphEntered = false;
+
+const getAppPlane = async (): Promise<NonNullable<typeof appPlane>> => {
+  if (appPlane === undefined) {
+    const { cloudApiHandler } = await import("./app");
+    appPlane = cloudApiHandler();
+    appGraphEntered = true;
+  }
+  return appPlane;
+};
 
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
+    isolateRequestSeq += 1;
+
     // Public pages must not enter TanStack Start: its first-request dynamic
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
@@ -215,7 +296,14 @@ const cloudflareHandler: ExportedHandler<Env> = {
       // to pass authenticated session props into the hibernatable DO.
       // Discovery docs still flow through the app-level MCP envelope.
       const forwarded = prepareMcpOrgScope(request);
-      return mcpAgentHandler(forwarded, env, ctx);
+      // /mcp leaves the Effect app for the Agents bridge, so no downstream
+      // HttpMiddleware.tracer opens the request envelope — this worker span is
+      // THE `http.server` span for MCP traffic, and its context is stamped onto
+      // the forwarded traceparent so the agent handler and session DO parent
+      // under it instead of exporting orphaned roots.
+      return traceCloudMcpRequest(forwarded, env, ctx, (tracedRequest) =>
+        Promise.resolve(mcpAgentHandler(tracedRequest, env, ctx)),
+      );
     }
     const tracingInstalled = installTracerProvider();
     // Join the caller's W3C trace when the request carries one — the web UI
@@ -250,13 +338,24 @@ const cloudflareHandler: ExportedHandler<Env> = {
         async (span) => {
           span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
           span.setAttribute(ATTR_URL_PATH, url.pathname);
+          const isolate = identifyIsolate();
+          span.setAttribute("executor.isolate.request_seq", isolateRequestSeq);
+          span.setAttribute("executor.start_graph.entered", startGraphEntered);
+          span.setAttribute("executor.isolate.id", isolate.id);
+          span.setAttribute("executor.isolate.age_ms", isolate.ageMs);
+          // Which plane served this: "app" skipped the Start graph entirely, so
+          // `start_graph.entered` says nothing about it. `app_graph.entered`
+          // is the app-plane analogue - false means this request paid for the
+          // Effect graph's first evaluation in this isolate.
+          const appPlaneRequest = servedByAppPlane(url.pathname, request.method);
+          span.setAttribute("executor.dispatch.plane", appPlaneRequest ? "app" : "start");
+          if (appPlaneRequest) span.setAttribute("executor.app_graph.entered", appGraphEntered);
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
           try {
-            const response = await fetchHandler(
-              withTraceparent(request, span.spanContext()),
-              env,
-              ctx,
-            );
+            const traced = withTraceparent(request, span.spanContext());
+            const response = appPlaneRequest
+              ? await (await getAppPlane()).handler(prepareMcpOrgScope(traced))
+              : await fetchHandler(traced, env, ctx);
             span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
             return response;
           } catch (err) {
@@ -336,4 +435,4 @@ const cloudflareHandler: ExportedHandler<Env> = {
   },
 };
 
-export default Sentry.withSentry(sentryOptions, cloudflareHandler);
+export default Sentry.withSentry(cloudSentryOptions, cloudflareHandler);

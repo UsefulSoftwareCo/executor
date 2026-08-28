@@ -28,7 +28,6 @@ import {
 import executorConfig from "../../executor.config";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
 import {
-  makeSelfHostMcpModernServerBuilder,
   makeSelfHostMcpSessionStore,
   selfHostMcpReporter,
   selfHostMcpSessions,
@@ -237,7 +236,6 @@ export const makeSelfHostTestApp = async (
       mcp: {
         auth: stubMcpAuth,
         sessions: selfHostMcpSessions(sessionStore),
-        modern: makeSelfHostMcpModernServerBuilder(dbHandle),
         reporter: selfHostMcpReporter,
       },
       plugins: { provider: pluginsProvider, config: SelfHostHostConfig },

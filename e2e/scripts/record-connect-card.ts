@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 
 import { chromium } from "playwright";
+import { visit } from "../src/surfaces/browser";
 
 const [baseUrl, outPrefix] = process.argv.slice(2);
 if (!baseUrl || !outPrefix) {
@@ -86,7 +87,7 @@ const shoot = async (label: string, javaScriptEnabled: boolean, outPath: string)
   // the light palette — an artifact no user sees. JS stays disabled for the
   // SSR shot only to freeze the pre-hydration origin (no client correction),
   // not to skip CSS.
-  await page.goto("/", { waitUntil: "networkidle" });
+  await visit(page, "/");
   // The install command is the thing that flashes; screenshot just its block.
   const command = page.locator('pre:has-text("add-mcp")').first();
   await command.waitFor({ state: "visible", timeout: 15_000 });

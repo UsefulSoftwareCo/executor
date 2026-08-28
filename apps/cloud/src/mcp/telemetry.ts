@@ -102,15 +102,10 @@ const InitializeParams = Schema.Struct({
   capabilities: Schema.optional(UnknownRecord),
 });
 
-const ModernEnvelopeParams = Schema.Struct({
-  _meta: Schema.optional(
-    Schema.Struct({
-      "io.modelcontextprotocol/protocolVersion": Schema.optional(Schema.String),
-    }),
-  ),
+const NamedParams = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  arguments: Schema.optional(UnknownRecord),
 });
-
-const NamedParams = Schema.Struct({ name: Schema.optional(Schema.String) });
 const UriParams = Schema.Struct({ uri: Schema.optional(Schema.String) });
 
 // `notifications/cancelled` carries no JSON-RPC id of its own, but its params
@@ -127,7 +122,6 @@ const decodeJsonRpcEnvelopeString = Schema.decodeUnknownOption(
   Schema.fromJsonString(JsonRpcEnvelope),
 );
 const decodeInitializeParams = Schema.decodeUnknownOption(InitializeParams);
-const decodeModernEnvelopeParams = Schema.decodeUnknownOption(ModernEnvelopeParams);
 const decodeNamedParams = Schema.decodeUnknownOption(NamedParams);
 const decodeUriParams = Schema.decodeUnknownOption(UriParams);
 const decodeCancelledParams = Schema.decodeUnknownOption(CancelledParams);
@@ -143,16 +137,32 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
     Effect.withSpan("mcp.request.read_json_rpc"),
   );
 
+// Managed-cloud capture of the executed script, on the `mcp.request` span
+// beside the client fingerprint. This module is cloud-only by construction —
+// local/self-host telemetry never records content — and cloud persists
+// executions for the execution-history feature anyway, so the script is
+// already tenant-visible data. Capped so a pathological payload can't
+// balloon the span.
+const MAX_CODE_ATTR_CHARS = 10_000;
+
+const executeCodeAttrs = (
+  name: string | undefined,
+  args: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  if (name !== "execute" && name !== "execute-action") return {};
+  const code = args?.["code"];
+  if (typeof code !== "string") return {};
+  return {
+    "mcp.execute.code":
+      code.length > MAX_CODE_ATTR_CHARS
+        ? `${code.slice(0, MAX_CODE_ATTR_CHARS)}\n… [truncated ${code.length - MAX_CODE_ATTR_CHARS} chars]`
+        : code,
+  };
+};
+
 const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
   const params = envelope.params ?? {};
-  const protocolAttrs = Option.match(decodeModernEnvelopeParams(params), {
-    onNone: () => ({}),
-    onSome: (modern) => {
-      const protocolVersion = modern._meta?.["io.modelcontextprotocol/protocolVersion"];
-      return protocolVersion ? { "mcp.client.protocol_version": protocolVersion } : {};
-    },
-  });
-  const methodSpecific = Match.value(envelope.method).pipe(
+  return Match.value(envelope.method).pipe(
     Match.when("initialize", () =>
       Option.match(decodeInitializeParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
@@ -170,7 +180,10 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
     Match.when("tools/call", () =>
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
-        onSome: ({ name }) => (name ? { "mcp.tool.name": name } : {}),
+        onSome: ({ name, arguments: args }) => ({
+          ...(name ? { "mcp.tool.name": name } : {}),
+          ...executeCodeAttrs(name, args),
+        }),
       }),
     ),
     Match.whenOr("resources/read", "resources/subscribe", () =>
@@ -197,7 +210,6 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
     Match.option,
     Option.getOrElse(() => ({}) as Record<string, unknown>),
   );
-  return { ...protocolAttrs, ...methodSpecific };
 };
 
 const replyAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {

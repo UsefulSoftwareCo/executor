@@ -35,9 +35,7 @@ export const makeCloudflareApprovalHandler = (
 
     const paused = PAUSED_PATH.exec(pathname);
     if (paused && request.method === "GET") {
-      const stub = stubFor(decodeURIComponent(paused[1]!));
-      if (!stub) return jsonResponse({ error: "Paused execution not found" }, 404);
-      const result = await stub.getPausedExecutionForApproval(
+      const result = await stubFor(decodeURIComponent(paused[1]!)).getPausedExecutionForApproval(
         decodeURIComponent(paused[2]!),
         owner,
       );
@@ -55,9 +53,7 @@ export const makeCloudflareApprovalHandler = (
       const response = raw === null ? null : decodeResumeResponse(raw);
       if (!response) return jsonResponse({ error: "Invalid approval response" }, 400);
 
-      const stub = stubFor(decodeURIComponent(resume[1]!));
-      if (!stub) return jsonResponse({ error: "Paused execution not found" }, 404);
-      const result = await stub.resumeExecutionForApproval(
+      const result = await stubFor(decodeURIComponent(resume[1]!)).resumeExecutionForApproval(
         decodeURIComponent(resume[2]!),
         owner,
         response,

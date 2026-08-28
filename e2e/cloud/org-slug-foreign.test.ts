@@ -13,6 +13,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const CLOUD_ORIGIN_HEADERS = (baseUrl: string) => ({ origin: new URL(baseUrl).origin });
 
@@ -67,10 +68,10 @@ scenario(
 
     yield* browser.session(inB, async ({ page, step }) => {
       await step("Land in org B, then open org A's slug URL directly", async () => {
-        await page.goto(`/${orgB.slug}`, { waitUntil: "networkidle" });
+        await visit(page, `/${orgB.slug}`);
         await page.getByText("Integrations").first().waitFor({ timeout: 30_000 });
         // Open org A by its slug while the cookie is still pinned to B.
-        await page.goto(`/${slugA}/policies`, { waitUntil: "networkidle" });
+        await visit(page, `/${slugA}/policies`);
       });
 
       await step("Org A's page renders at its slugged URL — the URL is the scope", async () => {

@@ -18,8 +18,8 @@ export const RUNNING_EXECUTION_LEASE_MS = PAUSED_APPROVAL_TIMEOUT_MS;
  */
 export const MAX_PAUSED_SESSION_IDLE_MS = SESSION_TIMEOUT_MS + PAUSED_EXECUTION_LEASE_MS;
 
-/** Maximum lifetime of one client-facing SSE response before reconnect rotation. */
-export const SSE_MAX_AGE_MS = 30 * 60 * 1000;
+/** Matches the patched agents transport's MAX_SSE_AGE_MS (30 minutes). */
+const SSE_MAX_AGE_MS = 30 * 60 * 1000;
 
 /**
  * Hard upper bound on idle time while running work or open streams keep

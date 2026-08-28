@@ -58,6 +58,7 @@ const EXECUTE_SKILL_BODY = [
   "- The `tools` object is a lazy proxy — enumerating it (`Object.keys(tools)`, spread, `for...in`) throws. Use `tools.search()` or `tools.executor.coreTools.connections.list({})` instead.",
   '- Pass an object to system tools, e.g. `tools.search({ query: "..." })`, `tools.executor.coreTools.connections.list({})`, and `tools.describe.tool({ path })`.',
   '- `tools.describe.tool()` returns compact TypeScript shapes. Use `inputTypeScript`, `outputTypeScript`, and `typeScriptDefinitions`. If the path doesn\'t resolve, the result carries `error: { code: "tool_not_found", suggestions }` — use a suggestion instead of retrying the same path.',
+  "- When `outputTypeScriptNote` is present, the `data` type was observed from live responses rather than declared by the provider: the listed fields are reliable, but the shape may be incomplete — prefer optional access for anything not listed.",
   "- For tools that return large collections (e.g. `getStates`, `getAll`), filter results in code rather than calling per-item tools.",
   "- Do not use `fetch` — all API calls go through `tools.*`.",
   "- If execution pauses for interaction, resume it with the returned `resumePayload`.",
@@ -639,10 +640,17 @@ export const findSkill = (name: string, catalog: readonly Skill[] = SKILLS): Ski
 
 /** The index the `skills` tool returns when called without a name (or with an
  *  unknown one): every skill's name and one-line summary, plus how to fetch
- *  the body. */
+ *  the body.
+ *
+ *  It leads with what the catalog IS. A host without a skill tool of its own
+ *  (pi, for one) reads `skills` as the general skill reader it is missing and
+ *  asks it for the user's or the harness's skills; the index is where that
+ *  model lands, so it has to say plainly that this list is the whole of it and
+ *  covers only Executor's own tools. */
 export const renderSkillsIndex = (catalog: readonly Skill[] = SKILLS): string =>
   [
-    'Available skills. Fetch one with `skills({ name: "<name>" })`.',
+    "How-to docs for Executor's own tools — this is the complete list, and there is nothing else to fetch.",
+    'Fetch one with `skills({ name: "<name>" })`. Names outside this list, file paths, and skills belonging to your harness or the user are not served here.',
     "",
     ...catalog.map((skill) => `- \`${skill.name}\` — ${skill.summary}`),
   ].join("\n");
