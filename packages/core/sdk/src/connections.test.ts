@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Result } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Result, Schema } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -11,6 +11,7 @@ import {
   ToolName,
 } from "./ids";
 import { createExecutor } from "./executor";
+import { HealthCheckResult } from "./health-check";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
@@ -42,6 +43,11 @@ const memoryProvider = (): CredentialProvider => {
 
 const INTEG = IntegrationSlug.make("vercel");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
+
+const ConnectionListHealthOutput = Schema.Struct({
+  connections: Schema.Array(Schema.Struct({ lastHealth: Schema.NullOr(HealthCheckResult) })),
+});
+const decodeConnectionListHealthOutput = Schema.decodeUnknownEffect(ConnectionListHealthOutput);
 
 const demoPlugin = definePlugin(() => ({
   id: "demo" as const,
@@ -263,6 +269,58 @@ describe("connections.create", () => {
 });
 
 describe("connections.list / get", () => {
+  it.effect("only includes full health diagnostics in verbose core tool output", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const, coreTools: {} });
+      const executor = yield* createExecutor(config);
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("health"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "v",
+      });
+
+      const health = {
+        status: "healthy" as const,
+        identity: "account@example.com",
+        checkedAt: 1234,
+        httpStatus: 200,
+        detail: "GET /me returned 200",
+        responseSample: [{ path: "user.email", value: "account@example.com" }],
+      };
+      yield* Effect.promise(() =>
+        config.db.updateMany("connection", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "health")),
+          set: { last_health: health },
+        }),
+      );
+
+      const list = (input: { readonly verbose?: boolean }) =>
+        executor
+          .execute(ToolAddress.make("executor.coreTools.connections.list"), {
+            integration: String(INTEG),
+            owner: "org",
+            ...input,
+          })
+          .pipe(Effect.flatMap(decodeConnectionListHealthOutput));
+
+      const defaultList = yield* list({});
+      const nonVerboseList = yield* list({ verbose: false });
+      const verboseList = yield* list({ verbose: true });
+      const summary = {
+        status: "healthy",
+        identity: "account@example.com",
+        checkedAt: 1234,
+      };
+
+      expect(defaultList.connections[0]?.lastHealth).toEqual(summary);
+      expect(nonVerboseList.connections[0]?.lastHealth).toEqual(summary);
+      expect(verboseList.connections[0]?.lastHealth).toEqual(health);
+    }),
+  );
+
   it.effect("lists created connections and filters by integration", () =>
     Effect.gen(function* () {
       const executor = yield* setup();
@@ -361,14 +419,83 @@ describe("connections.refresh", () => {
 });
 
 describe("tool catalog sync safety", () => {
+  it.effect("single-flights concurrent refreshes of the same stale connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refreshStarted = yield* Deferred.make<void>();
+        const releaseRefresh = yield* Deferred.make<void>();
+        let resolutions = 0;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          resolveTools: () =>
+            Effect.gen(function* () {
+              resolutions += 1;
+              if (resolutions > 1) {
+                yield* Deferred.succeed(refreshStarted, undefined);
+                yield* Deferred.await(releaseRefresh);
+              }
+              return {
+                tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+
+        const readsFiber = yield* Effect.forkChild(
+          Effect.all(
+            [
+              executor.tools.list({ integration: INTEG }),
+              executor.tools.list({ integration: INTEG }),
+            ],
+            { concurrency: "unbounded" },
+          ),
+        );
+        yield* Deferred.await(refreshStarted);
+        yield* Deferred.succeed(releaseRefresh, undefined);
+        const reads = yield* Fiber.join(readsFiber);
+
+        expect(reads).toHaveLength(2);
+        expect(resolutions).toBe(2);
+      }),
+    ),
+  );
+
   it.effect(
-    "background sync preserves a nonzero catalog when a plugin returns authoritative empty",
+    "background sync preserves a nonzero remote catalog when a plugin returns authoritative empty",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           let empty = false;
           const guardedPlugin = definePlugin(() => ({
             id: "guarded" as const,
+            remoteToolCatalog: true,
             credentialProviders: [memoryProvider()],
             storage: () => ({}),
             resolveTools: () =>
@@ -420,6 +547,66 @@ describe("tool catalog sync safety", () => {
             status: "degraded",
             detail: expect.stringContaining("authoritative empty catalog"),
           });
+        }),
+      ),
+  );
+
+  it.effect(
+    "background sync clears a non-remote catalog when a plugin returns authoritative empty",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let empty = false;
+          const storedStatePlugin = definePlugin(() => ({
+            id: "stored-state" as const,
+            credentialProviders: [memoryProvider()],
+            storage: () => ({}),
+            resolveTools: () =>
+              Effect.sync(() => ({
+                tools: empty
+                  ? []
+                  : [
+                      { name: ToolName.make("deploy"), description: "deploy" },
+                      { name: ToolName.make("list"), description: "list" },
+                    ],
+              })),
+            invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+            extension: (ctx) => ({
+              seed: () =>
+                ctx.core.integrations.register({
+                  slug: INTEG,
+                  description: "Vercel",
+                  config: {},
+                }),
+            }),
+          }))();
+          const config = makeTestConfig({ plugins: [storedStatePlugin] as const });
+          const executor = yield* createExecutor(config);
+          yield* executor["stored-state"].seed();
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+
+          empty = true;
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+              set: { tools_synced_at: null },
+            }),
+          );
+          const tools = yield* executor.tools.list({ integration: INTEG });
+          const connection = yield* executor.connections.get({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+
+          expect(tools).toEqual([]);
+          expect(connection?.lastHealth).toBeNull();
         }),
       ),
   );
@@ -615,6 +802,29 @@ describe("tool catalog sync safety", () => {
         expect(connection?.lastHealth).toMatchObject(health);
       }),
     ),
+  );
+});
+
+describe("connections.checkHealth", () => {
+  it.effect("keeps API-key connections without a probe unknown", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "secret-token",
+      });
+
+      const result = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+
+      expect(result.status).toBe("unknown");
+    }),
   );
 });
 

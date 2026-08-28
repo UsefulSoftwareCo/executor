@@ -37,7 +37,7 @@ export const desktopSettingsPlugin = definePlugin((options: DesktopSettingsPlugi
   id: "desktop-settings" as const,
   packageName: "@executor-js/plugin-desktop-settings",
   storage: () => ({}),
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "desktopSettings",
       kind: "executor",

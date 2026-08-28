@@ -1,0 +1,635 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomSet } from "@effect/atom-react";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+
+import {
+  AuthTemplateSlug,
+  IntegrationSlug,
+  type HealthCheckCandidate,
+  type HealthCheckSpec,
+} from "@executor-js/sdk/shared";
+import { useIntegrationPlugins, type IntegrationPreset } from "@executor-js/sdk/client";
+import { integrationWriteKeys, healthCheckWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { setIntegrationHealthCheck } from "@executor-js/react/api/atoms";
+import {
+  slugifyNamespace,
+  useIntegrationIdentity,
+} from "@executor-js/react/plugins/integration-identity";
+import { Button } from "@executor-js/react/components/button";
+import { HealthCheckConfigFields } from "@executor-js/react/components/health-check-editor";
+import {
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
+import { CardStack, CardStackContent } from "@executor-js/react/components/card-stack";
+import { FieldLabel } from "@executor-js/react/components/field";
+import { FloatActions } from "@executor-js/react/components/float-actions";
+import { Textarea } from "@executor-js/react/components/textarea";
+import { IOSSpinner } from "@executor-js/react/components/spinner";
+import {
+  addIntegrationErrorMessage,
+  errorMessageFromExit,
+  FormErrorAlert,
+  SlugCollisionAlert,
+  useSlugAlreadyExists,
+} from "@executor-js/react/lib/integration-add";
+
+import {
+  authenticationFromEditorValue,
+  editorValueFromAuthentication,
+  openApiWireAuthInput,
+} from "./auth-method-config";
+import { addOpenApiSpec, previewOpenApiSpec } from "./atoms";
+import { OpenApiIntegrationDetailsFields } from "./OpenApiIntegrationDetailsFields";
+import type { SpecPreviewSummary } from "../sdk/preview";
+import { type Authentication } from "../sdk/types";
+import { resolveServerUrl } from "../sdk/openapi-utils";
+import { detectedAuthenticationTemplates } from "../sdk/derive-auth";
+import {
+  decodeOpenApiSpecOverrides,
+  formatSpecOverridesText,
+  parseSpecOverridesText,
+} from "../sdk/spec-overrides";
+import { SpecOverridesEditor } from "./SpecOverridesEditor";
+
+const normalizePresetUrl = (url: string): string => {
+  const trimmed = url.trim();
+  if (!URL.canParse(trimmed)) return trimmed.replace(/\/$/, "");
+  const parsed = new URL(trimmed);
+  parsed.hash = "";
+  parsed.searchParams.sort();
+  return parsed.toString().replace(/\/$/, "");
+};
+
+/** Resolve catalog defaults from an explicit preset id or a matching spec URL. */
+export const resolveOpenApiPreset = (
+  presets: readonly IntegrationPreset[] | undefined,
+  initialPresetId: string | undefined,
+  specUrl: string,
+): IntegrationPreset | null => {
+  const explicitPreset = presets?.find((preset) => preset.id === initialPresetId);
+  if (explicitPreset) return explicitPreset;
+  if (specUrl.trim().length === 0) return null;
+  const normalizedSpecUrl = normalizePresetUrl(specUrl);
+  return (
+    presets?.find((preset) => preset.url && normalizePresetUrl(preset.url) === normalizedSpecUrl) ??
+    null
+  );
+};
+
+const specInputForAdd = (input: string) => {
+  const value = input.trim();
+  const parsed = Effect.runSyncExit(
+    Effect.try({
+      try: () => new URL(value),
+      catch: () => null,
+    }),
+  );
+  return Exit.isSuccess(parsed)
+    ? { kind: "url" as const, url: value }
+    : { kind: "blob" as const, value };
+};
+
+export const baseUrlFromSpecInput = (input: string): string => {
+  const value = input.trim();
+  if (!URL.canParse(value)) return "";
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+  return parsed.origin;
+};
+
+export const openApiPreviewFailureMessage = (message: string | null | undefined): string =>
+  `Couldn't load or parse this spec: ${message && message.trim().length > 0 ? message : "unknown error"}`;
+
+export function AddOpenApiHealthCheckSection(props: {
+  readonly presetHealthCheck?: HealthCheckSpec;
+  readonly candidates: readonly HealthCheckCandidate[];
+  readonly selected: HealthCheckCandidate | null;
+  readonly operation: string;
+  readonly onOperationChange: (operation: string) => void;
+  readonly identityField: string;
+  readonly onIdentityFieldChange: (field: string) => void;
+  readonly args: Record<string, string>;
+  readonly onArgChange: (name: string, value: string) => void;
+  readonly disabled: boolean;
+}) {
+  if (props.presetHealthCheck) {
+    return (
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium text-foreground">Health check</h3>
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-mono text-foreground">{props.presetHealthCheck.operation}</span>{" "}
+          From the catalog. Change it later from the integration page.
+        </p>
+      </section>
+    );
+  }
+
+  if (props.candidates.length === 0) return null;
+
+  return (
+    <section className="space-y-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
+        <p className="text-[11px] text-muted-foreground">
+          An optional read-only probe adds live upstream depth. For OAuth connections, validity and
+          identity come from the OAuth grant itself. For non-OAuth methods, the probe can validate
+          the credential and identify the account.
+        </p>
+      </div>
+      <HealthCheckConfigFields
+        candidates={props.candidates}
+        selected={props.selected}
+        operation={props.operation}
+        onOperationChange={props.onOperationChange}
+        identityField={props.identityField}
+        onIdentityFieldChange={props.onIdentityFieldChange}
+        args={props.args}
+        onArgChange={props.onArgChange}
+        disabled={props.disabled}
+        idPrefix="add-health-check"
+      />
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Component: single progressive form. Post-redesign: preview -> addSpec
+// (register the integration catalog entry with ALL detected auth methods) →
+// route to the integration's detail hub, where the user adds accounts. The add
+// flow no longer creates a connection.
+// ---------------------------------------------------------------------------
+
+export default function AddOpenApiIntegration(props: {
+  onComplete: (slug?: string) => void;
+  onCancel: () => void;
+  initialUrl?: string;
+  initialPreset?: string;
+  initialNamespace?: string;
+}) {
+  const integrationPlugins = useIntegrationPlugins();
+  const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
+  const openApiPresets = openApiPlugin?.presets;
+  const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
+  const [specOverridesDraft, setSpecOverridesDraft] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
+  const activePreset = resolveOpenApiPreset(openApiPresets, props.initialPreset, specUrl);
+  const presetSpecOverrides = decodeOpenApiSpecOverrides(activePreset?.specOverrides);
+  const specOverridesText = specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides);
+
+  // After analysis
+  const [preview, setPreview] = useState<SpecPreviewSummary | null>(null);
+  const [baseUrl, setBaseUrl] = useState("");
+  // Agent-visible description: prefilled from the spec's `info.description`
+  // until the user types (null = untouched, keep deriving from the preview).
+  const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
+  const identityFallbackName =
+    activePreset?.name ?? (preview ? Option.getOrElse(preview.title, () => "") : "");
+  const identity = useIntegrationIdentity({
+    fallbackName: identityFallbackName,
+    fallbackNamespace: props.initialNamespace,
+  });
+
+  // Submit
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  // Optional health check drafted while adding. Empty `hcOperation` means "not
+  // drafted": we then leave the integration's auto-detected default untouched
+  // rather than persisting a blank. No live preview here (no integration/key
+  // exists pre-creation, and `validateConnection` requires a persisted one).
+  const [hcOperation, setHcOperation] = useState("");
+  const [hcIdentityField, setHcIdentityField] = useState("");
+  const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+
+  const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
+  const doAdd = useAtomSet(addOpenApiSpec, { mode: "promiseExit" });
+  const doSetHealthCheck = useAtomSet(setIntegrationHealthCheck, { mode: "promiseExit" });
+
+  // Keep the latest handleAnalyze in a ref so the debounced effect doesn't need
+  // it as a dependency (it closes over fresh state).
+  const handleAnalyzeRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    const trimmed = specUrl.trim();
+    if (!trimmed) return;
+    if (preview) return;
+    const handle = setTimeout(() => {
+      handleAnalyzeRef.current();
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [specUrl, preview]);
+
+  // ---- Derived state ----
+
+  const previewHasNoServers = preview !== null && preview.servers.length === 0;
+  // Offer the spec's servers (resolved with defaults) as base-URL choices when
+  // there's more than one; a single/no server uses a plain input.
+  const baseUrlOptions =
+    preview && preview.servers.length > 1
+      ? preview.servers.map((server) => {
+          const url = resolveServerUrl(server.url, Option.getOrUndefined(server.variables), {});
+          return { value: url, label: url };
+        })
+      : undefined;
+  const firstServer = preview?.servers[0];
+  const firstServerUrl = firstServer
+    ? resolveServerUrl(firstServer.url, Option.getOrUndefined(firstServer.variables), {})
+    : "";
+  const previewPresetIcon = activePreset?.icon ?? null;
+
+  const resolvedBaseUrl = baseUrl.trim();
+  const resolvedIntegrationId =
+    activePreset?.defaultSlug ||
+    slugifyNamespace(identity.namespace) ||
+    (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
+  const resolvedDisplayName =
+    identity.name.trim() ||
+    (preview
+      ? Option.getOrElse(preview.title, () => resolvedIntegrationId)
+      : resolvedIntegrationId);
+  const resolvedDescription =
+    descriptionDraft ?? (preview ? Option.getOrElse(preview.description, () => "") : "");
+  const parsedSpecOverrides = useMemo(
+    () => parseSpecOverridesText(specOverridesText),
+    [specOverridesText],
+  );
+
+  // Register EVERY spec-detected auth method, not just a single selected one.
+  // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
+  // freshly-allocated `?? []` fallback arrays.
+  const authenticationTemplate: readonly Authentication[] = useMemo(() => {
+    if (activePreset?.authTemplate) {
+      return activePreset.authTemplate.flatMap((template): readonly Authentication[] =>
+        template.kind === "oauth2"
+          ? [
+              {
+                ...template,
+                slug: AuthTemplateSlug.make(template.slug),
+                resource: template.resource ?? undefined,
+              },
+            ]
+          : [],
+      );
+    }
+    return detectedAuthenticationTemplates(
+      preview?.headerPresets ?? [],
+      preview?.oauth2Presets ?? [],
+      resolvedBaseUrl,
+    );
+  }, [activePreset?.authTemplate, preview, resolvedBaseUrl]);
+
+  // Editable auth methods, seeded from the spec-detected templates. The add flow
+  // registers EVERY method (P6), so this is a LIST, preserving multi-method
+  // specs (e.g. apiKey + OAuth). Each seed carries the detected template's
+  // original slug, so an unedited detected method submits with its EXACT
+  // original slug (preserving behavior); added methods (no seed) get a
+  // deterministic fresh slug. Re-seeded whenever a fresh detection arrives
+  // (keyed on the detected templates, stable per analysis + base URL).
+  const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(() => {
+    const labels = [
+      ...(preview?.headerPresets ?? []).map((preset) => preset.label),
+      ...(preview?.oauth2Presets ?? []).map((preset) => preset.label),
+    ];
+    return authenticationTemplate.map(
+      (template: Authentication, index: number): AuthMethodSeed => ({
+        value: editorValueFromAuthentication(template),
+        slug: String(template.slug),
+        ...(labels[index] !== undefined ? { label: labels[index] } : {}),
+      }),
+    );
+  }, [preview, authenticationTemplate]);
+  const authMethodList = useAuthMethodList(authMethodSeeds);
+
+  // The methods to register, mapped back to stored `Authentication[]`. Drops
+  // `none` rows (nothing to register). An unedited detected method keeps its
+  // original `seedSlug`; an added method gets a deterministic fresh slug.
+  const editedAuthenticationTemplate: readonly Authentication[] = useMemo(() => {
+    const templates: Authentication[] = [];
+    authMethodList.rows.forEach((row: AuthMethodRow, index: number) => {
+      const slug =
+        row.seedSlug ?? (row.value.kind === "oauth" ? `oauth-${index}` : `apikey-${index}`);
+      const template = authenticationFromEditorValue(row.value, slug);
+      if (template !== null) templates.push(template);
+    });
+    return templates;
+  }, [authMethodList.rows]);
+
+  // Health-check candidates from the bounded preview (top-ranked operations with
+  // their response fields). The picker is freeform, so a custom op is still
+  // reachable when the spec exposes none.
+  const healthCheckCandidates = useMemo<readonly HealthCheckCandidate[]>(
+    () => preview?.healthCheckCandidates ?? [],
+    [preview?.healthCheckCandidates],
+  );
+  const hcSelected = useMemo(
+    () => healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null,
+    [healthCheckCandidates, hcOperation],
+  );
+  const hcRequiredParams = useMemo(
+    () => (hcSelected?.parameters ?? []).filter((p) => p.required),
+    [hcSelected],
+  );
+  const hcMissingRequired = hcRequiredParams.some(
+    (p) => (hcArgs[p.name] ?? "").trim().length === 0,
+  );
+
+  const onHcOperationChange = (next: string) => {
+    setHcOperation(next);
+    // Args and identity path are operation-specific; drop them so neither
+    // dangles onto a freshly picked operation.
+    setHcArgs({});
+    setHcIdentityField("");
+  };
+  const onHcArgChange = (name: string, value: string) =>
+    setHcArgs((prev) => ({ ...prev, [name]: value }));
+
+  // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
+  // whose slug already exists clobbers the existing one's connections/policies,
+  // so the API blocks it. Surface that here from the tenant-scoped catalog list.
+  const slugAlreadyExists = useSlugAlreadyExists(resolvedIntegrationId);
+
+  // The base URL is optional when the spec declares servers (resolved per call);
+  // required only when it doesn't. A drafted health check must have its required
+  // args filled (an empty draft, `hcOperation === ""`, imposes no constraint).
+  const canAdd =
+    preview !== null &&
+    parsedSpecOverrides.ok &&
+    !slugAlreadyExists &&
+    (!previewHasNoServers || resolvedBaseUrl.length > 0) &&
+    !(hcOperation.length > 0 && hcMissingRequired);
+
+  // ---- Handlers ----
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    setAddError(null);
+    if (!parsedSpecOverrides.ok) {
+      setAnalyzeError(parsedSpecOverrides.message);
+      setAnalyzing(false);
+      return;
+    }
+    const exit = await doPreview({
+      payload: {
+        spec: specUrl,
+        specFormat: activePreset?.specFormat,
+        ...(parsedSpecOverrides.value.length > 0
+          ? { specOverrides: parsedSpecOverrides.value }
+          : {}),
+      },
+    });
+    if (Exit.isFailure(exit)) {
+      setAnalyzeError(errorMessageFromExit(exit, "Failed to parse spec"));
+      setAnalyzing(false);
+      return;
+    }
+    const result = exit.value;
+    setPreview(result);
+    setBaseUrl(result.servers.length === 0 ? baseUrlFromSpecInput(specUrl) : "");
+    setAnalyzing(false);
+  };
+
+  handleAnalyzeRef.current = handleAnalyze;
+
+  // Persist the integration and return its slug. Registers the catalog entry
+  // with every detected auth method. Adding a slug that already exists is
+  // rejected by the API (`IntegrationAlreadyExistsError`), surfaced inline.
+  const ensureIntegration = useCallback(async (): Promise<IntegrationSlug | null> => {
+    const exit = await doAdd({
+      payload: {
+        spec: specInputForAdd(specUrl),
+        slug: resolvedIntegrationId,
+        name: resolvedDisplayName,
+        ...(resolvedDescription.trim().length > 0
+          ? { description: resolvedDescription.trim() }
+          : {}),
+        baseUrl: resolvedBaseUrl,
+        specFormat: activePreset?.specFormat,
+        family: activePreset?.family,
+        healthCheck: activePreset?.healthCheck,
+        ...(parsedSpecOverrides.ok && parsedSpecOverrides.value.length > 0
+          ? { specOverrides: parsedSpecOverrides.value }
+          : {}),
+        // Always send the edited method list (even empty) when the user has
+        // inspected a preview: an explicit [] means "no auth methods", while
+        // OMITTING the field tells the server to derive defaults from the
+        // spec, which would silently resurrect methods the user deleted.
+        // Serialize to the wire input dialect (apikey -> request-shaped).
+        authenticationTemplate: editedAuthenticationTemplate.map(openApiWireAuthInput),
+      },
+      reactivityKeys: integrationWriteKeys,
+    });
+    if (Exit.isFailure(exit)) {
+      setAddError(
+        addIntegrationErrorMessage(exit, resolvedIntegrationId, "Failed to add integration"),
+      );
+      return null;
+    }
+    return exit.value.slug;
+  }, [
+    specUrl,
+    doAdd,
+    resolvedIntegrationId,
+    resolvedDisplayName,
+    resolvedDescription,
+    resolvedBaseUrl,
+    editedAuthenticationTemplate,
+    parsedSpecOverrides,
+    activePreset?.family,
+    activePreset?.healthCheck,
+    activePreset?.specFormat,
+  ]);
+
+  const handleAdd = async () => {
+    setAdding(true);
+    setAddError(null);
+
+    const integration = await ensureIntegration();
+    if (!integration) {
+      setAdding(false);
+      return;
+    }
+
+    // Persist the drafted health check only when the user actively picked an
+    // operation; otherwise leave the integration's auto-detected default in
+    // place. A failure here is non-fatal, and must NOT block navigation: the
+    // integration is already created server-side, so returning here would strand
+    // the user (re-submitting the form hits the slug-already-exists guard). The
+    // check stays editable from the integration's detail page, so on failure we
+    // proceed to onComplete regardless and let the user fix it there.
+    if (hcOperation.length > 0) {
+      const identity = hcIdentityField.trim();
+      const argEntries = Object.entries(hcArgs)
+        .map(([key, value]) => [key, value.trim()] as const)
+        .filter(([, value]) => value.length > 0);
+      const spec: HealthCheckSpec = {
+        operation: hcOperation,
+        ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+        ...(identity.length > 0 ? { identityField: identity } : {}),
+      };
+      // Best-effort: the exit is intentionally ignored so a save failure cannot
+      // block completion.
+      await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+    }
+
+    props.onComplete(String(integration));
+  };
+
+  // ---- Render ----
+
+  return (
+    <div className="flex flex-1 flex-col gap-6">
+      <div>
+        <h1 className="text-xl font-semibold text-foreground">Add OpenAPI integration</h1>
+      </div>
+
+      {!preview ? (
+        <CardStack>
+          <CardStackContent className="border-t-0">
+            <div className="space-y-2 p-3">
+              <FieldLabel>OpenAPI Spec</FieldLabel>
+              <div className="relative">
+                <Textarea
+                  value={specUrl}
+                  onChange={(e) => {
+                    setSpecUrl((e.target as HTMLTextAreaElement).value);
+                    setAnalyzeError(null);
+                  }}
+                  placeholder="https://api.example.com/openapi.json"
+                  rows={3}
+                  maxRows={10}
+                  className="font-mono text-sm"
+                />
+                {analyzing && (
+                  <div className="pointer-events-none absolute right-2 top-2">
+                    <IOSSpinner className="size-4" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Paste a URL or raw JSON/YAML content.
+              </p>
+              {analyzing && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <IOSSpinner className="size-3.5" />
+                  Checking spec…
+                </p>
+              )}
+              {analyzeError && !analyzing && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                  <span>{openApiPreviewFailureMessage(analyzeError)}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => void handleAnalyze()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+            </div>
+          </CardStackContent>
+        </CardStack>
+      ) : null}
+
+      {preview ? (
+        <OpenApiIntegrationDetailsFields
+          title={Option.getOrElse(preview.title, () => "API")}
+          subtitle={`${Option.getOrElse(preview.version, () => "")}${
+            Option.isSome(preview.version) ? " · " : ""
+          }${preview.operationCount} operation${preview.operationCount !== 1 ? "s" : ""}${
+            preview.tags.length > 0
+              ? ` · ${preview.tags.length} tag${preview.tags.length !== 1 ? "s" : ""}`
+              : ""
+          }`}
+          identity={identity}
+          description={resolvedDescription}
+          onDescriptionChange={setDescriptionDraft}
+          baseUrl={resolvedBaseUrl}
+          onBaseUrlChange={setBaseUrl}
+          baseUrlOptions={baseUrlOptions}
+          baseUrlLabel={previewHasNoServers ? "Base URL" : "Base URL override (optional)"}
+          baseUrlPlaceholder={firstServerUrl || "https://api.example.com"}
+          baseUrlHint={
+            previewHasNoServers
+              ? undefined
+              : "Overrides the spec's servers; leave empty to choose the server (and variables) per tool call."
+          }
+          baseUrlMissingMessage={
+            previewHasNoServers ? "This spec declares no servers, enter a base URL." : undefined
+          }
+          specUrl={specUrl}
+          onSpecUrlChange={(value) => {
+            setSpecUrl(value);
+            setPreview(null);
+            setBaseUrl("");
+          }}
+          faviconIcon={previewPresetIcon}
+          faviconUrl={resolvedBaseUrl || firstServerUrl}
+        />
+      ) : null}
+
+      <SpecOverridesEditor
+        value={specOverridesText}
+        onChange={(value) => {
+          setSpecOverridesDraft(value);
+          setAnalyzeError(null);
+          setPreview(null);
+          setBaseUrl("");
+        }}
+        disabled={analyzing || adding}
+      />
+
+      {preview && (
+        <AuthMethodListEditor
+          list={authMethodList}
+          emptyHint="No authentication detected. Add a method, or add the integration without auth and connect an account from the integration page later."
+          footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
+        />
+      )}
+
+      {preview ? (
+        <AddOpenApiHealthCheckSection
+          presetHealthCheck={activePreset?.healthCheck}
+          candidates={healthCheckCandidates}
+          selected={hcSelected}
+          operation={hcOperation}
+          onOperationChange={onHcOperationChange}
+          identityField={hcIdentityField}
+          onIdentityFieldChange={setHcIdentityField}
+          args={hcArgs}
+          onArgChange={onHcArgChange}
+          disabled={adding}
+        />
+      ) : null}
+
+      {preview && slugAlreadyExists && !adding && (
+        <SlugCollisionAlert slug={resolvedIntegrationId} />
+      )}
+
+      {addError && <FormErrorAlert message={addError} />}
+
+      <FloatActions>
+        <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>
+          Cancel
+        </Button>
+        <Button onClick={() => void handleAdd()} disabled={!canAdd || analyzing} loading={adding}>
+          Add integration
+        </Button>
+      </FloatActions>
+    </div>
+  );
+}

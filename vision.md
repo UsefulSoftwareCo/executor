@@ -14,7 +14,7 @@ it safely.
 - It is **not AI-specific.** Agents are a primary consumer, but the layer is a general way to
   represent and interop between sources of capability.
 - It is **not code-mode-specific.** Code mode is one way to call tools; it isn't the point.
-- It is a category of **source** and a way to **interop between them** through one set of
+- It is a category of **integration** and a way to **interop between them** through one set of
   concepts.
 
 The bet: as work shifts toward agents acting through software, every company needs one layer
@@ -30,23 +30,23 @@ multiplayer must be powerful; neither carries the other's weight.
 
 - **Tool** — an id, an optional input schema, and an optional output schema (JSON Schema today;
   may grow richer types). The unit of capability. Addressed as
-  `<source>.<scope>.<connection>.<tool>`.
-- **Source** — contains tools. A source is produced by a plugin from some config (an OpenAPI
+  `<integration>.<scope>.<connection>.<tool>`.
+- **Integration** — contains tools. An integration is produced by a plugin from some config (an OpenAPI
   spec, a GraphQL endpoint, an MCP server, a CLI's install/run). The core never sees the raw
   config — only a normalized manifest.
-- **Connection** — a credential, born wired, identified by `(scope, source, name)`. The `name`
-  is required and load-bearing (the account: `work`, `personal`, `prod`). One source holds many
+- **Connection** — a credential, born wired, identified by `(scope, integration, name)`. The `name`
+  is required and load-bearing (the account: `work`, `personal`, `prod`). One integration holds many
   connections.
 - **Secret** — never lives in Executor and never reaches the agent. A connection holds a
   `SecretRef` (a pointer — `op://`, `keychain://`, `env://`, `vault://`); a provider resolves it
   at call time, in trusted space, behind a proxy.
 - **Scope** — placement and identity. An ordered, merged set (see _Scopes_). Every record is
   placed in a scope.
-- **Policy** — gates execution (allow / require-approval / block). Attached to sources and
+- **Policy** — gates execution (allow / require-approval / block). Attached to integrations and
   connections (see _Policies_).
-- **Plugin** — registers sources, tools, providers, storage, surfaces. The one open extension
+- **Plugin** — registers integrations, tools, providers, storage, surfaces. The one open extension
   seam (see _The model_).
-- **Manager / Invoker** — the core runtime roles: a manager owns a source's tools and config; an
+- **Manager / Invoker** — the core runtime roles: a manager owns an integration's tools and config; an
   invoker executes a tool through the right connection and proxy.
 
 ## The model — core, first-party, one seam, surfaces
@@ -63,12 +63,12 @@ generic plugin registry: toolkits, the MCP host, generative UI, workflows, stora
 audit/runs, the internal-apps catalog. They're separable but they don't go through an abstract
 plugin contract, because nobody outside you needs to add a new _kind_ of them.
 
-**One open plugin seam: sources.** There are thousands of APIs; you'll never enumerate them; you
+**One open plugin seam: integrations.** There are thousands of APIs; you'll never enumerate them; you
 want others to add them. That is where an open contract (`resolveTools` / `invokeTool`) earns its
 complexity. Secret **providers** are the one plausible second seam, for the same reason.
 
 > The discipline: do not make "everything a plugin." Keep first-party capabilities first-party,
-> and keep exactly one open seam (sources, + maybe providers). Reversible — extract a new seam
+> and keep exactly one open seam (integrations, + maybe providers). Reversible — extract a new seam
 > only when several first-party capabilities demand the same one.
 
 **Surfaces / hosts** serve the executor over a wire: MCP, HTTP, CLI, stdio, triggers, the web
@@ -128,11 +128,11 @@ is to _attach_ a record to a scope.
 ## Connections, secrets & auth
 
 - **Connection = a credential, born wired** (secret + account fused; no slot/binding split),
-  identified by `(scope, source, name)` with `name` required.
-- **Multiple accounts per source per scope** (distinct names). Per-member auth (each connects
+  identified by `(scope, integration, name)` with `name` required.
+- **Multiple accounts per integration per scope** (distinct names). Per-member auth (each connects
   their own) and team-level shared auth (one credential placed in an outer scope) are both just
   placement.
-- **Auth template vs credential.** A source declares _how_ it authenticates (OAuth / bearer /
+- **Auth template vs credential.** An integration declares _how_ it authenticates (OAuth / bearer /
   API key — a discriminated set); each connection fills that template.
 - **Secrets never reach the agent.** Resolved by a provider at call time, in trusted space,
   behind a **tool-proxy** — credentials never enter agent or sandbox code. **No escape hatch:** a
@@ -141,7 +141,7 @@ is to _attach_ a record to a scope.
   separately. **Credential lifecycle** (refresh, rotation, revocation, expiry) handled below the
   agent.
 
-## Sources & source kinds
+## Integrations & integration kinds
 
 Each kind is added through the **one open seam** (`resolveTools` + `invokeTool`): **OpenAPI**,
 **GraphQL**, **MCP servers**, **CLI** (install + run, no spec), **direct API / raw-fetch**, and
@@ -150,25 +150,25 @@ reasons over a **normalized manifest** (schemas, side-effect class, auth templat
 required capabilities, an LLM-authored description). **Spec auto-refresh** tracks upstream drift
 and **must never auto-expand authority** — new operations appear _ungranted until reviewed_.
 
-An **integrations registry** lets people discover and add sources.
+An **integrations registry** lets people discover and add integrations.
 
 ## Policies
 
 Policies gate **execution** — `approve` / `require_approval` / `block` — and are distinct from
 toolkits (which gate visibility). Resolution is _most-restrictive-wins_; **plugin defaults** let
-a source ship a tool pre-marked `require_approval` (destructive detection), with `approve` as the
+an integration ship a tool pre-marked `require_approval` (destructive detection), with `approve` as the
 override when an import wrongly flags a safe action.
 
 How people actually use them today (real usage): glob patterns over the address, where _every_
-rule targets a **source** and wildcards the scope/connection (`stripe_api.*.*.disputes.*`,
+rule targets an **integration** and wildcards the scope/connection (`stripe_api.*.*.disputes.*`,
 `pscale.*.*.execute_write_query`) — i.e. faking structural targeting because there's nowhere to
 attach it. The direction:
 
-- **Kill the global glob list. Attach policy to the source and connection records** — the two
-  structural levels. **Connection overrides source** (innermost-wins), with **scope authority
+- **Kill the global glob list. Attach policy to the integration and connection records** — the two
+  structural levels. **Connection overrides integration** (innermost-wins), with **scope authority
   layered on top** (outer/org mandatory, can't be weakened inward).
-- Fixing a mis-flagged tool becomes `approve` _on that source/connection_, directly.
-- **Toolkits carry no policy** — they're pure curation and inherit whatever source/connection
+- Fixing a mis-flagged tool becomes `approve` _on that integration/connection_, directly.
+- **Toolkits carry no policy** — they're pure curation and inherit whatever integration/connection
   policies apply to the tools they expose. This dissolves the old global-vs-toolkit merge
   conflict.
 
@@ -230,7 +230,7 @@ You build once; surfaces project.
   draw on, that **surfaces in tool search**, and can **run tools inline** to cut round-trips.
   Served off MCP and from a `.well-known`. File-backed (see _Authoring model_).
 - **Internal apps catalog & custom UI snippets.** Store and share custom UI and internal apps.
-- **Configure Executor via Executor** — managing sources, connections, scopes, policies,
+- **Configure Executor via Executor** — managing integrations, connections, scopes, policies,
   toolkits is itself done through tools.
 
 ## Authoring model — two paths
@@ -309,7 +309,7 @@ service install` (daemon), `executor web` (web app) — one instance, delivered 
 The hosted product runs on a **Cloudflare substrate** and lets users **write plugins and load
 them dynamically, sandboxed** — each in a Worker isolate with a **declared capability manifest**
 (a plugin asking for specific scopes can do exactly that and nothing else). User plugins ride the
-**source seam** and the capability membrane, opened **last and curated**. Local == remote via
+**integration seam** and the capability membrane, opened **last and curated**. Local == remote via
 **substrate substitution**: a local V8 isolate stands in for the dynamic worker, Git for
 Cloudflare Artifacts, local SQLite for hosted storage.
 
@@ -329,7 +329,7 @@ Cloudflare Artifacts, local SQLite for hosted storage.
 Built on **Effect**. The same SDK is in-memory _and_ client/server; SDK-only users need no
 server; serving is a standard Web `Request → Response` handler. The discipline that keeps breadth
 cheap is the **seam discipline**: the platform owns generic concerns (auth, caching, retries,
-schema, rendering, transport, the Run); a plugin owns only the source-specific resolve/invoke.
+schema, rendering, transport, the Run); a plugin owns only the integration-specific resolve/invoke.
 
 ## Principles
 
@@ -356,7 +356,7 @@ schema, rendering, transport, the Run); a plugin owns only the source-specific r
   nearest-to-substrate first: MCP → storage → workflows → generative UI → user plugins (curated,
   last). Three substrate invariants keep composition cheap: one typed invocation primitive;
   authorization inherited from the substrate, never re-implemented; a hard seam between
-  substrate-generic and source-specific code.
+  substrate-generic and integration-specific code.
 - **Vision mode vs build mode.** This document is vision mode — generativity ("and then you'd
   want X") is the point. In **build mode, every "and then you'd want X" is a YAGNI to defer**, not
   a dependency to satisfy. Build the smallest thing useful on its own; let the next be _pulled_ by

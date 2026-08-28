@@ -28,8 +28,8 @@ import type { McpAuthMethod } from "../sdk/types";
 // a non-org host like local), never read from an ambient owner.
 // ---------------------------------------------------------------------------
 
-export default function McpSignInButton(props: { sourceId: string; owner?: Owner }) {
-  const slug = IntegrationSlug.make(props.sourceId);
+export default function McpSignInButton(props: { integrationId: string; owner?: Owner }) {
+  const slug = IntegrationSlug.make(props.integrationId);
   const targetOwner: Owner = props.owner ?? "org";
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const connectionsResult = useAtomValue(connectionsAllAtom);

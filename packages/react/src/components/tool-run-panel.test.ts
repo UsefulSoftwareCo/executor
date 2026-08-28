@@ -9,7 +9,7 @@ import {
   type Owner,
 } from "@executor-js/sdk/shared";
 
-import { toolProxyAddress } from "./tool-run-panel";
+import { shouldRenderConnectionPicker, toolProxyAddress } from "./tool-run-panel";
 
 const connection = (input: { readonly owner: Owner; readonly name: string }): Connection => ({
   owner: input.owner,
@@ -20,6 +20,23 @@ const connection = (input: { readonly owner: Owner; readonly name: string }): Co
   address: ConnectionAddress.make(`tools.vercel.${input.owner}.${input.name}`),
   identityLabel: null,
   expiresAt: null,
+});
+
+describe("shouldRenderConnectionPicker", () => {
+  it("hides the picker when there is only one connection", () => {
+    expect(shouldRenderConnectionPicker([connection({ owner: "org", name: "published" })])).toBe(
+      false,
+    );
+  });
+
+  it("keeps the picker when there are multiple connections", () => {
+    expect(
+      shouldRenderConnectionPicker([
+        connection({ owner: "org", name: "prod" }),
+        connection({ owner: "user", name: "scratch" }),
+      ]),
+    ).toBe(true);
+  });
 });
 
 describe("toolProxyAddress", () => {

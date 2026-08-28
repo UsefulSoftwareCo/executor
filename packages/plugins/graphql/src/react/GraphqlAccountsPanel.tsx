@@ -36,12 +36,12 @@ import type { GraphqlAuthMethod } from "../sdk/types";
 // ---------------------------------------------------------------------------
 
 export default function GraphqlAccountsPanel(props: {
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly integrationName: string;
   readonly accountHandoff?: IntegrationAccountHandoff | null;
 }) {
-  const { sourceId, integrationName, accountHandoff } = props;
-  const slug = IntegrationSlug.make(sourceId);
+  const { integrationId, integrationName, accountHandoff } = props;
+  const slug = IntegrationSlug.make(integrationId);
   const configResult = useAtomValue(graphqlConfigAtom(slug));
   const doConfigure = useAtomSet(graphqlConfigure, { mode: "promiseExit" });
 

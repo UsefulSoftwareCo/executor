@@ -426,7 +426,7 @@ scenario(
             "What an agent sees for tools derived from description-rich fixtures:",
             "the `tools.list` catalog entry (quoted) and the `tools.schema` view —",
             "the same compiled TypeScript previews `tools.describe.tool()` returns",
-            "inside the sandbox. Anything written in the fixture sources (bottom)",
+            "inside the sandbox. Anything written in the fixture integrations (bottom)",
             "but absent here was dropped by the spec→tool pipeline.",
             "",
             ...sections.flatMap(([title, tools]) => [
@@ -442,7 +442,7 @@ scenario(
             "",
             codeBlock("md", inventory ?? "(no inventory section found)"),
             "",
-            "## Fixture sources",
+            "## Fixture integrations",
             "",
             "<details><summary>OpenAPI spec</summary>",
             "",

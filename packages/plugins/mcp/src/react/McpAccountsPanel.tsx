@@ -36,12 +36,12 @@ import type { McpAuthMethod } from "../sdk/types";
 // ---------------------------------------------------------------------------
 
 export default function McpAccountsPanel(props: {
-  readonly sourceId: string;
+  readonly integrationId: string;
   readonly integrationName: string;
   readonly accountHandoff?: IntegrationAccountHandoff | null;
 }) {
-  const { sourceId, integrationName, accountHandoff } = props;
-  const slug = IntegrationSlug.make(sourceId);
+  const { integrationId, integrationName, accountHandoff } = props;
+  const slug = IntegrationSlug.make(integrationId);
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const doConfigureAuth = useAtomSet(configureMcpAuth, { mode: "promiseExit" });
 

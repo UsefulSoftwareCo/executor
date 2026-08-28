@@ -57,7 +57,7 @@ export type PluginGroups<TPlugins extends readonly AnyPlugin[]> = ExtractPluginG
   TPlugins[number]
 >;
 
-/** Group identities baked into `CoreExecutorApi` (tools, sources, secrets,
+/** Group identities baked into `CoreExecutorApi` (tools, integrations, secrets,
  *  …). Extracted via inference so adding a core group flows through
  *  without touching this helper. */
 type CoreGroups =

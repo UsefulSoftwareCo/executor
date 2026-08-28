@@ -180,6 +180,13 @@ export const ExtractedOperation = Schema.Struct({
   inputSchema: Schema.OptionFromOptional(Schema.Unknown),
   outputSchema: Schema.OptionFromOptional(Schema.Unknown),
   deprecated: Schema.Boolean,
+  /** OAuth scope requirements from `security`, alternatives preserved: each
+   *  inner array is one acceptable Security Requirement Object's scope set
+   *  (sorted, deduped); the outer array is an OR across alternatives. An
+   *  absent operation `security` inherits the document default; an explicit
+   *  `security: []` (auth disabled) and a scope-less declaration both omit
+   *  the field. */
+  requiredScopeAlternatives: Schema.optional(Schema.Array(Schema.Array(Schema.String))),
 });
 export type ExtractedOperation = typeof ExtractedOperation.Type;
 
@@ -204,6 +211,12 @@ export const OperationBinding = Schema.Struct({
   parameters: Schema.Array(OperationParameter),
   requestBody: Schema.OptionFromOptional(OperationRequestBody),
   responseBody: Schema.OptionFromOptional(OperationResponseBody),
+  /** Declared OAuth scope alternatives (see
+   *  ExtractedOperation.requiredScopeAlternatives), persisted with the
+   *  binding so the invoke path can annotate a scope-insufficient rejection
+   *  with exactly what the operation needs. Optional so bindings stored
+   *  before this field existed keep decoding. */
+  requiredScopeAlternatives: Schema.optional(Schema.Array(Schema.Array(Schema.String))),
 });
 export type OperationBinding = typeof OperationBinding.Type;
 

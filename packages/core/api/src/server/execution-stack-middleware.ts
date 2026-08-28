@@ -35,9 +35,11 @@
 // ---------------------------------------------------------------------------
 
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { Context, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer } from "effect";
+import type * as Cause from "effect/Cause";
 
 import type { AnyPlugin } from "@executor-js/sdk";
+import type { ExecutionEngine } from "@executor-js/execution";
 
 import type { DbProvider } from "./executor-fuma-db";
 import {
@@ -49,13 +51,17 @@ import {
 import { ExecutionEngineService, ExecutorService } from "../services";
 import { providePluginExtensions, type PluginExtensionServices } from "../plugin-routes";
 import {
+  authContextFromPlatform,
   authContextFromPrincipal,
   AuthContext,
+  isPlatformPrincipal,
+  ReadOnlyCredential,
   type IdentityFailure,
-  type Principal,
+  type ResolvedPrincipal,
 } from "./identity";
 import {
   makeExecutionStack,
+  makePlatformExecutionStack,
   type CodeExecutorProvider,
   type EngineDecorator,
 } from "./execution-stack";
@@ -68,9 +74,9 @@ import {
  * residual requirement the strategy adds (always `never` in practice).
  */
 export interface FailureRenderingStrategy<E, RR = never> {
-  readonly renderFailure: <R>(
-    effect: Effect.Effect<Principal, E, R>,
-  ) => Effect.Effect<Principal | HttpServerResponse.HttpServerResponse, E, R | RR>;
+  readonly renderFailure: <A extends ResolvedPrincipal, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A | HttpServerResponse.HttpServerResponse, E, R | RR>;
 }
 
 /**
@@ -98,6 +104,15 @@ export const textFailureStrategy: FailureRenderingStrategy<IdentityFailure> = {
               status: 503,
             }),
           ),
+        // Self-host/local identity never resolves a platform credential, but the
+        // method gate raises this tag on the SHARED channel, so total coverage
+        // requires rendering it (and keeps the strategy honest if that changes).
+        ReadOnlyCredential: () =>
+          Effect.succeed(
+            HttpServerResponse.text("Organization API keys are read-only", {
+              status: 403,
+            }),
+          ),
       }),
     ),
 };
@@ -112,12 +127,14 @@ export interface MakeExecutionStackMiddlewareOptions<
   /** The host's plugin tuple — drives the typed extension Services and binding. */
   readonly plugins: TPlugins;
   /**
-   * Resolve the inbound web `Request` to a neutral `Principal`. Adapter-specific
-   * credential precedence stays inside this function.
+   * Resolve the inbound web `Request` to a neutral `Principal` — or, for an
+   * org-level credential (cloud's org-scoped API key), a `PlatformPrincipal`
+   * that the middleware routes to the read-only platform branch.
+   * Adapter-specific credential precedence stays inside this function.
    */
-  readonly authenticate: (request: Request) => Effect.Effect<Principal, E, RLong>;
+  readonly authenticate: (request: Request) => Effect.Effect<ResolvedPrincipal, E, RLong>;
   /** Render `authenticate` failures (passthrough for cloud, text for self-host). */
-  readonly strategy: FailureRenderingStrategy<E, RStrategy>;
+  readonly strategy: FailureRenderingStrategy<E | ReadOnlyCredential, RStrategy>;
   /** The host's `makeExecutionStack` seam Layer. */
   readonly stackLayer: Layer.Layer<
     DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,
@@ -166,9 +183,53 @@ export const makeExecutionStackMiddleware = <
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           const webRequest = yield* HttpServerRequest.toWeb(request);
-          const resolved = yield* options.strategy.renderFailure(options.authenticate(webRequest));
+          const resolved = yield* options.strategy.renderFailure(
+            options.authenticate(webRequest).pipe(
+              // The PLATFORM branch's gate lives here, before any handler: an
+              // org credential is read-only by construction, so anything that
+              // is not a safe read is refused as a typed 403 rather than
+              // reaching a handler that would bind it to a subject or attempt
+              // a write (the storage policy would refuse the write anyway —
+              // this makes the refusal a clear response instead of a 500).
+              Effect.filterOrFail(
+                (principal) =>
+                  !isPlatformPrincipal(principal) ||
+                  isPlatformSafeRequest(webRequest.method, new URL(webRequest.url).pathname),
+                () =>
+                  new ReadOnlyCredential({
+                    code: "read_only_credential",
+                    message: "Organization API keys are read-only",
+                  }),
+              ),
+            ),
+          );
           // The strategy recovered the failure into a Response — return it.
           if (!isPrincipal(resolved)) return resolved;
+
+          if (isPlatformPrincipal(resolved)) {
+            // Org credential: the subject-less, write-refusing platform stack.
+            // No `touchSubject` runs, so the credential never mints a phantom
+            // user row in the very lists the admin plane serves. Neither
+            // `RequestWebOrigin` nor `RequestOrgSlug` is provided: both feed
+            // browser-handoff URL construction, which only interactive member
+            // flows perform, and `makePlatformExecutor` reads neither.
+            const { executor } = yield* makePlatformExecutionStack<TPlugins>(
+              resolved.organizationId,
+            ).pipe(
+              Effect.provide(options.stackLayer),
+              Effect.withSpan("executor.stack.http.resolve_platform"),
+            );
+            return yield* httpEffect.pipe(
+              Effect.provideService(AuthContext, AuthContext.of(authContextFromPlatform(resolved))),
+              Effect.provideService(ExecutorService, executor),
+              // The engine runs code as an acting member; the platform view has
+              // none, and owns no executions. GET readers get the honest empty
+              // answers; the execute/resume paths sit behind the method gate
+              // above and are unreachable.
+              Effect.provideService(ExecutionEngineService, readOnlyExecutionEngine),
+              provideExecutorExtensions(executor),
+            );
+          }
           const auth = AuthContext.of(authContextFromPrincipal(resolved));
           // The public origin the caller actually hit, so a host with no static
           // web base URL (a Worker) derives one zero-config. An explicit
@@ -188,13 +249,35 @@ export const makeExecutionStackMiddleware = <
           // provider carried one. Absent slug -> the service stays unprovided and
           // the URL falls back to its bare, client-canonicalized form.
           const { executor, engine } = yield* resolved.organizationSlug !== undefined
-            ? stack.pipe(Effect.provideService(RequestOrgSlug, { slug: resolved.organizationSlug }))
-            : stack;
+            ? stack.pipe(
+                Effect.provideService(RequestOrgSlug, { slug: resolved.organizationSlug }),
+                Effect.withSpan("executor.stack.http.resolve"),
+              )
+            : stack.pipe(Effect.withSpan("executor.stack.http.resolve"));
           return yield* httpEffect.pipe(
             Effect.provideService(AuthContext, auth),
             Effect.provideService(ExecutorService, executor),
             Effect.provideService(ExecutionEngineService, engine),
             provideExecutorExtensions(executor),
+            // This engine belongs to THIS request: the stack above was built
+            // from the host's request-scoped DB handle, and `executeWithPause`
+            // forks its sandbox as a daemon that would otherwise outlive the
+            // handler. The host closes the connection when the request scope
+            // closes — which happens AFTER this effect returns — so ending the
+            // engine here is what keeps a sandbox fiber from waking up on a
+            // closed pool.
+            //
+            // Nothing is lost by ending it: on a per-request engine the paused
+            // fiber is already unreachable once the response is written (a
+            // resume lands on a different engine and replays the call instead),
+            // so the fiber could only ever have failed. The MCP session Durable
+            // Object does NOT come through here — it builds its own stack over a
+            // session-lifetime handle, so its pauses still survive between
+            // requests, which is the whole point of that plane.
+            //
+            // `ensuring`, not `tap`: interruption and failure have to end the
+            // fiber too, and it must not run before the response is produced.
+            Effect.ensuring(engine.shutdown),
           );
           // Provide the boot-captured context; uncaptured deps (cloud's
           // request-scoped `DbService`) remain residual and flow through here.
@@ -203,13 +286,60 @@ export const makeExecutionStackMiddleware = <
   );
 };
 
-// `renderFailure` yields either the resolved `Principal` (proceed) or an
-// already-built `HttpServerResponse` (the strategy recovered the failure). A
-// `Principal` is a plain object with `accountId`; a response is tagged. Discern
-// by the marker the response framework brands its values with.
+// `renderFailure` yields either the resolved principal (proceed) or an
+// already-built `HttpServerResponse` (the strategy recovered the failure).
+// Discern by the marker the response framework brands its values with.
 const isPrincipal = (
-  value: Principal | HttpServerResponse.HttpServerResponse,
-): value is Principal => !HttpServerResponse.isHttpServerResponse(value);
+  value: ResolvedPrincipal | HttpServerResponse.HttpServerResponse,
+): value is ResolvedPrincipal => !HttpServerResponse.isHttpServerResponse(value);
+
+/**
+ * Whether a request is a SAFE READ the platform branch may serve. The method
+ * check (GET, plus HEAD — the router serves HEAD off the GET route) is
+ * necessary but NOT sufficient: `GET /oauth/callback` is the one core GET with
+ * side effects — completing it reads an org-owned oauth session, performs an
+ * outbound authorization-code exchange with the org's client credentials, and
+ * then attempts the connection write. A read-only credential must be refused
+ * BEFORE that exchange burns the in-flight code, not after the storage policy
+ * rejects the final write, so the callback path is excluded by name. It is a
+ * browser-redirect surface — no legitimate machine-credential caller lands on
+ * it with a Bearer header.
+ */
+const isPlatformSafeRequest = (method: string, pathname: string): boolean =>
+  (method === "GET" || method === "HEAD") && !pathname.endsWith("/oauth/callback");
+
+/** Reaching an engine member the platform branch cannot honestly serve is a
+ *  wiring bug (the safe-request gate keeps those paths unreachable), so it
+ *  dies as a tagged defect rather than failing with a typed error a client
+ *  could mistake for a product answer. */
+class PlatformEngineUnavailable extends Data.TaggedError("PlatformEngineUnavailable")<{
+  readonly member: string;
+}> {}
+
+/**
+ * The engine the platform branch provides. The one member a safe read can
+ * actually reach — `getPausedExecution`, via `GET /executions/:id` — answers
+ * null (a 404), honestly: the platform view owns no executions. The paused
+ * counters answer the same empty story for any future reader. Everything else
+ * (execute, resume, the MCP tool description) exists to satisfy the service
+ * shape, sits behind the middleware's safe-request gate, and dies if reached.
+ */
+const readOnlyExecutionEngine: ExecutionEngine<Cause.YieldableError> = {
+  // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
+  execute: () => Effect.die(new PlatformEngineUnavailable({ member: "execute" })),
+  // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
+  executeWithPause: () => Effect.die(new PlatformEngineUnavailable({ member: "executeWithPause" })),
+  // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
+  resume: () => Effect.die(new PlatformEngineUnavailable({ member: "resume" })),
+  getPausedExecution: () => Effect.succeed(null),
+  pausedExecutionCount: () => Effect.succeed(0),
+  hasPausedExecutions: () => Effect.succeed(false),
+  // Nothing is ever forked here — the platform branch cannot execute — so there
+  // is no sandbox fiber to end.
+  shutdown: Effect.void,
+  // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: only the MCP tool server reads this, and the MCP plane never serves a platform credential
+  getDescription: Effect.die(new PlatformEngineUnavailable({ member: "getDescription" })),
+};
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 

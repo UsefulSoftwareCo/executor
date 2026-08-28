@@ -15,6 +15,7 @@ const toResponse = (i: Integration) => ({
   canRefresh: i.canRefresh,
   authMethods: i.authMethods,
   ...(i.displayUrl ? { displayUrl: i.displayUrl } : {}),
+  ...(i.family ? { family: i.family } : {}),
 });
 
 export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrations", (handlers) =>

@@ -65,16 +65,17 @@ const freshConnectionName = () => ConnectionName.make(`conn${randomBytes(4).toSt
 // These mirror what the product web app does: cookie-authenticated calls whose
 // responses re-seal the session when the active org changes.
 
-const cookieOf = (identity: Identity): string => identity.headers?.["cookie"] ?? "";
-
 const postJson = (target: TargetShape, path: string, identity: Identity, body: unknown) =>
   Effect.promise(async () => {
     const response = await fetch(new URL(path, target.baseUrl), {
       method: "POST",
       headers: {
+        // The identity's own headers (session cookie + org selector) exactly
+        // as its API client would send them — org-scoped endpoints fail
+        // closed without the selector.
+        ...(identity.headers ?? {}),
         "content-type": "application/json",
         origin: new URL(target.baseUrl).origin,
-        cookie: cookieOf(identity),
       },
       body: JSON.stringify(body),
     });
@@ -84,17 +85,34 @@ const postJson = (target: TargetShape, path: string, identity: Identity, body: u
     return response;
   });
 
-/** The identity re-bound to the refreshed session cookie a response set. */
-const withRefreshedSession = (identity: Identity, response: Response): Identity => {
+/** The identity re-bound to the refreshed session cookie a response set,
+ *  scoped to `orgSelector` via the selector header (see switchOrg). */
+const withRefreshedSession = (
+  identity: Identity,
+  response: Response,
+  orgSelector: string,
+): Identity => {
   const refreshed = (response.headers.getSetCookie?.() ?? [])
     .find((header) => header.startsWith("wos-session="))
     ?.split(";")[0];
   if (!refreshed) throw new Error("response did not refresh the session cookie");
-  return { ...identity, headers: { cookie: refreshed } };
+  return {
+    ...identity,
+    headers: { cookie: refreshed, [ORG_SELECTOR_HEADER]: orgSelector },
+  };
+};
+
+/** The org selector this identity's requests carry — the same header the web
+ *  client derives from the console URL (identities minted with an org carry
+ *  it; org-scoped reads fail closed without one). */
+const orgSelectorOf = (identity: Identity): string => {
+  const selector = identity.headers?.[ORG_SELECTOR_HEADER];
+  if (!selector) throw new Error(`identity ${identity.label} carries no org selector header`);
+  return selector;
 };
 
 /** Invite `member` into `admin`'s org and accept — the real invite flow.
- *  Returns the member identity with its session re-bound to that org. */
+ *  Returns the member identity with its requests scoped to that org. */
 const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
     const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
@@ -104,14 +122,15 @@ const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
     const acceptResponse = yield* postJson(target, "/api/auth/accept-invitation", member, {
       invitationId: invitation.id,
     });
-    return withRefreshedSession(member, acceptResponse);
+    return withRefreshedSession(member, acceptResponse, orgSelectorOf(admin));
   });
 
 /** Create another org for this account; returns the identity bound to it. */
 const createAnotherOrg = (target: TargetShape, identity: Identity, name: string) =>
   Effect.gen(function* () {
     const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
-    return withRefreshedSession(identity, response);
+    const created = (yield* Effect.promise(() => response.clone().json())) as { id: string };
+    return withRefreshedSession(identity, response, created.id);
   });
 
 // `/api/auth/switch-organization` (session-cookie-based org switching) was
@@ -119,10 +138,12 @@ const createAnotherOrg = (target: TargetShape, identity: Identity, name: string)
 // the session. A request picks its active org via the `x-executor-organization`
 // header (apps/cloud/src/auth/organization.ts's `ORG_SELECTOR_HEADER`,
 // `EXECUTOR_ORG_SELECTOR_HEADER = "x-executor-organization"` in
-// packages/core/sdk/src/server-connection.ts), falling back to the session's
-// own org when absent. The header is a SELECTOR, not a trust boundary — the
-// server re-checks live membership — so attaching it directly to the identity
-// here is exactly what the real web client does from the console URL's slug.
+// packages/core/sdk/src/server-connection.ts). Org-scoped API reads FAIL
+// CLOSED without it — there is deliberately no fallback to the session's
+// cookie-pinned org (that fallback served wrong-tenant data to multi-org
+// users). The header is a SELECTOR, not a trust boundary — the server
+// re-checks live membership — so attaching it directly to the identity here
+// is exactly what the real web client does from the console URL's slug.
 const ORG_SELECTOR_HEADER = "x-executor-organization";
 
 /** Switch this account's active org; returns the identity scoped to it via
@@ -137,11 +158,12 @@ const switchOrg = (
     headers: { ...identity.headers, [ORG_SELECTOR_HEADER]: organizationId },
   });
 
-/** The org this identity's session is currently bound to. */
+/** The org this identity's requests are scoped to (selector header included,
+ *  mirroring the web client). */
 const activeOrganizationId = (target: TargetShape, identity: Identity) =>
   Effect.promise(async () => {
     const response = await fetch(new URL("/api/auth/me", target.baseUrl), {
-      headers: { cookie: cookieOf(identity) },
+      headers: identity.headers ?? {},
     });
     if (!response.ok) throw new Error(`/api/auth/me failed (${response.status})`);
     const body = (await response.json()) as { organization: { id: string } | null };

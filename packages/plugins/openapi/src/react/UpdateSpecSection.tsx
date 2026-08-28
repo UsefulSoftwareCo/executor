@@ -13,6 +13,8 @@ import { Label } from "@executor-js/react/components/label";
 import { Textarea } from "@executor-js/react/components/textarea";
 
 import { openApiConfigAtom, updateOpenApiSpec } from "./atoms";
+import { SpecOverridesEditor } from "./SpecOverridesEditor";
+import { formatSpecOverridesText, parseSpecOverridesText } from "../sdk/spec-overrides";
 
 // ---------------------------------------------------------------------------
 // Update spec — the openapi plugin's section of the integration Edit sheet.
@@ -42,27 +44,39 @@ const outcomeSummary = (outcome: UpdateOutcome): string => {
 };
 
 export default function UpdateSpecSection(props: EditSheetSectionProps) {
-  const slug = IntegrationSlug.make(props.sourceId);
+  const slug = IntegrationSlug.make(props.integrationId);
   const configResult = useAtomValue(openApiConfigAtom(slug));
   const doUpdate = useAtomSet(updateOpenApiSpec, { mode: "promiseExit" });
   const [refetchStaged, setRefetchStaged] = useState(false);
   const [pasted, setPasted] = useState("");
+  const [specOverridesDraft, setSpecOverridesDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const config =
     AsyncResult.isSuccess(configResult) && configResult.value ? configResult.value : null;
 
-  const sourceUrl = config?.sourceUrl;
+  const specUrl = config?.specUrl;
+  const specOverridesText = specOverridesDraft ?? formatSpecOverridesText(config?.specOverrides);
 
   // The staged apply, rebuilt whenever the staged inputs change. Reported to
   // the sheet through a ref-stable callback so Save can run it.
   const applyStaged = useCallback(async (): Promise<EditSheetApplyResult> => {
     const spec = pasted.trim().length > 0 ? { kind: "blob" as const, value: pasted } : undefined;
-    if (!spec && !refetchStaged) return { ok: true, summary: null };
+    const parsedOverrides = parseSpecOverridesText(specOverridesText);
+    if (!parsedOverrides.ok) {
+      setError(parsedOverrides.message);
+      return { ok: false };
+    }
+    if (!spec && !refetchStaged && specOverridesDraft === null) {
+      return { ok: true, summary: null };
+    }
     setError(null);
     const exit = await doUpdate({
       params: { slug },
-      payload: spec ? { spec } : {},
+      payload: {
+        ...(spec ? { spec } : {}),
+        ...(specOverridesDraft !== null ? { specOverrides: parsedOverrides.value } : {}),
+      },
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(exit)) {
@@ -71,12 +85,13 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
     }
     setRefetchStaged(false);
     setPasted("");
+    setSpecOverridesDraft(null);
     return { ok: true, summary: outcomeSummary(exit.value) };
-  }, [doUpdate, pasted, refetchStaged, slug]);
+  }, [doUpdate, pasted, refetchStaged, slug, specOverridesDraft, specOverridesText]);
 
   const onPendingChangeRef = useRef(props.onPendingChange);
   onPendingChangeRef.current = props.onPendingChange;
-  const hasStagedChange = refetchStaged || pasted.trim().length > 0;
+  const hasStagedChange = refetchStaged || pasted.trim().length > 0 || specOverridesDraft !== null;
   useEffect(() => {
     onPendingChangeRef.current?.(hasStagedChange ? applyStaged : null);
     // Clear the staged apply if this section unmounts mid-edit.
@@ -95,7 +110,7 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
         </p>
       </div>
 
-      {sourceUrl ? (
+      {specUrl ? (
         <div className="space-y-2">
           <Label className="flex items-start gap-2 text-sm font-normal">
             <Checkbox
@@ -107,7 +122,7 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
             <span className="space-y-0.5">
               <span className="block">Re-fetch the spec on save</span>
               <span className="block break-all font-mono text-xs text-muted-foreground">
-                {sourceUrl}
+                {specUrl}
               </span>
             </span>
           </Label>
@@ -128,6 +143,8 @@ export default function UpdateSpecSection(props: EditSheetSectionProps) {
           />
         </div>
       )}
+
+      <SpecOverridesEditor value={specOverridesText} onChange={setSpecOverridesDraft} />
 
       {error && <FormErrorAlert message={error} />}
     </div>

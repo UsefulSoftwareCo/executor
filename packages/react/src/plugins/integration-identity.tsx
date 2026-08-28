@@ -40,10 +40,10 @@ export function pascalCaseDomainLabel(label: string): string | null {
     .join("");
 }
 
-export function integrationDisplayNameFromUrl(url: string, sourceKind: string): string | null {
+export function integrationDisplayNameFromUrl(url: string, integrationKind: string): string | null {
   const label = domainLabelFromUrl(url);
   const displayLabel = label ? pascalCaseDomainLabel(label) : null;
-  return displayLabel ? `${displayLabel} ${sourceKind}` : null;
+  return displayLabel ? `${displayLabel} ${integrationKind}` : null;
 }
 
 // Package runners whose own name is never the integration name: the meaningful
@@ -129,11 +129,11 @@ export function humanizeStdioToken(token: string): string | null {
 export function integrationDisplayNameFromStdio(
   command: string,
   args: readonly string[],
-  sourceKind: string,
+  integrationKind: string,
 ): string | null {
   const token = stdioPackageToken(command, args);
   const label = token ? humanizeStdioToken(token) : null;
-  return label ? `${label} ${sourceKind}` : null;
+  return label ? `${label} ${integrationKind}` : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ export interface IntegrationIdentityFieldsProps {
   readonly namespaceHint?: string;
   /**
    * When true, the namespace field is rendered disabled — useful on Edit
-   * forms, where the namespace is the source's identity and changing it
+   * forms, where the namespace is the integration's identity and changing it
    * would require a delete + recreate flow.
    */
   readonly namespaceReadOnly?: boolean;
@@ -225,7 +225,7 @@ export function IntegrationIdentityFields({
   const effectiveNamespaceHint =
     namespaceHint ??
     (namespaceReadOnly
-      ? "The namespace is part of the source's identity and cannot be changed."
+      ? "The namespace is part of the integration's identity and cannot be changed."
       : undefined);
 
   return (
@@ -255,7 +255,7 @@ export function IntegrationIdentityFieldRows({
   const effectiveNamespaceHint =
     namespaceHint ??
     (namespaceReadOnly
-      ? "The namespace is part of the source's identity and cannot be changed."
+      ? "The namespace is part of the integration's identity and cannot be changed."
       : undefined);
 
   return (

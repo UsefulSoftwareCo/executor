@@ -2,7 +2,9 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet, useAtomRefresh } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { toast } from "sonner";
 import { trackEvent } from "../api/analytics";
+import { messageFromExit } from "../api/error-reporting";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   AuthTemplateSlug,
@@ -13,6 +15,7 @@ import {
   type Owner,
 } from "@executor-js/sdk/shared";
 import {
+  checkConnectionHealth,
   connectionsAllAtom,
   integrationToolsAllAtom,
   integrationsOptimisticAtom,
@@ -21,7 +24,11 @@ import {
   refreshConnection,
   removeIntegrationOptimistic,
 } from "../api/atoms";
-import { connectionWriteKeys, integrationWriteKeys } from "../api/reactivity-keys";
+import {
+  connectionCheckKeys,
+  connectionWriteKeys,
+  integrationWriteKeys,
+} from "../api/reactivity-keys";
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
@@ -36,6 +43,12 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { useConnectionsHealth } from "../lib/use-connection-health";
+import {
+  integrationDetailInternalTabFromSearch,
+  type IntegrationDetailInternalTab,
+  type IntegrationDetailSearchTab,
+} from "../lib/integration-detail-tabs";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
 // the integration's per-owner connections; a tool's policy id is
@@ -52,7 +65,14 @@ type ToolRow = {
   readonly static?: boolean;
 };
 
-export function IntegrationDetailPage(props: { namespace: string }) {
+export function IntegrationDetailPage(props: {
+  namespace: string;
+  tab?: IntegrationDetailSearchTab;
+  /** Route-validated `addAccount=1`: open the add-connection flow on arrival.
+   *  Set by the `/connect/<slug>` deep link, which navigates client-side and so
+   *  cannot rely on the raw location search below. */
+  addAccount?: boolean;
+}) {
   const { namespace } = props;
   const slug = IntegrationSlug.make(namespace);
   const integrationPlugins = useIntegrationPlugins();
@@ -66,6 +86,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const refreshTools = useAtomRefresh(integrationToolsAllAtom(slug));
   const doRemove = useAtomSet(removeIntegrationOptimistic, { mode: "promiseExit" });
   const doRefresh = useAtomSet(refreshConnection, { mode: "promiseExit" });
+  const doCheckHealth = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   // Policies are owner-partitioned on write; the integration policy menu writes
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
@@ -88,8 +109,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [retryingTools, setRetryingTools] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"accounts" | "tools">("accounts");
+  const [activeTab, setActiveTab] = useState<IntegrationDetailInternalTab>(() =>
+    integrationDetailInternalTabFromSearch(props.tab),
+  );
   const [manualAccountHandoff, setManualAccountHandoff] =
     useState<IntegrationAccountHandoff | null>(null);
   const [locationSearch] = useState(() =>
@@ -101,6 +125,10 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setEditSheetOpen(false);
   }, [namespace]);
 
+  useEffect(() => {
+    setActiveTab(integrationDetailInternalTabFromSearch(props.tab));
+  }, [namespace, props.tab]);
+
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
   useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
@@ -108,9 +136,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
   const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
-    if (locationSearch.length === 0) return null;
     const search = new URLSearchParams(locationSearch);
-    if (search.get("addAccount") !== "1") return null;
+    // The route-validated flag and the raw `addAccount=1` are the same request;
+    // either one opens the flow. The extra prefill fields below are read from
+    // the raw search, which is populated on the full page loads that carry them.
+    if (!props.addAccount && search.get("addAccount") !== "1") return null;
     const owner = search.get("owner");
     const template = search.get("template");
     const label = search.get("label");
@@ -135,13 +165,13 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       };
     })();
     return {
-      key: locationSearch,
+      key: `${String(props.addAccount)}:${locationSearch}`,
       ...(owner === "org" || owner === "user" ? { owner } : {}),
       ...(template != null && template.length > 0 ? { template } : {}),
       ...(label != null && label.length > 0 ? { label } : {}),
       ...(oauthClient !== undefined ? { oauthClient } : {}),
     };
-  }, [locationSearch]);
+  }, [locationSearch, props.addAccount]);
   const accountHandoff = manualAccountHandoff ?? urlAccountHandoff;
 
   useEffect(() => {
@@ -222,6 +252,25 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     );
   }, [connectionsResult, slug]);
 
+  const healthProbeFor = useConnectionsHealth(integrationConnections);
+  const toolsHealthIssue = useMemo(() => {
+    const issues = integrationConnections
+      .map((connection) => ({ connection, probe: healthProbeFor(connection) }))
+      .filter(
+        (
+          entry,
+        ): entry is {
+          connection: Connection;
+          probe: NonNullable<ReturnType<typeof healthProbeFor>>;
+        } => entry.probe?.status === "expired" || entry.probe?.status === "degraded",
+      )
+      .sort((a, b) => {
+        const rank = (status: string): number => (status === "expired" ? 0 : 1);
+        return rank(a.probe.status) - rank(b.probe.status);
+      });
+    return issues[0] ?? null;
+  }, [healthProbeFor, integrationConnections]);
+
   // Account-grouped tool rows for the Tools tab. NOT deduped across
   // connections: one row per (owner, connection, tool). The leaf's `name` is the
   // policy id `<integration>.<tool>` so leaf policy patterns stay correct, while
@@ -261,6 +310,17 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const selection = selectedToolId ? (selectionById.get(selectedToolId) ?? null) : null;
   const selectedAddress = selection?.address ?? null;
   const selectedBareName = selection?.bareName ?? null;
+  const connectedEmptyTools =
+    !isBuiltInIntegration && integrationConnections.length > 0 && integrationTools.length === 0;
+  const hasToolSyncIssue = connectedEmptyTools && toolsHealthIssue !== null;
+  const emptyToolsTitle = toolsHealthIssue
+    ? toolsHealthIssue.probe.status === "expired"
+      ? "Connection rejected"
+      : "Tool sync failed"
+    : "Checking connection";
+  const emptyToolsDescription =
+    toolsHealthIssue?.probe.detail ??
+    "Checking whether this connection can load the GraphQL schema.";
 
   // Declared auth methods — derived server-side from the owning plugin's config
   // and carried on the integration catalog response. This is authoritative even
@@ -342,9 +402,71 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setRefreshing(false);
   };
 
+  const handleRetryTools = async () => {
+    if (retryingTools) return;
+    setRetryingTools(true);
+    let refreshedAny = false;
+    // The first still-unhealthy verdict (or failed call) explains why nothing
+    // synced; without it the button spins and stops with no visible change.
+    let firstProblem: string | null = null;
+    for (const connection of integrationConnections) {
+      const ref = {
+        owner: connection.owner,
+        integration: slug,
+        name: connection.name,
+      };
+      const health = await doCheckHealth({
+        params: ref,
+        query: {},
+        reactivityKeys: connectionCheckKeys,
+      });
+      if (Exit.isFailure(health)) {
+        firstProblem ??= messageFromExit(health, "Health check failed");
+        continue;
+      }
+      if (health.value.status !== "healthy") {
+        firstProblem ??= health.value.detail ?? "The connection is still unhealthy.";
+        continue;
+      }
+      const refreshed = await doRefresh({
+        params: ref,
+        reactivityKeys: connectionWriteKeys,
+      });
+      if (Exit.isFailure(refreshed)) {
+        firstProblem ??= messageFromExit(refreshed, "Tool sync failed");
+        continue;
+      }
+      refreshedAny = true;
+    }
+    trackEvent("integration_refreshed", {
+      integration_slug: String(slug),
+      connection_count: integrationConnections.length,
+      success: refreshedAny,
+    });
+    if (refreshedAny) {
+      refreshTools();
+      toast.success("Tools synced");
+    } else {
+      toast.error(firstProblem ?? "No connections to sync");
+    }
+    setRetryingTools(false);
+  };
+
   const handleOpenAddConnection = () => {
     setActiveTab("accounts");
     setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
+  };
+
+  const handleTabChange = (value: string) => {
+    const nextTab = value === "tools" ? "tools" : "accounts";
+    setActiveTab(nextTab);
+    void navigate({
+      to: "/{-$orgSlug}/integrations/$namespace",
+      params: { namespace },
+      search: {
+        tab: nextTab,
+      },
+    });
   };
 
   return (
@@ -415,7 +537,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
 
       <Tabs
         value={currentTab}
-        onValueChange={(value: string) => setActiveTab(value as "accounts" | "tools")}
+        onValueChange={handleTabChange}
         className="min-h-0 flex-1 gap-0 overflow-hidden"
       >
         <div className="shrink-0 border-b border-border/60 px-4 py-2">
@@ -433,7 +555,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
             {editPlugin?.accounts ? (
               <Suspense fallback={<AccountsSkeleton />}>
                 <editPlugin.accounts
-                  sourceId={namespace}
+                  integrationId={namespace}
                   integrationName={integrationData?.name || namespace}
                   accountHandoff={accountHandoff}
                 />
@@ -478,6 +600,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
                       policies={sortedPolicies}
                       groupByConnection={!isBuiltInIntegration}
+                      emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
                     />
                   </div>
 
@@ -490,7 +613,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
                         staticTool={selection?.static}
                         policy={selectedTool.policy}
                         onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                        onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                        onClearPolicy={(pattern, policyId) =>
+                          void policyActions.clear(pattern, policyId)
+                        }
                         {...(!selection?.static && selectedBareName
                           ? {
                               integration: slug,
@@ -504,6 +629,23 @@ export function IntegrationDetailPage(props: { namespace: string }) {
                       <NoConnectionToolsEmptyState
                         onAddConnection={handleOpenAddConnection}
                         canAddConnection={accountsMethods.length > 0}
+                      />
+                    ) : hasToolSyncIssue ? (
+                      <ToolDetailEmpty
+                        hasTools={false}
+                        title={emptyToolsTitle}
+                        description={emptyToolsDescription}
+                        action={
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleRetryTools()}
+                            disabled={retryingTools}
+                          >
+                            {retryingTools ? "Checking…" : "Check and sync tools"}
+                          </Button>
+                        }
                       />
                     ) : (
                       <ToolDetailEmpty hasTools={integrationTools.length > 0} />

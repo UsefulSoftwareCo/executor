@@ -13,6 +13,7 @@
     "*.tsbuildinfo",
     "executor-*.tgz",
     "**/routeTree.gen.ts",
+    "**/smoke-harness-bundle.gen.ts",
     "apps/cloud/src/services/executor-schema.ts"
   ]
 }

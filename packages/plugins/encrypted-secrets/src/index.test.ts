@@ -59,7 +59,10 @@ const makeFakeStorage = () => {
       }),
     remove: (input: { collection: string; key: string; owner: Owner }) =>
       Effect.sync(() => {
-        rows.delete(composite(input.collection, input.key));
+        // Owner-filtered like the real facade: a remove aimed at the wrong
+        // partition deletes nothing.
+        const row = rows.get(composite(input.collection, input.key));
+        if (row && row.owner === input.owner) rows.delete(composite(input.collection, input.key));
       }),
   };
   return { facade, rows };
@@ -135,7 +138,8 @@ describe("provider", () => {
   // the scope arg entirely. The provider keys solely by the opaque
   // `ProviderItemId`; the referencing connection row owns the (tenant, owner,
   // subject) partition, so cross-scope isolation is no longer the provider's
-  // concern to enforce or test.
+  // concern to enforce or test. Filing rows into the RIGHT partition still is
+  // — see the partitioning describe below (issue #1453).
 
   test("get returns null for a missing id", async () => {
     const { provider } = makeProvider("master");
@@ -160,5 +164,52 @@ describe("provider", () => {
     await Effect.runPromise(provider.set!(id("beta"), "b"));
     const entries = await Effect.runPromise(provider.list!());
     expect(entries.map((e) => e.id).sort()).toEqual(["alpha", "beta"]);
+  });
+});
+
+// The partition a write files under is the CREDENTIAL's owner (embedded in
+// the item id), not the acting caller's binding. Issue #1453: a user-bound
+// caller completing an org connection's OAuth consent filed the tokens under
+// their private partition, so every other org principal resolved nothing and
+// failed with `oauth_connection_missing`.
+describe("owner partitioning", () => {
+  const storedOwner = (
+    rows: Map<string, { owner: Owner; key: string; collection: string; data: unknown }>,
+    key: string,
+  ) => [...rows.values()].find((row) => row.key === key)?.owner;
+
+  test("an org-embedded id written by a user-bound caller files org-shared", async () => {
+    const { provider, rows } = makeProvider("master", Owner.make("user"));
+    await Effect.runPromise(provider.set!(id("oauth:org:slack:workspace"), "access_tok"));
+    await Effect.runPromise(provider.set!(id("oauth:org:slack:workspace:refresh"), "refresh_tok"));
+    await Effect.runPromise(provider.set!(id("connection:org:exa:main:token"), "api_key"));
+    await Effect.runPromise(provider.set!(id("oauth-client:org:my_app:secret"), "client_sec"));
+    expect(storedOwner(rows, "oauth:org:slack:workspace")).toBe("org");
+    expect(storedOwner(rows, "oauth:org:slack:workspace:refresh")).toBe("org");
+    expect(storedOwner(rows, "connection:org:exa:main:token")).toBe("org");
+    expect(storedOwner(rows, "oauth-client:org:my_app:secret")).toBe("org");
+  });
+
+  test("a user-embedded id written by an org-bound caller files user-private", async () => {
+    const { provider, rows } = makeProvider("master", Owner.make("org"));
+    await Effect.runPromise(provider.set!(id("connection:user:notion:personal:token"), "private"));
+    expect(storedOwner(rows, "connection:user:notion:personal:token")).toBe("user");
+  });
+
+  test("an id with no embedded owner falls back to the caller binding", async () => {
+    const asUser = makeProvider("master", Owner.make("user"));
+    await Effect.runPromise(asUser.provider.set!(id("github"), "v"));
+    expect(storedOwner(asUser.rows, "github")).toBe("user");
+
+    const asOrg = makeProvider("master", Owner.make("org"));
+    await Effect.runPromise(asOrg.provider.set!(id("github"), "v"));
+    expect(storedOwner(asOrg.rows, "github")).toBe("org");
+  });
+
+  test("delete targets the embedded owner's partition", async () => {
+    const { provider, rows } = makeProvider("master", Owner.make("user"));
+    await Effect.runPromise(provider.set!(id("oauth:org:slack:workspace"), "tok"));
+    await Effect.runPromise(provider.delete!(id("oauth:org:slack:workspace")));
+    expect(rows.size).toBe(0);
   });
 });

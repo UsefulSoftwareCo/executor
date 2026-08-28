@@ -32,18 +32,22 @@ const github = await createEmulator({ service: "github", port: 4501 });
 `servers`) when a proxy fronts the emulator — the bind stays on `port`.
 
 **Attach to a running one** (another process, or hosted on Cloudflare with
-Durable Object state at `https://<service>.emulators.dev` /
-`https://<service>.<instance>.emulators.dev` — catalog at
-`GET https://emulators.dev/_emulate/services`):
+Durable Object state at `https://<service>.<instance>.emulators.dev` —
+catalog at `GET https://emulators.dev/_emulate/services`). Service hosts
+(`https://<service>.emulators.dev`) are control plane only, with no shared
+default instance behind them: create a private instance first and connect to
+the returned `providerBaseUrl`.
 
 ```ts
 import { connectEmulator } from "@executor-js/emulate";
-const resend = await connectEmulator({ baseUrl: "https://resend.emulators.dev" });
+const created = await fetch("https://resend.emulators.dev/_emulate/instances", { method: "POST" });
+const { providerBaseUrl } = await created.json();
+const resend = await connectEmulator({ baseUrl: providerBaseUrl });
 // optional: { service: "resend" } verifies the manifest on connect
 ```
 
-Create a private hosted instance with `POST /_emulate/instances` on the
-service host.
+In e2e scenarios use `createEmulatorInstance` from
+`e2e/src/emulator-instance.ts`, which wraps this.
 
 ## The typed control-plane client
 
@@ -113,12 +117,11 @@ The emulate repo's own `AGENTS.md` / `README.md` carry the current build,
 publish, and deploy commands (npm + Cloudflare creds are in 1Password). Read
 them there rather than memorizing flags here — they move.
 
-**A hot deploy can redden other people's e2e.** `*.emulators.dev` service
-hosts are shared infrastructure; a control-plane regression there has failed
-unrelated PRs' suites before. When a scenario needs isolation or a behavior
-that isn't deployed yet, pin to a published package version or mint a private
-per-run instance (`POST /_emulate/instances`) instead of mutating the shared
-service host.
+**A hot deploy can redden other people's e2e.** The `emulate-hosts` worker
+behind `*.emulators.dev` is shared infrastructure; a control-plane regression
+there has failed unrelated PRs' suites before. Scenarios always run on private
+per-run instances (`POST /_emulate/instances`); when a scenario needs behavior
+that isn't deployed yet, pin to a published package version.
 
 ## Gotchas
 

@@ -3,7 +3,7 @@
 //
 // Aggregates the openapi plugin's frontend contributions into a single
 // declarative spec. The host's Vite plugin reads this via
-// `virtual:executor/plugins-client`, so the host's sources page derives
+// `virtual:executor/plugins-client`, so the host's integrations page derives
 // the openapi entry from here without a direct `*/react` import.
 //
 // The richer add/edit/summary components still live in `./react`; this
@@ -12,9 +12,11 @@
 
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
-import { openApiIntegrationPlugin } from "./source-plugin";
+import { createOpenApiIntegrationPlugin, type OpenApiClientConfig } from "./integration-plugin";
 
-export default defineClientPlugin({
-  id: "openapi" as const,
-  integrationPlugin: openApiIntegrationPlugin,
-});
+export default function createOpenApiClientPlugin(config?: OpenApiClientConfig) {
+  return defineClientPlugin({
+    id: "openapi" as const,
+    integrationPlugin: createOpenApiIntegrationPlugin(config),
+  });
+}

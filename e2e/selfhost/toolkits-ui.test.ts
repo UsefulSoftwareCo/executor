@@ -201,9 +201,14 @@ scenario(
           await page.getByRole("button", { name: "Manage toolkit connections" }).click();
           const dialog = page.getByRole("dialog", { name: "Manage connections" });
           await dialog.waitFor();
+          // The contract is the explanation, not the count: this suite's own
+          // hidden connection guarantees at least one, but the workspace is
+          // shared, so another scenario's personal connection may legitimately
+          // raise the number (asserting a global count is what e2e/AGENTS.md
+          // forbids).
           await dialog
             .getByText(
-              "You have 1 personal connection that is not shown because this is a shared toolkit.",
+              /You have \d+ personal connections? that (?:is|are) not shown because this is a shared toolkit\./,
             )
             .waitFor();
         });

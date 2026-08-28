@@ -18,6 +18,7 @@ import {
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
+  EnterpriseManagedStartInputSchema,
   IntegrationSlug,
   InternalError,
   OAuthClientSlug,
@@ -50,6 +51,7 @@ const ConnectionResponse = Schema.Struct({
   oauthClient: Schema.NullOr(OAuthClientSlug),
   oauthClientOwner: Schema.NullOr(Owner),
   oauthScope: Schema.NullOr(Schema.String),
+  missingOAuthScopes: Schema.Array(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
@@ -61,7 +63,7 @@ const CreateClientPayload = Schema.Struct({
   slug: OAuthClientSlug,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
-  grant: Schema.Literals(["authorization_code", "client_credentials"]),
+  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
   clientId: Schema.String,
   clientSecret: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -109,7 +111,7 @@ const RegisterDynamicResponse = Schema.Struct({
 const OAuthClientSummaryResponse = Schema.Struct({
   owner: Owner,
   slug: OAuthClientSlug,
-  grant: Schema.Literals(["authorization_code", "client_credentials"]),
+  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -119,6 +121,15 @@ const OAuthClientSummaryResponse = Schema.Struct({
     Schema.Struct({
       kind: Schema.Literal("dynamic_client_registration"),
       integration: Schema.optional(Schema.NullOr(IntegrationSlug)),
+    }),
+    /** Host-operated app declared in executor config — every org connects
+     *  through it; nothing to paste. `integrations` ranks it as the default
+     *  for those integrations; `allowedScopes` is the host-enforced scope
+     *  boundary the picker mirrors before offering it. */
+    Schema.Struct({
+      kind: Schema.Literal("first_party"),
+      integrations: Schema.optional(Schema.Array(IntegrationSlug)),
+      allowedScopes: Schema.optional(Schema.Array(Schema.String)),
     }),
   ]),
 });
@@ -159,7 +170,16 @@ const StartPayload = Schema.Struct({
   integration: IntegrationSlug,
   template: AuthTemplateSlug,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Mint a NEW connection: a taken `name` resolves to the next free suffixed
+   *  name server-side instead of re-minting the existing row. */
+  newConnection: Schema.optional(Schema.Boolean),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Enterprise-managed authorization inputs (MCP EMA profile). Required when
+   *  the named client's grant is `id_jag`, ignored otherwise: the client's own
+   *  id/secret authenticate at the MCP server's authorization server, while
+   *  these name the SECOND registration at the enterprise identity provider and
+   *  carry the identity assertion the user already holds from single sign-on. */
+  enterprise: Schema.optional(EnterpriseManagedStartInputSchema),
 });
 
 const StartResponse = Schema.Union([

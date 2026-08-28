@@ -10,6 +10,7 @@ import { Effect } from "effect";
 
 import { scenario } from "./scenario";
 import { Browser, Target } from "./services";
+import { visit } from "./surfaces/browser";
 
 export const FORCED_LATEST = "99.0.0";
 const CHANGELOG_FIXTURE = {
@@ -133,7 +134,7 @@ export const registerUpdateCardCurrentScenario = (name: string): void =>
         );
 
         await step("Open the console", async () => {
-          await page.goto("/", { waitUntil: "networkidle" });
+          await visit(page, "/");
           await page.getByRole("heading", { name: "Integrations" }).waitFor({ timeout: 60_000 });
         });
 

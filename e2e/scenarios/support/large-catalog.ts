@@ -5,7 +5,7 @@
 // by running the policy engine over the WHOLE catalog on connect (the
 // getDescription -> connections.list -> toolsList path), not just the toolkit's
 // own connections. A per-tool resolution there is an N+1 that scales with total
-// catalog size, so a realistic workspace (a real spec plus enough sources to
+// catalog size, so a realistic workspace (a real spec plus enough integrations to
 // look like one) is what surfaces the regression.
 //
 // `catalogApi` is exported so scenarios build their client from the SAME
@@ -65,7 +65,7 @@ export const syntheticSpec = (title: string, ops: number, baseUrl: string): stri
   });
 };
 
-export interface SeedSource {
+export interface SeedIntegration {
   readonly slug: string;
   readonly specText: string;
   readonly baseUrl: string;
@@ -73,53 +73,53 @@ export interface SeedSource {
 }
 
 export interface SeedPlan {
-  readonly sources: ReadonlyArray<SeedSource>;
-  /** The first source's slug — the one the toolkit is scoped to. */
+  readonly integrations: ReadonlyArray<SeedIntegration>;
+  /** The first integration's slug — the one the toolkit is scoped to. */
   readonly firstSlug: string;
-  /** Connection pattern the toolkit binds (the first source, org, conn0). */
+  /** Connection pattern the toolkit binds (the first integration, org, conn0). */
   readonly toolkitConnectionPattern: string;
 }
 
 export interface SeedOptions {
-  /** Synthetic sources on top of the real spec. Default 10. */
-  readonly syntheticSources?: number;
-  /** Operations per synthetic source. Default 300. */
-  readonly opsPerSource?: number;
-  /** Include the real Vercel fixture (322 ops) as one source. Default true. */
+  /** Synthetic integrations on top of the real spec. Default 10. */
+  readonly syntheticIntegrations?: number;
+  /** Operations per synthetic integration. Default 300. */
+  readonly opsPerIntegration?: number;
+  /** Include the real Vercel fixture (322 ops) as one integration. Default true. */
   readonly includeRealSpec?: boolean;
 }
 
 /**
  * Plan a large, production-shaped catalog. With the defaults (1 real + 10
- * synthetic sources, 300 ops each) it is ~3,300 tools across 11 sources, where
+ * synthetic integrations, 300 ops each) it is ~3,300 tools across 11 integrations, where
  * the per-tool policy N+1 turns a toolkit connect from sub-second into a 30s+
- * client timeout. Each source gets exactly one org connection at `conn0`.
+ * client timeout. Each integration gets exactly one org connection at `conn0`.
  */
 export const planLargeCatalog = (options: SeedOptions = {}): SeedPlan => {
-  const syntheticSources = options.syntheticSources ?? 10;
-  const opsPerSource = options.opsPerSource ?? 300;
+  const syntheticIntegrations = options.syntheticIntegrations ?? 10;
+  const opsPerIntegration = options.opsPerIntegration ?? 300;
   const includeRealSpec = options.includeRealSpec ?? true;
 
-  const sources: SeedSource[] = [];
+  const integrations: SeedIntegration[] = [];
   if (includeRealSpec) {
-    sources.push({
+    integrations.push({
       slug: unique("vercel"),
       specText: vercelSpecText(),
       baseUrl: "https://api.vercel.com",
       description: "Vercel API",
     });
   }
-  for (let s = 0; s < syntheticSources; s++) {
-    sources.push({
+  for (let s = 0; s < syntheticIntegrations; s++) {
+    integrations.push({
       slug: unique("svc"),
-      specText: syntheticSpec(`Service ${s}`, opsPerSource, "https://service.example"),
+      specText: syntheticSpec(`Service ${s}`, opsPerIntegration, "https://service.example"),
       baseUrl: "https://service.example",
     });
   }
 
-  const firstSlug = sources[0]!.slug;
+  const firstSlug = integrations[0]!.slug;
   return {
-    sources,
+    integrations,
     firstSlug,
     toolkitConnectionPattern: `${firstSlug}.org.conn0.*`,
   };
@@ -151,7 +151,7 @@ export interface SeededCatalog {
 
 /**
  * Build the planned catalog under the current identity (one org connection per
- * source) and a toolkit scoped to the first source, then report the total tool
+ * integration) and a toolkit scoped to the first integration, then report the total tool
  * count and a finalizer. The toolkit's own surface is small; the connect cost
  * the scenarios guard comes from the policy engine walking the whole catalog.
  */
@@ -162,13 +162,13 @@ export const seedLargeCatalog = (
   Effect.gen(function* () {
     const plan = planLargeCatalog(options);
 
-    for (const source of plan.sources) {
+    for (const integration of plan.integrations) {
       yield* client.openapi.addSpec({
         payload: {
-          spec: { kind: "blob", value: source.specText },
-          slug: IntegrationSlug.make(source.slug),
-          baseUrl: source.baseUrl,
-          ...(source.description ? { description: source.description } : {}),
+          spec: { kind: "blob", value: integration.specText },
+          slug: IntegrationSlug.make(integration.slug),
+          baseUrl: integration.baseUrl,
+          ...(integration.description ? { description: integration.description } : {}),
           authenticationTemplate: [
             {
               slug: "apiKey",
@@ -182,7 +182,7 @@ export const seedLargeCatalog = (
         payload: {
           owner: "org",
           name: ConnectionName.make("conn0"),
-          integration: IntegrationSlug.make(source.slug),
+          integration: IntegrationSlug.make(integration.slug),
           template: AuthTemplateSlug.make("apiKey"),
           value: "unused-token",
         },
@@ -200,7 +200,7 @@ export const seedLargeCatalog = (
       payload: { pattern: plan.toolkitConnectionPattern },
     });
 
-    const integrationSlugs = plan.sources.map((source) => source.slug);
+    const integrationSlugs = plan.integrations.map((integration) => integration.slug);
     const cleanup = Effect.gen(function* () {
       yield* client.toolkits.remove({ params: { toolkitId: toolkit.id } }).pipe(Effect.ignore);
       yield* Effect.forEach(

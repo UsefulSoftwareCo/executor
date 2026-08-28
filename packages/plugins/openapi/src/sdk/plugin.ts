@@ -9,20 +9,27 @@ import {
   IntegrationSlug,
   ToolResult,
   definePlugin,
+  HealthCheckSpec,
   mergeAuthTemplates,
   sha256Hex,
   tool,
   type AuthMethodDescriptor,
   type Integration,
   type IntegrationConfig,
+  type IntegrationPreset,
   type IntegrationRecord,
   type PluginCtx,
   type StorageFailure,
 } from "@executor-js/sdk/core";
 
 import { decodeOpenApiIntegrationConfig, type OpenApiIntegrationConfig } from "./config";
-import { OpenApiExtractionError, OpenApiOAuthError, OpenApiParseError } from "./errors";
-import { parse, resolveSpecText } from "./parse";
+import {
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  OpenApiParseError,
+  OpenApiSpecOverrideError,
+} from "./errors";
+import { parse, parseSpecObject, resolveSpecText } from "./parse";
 import { extract } from "./extract";
 import {
   OAuth2AuthorizationCodeFlow,
@@ -30,16 +37,23 @@ import {
   OAuth2Preset,
   SecurityScheme,
   previewSpecText,
+  previewSpecTextStreaming,
   type SpecPreview,
 } from "./preview";
 import { deriveAuthenticationTemplateFromPreview, firstBaseUrlForPreview } from "./derive-auth";
 import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore } from "./store";
+import {
+  resolveSpecFormatAdapter,
+  type ConvertedSpec,
+  type SpecFormatAdapter,
+} from "./spec-format";
 import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
 import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
+  compileAndPersistOpenApiSpecStreaming,
   compileOpenApiSpec,
   invokeOpenApiBackedTool,
   listHealthCheckCandidatesOpenApi,
@@ -50,6 +64,14 @@ import {
 } from "./backing";
 import type { InvokeOptions } from "./invoke";
 import { resolveServerUrl } from "./openapi-utils";
+import {
+  applySpecOverrides,
+  decodeOpenApiSpecOverrides,
+  SpecOverridesSchema,
+  type SpecOverrides,
+} from "./spec-overrides";
+
+const encodeJsonText = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 // ---------------------------------------------------------------------------
 // Extension input shapes
@@ -59,6 +81,8 @@ export type OpenApiSpecInput = typeof OpenApiSpecInputSchema.Type;
 
 export interface OpenApiPreviewInput {
   readonly spec: string;
+  readonly specFormat?: string;
+  readonly specOverrides?: SpecOverrides;
 }
 
 /** Add an OpenAPI integration to the catalog. The integration is the API
@@ -67,7 +91,7 @@ export interface OpenApiPreviewInput {
 export interface OpenApiSpecConfig {
   readonly spec: OpenApiSpecInput;
   /** The catalog slug for the new integration (the `<integration>` segment). */
-  readonly slug: string;
+  readonly slug?: string;
   /** Display name (defaults to the spec title). */
   readonly name?: string;
   /** Agent-visible description (defaults to the spec's `info.description`,
@@ -78,6 +102,11 @@ export interface OpenApiSpecConfig {
   readonly headers?: Record<string, string>;
   /** Static query params applied to every request. */
   readonly queryParams?: Record<string, string>;
+  readonly specFormat?: string;
+  /** Ordered RFC 6902 operations applied after fetching/conversion and before parsing. */
+  readonly specOverrides?: SpecOverrides;
+  readonly family?: string;
+  readonly healthCheck?: HealthCheckSpec;
   /** Auth methods a connection's value renders through - canonical
    *  placements or the request-shaped authoring dialect. */
   readonly authenticationTemplate?: readonly AuthenticationInput[];
@@ -88,14 +117,16 @@ export interface OpenApiExtensionFailure {
 }
 
 /** Add / merge custom auth methods onto an existing OpenAPI integration's
- *  `authenticationTemplate`. Mirrors the GraphQL plugin's `configure`. */
+ *  `authenticationTemplate`, and update request routing metadata. Mirrors the
+ *  GraphQL plugin's `configure`. */
 export interface OpenApiConfigureInput {
   /** The auth methods to add. Each entry is appended to (or, when its `slug`
    *  already exists, replaces) the integration's existing template array. A
    *  custom apiKey method with no `slug` is assigned a generated `custom_<id>`
    *  slug that is collision-checked against the existing template. */
-  readonly authenticationTemplate: readonly AuthenticationInput[];
+  readonly authenticationTemplate?: readonly AuthenticationInput[];
   readonly mode?: "merge" | "replace";
+  readonly baseUrl?: string;
 }
 
 /** What changed in the tool catalog when a spec was updated in place. Tool
@@ -109,8 +140,10 @@ export interface UpdateSpecResult {
 
 export interface OpenApiUpdateSpecInput {
   /** New spec source. Omit to re-fetch from the integration's stored
-   *  `sourceUrl`. */
+   *  `specUrl`. */
   readonly spec?: OpenApiSpecInput;
+  /** Replacement override list. Omit to keep existing overrides; pass [] to clear them. */
+  readonly specOverrides?: SpecOverrides;
 }
 
 export interface OpenApiPluginExtension {
@@ -118,7 +151,11 @@ export interface OpenApiPluginExtension {
     input: string | OpenApiPreviewInput,
   ) => Effect.Effect<
     SpecPreview,
-    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError | StorageFailure
+    | OpenApiParseError
+    | OpenApiExtractionError
+    | OpenApiOAuthError
+    | OpenApiSpecOverrideError
+    | StorageFailure
   >;
   readonly addSpec: (
     config: OpenApiSpecConfig,
@@ -127,6 +164,7 @@ export interface OpenApiPluginExtension {
     | OpenApiParseError
     | OpenApiExtractionError
     | OpenApiOAuthError
+    | OpenApiSpecOverrideError
     | IntegrationAlreadyExistsError
     | StorageFailure
   >;
@@ -141,6 +179,7 @@ export interface OpenApiPluginExtension {
     | OpenApiParseError
     | OpenApiExtractionError
     | OpenApiOAuthError
+    | OpenApiSpecOverrideError
     | IntegrationNotFoundError
     | StorageFailure
   >;
@@ -165,6 +204,8 @@ export interface OpenApiPluginExtension {
 
 const PreviewSpecInputSchema = Schema.Struct({
   spec: Schema.String,
+  specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const StaticPreviewServerVariableSchema = Schema.Struct({
@@ -247,6 +288,7 @@ const AuthenticationSchema = Schema.Union([
   Schema.Struct({
     slug: Schema.String,
     kind: Schema.Literal("oauth2"),
+    label: Schema.optional(Schema.String),
     authorizationUrl: Schema.String,
     tokenUrl: Schema.String,
     resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -259,17 +301,22 @@ const AuthenticationSchema = Schema.Union([
   ApiKeyAuthTemplate,
 ]);
 
-const AddSourceInputSchema = Schema.Struct({
+const AddIntegrationInputSchema = Schema.Struct({
   spec: OpenApiSpecInputSchema,
-  slug: Schema.String,
+  slug: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
+  family: Schema.optional(Schema.String),
+  healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
 });
 
-const AddSourceOutputSchema = Schema.Struct({
+const AddIntegrationOutputSchema = Schema.Struct({
   slug: Schema.String,
   toolCount: Schema.Number,
 });
@@ -280,11 +327,11 @@ const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
 const PreviewSpecOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticPreviewSpecOutputSchema),
 );
-const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(AddSourceInputSchema),
+const AddIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddIntegrationInputSchema),
 );
-const AddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(AddSourceOutputSchema),
+const AddIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddIntegrationOutputSchema),
 );
 
 const openApiToolFailure = (code: string, message: string, details?: unknown) =>
@@ -360,7 +407,7 @@ const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => (
   })),
 });
 
-const specInputToSourceUrl = (spec: OpenApiSpecInput): string | undefined =>
+const specInputToSpecUrl = (spec: OpenApiSpecInput): string | undefined =>
   spec.kind === "url" ? spec.url : undefined;
 
 const OAUTH_DISCOVERED_SCHEME_NAME = "DiscoveredOAuth2";
@@ -400,7 +447,7 @@ const addProbeCandidate = (candidates: string[], value: string | undefined): voi
 
 const oauthProbeCandidates = (
   preview: SpecPreview,
-  sourceUrl: string | undefined,
+  specUrl: string | undefined,
   baseUrl: string | undefined,
 ): readonly string[] => {
   const candidates: string[] = [];
@@ -411,7 +458,7 @@ const oauthProbeCandidates = (
       resolveServerUrl(server.url, Option.getOrUndefined(server.variables), {}),
     );
   }
-  addProbeCandidate(candidates, sourceUrl);
+  addProbeCandidate(candidates, specUrl);
   return candidates;
 };
 
@@ -534,7 +581,7 @@ export const describeOpenApiAuthMethods = (
       if (template.kind === "oauth2") {
         return {
           id: String(template.slug),
-          label: "OAuth2",
+          label: template.label ?? "OAuth2",
           kind: "oauth",
           template: String(template.slug),
           oauth: {
@@ -553,9 +600,12 @@ export const describeOpenApiAuthMethods = (
 
 export const describeOpenApiIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = decodeOpenApiIntegrationConfig(record.config);
-  return { url: config?.baseUrl ?? config?.sourceUrl };
+  return {
+    url: config?.baseUrl ?? config?.specUrl,
+    ...(config?.family ? { family: config.family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -565,37 +615,112 @@ export const describeOpenApiIntegrationDisplay = (
 export interface OpenApiPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
   readonly invokeOptions?: InvokeOptions;
+  readonly specFormats?: readonly SpecFormatAdapter[];
+  readonly presets?: readonly IntegrationPreset[];
 }
 
-export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
+export const openApiPlugin = definePlugin<
+  "openapi",
+  OpenApiPluginExtension,
+  OpenapiStore,
+  OpenApiPluginOptions
+>((options?: OpenApiPluginOptions) => {
+  interface ResolvedSpec extends ConvertedSpec {
+    readonly sourceSpecText: string;
+  }
+
+  const applyOverridesToResolvedSpec = Effect.fn("OpenApi.applyOverridesToResolvedSpec")(function* (
+    resolved: ConvertedSpec,
+    overrides: SpecOverrides | undefined,
+  ) {
+    if (!overrides || overrides.length === 0) {
+      return { ...resolved, sourceSpecText: resolved.specText } satisfies ResolvedSpec;
+    }
+    const document = yield* parseSpecObject(resolved.specText);
+    const patched = yield* applySpecOverrides(document, overrides);
+    return {
+      ...resolved,
+      sourceSpecText: resolved.specText,
+      specText: encodeJsonText(patched),
+    } satisfies ResolvedSpec;
+  });
+
   const resolveSpecForInput = (
-    spec: OpenApiSpecInput,
+    config: Pick<
+      OpenApiSpecConfig,
+      "spec" | "specFormat" | "specOverrides" | "headers" | "queryParams" | "baseUrl"
+    > & {
+      readonly authenticationTemplate?: readonly (Authentication | AuthenticationInput)[];
+    },
     httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   ): Effect.Effect<
-    {
-      readonly specText: string;
-    },
-    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError
+    ResolvedSpec,
+    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError | OpenApiSpecOverrideError
   > =>
     Effect.gen(function* () {
-      if (spec.kind === "url") {
-        const specText = yield* resolveSpecText(spec.url).pipe(Effect.provide(httpClientLayer));
-        return { specText };
+      const adapter = yield* resolveSpecFormatAdapter(
+        options?.specFormats ?? [],
+        config.specFormat,
+      );
+      if (adapter) {
+        if (config.spec.kind !== "url") {
+          return yield* new OpenApiParseError({
+            message: "Spec format adapters require a URL spec input",
+          });
+        }
+        const resolved = yield* adapter.fetch({
+          urls: [config.spec.url],
+          credentials: {
+            ...(config.headers ? { headers: config.headers } : {}),
+            ...(config.queryParams ? { queryParams: config.queryParams } : {}),
+          },
+          ...(config.authenticationTemplate
+            ? {
+                consentScopes: config.authenticationTemplate.flatMap((template) =>
+                  "kind" in template && template.kind === "oauth2" ? template.scopes : [],
+                ),
+              }
+            : {}),
+          httpClientLayer,
+        });
+        return yield* applyOverridesToResolvedSpec(resolved, config.specOverrides);
       }
-      return { specText: spec.value };
+      if (config.spec.kind === "url") {
+        const specText = yield* resolveSpecText(config.spec.url).pipe(
+          Effect.provide(httpClientLayer),
+        );
+        return yield* applyOverridesToResolvedSpec(
+          { specText, specUrl: config.spec.url },
+          config.specOverrides,
+        );
+      }
+      return yield* applyOverridesToResolvedSpec(
+        { specText: config.spec.value },
+        config.specOverrides,
+      );
     });
 
   return {
     id: "openapi" as const,
     packageName: "@executor-js/plugin-openapi",
-    integrationPresets: openApiPresets.map((preset) => ({
-      id: preset.id,
-      name: preset.name,
-      summary: preset.summary,
-      ...(preset.url ? { url: preset.url } : {}),
-      ...(preset.icon ? { icon: preset.icon } : {}),
-      ...(preset.featured ? { featured: preset.featured } : {}),
-    })),
+    clientConfig: options?.presets ? { presets: options.presets } : undefined,
+    integrationPresets: [...openApiPresets, ...(options?.presets ?? [])].map((preset) => {
+      const specOverrides = decodeOpenApiSpecOverrides(preset.specOverrides);
+      return {
+        id: preset.id,
+        name: preset.name,
+        summary: preset.summary,
+        ...(preset.url ? { url: preset.url } : {}),
+        ...(preset.icon ? { icon: preset.icon } : {}),
+        ...(preset.featured ? { featured: preset.featured } : {}),
+        ...(preset.family ? { family: preset.family } : {}),
+        ...(preset.specFormat ? { specFormat: preset.specFormat } : {}),
+        ...(preset.defaultSlug ? { defaultSlug: preset.defaultSlug } : {}),
+        ...(specOverrides ? { specOverrides } : {}),
+        ...(preset.authTemplate ? { authTemplate: preset.authTemplate } : {}),
+        ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
+      };
+    }),
     storage: (deps): OpenapiStore => makeDefaultOpenapiStore(deps),
 
     extension: (ctx: PluginCtx<OpenapiStore>) => {
@@ -604,13 +729,13 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
       const enrichPreviewWithDiscoveredOAuth = (input: {
         readonly specText: string;
         readonly preview: SpecPreview;
-        readonly sourceUrl?: string;
+        readonly specUrl?: string;
         readonly baseUrl?: string;
       }): Effect.Effect<SpecPreview, OpenApiParseError | OpenApiExtractionError> =>
         Effect.gen(function* () {
           if (input.preview.oauth2Presets.length > 0) return input.preview;
 
-          const candidates = oauthProbeCandidates(input.preview, input.sourceUrl, input.baseUrl);
+          const candidates = oauthProbeCandidates(input.preview, input.specUrl, input.baseUrl);
           if (candidates.length === 0) return input.preview;
 
           for (const candidate of candidates) {
@@ -650,8 +775,24 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         Effect.gen(function* () {
           // Resolve URL → text and parse BEFORE opening a transaction. Holding
           // `BEGIN` across a network fetch is the Hyperdrive deadlock path.
-          const resolved = yield* resolveSpecForInput(config.spec, httpClientLayer);
-          const compiled = yield* compileOpenApiSpec(resolved.specText);
+          const resolved = yield* resolveSpecForInput(config, httpClientLayer);
+          const compiled = resolved.keepPathItem
+            ? undefined
+            : yield* compileOpenApiSpec(resolved.specText);
+          const adapter = yield* resolveSpecFormatAdapter(
+            options?.specFormats ?? [],
+            config.specFormat,
+          );
+          const derivedIdentity =
+            adapter?.deriveIdentity && resolved.document
+              ? adapter.deriveIdentity(resolved.document)
+              : null;
+          const resolvedSlug = config.slug?.trim() || derivedIdentity?.slug;
+          if (!resolvedSlug) {
+            return yield* new OpenApiParseError({
+              message: "OpenAPI integration slug is required",
+            });
+          }
 
           // Defaults the add page derives from its preview, applied here so
           // headless callers (MCP, API) get the same integration the UI's
@@ -665,21 +806,28 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           //     end with nowhere to paste a credential)
           // An explicit input always wins; for auth, an explicit EMPTY array
           // means "no auth methods" and suppresses the derivation.
-          const explicitBaseUrl = config.baseUrl;
+          const explicitBaseUrl = config.baseUrl ?? resolved.baseUrl;
           const needsDerivedBaseUrl = explicitBaseUrl == null;
           const needsDerivedAuth = config.authenticationTemplate == null;
+          // Spec-format selections (resolved.keepPathItem) preview via the
+          // streaming path: the whole-document parse of a Graph-sized source is
+          // the measured isolate OOM. The OAuth-discovery enrich re-parses the
+          // full text for the same reason, and an adapter spec declares its
+          // auth (or the adapter supplies the template), so it is skipped.
           const preview =
             needsDerivedBaseUrl || needsDerivedAuth
-              ? yield* previewSpecText(resolved.specText).pipe(
-                  Effect.flatMap((rawPreview) =>
-                    enrichPreviewWithDiscoveredOAuth({
-                      specText: resolved.specText,
-                      preview: rawPreview,
-                      sourceUrl: specInputToSourceUrl(config.spec),
-                      baseUrl: config.baseUrl,
-                    }),
-                  ),
-                )
+              ? resolved.keepPathItem
+                ? yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem)
+                : yield* previewSpecText(resolved.specText).pipe(
+                    Effect.flatMap((rawPreview) =>
+                      enrichPreviewWithDiscoveredOAuth({
+                        specText: resolved.specText,
+                        preview: rawPreview,
+                        specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
+                        baseUrl: explicitBaseUrl,
+                      }),
+                    ),
+                  )
               : undefined;
           const derivedBaseUrl =
             needsDerivedBaseUrl && preview ? firstBaseUrlForPreview(preview) : undefined;
@@ -689,7 +837,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               ? deriveAuthenticationTemplateFromPreview(preview, effectiveBaseUrl)
               : undefined;
 
-          const slug = IntegrationSlug.make(config.slug);
+          const slug = IntegrationSlug.make(resolvedSlug);
 
           // Block re-adding an existing slug. The core `integrations.register`
           // primitive upserts (so boot re-registration is idempotent), but an
@@ -702,11 +850,16 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           }
 
           const specHash = yield* sha256Hex(resolved.specText);
+          const sourceSpecHash =
+            config.specOverrides && config.specOverrides.length > 0
+              ? yield* sha256Hex(resolved.sourceSpecText)
+              : undefined;
 
           const integrationConfig: OpenApiIntegrationConfig = {
+            ...(resolved.config ?? {}),
             specHash,
-            ...(specInputToSourceUrl(config.spec) !== undefined
-              ? { sourceUrl: specInputToSourceUrl(config.spec) }
+            ...((resolved.specUrl ?? specInputToSpecUrl(config.spec)) !== undefined
+              ? { specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec) }
               : {}),
             // baseUrl is an optional override only. The host is otherwise
             // resolved per call from the operation's `servers` (extracted from
@@ -714,15 +867,22 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
             ...(config.headers ? { headers: config.headers } : {}),
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
+            ...(config.specFormat ? { specFormat: config.specFormat } : {}),
+            ...(config.family ? { family: config.family } : {}),
+            ...(config.specOverrides && config.specOverrides.length > 0
+              ? { specOverrides: config.specOverrides, sourceSpecHash }
+              : {}),
             // Prefer the caller's explicit template; otherwise derive from the
             // spec's declared security schemes.
             ...(config.authenticationTemplate
               ? {
                   authenticationTemplate: normalizeOpenApiAuthInputs(config.authenticationTemplate),
                 }
-              : derivedAuthenticationTemplate && derivedAuthenticationTemplate.length > 0
-                ? { authenticationTemplate: derivedAuthenticationTemplate }
-                : {}),
+              : resolved.authenticationTemplate && resolved.authenticationTemplate.length > 0
+                ? { authenticationTemplate: resolved.authenticationTemplate }
+                : derivedAuthenticationTemplate && derivedAuthenticationTemplate.length > 0
+                  ? { authenticationTemplate: derivedAuthenticationTemplate }
+                  : {}),
           };
 
           // The spec blob is written OUTSIDE the transaction: it's
@@ -730,30 +890,59 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
           yield* ctx.storage.putSpec(specHash, resolved.specText);
+          if (sourceSpecHash) {
+            yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
+          }
           // The content-addressed defs blob lets the serve path resolve the
           // shared `definitions` without re-parsing the spec. Same idempotent,
           // outside-the-transaction rationale as the spec blob.
-          yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          if (compiled) {
+            yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          }
 
           yield* ctx.transaction(
             Effect.gen(function* () {
               yield* ctx.core.integrations.register({
                 slug,
-                name: config.name?.trim() || compiled.title || config.slug,
+                name:
+                  config.name?.trim() || derivedIdentity?.name || compiled?.title || resolvedSlug,
                 description:
-                  config.description ?? compiled.description ?? compiled.title ?? config.slug,
+                  config.description ??
+                  derivedIdentity?.description ??
+                  compiled?.description ??
+                  compiled?.title ??
+                  resolvedSlug,
                 config: integrationConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
                 canRemove: true,
-                canRefresh: specInputToSourceUrl(config.spec) != null,
+                canRefresh: integrationConfig.specUrl != null,
               });
-              yield* ctx.storage.putOperations(
-                config.slug,
-                openApiStoredOperationsFromCompiled(config.slug, compiled),
-              );
+              if (config.healthCheck) {
+                yield* ctx.core.integrations.setHealthCheck(slug, config.healthCheck);
+              }
+              if (compiled) {
+                yield* ctx.storage.putOperations(
+                  resolvedSlug,
+                  openApiStoredOperationsFromCompiled(resolvedSlug, compiled),
+                );
+                return compiled.definitions.length;
+              }
+              const persisted = yield* compileAndPersistOpenApiSpecStreaming({
+                specText: resolved.specText,
+                integration: resolvedSlug,
+                storage: ctx.storage,
+                specHash,
+                keepPathItem: resolved.keepPathItem,
+              });
+              return persisted.toolCount;
             }),
           );
 
-          return { slug, toolCount: compiled.definitions.length };
+          const toolCount = compiled
+            ? compiled.definitions.length
+            : yield* ctx.storage
+                .listOperations(resolvedSlug)
+                .pipe(Effect.map((operations) => operations.length));
+          return { slug, toolCount };
         });
 
       // Update the spec IN PLACE: re-resolve (stored source URL / bundle, or a
@@ -773,8 +962,21 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // The new spec source: explicit input wins; otherwise re-fetch from
           // where the spec originally came from. A pasted-blob integration has
           // no origin, so updating it requires a new input.
+          const nextOverrides = input?.specOverrides ?? current.specOverrides ?? [];
+          const storedSourceHash = current.sourceSpecHash ?? current.specHash;
+          const storedSourceText =
+            input?.spec === undefined && !current.specUrl && input?.specOverrides !== undefined
+              ? storedSourceHash
+                ? yield* ctx.storage.getSpec(storedSourceHash)
+                : null
+              : null;
           const specInput: OpenApiSpecInput | null =
-            input?.spec ?? (current.sourceUrl ? { kind: "url", url: current.sourceUrl } : null);
+            input?.spec ??
+            (current.specUrl
+              ? { kind: "url", url: current.specUrl }
+              : storedSourceText
+                ? { kind: "blob", value: storedSourceText }
+                : null);
           if (specInput === null) {
             return yield* new OpenApiParseError({
               message:
@@ -784,27 +986,52 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           // Resolve + compile BEFORE the transaction (same Hyperdrive-deadlock
           // rule as addSpec: never hold BEGIN across a network fetch).
-          const resolved = yield* resolveSpecForInput(specInput, httpClientLayer);
-          const compiled = yield* compileOpenApiSpec(resolved.specText);
+          const resolved = yield* resolveSpecForInput(
+            {
+              spec: specInput,
+              specFormat: current.specFormat,
+              specOverrides: nextOverrides,
+              headers: current.headers,
+              queryParams: current.queryParams,
+              baseUrl: current.baseUrl,
+              authenticationTemplate: current.authenticationTemplate,
+            },
+            httpClientLayer,
+          );
+          const compiled = resolved.keepPathItem
+            ? undefined
+            : yield* compileOpenApiSpec(resolved.specText);
 
           const previousOperations = yield* ctx.storage.listOperations(rawSlug);
           const previousNames = new Set(previousOperations.map((op) => op.toolName));
-          const nextNames = new Set(compiled.definitions.map((def) => def.toolPath));
 
           // The resolved spec text lives in the plugin blob store keyed by its
           // content hash (`spec/<hash>`); the config carries only the hash. Put
           // the blob outside the transaction - re-puts are idempotent and an
           // aborted config update just leaves an unreferenced blob.
           const specHash = yield* sha256Hex(resolved.specText);
+          const sourceSpecHash =
+            nextOverrides.length > 0 ? yield* sha256Hex(resolved.sourceSpecText) : undefined;
           yield* ctx.storage.putSpec(specHash, resolved.specText);
-          yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          if (sourceSpecHash) {
+            yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
+          }
+          if (compiled) {
+            yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          }
 
+          const {
+            sourceSpecHash: _currentSourceSpecHash,
+            specOverrides: _currentSpecOverrides,
+            ...currentWithoutOverrides
+          } = current;
           const nextConfig: OpenApiIntegrationConfig = {
-            ...current,
+            ...currentWithoutOverrides,
             specHash,
-            ...(specInputToSourceUrl(specInput) !== undefined
-              ? { sourceUrl: specInputToSourceUrl(specInput) }
+            ...((resolved.specUrl ?? specInputToSpecUrl(specInput)) !== undefined
+              ? { specUrl: resolved.specUrl ?? specInputToSpecUrl(specInput) }
               : {}),
+            ...(nextOverrides.length > 0 ? { specOverrides: nextOverrides, sourceSpecHash } : {}),
           };
 
           yield* ctx.transaction(
@@ -812,12 +1039,27 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               yield* ctx.core.integrations.update(slug, {
                 config: nextConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
               });
-              yield* ctx.storage.putOperations(
-                rawSlug,
-                openApiStoredOperationsFromCompiled(rawSlug, compiled),
-              );
+              if (compiled) {
+                yield* ctx.storage.putOperations(
+                  rawSlug,
+                  openApiStoredOperationsFromCompiled(rawSlug, compiled),
+                );
+              } else {
+                yield* compileAndPersistOpenApiSpecStreaming({
+                  specText: resolved.specText,
+                  integration: rawSlug,
+                  storage: ctx.storage,
+                  specHash,
+                  keepPathItem: resolved.keepPathItem,
+                });
+              }
             }),
           );
+
+          const nextOperations = compiled
+            ? openApiStoredOperationsFromCompiled(rawSlug, compiled)
+            : yield* ctx.storage.listOperations(rawSlug);
+          const nextNames = new Set(nextOperations.map((op) => op.toolName));
 
           // Rebuild each connection's tool rows from the new spec. Outside the
           // transaction: refresh opens its own, and a half-refreshed catalog
@@ -843,7 +1085,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           return {
             slug,
-            toolCount: compiled.definitions.length,
+            toolCount: nextNames.size,
             addedTools: [...nextNames].filter((name) => !previousNames.has(name)).sort(),
             removedTools: [...previousNames].filter((name) => !nextNames.has(name)).sort(),
           } satisfies UpdateSpecResult;
@@ -857,14 +1099,28 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         previewSpec: (input: string | OpenApiPreviewInput) =>
           Effect.gen(function* () {
             const previewInput = typeof input === "string" ? { spec: input } : input;
-            const specText = yield* resolveSpecText(previewInput.spec).pipe(
-              Effect.provide(httpClientLayer),
+            const spec = maybeUrl(previewInput.spec.trim())
+              ? { kind: "url" as const, url: previewInput.spec.trim() }
+              : { kind: "blob" as const, value: previewInput.spec };
+            const resolved = yield* resolveSpecForInput(
+              {
+                spec,
+                specFormat: previewInput.specFormat,
+                specOverrides: previewInput.specOverrides,
+              },
+              httpClientLayer,
             );
-            const preview = yield* previewSpecText(specText);
+            // Spec-format selections stream (whole-parse of a Graph-sized
+            // source OOMs the isolate) and skip the OAuth-discovery enrich —
+            // same rationale as the addSpec derived preview above.
+            if (resolved.keepPathItem) {
+              return yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem);
+            }
+            const preview = yield* previewSpecText(resolved.specText);
             return yield* enrichPreviewWithDiscoveredOAuth({
-              specText,
+              specText: resolved.specText,
               preview,
-              sourceUrl: maybeUrl(previewInput.spec.trim()) ? previewInput.spec.trim() : undefined,
+              specUrl: resolved.specUrl ?? (spec.kind === "url" ? spec.url : undefined),
             });
           }),
 
@@ -917,14 +1173,19 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               const current = decodeOpenApiIntegrationConfig(record.config);
               if (!current) return [] as readonly Authentication[];
 
-              const incoming = normalizeOpenApiAuthInputs(input.authenticationTemplate);
               const merged =
-                input.mode === "replace"
-                  ? incoming
-                  : mergeAuthTemplates(current.authenticationTemplate ?? [], incoming);
+                input.authenticationTemplate === undefined
+                  ? (current.authenticationTemplate ?? [])
+                  : input.mode === "replace"
+                    ? normalizeOpenApiAuthInputs(input.authenticationTemplate)
+                    : mergeAuthTemplates(
+                        current.authenticationTemplate ?? [],
+                        normalizeOpenApiAuthInputs(input.authenticationTemplate),
+                      );
 
               const next: OpenApiIntegrationConfig = {
                 ...current,
+                ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
                 authenticationTemplate: merged,
               };
 
@@ -938,7 +1199,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
       };
     },
 
-    staticSources: (self: OpenApiPluginExtension) => [
+    staticIntegrations: (self: OpenApiPluginExtension) => [
       {
         id: "openapi",
         kind: "executor",
@@ -960,6 +1221,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                     Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
                   OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
                     Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                  OpenApiSpecOverrideError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
                 }),
               ),
           }),
@@ -971,17 +1234,22 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI integration",
             },
-            inputSchema: AddSourceInputStandardSchema,
-            outputSchema: AddSourceOutputStandardSchema,
-            execute: (input: typeof AddSourceInputSchema.Type) =>
+            inputSchema: AddIntegrationInputStandardSchema,
+            outputSchema: AddIntegrationOutputStandardSchema,
+            execute: (input: typeof AddIntegrationInputSchema.Type) =>
               self
                 .addSpec({
                   spec: input.spec,
                   slug: input.slug,
+                  name: input.name,
                   description: input.description,
                   baseUrl: input.baseUrl,
                   headers: input.headers,
                   queryParams: input.queryParams,
+                  specFormat: input.specFormat,
+                  specOverrides: input.specOverrides,
+                  family: input.family,
+                  healthCheck: input.healthCheck,
                   authenticationTemplate: input.authenticationTemplate as
                     | readonly AuthenticationInput[]
                     | undefined,
@@ -1000,6 +1268,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                       Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
                     OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
                       Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                    OpenApiSpecOverrideError: ({ message }) =>
+                      Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
                     IntegrationAlreadyExistsError: ({ slug }: IntegrationAlreadyExistsError) =>
                       Effect.succeed(
                         openApiToolFailure(

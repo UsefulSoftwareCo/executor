@@ -16,6 +16,7 @@ import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -81,7 +82,7 @@ scenario(
           const actions = page.getByRole("button", { name: `Actions for ${appName}` });
 
           await step("Open the integration and start a new connection", async () => {
-            await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
+            await visit(page, `/integrations/${integration}`);
             await page.getByRole("button", { name: "Add connection" }).click();
             // OAuth2 is the integration's only method, so the modal opens on
             // the OAuth app step with nothing registered yet. (`exact` avoids
@@ -127,6 +128,33 @@ scenario(
             ).toBe("client-two");
             await page.getByRole("button", { name: "Cancel" }).click();
             await actions.waitFor();
+          });
+
+          await step("A rejected removal reports the failure and keeps the app", async () => {
+            await page.route("**/api/oauth/clients/**", async (route) => {
+              if (route.request().method() !== "DELETE") {
+                await route.continue();
+                return;
+              }
+              await route.fulfill({
+                status: 500,
+                contentType: "application/json",
+                body: JSON.stringify({ _tag: "InternalError", traceId: "oauth-client-remove" }),
+              });
+            });
+            await actions.click();
+            await page.getByRole("menuitem", { name: "Remove" }).click();
+            await page.getByRole("button", { name: "Remove app" }).click();
+            await page.getByText(`Failed to remove ${appName}`, { exact: true }).waitFor();
+            await page.getByRole("heading", { name: `Remove ${appName}?` }).waitFor();
+            const clients = await Effect.runPromise(client.oauth.listClients());
+            expect(
+              clients.map((candidate) => String(candidate.slug)),
+              "a rejected removal leaves the registered app in the catalog",
+            ).toContain(appName);
+            await page.getByRole("button", { name: "Cancel" }).click();
+            await actions.waitFor();
+            await page.unroute("**/api/oauth/clients/**");
           });
 
           await step("Remove the app and confirm", async () => {

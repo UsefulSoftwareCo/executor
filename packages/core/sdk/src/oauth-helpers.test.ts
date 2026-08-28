@@ -19,6 +19,8 @@ import {
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
   exchangeClientCredentials,
+  idTokenIdentityLabel,
+  isPermanentTokenRejection,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -97,6 +99,14 @@ const tokenResponse =
   (body: unknown): TokenHandler =>
   () =>
     json(200, body);
+
+const tokenResponseFetch =
+  (body: unknown): typeof globalThis.fetch =>
+  async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
 
 // ---------------------------------------------------------------------------
 // PKCE
@@ -362,6 +372,81 @@ describe("exchangeAuthorizationCode", () => {
           });
           expect(result.access_token).toBe("tok");
           expect(result.refresh_token).toBe("rtok");
+          expect(result.idTokenIdentityLabel).toBe("user-1");
+        }),
+    ),
+  );
+
+  it.effect("extracts id_token email as the identity label", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          email: "alice@example.com",
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.idTokenIdentityLabel).toBe("alice@example.com");
+        }),
+    ),
+  );
+
+  it.effect("falls back from id_token email to preferred_username then sub", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: unsignedJwt({
+          preferred_username: "alice",
+          sub: "user-1",
+        }),
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const preferred = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(preferred.idTokenIdentityLabel).toBe("alice");
+        }),
+    ),
+  );
+
+  it("falls back to sub and ignores malformed id_tokens", () => {
+    expect(idTokenIdentityLabel(unsignedJwt({ sub: "user-1" }))).toBe("user-1");
+    expect(idTokenIdentityLabel("not-a-jwt")).toBeUndefined();
+    expect(idTokenIdentityLabel(undefined)).toBeUndefined();
+  });
+
+  it.effect("ignores malformed id_tokens without failing the exchange", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        ...validCodeBody,
+        id_token: "not-a-jwt",
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.access_token).toBe("tok");
+          expect(result.idTokenIdentityLabel).toBeUndefined();
         }),
     ),
   );
@@ -406,7 +491,159 @@ describe("exchangeAuthorizationCode", () => {
         expect(result.access_token).toBe("tok");
         expect(result.refresh_token).toBe("rtok");
         expect(result.expires_in).toBe(3600);
+        expect(result.idTokenIdentityLabel).toBeUndefined();
       }),
+    ),
+  );
+
+  it.effect("uses nested granted scopes for Slack-style user token responses", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "xoxp-user-token",
+        token_type: "Bearer",
+        scope: "",
+        authed_user: {
+          id: "U12345",
+          scope: "channels:read,chat:write",
+        },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.access_token).toBe("xoxp-user-token");
+          expect(result.scope).toBe("channels:read chat:write");
+        }),
+    ),
+  );
+
+  it.effect("selects the nested user grant when an empty top-level grant has a bot token", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "xoxb-bot-token",
+        token_type: "Bearer",
+        scope: "",
+        refresh_token: "bot-refresh-token",
+        expires_in: 600,
+        id_token: unsignedJwt({ email: "alice@example.com" }),
+        authed_user: {
+          scope: "channels:read,chat:write",
+          access_token: "xoxp-user-token",
+          token_type: "user",
+          refresh_token: "user-refresh-token",
+          expires_in: 3600,
+        },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result).toMatchObject({
+            access_token: "xoxp-user-token",
+            token_type: "user",
+            refresh_token: "user-refresh-token",
+            expires_in: 3600,
+            scope: "channels:read chat:write",
+            idTokenIdentityLabel: "alice@example.com",
+          });
+        }),
+    ),
+  );
+
+  it.effect("treats an empty standard scope as omitted", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "user-token",
+        token_type: "Bearer",
+        scope: "   ",
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.scope).toBeUndefined();
+        }),
+    ),
+  );
+
+  it.effect("normalizes Slack's comma-delimited top-level scopes", () =>
+    Effect.gen(function* () {
+      const result = yield* exchangeAuthorizationCode({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        fetch: tokenResponseFetch({
+          access_token: "xoxp-user-token",
+          token_type: "Bearer",
+          scope: "channels:read,chat:write,reactions:read",
+        }),
+      });
+
+      expect(result.scope).toBe("channels:read chat:write reactions:read");
+    }),
+  );
+
+  it.effect("preserves commas in scope tokens from non-Slack providers", () =>
+    Effect.gen(function* () {
+      const result = yield* exchangeAuthorizationCode({
+        tokenUrl: "https://oauth.example.com/token",
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        fetch: tokenResponseFetch({
+          access_token: "provider-token",
+          token_type: "Bearer",
+          scope: "scope,with-comma other.scope",
+        }),
+      });
+
+      expect(result.scope).toBe("scope,with-comma other.scope");
+    }),
+  );
+
+  it.effect("keeps a standard top-level scope ahead of nested provider metadata", () =>
+    withTokenEndpoint(
+      tokenResponse({
+        access_token: "user-token",
+        token_type: "Bearer",
+        scope: "standard.scope",
+        authed_user: { scope: "provider.scope" },
+      }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            redirectUrl: "https://app.example.com/cb",
+            codeVerifier: "verifier",
+            code: "abc",
+          });
+          expect(result.scope).toBe("standard.scope");
+        }),
     ),
   );
 
@@ -668,6 +905,24 @@ describe("exchangeClientCredentials", () => {
 });
 
 describe("refreshAccessToken", () => {
+  it.effect("normalizes Slack's comma-delimited scopes on refresh", () =>
+    Effect.gen(function* () {
+      const result = yield* refreshAccessToken({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "csecret",
+        refreshToken: "refresh-token",
+        fetch: tokenResponseFetch({
+          access_token: "xoxp-refreshed-token",
+          token_type: "Bearer",
+          scope: "channels:read,chat:write,reactions:read",
+        }),
+      });
+
+      expect(result.scope).toBe("channels:read chat:write reactions:read");
+    }),
+  );
+
   it.effect("posts grant_type=refresh_token with the refresh token", () =>
     withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {
@@ -793,6 +1048,91 @@ describe("refreshAccessToken", () => {
         expect(result.expires_in).toBe(3600);
       }),
     ),
+  );
+
+  // Datadog answers refresh grants with a non-conform envelope; the §5.2 code
+  // must still be recovered so invalid_grant classifies as reauth-required
+  // instead of a retried-forever transient (owner.com prod, 2026-07-30).
+  it.effect("recovers invalid_grant from Datadog's non-conform errors array", () =>
+    withTokenEndpoint(
+      () =>
+        json(400, {
+          errors: ["invalid_grant - Invalid or expired refresh token or code verifier."],
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("recovers a bare non-conform `error` string outside the spec envelope shape", () =>
+    withTokenEndpoint(
+      () => json(400, { error: "invalid_grant", detail: 42 }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+        }),
+    ),
+  );
+
+  it.effect("does not invent a code from free-text error bodies", () =>
+    withTokenEndpoint(
+      () => json(400, { errors: ["something went wrong, try again later"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
+    ),
+  );
+
+  it.effect("does not probe non-conform bodies on 5xx responses", () =>
+    withTokenEndpoint(
+      () => json(502, { errors: ["invalid_grant - upstream proxy noise"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+          expect(error).toBeInstanceOf(OAuth2Error);
+          expect((error as OAuth2Error).error).toBeUndefined();
+        }),
+    ),
+  );
+
+  // Every refusal the classifier can be handed as an HTTP RESPONSE — a
+  // text/plain 400, a text/plain 404, a 200 carrying an error body, a 200 with
+  // no usable token, a 5xx — is covered black-box by
+  // `e2e/scenarios/oauth-refresh-rejected-non-json.test.ts`, where the test
+  // authorization server can actually emit those bytes. The one shape no
+  // authorization server can emit is *no answer at all*, so this case stays
+  // here: it is the boundary between "the server said no" (permanent) and "we
+  // never got an answer" (retryable), and only a dead socket expresses it.
+  it.effect("a transport failure stays transient and carries no status", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        refreshAccessToken({
+          tokenUrl: "http://127.0.0.1:1/token",
+          clientId: "cid",
+          refreshToken: "old",
+          timeoutMs: 100,
+        }),
+      );
+      expect(error.status).toBeUndefined();
+      expect(isPermanentTokenRejection(error)).toBe(false);
+    }),
   );
 });
 

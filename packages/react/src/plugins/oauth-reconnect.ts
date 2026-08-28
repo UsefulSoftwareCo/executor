@@ -113,7 +113,7 @@ export function connectionNeedsReconsent(
  *  granted, given the integration's oauth auth method.
  *
  *  Spec-derived oauth scopes are the full per-operation catalog union (an OpenAPI
- *  source like PostHog declares hundreds): requested broadly to unlock as many
+ *  integration like PostHog declares hundreds): requested broadly to unlock as many
  *  tools as possible, but none individually required. A provider that narrows the
  *  grant to the user's actual access is healthy, so the spec catalog must NOT
  *  drive a reconnect prompt. Custom (user-configured) scopes are intentional and

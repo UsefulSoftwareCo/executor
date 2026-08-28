@@ -15,7 +15,7 @@ import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-
 import {
   defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
-  listExecutorSources,
+  listExecutorIntegrations,
   describeTool,
   type ToolDiscoveryProvider,
 } from "./tool-invoker";
@@ -61,6 +61,47 @@ export type ResumeResponse = {
 // Auto-accept every elicitation. Used by the `autoApprove` path where the
 // caller is itself the human approver (the operator-facing Run/Test panel).
 const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
+
+/**
+ * Approximate size of the value a script returned, before any preview
+ * truncation. This is the "did the model narrow in code or dump the raw
+ * payload" metric: a compact JSON length, not the pretty-printed preview the
+ * model receives, so treat it as magnitude. -1 means unmeasurable (a value
+ * `JSON.stringify` rejects, e.g. a BigInt) — unknown size, not zero.
+ */
+const measureResultChars = (value: unknown): number => {
+  if (value == null) return 0;
+  if (typeof value === "string") return value.length;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort size probe over an arbitrary sandbox value; a stringify rejection must not fail the execution path
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return -1;
+  }
+};
+
+/**
+ * Stamp the current `mcp.execute` / `mcp.execute.resume` span with how the
+ * execution ended and how much data it sent back toward model context.
+ * Sandbox failures ride the success channel as `ExecuteResult.error`, so
+ * without this the span reads OK and the failure class is unqueryable.
+ * Attributes stay enumerable identifiers and sizes — never the error message
+ * or result content itself.
+ */
+const annotateExecuteOutcome = (result: ExecuteResult) =>
+  Effect.annotateCurrentSpan({
+    "mcp.execute.result_chars": measureResultChars(result.result),
+    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
+    "mcp.execute.emitted": result.output?.length ?? 0,
+    ...(result.error
+      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
+      : { "mcp.execute.outcome": "ok" }),
+  });
+
+const annotateExecutionOutcome = (execution: ExecutionResult) =>
+  execution.status === "paused"
+    ? Effect.annotateCurrentSpan({ "mcp.execute.outcome": "paused" })
+    : annotateExecuteOutcome(execution.result);
 
 // ---------------------------------------------------------------------------
 // Result formatting
@@ -298,12 +339,12 @@ const makeFullInvoker = (
             }),
           );
       }
-      if (path === "executor.sources.list") {
+      if (path === "executor.integrations.list") {
         if (args !== undefined && !isRecord(args)) {
           return Effect.fail(
             new ExecutionToolError({
               message:
-                "tools.executor.sources.list expects an object: { query?: string; limit?: number; offset?: number }",
+                "tools.executor.integrations.list expects an object: { query?: string; limit?: number; offset?: number }",
             }),
           );
         }
@@ -311,14 +352,14 @@ const makeFullInvoker = (
         if (isRecord(args) && args.query !== undefined && typeof args.query !== "string") {
           return Effect.fail(
             new ExecutionToolError({
-              message: "tools.executor.sources.list query must be a string when provided",
+              message: "tools.executor.integrations.list query must be a string when provided",
             }),
           );
         }
 
         const limit = readOptionalLimit(
           isRecord(args) ? args.limit : undefined,
-          "tools.executor.sources.list",
+          "tools.executor.integrations.list",
         );
         if (Predicate.isTagged(limit, "ExecutionToolError")) {
           return Effect.fail(limit);
@@ -326,13 +367,13 @@ const makeFullInvoker = (
 
         const offset = readOptionalOffset(
           isRecord(args) ? args.offset : undefined,
-          "tools.executor.sources.list",
+          "tools.executor.integrations.list",
         );
         if (Predicate.isTagged(offset, "ExecutionToolError")) {
           return Effect.fail(offset);
         }
 
-        return listExecutorSources(executor, {
+        return listExecutorIntegrations(executor, {
           query: isRecord(args) && typeof args.query === "string" ? args.query : undefined,
           limit,
           offset,
@@ -443,6 +484,21 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    * Get the dynamic tool description (workflow + namespaces).
    */
   readonly getDescription: Effect.Effect<string>;
+
+  /**
+   * End this engine's in-flight sandbox fibers and wait for them to unwind.
+   *
+   * `executeWithPause` forks the sandbox as a daemon so a pause can outlive the
+   * caller that observed it. That fiber holds the executor, and so the DB handle
+   * belonging to whichever scope built this engine. A host that builds an engine
+   * per request MUST call this before that scope's connection is closed, or the
+   * fiber outlives the pool it queries.
+   *
+   * Required, not optional: a decorator that wrapped the engine and quietly
+   * dropped this member would silently reopen that race, so the type makes
+   * forwarding it a compile error.
+   */
+  readonly shutdown: Effect.Effect<void>;
 };
 
 export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
@@ -450,6 +506,17 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 ): ExecutionEngine<E> => {
   const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
+  // Every sandbox fiber `startPausableExecution` still has in flight.
+  //
+  // Those fibers are daemons (`Effect.forkDetach`) so a pause can outlive the
+  // caller that observed it. But they close over `executor`, and the executor
+  // closes over the FumaDB handle the host opened for whatever scope built THIS
+  // engine — `makeFumaClient` captures `db` at construction, not per operation.
+  // A host that builds one engine per HTTP request therefore needs a way to end
+  // that fiber's life with the request; otherwise it wakes up after the
+  // request's postgres pool has been closed and every query it makes lands on a
+  // dead pool. `shutdown` below is that seam.
+  const liveSandboxFibers = new Set<Fiber.Fiber<ExecuteResult, E>>();
   // Outcomes of executions that already settled (resumed to completion, hit a
   // new pause, or died while paused). MCP clients retry `resume` when a
   // response gets lost in transit; without this cache the retry of an
@@ -529,6 +596,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     if (options?.autoApprove) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.auto_approve": true });
       const result = yield* runInlineExecution(code, { onElicitation: acceptAllHandler });
+      yield* annotateExecuteOutcome(result);
       return { status: "completed", result } satisfies ExecutionResult;
     }
 
@@ -571,6 +639,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     fiber = yield* Effect.forkDetach(
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
+    liveSandboxFibers.add(fiber);
 
     // When the fiber settles on its own (sandbox timeout, failure) while
     // pauses are still outstanding, drop them: getPausedExecution must not
@@ -582,6 +651,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       Fiber.await(sandboxFiber).pipe(
         Effect.flatMap((exit) =>
           Effect.sync(() => {
+            // Settled on its own — it can no longer touch the host's DB handle,
+            // so it is not `shutdown`'s problem any more.
+            liveSandboxFibers.delete(sandboxFiber);
             const outcome = Exit.map(
               exit,
               (result): ExecutionResult => ({ status: "completed", result }),
@@ -596,7 +668,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       ),
     );
 
-    return (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
+    const outcome = (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
+    yield* annotateExecutionOutcome(outcome);
+    return outcome;
   });
 
   /**
@@ -619,13 +693,17 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const settled = settledOutcomes.get(executionId);
     if (settled) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.replayed": true });
-      return (yield* settled) as ExecutionResult;
+      const replayed = (yield* settled) as ExecutionResult;
+      yield* annotateExecutionOutcome(replayed);
+      return replayed;
     }
 
     const pending = pendingResumes.get(executionId);
     if (pending) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.joined_inflight": true });
-      return (yield* Deferred.await(pending)) as ExecutionResult;
+      const joined = (yield* Deferred.await(pending)) as ExecutionResult;
+      yield* annotateExecutionOutcome(joined);
+      return joined;
     }
 
     const paused = pausedExecutions.get(executionId);
@@ -640,7 +718,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       content: response.content,
     });
 
-    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
+    const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           recordSettledOutcome(executionId, exit);
@@ -649,6 +727,8 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         }),
       ),
     )) as ExecutionResult;
+    yield* annotateExecutionOutcome(outcome);
+    return outcome;
   });
 
   /**
@@ -670,13 +750,40 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       },
       toolDiscoveryProvider,
     );
-    return yield* codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec"));
+    const result = yield* codeExecutor
+      .execute(code, invoker)
+      .pipe(Effect.withSpan("executor.code.exec"));
+    yield* annotateExecuteOutcome(result);
+    return result;
+  });
+
+  /**
+   * End this engine's sandbox fibers, and WAIT for them to finish unwinding.
+   *
+   * A host calls this when the scope that owns the engine's DB handle is about
+   * to close. Interruption is awaited rather than fired and forgotten: the point
+   * is that no sandbox fiber is still able to issue a query by the time the
+   * host's connection finalizer runs, so returning early would reopen the very
+   * race this closes.
+   *
+   * Paused executions are dropped with the fibers — a pause whose fiber has been
+   * interrupted can never consume a response, so leaving the entry behind would
+   * only let a later `resume` hand back a pause that cannot progress.
+   */
+  const shutdown: Effect.Effect<void> = Effect.suspend(() => {
+    const fibers = Array.from(liveSandboxFibers);
+    liveSandboxFibers.clear();
+    for (const [id, paused] of pausedExecutions) {
+      if (fibers.includes(paused.fiber)) pausedExecutions.delete(id);
+    }
+    return Fiber.interruptAll(fibers);
   });
 
   return {
     execute: runInlineExecution,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
+    shutdown,
     isExecutionSettled: (executionId) => Effect.sync(() => settledExecutionIds.has(executionId)),
     getPausedExecution: (executionId) =>
       Effect.sync(() => pausedExecutions.get(executionId) ?? null),

@@ -13,6 +13,7 @@ const stubApiKeys = Layer.succeed(ApiKeyService)({
     Effect.succeed(
       value === "valid_user_key"
         ? {
+            scope: "user" as const,
             accountId: "user_123",
             organizationId: "org_123",
             keyId: "api_key_123",
@@ -22,6 +23,9 @@ const stubApiKeys = Layer.succeed(ApiKeyService)({
   listUserKeys: () => Effect.succeed([]),
   createUserKey: () => Effect.die("protected API auth test does not create API keys"),
   revokeUserKey: () => Effect.void,
+  listOrgKeys: () => Effect.die("auth resolution test does not list org API keys"),
+  createOrgKey: () => Effect.die("auth resolution test does not create org API keys"),
+  revokeOrgKey: () => Effect.die("auth resolution test does not revoke org API keys"),
 });
 
 const stubWorkOS = Layer.succeed(
@@ -43,7 +47,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -85,6 +89,7 @@ describe("protected API key auth", () => {
       );
 
       expect(identity).toEqual({
+        kind: "member",
         accountId: "user_123",
         organizationId: "org_123",
         organizationName: "Org org_123",

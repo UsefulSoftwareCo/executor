@@ -11,6 +11,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import {
+  EnterpriseIdentityProviderDescriptorSchema,
   HealthCheckCandidate,
   HealthCheckSpec,
   IntegrationDetectionResult,
@@ -54,6 +55,11 @@ const OAuthDescriptor = Schema.Struct({
   registrationEndpoint: Schema.optional(Schema.String),
   supportsDynamicRegistration: Schema.optional(Schema.Boolean),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  /** MCP Enterprise-Managed Authorization: the registered OAuth app that mints
+   *  this integration's identity assertions. Present only when the deployment
+   *  declared one — the client names it on `oauth.start` alongside the
+   *  assertion it holds. The interactive flow stays available regardless. */
+  enterpriseIdentityProvider: Schema.optional(EnterpriseIdentityProviderDescriptorSchema),
 });
 
 /** A single declared auth method — mirrors the SDK's `AuthMethodDescriptor`. */
@@ -81,6 +87,8 @@ const IntegrationResponse = Schema.Struct({
   authMethods: Schema.Array(AuthMethodDescriptorSchema),
   /** Non-secret URL derived from opaque integration config for favicons. */
   displayUrl: Schema.optional(Schema.String),
+  /** Catalog family derived from opaque integration config for grouped display. */
+  family: Schema.optional(Schema.String),
 });
 
 const UpdateIntegrationPayload = Schema.Struct({

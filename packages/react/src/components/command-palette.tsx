@@ -23,8 +23,8 @@ import {
 // CommandPalette — global ⌘K navigator.
 //
 // Order of entries:
-//   1. Connected sources (priority, shown first)
-//   2. Add <Plugin> actions for each available source plugin
+//   1. Connected integrations (priority, shown first)
+//   2. Add <Plugin> actions for each available integration plugin
 //   3. Popular integrations (plugin presets)
 // ---------------------------------------------------------------------------
 
@@ -46,7 +46,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onOpenChange, open]);
 
-  const connectedSources = useMemo(
+  const connectedIntegrations = useMemo(
     () =>
       AsyncResult.match(integrationsResult, {
         onInitial: () => [] as Array<{ id: string; name: string; kind: string; url?: string }>,
@@ -140,9 +140,9 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
-        {connectedSources.length > 0 && (
+        {connectedIntegrations.length > 0 && (
           <CommandGroup heading="Connected">
-            {connectedSources.map(
+            {connectedIntegrations.map(
               (s: {
                 readonly id: string;
                 readonly name: string;
@@ -150,7 +150,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
                 readonly url?: string;
               }) => (
                 <CommandItem
-                  key={`source-${s.id}`}
+                  key={`integration-${s.id}`}
                   value={`connected ${s.name} ${s.id} ${s.kind}`}
                   onSelect={() => goToIntegration(s.id)}
                 >
@@ -166,7 +166,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
           </CommandGroup>
         )}
 
-        {connectedSources.length > 0 && integrationPlugins.length > 0 && <CommandSeparator />}
+        {connectedIntegrations.length > 0 && integrationPlugins.length > 0 && <CommandSeparator />}
 
         {integrationPlugins.length > 0 && (
           <CommandGroup heading="Add integration">

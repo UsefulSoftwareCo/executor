@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -37,6 +39,27 @@ it.effect("returns an actionable error when Deno is missing", () =>
     expect(output.result).toBeNull();
     expect(output.error).toContain("Install Deno or set DENO_BIN");
   }),
+);
+
+it.effect.skipIf(process.platform === "win32")(
+  "returns an execution error when the subprocess closes stdin",
+  () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor({
+        denoExecutable: fileURLToPath(
+          new URL("./fixtures/close-stdin-worker.mjs", import.meta.url),
+        ),
+        timeoutMs: 5_000,
+      });
+      const toolInvoker = makeTestInvoker({
+        "test.call": () => "done",
+      });
+
+      const output = yield* executor.execute("return tools.test.call({});", toolInvoker);
+
+      expect(output.result).toBeNull();
+      expect(output.error).toContain("Failed to write to Deno subprocess stdin");
+    }),
 );
 
 describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
@@ -234,19 +257,51 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
     }),
   );
 
-  it.effect("respects timeout", () =>
-    Effect.gen(function* () {
-      const executor = makeDenoSubprocessExecutor({
-        timeoutMs: 500,
-      });
-      const toolInvoker = makeTestInvoker({});
+  it("suspends the execution deadline while a tool dispatch is in flight", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("slow result")),
+    };
 
-      const output = yield* executor.execute("await new Promise(() => {}); return 1;", toolInvoker);
+    const output = await Effect.runPromise(
+      executor.execute("return await tools.slow.wait({});", toolInvoker),
+    );
 
-      expect(output.result).toBeNull();
-      expect(output.error).toContain("timed out");
-    }),
-  );
+    expect(output.error).toBeUndefined();
+    expect(output.result).toBe("slow result");
+  });
+
+  it("still times out continuous autonomous compute", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker = makeTestInvoker({});
+
+    const output = await Effect.runPromise(
+      executor.execute("await new Promise(() => {}); return 1;", toolInvoker),
+    );
+
+    expect(output.result).toBeNull();
+    expect(output.error).toBe(`Deno subprocess execution timed out after ${timeoutMs}ms`);
+  });
+
+  it("resets the execution deadline after a tool dispatch returns", async () => {
+    const timeoutMs = 300;
+    const executor = makeDenoSubprocessExecutor({ timeoutMs });
+    const toolInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("done")),
+    };
+
+    const output = await Effect.runPromise(
+      executor.execute(
+        "await tools.slow.wait({}); await new Promise(() => {}); return 1;",
+        toolInvoker,
+      ),
+    );
+
+    expect(output.result).toBeNull();
+    expect(output.error).toBe(`Deno subprocess execution timed out after ${timeoutMs}ms`);
+  });
 
   it.effect("network access is denied by default", () =>
     Effect.gen(function* () {
@@ -337,9 +392,9 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
 
       expect(output.error).toBeUndefined();
       expect(output.result).toEqual({
-        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
         spread:
-          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
       });
     }),
   );

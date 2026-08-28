@@ -210,5 +210,11 @@ export const InvocationResult = Schema.Struct({
   status: Schema.Number,
   data: Schema.NullOr(Schema.Unknown),
   errors: Schema.NullOr(Schema.Unknown),
+  /** The raw response body (parsed JSON or text) and response headers: a
+   *  non-2xx response is usually NOT GraphQL-shaped (an auth gateway's OAuth
+   *  error object, an HTML page), so 401/403 classification needs what
+   *  `data`/`errors` cannot carry. */
+  body: Schema.optional(Schema.Unknown),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type InvocationResult = typeof InvocationResult.Type;

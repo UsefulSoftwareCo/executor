@@ -6,6 +6,13 @@ declare global {
   namespace Cloudflare {
     interface Env {
       // Observability
+      // Worker version metadata binding (wrangler.jsonc `version_metadata`).
+      // Optional so test workers and local setups without the binding still
+      // typecheck; spans then carry the "dev" service.version default.
+      CF_VERSION_METADATA?: WorkerVersionMetadata;
+      // Commit that produced the running deploy, passed by CI as
+      // `wrangler deploy --var GIT_COMMIT_SHA:$GITHUB_SHA`. Absent outside CI.
+      GIT_COMMIT_SHA?: string;
       AXIOM_TOKEN?: string;
       AXIOM_DATASET?: string;
       AXIOM_TRACES_URL?: string;
@@ -21,6 +28,10 @@ declare global {
       // DATABASE_URL is only selected when explicitly requested for local/test.
       DATABASE_URL?: string;
       EXECUTOR_DIRECT_DATABASE_URL?: string;
+
+      // Static asset binding emitted by @cloudflare/vite-plugin in
+      // dist/server/wrangler.json as assets.directory = "../client".
+      ASSETS: { readonly fetch: (request: Request) => Promise<Response> };
 
       // Plugin blob seam backend (wrangler.jsonc `r2_buckets`). Declared here
       // (optional) rather than regenerating worker-configuration.d.ts: test
@@ -48,6 +59,30 @@ declare global {
       // exercised with real executions, so the e2e dev-server env sets a small
       // number to drive the backstop. Production leaves it unset.
       EXECUTION_RATE_LIMIT_PER_HOUR?: string;
+
+      // Optional override for the counter DO's check budget in milliseconds
+      // (defaults to RATE_LIMIT_CHECK_TIMEOUT_MS = 2000 when unset or
+      // unparseable). Same purpose as the cap override: the production budget
+      // can't be blown on demand, so tests set a tiny one to exercise the
+      // fail-open path. Production leaves it unset.
+      EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS?: string;
+
+      // First-party OAuth apps (executor-owned provider registrations). Each
+      // pair enables one-click connect through `first-party:<provider>`; an
+      // unset pair simply ships no first-party app for that provider. The
+      // registered callback on the provider side must be
+      // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback`.
+      FIRST_PARTY_GITHUB_CLIENT_ID?: string;
+      FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
+      // Endpoint overrides for the GitHub first-party app, so tests/dev can
+      // point it at an emulated provider and complete the whole flow. Unset in
+      // production (the real github.com endpoints are the defaults).
+      FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
+      FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_SLACK_CLIENT_ID?: string;
+      FIRST_PARTY_SLACK_CLIENT_SECRET?: string;
 
       // Billing
       AUTUMN_SECRET_KEY?: string;

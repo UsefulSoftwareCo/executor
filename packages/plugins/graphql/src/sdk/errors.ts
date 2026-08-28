@@ -6,6 +6,18 @@ export class GraphqlIntrospectionError extends Schema.TaggedErrorClass<GraphqlIn
   "GraphqlIntrospectionError",
   {
     message: Schema.String,
+    status: Schema.optional(Schema.Number),
+    reason: Schema.optional(
+      Schema.Literals([
+        "network",
+        "http",
+        "invalid-json",
+        "invalid-shape",
+        "missing-schema",
+        "graphql-errors",
+      ]),
+    ),
+    upstreamMessage: Schema.optional(Schema.String),
   },
 ) {}
 
@@ -19,6 +31,8 @@ export class GraphqlExtractionError extends Schema.TaggedErrorClass<GraphqlExtra
 export class GraphqlInvocationError extends Data.TaggedError("GraphqlInvocationError")<{
   readonly message: string;
   readonly statusCode: Option.Option<number>;
+  readonly reason?: "invocation_timeout";
+  readonly timeoutMs?: number;
   readonly cause?: unknown;
 }> {}
 

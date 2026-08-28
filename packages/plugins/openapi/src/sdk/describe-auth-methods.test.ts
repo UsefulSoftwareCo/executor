@@ -84,6 +84,23 @@ describe("describeOpenApiAuthMethods", () => {
     ]);
   });
 
+  it("prefers a stored oauth label over the generic OAuth2 fallback", () => {
+    const methods = describeOpenApiAuthMethods(
+      recordWith([
+        {
+          slug: AuthTemplateSlug.make("azureAdDelegated"),
+          kind: "oauth2",
+          label: "OAuth2 (user)",
+          authorizationUrl: "https://auth.example/authorize",
+          tokenUrl: "https://auth.example/token",
+          scopes: ["read"],
+        },
+      ]),
+    );
+
+    expect(methods.map((method) => method.label)).toEqual(["OAuth2 (user)"]);
+  });
+
   it("returns [] when no auth template is declared and for a foreign config", () => {
     expect(describeOpenApiAuthMethods(recordWith([]))).toEqual([]);
     expect(
@@ -106,20 +123,20 @@ describe("describeOpenApiAuthMethods", () => {
         ...recordWith([]),
         config: {
           spec: "{}",
-          sourceUrl: "https://api.example.com/openapi.json",
+          specUrl: "https://api.example.com/openapi.json",
           baseUrl: "https://api.example.com",
         } as IntegrationConfig,
       }),
     ).toEqual({ url: "https://api.example.com" });
   });
 
-  it("falls back to sourceUrl for display metadata", () => {
+  it("falls back to specUrl for display metadata", () => {
     expect(
       describeOpenApiIntegrationDisplay({
         ...recordWith([]),
         config: {
           spec: "{}",
-          sourceUrl: "https://api.example.com/openapi.json",
+          specUrl: "https://api.example.com/openapi.json",
         } as IntegrationConfig,
       }),
     ).toEqual({ url: "https://api.example.com/openapi.json" });

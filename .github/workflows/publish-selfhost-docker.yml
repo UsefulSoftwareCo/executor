@@ -16,6 +16,18 @@ concurrency:
   group: publish-selfhost-docker-${{ inputs.tag }}
   cancel-in-progress: false
 
+# CI is not a user. Without this, executor's own product telemetry reports to the
+# production PostHog project from every e2e shard: the analytics layer
+# (integration_added, execution_completed, artifact_*) and the
+# integrations-registry fetch, which lands as a `hit` event. Each shard is a
+# fresh container, so it mints a fresh anonymous id and arrives on a fresh
+# runner IP — inflating machine and user counts by roughly an order of
+# magnitude. Both opt-outs are the packages' documented CI/test hooks.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   metadata:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -163,16 +175,124 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Release gate: run the full selfhost-docker e2e project against the exact
+  # by-digest image each build leg pushed, before any user-visible tag moves.
+  # Build-only smoke misses startup crashes and feature-path breaks (a package
+  # resolved at runtime but missing from the packaged runtime shipped broken in
+  # v1.5.30 exactly this way); per-arch matters too — the libsql native-addon
+  # bug was arm64-only.
+  e2e:
+    needs:
+      - metadata
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.release_tag }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-1.3.11-
+
+      # Scenario helpers spawn Node sidecars; pin the same Node 24 runtime the
+      # other workflows use.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-playwright-
+
+      # Install from e2e so bunx resolves ITS pinned playwright (the version
+      # the tests run against) rather than floating to the latest.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        working-directory: e2e
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digest
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests
+
+      - name: Resolve image reference
+        id: image_ref
+        shell: bash
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest_file="$(find "$RUNNER_TEMP/digests" -maxdepth 1 -type f | head -n 1)"
+          if [ -z "$digest_file" ]; then
+            echo "No image digest was downloaded."
+            exit 1
+          fi
+          ref="${IMAGE}@sha256:$(basename "$digest_file")"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          docker pull "$ref"
+
+      - name: Run selfhost-docker scenarios against the published digest
+        env:
+          E2E_SELFHOST_DOCKER_IMAGE: ${{ steps.image_ref.outputs.ref }}
+        run: bunx vitest run --project selfhost-docker --retry=2
+        working-directory: e2e
+
+      - name: Upload run artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-runs-selfhost-docker-${{ matrix.arch }}
+          path: |
+            e2e/runs/
+            e2e/selfhost-docker.boot.log
+          retention-days: 7
+
   merge:
     needs:
       - metadata
       - build
+      - e2e
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       packages: write
-    env:
-      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
-
     steps:
       - name: Download image digests
         uses: actions/download-artifact@v4
@@ -219,9 +339,27 @@ jobs:
 
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
+  # Mirrors each release to the pre-org-move namespace
+  # (ghcr.io/rhyssullivan/executor-selfhost), which GHCR cannot redirect.
+  # Deliberately a separate job: the canonical publish above never depends on
+  # it, and a failure here (an expired GHCR_LEGACY_TOKEN, historically) shows
+  # as one red job pointing at exactly what to fix.
+  mirror-legacy:
+    needs:
+      - metadata
+      - merge
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
+
+    steps:
       - name: Skip legacy GHCR mirror (GHCR_LEGACY_TOKEN not configured)
         if: env.HAS_LEGACY_TOKEN != 'true'
         run: echo "GHCR_LEGACY_TOKEN is not configured; skipping legacy GHCR mirror."
+
+      - name: Set up Docker Buildx
+        if: env.HAS_LEGACY_TOKEN == 'true'
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to legacy GHCR namespace
         if: env.HAS_LEGACY_TOKEN == 'true'
@@ -231,7 +369,7 @@ jobs:
           username: rhyssullivan
           password: ${{ secrets.GHCR_LEGACY_TOKEN }}
 
-      - name: Mirror self-host image to legacy GHCR namespace
+      - name: Mirror release tags to the legacy namespace
         if: env.HAS_LEGACY_TOKEN == 'true'
         shell: bash
         env:

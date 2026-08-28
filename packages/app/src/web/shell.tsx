@@ -9,7 +9,10 @@ import {
   toolsAllAtom,
 } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
-import { integrationPresetIconUrl } from "@executor-js/react/components/integration-favicon";
+import {
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "@executor-js/react/components/integration-favicon";
 import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
@@ -135,10 +138,15 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
               >
                 <IntegrationIconWithAccount
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind },
+                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
-                  sourceId={slug}
+                  integrationId={slug}
+                  url={
+                    integration.displayUrl ??
+                    integrationInferredUrl({ id: slug, name }) ??
+                    undefined
+                  }
                   size="sm"
                 />
                 <span className="flex-1 truncate">{name}</span>
@@ -157,6 +165,7 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
   const isSecrets = props.pathname === "/secrets";
   const isPolicies = props.pathname === "/policies";
   const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
+  const isArtifacts = props.pathname === "/artifacts" || props.pathname.startsWith("/artifacts/");
 
   return (
     <>
@@ -196,10 +205,16 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
           active={isToolkits}
           onNavigate={props.onNavigate}
         />
+        <NavItem
+          to="/{-$orgSlug}/artifacts"
+          label="Artifacts"
+          active={isArtifacts}
+          onNavigate={props.onNavigate}
+        />
 
         <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
-        {/* Sources list */}
+        {/* Integrations list */}
         <Link
           to="/{-$orgSlug}"
           className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground"
@@ -253,7 +268,7 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
 export function Shell() {
   const location = useLocation();
   const pathname = location.pathname;
-  const refreshSources = useAtomRefresh(integrationsAtom);
+  const refreshIntegrations = useAtomRefresh(integrationsAtom);
   const refreshTools = useAtomRefresh(toolsAllAtom);
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -279,7 +294,7 @@ export function Shell() {
     }
 
     const refreshBackendData = () => {
-      refreshSources();
+      refreshIntegrations();
       refreshTools();
     };
 
@@ -288,7 +303,7 @@ export function Shell() {
     return () => {
       import.meta.hot?.off("executor:backend-updated", refreshBackendData);
     };
-  }, [refreshSources, refreshTools]);
+  }, [refreshIntegrations, refreshTools]);
 
   return (
     <div className="flex h-screen overflow-hidden">

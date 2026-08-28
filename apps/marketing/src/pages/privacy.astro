@@ -39,7 +39,7 @@ import LegalLayout from "../components/LegalLayout.astro";
   <ul>
     <li>organization and workspace names;</li>
     <li>membership and role information;</li>
-    <li>source and integration metadata;</li>
+    <li>integration metadata;</li>
     <li>tool catalogs, schemas, policies, and related configuration;</li>
     <li>secret metadata and connection settings; and</li>
     <li>billing plan, membership, and execution-usage records.</li>
@@ -51,6 +51,39 @@ import LegalLayout from "../components/LegalLayout.astro";
     related configuration. We process that information to authenticate requests and operate your configured
     integrations. We may also process content that passes through those integrations when you instruct Executor to make
     a call, run code, or execute a workflow.
+  </p>
+
+  <h3>Google Workspace API data</h3>
+  <p>
+    If you connect a Google Workspace service, Executor uses the permissions you grant to perform the actions you
+    request through that integration. Depending on the service and permissions you choose, this may include accessing
+    or modifying Google Calendar calendars, events, and sharing rules; Gmail messages, drafts, threads, attachments, labels, and settings; Google
+    Drive files and folders; Docs documents; Sheets spreadsheets; Slides presentations; Forms and responses; Contacts,
+    profile fields, other contacts, and an available Workspace directory; Tasks; Meet spaces, participants, recordings, and transcripts; app-created or user-selected Photos media; Search
+    Console sites, sitemaps, indexed URLs, and performance data; or other Google content made available by the service
+    you connect. For Gmail, this can include permanently deleting messages or threads only when you explicitly request
+    that irreversible action.
+  </p>
+  <p>
+    Executor stores OAuth credentials and connection metadata so the integration can continue working. It processes
+    Google Workspace content only while carrying out your requested tool calls and returning their results to you or
+    the agent you directed to make the call. That content can appear in the resulting agent session or in another
+    service when you explicitly direct Executor to send it there.
+  </p>
+  <p>
+    We do not use Google Workspace API data for advertising or to train generalized artificial-intelligence or
+    machine-learning models. We disclose it only as needed to provide the user-requested integration, operate and secure
+    the Services, comply with law, or as otherwise described in this Policy with the user&apos;s consent.
+  </p>
+  <p>
+    Executor&apos;s use and transfer of information received from Google Workspace APIs adheres to the
+    <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+    including its Limited Use requirements.
+  </p>
+  <p>
+    You can stop Executor&apos;s access by deleting the Google connection in Executor or revoking Executor from your
+    Google Account permissions. To request deletion of your Executor account, stored OAuth credentials, connection
+    metadata, or other personal information, email <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
   </p>
 
   <h3>Website inputs and support communications</h3>
@@ -155,7 +188,7 @@ import LegalLayout from "../components/LegalLayout.astro";
   </p>
 
   <p>
-    You can also manage certain information directly in the product, such as organizations, memberships, sources,
+    You can also manage certain information directly in the product, such as organizations, memberships,
     secrets, policies, and integrations. To exercise privacy rights or request account deletion, email
     <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
   </p>
