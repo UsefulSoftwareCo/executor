@@ -1,6 +1,6 @@
 import { expect, test } from "@effect/vitest";
 import { FetchHttpClient } from "effect/unstable/http";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Layer } from "effect";
 
 import { makeTelemetryLive } from "./telemetry";
 
@@ -133,6 +133,52 @@ test("the exported payload carries no query values, userinfo, or fragments", asy
   expect(body).not.toContain(SECRET);
   // No exported url.full keeps a query string.
   expect(body).not.toContain("graphql?");
+});
+
+// Logs are their own OTLP signal with their own serialization path: the
+// OtlpLogger exports `Cause.pretty` output and every log annotation, and the
+// server logs OAuth callback failure causes whose error messages embed the raw
+// URL. The scrub is asserted on the logs payload the collector receives.
+test("the exported logs payload carries no credential-bearing URLs", async () => {
+  const SECRET = "synthetic-selfhost-log-canary";
+  const seen: Array<Request> = [];
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Effect.logError(
+        "oauth callback failed",
+        Cause.fail(
+          `Transport: fetch failed (GET https://u:${SECRET}-userinfo@api.test/api/oauth/callback?code=${SECRET}-code)`,
+        ),
+      ).pipe(
+        Effect.annotateLogs(
+          "request.url",
+          `https://api.test/api/oauth/callback?code=${SECRET}-annotation`,
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        makeTelemetryLive({
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.test",
+          EXECUTOR_OTEL_EXPORT_LOGS: "true",
+        }).pipe(
+          Layer.provide(
+            stubFetch((request) => {
+              seen.push(request);
+              return new Response(null, { status: 200 });
+            }),
+          ),
+        ),
+      ),
+      Effect.scoped,
+    ),
+  );
+
+  const body = await seen.find((request) => request.url.endsWith("/v1/logs"))?.text();
+  expect(body).toBeDefined();
+  // Non-vacuous: the record, its cause, and the scrubbed URL are on the wire.
+  expect(body).toContain("oauth callback failed");
+  expect(body).toContain("/api/oauth/callback");
+  expect(body).not.toContain(SECRET);
 });
 
 // --- helpers ---------------------------------------------------------------

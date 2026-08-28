@@ -10,12 +10,13 @@
 // a `TracerDisabledWhen` override would only cover the routes someone
 // remembered to wire it into.
 //
-// Three channels are scrubbed: attributes (`url.full` / `url.query` stamped
+// Four channels are scrubbed: attributes (`url.full` / `url.query` stamped
 // unconditionally by Effect's HttpMiddleware.tracer and HttpClient), event
 // attributes (`exception.message` / `exception.stacktrace` carry the raw URL
-// of a failed request), and the status message. `url.path` is deliberately
-// preserved — route-level visibility is what makes these traces worth
-// exporting at all.
+// of a failed request), link attributes (a link to a peer span carries the
+// peer's own attribute bag), and the status message. `url.path` is
+// deliberately preserved — route-level visibility is what makes these traces
+// worth exporting at all.
 // ---------------------------------------------------------------------------
 
 import type { Context } from "@opentelemetry/api";
@@ -29,21 +30,25 @@ import {
 
 /** The mutable surface of a span the redactor needs: the attribute bag, the
  *  recorded events (exception events carry `exception.message` and
- *  `exception.stacktrace`), and the status (whose `message` carries the
- *  failing error's message). Both `Span` and `ReadableSpan` expose all three
- *  as plain mutable objects. */
+ *  `exception.stacktrace`), the links (each carries its own attribute bag),
+ *  and the status (whose `message` carries the failing error's message). Both
+ *  `Span` and `ReadableSpan` expose all four as plain mutable objects. */
 interface RedactableSpan {
   readonly attributes: Record<string, unknown>;
   readonly events: ReadonlyArray<{
     name: string;
     attributes?: Record<string, unknown> | undefined;
   }>;
+  readonly links: ReadonlyArray<{
+    attributes?: Record<string, unknown> | undefined;
+  }>;
   readonly status: { message?: string | undefined };
 }
 
 /** Wraps a span processor so every span is scrubbed of credential-bearing URL
- *  components — in attributes, in event attributes, and in the status message
- *  — before the inner processor (and therefore the exporter) sees it.
+ *  components — in attributes, in event attributes, in link attributes, and
+ *  in the status message — before the inner processor (and therefore the
+ *  exporter) sees it.
  *
  *  The attribute rewrite happens in `onEnding`, the last hook the OTel SDK
  *  calls while the span is still mutable (`Span.end()` runs `onEnding` before
@@ -84,11 +89,20 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
     // Work on a copy so the redaction decision is made from the current values
     // and applied through the caller's writer (span API vs direct mutation).
     const draft: Record<string, unknown> = { ...span.attributes };
-    const stripped = redactSpanUrlAttributes(draft);
+    const stripped = new Set(redactSpanUrlAttributes(draft));
     for (const [name, value] of Object.entries(draft)) {
       if (typeof value === "string" && value !== span.attributes[name]) write(name, value);
     }
-    if (stripped.length > 0) write(STRIPPED_QUERY_ATTRIBUTE, stripped.join(","));
+
+    // Links have no setter on an ended span, so their attribute bags are
+    // scrubbed by direct mutation — the same full URL-aware pass the span's
+    // own attributes get, since a link carries an arbitrary attribute bag.
+    for (const link of span.links) {
+      if (link.attributes === undefined) continue;
+      for (const key of redactSpanUrlAttributes(link.attributes)) stripped.add(key);
+    }
+
+    if (stripped.size > 0) write(STRIPPED_QUERY_ATTRIBUTE, Array.from(stripped).sort().join(","));
 
     for (const event of span.events) {
       const name = redactUrlsInText(event.name);

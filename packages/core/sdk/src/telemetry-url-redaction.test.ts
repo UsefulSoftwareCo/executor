@@ -260,6 +260,45 @@ describe("redactOtlpTraceExport", () => {
     expect(serialized).toContain("http://exa mple.test/x");
   });
 
+  it("scrubs the sibling fields of a URL-keyed KeyValue instead of passing them through", () => {
+    // The URL-aware KeyValue special case must not exempt the REST of that
+    // object from the walk: a crafted KeyValue can carry URL-bearing text in a
+    // sibling of `key`/`value.stringValue`, and the browser-traces forwarder
+    // feeds attacker-shaped JSON straight through this function.
+    const SECRET = "synthetic-keyvalue-sibling-secret";
+    const payload = {
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  attributes: [
+                    {
+                      key: "url.full",
+                      value: {
+                        stringValue: "https://api.test/x?owner=synthetic-keyvalue-main-secret",
+                        extraValue: `see https://api.test/x?owner=${SECRET}-inner`,
+                      },
+                      note: `retry of https://api.test/x?owner=${SECRET}-sibling`,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const serialized = JSON.stringify(redactOtlpTraceExport(payload));
+
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain("synthetic-keyvalue-main-secret");
+    // Non-vacuous: the redacted URL survives in every field.
+    expect(serialized).toContain("https://api.test/x");
+  });
+
   it("drops content past the nesting bound rather than forwarding it unexamined", () => {
     let deep: unknown = "https://api.test/x?key=synthetic-deep-secret";
     for (let index = 0; index < 200; index += 1) deep = [deep];

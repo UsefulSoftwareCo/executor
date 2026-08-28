@@ -15,7 +15,9 @@
 // scheme, host, and path survive — that is what makes a trace debuggable. The
 // parameter NAMES (never values) are reported so a trace still shows that a
 // request carried a `code`, without its value; a nameless segment (`?token` —
-// indistinguishable from a bare value) is reported as `*`.
+// indistinguishable from a bare value) is reported as `*`. That diagnostic is
+// stamped only by the cloud span processor, which holds whole spans; the
+// serialization-seam consumers below remove secrets and report nothing.
 //
 // URLs also escape the attribute bag: when a request fails, Effect's error
 // types embed the raw URL in their `message` ("Transport: … (GET <url>)"),
@@ -27,7 +29,8 @@
 //     around `redactSpanUrlAttributes`/`redactUrlsInText`;
 //   - the self-host server and the browser client provide
 //     `UrlRedactingOtlpSerializationJson` to their Effect OTLP exporters, so
-//     the scrub runs at the serialization seam every span passes through;
+//     the scrub runs at the serialization seam every span and log record
+//     passes through;
 //   - apps/cloud's browser-traces forwarder scrubs the decoded OTLP JSON
 //     batch with `redactOtlpTraceExport` before forwarding it.
 // ---------------------------------------------------------------------------
@@ -45,7 +48,8 @@ const QUERY_ATTRIBUTE = "url.query";
 /** Names of the parameters removed from this span's URL attributes, plus the
  *  markers `userinfo` / `fragment` when those components were dropped and `*`
  *  for a nameless query segment. Non-secret by construction — it is the key
- *  list, never the values. */
+ *  list, never the values. Stamped only by the cloud span processor; the
+ *  serialization-seam paths remove secrets without reporting. */
 export const STRIPPED_QUERY_ATTRIBUTE = "url.query.stripped_keys";
 
 const isUrlAttribute = (name: string): boolean =>
@@ -182,29 +186,30 @@ const scrubValue = (value: unknown, depth: number): unknown => {
   if (value !== null && typeof value === "object") {
     if (depth >= MAX_SCRUB_DEPTH) return {};
     const record = value as Record<string, unknown>;
-    // An OTLP KeyValue whose key names a URL attribute gets the URL-aware
-    // scrub on its string value (free-text scrubbing alone would miss a
-    // malformed URL that the text regex does not match).
-    const key = record["key"];
-    if (typeof key === "string" && (isUrlAttribute(key) || key === QUERY_ATTRIBUTE)) {
-      const inner = record["value"];
-      if (inner !== null && typeof inner === "object") {
-        const anyValue = inner as Record<string, unknown>;
-        const text = anyValue["stringValue"];
-        if (typeof text === "string") {
-          return {
-            ...record,
-            value: {
-              ...anyValue,
-              stringValue: key === QUERY_ATTRIBUTE ? "" : redactUrlForTelemetry(text).url,
-            },
-          };
-        }
-      }
-    }
     const result: Record<string, unknown> = {};
     for (const [name, item] of Object.entries(record)) {
       result[name] = scrubValue(item, depth + 1);
+    }
+    // An OTLP KeyValue whose key names a URL attribute additionally gets the
+    // URL-aware scrub on its string value (free-text scrubbing alone would
+    // miss a malformed URL that the text regex does not match). This runs ON
+    // TOP of the generic walk above — never instead of it — so a crafted
+    // KeyValue cannot smuggle URL-bearing text through a sibling field.
+    const key = record["key"];
+    const inner = record["value"];
+    if (
+      typeof key === "string" &&
+      (isUrlAttribute(key) || key === QUERY_ATTRIBUTE) &&
+      inner !== null &&
+      typeof inner === "object"
+    ) {
+      const text = (inner as Record<string, unknown>)["stringValue"];
+      if (typeof text === "string") {
+        result["value"] = {
+          ...(result["value"] as Record<string, unknown>),
+          stringValue: key === QUERY_ATTRIBUTE ? "" : redactUrlForTelemetry(text).url,
+        };
+      }
     }
     return result;
   }
@@ -216,19 +221,32 @@ const scrubValue = (value: unknown, depth: number): unknown => {
  *  `http.url` / `url.query` attribute value redacted. The walk is generic —
  *  every string in the tree passes through the free-text scrub — so a
  *  credential-bearing URL cannot hide in a field the OTLP schema does not
- *  name. */
+ *  name. Removal only: this path adds no `url.query.stripped_keys`
+ *  diagnostic (that reporting exists only on the cloud span-processor path). */
 export const redactOtlpTraceExport = (payload: unknown): unknown => scrubValue(payload, 0);
 
-/** JSON OTLP serialization with the trace payload scrubbed at the
- *  serialization seam — the one chokepoint every exported span passes through
- *  in Effect's OTLP exporter, regardless of which layer created the span.
- *  Drop-in replacement for `OtlpSerialization.layerJson`. Logs and metrics
- *  serialize unchanged. */
+/** A decoded OTLP log-export payload (`{ resourceLogs: … }`) with every string
+ *  scrubbed of embedded URL credentials. Log records need this as much as
+ *  spans do: Effect's `OtlpLogger` exports `Cause.pretty` output (a failure's
+ *  error message embeds the raw URL of the request that failed) and every log
+ *  annotation verbatim. The walk is the same one traces get, including the
+ *  URL-aware KeyValue handling for annotation attributes. */
+export const redactOtlpLogExport = (payload: unknown): unknown => scrubValue(payload, 0);
+
+/** JSON OTLP serialization with the trace and log payloads scrubbed at the
+ *  serialization seam — the one chokepoint every exported span and log record
+ *  passes through in Effect's OTLP exporter, regardless of which layer created
+ *  it. Drop-in replacement for `OtlpSerialization.layerJson`. Metrics
+ *  serialize unchanged: they are aggregated numbers under fixed metric names,
+ *  not request-derived strings. This seam removes secrets only; the
+ *  stripped-parameter-names diagnostic is stamped solely by the cloud span
+ *  processor, which sees spans as attribute bags rather than serialized
+ *  batches. */
 export const UrlRedactingOtlpSerializationJson: Layer.Layer<OtlpSerialization> = Layer.succeed(
   OtlpSerialization,
   {
     traces: (spans) => HttpBody.jsonUnsafe(redactOtlpTraceExport(spans)),
     metrics: (metrics) => HttpBody.jsonUnsafe(metrics),
-    logs: (logs) => HttpBody.jsonUnsafe(logs),
+    logs: (logs) => HttpBody.jsonUnsafe(redactOtlpLogExport(logs)),
   },
 );

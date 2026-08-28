@@ -85,6 +85,46 @@ describe("UrlRedactingSpanProcessor", () => {
     expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBeUndefined();
   });
 
+  it("scrubs URL-bearing link attributes", () => {
+    // Span links carry attributes exactly as spans do — `ReadableSpan.links`
+    // is a fourth channel to the exporter, and a link stamped with the peer's
+    // URL must not export the credential the span's own attributes dropped.
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({
+      spanProcessors: [new UrlRedactingSpanProcessor(new SimpleSpanProcessor(exporter))],
+    });
+    const tracer = provider.getTracer("test");
+    const upstream = tracer.startSpan("upstream");
+    const span = tracer.startSpan("http.server GET", {
+      links: [
+        {
+          context: upstream.spanContext(),
+          attributes: {
+            // Malformed on purpose: the free-text regex alone would not match
+            // it, so the URL-aware attribute path must handle link attributes.
+            "url.full": "http://exa mple.test/graphql?key=synthetic-link-key-secret",
+            "peer.note":
+              "after GET https://canary:synthetic-link-userinfo-secret@api.test/graphql?owner=synthetic-link-owner-secret",
+          },
+        },
+      ],
+    });
+    span.end();
+    upstream.end();
+
+    const exported = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === "http.server GET");
+    const links = JSON.stringify(exported?.links);
+    expect(links).not.toContain("synthetic-link-key-secret");
+    expect(links).not.toContain("synthetic-link-userinfo-secret");
+    expect(links).not.toContain("synthetic-link-owner-secret");
+    // Non-vacuous: the link, its identity, and the scrubbed URLs survive.
+    expect(exported?.links).toHaveLength(1);
+    expect(links).toContain(upstream.spanContext().spanId);
+    expect(links).toContain("https://api.test/graphql");
+  });
+
   it("scrubs the URL out of exception events and the status message", () => {
     // The shape `@effect/opentelemetry` exports for a failed request:
     // `TransportError.message` embeds the raw URL, and the bridge copies it

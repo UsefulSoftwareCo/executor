@@ -115,8 +115,10 @@ export const makeTelemetryLive = (
   return Layer.merge(TracerLive, LoggerLive).pipe(
     // The redacting serialization is the scrub for this exporter path: no
     // cloud span processor runs here, so credential-bearing URL components
-    // (query values, userinfo, fragments) are stripped from the trace payload
-    // at the serialization seam every exported span passes through.
+    // (query values, userinfo, fragments) are stripped from the trace and log
+    // payloads at the serialization seam every exported span and log record
+    // passes through. Removal only — this path adds no stripped-keys
+    // diagnostic.
     Layer.provide(UrlRedactingOtlpSerializationJson),
     // The exporter gets a plain fetch client, deliberately not the guarded
     // hosted client: the collector is an address the operator configured, so

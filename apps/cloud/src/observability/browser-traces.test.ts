@@ -78,7 +78,12 @@ describe("browserTracesResponse", () => {
                       key: "url.full",
                       value: {
                         stringValue: `https://app.test/api/oauth/callback?code=${SECRET}-code#access_token=${SECRET}-fragment`,
+                        // Crafted sibling fields: the page-side exporter is not
+                        // a trust boundary, so the URL-keyed special case must
+                        // not exempt the rest of the KeyValue from the scrub.
+                        extraValue: `https://app.test/x?owner=${SECRET}-kv-inner`,
                       },
+                      note: `retry of https://app.test/x?owner=${SECRET}-kv-sibling`,
                     },
                     { key: "url.query", value: { stringValue: `code=${SECRET}-code` } },
                   ],
