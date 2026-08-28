@@ -1,17 +1,19 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
 import { authClient } from "./auth-client";
+import { fetchSocialProviders } from "./auth-config";
 import { AuthLayout } from "./auth-layout";
 import { postLoginTarget } from "../src/auth/return-to";
 
-// Self-host login: email + password sign-in via Better Auth. On success we
-// reload so the shared AuthProvider re-reads /account/me and the AuthGate swaps
-// in the app. (Cloud's equivalent is a WorkOS redirect — this is the
-// provider-specific piece injected into the shared shell.)
+// Self-host login: email + password sign-in via Better Auth, plus a provider
+// button per configured social provider (read from /api/auth-config). On
+// success we reload so the shared AuthProvider re-reads /account/me and the
+// AuthGate swaps in the app. (Cloud's equivalent is a WorkOS redirect — this is
+// the provider-specific piece injected into the shared shell.)
 //
 // There is no self-signup here: open registration is closed. New people join by
 // redeeming an invite — either the full /join/<code> link, or by entering the
@@ -27,6 +29,17 @@ export const LoginPage = () => {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [socialProviders, setSocialProviders] = useState<readonly string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSocialProviders().then((providers) => {
+      if (!cancelled) setSocialProviders(providers);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const signIn = async (event: FormEvent) => {
     event.preventDefault();
@@ -39,6 +52,22 @@ export const LoginPage = () => {
       return;
     }
     window.location.href = postLogin;
+  };
+
+  const signInWithGoogle = async () => {
+    setBusy(true);
+    setError(null);
+    // Better Auth redirects the browser to Google; on callback it lands on
+    // `callbackURL`, so the deep-link target survives the round trip the same
+    // way it does for the email form's post-login navigation.
+    const result = await authClient.signIn.social({
+      provider: "google",
+      callbackURL: postLogin,
+    });
+    if (result.error) {
+      setBusy(false);
+      setError(result.error.message ?? "Sign in failed");
+    }
   };
 
   const redeem = (event: FormEvent) => {
@@ -94,6 +123,24 @@ export const LoginPage = () => {
             <Button type="submit" disabled={busy} className="w-full">
               {busy ? "…" : "Sign in"}
             </Button>
+            {socialProviders.includes("google") && (
+              <>
+                <div className="flex items-center gap-3">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-xs text-muted-foreground">or</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void signInWithGoogle()}
+                  className="w-full"
+                >
+                  Continue with Google
+                </Button>
+              </>
+            )}
           </form>
         ) : (
           <form onSubmit={redeem} className="space-y-4">

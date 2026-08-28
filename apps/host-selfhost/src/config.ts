@@ -18,6 +18,19 @@ import {
 export const SELF_HOST_NAMESPACE = "executor_selfhost";
 export const SELF_HOST_SCHEMA_VERSION = "1.0.0";
 
+/**
+ * Google sign-in for the self-host login page and the MCP OAuth connect flow.
+ * Present only when the operator configured a Google OAuth client; the
+ * allowlist is what replaces the invite code for social sign-ups (the domain
+ * IS the invite), so it is required whenever the provider is enabled.
+ */
+export interface GoogleSsoConfig {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  /** Lowercased email domains admitted without an invite code. */
+  readonly allowedDomains: readonly string[];
+}
+
 export interface SelfHostConfig {
   /** Bind address. Defaults to loopback. */
   readonly host: string;
@@ -51,6 +64,8 @@ export interface SelfHostConfig {
    * minutes (the same pattern as MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS on cloud).
    */
   readonly sandboxTimeoutMs: number | undefined;
+  /** Google sign-in, or undefined when the operator hasn't configured it. */
+  readonly googleSso: GoogleSsoConfig | undefined;
 }
 
 export const resolveDataDir = (): string =>
@@ -157,7 +172,37 @@ export const loadConfig = (): SelfHostConfig => {
     organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
     orgSlug: resolveOrgSlug(),
     sandboxTimeoutMs: resolveSandboxTimeoutMs(),
+    googleSso: resolveGoogleSso(),
   };
+};
+
+// Half-configured SSO is refused rather than silently ignored (same posture as
+// resolveSandboxTimeoutMs): an operator who set one of the two credentials
+// should find out at boot, not by staring at a login page with no button. An
+// empty domain allowlist is refused too — without it, Google sign-in would be
+// open registration for anyone with a Google account, bypassing the invite
+// gate entirely.
+const resolveGoogleSso = (): GoogleSsoConfig | undefined => {
+  const clientId = process.env.EXECUTOR_GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.EXECUTOR_GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId && !clientSecret) return undefined;
+  if (!clientId || !clientSecret) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on half-configured SSO credentials
+    throw new Error(
+      "EXECUTOR_GOOGLE_CLIENT_ID and EXECUTOR_GOOGLE_CLIENT_SECRET must be set together",
+    );
+  }
+  const allowedDomains = (process.env.EXECUTOR_GOOGLE_ALLOWED_DOMAINS ?? "")
+    .split(",")
+    .map((domain) => domain.trim().replace(/^@/, "").toLowerCase())
+    .filter((domain) => domain.length > 0);
+  if (allowedDomains.length === 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: Google sign-in without a domain allowlist is open registration; refuse to boot
+    throw new Error(
+      'EXECUTOR_GOOGLE_ALLOWED_DOMAINS is required when Google sign-in is configured (comma-separated email domains, e.g. "example.com") — it is what gates sign-ups in place of an invite code',
+    );
+  }
+  return { clientId, clientSecret, allowedDomains };
 };
 
 // A malformed value is refused rather than silently ignored: an operator who

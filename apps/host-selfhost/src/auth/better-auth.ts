@@ -6,7 +6,7 @@ import { type Client } from "@libsql/client";
 import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
-import { loadConfig } from "../config";
+import { loadConfig, type GoogleSsoConfig } from "../config";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
 
@@ -24,6 +24,27 @@ interface SignupGate {
 // Only self-service email signups are code-gated. Server/admin-initiated user
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
+
+// Better Auth serves the social OAuth callback at `/callback/:providerId`
+// (`api/routes/callback` in the installed build) — the only path a
+// social-provider user creation arrives on. Server-side creation (the seed,
+// admin add-user) never carries it, so it cleanly splits "a stranger signed in
+// with Google" from every trusted path.
+const isSocialCallback = (path: string | undefined): boolean =>
+  path?.startsWith("/callback/") === true;
+
+// The domain of a well-formed address, or null — so a malformed email can never
+// match an allowlist entry (`emailDomain("@example.com")` is null, not "example.com").
+export const emailDomain = (email: string): string | null => {
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return null;
+  return email.slice(at + 1).toLowerCase();
+};
+
+const isDomainAdmitted = (sso: GoogleSsoConfig, email: string): boolean => {
+  const domain = emailDomain(email);
+  return domain !== null && sso.allowedDomains.includes(domain);
+};
 
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
@@ -99,6 +120,19 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     baseURL: config.webBaseUrl,
     trustedOrigins: [config.webBaseUrl],
     emailAndPassword: { enabled: true },
+    // Google sign-in, when the operator configured it (see config.ts). The
+    // domain gate below is what admits or refuses the users this creates —
+    // enabling the provider alone never opens registration.
+    ...(config.googleSso
+      ? {
+          socialProviders: {
+            google: {
+              clientId: config.googleSso.clientId,
+              clientSecret: config.googleSso.clientSecret,
+            },
+          },
+        }
+      : {}),
     // `apiKey` issues long-lived personal keys (the API-keys page). With
     // `enableSessionForAPIKeys`, presenting a key resolves to its owner's
     // session — so a key works as a Bearer token for the API + MCP endpoint.
@@ -175,8 +209,25 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
         ? {
             user: {
               create: {
-                before: async (_user, context) => {
-                  if (context?.path !== SIGNUP_PATH) return;
+                before: async (user, context) => {
+                  if (context?.path !== SIGNUP_PATH) {
+                    // Social sign-ups arrive on the OAuth callback path; the
+                    // domain allowlist gates them in place of an invite code.
+                    // Server-side creation (the seed, admin add-user) passes.
+                    const sso = config.googleSso;
+                    if (
+                      isSocialCallback(context?.path) &&
+                      !(sso !== undefined && isDomainAdmitted(sso, user.email))
+                    ) {
+                      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
+                      throw new APIError("FORBIDDEN", {
+                        message: sso
+                          ? `Sign-ups are restricted to ${sso.allowedDomains.map((d) => `@${d}`).join(", ")} accounts.`
+                          : "Social sign-up is not enabled on this instance.",
+                      });
+                    }
+                    return;
+                  }
                   if (await orgHasNoMembers(gate)) return; // first user claims the org
                   const code = inviteCodeFrom(context);
                   if (!code) {
@@ -193,9 +244,30 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
                   }
                 },
                 after: async (user, context) => {
-                  if (context?.path !== SIGNUP_PATH) return;
                   const auth = gate.getAuth();
                   if (!auth) return;
+                  if (context?.path !== SIGNUP_PATH) {
+                    // A social user that reached `after` was domain-admitted by
+                    // `before`; joining the instance org as a member is what an
+                    // invite redemption would have done. Server-side creation
+                    // (no callback path) is left alone — the seed manages its
+                    // own membership.
+                    const sso = config.googleSso;
+                    if (
+                      isSocialCallback(context?.path) &&
+                      sso !== undefined &&
+                      isDomainAdmitted(sso, user.email)
+                    ) {
+                      await auth.api.addMember({
+                        body: {
+                          userId: user.id,
+                          role: "member",
+                          organizationId: gate.organizationId,
+                        },
+                      });
+                    }
+                    return;
+                  }
                   // First user into an empty org becomes its owner (no code).
                   if (await orgHasNoMembers(gate)) {
                     await auth.api.addMember({
