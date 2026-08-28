@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
@@ -1177,6 +1177,28 @@ describe("mcpPlugin endpoint telemetry", () => {
       context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
     });
 
+  /** Serializes spans the way the OTel export bridge would see them —
+   *  attributes, events, and, for a failed span, the error channel
+   *  (`@effect/opentelemetry` stamps each pretty error's message/stack as an
+   *  exception EVENT and `errors[0].message` as `status.message`). A
+   *  credential hiding in any of those channels fails the assertion, not just
+   *  one hiding in an attribute. */
+  const serializeExportChannels = (spans: ReadonlyArray<Tracer.NativeSpan>): string =>
+    JSON.stringify(
+      spans.map((span) => ({
+        attributes: Object.fromEntries(span.attributes.entries()),
+        events: span.events.map(([name, , attributes]) => ({ name, attributes })),
+        errors:
+          Predicate.isTagged(span.status, "Ended") && Exit.isFailure(span.status.exit)
+            ? Cause.prettyErrors(span.status.exit.cause).map((prettyError) => ({
+                name: prettyError.name,
+                message: prettyError.message,
+                stack: prettyError.stack ?? "",
+              }))
+            : [],
+      })),
+    );
+
   it.effect("stamps a sanitized endpoint on the detect span", () =>
     Effect.gen(function* () {
       const spans: Array<Tracer.NativeSpan> = [];
@@ -1199,10 +1221,8 @@ describe("mcpPlugin endpoint telemetry", () => {
       // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
       // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
       // which is not installed at this level.
-      const serialized = JSON.stringify(
-        spans
-          .filter((span) => span.name.startsWith("mcp.plugin."))
-          .map((span) => Object.fromEntries(span.attributes.entries())),
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
       );
       expect(serialized).not.toContain(QUERY_TOKEN);
       expect(serialized).not.toContain(USERINFO_PASSWORD);
@@ -1228,10 +1248,8 @@ describe("mcpPlugin endpoint telemetry", () => {
       // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
       // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
       // which is not installed at this level.
-      const serialized = JSON.stringify(
-        spans
-          .filter((span) => span.name.startsWith("mcp.plugin."))
-          .map((span) => Object.fromEntries(span.attributes.entries())),
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
       );
       expect(serialized).not.toContain(QUERY_TOKEN);
     }),

@@ -16,12 +16,31 @@
 // credential itself.
 // ---------------------------------------------------------------------------
 
+/** Fallback for input `URL` cannot parse. A malformed paste can still carry
+ *  both credential shapes (`user:password@` and `?token=…`), so it must never
+ *  pass through verbatim — degrade by truncation instead. Everything from the
+ *  first `?` or `#` is dropped (an unparseable query string cannot be proven
+ *  credential-free), and anything before a remaining `@` is dropped with it
+ *  (it may be userinfo; over-stripping is the safe direction here). */
+const opaqueEndpoint = (
+  endpoint: string,
+): { readonly sanitized: string; readonly hadQuery: boolean; readonly hadUserinfo: boolean } => {
+  const queryStart = endpoint.search(/[?#]/);
+  const beforeQuery = queryStart === -1 ? endpoint : endpoint.slice(0, queryStart);
+  const userinfoEnd = beforeQuery.lastIndexOf("@");
+  return {
+    sanitized: userinfoEnd === -1 ? beforeQuery : beforeQuery.slice(userinfoEnd + 1),
+    hadQuery: queryStart !== -1,
+    hadUserinfo: userinfoEnd !== -1,
+  };
+};
+
 /** The endpoint with every credential-bearing component removed: query string,
- *  fragment, and `user:pass@` userinfo. Unparseable input is returned as-is —
- *  it is not a URL, so there is nothing to strip, and callers still want the
- *  literal for debugging a malformed paste. */
+ *  fragment, and `user:pass@` userinfo. Unparseable input degrades through the
+ *  same textual truncation — never verbatim, because a malformed paste is
+ *  exactly where a stray credential hides. */
 export const endpointForTelemetry = (endpoint: string): string => {
-  if (!URL.canParse(endpoint)) return endpoint;
+  if (!URL.canParse(endpoint)) return opaqueEndpoint(endpoint).sanitized;
   const url = new URL(endpoint);
   url.search = "";
   url.hash = "";
@@ -38,10 +57,11 @@ export const endpointTelemetryAttributes = (
   endpoint: string,
 ): Record<string, string | boolean> => {
   if (!URL.canParse(endpoint)) {
+    const opaque = opaqueEndpoint(endpoint);
     return {
-      [prefix]: endpoint,
-      [`${prefix}.has_query`]: false,
-      [`${prefix}.has_userinfo`]: false,
+      [prefix]: opaque.sanitized,
+      [`${prefix}.has_query`]: opaque.hadQuery,
+      [`${prefix}.has_userinfo`]: opaque.hadUserinfo,
     };
   }
   const url = new URL(endpoint);

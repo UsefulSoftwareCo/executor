@@ -35,8 +35,25 @@ describe("endpointForTelemetry", () => {
     );
   });
 
-  it("returns unparseable input as-is", () => {
+  it("returns credential-free unparseable input as-is", () => {
     expect(endpointForTelemetry("not a url")).toBe("not a url");
+  });
+
+  it("truncates an unparseable paste at the first `?` instead of passing it through", () => {
+    // A space in the host makes this unparseable, but the `?token=…` shape is
+    // still a credential and must not be stamped verbatim.
+    const scrubbed = endpointForTelemetry(`http://exa mple.test/mcp?token=${QUERY_TOKEN}`);
+    expect(scrubbed).toBe("http://exa mple.test/mcp");
+    expect(scrubbed).not.toContain(QUERY_TOKEN);
+  });
+
+  it("drops a userinfo-looking prefix from an unparseable paste", () => {
+    const scrubbed = endpointForTelemetry(
+      `http://svc-user:${USERINFO_PASSWORD}@exa mple.test/mcp?token=${QUERY_TOKEN}`,
+    );
+    expect(scrubbed).toBe("exa mple.test/mcp");
+    expect(scrubbed).not.toContain(QUERY_TOKEN);
+    expect(scrubbed).not.toContain(USERINFO_PASSWORD);
   });
 });
 
@@ -64,5 +81,20 @@ describe("endpointTelemetryAttributes", () => {
       "mcp.endpoint.has_query": false,
       "mcp.endpoint.has_userinfo": false,
     });
+  });
+
+  it("degrades an unparseable paste without leaking either credential shape", () => {
+    const attributes = endpointTelemetryAttributes(
+      "mcp.endpoint",
+      `http://svc-user:${USERINFO_PASSWORD}@exa mple.test/mcp?token=${QUERY_TOKEN}`,
+    );
+
+    expect(attributes).toEqual({
+      "mcp.endpoint": "exa mple.test/mcp",
+      "mcp.endpoint.has_query": true,
+      "mcp.endpoint.has_userinfo": true,
+    });
+    expect(JSON.stringify(attributes)).not.toContain(QUERY_TOKEN);
+    expect(JSON.stringify(attributes)).not.toContain(USERINFO_PASSWORD);
   });
 });
