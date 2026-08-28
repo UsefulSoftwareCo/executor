@@ -13,25 +13,27 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
-import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
-import { messageFromExit } from "@executor-js/react/api/error-reporting";
-import { Button } from "@executor-js/react/components/button";
+import {
+  CardStack,
+  CardStackContent,
+  CardStackEntryField,
+} from "@executor-js/react/components/card-stack";
 import { Input } from "@executor-js/react/components/input";
-import { Label } from "@executor-js/react/components/label";
 import { Textarea } from "@executor-js/react/components/textarea";
+import { errorMessageFromExit, FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
-import { configureMcpAuth, mcpServerAtom, updateStdioServer } from "./atoms";
+import { configureMcpAuth, configureMcpServer, mcpServerAtom } from "./atoms";
 import type {
   McpAuthMethod,
   McpCanonicalAuthMethodInput,
   McpIntegrationConfig,
-  McpStdioIntegrationConfig,
 } from "../sdk/types";
 import {
   editorValueFromMcpAuthMethod,
   mcpAuthMethodInputFromEditorValue,
   mcpWireAuthInput,
 } from "./auth-method-config";
+import { formatStdioArgs, formatStdioEnv, parseStdioArgs, parseStdioEnv } from "./stdio-fields";
 
 type McpServer = {
   readonly slug: IntegrationSlug;
@@ -179,163 +181,155 @@ function RemoteEdit(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Stdio read-only view
+// Stdio edit — the command, its arguments, the working directory, and the
+// DECLARED static environment. Secret env vars are not edited here: a stdio
+// server declares them as a `stdio_env` auth method and their values live on
+// the connection, managed from the integration page's accounts hub. Changes
+// are staged and applied by the sheet's Save, like the remote editor above.
 // ---------------------------------------------------------------------------
 
-function StdioEditForm(props: {
-  server: McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> };
+type McpStdioConfig = Extract<McpIntegrationConfig, { transport: "stdio" }>;
+
+/** Order-independent identity for a declared env map, so re-ordering the lines
+ *  in the field is not reported as a change. */
+const envIdentity = (env: Readonly<Record<string, string>> | undefined): string =>
+  Object.entries(env ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+
+function StdioEdit(props: {
+  server: McpServer & { config: McpStdioConfig };
   onPendingChange?: EditSheetSectionProps["onPendingChange"];
 }) {
   const { server } = props;
-  const doUpdate = useAtomSet(updateStdioServer, { mode: "promiseExit" });
-  const [command, setCommand] = useState(server.config.command || "");
-  const [args, setArgs] = useState((server.config.args || []).join(" "));
-  const [cwd, setCwd] = useState(server.config.cwd || "");
-  const [envVars, setEnvVars] = useState(
-    Object.entries(server.config.env || {})
-      .map(([k, v]) => `${k}=${v}`)
-      .join("\n"),
-  );
-  const [isSaving, setIsSaving] = useState(false);
+  const doConfigure = useAtomSet(configureMcpServer, { mode: "promiseExit" });
+
+  const [command, setCommand] = useState(server.config.command);
+  const [args, setArgs] = useState(() => formatStdioArgs(server.config.args));
+  const [cwd, setCwd] = useState(server.config.cwd ?? "");
+  const [env, setEnv] = useState(() => formatStdioEnv(server.config.env));
   const [error, setError] = useState<string | null>(null);
 
-  // Convert args string back to array
-  const argsArray = args.split(" ").filter(Boolean);
+  // The edited config. `configureServer` replaces the whole blob, so anything
+  // this form does not surface (`versionNegotiation`, `authenticationTemplate`)
+  // is carried through untouched. Empty optional fields are omitted rather than
+  // written as `undefined`.
+  const edited = useMemo<McpStdioConfig>(() => {
+    const { args: _args, cwd: _cwd, env: _env, ...rest } = server.config;
+    const nextArgs = parseStdioArgs(args);
+    const nextEnv = parseStdioEnv(env);
+    const nextCwd = cwd.trim();
+    return {
+      ...rest,
+      command: command.trim(),
+      ...(nextArgs.length > 0 ? { args: nextArgs } : {}),
+      ...(Object.keys(nextEnv).length > 0 ? { env: nextEnv } : {}),
+      ...(nextCwd !== "" ? { cwd: nextCwd } : {}),
+    };
+  }, [args, command, cwd, env, server.config]);
 
-  // Parse env vars from textarea
-  const envObject = Object.fromEntries(
-    envVars
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => line.split("="))
-      .filter(([k, v]) => k && v),
-  );
+  const changed =
+    edited.command !== server.config.command ||
+    formatStdioArgs(edited.args) !== formatStdioArgs(server.config.args) ||
+    (edited.cwd ?? "") !== (server.config.cwd ?? "") ||
+    envIdentity(edited.env) !== envIdentity(server.config.env);
 
-  const hasChanges =
-    command !== server.config.command ||
-    argsArray.join(" ") !== (server.config.args || []).join(" ") ||
-    cwd !== (server.config.cwd || "") ||
-    JSON.stringify(envObject) !== JSON.stringify(server.config.env || {});
-
+  // Staged apply, run by the sheet's Save. Persisting the config re-runs
+  // discovery on every connection, so the tool catalog matches the new command.
   const applyStaged = useCallback(async (): Promise<EditSheetApplyResult> => {
     setError(null);
-    setIsSaving(true);
-    const config: McpStdioIntegrationConfig = {
-      ...server.config,
-      command,
-      args: argsArray,
-      cwd: cwd || undefined,
-      env: Object.keys(envObject).length > 0 ? envObject : undefined,
-    };
-    const exit = await doUpdate({
-      params: { slug: server.slug },
-      payload: { config },
-      reactivityKeys: integrationWriteKeys,
-    });
-    setIsSaving(false);
-    if (Exit.isFailure(exit)) {
-      setError(messageFromExit(exit, "Failed to update stdio server"));
+    if (edited.command === "") {
+      setError("A command is required.");
       return { ok: false };
     }
-    return { ok: true, summary: "Stdio server updated successfully." };
-  }, [argsArray, command, cwd, doUpdate, envObject, server.config, server.slug]);
+    const exit = await doConfigure({
+      params: { slug: server.slug },
+      payload: { config: edited },
+      reactivityKeys: integrationWriteKeys,
+    });
+    if (Exit.isFailure(exit)) {
+      setError(errorMessageFromExit(exit, "Failed to update the server command"));
+      return { ok: false };
+    }
+    return { ok: true, summary: "Server command updated." };
+  }, [doConfigure, edited, server.slug]);
 
   const onPendingChangeRef = useRef(props.onPendingChange);
   onPendingChangeRef.current = props.onPendingChange;
   useEffect(() => {
-    onPendingChangeRef.current?.(hasChanges ? applyStaged : null);
+    onPendingChangeRef.current?.(changed ? applyStaged : null);
     return () => onPendingChangeRef.current?.(null);
-  }, [hasChanges, applyStaged]);
+  }, [changed, applyStaged]);
 
   return (
     <div className="space-y-4 border-t border-border/60 pt-5">
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">Server configuration</p>
+        <p className="text-sm font-medium text-foreground">Server command</p>
         <p className="text-xs text-muted-foreground">
-          Edit the stdio server command and environment variables.
+          Changes apply when you save. The server is dialed again and its tools are rediscovered.
         </p>
       </div>
 
-      <div className="space-y-3">
-        <div>
-          <Label htmlFor="mcp-stdio-command">Command *</Label>
-          <Input
-            id="mcp-stdio-command"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm"
-            placeholder="e.g., node"
-            required
-          />
-        </div>
+      <CardStack>
+        <CardStackContent className="border-t-0">
+          <CardStackEntryField
+            label="Command"
+            description="- The executable to run (e.g. npx, uvx, node)."
+          >
+            <Input
+              value={command}
+              onChange={(e) => setCommand((e.target as HTMLInputElement).value)}
+              placeholder="npx"
+              className="font-mono text-sm"
+            />
+          </CardStackEntryField>
 
-        <div>
-          <Label htmlFor="mcp-stdio-args">Arguments</Label>
-          <Input
-            id="mcp-stdio-args"
-            value={args}
-            onChange={(e) => setArgs(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm"
-            placeholder="server.js --port 3000"
-          />
-          <p className="mt-1 text-xs text-muted-foreground">Space-separated arguments</p>
-        </div>
+          <CardStackEntryField
+            label="Arguments"
+            description="- Space-separated arguments passed to the command."
+          >
+            <Input
+              value={args}
+              onChange={(e) => setArgs((e.target as HTMLInputElement).value)}
+              placeholder="-y chrome-devtools-mcp@latest"
+              className="font-mono text-sm"
+            />
+          </CardStackEntryField>
 
-        <div>
-          <Label htmlFor="mcp-stdio-cwd">Working Directory</Label>
-          <Input
-            id="mcp-stdio-cwd"
-            value={cwd}
-            onChange={(e) => setCwd(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm"
-            placeholder="/path/to/working/directory"
-          />
-        </div>
+          <CardStackEntryField
+            label="Working directory"
+            description="- Optional. Where the command runs."
+          >
+            <Input
+              value={cwd}
+              onChange={(e) => setCwd((e.target as HTMLInputElement).value)}
+              placeholder="/path/to/server"
+              className="font-mono text-sm"
+            />
+          </CardStackEntryField>
 
-        <div>
-          <Label htmlFor="mcp-stdio-env">Environment Variables</Label>
-          <Textarea
-            id="mcp-stdio-env"
-            value={envVars}
-            onChange={(e) => setEnvVars(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm font-mono"
-            placeholder="KEY=value&#10;ANOTHER_KEY=another_value"
-            rows={3}
-          />
-          <p className="mt-1 text-xs text-muted-foreground">One per line, format: KEY=value</p>
-        </div>
-      </div>
+          <CardStackEntryField
+            label="Environment variables"
+            description="- One KEY=value per line. The server receives these plus a small base set; it does not inherit executor's environment."
+          >
+            <Textarea
+              value={env}
+              onChange={(e) => setEnv((e.target as HTMLTextAreaElement).value)}
+              placeholder={"LOG_LEVEL=debug\nREGION=eu-west-1"}
+              className="font-mono text-sm"
+            />
+          </CardStackEntryField>
+        </CardStackContent>
+      </CardStack>
 
-      {error && (
-        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-400">
-          {error}
-        </div>
-      )}
+      <p className="text-xs text-muted-foreground">
+        Secret values do not belong here. A server that needs an API key declares its variable name
+        as an authentication method, and the value is entered per connection from the accounts
+        panel.
+      </p>
 
-      {isSaving && <div className="text-sm text-muted-foreground">Saving...</div>}
-
-      <div className="flex gap-2">
-        <Button onClick={() => void applyStaged()} disabled={isSaving || !hasChanges}>
-          {isSaving ? "Saving..." : "Save"}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => {
-            setCommand(server.config.command || "");
-            setArgs((server.config.args || []).join(" "));
-            setCwd(server.config.cwd || "");
-            setEnvVars(
-              Object.entries(server.config.env || {})
-                .map(([key, value]) => `${key}=${value}`)
-                .join("\n"),
-            );
-            setError(null);
-          }}
-          disabled={isSaving}
-        >
-          Cancel
-        </Button>
-      </div>
+      {error && <FormErrorAlert message={error} />}
     </div>
   );
 }
@@ -357,10 +351,8 @@ export default function EditMcpIntegration({
 
   if (server.config.transport === "stdio") {
     return (
-      <StdioEditForm
-        server={
-          server as McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> }
-        }
+      <StdioEdit
+        server={server as McpServer & { config: McpStdioConfig }}
         {...(onPendingChange ? { onPendingChange } : {})}
       />
     );

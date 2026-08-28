@@ -12,7 +12,6 @@ import {
   McpAuthMethodInput,
   McpAuthShorthand,
   McpIntegrationConfig,
-  McpStdioIntegrationConfig,
 } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
@@ -106,14 +105,6 @@ const ConfigureServerResponse = Schema.Struct({
   config: McpIntegrationConfig,
 });
 
-const UpdateStdioServerPayload = Schema.Struct({
-  config: McpStdioIntegrationConfig,
-});
-
-const UpdateStdioServerResponse = Schema.Struct({
-  config: McpStdioIntegrationConfig,
-});
-
 // The configureAuth payload/response — custom auth methods to merge-append
 // onto the integration's `authenticationTemplate` (or `replace` the set).
 // Mirrors the GraphQL/OpenAPI configure endpoints.
@@ -192,14 +183,6 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SlugParams,
       payload: ConfigureAuthPayload,
       success: ConfigureAuthResponse,
-      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("updateStdioServer", "/mcp/servers/:slug/stdio", {
-      params: SlugParams,
-      payload: UpdateStdioServerPayload,
-      success: UpdateStdioServerResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   );

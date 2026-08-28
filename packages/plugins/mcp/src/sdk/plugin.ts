@@ -1195,23 +1195,25 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      /** Replace the stored config, then rediscover on every connection. The
+       *  tool catalog is derived from the config — the stdio command, the
+       *  remote endpoint — so leaving the previous catalog in place after a
+       *  config change advertises tools the server no longer serves.
+       *  Rediscovery is best-effort: the config is already persisted, and a
+       *  server that will not dial must not roll the edit back. It simply
+       *  lists no tools until it does. */
       const configureServer = (slug: string, config: McpIntegrationConfigType) =>
-        ctx.core.integrations.update(slugFrom(slug), { config }).pipe(
-          Effect.withSpan("mcp.plugin.configure_server", {
-            attributes: { "mcp.integration.slug": slug },
-          }),
-        );
-
-      const updateStdioServer = (slug: string, config: McpStdioIntegrationConfig) =>
         Effect.gen(function* () {
           const integration = slugFrom(slug);
           yield* ctx.core.integrations.update(integration, { config });
           const connections = yield* ctx.connections.list({ integration });
-          yield* Effect.forEach(connections, (connection) => ctx.connections.refresh(connection), {
-            discard: true,
-          });
+          yield* Effect.forEach(
+            connections,
+            (connection) => Effect.ignore(ctx.connections.refresh(connection)),
+            { discard: true },
+          );
         }).pipe(
-          Effect.withSpan("mcp.plugin.update_stdio_server", {
+          Effect.withSpan("mcp.plugin.configure_server", {
             attributes: { "mcp.integration.slug": slug },
           }),
         );
@@ -1261,7 +1263,6 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         reconcileStdioConnections,
         getServer,
         configureServer,
-        updateStdioServer,
         configureAuth,
       };
     },
@@ -1796,10 +1797,6 @@ export interface McpPluginExtension {
   readonly configureServer: (
     slug: string,
     config: McpIntegrationConfigType,
-  ) => Effect.Effect<void, McpExtensionFailure>;
-  readonly updateStdioServer: (
-    slug: string,
-    config: McpStdioIntegrationConfig,
   ) => Effect.Effect<void, McpExtensionFailure>;
   readonly configureAuth: (
     slug: string,
