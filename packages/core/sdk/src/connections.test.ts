@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Inspectable,
   Logger,
@@ -1108,16 +1109,74 @@ const makeHealthHarness = (options?: {
   /** Replaces the default instant-healthy probe. Entries are still counted in
    *  `counters.probes`, so a Deferred-gated probe lets a test hold every
    *  in-flight health check open and count how many actually started. */
-  readonly probe?: Effect.Effect<typeof HealthCheckResult.Type>;
+  readonly probe?: Effect.Effect<typeof HealthCheckResult.Type, unknown>;
 }) => {
-  const counters = { probes: 0 };
-  // Runs inside every invocation before it returns, so a test can interleave
-  // a concurrent write (e.g. a refresh discovering invalid_grant) between the
-  // row load and the heal-on-use decision.
-  const hooks = { onInvoke: Effect.void as Effect.Effect<void> };
+  const counters = { probes: 0, resolves: 0 };
+  const hooks = {
+    // Runs inside every invocation before it returns, so a test can interleave
+    // a concurrent write (e.g. a refresh discovering invalid_grant) between the
+    // row load and the heal-on-use decision.
+    onInvoke: Effect.void as Effect.Effect<void>,
+    // Runs inside every credential-provider read (counted in
+    // `counters.resolves`), so a Deferred here holds the credential-only
+    // health path open the way a Deferred probe holds the probing path open.
+    onResolve: Effect.void as Effect.Effect<void>,
+    // One-shot: runs immediately before a connection UPDATE that writes
+    // `last_health` reaches the database — INSIDE a verdict guard's
+    // check-to-write window, after its fresh read has already been taken.
+    // Cleared before it runs, so the conflicting write it performs (through
+    // the unwrapped `config.db`) is not intercepted again.
+    beforeHealthPersist: null as Effect.Effect<void> | null,
+  };
+  // Wraps the executor's FumaDb handle so `beforeHealthPersist` can commit a
+  // conflicting write in the exact window the write guards must close.
+  // `withContext` re-wraps because `createExecutor` rebinds the handle to its
+  // owner context; without that the interception would be dropped.
+  const interceptHealthWrites = (db: FumaDb): FumaDb =>
+    new Proxy(db as object, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            interceptHealthWrites((value as (context: unknown) => FumaDb).call(target, context));
+        }
+        if (prop === "updateMany") {
+          return async (
+            table: string,
+            updateOptions: { readonly set?: Record<string, unknown> },
+          ) => {
+            const hook = hooks.beforeHealthPersist;
+            if (
+              hook !== null &&
+              table === "connection" &&
+              updateOptions.set !== undefined &&
+              "last_health" in updateOptions.set
+            ) {
+              hooks.beforeHealthPersist = null;
+              await Effect.runPromise(hook);
+            }
+            return (value as (...args: unknown[]) => Promise<void>).call(
+              target,
+              table,
+              updateOptions,
+            );
+          };
+        }
+        return value;
+      },
+    }) as FumaDb;
+  const baseProvider = memoryProvider();
+  const countingProvider: CredentialProvider = {
+    ...baseProvider,
+    get: (id) =>
+      Effect.suspend(() => {
+        counters.resolves += 1;
+        return hooks.onResolve.pipe(Effect.andThen(baseProvider.get(id)));
+      }),
+  };
   const plugin = definePlugin(() => ({
     id: "healthdemo" as const,
-    credentialProviders: [memoryProvider()],
+    credentialProviders: [countingProvider],
     storage: () => ({}),
     resolveTools: () =>
       Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
@@ -1147,7 +1206,7 @@ const makeHealthHarness = (options?: {
       plugins: [plugin] as const,
       coreTools: { webBaseUrl: "http://localhost:3000" },
     });
-    const executor = yield* createExecutor(config);
+    const executor = yield* createExecutor({ ...config, db: interceptHealthWrites(config.db) });
     yield* executor.healthdemo.seed();
     yield* executor.connections.create({
       owner: "org",
@@ -1430,6 +1489,173 @@ describe("heal-on-use", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The guards above re-take their decision from a fresh row at write time, but
+// a re-read alone leaves a window: a conflicting write can commit AFTER the
+// fresh read and BEFORE the guard's own UPDATE. These tests commit the
+// conflict inside that exact window (`hooks.beforeHealthPersist` fires after
+// the guard's fresh read, immediately before its UPDATE reaches the
+// database) and assert the guarded write loses: the UPDATE is
+// compare-and-swapped on the `updated_at` stamp the fresh read observed, so
+// the conflict's bump makes it match zero rows. Every initial stamp ages
+// `updated_at` because SQLite stores the stamp at second granularity — the
+// conflict's fresh stamp must land in a different granule than the observed
+// one for the swap to see it.
+// ---------------------------------------------------------------------------
+
+describe("verdict write guards close the check-to-write window", () => {
+  const REF = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+  it.effect("probe persist: a dead grant recorded inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      // The probe passes on the old access token's remaining lifetime while a
+      // concurrent refresh discovers invalid_grant. The dead-grant write
+      // commits after the guard's fresh read (which saw no dead grant) and
+      // before its UPDATE — the window a re-read alone cannot close.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      // The dead-grant verdict survived the probe's guarded write...
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
+
+      // ...and the next check serves it without probing, as for any dead grant.
+      const after = yield* executor.connections.checkHealth(REF);
+      expect(after.status).toBe("expired");
+      expect(counters.probes).toBe(1);
+    }),
+  );
+
+  it.effect("heal-on-use: a dead grant recorded inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      // Heal-on-use re-reads, sees the stale verdict it observed at load and
+      // no dead grant, and decides to heal — then the dead-grant write
+      // commits before its UPDATE.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
+    }),
+  );
+
+  it.effect("heal-on-use: a newer verdict written inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      const newerDetail = "revoked upstream while the heal was in flight";
+      hooks.beforeHealthPersist = stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: newerDetail },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: newerDetail });
+    }),
+  );
+});
+
+describe("credential-only health path", () => {
+  it.effect("concurrent checks collapse to one credential resolution", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
+      // No declared probe spec + an OAuth client on the row routes checkHealth
+      // down the credential-only path: the verdict is "the credential
+      // resolved", produced without invoking the plugin probe. That path runs
+      // behind the same in-flight gate as probing, so concurrent checks must
+      // collapse to ONE resolution.
+      yield* stamp({ oauth_client: "acme", expires_at: null });
+      hooks.onResolve = Deferred.await(gate);
+      counters.resolves = 0;
+      const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+      const checks = yield* Effect.forkChild(
+        Effect.all([executor.connections.checkHealth(ref), executor.connections.checkHealth(ref)], {
+          concurrency: "unbounded",
+        }),
+      );
+      // The resolution is held open by the gate, so nothing has been
+      // persisted: both checks must reach the credential path. Give them real
+      // time to get there — the counter then says how many resolutions started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.resolves).toBe(1);
+
+      yield* Deferred.succeed(gate, void 0);
+      const [first, second] = yield* Fiber.join(checks);
+      expect(first.status).toBe("healthy");
+      expect(second.status).toBe("healthy");
+      expect(counters.resolves).toBe(1);
+      expect(counters.probes).toBe(0);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+});
+
+describe("health probe gate lifecycle", () => {
+  it.effect("a failed probe clears its gate entry for the next check", () =>
+    Effect.gen(function* () {
+      let firstProbe = true;
+      const { executor, counters } = yield* makeHealthHarness({
+        probe: Effect.suspend(() => {
+          if (firstProbe) {
+            firstProbe = false;
+            return Effect.fail("probe exploded" as const);
+          }
+          return Effect.succeed({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "probe ok",
+          });
+        }),
+      });
+      const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+      const first = yield* executor.connections.checkHealth(ref).pipe(Effect.exit);
+      expect(Exit.isFailure(first)).toBe(true);
+
+      // A leaked gate entry would hand this check the first probe's settled
+      // Deferred (failing again without probing); a second probe run proves
+      // the failure removed the entry.
+      const second = yield* executor.connections.checkHealth(ref);
+      expect(second.status).toBe("healthy");
+      expect(counters.probes).toBe(2);
     }),
   );
 });

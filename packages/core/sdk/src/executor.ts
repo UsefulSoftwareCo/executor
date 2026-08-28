@@ -3762,8 +3762,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // can still render the connection, just without a liveness verdict.
     const unknownHealth = (): HealthCheckResult => ({ status: "unknown", checkedAt: Date.now() });
 
+    /** Persist a verdict with a compare-and-swap on `updated_at`: the single
+     *  UPDATE commits only while the row still carries the stamp the caller's
+     *  fresh read observed, so a write landing between that read and this one
+     *  (a refresh recording invalid_grant, a newer verdict) makes the WHERE
+     *  match zero rows — the newer state wins and the loser is a silent no-op.
+     *
+     *  `updated_at` is the version token because every write that touches
+     *  `last_health` or `provider_state` bumps it inside the same statement
+     *  (grep `updateMany("connection"`; keep it that way), while the json
+     *  columns themselves can never appear in a WHERE clause — Postgres maps
+     *  them to `json`, which has no comparison operators, so a value-guarded
+     *  UPDATE would raise at runtime and, behind `Effect.ignore`, silently
+     *  disable verdict persistence. The stamp is millisecond-grained on
+     *  Postgres and second-grained on SQLite; a conflicting write inside the
+     *  same granule as the row's previous stamp can still slip the swap, but
+     *  even then a buried dead grant stays authoritative at read time:
+     *  `deadGrantVerdict` answers from `provider_state`, which no verdict
+     *  write touches. Best-effort, like every verdict write. */
     const persistHealthResult = (
       ref: ConnectionRef,
+      observedUpdatedAt: Date,
       result: HealthCheckResult,
     ): Effect.Effect<void, never> =>
       core
@@ -3773,6 +3792,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               b("owner", "=", String(ref.owner)),
               b("integration", "=", String(ref.integration)),
               b("name", "=", String(ref.name)),
+              b("updated_at", "=", observedUpdatedAt),
             ),
           set: { last_health: result, updated_at: new Date() },
         })
@@ -3800,9 +3820,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  longer be the persisted one: a concurrent refresh discovering
      *  invalid_grant, or a probe, can write a NEWER verdict while the call is
      *  in flight, and an unconditional write here would bury it under
-     *  "healthy". So the decision is re-taken against a fresh row at write
-     *  time, and heals only when it still carries the exact verdict observed
-     *  at load — any newer write is newer evidence than this invocation. */
+     *  "healthy". So the decision is re-taken against a fresh row, and the
+     *  write itself is compare-and-swapped on that row's `updated_at` stamp
+     *  (`persistHealthResult`) — a conflicting write landing even between the
+     *  re-read and the UPDATE changes the stamp and the heal is a silent
+     *  no-op. Any newer write is newer evidence than this invocation. */
     const healPersistedHealthOnUse = (
       row: ConnectionRow,
       result: unknown,
@@ -3836,7 +3858,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ) {
               return Effect.void;
             }
-            return persistHealthResult(ref, {
+            return persistHealthResult(ref, fresh.updated_at, {
               status: "healthy",
               checkedAt: Date.now(),
               detail: "Tool invocation succeeded.",
@@ -3961,16 +3983,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  flight: a concurrent refresh discovering invalid_grant writes the
      *  authoritative dead-grant state (with its own `expired` verdict), and a
      *  probe that passed on the old access token's remaining lifetime must
-     *  not bury it. Best-effort, like every verdict write. */
+     *  not bury it. The fresh read decides WHETHER to write; the write itself
+     *  is compare-and-swapped on that row's `updated_at` stamp
+     *  (`persistHealthResult`), so a dead-grant write landing even between
+     *  the read and the UPDATE wins and the probe verdict is a silent no-op.
+     *  Best-effort, like every verdict write. */
     const persistProbeHealthResult = (
       ref: ConnectionRef,
       result: HealthCheckResult,
     ): Effect.Effect<void> =>
       findConnectionRow(ref).pipe(
         Effect.flatMap((fresh) =>
-          fresh !== null && oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
+          fresh === null || oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
             ? Effect.void
-            : persistHealthResult(ref, result),
+            : persistHealthResult(ref, fresh.updated_at, result),
         ),
         Effect.ignore,
       );
