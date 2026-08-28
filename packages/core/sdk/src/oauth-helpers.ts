@@ -641,8 +641,23 @@ const oauthErrorFromResponseBody = (
   });
 };
 
-const toOAuth2Error = (cause: unknown): OAuth2Error => {
+/** Exact-string scrub of the submitted client secret from text bound for an
+ *  `OAuth2Error`. A misbehaving authorization server can echo the credential it
+ *  was just sent back inside `error_description` — a field that is deliberately
+ *  previewable everywhere else in this module because it is the AS's
+ *  human-readable verdict. The message it lands in reaches the OAuth popup's
+ *  browser-visible error details, persisted connection health, and telemetry,
+ *  and for a first-party client the secret is deployment-wide. The helper knows
+ *  exactly which string it submitted, so this is a targeted replacement of that
+ *  one value, not a heuristic. */
+const redactSubmittedClientSecret = (
+  text: string,
+  clientSecret: string | null | undefined,
+): string => (clientSecret ? text.replaceAll(clientSecret, "[redacted]") : text);
+
+const toOAuth2Error = (cause: unknown, clientSecret?: string | null): OAuth2Error => {
   if (isOAuth2Error(cause)) return cause;
+  const scrub = (text: string): string => redactSubmittedClientSecret(text, clientSecret);
   if (typeof cause === "object" && cause !== null) {
     const c = cause as {
       error?: unknown;
@@ -657,8 +672,10 @@ const toOAuth2Error = (cause: unknown): OAuth2Error => {
           ? c.message
           : undefined;
     return new OAuth2Error({
-      message: `OAuth token exchange failed: ${description ?? code ?? "unknown error"}`,
-      error: code,
+      message: scrub(`OAuth token exchange failed: ${description ?? code ?? "unknown error"}`),
+      // The code is scrubbed too: a conform envelope's `error` is an arbitrary
+      // string the AS chose, and it flows into the token-request span attribute.
+      error: code === undefined ? undefined : scrub(code),
       cause,
     });
   }
@@ -674,13 +691,18 @@ const toOAuth2Error = (cause: unknown): OAuth2Error => {
  *
  *  `fallbackMessage` is for the paths that hold the error Response directly
  *  rather than catching a thrown oauth4webapi error: there is no library
- *  message to build on, so the caller names the step instead. */
+ *  message to build on, so the caller names the step instead.
+ *
+ *  `clientSecret` is the secret the failed request submitted, when the client
+ *  is confidential. Every constructed message is scrubbed of it, because the
+ *  body it is built from is the AS's and may echo the credential back. */
 const toOAuth2ErrorWithHttpSummary = (
   cause: unknown,
-  options?: { readonly fallbackMessage?: string },
+  options?: { readonly fallbackMessage?: string; readonly clientSecret?: string | null },
 ): Effect.Effect<OAuth2Error> => {
   if (isOAuth2Error(cause)) return Effect.succeed(cause);
-  const base = toOAuth2Error(cause);
+  const scrub = (text: string): string => redactSubmittedClientSecret(text, options?.clientSecret);
+  const base = toOAuth2Error(cause, options?.clientSecret);
   const response = responseFromOAuthErrorCause(cause);
   if (!response) {
     // No Response, but possibly a body the library already parsed off one it
@@ -704,8 +726,8 @@ const toOAuth2ErrorWithHttpSummary = (
       // exactly the leak the message allowlist exists to prevent. The other
       // branches keep their cause because theirs is diagnostic, not a body.
       new OAuth2Error({
-        message: `${options?.fallbackMessage ?? base.message} (${summary.join("; ")})`,
-        error: base.error ?? envelope?.error,
+        message: scrub(`${options?.fallbackMessage ?? base.message} (${summary.join("; ")})`),
+        error: base.error ?? (envelope?.error === undefined ? undefined : scrub(envelope.error)),
         status: PARSED_BODY_CAUSE_STATUS,
       }),
     );
@@ -727,20 +749,37 @@ const toOAuth2ErrorWithHttpSummary = (
         : `${headline}: ${recovered.code}${
             recovered.description === undefined ? "" : ` — ${recovered.description}`
           }`;
+    const code = base.error ?? recovered?.code;
+    // The diagnostic rejection is dropped when the submitted secret is visible
+    // in its serialised form — oauth4webapi's ResponseBodyError carries the
+    // AS's `error_description` as an own enumerable field, so anything that
+    // renders the WHOLE failure (`Cause.pretty`, `JSON.stringify`) would
+    // replay the echo straight past the message scrub above. Everything
+    // classification reads — status, code, HTTP summary — is already lifted
+    // out, mirroring the malformed-200 branch's treatment of token-bearing
+    // rejections; the ordinary no-echo failure keeps its cause untouched.
+    const causeEchoesSecret =
+      Boolean(options?.clientSecret) && safeStringify(cause).includes(options?.clientSecret ?? "");
     return new OAuth2Error({
-      message: `${described} (${summary})`,
-      error: base.error ?? recovered?.code,
+      message: scrub(`${described} (${summary})`),
+      error: code === undefined ? undefined : scrub(code),
       // Carried even when no code was recovered: the status is what tells a
       // caller whether the AS refused (4xx — permanent, stop) or stumbled (5xx
       // — retry). Most real refusals arrive with no code at all.
       status: response.status,
-      cause,
+      ...(causeEchoesSecret ? {} : { cause }),
     });
   });
 };
 
-const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2Error> =>
-  toOAuth2ErrorWithHttpSummary(cause).pipe(Effect.flatMap((error) => Effect.fail(error)));
+/** Curried on the submitted client secret so every `Effect.catch` site names
+ *  the credential its request carried — the scrub cannot work without it. */
+const failOAuth2WithHttpSummary =
+  (clientSecret: string | null | undefined) =>
+  (cause: unknown): Effect.Effect<never, OAuth2Error> =>
+    toOAuth2ErrorWithHttpSummary(cause, { clientSecret }).pipe(
+      Effect.flatMap((error) => Effect.fail(error)),
+    );
 
 /** Fail from a token-endpoint error Response the caller holds directly — the
  *  `genericTokenEndpointRequest` paths, where oauth4webapi hands back the raw
@@ -751,8 +790,9 @@ const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2E
 const failOAuth2FromErrorResponse = (
   response: Response,
   fallbackMessage: string,
+  clientSecret: string | null | undefined,
 ): Effect.Effect<never, OAuth2Error> =>
-  toOAuth2ErrorWithHttpSummary(response, { fallbackMessage }).pipe(
+  toOAuth2ErrorWithHttpSummary(response, { fallbackMessage, clientSecret }).pipe(
     Effect.flatMap((error) => Effect.fail(error)),
   );
 
@@ -1069,6 +1109,9 @@ export type ExchangeAuthorizationCodeInput = {
   readonly codeVerifier: string;
   readonly code: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator. MCP Auth spec MUST-requires this on
    *  the token request when the client knows the resource it intends
@@ -1077,6 +1120,59 @@ export type ExchangeAuthorizationCodeInput = {
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
+};
+
+const base64BasicCredentials = (clientId: string, clientSecret: string): string => {
+  const bytes = new TextEncoder().encode(`${clientId}:${clientSecret}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return globalThis.btoa(binary);
+};
+
+const jsonTokenEndpointRequest = async (input: {
+  readonly tokenUrl: string;
+  readonly clientId: string;
+  readonly clientSecret?: string | null;
+  readonly clientAuth: ClientAuthMethod;
+  readonly grantType: "authorization_code" | "refresh_token";
+  readonly parameters: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
+}): Promise<Response> => {
+  const tokenUrl = assertSupportedOAuthEndpointUrl(
+    input.tokenUrl,
+    "Token URL",
+    input.endpointUrlPolicy,
+  );
+  const headers = new Headers({
+    accept: "application/json",
+    "content-type": "application/json",
+  });
+  const confidential = Boolean(input.clientSecret);
+  if (confidential && input.clientAuth === "basic") {
+    headers.set(
+      "authorization",
+      `Basic ${base64BasicCredentials(input.clientId, input.clientSecret ?? "")}`,
+    );
+  }
+  const body = {
+    grant_type: input.grantType,
+    ...input.parameters,
+    ...(confidential && input.clientAuth === "basic"
+      ? {}
+      : {
+          client_id: input.clientId,
+          ...(confidential ? { client_secret: input.clientSecret ?? "" } : {}),
+        }),
+  };
+  // oxlint-disable-next-line executor/no-raw-fetch -- boundary: provider token exchange is the SDK's HTTP boundary and preserves its injected fetch seam
+  return await (input.fetch ?? globalThis.fetch)(tokenUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(input.timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS),
+  });
 };
 
 export const exchangeAuthorizationCode = (
@@ -1106,24 +1202,37 @@ export const exchangeAuthorizationCode = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
-      const response = await oauth.genericTokenEndpointRequest(
-        as,
-        client,
-        clientAuth,
-        "authorization_code",
-        params,
-        oauth4webapiRequestOptions(
-          input.tokenUrl,
-          input.timeoutMs,
-          input.endpointUrlPolicy,
-          input.fetch,
-        ),
-      );
+      const response =
+        input.requestFormat === "json"
+          ? await jsonTokenEndpointRequest({
+              tokenUrl: input.tokenUrl,
+              clientId: input.clientId,
+              clientSecret: input.clientSecret,
+              clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+              grantType: "authorization_code",
+              parameters: Object.fromEntries(params),
+              timeoutMs: input.timeoutMs,
+              endpointUrlPolicy: input.endpointUrlPolicy,
+              fetch: input.fetch,
+            })
+          : await oauth.genericTokenEndpointRequest(
+              as,
+              client,
+              clientAuth,
+              "authorization_code",
+              params,
+              oauth4webapiRequestOptions(
+                input.tokenUrl,
+                input.timeoutMs,
+                input.endpointUrlPolicy,
+                input.fetch,
+              ),
+            );
       return await processTokenEndpointResponse(as, client, response);
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "authorization_code",
       tokenUrl: input.tokenUrl,
@@ -1186,7 +1295,7 @@ export const exchangeClientCredentials = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "client_credentials",
       tokenUrl: input.tokenUrl,
@@ -1208,6 +1317,9 @@ export type RefreshAccessTokenInput = {
   readonly scopes?: readonly string[];
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator — MCP spec MUST-requires this on
    *  refresh requests so the new access token's audience is bound to
@@ -1241,6 +1353,26 @@ export const refreshAccessToken = (
       }
       const additionalParameters =
         Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
+      if (input.requestFormat === "json") {
+        const response = await jsonTokenEndpointRequest({
+          tokenUrl: input.tokenUrl,
+          clientId: input.clientId,
+          clientSecret: input.clientSecret,
+          clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+          grantType: "refresh_token",
+          parameters: {
+            refresh_token: input.refreshToken,
+            ...(input.scopes && input.scopes.length > 0
+              ? { scope: input.scopes.join(input.scopeSeparator ?? " ") }
+              : {}),
+            ...(input.resource ? { resource: input.resource } : {}),
+          },
+          timeoutMs: input.timeoutMs,
+          endpointUrlPolicy: input.endpointUrlPolicy,
+          fetch: input.fetch,
+        });
+        return await processTokenEndpointResponse(as, client, response);
+      }
       const response = await oauth.refreshTokenGrantRequest(
         as,
         client,
@@ -1265,7 +1397,7 @@ export const refreshAccessToken = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "refresh_token",
       tokenUrl: input.tokenUrl,
@@ -1375,10 +1507,14 @@ export const exchangeSubjectTokenForIdJag = (
         );
       },
       catch: (cause) => cause,
-    }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+    }).pipe(Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)));
 
     if (!response.ok) {
-      return yield* failOAuth2FromErrorResponse(response, "ID-JAG token exchange was rejected");
+      return yield* failOAuth2FromErrorResponse(
+        response,
+        "ID-JAG token exchange was rejected",
+        input.clientSecret,
+      );
     }
 
     // Nothing else reads this body, so it is consumed directly. A read failure
@@ -1485,7 +1621,7 @@ export const redeemIdJagAssertion = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: JWT_BEARER_GRANT_TYPE,
       tokenUrl: input.tokenUrl,
