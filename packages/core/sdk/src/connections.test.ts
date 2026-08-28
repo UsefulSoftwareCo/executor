@@ -575,6 +575,276 @@ describe("connections.create", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// Credential-write durability & compensation. The row insert and the provider
+// write cannot be atomic — the provider may live outside the database — so the
+// create sequences them: the row must be DURABLE before the provider is
+// touched, and a write that does not complete must tear down everything it
+// already stored. The worst outcome is a committed row whose credentials were
+// never written: it 409s every retry while resolving nothing.
+// ---------------------------------------------------------------------------
+
+const trackingProvider = (
+  store: Map<string, string>,
+  overrides?: Partial<Pick<CredentialProvider, "set">>,
+): CredentialProvider => ({
+  key: ProviderKey.make("memory"),
+  writable: true,
+  get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+  set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+  delete: (id) => Effect.sync(() => void store.delete(String(id))),
+  ...overrides,
+});
+
+const durabilityPlugin = (provider: CredentialProvider) =>
+  definePlugin(() => ({
+    id: "durable" as const,
+    credentialProviders: [provider],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+    invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+    extension: (ctx) => ({
+      seed: () =>
+        ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+      resolveValue: (name: string) =>
+        ctx.connections.resolveValue({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make(name),
+        }),
+      /** A plugin composing a create into its own atomic unit — the shape that
+       *  makes the create's inner insert a pass-through with no commit of its
+       *  own. */
+      createInTransaction: (rollback: boolean) =>
+        ctx.transaction(
+          Effect.gen(function* () {
+            const created = yield* ctx.connections.create({
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: INTEG,
+              template: TEMPLATE,
+              value: "secret-token",
+            });
+            if (rollback) return yield* Effect.fail("rollback" as const);
+            return created;
+          }),
+        ),
+    }),
+  }))();
+
+describe("connections.create credential-write durability", () => {
+  // `transaction` nests by pass-through: inside a plugin's `ctx.transaction`
+  // the create's inner insert commits nothing — the row becomes durable only
+  // with the OUTER commit. A credential written inline in that window outlives
+  // a rollback as an orphan at a deterministic item id, where the next create
+  // of the same name silently adopts it. The write must wait for the real
+  // commit, and the caller's own typed failure must pass through untouched.
+  it.effect("discards the credential write when an enclosing transaction rolls back", () =>
+    Effect.gen(function* () {
+      const store = new Map<string, string>();
+      const executor = yield* makeTestExecutor({
+        plugins: [durabilityPlugin(trackingProvider(store))] as const,
+      });
+      yield* executor.durable.seed();
+
+      const result = yield* Effect.result(executor.durable.createInTransaction(true));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(result.failure).toBe("rollback");
+
+      // No zombie row and no orphaned credential survived the rollback.
+      expect(yield* executor.connections.list()).toEqual([]);
+      expect(store.size).toBe(0);
+
+      // The name is fully reusable: a committed create stores its own value.
+      yield* executor.durable.createInTransaction(false);
+      expect((yield* executor.connections.list()).length).toBe(1);
+      expect(yield* executor.durable.resolveValue("main")).toBe("secret-token");
+    }),
+  );
+
+  // Inside an enclosing transaction the create returns before its deferred
+  // credential write runs, so a write failure can no longer become the
+  // caller's typed error. What it must NOT become is a silent zombie: the
+  // deferred failure removes the committed row (and its tools) and reports
+  // the failure loudly.
+  it.effect("a deferred credential-write failure removes the committed row and logs", () =>
+    Effect.gen(function* () {
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: () =>
+          Effect.fail(new StorageError({ message: "provider write refused", cause: undefined })),
+      });
+      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
+      yield* executor.durable.seed();
+
+      const errors: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Error") {
+          errors.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const result = yield* Effect.result(
+        executor.durable.createInTransaction(false).pipe(Effect.provide(Logger.layer([capture]))),
+      );
+
+      // The transaction committed, so the create itself reported success ...
+      expect(Result.isSuccess(result)).toBe(true);
+      // ... but the failed write tore the committed row (and its tools) down
+      // instead of leaving it to 409 every retry while resolving nothing.
+      expect(yield* executor.connections.list()).toEqual([]);
+      expect(yield* executor.tools.list()).toEqual([]);
+      expect(errors.some((line) => line.includes("failed after commit"))).toBe(true);
+    }),
+  );
+
+  // Interruption is not an error: error-channel compensation never sees it. A
+  // create interrupted mid-write must still tear down what it already did —
+  // the committed row and every item that landed before the interrupt.
+  it.effect("an interrupted create removes the row and the items it already wrote", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const secondWriteEntered = yield* Deferred.make<void>();
+        const store = new Map<string, string>();
+        const provider = trackingProvider(store, {
+          set: (id, value) =>
+            String(id).endsWith(":second")
+              ? Deferred.succeed(secondWriteEntered, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.sync(() => void store.set(String(id), value)),
+        });
+        const executor = yield* makeTestExecutor({
+          plugins: [durabilityPlugin(provider)] as const,
+        });
+        yield* executor.durable.seed();
+
+        const fiber = yield* Effect.forkChild(
+          executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: { first: "1", second: "2" },
+          }),
+        );
+        yield* Deferred.await(secondWriteEntered);
+        yield* Fiber.interrupt(fiber);
+
+        // The first item had landed before the interrupt; compensation removed
+        // it together with the row it belonged to.
+        expect(store.size).toBe(0);
+        expect(yield* executor.connections.list()).toEqual([]);
+      }),
+    ),
+  );
+
+  // One provider.set can succeed and a later one fail. Deleting only the row
+  // leaves the earlier secret at its deterministic item id, waiting to be
+  // adopted by the next create of the same name. Compensation must remove the
+  // items already written, not just the row.
+  it.effect("a failed later variable write cleans up the earlier items and the row", () =>
+    Effect.gen(function* () {
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
+            : Effect.sync(() => void store.set(String(id), value)),
+      });
+      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
+      yield* executor.durable.seed();
+
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: { first: "1", second: "2" },
+        }),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+      // Neither half survives: the first item is gone with the row.
+      expect(store.size).toBe(0);
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
+
+  // The compensating delete can itself fail. Swallowing that failure strands
+  // a visible credential-less row behind an error that never mentions it. The
+  // create must fail with an error that NAMES the stranded connection so an
+  // operator can act on it.
+  it.effect("names the stranded connection when the compensating delete fails", () =>
+    Effect.gen(function* () {
+      let failRowDelete = false;
+      const failConnectionDeletes = (db: FumaDb): FumaDb => {
+        const wrap = (inner: FumaDb): FumaDb =>
+          new Proxy(inner, {
+            get(target, prop) {
+              if (prop === "withContext") {
+                return (context: unknown) =>
+                  wrap((target.withContext as (c: unknown) => FumaDb)(context));
+              }
+              if (prop === "transaction") {
+                return (run: (tx: FumaDb) => Promise<unknown>) =>
+                  (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                    (tx) => run(wrap(tx)),
+                  );
+              }
+              if (prop === "deleteMany") {
+                return (table: unknown, query: unknown) =>
+                  failRowDelete && table === "connection"
+                    ? // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
+                      Promise.reject(
+                        new StorageError({ message: "delete refused", cause: undefined }),
+                      )
+                    : (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                        table,
+                        query,
+                      );
+              }
+              return Reflect.get(target, prop);
+            },
+          });
+        return wrap(db);
+      };
+
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
+            : Effect.sync(() => void store.set(String(id), value)),
+      });
+      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* createExecutor({ ...config, db: failConnectionDeletes(config.db) });
+      yield* executor.durable.seed();
+      failRowDelete = true;
+
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: { first: "1", second: "2" },
+        }),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      const failure = result.failure;
+      expect(Predicate.isTagged("StorageError")(failure)).toBe(true);
+      if (!Predicate.isTagged("StorageError")(failure)) return;
+      expect(failure.message).toContain("main");
+      expect(failure.message).toContain("vercel");
+    }),
+  );
+});
+
 describe("connections.list / get", () => {
   it.effect("only includes full health diagnostics in verbose core tool output", () =>
     Effect.gen(function* () {
