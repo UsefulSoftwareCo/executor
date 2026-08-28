@@ -10,11 +10,6 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
-import {
-  makeDynamicWorkerAppToolExecutor,
-  makeNativeWorkerBundlerBackend,
-} from "@executor-js/plugin-apps/cloud";
-import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-workos-vault";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
@@ -53,31 +48,10 @@ interface CloudPluginDeps {
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
-  /** Mirrors `HostConfig.allowLocalNetwork` (`ALLOW_LOCAL_NETWORK`). Off by
-   *  default; production leaves it unset. */
-  readonly allowLocalNetwork?: boolean;
-  readonly workerLoader?: {
-    readonly get: (
-      name: string,
-      factory: () => {
-        readonly compatibilityDate: string;
-        readonly compatibilityFlags?: string[];
-        readonly mainModule: string;
-        readonly modules: Readonly<Record<string, string>>;
-        readonly globalOutbound?: null;
-      },
-    ) => { readonly getEntrypoint: () => unknown };
-  };
 }
 
 export default defineExecutorConfig({
-  plugins: ({
-    workosCredentials,
-    workosVaultClient,
-    activeToolkitSlug,
-    allowLocalNetwork,
-    workerLoader,
-  }: CloudPluginDeps = {}) =>
+  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -87,16 +61,6 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: false,
       }),
       graphqlHttpPlugin(),
-      appsHttpPlugin({
-        ...(workerLoader
-          ? {
-              executor: makeDynamicWorkerAppToolExecutor({ loader: workerLoader }),
-              bundler: makeNativeWorkerBundlerBackend(),
-            }
-          : {}),
-        sourceKinds: ["git"],
-        allowPrivateGitHosts: allowLocalNetwork === true,
-      }),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({
         credentials: workosCredentials ?? { apiKey: "", clientId: "" },

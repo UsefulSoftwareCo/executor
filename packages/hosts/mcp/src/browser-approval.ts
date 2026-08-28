@@ -52,6 +52,34 @@ export const readElicitationMode = (request: Request): McpElicitationMode => {
 };
 
 /**
+ * Read the artifacts opt-OUT off an MCP request's `?artifacts=` query.
+ * Artifacts are ON by default: a clean endpoint URL gets the full artifact
+ * surface, and only an explicit false value (`?artifacts=false`, or any
+ * spelling that isn't one of the accepted truthy forms) withholds it. A
+ * session that opts out gets no artifact tools, no `ui://` shell resource,
+ * and no artifact skills — as if the host had never been configured for them.
+ * `?artifacts=true` remains accepted and is simply the default made explicit.
+ */
+export const readArtifactsEnabled = (request: Request): boolean => {
+  const value = new URL(request.url).searchParams.get("artifacts");
+  if (value === null) return true;
+  return TRUE_QUERY_VALUES.has(value.toLowerCase());
+};
+
+/**
+ * Read the per-integration search tools opt-IN off an MCP request's
+ * `?search_tools=` query. OFF by default: a clean endpoint URL serves only the
+ * core surface, and only an accepted truthy spelling (`?search_tools=true`)
+ * adds one `search_<integration>` tool per connected integration. Any other
+ * explicit value reads as the default (disabled).
+ */
+export const readSearchToolsEnabled = (request: Request): boolean => {
+  const value = new URL(request.url).searchParams.get("search_tools");
+  if (value === null) return false;
+  return TRUE_QUERY_VALUES.has(value.toLowerCase());
+};
+
+/**
  * Build the console approval URL for a paused execution:
  * `<origin>/<organizationSlug>/resume/<executionId>?mcp_session_id=<sessionId>`
  * when the host knows the org slug, otherwise

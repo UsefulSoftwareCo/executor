@@ -177,6 +177,17 @@ const serviceEnvironment = (
     "EXECUTOR_SENTRY_RELEASE",
     "EXECUTOR_SENTRY_ENVIRONMENT",
     "EXECUTOR_RUN_ID",
+    // Analytics opt-out must survive into the supervised unit's minimal env,
+    // or an opted-out install would silently re-enable analytics under launchd.
+    "DO_NOT_TRACK",
+    "EXECUTOR_DISABLE_ANALYTICS",
+    // Preserve the caller's TLS trust configuration. Corporate/intercepting
+    // CAs commonly live outside the OS trust store; dropping these paths in a
+    // minimal launchd/systemd environment makes HTTPS integrations fail only
+    // after service installation while the same CLI call succeeds.
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
   ] as const;
   const passThrough = Object.fromEntries(
     passThroughKeys.flatMap((key) => {

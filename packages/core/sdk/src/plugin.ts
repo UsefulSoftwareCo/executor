@@ -369,6 +369,12 @@ export interface ToolInvocationCredential {
   readonly values: Record<string, string | null>;
   /** The integration's stored config, for template rendering. */
   readonly config: IntegrationConfig;
+  /** The OAuth scopes the connection's grant actually covers, from the
+   *  connection row's `oauth_scope` (space-delimited, as returned by the
+   *  token endpoint). Absent for non-OAuth connections and for OAuth
+   *  providers that never echo a scope; consumers comparing against an
+   *  operation's declared scopes must fail open when this is undefined. */
+  readonly grantedScopes?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +568,8 @@ export interface IntegrationPreset {
   readonly family?: string;
   readonly specFormat?: string;
   readonly defaultSlug?: string;
+  /** Plugin-specific RFC 6902 operations applied to a fetched specification. */
+  readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
   readonly transport?: "remote" | "stdio";
@@ -574,6 +582,7 @@ export type IntegrationPresetAuthentication =
   | {
       readonly slug: string;
       readonly kind: "oauth2";
+      readonly label?: string;
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
       readonly resource?: string | null;

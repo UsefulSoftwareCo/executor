@@ -1,6 +1,7 @@
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 const root = process.cwd();
 const out = join(root, ".selfhost-runtime");
@@ -35,7 +36,32 @@ const libsqlNativePackage = (): string => {
   return `@libsql/${target}`;
 };
 
+// The `workerd` package's bin/workerd is a Node shim that execs the real
+// binary from the per-platform optional dependency
+// (`@cloudflare/workerd-<os>-<arch>`); without it the runtime throws
+// "workerd is unavailable on this platform" on first app-tool bundle or
+// invoke. Same per-platform shape as libsql above.
+const workerdPlatformPackage = (): string => {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "workerd-darwin-arm64",
+    "darwin-x64": "workerd-darwin-64",
+    "linux-arm64": "workerd-linux-arm64",
+    "linux-x64": "workerd-linux-64",
+    "win32-x64": "workerd-windows-64",
+  };
+  const key = `${process.platform}-${process.arch}`;
+  const target = platformMap[key];
+  if (!target) {
+    throw new Error(
+      `package-runtime: no workerd platform package mapped for ${key}. ` +
+        "Add it to the platform map in apps/host-selfhost/scripts/package-runtime.ts.",
+    );
+  }
+  return `@cloudflare/${target}`;
+};
+
 const externalPackages = [
+  "@cloudflare/worker-bundler",
   "quickjs-emscripten",
   "quickjs-emscripten-core",
   "@jitl/quickjs-ffi-types",
@@ -44,6 +70,7 @@ const externalPackages = [
   "@jitl/quickjs-wasmfile-release-asyncify",
   "@jitl/quickjs-wasmfile-debug-asyncify",
   "workerd",
+  workerdPlatformPackage(),
   libsqlNativePackage(),
 ] as const;
 
@@ -64,12 +91,38 @@ const copyPackage = (name: string): void => {
   cpSync(packageDir(name), destination, { recursive: true, dereference: true });
 };
 
+// Worker-bundler consumers load `dist/index.bundled.js` from the resolved
+// package, falling back to bundling `dist/index.js` with esbuild at runtime.
+// The npm package doesn't ship the bundled entry and the runtime image has no
+// esbuild, so produce it here, the same way apps/cli/src/build.ts does for the
+// packed CLI.
+const writeBundledWorkerBundler = async (): Promise<void> => {
+  const distPath = join(packageDir("@cloudflare/worker-bundler"), "dist");
+  const esbuildEntry = requireFromSelfHost.resolve("esbuild", {
+    paths: [join(root, "node_modules/.bun/node_modules")],
+  });
+  const { build } = await import(pathToFileURL(esbuildEntry).href);
+  const result = await build({
+    entryPoints: [join(distPath, "index.js")],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    external: ["./esbuild.wasm"],
+    logLevel: "silent",
+    write: false,
+  });
+  const source = result.outputFiles[0]?.text;
+  if (source === undefined) throw new Error("failed to bundle @cloudflare/worker-bundler");
+  writeFileSync(join(out, "node_modules/@cloudflare/worker-bundler/dist/index.bundled.js"), source);
+};
+
 rmSync(out, { recursive: true, force: true });
 mkdirSync(serverOut, { recursive: true });
 
 await Bun.$`bun build apps/host-selfhost/src/serve.ts --target=bun --format=esm --outdir=${serverOut} ${quickJsExternals.map((name) => `--external=${name}`)}`;
 
 for (const name of externalPackages) copyPackage(name);
+await writeBundledWorkerBundler();
 
 if (!existsSync(join(serverOut, "serve.js"))) {
   throw new Error(

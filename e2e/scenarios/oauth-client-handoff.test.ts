@@ -33,9 +33,11 @@ import {
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { ConnectionName, IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 
+import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import type { McpSession } from "../src/surfaces/mcp";
+import { visit } from "../src/surfaces/browser";
 
 const microsoftApi = composePluginApi([
   openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
@@ -252,8 +254,6 @@ scenario(
 //    browser; the agent connects.
 // ---------------------------------------------------------------------------
 
-const EMULATOR_BASE = "https://microsoft.emulators.dev";
-
 const handoffForBrowserCode = (input: {
   readonly integration: string;
   readonly slug: string;
@@ -336,11 +336,11 @@ scenario(
     const connection = "machine";
     const template = MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG;
 
-    // The hosted emulator mints a real-shaped client-credentials app and records
-    // every token exchange — the ledger is shared, so key everything off the
-    // unique minted clientId.
+    // A per-run hosted emulator instance mints a real-shaped client-credentials
+    // app and records every token exchange in its own isolated ledger.
+    const emulatorBase = yield* createEmulatorInstance("microsoft", "oauth-handoff");
     const emulator: EmulatorClient = yield* Effect.promise(() =>
-      connectEmulator({ baseUrl: EMULATOR_BASE, service: "microsoft" }),
+      connectEmulator({ baseUrl: emulatorBase, service: "microsoft" }),
     );
     const minted = yield* Effect.promise(() =>
       emulator.credentials.mint({ type: "oauth-client-credentials", name: "Executor E2E Graph" }),
@@ -401,7 +401,7 @@ scenario(
         //    pre-filled from the handoff. They type ONLY the secret.
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the agent's handoff URL", async () => {
-            await page.goto(handoffUrl, { waitUntil: "networkidle" });
+            await visit(page, handoffUrl);
           });
 
           await step("The Register-OAuth-app form auto-opens, pre-filled", async () => {

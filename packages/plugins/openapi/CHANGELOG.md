@@ -1,5 +1,163 @@
 # @executor-js/plugin-openapi
 
+## 1.6.0
+
+### Patch Changes
+
+- [#1660](https://github.com/UsefulSoftwareCo/executor/pull/1660) [`c11bef2`](https://github.com/UsefulSoftwareCo/executor/commit/c11bef2cd049db7bbf51b15e18761b14acccb534) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Cloudflare ships as MCP-only, with code mode opted out**
+
+  The Cloudflare OpenAPI preset is gone from the default catalog; the MCP preset is the one Cloudflare entry. Its endpoint now pins `?codemode=false` because Cloudflare's MCP server otherwise hides the tool catalog behind a single code-execution tool, and executor already provides the code-execution surface. Hand-entered `mcp.cloudflare.com` URLs missing the opt-out get an inline warning in the add flow telling the user to append `?codemode=false`.
+
+- [#1669](https://github.com/UsefulSoftwareCo/executor/pull/1669) [`46cea2c`](https://github.com/UsefulSoftwareCo/executor/commit/46cea2cbb1f414ae58ac876819a51b11967909a6) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Request Gmail's basic-settings scope alongside full mailbox access so Google integrations can create and manage Gmail filters without including domain-admin-only sharing settings.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+  - @executor-js/config@1.6.0
+
+## 1.5.42
+
+### Patch Changes
+
+- [#1642](https://github.com/UsefulSoftwareCo/executor/pull/1642) [`32206c7`](https://github.com/UsefulSoftwareCo/executor/commit/32206c7f78654f638bfd27c25c71c30c3d6354be) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Preserve an integration's selected OAuth consent scopes when refreshing converted API specifications, so Google Gmail refreshes do not restore operations that require broader scopes.
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/api@1.4.62
+  - @executor-js/config@1.5.42
+  - @executor-js/react@1.4.62
+
+## 1.5.41
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/config@1.5.41
+  - @executor-js/react@1.4.61
+
+## 1.5.40
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/api@1.4.60
+  - @executor-js/config@1.5.40
+  - @executor-js/react@1.4.60
+
+## 1.5.39
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/api@1.4.59
+  - @executor-js/config@1.5.39
+  - @executor-js/react@1.4.59
+
+## 1.5.38
+
+### Patch Changes
+
+- [#1428](https://github.com/UsefulSoftwareCo/executor/pull/1428) [`df01d91`](https://github.com/UsefulSoftwareCo/executor/commit/df01d9197e7b4fca9bd0adaca0705a80435e188c) Thanks [@saga-agent](https://github.com/saga-agent)! - Use the versioned Google Photos raw upload endpoint so generated upload tools send media to `/v1/uploads` instead of the invalid `/uploads` path.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4), [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/react@1.4.58
+  - @executor-js/api@1.4.58
+  - @executor-js/config@1.5.38
+
+## 1.5.37
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/config@1.5.37
+  - @executor-js/react@1.4.57
+
+## 1.5.36
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/config@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/react@1.4.56
+
+## 1.5.35
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/config@1.5.35
+  - @executor-js/react@1.4.55
+
+## 1.5.34
+
+### Patch Changes
+
+- [#1430](https://github.com/UsefulSoftwareCo/executor/pull/1430) [`a86cc4e`](https://github.com/UsefulSoftwareCo/executor/commit/a86cc4e6d0252c90834f40ee09837d8a19cab7fe) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - OpenAPI invocations now bound how long a buffered (non-streaming) response body may take to arrive. An upstream that returns headers quickly and then stalls the body previously hung the call indefinitely on runtimes without a platform subrequest limit; it now aborts after the response-body timeout (default 60s, configurable via `invokeOptions.responseBodyTimeoutMs`) with a distinct `upstream_response_body_timeout` failure.
+
+- [#1427](https://github.com/UsefulSoftwareCo/executor/pull/1427) [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Apply persisted RFC 6902 overrides to OpenAPI specifications during preview, import, and refresh so upstream documents can be corrected without maintaining a fork. Figma imports automatically narrow OAuth to the scopes supported by its OAuth app configuration.
+
+- [#1426](https://github.com/UsefulSoftwareCo/executor/pull/1426) [`171de20`](https://github.com/UsefulSoftwareCo/executor/commit/171de204725d10405c693549febc3a1cce2c24d8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Do not add unadvertised OpenID Connect identity scopes to OAuth authorization requests derived from OpenAPI specifications.
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/api@1.4.54
+  - @executor-js/config@1.5.34
+  - @executor-js/react@1.4.54
+
+## 1.5.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.33
+  - @executor-js/config@1.5.33
+  - @executor-js/api@1.4.53
+  - @executor-js/react@1.4.53
+
+## 1.5.32
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/config@1.5.32
+  - @executor-js/api@1.4.52
+  - @executor-js/react@1.4.52
+
+## 1.5.31
+
+### Patch Changes
+
+- [#1389](https://github.com/UsefulSoftwareCo/executor/pull/1389) [`9e38928`](https://github.com/UsefulSoftwareCo/executor/commit/9e38928f0fda9032b64b26990270c5d2b6690d13) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Advertise NDJSON operation outputs as arrays. Endpoints declaring `application/stream+json`, `application/x-ndjson`, or `application/jsonl` responses (for example Vercel's runtime-logs) spec the schema of one line, but invocations return an array of parsed lines; describe previews now wrap the line schema in an array so generated code matches what actually comes back. Existing integrations with NDJSON operations are stale-marked once so their tool catalogs rebuild with the corrected schemas.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.31
+  - @executor-js/config@1.5.31
+  - @executor-js/api@1.4.51
+  - @executor-js/react@1.4.51
+
+## 1.5.30
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/config@1.5.30
+  - @executor-js/api@1.4.50
+  - @executor-js/react@1.4.50
+
 ## 1.5.29
 
 ### Patch Changes

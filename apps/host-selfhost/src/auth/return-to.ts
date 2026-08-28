@@ -32,3 +32,32 @@ export const mcpAuthorizeResumeTarget = (search: string): string | null => {
   if (!params.get("client_id") || !params.get("redirect_uri")) return null;
   return `${MCP_AUTHORIZE_PATH}?${params.toString()}`;
 };
+
+const LOGIN_PATH = "/login";
+
+/**
+ * Where the self-host login page sends someone after a successful sign-in, in
+ * priority order:
+ *
+ *  1. an interrupted MCP OAuth authorize (the params ARE the request),
+ *  2. an explicit safe `returnTo` (e.g. the integration OAuth callback),
+ *  3. the URL they actually opened, and
+ *  4. the dashboard.
+ *
+ * Step 3 is what makes a deep link like `/connect/linear` survive sign-in here.
+ * Unlike cloud — which redirects to `/login?returnTo=…` — self-host's gate
+ * swaps the login page in WITHOUT navigating, so the address bar still holds
+ * the requested URL and no `returnTo` was ever written. `/login` itself is
+ * excluded so signing in from the bare login page lands on the dashboard rather
+ * than looping back to the form.
+ */
+export const postLoginTarget = (location: {
+  readonly pathname: string;
+  readonly search: string;
+}): string =>
+  mcpAuthorizeResumeTarget(location.search) ??
+  safeReturnTo(new URLSearchParams(location.search).get("returnTo")) ??
+  (location.pathname === LOGIN_PATH
+    ? null
+    : safeReturnTo(`${location.pathname}${location.search}`)) ??
+  "/";

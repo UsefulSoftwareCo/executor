@@ -3,7 +3,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import type { ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
-import { resolveServerUrl } from "./openapi-utils";
+import { isNdjsonMediaType, NDJSON_MEDIA_TYPES, resolveServerUrl } from "./openapi-utils";
 import {
   type EncodingObject,
   type OperationFileHint,
@@ -57,17 +57,51 @@ const encodeReservedAware = (raw: string, allowReserved: boolean): string => {
   return out;
 };
 
-const queryParamValues = (value: unknown, param: OperationParameter): string[] => {
+type QueryParamEntry = readonly [name: string, value: string];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const queryParamEntries = (value: unknown, param: OperationParameter): QueryParamEntry[] => {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) return [primitiveToString(value)];
 
   const style = Option.getOrUndefined(param.style) ?? "form";
   const explode = Option.getOrElse(param.explode, () => true);
 
-  if (explode) return value.map(primitiveToString);
+  if (isRecord(value)) {
+    const entries = Object.entries(value).filter(
+      ([, nested]) => nested !== undefined && nested !== null,
+    );
+
+    if (style === "form") {
+      if (explode) {
+        // OAS form + explode=true serializes an object as top-level query
+        // fields, e.g. `{ region: "west", tier: "standard" }` ->
+        // `region=west&tier=standard`.
+        return entries.map(([name, nested]) => [name, primitiveToString(nested)]);
+      }
+
+      return [
+        [
+          param.name,
+          entries.flatMap(([name, nested]) => [name, primitiveToString(nested)]).join(","),
+        ],
+      ];
+    }
+
+    if (style === "deepObject") {
+      return entries.map(([name, nested]) => [`${param.name}[${name}]`, primitiveToString(nested)]);
+    }
+
+    return [[param.name, primitiveToString(value)]];
+  }
+
+  if (!Array.isArray(value)) return [[param.name, primitiveToString(value)]];
+
+  if (explode) return value.map((nested) => [param.name, primitiveToString(nested)]);
 
   const separator = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
-  return [value.map(primitiveToString).join(separator)];
+  return [[param.name, value.map(primitiveToString).join(separator)]];
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +187,9 @@ const normalizeContentType = (ct: string | null | undefined): string =>
 
 export const STREAM_MAX_BYTES = 1_000_000;
 export const STREAM_MAX_MS = 10_000;
+// Buffered bodies should normally finish soon after headers arrive. This is
+// deliberately generous while still providing plain Node runtimes a backstop.
+export const RESPONSE_BODY_TIMEOUT_MS = 60_000;
 // Below Cloudflare's ~125s subrequest limit so cloud fails first with an
 // actionable error, but above the slowest legitimate buffered upstreams
 // observed in production (30d telemetry: successful calls cluster under
@@ -170,6 +207,7 @@ export interface StreamingResponseCaps {
 
 export interface InvokeOptions {
   readonly responseHeadersTimeoutMs?: number;
+  readonly responseBodyTimeoutMs?: number;
 }
 
 const formatTimeout = (timeoutMs: number): string =>
@@ -178,12 +216,10 @@ const formatTimeout = (timeoutMs: number): string =>
 const responseHeadersTimeoutMessage = (timeoutMs: number): string =>
   `Upstream returned no response headers within ${formatTimeout(timeoutMs)}. The endpoint may be a live stream with no data to send (for example, runtime logs of an idle deployment); the request was aborted. Retry when the resource has activity, or use a non-streaming endpoint.`;
 
-const STREAMING_RESPONSE_CONTENT_TYPES = new Set([
-  "application/stream+json",
-  "application/x-ndjson",
-  "application/jsonl",
-  "text/event-stream",
-]);
+const responseBodyTimeoutMessage = (timeoutMs: number): string =>
+  `Upstream response body did not finish within ${formatTimeout(timeoutMs)}. The request was aborted. Retry the operation; if it times out again, check the upstream service health or use an endpoint with a bounded response.`;
+
+const STREAMING_RESPONSE_CONTENT_TYPES = new Set([...NDJSON_MEDIA_TYPES, "text/event-stream"]);
 
 const isStreamingResponseContentType = (ct: string | null | undefined): boolean =>
   STREAMING_RESPONSE_CONTENT_TYPES.has(normalizeContentType(ct));
@@ -247,20 +283,11 @@ const parseStreamingJsonLines = (text: string, truncated: boolean): unknown => {
   return rows;
 };
 
-const NDJSON_CONTENT_TYPES = new Set([
-  "application/stream+json",
-  "application/x-ndjson",
-  "application/jsonl",
-]);
-
 const decodeStreamingResponseBody = (
   contentType: string | null,
   text: string,
   truncated: boolean,
-): unknown =>
-  NDJSON_CONTENT_TYPES.has(normalizeContentType(contentType))
-    ? parseStreamingJsonLines(text, truncated)
-    : text;
+): unknown => (isNdjsonMediaType(contentType) ? parseStreamingJsonLines(text, truncated) : text);
 
 export const collectStreamingBody = (
   stream: Stream.Stream<Uint8Array, unknown, never>,
@@ -835,12 +862,64 @@ const applyRequestBody = (
 // `invoke` applies (one code path, not a parallel re-implementation).
 // ---------------------------------------------------------------------------
 
+const acceptedArgumentNames = (operation: OperationBinding): readonly string[] => {
+  const accepted = new Set<string>();
+
+  for (const param of operation.parameters) {
+    accepted.add(param.name);
+    for (const container of CONTAINER_KEYS[param.location] ?? []) accepted.add(container);
+  }
+
+  for (const match of operation.pathTemplate.matchAll(/\{([^{}]+)\}/g)) {
+    if (match[1]) accepted.add(match[1]);
+  }
+
+  if (Option.isSome(operation.requestBody)) {
+    const requestBody = operation.requestBody.value;
+    const contents = Option.getOrUndefined(requestBody.contents);
+    accepted.add("body");
+    accepted.add("input");
+    if (
+      isOctetStream(requestBody.contentType) ||
+      contents?.some((content) => isOctetStream(content.contentType))
+    ) {
+      accepted.add("bodyBase64");
+    }
+    if (contents && contents.length > 1) accepted.add("contentType");
+  }
+
+  const servers = operation.servers ?? [];
+  const hasServerVariables = servers.some(
+    (server) => Object.keys(Option.getOrUndefined(server.variables) ?? {}).length > 0,
+  );
+  if (servers.length > 1 || hasServerVariables) accepted.add("server");
+
+  return [...accepted];
+};
+
 export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   operation: OperationBinding,
   args: Record<string, unknown>,
   resolvedHeaders: Record<string, string>,
   integrationQueryParams: Record<string, string> = {},
 ) {
+  const accepted = acceptedArgumentNames(operation);
+  const acceptedSet = new Set(accepted);
+  const unknown = Object.keys(args).filter((name) => !acceptedSet.has(name));
+  if (unknown.length > 0) {
+    const label = unknown.length === 1 ? "Unknown argument" : "Unknown arguments";
+    const names = unknown.map((name) => JSON.stringify(name)).join(", ");
+    const acceptedMessage =
+      accepted.length > 0
+        ? `This operation accepts: ${accepted.join(", ")}.`
+        : "This operation accepts no arguments.";
+    return yield* new OpenApiInvocationError({
+      message: `${label} ${names}. ${acceptedMessage}`,
+      statusCode: Option.none(),
+      reason: "unknown_arguments",
+    });
+  }
+
   const resolvedPath = yield* resolvePath(operation.pathTemplate, args, operation.parameters);
 
   const path = resolvedPath.startsWith("/") ? resolvedPath : `/${resolvedPath}`;
@@ -858,8 +937,8 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   for (const param of operation.parameters) {
     if (param.location !== "query") continue;
     const value = readParamValue(args, param);
-    for (const paramValue of queryParamValues(value, param)) {
-      request = HttpClientRequest.appendUrlParam(request, param.name, paramValue);
+    for (const [name, paramValue] of queryParamEntries(value, param)) {
+      request = HttpClientRequest.appendUrlParam(request, name, paramValue);
     }
   }
 
@@ -868,6 +947,14 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
     const value = readParamValue(args, param);
     if (value === undefined || value === null) continue;
     request = HttpClientRequest.setHeader(request, param.name, String(value));
+  }
+
+  const cookieValues: string[] = [];
+  for (const param of operation.parameters) {
+    if (param.location !== "cookie") continue;
+    const value = readParamValue(args, param);
+    if (value === undefined || value === null) continue;
+    cookieValues.push(`${param.name}=${primitiveToString(value)}`);
   }
 
   if (Option.isSome(operation.requestBody)) {
@@ -986,6 +1073,15 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   }
 
   request = applyHeaders(request, resolvedHeaders);
+  if (cookieValues.length > 0) {
+    const existingCookie = request.headers.cookie;
+    const serializedCookies = cookieValues.join("; ");
+    request = HttpClientRequest.setHeader(
+      request,
+      "Cookie",
+      existingCookie ? `${existingCookie}; ${serializedCookies}` : serializedCookies,
+    );
+  }
 
   return request;
 });
@@ -1014,6 +1110,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   const request = yield* buildRequest(operation, args, resolvedHeaders, integrationQueryParams);
 
   const responseHeadersTimeoutMs = options.responseHeadersTimeoutMs ?? RESPONSE_HEADERS_TIMEOUT_MS;
+  const responseBodyTimeoutMs = options.responseBodyTimeoutMs ?? RESPONSE_BODY_TIMEOUT_MS;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const responseExitOption = yield* Effect.callback<
     Option.Option<Exit.Exit<HttpClientResponse.HttpClientResponse, OpenApiInvocationError>>
@@ -1081,6 +1178,51 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         cause: err,
       }),
   );
+  const readResponseBody = <A>(body: Effect.Effect<A, OpenApiInvocationError, never>) =>
+    Effect.gen(function* () {
+      const bodyExitOption = yield* Effect.callback<
+        Option.Option<Exit.Exit<A, OpenApiInvocationError>>
+      >((resume, signal) => {
+        let settled = false;
+        const bodyEffect = body.pipe(
+          Effect.exit,
+          Effect.tap((exit) =>
+            Effect.sync(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resume(Effect.succeed(Option.some(exit)));
+            }),
+          ),
+        );
+        const fiber = runFork(bodyEffect);
+        const interrupt = () => {
+          runFork(Fiber.interrupt(fiber));
+        };
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          interrupt();
+          resume(Effect.succeed(Option.none()));
+        }, responseBodyTimeoutMs);
+        signal.addEventListener("abort", interrupt, { once: true });
+        return Effect.sync(() => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", interrupt);
+          if (!settled) interrupt();
+        });
+      });
+      if (Option.isNone(bodyExitOption)) {
+        return yield* new OpenApiInvocationError({
+          message: responseBodyTimeoutMessage(responseBodyTimeoutMs),
+          statusCode: Option.some(status),
+          reason: "response_body_timeout",
+        });
+      }
+      const bodyExit = bodyExitOption.value;
+      if (Exit.isFailure(bodyExit)) return yield* Effect.failCause(bodyExit.cause);
+      return bodyExit.value;
+    });
   const responseBodyBinding = Option.getOrUndefined(operation.responseBody);
   const fileHint = responseBodyBinding
     ? Option.getOrUndefined(responseBodyBinding.fileHint)
@@ -1096,23 +1238,21 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   if (streamingBody) {
     Object.assign(responseHeaders, streamingBody.headers);
   }
+  const bufferedBody = Effect.suspend(() =>
+    ok && fileHint?.kind === "binaryResponse"
+      ? response.arrayBuffer.pipe(
+          Effect.map((bytes) => fileFromBinaryBytes(new Uint8Array(bytes), fileHint, contentType)),
+        )
+      : isJsonContentType(contentType)
+        ? response.json.pipe(Effect.catch(() => response.text))
+        : response.text,
+  );
   const responseBody: unknown =
     status === 204
       ? null
-      : ok && fileHint?.kind === "binaryResponse"
-        ? fileFromBinaryBytes(
-            new Uint8Array(yield* response.arrayBuffer.pipe(mapBodyError)),
-            fileHint,
-            contentType,
-          )
-        : streamingBody
-          ? streamingBody.data
-          : isJsonContentType(contentType)
-            ? yield* response.json.pipe(
-                Effect.catch(() => response.text),
-                mapBodyError,
-              )
-            : yield* response.text.pipe(mapBodyError);
+      : streamingBody
+        ? streamingBody.data
+        : yield* readResponseBody(bufferedBody.pipe(mapBodyError));
 
   const dataBody =
     ok && fileHint?.kind === "byteField"
@@ -1152,6 +1292,21 @@ const resolveRequestHost = (
   return resolveServerUrl(chosen.url, Option.getOrUndefined(chosen.variables), overrides);
 };
 
+const baseUrlForPathTemplate = (baseUrl: string, pathTemplate: string): string => {
+  if (!baseUrl || !pathTemplate.startsWith("/upload/") || !URL.canParse(baseUrl)) return baseUrl;
+
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  if (basePath && basePath !== "/" && pathTemplate.startsWith(`/upload${basePath}/`)) {
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  return baseUrl;
+};
+
 // ---------------------------------------------------------------------------
 // Invoke with a provided HttpClient layer + per-call host resolution
 // ---------------------------------------------------------------------------
@@ -1165,7 +1320,11 @@ export const invokeWithLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   options: InvokeOptions = {},
 ) => {
-  const effectiveBaseUrl = resolveRequestHost(operation.servers ?? [], args.server, baseUrl);
+  const effectiveBaseUrl = baseUrlForPathTemplate(
+    resolveRequestHost(operation.servers ?? [], args.server, baseUrl),
+    operation.pathTemplate,
+  );
+
   const clientWithBaseUrl = effectiveBaseUrl
     ? Layer.effect(
         HttpClient.HttpClient,

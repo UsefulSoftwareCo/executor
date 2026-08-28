@@ -13,6 +13,7 @@ import {
 } from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import {
+  openApiNdjsonOutputDataMigration,
   openApiOutputSchemaDataMigration,
   openApiSpecBlobDataMigration,
 } from "@executor-js/plugin-openapi";
@@ -47,4 +48,7 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   // GC dead DCR oauth_client rows (old always-register duplicates) and backfill
   // the surviving DCR rows' origin_issuer from token_url (issue #1120, Part C).
   oauthClientGcSqliteMigration,
+  // Stale-mark connections whose operations return NDJSON so their tool rows
+  // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
+  openApiNdjsonOutputDataMigration,
 ];

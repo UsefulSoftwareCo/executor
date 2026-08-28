@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/runtime-workerd-subprocess",
-  "version": "0.0.1",
+  "version": "0.0.15",
   "private": true,
   "type": "module",
   "exports": {

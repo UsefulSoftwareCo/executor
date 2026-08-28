@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  integrationFaviconFallbackUrl,
   integrationFaviconSrc,
   integrationFaviconUrl,
   integrationInferredUrl,
@@ -10,22 +9,15 @@ import {
 } from "./integration-favicon";
 
 describe("IntegrationFavicon", () => {
-  it("uses the integrations.sh logo proxy as the primary favicon source", () => {
+  it("resolves favicons only through the integrations.sh logo proxy", () => {
     expect(integrationFaviconUrl("https://api.github.com/graphql", 20)).toBe(
       "https://integrations.sh/logo/github.com?sz=40",
-    );
-  });
-
-  it("falls back to the Google favicon service", () => {
-    expect(integrationFaviconFallbackUrl("https://api.github.com/graphql", 20)).toBe(
-      "https://www.google.com/s2/favicons?domain=github.com&sz=40",
     );
   });
 
   it("does not request favicons for local URLs", () => {
     expect(integrationFaviconUrl("http://localhost:3000/private", 20)).toBeNull();
     expect(integrationFaviconUrl("http://127.0.0.1:3000/private", 20)).toBeNull();
-    expect(integrationFaviconFallbackUrl("http://localhost:3000/private", 20)).toBeNull();
   });
 
   it("sends only the registrable domain to the logo proxy", () => {
@@ -34,13 +26,11 @@ describe("IntegrationFavicon", () => {
     );
   });
 
-  it("walks the cascade from the proxy to the favicon service on failure", () => {
+  it("falls through to the placeholder when the proxy fails", () => {
     const url = "https://api.github.com/graphql";
     const primary = integrationFaviconSrc({ url, size: 20 });
     expect(primary).toBe("https://integrations.sh/logo/github.com?sz=40");
-    expect(integrationFaviconSrc({ url, size: 20, failedSrcs: [primary ?? ""] })).toBe(
-      "https://www.google.com/s2/favicons?domain=github.com&sz=40",
-    );
+    expect(integrationFaviconSrc({ url, size: 20, failedSrcs: [primary ?? ""] })).toBeNull();
   });
 
   it("uses the Executor favicon for the built-in executor integration", () => {
@@ -102,63 +92,11 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/sheets.svg");
   });
 
-  it("finds preset icons from display names with suffixes", () => {
-    expect(
-      integrationPresetIconUrl(
-        {
-          id: "google_search_console_api",
-          kind: "googleDiscovery",
-          name: "Google Search Console API",
-        },
-        [
-          {
-            key: "google",
-            label: "Google",
-            add: () => null,
-            edit: () => null,
-            presets: [
-              {
-                id: "google-search-console",
-                name: "Google Search Console",
-                summary: "Search performance.",
-                icon: "https://example.com/google.svg",
-              },
-            ],
-          },
-        ],
-      ),
-    ).toBe("https://example.com/google.svg");
-  });
-
-  it("finds preset icons from an integration id when the URL is missing", () => {
-    expect(
-      integrationPresetIconUrl(
-        {
-          id: "sentry",
-          kind: "mcp",
-          name: "Sentry MCP",
-        },
-        [
-          {
-            key: "mcp",
-            label: "MCP",
-            add: () => null,
-            edit: () => null,
-            presets: [
-              {
-                id: "sentry",
-                name: "Sentry",
-                summary: "Errors.",
-                icon: "https://example.com/sentry.png",
-              },
-            ],
-          },
-        ],
-      ),
-    ).toBe("https://example.com/sentry.png");
-  });
-
-  it("matches migrated MCP slugs with host/suffix noise", () => {
+  it("does not fuzzy-match preset icons from names or slugs", () => {
+    // Name/slug token matching is gone: without an exact defaultSlug or URL
+    // match, the preset matcher declines and the cascade resolves through the
+    // integrations.sh favicon instead, which is derived from the integration's
+    // own domain and therefore cannot render the wrong brand.
     const presets = [
       {
         key: "mcp",
@@ -167,63 +105,25 @@ describe("IntegrationFavicon", () => {
         edit: () => null,
         presets: [
           {
-            id: "posthog",
-            name: "PostHog",
-            summary: "Analytics.",
-            icon: "https://example.com/posthog.png",
-          },
-          {
-            id: "linear",
-            name: "Linear",
-            summary: "Issues.",
-            icon: "https://example.com/linear.png",
-          },
-          {
-            id: "planetscale",
-            name: "PlanetScale",
-            summary: "Databases.",
-            icon: "https://example.com/pscale.png",
+            id: "sentry",
+            name: "Sentry",
+            summary: "Errors.",
+            icon: "https://example.com/sentry.png",
           },
         ],
       },
     ];
 
     expect(
-      integrationPresetIconUrl(
-        { id: "mcp_posthog_com", kind: "mcp", name: "mcp.posthog.com" },
-        presets,
-      ),
-    ).toBe("https://example.com/posthog.png");
-    expect(
-      integrationPresetIconUrl(
-        { id: "mcp_linear_app", kind: "mcp", name: "mcp.linear.app" },
-        presets,
-      ),
-    ).toBe("https://example.com/linear.png");
-    expect(
-      integrationPresetIconUrl({ id: "pscale_mcp", kind: "mcp", name: "Pscale MCP" }, presets),
-    ).toBe("https://example.com/pscale.png");
-  });
+      integrationPresetIconUrl({ id: "sentry", kind: "mcp", name: "Sentry MCP" }, presets),
+    ).toBeNull();
 
-  it("matches migrated OpenAPI slugs with API/REST suffixes", () => {
-    expect(
-      integrationPresetIconUrl({ id: "stripe_api", kind: "openapi", name: "Stripe API" }, [
-        {
-          key: "openapi",
-          label: "OpenAPI",
-          add: () => null,
-          edit: () => null,
-          presets: [
-            {
-              id: "stripe",
-              name: "Stripe",
-              summary: "Payments.",
-              icon: "https://example.com/stripe.png",
-            },
-          ],
-        },
-      ]),
-    ).toBe("https://example.com/stripe.png");
+    // Migrated host-shaped integrations resolve through the inferred URL:
+    const inferred = integrationInferredUrl({ id: "mcp_posthog_com", name: "mcp.posthog.com" });
+    expect(inferred).toBe("https://mcp.posthog.com");
+    expect(integrationFaviconSrc({ url: inferred ?? undefined, size: 16 })).toBe(
+      "https://integrations.sh/logo/posthog.com?sz=32",
+    );
   });
 
   it("prefers exact catalog defaultSlug icons for OpenAPI provider services", () => {
@@ -248,7 +148,25 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/gmail.png");
   });
 
-  it("does not split generic words into brand matches", () => {
+  it("matches presets on exact URL equality, not names", () => {
+    const presets = [
+      {
+        key: "openapi",
+        label: "OpenAPI",
+        add: () => null,
+        edit: () => null,
+        presets: [
+          {
+            id: "spotify",
+            name: "Spotify",
+            summary: "Music.",
+            url: "https://api.spotify.com/v1",
+            icon: "https://example.com/spotify.png",
+          },
+        ],
+      },
+    ];
+
     expect(
       integrationPresetIconUrl(
         {
@@ -257,30 +175,43 @@ describe("IntegrationFavicon", () => {
           name: "Spotify Web API",
           url: "https://api.spotify.com/v1",
         },
-        [
-          {
-            key: "openapi",
-            label: "OpenAPI",
-            add: () => null,
-            edit: () => null,
-            presets: [
-              {
-                id: "exa-websets",
-                name: "Exa Websets",
-                summary: "Web data.",
-                icon: "https://example.com/exa.png",
-              },
-              {
-                id: "spotify",
-                name: "Spotify",
-                summary: "Music.",
-                icon: "https://example.com/spotify.png",
-              },
-            ],
-          },
-        ],
+        presets,
       ),
     ).toBe("https://example.com/spotify.png");
+
+    // Same name, different URL: no match — the URL-derived favicon takes over.
+    expect(
+      integrationPresetIconUrl(
+        {
+          id: "spotify_web_api",
+          kind: "openapi",
+          name: "Spotify Web API",
+          url: "https://api.spotify.com/v2",
+        },
+        presets,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not match a different brand sharing a word fragment (ClickHouse Cloud vs Cloudflare)", () => {
+    expect(
+      integrationPresetIconUrl({ id: "clickhouse", kind: "mcp", name: "ClickHouse Cloud" }, [
+        {
+          key: "mcp",
+          label: "MCP",
+          add: () => null,
+          edit: () => null,
+          presets: [
+            {
+              id: "cloudflare",
+              name: "Cloudflare",
+              summary: "Workers, KV, D1, R2, and DNS management via MCP.",
+              icon: "https://integrations.sh/logo/cloudflare.com",
+            },
+          ],
+        },
+      ]),
+    ).toBeNull();
   });
 
   it("infers favicon URLs from migrated host-shaped MCP names and slugs", () => {

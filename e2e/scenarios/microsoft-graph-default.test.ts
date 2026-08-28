@@ -6,10 +6,10 @@ import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_AUTHORIZATION_URL,
-  MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_TOKEN_URL,
   microsoftCatalog,
   microsoftGraphAdapter,
+  microsoftGraphSliceUrl,
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -55,11 +55,29 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
+        // The add dialog previews before registering. This must stream: the
+        // whole-document parse of the Graph source OOMs the dev workerd
+        // isolate the same way it did the production one.
+        const preview = yield* client.openapi.previewSpec({
+          payload: {
+            spec: microsoftGraphSliceUrl(MICROSOFT_FILES_PRESET_ID),
+            specFormat: "microsoft-graph",
+          },
+        });
+        expect(
+          preview.operationCount,
+          "the preview streams the files selection without a whole-document parse",
+        ).toBeGreaterThan(10);
+        expect(
+          preview.healthCheckCandidates.length,
+          "the preview carries ranked health-check candidates for the selection",
+        ).toBeGreaterThan(0);
+
         const added = yield* client.openapi.addSpec({
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+              url: microsoftGraphSliceUrl(MICROSOFT_FILES_PRESET_ID),
             },
             slug: integration,
             name: "Microsoft Graph Files",

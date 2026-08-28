@@ -31,8 +31,12 @@ const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: str
 const TOOL_FILE_TYPESCRIPT =
   '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
 
-const wrapOutputTypeScript = (outputTypeScript?: string): string =>
-  `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+const wrapOutputTypeScript = (outputTypeScript?: string, marker?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+
+/** Inline provenance for observed types — a model that copies only the type
+ *  string still sees the hint, since the compact render drops descriptions. */
+const OBSERVED_TYPE_MARKER = " /* observed; may be incomplete */";
 
 const withToolResultDefinitions = (
   definitions?: Record<string, string>,
@@ -76,6 +80,7 @@ type DescribedTool = {
   readonly description?: string;
   readonly inputTypeScript?: string;
   readonly outputTypeScript?: string;
+  readonly outputTypeScriptNote?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
   readonly error?: {
@@ -94,7 +99,8 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     {
       path: "search",
       name: "search",
-      description: "Search available Executor tools.",
+      description:
+        "Search available Executor tools. An empty query with a namespace enumerates that integration's full catalog, sorted by path.",
       inputTypeScript: "{ query: string; namespace?: string; limit?: number; offset?: number; }",
       outputTypeScript:
         "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
@@ -176,6 +182,7 @@ const credentialResolutionToolFailure = (input: {
   readonly label: string;
   readonly message: string;
   readonly reauthRequired?: boolean;
+  readonly oauthErrorCode?: string;
 }) =>
   authToolFailure({
     code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
@@ -187,6 +194,12 @@ const credentialResolutionToolFailure = (input: {
       kind: "oauth",
       label: input.label,
     },
+    // The AS's own RFC 6749 §5.2 verdict, when there was one — structured so
+    // the agent (and anyone reading the failure) can distinguish a dead grant
+    // from a misconfigured app without parsing the message.
+    ...(input.oauthErrorCode !== undefined
+      ? { upstream: { details: { oauthErrorCode: input.oauthErrorCode } } }
+      : {}),
   });
 
 const bindingToolFailure = (value: unknown): ToolError | null => {
@@ -309,6 +322,7 @@ export const makeExecutorToolInvoker = (
             label: `${err.integration}.${err.owner}.${err.name}`,
             message: err.message,
             reauthRequired: err.reauthRequired,
+            oauthErrorCode: err.oauthErrorCode,
           }),
         ),
       ),
@@ -655,15 +669,20 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ...(options?.namespace ? { "executor.search.namespace": options.namespace } : {}),
   });
 
-  const empty: PagedResult<ToolDiscoveryResult> = {
-    items: [],
-    total: 0,
-    hasMore: false,
-    nextOffset: null,
-  };
+  const emptyQuery = normalizeSearchText(query).length === 0;
+  const hasNamespace =
+    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0;
 
-  if (normalizeSearchText(query).length === 0) {
-    return empty;
+  // An empty query with no namespace stays empty: it carries neither a
+  // ranking signal nor a scope, and listing the whole workspace "by default"
+  // is exactly the arbitrary dump the ranked search refuses to be.
+  if (emptyQuery && !hasNamespace) {
+    return {
+      items: [],
+      total: 0,
+      hasMore: false,
+      nextOffset: null,
+    } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
   const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
@@ -676,11 +695,31 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ),
   );
   const searchable = all.map(toSearchableTool);
-  const ranked = searchable
-    .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-    .map((tool: SearchableTool) => scoreToolMatch(tool, query))
-    .filter(Predicate.isNotNull)
-    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  // An empty query WITH a namespace is enumeration, not search: there is no
+  // ranking signal, so the namespace's whole catalog comes back sorted by
+  // path (score 0) and paged. Enumeration scopes by EXACT integration slug —
+  // the token-prefix `matchesNamespace` used for ranked search would also
+  // sweep in prefix-sibling integrations (namespace "google" matching
+  // google_gmail and google_sheets), which would silently break the census
+  // guarantee: `total` here must reconcile against
+  // `executor.integrations.list`'s per-integration toolCount.
+  const ranked: readonly ToolDiscoveryResult[] = emptyQuery
+    ? searchable
+        .filter((tool) => tool.integration === options?.namespace?.trim())
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .map((tool) => ({
+          path: tool.path,
+          name: tool.name,
+          integration: tool.integration,
+          score: 0,
+          ...(tool.description !== undefined ? { description: tool.description } : {}),
+        }))
+    : searchable
+        .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+        .filter(Predicate.isNotNull)
+        .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
 
@@ -831,7 +870,18 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    outputTypeScript: wrapOutputTypeScript(
+      schema.outputTypeScript,
+      schema.outputSchemaSource === "observed" ? OBSERVED_TYPE_MARKER : undefined,
+    ),
+    // The compact TS render drops the schema's provenance description, so an
+    // observed (runtime-inferred) shape gets an explicit note: the model
+    // should treat the fields as reliable but not exhaustive.
+    ...(schema.outputSchemaSource === "observed"
+      ? {
+          outputTypeScriptNote: `data type observed from ${schema.outputSchemaObservations ?? 1} live response(s), not declared by the provider; fields may be incomplete.`,
+        }
+      : {}),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
   return described;

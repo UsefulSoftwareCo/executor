@@ -8,6 +8,7 @@
 import { sqliteDataMigration, type SqliteDataMigration } from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import {
+  openApiNdjsonOutputDataMigration,
   openApiOutputSchemaDataMigration,
   openApiSpecBlobDataMigration,
 } from "@executor-js/plugin-openapi";
@@ -15,6 +16,7 @@ import { graphqlIntrospectionBlobDataMigration } from "@executor-js/plugin-graph
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
 
 import { providerServiceSplitDataMigration } from "@executor-js/plugin-provider-service-split";
+import { encryptedSecretsRepartitionDataMigration } from "@executor-js/plugin-encrypted-secrets";
 import { authConfigTransforms } from "./auth-config-migration";
 
 export const selfHostDataMigrations: readonly SqliteDataMigration[] = [
@@ -33,4 +35,10 @@ export const selfHostDataMigrations: readonly SqliteDataMigration[] = [
   graphqlIntrospectionBlobDataMigration,
   googleOpenApiOwnershipDataMigration,
   providerServiceSplitDataMigration,
+  // Stale-mark connections whose operations return NDJSON so their tool rows
+  // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
+  openApiNdjsonOutputDataMigration,
+  // Re-file credential rows the pre-fix provider stored under the acting
+  // caller's partition instead of the owner embedded in the item id (#1453).
+  encryptedSecretsRepartitionDataMigration,
 ];

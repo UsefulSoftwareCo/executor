@@ -37,7 +37,7 @@ scenario(
     // bootstrap admin, so other scenarios' connections legitimately appear here;
     // asserting a global count there is exactly what e2e/AGENTS.md forbids.
     const connections = yield* api.connections.list({ query: {} });
-    if (target.name === "selfhost") return;
+    if (target.name.startsWith("selfhost")) return;
     expect(connections.length, "a fresh org starts with no connections").toBe(0);
   }),
 );

@@ -1,3 +1,7 @@
+import { slackMcpUserScopes } from "../lib/slack-mcp-oauth";
+
+export { slackMcpUserScopes } from "../lib/slack-mcp-oauth";
+
 export interface OAuthAppSetup {
   readonly id: string;
   readonly title: string;
@@ -28,35 +32,6 @@ interface SlackManifest {
     readonly is_mcp_enabled: boolean;
   };
 }
-
-export const slackMcpUserScopes = [
-  "search:read.public",
-  "search:read.private",
-  "search:read.mpim",
-  "search:read.im",
-  "search:read.files",
-  "search:read.users",
-  "chat:write",
-  "channels:history",
-  "groups:history",
-  "mpim:history",
-  "im:history",
-  "canvases:read",
-  "canvases:write",
-  "users:read",
-  "users:read.email",
-  "reactions:write",
-  "reactions:read",
-  "emoji:read",
-  "files:read",
-  "channels:write",
-  "groups:write",
-  "im:write",
-  "mpim:write",
-  "channels:read",
-  "groups:read",
-  "mpim:read",
-] as const;
 
 const slackManifest = (callbackUrl: string): SlackManifest => ({
   display_information: { name: "Executor" },

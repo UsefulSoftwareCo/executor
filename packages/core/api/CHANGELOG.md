@@ -1,5 +1,133 @@
 # @executor-js/api
 
+## 1.4.63
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/execution@1.6.0
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.62
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/execution@1.5.42
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.61
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/execution@1.5.41
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.60
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/execution@1.5.40
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.59
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/execution@1.5.39
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.58
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/execution@1.5.38
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.57
+
+### Patch Changes
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/execution@1.5.37
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/execution@1.5.36
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.55
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/execution@1.5.35
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.54
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/execution@1.5.34
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.33
+  - @executor-js/execution@1.5.33
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.32
+  - @executor-js/execution@1.5.32
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.51
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.31
+  - @executor-js/execution@1.5.31
+  - @executor-js/host-mcp@1.4.4
+
+## 1.4.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.30
+  - @executor-js/execution@1.5.30
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.49
 
 ### Patch Changes

@@ -2,6 +2,7 @@ import {
   ConnectionAddress,
   PolicyId,
   ProviderKey,
+  type ArtifactId,
   type AuthTemplateSlug,
   type Connection,
   type ConnectionName,
@@ -150,6 +151,24 @@ export const pausedExecutionAtom = (executionId: string) =>
     timeToLive: "5 seconds",
   });
 
+export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
+  timeToLive: "30 seconds",
+  reactivityKeys: [ReactivityKey.artifacts],
+});
+
+/**
+ * One artifact, with its `code`. `artifacts.list` deliberately omits the source
+ * so a long list stays cheap, so the detail page must fetch the row itself —
+ * it cannot derive from the list atom the way `integrationAtom` does.
+ */
+export const artifactAtom = Atom.family((artifactId: ArtifactId) =>
+  ExecutorApiClient.query("artifacts", "get", {
+    params: { artifactId },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.artifacts],
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // Mutation atoms — reactivityKeys must be passed at call site (effect-atom
 // does not accept them at definition time). See `reactivity-keys.tsx` for the
@@ -244,6 +263,19 @@ export const createPolicy = ExecutorApiClient.mutation("policies", "create");
 export const updatePolicy = ExecutorApiClient.mutation("policies", "update");
 
 export const removePolicy = ExecutorApiClient.mutation("policies", "remove");
+
+export const renameArtifact = ExecutorApiClient.mutation("artifacts", "rename");
+
+export const removeArtifact = ExecutorApiClient.mutation("artifacts", "remove");
+
+/**
+ * Upgrade an artifact's gallery preview to a snapshot of a settled render.
+ *
+ * Fired by the artifact page after the shell reports that its render has
+ * settled with real data. Best-effort by design: a failure here means the card
+ * keeps showing its layout preview, which is a perfectly good picture.
+ */
+export const setArtifactPreview = ExecutorApiClient.mutation("artifacts", "setPreview");
 
 export const resumeExecution = ExecutorApiClient.mutation("executions", "resume");
 
@@ -452,6 +484,42 @@ export const removePolicyOptimistic = policiesOptimisticAtom.pipe(
     reducer: (current, arg: { readonly params: { readonly policyId: PolicyId } }) =>
       AsyncResult.map(current, (rows) => rows.filter((r) => r.id !== arg.params.policyId)),
     fn: removePolicy,
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Artifacts — optimistic surface. Rename and delete are the only writes the
+// console makes (artifacts are created by the model through `create-artifact`), so
+// the list is the single optimistic surface both mutations reduce over.
+// ---------------------------------------------------------------------------
+
+export const artifactsOptimisticAtom = Atom.optimistic(artifactsAtom);
+
+export const renameArtifactOptimistic = artifactsOptimisticAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (
+      current,
+      arg: {
+        readonly params: { readonly artifactId: ArtifactId };
+        readonly payload: { readonly title: string };
+      },
+    ) =>
+      AsyncResult.map(current, (rows) =>
+        rows.map((row) =>
+          row.id === arg.params.artifactId
+            ? { ...row, title: arg.payload.title, updatedAt: Date.now() }
+            : row,
+        ),
+      ),
+    fn: renameArtifact,
+  }),
+);
+
+export const removeArtifactOptimistic = artifactsOptimisticAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, arg: { readonly params: { readonly artifactId: ArtifactId } }) =>
+      AsyncResult.map(current, (rows) => rows.filter((row) => row.id !== arg.params.artifactId)),
+    fn: removeArtifact,
   }),
 );
 

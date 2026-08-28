@@ -161,7 +161,12 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             integration: payload.integration,
             template: payload.template,
             identityLabel: payload.identityLabel,
+            newConnection: payload.newConnection,
             redirectUri: payload.redirectUri,
+            // Enterprise-managed authorization inputs. Ignored by every other
+            // grant, and REQUIRED by `id_jag` — the identity assertion is held
+            // by the caller, never by the server.
+            enterprise: payload.enterprise,
           });
           return startResultToResponse(result);
         }),

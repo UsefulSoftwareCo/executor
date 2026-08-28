@@ -1,4 +1,5 @@
 export * from "./types";
+export * from "./error-kind";
 export * from "./validation";
 export * from "./json-schema";
 export * from "./effect-errors";

@@ -119,7 +119,14 @@ const jsonRpcErrorCallTool =
       error: { code, message: "application-level do-not-leak" },
     });
 
-const seedCallToolExecutor = (input: { slug: string; callTool: CallToolResponder }) =>
+const seedCallToolExecutor = (input: {
+  slug: string;
+  callTool: CallToolResponder;
+  /** Seed an oauth2-templated connection with a static access token, so the
+   *  transport gets a real authProvider — the production OAuth path where the
+   *  SDK's own challenge handling would otherwise swallow scope signals. */
+  oauth?: boolean;
+}) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const server = yield* serveCallToolServer(input.callTool);
@@ -133,13 +140,14 @@ const seedCallToolExecutor = (input: { slug: string; callTool: CallToolResponder
         endpoint: server.url("/mcp"),
         slug: input.slug,
         remoteTransport: "streamable-http",
+        ...(input.oauth ? { auth: { kind: "oauth2" as const } } : {}),
       });
       yield* executor.connections.create({
         owner: "org",
         name: ConnectionName.make("main"),
         integration: IntegrationSlug.make(input.slug),
-        template: TEMPLATE,
-        value: "",
+        template: input.oauth ? AuthTemplateSlug.make("oauth2") : TEMPLATE,
+        value: input.oauth ? "static-access-token" : "",
       });
 
       return {
@@ -642,6 +650,100 @@ describe("mcpPlugin", () => {
       ),
     );
   }
+
+  it.effect(
+    "classifies a scope-insufficient 403 as oauth_scope_insufficient, not connection_rejected",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = "call_status_scope";
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            // RFC 6750 insufficient_scope in the response body: re-running the
+            // same grant cannot fix this, so the failure must not carry the
+            // re-authenticate recovery (whose oauth.start hint would loop).
+            callTool: () =>
+              HttpServerResponse.text(
+                '{"error":"insufficient_scope","error_description":"do-not-leak: needs files.read"}',
+                { status: 403 },
+              ),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "oauth_scope_insufficient",
+              status: 403,
+              retryable: false,
+              details: {
+                category: "authentication",
+                integration: { id: slug },
+                credential: { kind: "oauth", label: "main" },
+                upstream: { status: 403 },
+              },
+            },
+          });
+
+          const failure = result as {
+            readonly ok: false;
+            readonly error: {
+              readonly message: string;
+              readonly details: { readonly recovery: Record<string, string> };
+            };
+          };
+          expect(failure.error.message).not.toContain("do-not-leak");
+          expect(
+            failure.error.details.recovery.startOAuthTool,
+            "no oauth.start hint: re-running the identical grant cannot satisfy the scope",
+          ).toBeUndefined();
+          expect(failure.error.details.recovery.scopeInstructions).toBeDefined();
+        }),
+      ),
+  );
+
+  it.effect(
+    "classifies a challenge-header scope 403 on an OAuth connection as oauth_scope_insufficient",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The production path: an oauth2-templated connection gives the
+          // transport an authProvider, and the MCP SDK reacts to an RFC 6750
+          // insufficient_scope challenge by re-running auth itself
+          // ("upscoping") — which our static-token provider can only answer by
+          // demanding reauthorization. The fetch adapter intercepts the
+          // challenge below the SDK, so the failure classifies as the scope
+          // shortfall it is instead of oauth_reauth_required.
+          const slug = "call_status_oauth_scope";
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            oauth: true,
+            callTool: () =>
+              HttpServerResponse.text("do-not-leak: forbidden", {
+                status: 403,
+                headers: {
+                  "www-authenticate":
+                    'Bearer realm="mcp", error="insufficient_scope", scope="files.read"',
+                },
+              }),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "oauth_scope_insufficient",
+              status: 403,
+              details: { category: "authentication" },
+            },
+          });
+          const failure = result as { readonly error: { readonly message: string } };
+          expect(failure.error.message).not.toContain("do-not-leak");
+        }),
+      ),
+  );
 
   it.effect("does not classify non-auth tools/call HTTP failures as auth failures", () =>
     Effect.scoped(

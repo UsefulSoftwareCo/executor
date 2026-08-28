@@ -1,4 +1,11 @@
 export { parse, resolveSpecText, fetchSpecText } from "./parse";
+export {
+  applySpecOverrides,
+  JsonPatchOperationSchema,
+  SpecOverridesSchema,
+  type JsonPatchOperation,
+  type SpecOverrides,
+} from "./spec-overrides";
 export { extract, streamOperationBindingsFromStructure } from "./extract";
 export {
   structuralSplit,
@@ -17,6 +24,7 @@ export {
   invokeWithLayer,
   buildRequest,
   annotationsForOperation,
+  RESPONSE_BODY_TIMEOUT_MS,
   RESPONSE_HEADERS_TIMEOUT_MS,
   type InvokeOptions,
 } from "./invoke";
@@ -92,6 +100,7 @@ export {
   OpenApiExtractionError,
   OpenApiInvocationError,
   OpenApiOAuthError,
+  OpenApiSpecOverrideError,
   OpenApiAuthRequiredError,
 } from "./errors";
 
@@ -125,5 +134,10 @@ export {
   runSqliteOpenApiOutputSchemaMigration,
   unwrapOpenApiTransportEnvelope,
 } from "./output-schema-migration";
+
+export {
+  openApiNdjsonOutputDataMigration,
+  runSqliteNdjsonOutputMigration,
+} from "./ndjson-output-migration";
 
 export { openApiSpecBlobDataMigration } from "./spec-blob-migration";

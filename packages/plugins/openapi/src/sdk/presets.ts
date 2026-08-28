@@ -1,4 +1,5 @@
 import type { HealthCheckSpec, IntegrationPresetAuthentication } from "@executor-js/sdk/core";
+import type { SpecOverrides } from "./spec-overrides";
 
 export interface OpenApiPreset {
   readonly id: string;
@@ -10,11 +11,63 @@ export interface OpenApiPreset {
   readonly family?: string;
   readonly specFormat?: string;
   readonly defaultSlug?: string;
+  readonly specOverrides?: SpecOverrides;
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
 }
 
+/** GitHub OAuth-app flow (classic apps, not GitHub Apps): scopes are requested
+ *  at authorize time, tokens don't expire, and the token endpoint returns
+ *  form-encoded unless the request sends `Accept: application/json` — which the
+ *  SDK's token exchange always does (oauth4webapi sets it). `repo` + `read:org`
+ *  + `user:email` covers the common repo/issue/PR surface without admin grants. */
+export const GITHUB_SUPPORTED_OAUTH_SCOPES = ["repo", "read:org", "user:email"] as const;
+
+export const GITHUB_OAUTH_TEMPLATE: IntegrationPresetAuthentication = {
+  slug: "oauth2",
+  kind: "oauth2",
+  authorizationUrl: "https://github.com/login/oauth/authorize",
+  tokenUrl: "https://github.com/login/oauth/access_token",
+  scopes: GITHUB_SUPPORTED_OAUTH_SCOPES,
+};
+
+export const FIGMA_SUPPORTED_OAUTH_SCOPES = [
+  "current_user:read",
+  "file_comments:read",
+  "file_comments:write",
+  "file_content:read",
+  "file_dev_resources:read",
+  "file_dev_resources:write",
+  "file_metadata:read",
+  "file_versions:read",
+  "library_assets:read",
+  "library_content:read",
+  "project_metadata:read",
+  "projects:read",
+  "team_library_content:read",
+  "webhooks:read",
+  "webhooks:write",
+] as const;
+
+export const FIGMA_SPEC_OVERRIDES: SpecOverrides = [
+  {
+    op: "replace",
+    path: "/components/securitySchemes/OAuth2/flows/authorizationCode/scopes",
+    value: Object.fromEntries(FIGMA_SUPPORTED_OAUTH_SCOPES.map((scope) => [scope, ""])),
+  },
+];
+
 const openApiOnlyPresets: readonly OpenApiPreset[] = [
+  {
+    id: "figma",
+    name: "Figma",
+    summary: "Files, comments, components, variables, projects, and webhooks.",
+    url: "https://raw.githubusercontent.com/figma/rest-api-spec/refs/heads/main/openapi/openapi.yaml",
+    icon: "https://integrations.sh/logo/figma.com",
+    featured: true,
+    defaultSlug: "figma_api",
+    specOverrides: FIGMA_SPEC_OVERRIDES,
+  },
   {
     id: "stripe",
     name: "Stripe",
@@ -28,8 +81,9 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "GitHub REST",
     summary: "Repos, issues, pull requests, actions, and users.",
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-    icon: "https://svgl.app/library/github_dark.svg",
+    icon: "https://integrations.sh/logo/github.com",
     featured: true,
+    authTemplate: [GITHUB_OAUTH_TEMPLATE],
   },
   {
     id: "vercel",
@@ -37,14 +91,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     summary: "Deployments, domains, projects, and edge config.",
     url: "https://openapi.vercel.sh",
     icon: "https://integrations.sh/logo/vercel.com",
-    featured: true,
-  },
-  {
-    id: "cloudflare",
-    name: "Cloudflare",
-    summary: "DNS, workers, pages, R2, and security rules.",
-    url: "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
-    icon: "https://integrations.sh/logo/cloudflare.com",
     featured: true,
   },
   {
@@ -60,7 +106,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "OpenAI",
     summary: "Models, files, responses, and fine-tuning.",
     url: "https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml",
-    icon: "https://svgl.app/library/openai_dark.svg",
+    icon: "https://integrations.sh/logo/openai.com",
     featured: true,
   },
   {

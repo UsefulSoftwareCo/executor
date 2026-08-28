@@ -1,8 +1,14 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { generateKeyBetween } from "fractional-indexing";
-import { PolicyId, type Owner, type ToolPolicyAction } from "@executor-js/sdk/shared";
+import { toast } from "sonner";
+import {
+  PolicyId,
+  positionForNewPattern,
+  type Owner,
+  type ToolPolicyAction,
+} from "@executor-js/sdk/shared";
 
 import {
   createPolicyOptimistic,
@@ -12,32 +18,19 @@ import {
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
 import { trackEvent } from "../api/analytics";
-
-// Specificity score for ordering. Higher = more specific = should sit at a
-// lower position-key (higher precedence). New rules are auto-placed below
-// any more-specific existing rules so a freshly-added group rule never
-// silently shadows an existing leaf rule.
-//   `*`            → 0
-//   `vercel.*`     → 2  (1 literal segment, wildcard)
-//   `vercel.dns.*` → 4  (2 literal segments, wildcard)
-//   `vercel.dns`   → 5  (2 literal segments, exact — beats same-prefix wildcard)
-//   `vercel.dns.create` → 7  (3 literal segments, exact)
-const specificity = (pattern: string): number => {
-  if (pattern === "*") return 0;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    return prefix.split(".").length * 2;
-  }
-  return pattern.split(".").length * 2 + 1;
-};
+import { messageFromExit } from "../api/error-reporting";
 
 export interface PolicyAction {
   /** Set the action on a pattern. If a user rule with this exact pattern
    *  already exists, update it. Otherwise create with auto-placed
    *  position so more-specific rules keep precedence. */
   readonly set: (pattern: string, action: ToolPolicyAction) => Promise<void>;
-  /** Remove the user rule with this exact pattern, if any. No-op if none. */
-  readonly clear: (pattern: string) => Promise<void>;
+  /** Remove the user rule with this exact pattern, if any. `policyId` is the
+   *  id of the rule the caller believes is active (e.g. from the tool's
+   *  resolved EffectivePolicy); it is the fallback when the local policies
+   *  list is mid-refresh and doesn't contain the rule yet — without it a
+   *  clear in that window silently no-ops. */
+  readonly clear: (pattern: string, policyId?: string) => Promise<void>;
   /** True while a write is in flight. */
   readonly busy: boolean;
 }
@@ -54,9 +47,9 @@ export interface PolicyAction {
  */
 export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
   const policies = useAtomValue(policiesOptimisticAtom);
-  const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promise" });
-  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promise" });
-  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promise" });
+  const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
+  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
+  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
 
   // Sorted by position ASC (lowest position = highest precedence first),
   // matching server evaluation order. Optimistic placeholder rows carry
@@ -83,20 +76,23 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
 
   const busy = policies.waiting;
 
+  // Server-assigned ids of rules this hook created, by pattern. The local
+  // policies list is optimistic: right after a create it holds a placeholder
+  // row with a fake `pending-*` id (and the resolved EffectivePolicy a caller
+  // hands back can carry that same fake id), so neither is safe to DELETE
+  // with. The create response is the one authoritative id source in that
+  // window.
+  const createdIdByPattern = useRef(new Map<string, string>());
+
+  // Specificity-aware placement (below any more-specific rule) via the shared
+  // sdk helper — the same computation the server applies when no position is
+  // sent. Computing it here too keeps the optimistic UI's final order stable;
+  // if this client's list is stale, the server default is the backstop.
   const computePosition = useCallback(
     (newPattern: string): string | undefined => {
       const committed = sorted.filter((r) => r.position !== "");
       if (committed.length === 0) return undefined;
-      const newScore = specificity(newPattern);
-      // Walk down the list (most-precedent first); place the new rule
-      // just before the first existing rule whose specificity is <= the
-      // new one. That way more-specific rules stay above us, and we win
-      // against everything equally or less specific.
-      let idx = committed.findIndex((r) => specificity(r.pattern) <= newScore);
-      if (idx === -1) idx = committed.length; // append at bottom
-      const prev = idx === 0 ? null : committed[idx - 1]!.position;
-      const next = idx === committed.length ? null : committed[idx]!.position;
-      return generateKeyBetween(prev, next);
+      return positionForNewPattern(newPattern, committed);
     },
     [sorted],
   );
@@ -112,36 +108,57 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
       const existing = findExact(pattern);
       if (existing) {
         if (existing.action === action) return;
-        await doUpdate({
+        const exit = await doUpdate({
           params: { policyId: PolicyId.make(existing.id) },
           payload: { owner, action },
           reactivityKeys: policyWriteKeys,
         });
+        if (Exit.isFailure(exit)) {
+          toast.error(messageFromExit(exit, "Failed to update policy"));
+          return;
+        }
         trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
         return;
       }
       const position = computePosition(pattern);
-      await doCreate({
+      const exit = await doCreate({
         payload:
           position === undefined
             ? { owner, pattern, action }
             : { owner, pattern, action, position },
         reactivityKeys: policyWriteKeys,
       });
+      if (Exit.isFailure(exit)) {
+        toast.error(messageFromExit(exit, "Failed to create policy"));
+        return;
+      }
+      createdIdByPattern.current.set(pattern, String(exit.value.id));
       trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
     },
     [owner, doCreate, doUpdate, findExact, computePosition],
   );
 
   const clear = useCallback(
-    async (pattern: string) => {
+    async (pattern: string, policyId?: string) => {
+      // Resolve the id to delete, most-authoritative first. The local list
+      // and the caller's resolved policy can both hold an optimistic
+      // `pending-*` placeholder id right after a create (before the
+      // post-commit refetch lands); the create response we recorded is real,
+      // and a placeholder id must never reach the server.
       const existing = findExact(pattern);
-      if (!existing) return;
-      await doRemove({
-        params: { policyId: PolicyId.make(existing.id) },
+      const isReal = (id: string | undefined): id is string => !!id && !id.startsWith("pending-");
+      const id = [existing?.id, createdIdByPattern.current.get(pattern), policyId].find(isReal);
+      if (!id) return;
+      const exit = await doRemove({
+        params: { policyId: PolicyId.make(id) },
         payload: { owner },
         reactivityKeys: policyWriteKeys,
       });
+      if (Exit.isFailure(exit)) {
+        toast.error(messageFromExit(exit, "Failed to clear policy"));
+        return;
+      }
+      createdIdByPattern.current.delete(pattern);
       trackEvent("tool_policy_cleared", {
         pattern_kind: pattern.endsWith(".*") ? "group" : "exact",
         owner,

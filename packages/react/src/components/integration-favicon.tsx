@@ -14,22 +14,13 @@ const integrationFaviconDomain = (url: string | undefined): string | null => {
 };
 
 // integrations.sh/logo proxies context.dev's Logo Link behind an edge cache
-// and is executor's single logo source; Google's favicon service remains in
-// the cascade as the fallback the <img> onError walks to when the proxy is
-// unreachable or serves nothing for the domain.
+// and is executor's single logo source. Fallbacks (Google's favicon service,
+// a letter placeholder for unknown domains) live inside the proxy, so clients
+// never resolve favicons against a third party directly.
 export function integrationFaviconUrl(url: string | undefined, size: number): string | null {
   const domain = integrationFaviconDomain(url);
   if (!domain) return null;
   return `https://integrations.sh/logo/${domain}?sz=${size * 2}`;
-}
-
-export function integrationFaviconFallbackUrl(
-  url: string | undefined,
-  size: number,
-): string | null {
-  const domain = integrationFaviconDomain(url);
-  if (!domain) return null;
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`;
 }
 
 export function integrationLocalIconUrl(integrationId: string | undefined): string | null {
@@ -85,46 +76,6 @@ const googleApiServiceFromUrl = (url: string | undefined): string | null => {
   return null;
 };
 
-const normalizeToken = (value: string | undefined): string =>
-  value?.toLowerCase().replace(/[^a-z0-9]+/g, "") ?? "";
-
-const tokenVariants = (value: string | undefined): readonly string[] => {
-  const tokens = new Set<string>();
-  const normalized = normalizeToken(value);
-  if (normalized.length > 0) tokens.add(normalized);
-
-  const parts =
-    value
-      ?.toLowerCase()
-      .split(/[^a-z0-9]+/g)
-      .filter(Boolean) ?? [];
-  const noise = new Set([
-    "api",
-    "mcp",
-    "openapi",
-    "rest",
-    "graphql",
-    "web",
-    "com",
-    "net",
-    "org",
-    "dev",
-  ]);
-  const cleaned = parts.filter((part) => !noise.has(part));
-  const cleanedToken = cleaned.join("");
-  if (cleanedToken.length > 0) tokens.add(cleanedToken);
-  const aliases: Record<string, string> = {
-    pscale: "planetscale",
-  };
-  for (const part of cleaned) {
-    tokens.add(part);
-    const alias = aliases[part];
-    if (alias) tokens.add(alias);
-  }
-
-  return [...tokens];
-};
-
 export function integrationInferredUrl(integration: {
   readonly id: string;
   readonly name?: string;
@@ -138,13 +89,12 @@ export function integrationInferredUrl(integration: {
   return null;
 }
 
-const tokenMatches = (integrationValue: string, presetValue: string): boolean =>
-  presetValue.length > 0 &&
-  integrationValue.length > 0 &&
-  (integrationValue === presetValue ||
-    integrationValue.includes(presetValue) ||
-    presetValue.includes(integrationValue));
-
+// Exact identity signals only — preset defaultSlug, normalized URL equality,
+// or the same Google discovery service. Fuzzy name/slug token matching used to
+// live here and matched unrelated brands sharing a word fragment ("ClickHouse
+// Cloud" rendered Cloudflare's logo via "cloud"). A missed match is recoverable
+// (the cascade falls through to the domain-derived integrations.sh favicon,
+// which is always the right brand); a wrong-brand icon is not.
 export function integrationPresetIconUrl(
   integration: {
     readonly id: string;
@@ -162,18 +112,13 @@ export function integrationPresetIconUrl(
 
   const integrationUrl = normalizeUrl(integration.url);
   const integrationGoogleService = googleApiServiceFromUrl(integration.url);
-  const integrationTokens = [...tokenVariants(integration.id), ...tokenVariants(integration.name)];
 
   const preset = presets.find((p) => {
     const presetUrl = normalizeUrl(p.url);
     const presetGoogleService = googleApiServiceFromUrl(p.url);
-    const presetTokens = [...tokenVariants(p.id), ...tokenVariants(p.name)];
     return (
       (integrationUrl !== null && presetUrl === integrationUrl) ||
-      (integrationGoogleService !== null && presetGoogleService === integrationGoogleService) ||
-      integrationTokens.some((integrationToken) =>
-        presetTokens.some((presetToken) => tokenMatches(integrationToken, presetToken)),
-      )
+      (integrationGoogleService !== null && presetGoogleService === integrationGoogleService)
     );
   });
 
@@ -181,9 +126,9 @@ export function integrationPresetIconUrl(
 }
 
 // Resolution cascade for the rendered favicon: first non-null, non-failed of an
-// explicit preset icon, the bundled local icon for a known integration id, the
-// integrations.sh logo proxy derived from the integration URL, then the Google
-// favicon service as a last resort. The built-in executor integration has no preset
+// explicit preset icon, the bundled local icon for a known integration id, then
+// the integrations.sh logo proxy derived from the integration URL (which owns
+// its own upstream fallbacks). The built-in executor integration has no preset
 // icon and no URL, so it resolves ONLY through the integrationId branch: callers
 // that drop integrationId fall through to the neutral BoxIcon placeholder.
 export function integrationFaviconSrc(args: {
@@ -199,7 +144,6 @@ export function integrationFaviconSrc(args: {
       args.icon ?? null,
       integrationLocalIconUrl(args.integrationId),
       integrationFaviconUrl(args.url, args.size),
-      integrationFaviconFallbackUrl(args.url, args.size),
     ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
   );
 }

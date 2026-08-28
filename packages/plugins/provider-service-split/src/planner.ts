@@ -9,7 +9,7 @@ import {
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   microsoftCatalog,
 } from "@executor-js/plugin-openapi/providers/microsoft";
-import type { OpenApiPreset } from "@executor-js/plugin-openapi/presets";
+import type { IntegrationPreset } from "@executor-js/sdk/core";
 
 type MonolithPluginId = "google" | "microsoft";
 
@@ -264,6 +264,7 @@ const GOOGLE_IDENTITY_DISCOVERY_URL = "https://www.googleapis.com/discovery/v1/a
 
 const GOOGLE_TOOL_PREFIX_TO_PRESET_ID: ReadonlyMap<string, string> = new Map([
   ["calendar", "google-calendar"],
+  ["meet", "google-meet"],
   ["gmail", "google-gmail"],
   ["sheets", "google-sheets"],
   ["drive", "google-drive"],
@@ -330,11 +331,11 @@ const integrationPatternSegment = (
   return { prefix, integration: tail.split(".")[0] ?? "" };
 };
 
-const googleCatalogById: ReadonlyMap<string, OpenApiPreset> = new Map(
+const googleCatalogById: ReadonlyMap<string, IntegrationPreset> = new Map(
   googleCatalog.map((preset) => [preset.id, preset]),
 );
 
-const microsoftCatalogByMonolithPresetId: ReadonlyMap<string, OpenApiPreset> = new Map(
+const microsoftCatalogByMonolithPresetId: ReadonlyMap<string, IntegrationPreset> = new Map(
   microsoftCatalog.map((preset) => [preset.id.replace(/^microsoft-/, ""), preset]),
 );
 
@@ -1045,7 +1046,19 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         hardErrors.push(error instanceof Error ? error.message : String(error));
         continue;
       }
-      const specHash = specHashFor(monolith);
+      // Same escape hatch as deriveServices above: under collectPolicyErrors a
+      // monolith without a usable specHash becomes a per-org hardError (org
+      // skipped, warned, left unstamped) instead of failing the whole plan. An
+      // escaped throw here took down every org in the run and, on the local
+      // boot rail, prevented the daemon from starting at all (issue #1403).
+      let specHash: string;
+      try {
+        specHash = specHashFor(monolith);
+      } catch (error) {
+        if (!input.collectPolicyErrors) throw error;
+        hardErrors.push(error instanceof Error ? error.message : String(error));
+        continue;
+      }
       const namespace = pluginBlobNamespace(tenant, monolith.plugin_id);
       const targetNamespace = pluginBlobNamespace(tenant, "openapi");
       const specBlobPresent =
