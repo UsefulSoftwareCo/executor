@@ -102,9 +102,14 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     return { ...handle, end: () => handle.close() };
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    _storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
     // Single-tenant: every Access principal belongs to the one configured org,
-    // so there is nothing to resolve — stamp the configured org name.
+    // so there is nothing to resolve — stamp the configured org name. Nothing
+    // to reuse from the stored meta either; config is already the cheapest and
+    // freshest source there is.
     return Effect.succeed({
       organizationId: token.organizationId,
       organizationName: this.cfConfig.organizationName,

@@ -1226,8 +1226,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     // and projected exactly like stored rows — clientId only, never the secret.
     // Owner is reported as "org" (the widest visibility the summary shape can
     // express); the flow itself ignores owner for first-party slugs.
-    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()].map(
-      (config) => ({
+    //
+    // `unlisted` apps are withheld here and ONLY here: listing is what offers an
+    // app for a NEW connection, so this is the whole of "stop offering it".
+    // `loadClient` still resolves them, keeping every existing connection's
+    // refresh and reconnect intact.
+    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()]
+      .filter((config) => config.unlisted !== true)
+      .map((config) => ({
         owner: "org",
         slug: firstPartyOAuthClientSlug(config.name),
         grant: "authorization_code",
@@ -1240,8 +1246,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
           ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
         },
-      }),
-    );
+      }));
     return deps.fuma
       .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
       .pipe(

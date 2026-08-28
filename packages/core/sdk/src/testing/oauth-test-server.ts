@@ -70,6 +70,19 @@ export interface OAuthTestServerOptions {
    *  Defaults to `invalid_grant`; set to e.g. `invalid_request` to mirror
    *  authorization servers that reject dead refresh tokens with other codes. */
   readonly invalidRefreshTokenErrorCode?: string;
+  /** Answer a rejected refresh-token grant with this EXACT response instead of
+   *  the conform §5.2 JSON envelope, byte for byte. Production token endpoints
+   *  refuse dead grants in shapes the spec never describes — a `text/plain` 400
+   *  ("your session has expired"), a `text/plain` 404, or a GitHub-style HTTP
+   *  200 whose body carries the error — and executor has to read all of them as
+   *  the same definitive refusal. Takes precedence over
+   *  `invalidRefreshTokenErrorCode` / `invalidRefreshTokenDescription`. */
+  readonly refreshRejection?: {
+    readonly status: number;
+    /** Defaults to `text/plain; charset=utf-8`. */
+    readonly contentType?: string;
+    readonly body: string;
+  };
   readonly idTokenClaims?: Readonly<Record<string, unknown>>;
   readonly refreshIdTokenClaims?: Readonly<Record<string, unknown>>;
   /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
@@ -818,7 +831,13 @@ export const serveOAuthTestServer = (
             const refreshToken = params.get("refresh_token");
             const record = refreshToken ? refreshTokens.get(refreshToken) : undefined;
             if (!supportRefresh || !refreshToken || !record || record.clientId !== clientId) {
-              return oauthError(400, invalidRefreshTokenErrorCode, invalidRefreshTokenDescription);
+              const rejection = options.refreshRejection;
+              return rejection
+                ? HttpServerResponse.text(rejection.body, {
+                    status: rejection.status,
+                    contentType: rejection.contentType ?? "text/plain; charset=utf-8",
+                  })
+                : oauthError(400, invalidRefreshTokenErrorCode, invalidRefreshTokenDescription);
             }
             const nextAccessToken = `at_${randomUUID()}`;
             const nextRefreshToken = `rt_${randomUUID()}`;

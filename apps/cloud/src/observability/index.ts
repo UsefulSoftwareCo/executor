@@ -12,10 +12,11 @@
 
 import * as Sentry from "@sentry/cloudflare";
 import type { ErrorEvent, Scope } from "@sentry/cloudflare";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Effect, Layer, Predicate } from "effect";
 import type * as Tracer from "effect/Tracer";
 
 import { ErrorCapture } from "@executor-js/api";
+import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
 
 // Drizzle/postgres-js include the failing SQL (params + bound values) in
 // their error message. For OpenAPI source inserts that's 1MB+ of spec
@@ -29,6 +30,21 @@ const OTEL_SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 export const OTEL_TRACE_ID_TAG = "otel_trace_id";
 export const OTEL_SPAN_ID_TAG = "otel_span_id";
 export const SENTRY_EVENT_ID_ATTRIBUTE = "sentry.event_id";
+
+/**
+ * Set by the MCP session Durable Object when it has finished deciding what to
+ * do about a cause — reported it, or classified it as an expected Cloudflare
+ * platform reset and deliberately not reported it.
+ *
+ * `instrumentDurableObjectWithSentry` wraps the DO's entry points and captures
+ * the same rejection again as it escapes, which is why one platform reset
+ * opened two issues for the same event. The DO is the better owner — it has
+ * the session, the org, the OTEL correlation and the classification — so its
+ * claim wins and the auto-instrumentation's echo is dropped in `beforeSend`.
+ * Nothing the DO does not claim is affected.
+ */
+export const DO_CAUSE_OWNER_TAG = "mcp.do.cause_owner";
+export const DO_CAUSE_OWNER_VALUE = "durable_object";
 
 export type OtelCorrelationContext = {
   readonly traceId: string;
@@ -99,10 +115,25 @@ export const tagCurrentSentryScopeWithCurrentOtelSpan: Effect.Effect<OtelCorrela
     return context;
   });
 
+/**
+ * True when this event is the auto-instrumentation's copy of a cause the
+ * Durable Object already claimed.
+ *
+ * Both conditions matter. The tag alone would drop the DO's own report; the
+ * mechanism alone would drop genuinely unhandled DO failures (an alarm crash,
+ * say) that nothing else reports. Together they identify exactly the echo.
+ */
+const isClaimedDurableObjectEcho = (event: ErrorEvent): boolean => {
+  if (event.tags?.[DO_CAUSE_OWNER_TAG] !== DO_CAUSE_OWNER_VALUE) return false;
+  const mechanism = event.exception?.values?.[0]?.mechanism?.type;
+  return typeof mechanism === "string" && mechanism.startsWith("auto.");
+};
+
 export const beforeSendWithOtelCorrelation = (
   event: ErrorEvent,
   options?: { readonly logPayload?: boolean },
-): ErrorEvent => {
+): ErrorEvent | null => {
+  if (isClaimedDurableObjectEcho(event)) return null;
   if (options?.logPayload) {
     console.info(
       JSON.stringify({
@@ -115,6 +146,53 @@ export const beforeSendWithOtelCorrelation = (
   }
   return event;
 };
+
+/**
+ * The single `beforeSend` the worker and its Durable Objects install.
+ *
+ * The worker ships as content-hashed chunks and its frames are not resolved
+ * back to source, so Sentry's default grouping keys on names like
+ * `execution-rate-limit-<hash>` and re-opens every issue on the next deploy.
+ * `withStableGroupingFingerprint` pins a key with the hash normalized out;
+ * events with no hashed grouping input are left on the default algorithm.
+ *
+ * The two stages are independent and compose in this order: the capture-owner
+ * pass decides WHETHER the event is reported at all (a cause the Durable
+ * Object already claimed is dropped, and a dropped event is never
+ * fingerprinted), and the grouping pass then decides HOW whatever survives is
+ * grouped.
+ */
+export const beforeSendCloudEvent = (
+  event: ErrorEvent,
+  options?: { readonly logPayload?: boolean },
+): ErrorEvent | null => {
+  const reported = beforeSendWithOtelCorrelation(event, options);
+  return reported === null ? null : withStableGroupingFingerprint(reported);
+};
+
+/**
+ * The Sentry options the worker and every Durable Object install. It lives
+ * beside the `beforeSend` it wires so the composition is covered by
+ * observability.test.ts; `server.ts` only passes this through.
+ *
+ * NOTE: do NOT enable `instrumentPrototypeMethods`. It walks the DO prototype
+ * and reads every property — including accessors — to find methods to wrap,
+ * which invokes the `sessionId` getter with `this` bound to the prototype
+ * (where `ctx` is undefined) and throws during construction, 500ing every
+ * session create / cold restore. The DO captures its own errors via the
+ * `captureCause` seam (→ Sentry) instead.
+ */
+export const cloudSentryOptions = (env: Env) => ({
+  dsn: env.SENTRY_DSN,
+  tracesSampleRate: 0,
+  enableLogs: true,
+  sendDefaultPii: true,
+  skipOpenTelemetrySetup: true,
+  beforeSend: (event: ErrorEvent) =>
+    beforeSendCloudEvent(event, {
+      logPayload: !env.SENTRY_DSN || env.SENTRY_OTEL_LOG_PAYLOAD === "true",
+    }),
+});
 
 export const addCurrentOtelCorrelationTags = <
   T extends { readonly tags?: Record<string, unknown> },
@@ -144,14 +222,75 @@ export const sentryPayloadForCause = (
   return { primary: input, pretty: null };
 };
 
+// Safe classification fields our tagged errors carry (`UserStoreError.operation`
+// / `.reason`, `WorkOSError.status`). They are promoted to Sentry TAGS because
+// the pretty cause is only an `extra`, and Sentry's server-side scrubber
+// replaces that extra with "[Filtered]" — leaving an issue with no failing
+// operation and no reason in it at all. Tags survive, group, and are
+// searchable. Values are failure modes and operation names; never a query, a
+// value, or anything customer-derived.
+const CLASSIFICATION_TAG_FIELDS = ["operation", "reason", "status"] as const;
+
+/** The errors those fields are read from. An allowlist, because the fields are
+ *  only known to be safe on the errors this app defines. */
+const CLASSIFIED_ERROR_TAGS = [
+  "UserStoreError",
+  "WorkOSError",
+  "McpSessionMetaUnavailableError",
+] as const;
+
+const MAX_CLASSIFICATION_TAG_CHARS = 120;
+
+const MAX_CAUSE_NESTING = 3;
+
+/** Every error value a cause carries, failures and defects alike. A defect can
+ *  itself be a `Cause` (an inner `runPromise` rejecting with its own squashed
+ *  cause), so the walk unwraps a few levels. */
+const errorValuesOf = (input: unknown, depth = 0): readonly unknown[] => {
+  if (depth >= MAX_CAUSE_NESTING) return [];
+  if (!Cause.isCause(input)) return [input];
+  const values: unknown[] = [];
+  for (const reason of input.reasons) {
+    if (Cause.isFailReason(reason)) values.push(reason.error);
+    else if (Cause.isDieReason(reason)) values.push(...errorValuesOf(reason.defect, depth + 1));
+  }
+  return values;
+};
+
+/** Read the classification fields off the tagged errors inside a cause. First
+ *  writer wins, so the innermost reported error names the issue. */
+const classificationTagsOf = (input: unknown): Readonly<Record<string, string>> => {
+  const tags: Record<string, string> = {};
+  for (const candidate of errorValuesOf(input)) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    // Only the errors whose fields we know are safe classifications. Without
+    // this, any foreign object in the cause that happens to carry an
+    // `operation` / `reason` / `status` field would have that value promoted
+    // onto a tag, and a foreign field is not known to be free of a query, a
+    // value, or anything customer-derived.
+    if (!CLASSIFIED_ERROR_TAGS.some((tag) => Predicate.isTagged(candidate, tag))) continue;
+    const tagged = candidate as Record<string, unknown>;
+    for (const field of CLASSIFICATION_TAG_FIELDS) {
+      const value = tagged[field];
+      if (tags[field] !== undefined) continue;
+      if (typeof value === "string" || typeof value === "number") {
+        tags[field] = String(value).slice(0, MAX_CLASSIFICATION_TAG_CHARS);
+      }
+    }
+  }
+  return tags;
+};
+
 export const captureCause = (
   input: unknown,
   context: OtelCorrelationContext | null = null,
 ): string | undefined => {
   const { primary, pretty } = sentryPayloadForCause(input);
+  const classification = classificationTagsOf(input);
   tagCurrentSentryScopeWithOtelContext(context);
   return Sentry.captureException(primary, (scope) => {
     tagSentryScopeWithOtelContext(scope, context);
+    for (const [key, value] of Object.entries(classification)) scope.setTag(key, value);
     if (pretty !== null) scope.setExtra("cause", pretty);
     return scope;
   });
@@ -166,6 +305,15 @@ export const captureCauseEffect = (input: unknown): Effect.Effect<string | undef
     }
     return eventId;
   });
+
+/**
+ * Mark the current Sentry scope as "the Durable Object has already dealt with
+ * this cause". Call it AFTER any `captureCauseEffect`, so the DO's own event —
+ * captured against the scope as it was — is not itself mistaken for the echo.
+ */
+export const claimCauseHandledByDurableObject: Effect.Effect<void> = Effect.sync(() => {
+  Sentry.getCurrentScope().setTag(DO_CAUSE_OWNER_TAG, DO_CAUSE_OWNER_VALUE);
+});
 
 export const ErrorCaptureLive: Layer.Layer<ErrorCapture> = Layer.succeed(
   ErrorCapture,

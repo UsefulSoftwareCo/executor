@@ -58,7 +58,7 @@ import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execu
 // `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
-import { authorizeOrganization } from "../auth/organization";
+import { resolveSessionMetaForToken } from "./session-meta";
 import {
   DbService,
   combinedSchema,
@@ -71,6 +71,7 @@ import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry
 import {
   captureCause as reportCause,
   captureCauseEffect as reportCauseEffect,
+  claimCauseHandledByDurableObject,
   tagCurrentSentryScopeWithCurrentOtelSpan,
 } from "../observability";
 import { parseTraceparent } from "./traceparent";
@@ -105,10 +106,6 @@ type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
   readonly end: () => Promise<void>;
 };
-
-class OrganizationNotFoundError extends Data.TaggedError("OrganizationNotFoundError")<{
-  readonly organizationId: string;
-}> {}
 
 class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
   readonly cause: unknown;
@@ -208,35 +205,27 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     });
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
+    // The database handle is opened LAZILY: on the props and stored paths — the
+    // overwhelming majority of inits — nothing here touches Postgres at all,
+    // which is the whole point. postgres.js only dials on first query, so
+    // building the handle costs nothing; `ensuring` still closes it.
     const dbHandle = makeEphemeralDb();
-    return Effect.gen(function* () {
-      // Membership was already verified by the worker's per-request auth; this
-      // re-check is where the session learns the member's WORKSPACE ROLE, so
-      // the executor it builds can bind `orgWrites` (a member may use org
-      // connections but not configure workspace-level state). The role is
-      // baked into the persisted meta: a demotion applies from the next
-      // session init, not mid-session.
-      const org = yield* authorizeOrganization(token.userId, token.organizationId);
-      if (!org) {
-        return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
-      }
-      return {
-        organizationId: org.id,
-        organizationName: org.name,
-        organizationSlug: org.slug,
-        userId: token.userId,
-        orgRole: org.memberRole,
-        resource: token.resource,
-        elicitationMode: token.elicitationMode,
-        artifactsEnabled: token.artifactsEnabled,
-        searchToolsEnabled: token.searchToolsEnabled,
-      } satisfies SessionMeta;
-    }).pipe(
+    return resolveSessionMetaForToken(token, storedMeta).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
       Effect.provide(makeSessionServices(dbHandle)),
       Effect.ensuring(Effect.promise(() => dbHandle.end())),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a vanished org is a defect; the worker already verified the bearer
+      // The base's `resolveSessionMeta` seam has no error channel, and a
+      // Durable Object's `init` can only reject its Promise — so a failure has
+      // to leave as a defect. What changed is WHAT leaves: an unreachable
+      // organization directory is now a bounded, classified
+      // `McpSessionMetaUnavailableError` whose message the worker recognises
+      // and renders as a retryable 503 (see `agent-handler.ts`), instead of an
+      // unclassified Postgres cause that produced a 500 and a client hang.
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the DO init seam is Promise-only; the failure is classified before it dies
       Effect.orDie,
     );
   }
@@ -376,6 +365,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override prepareErrorCaptureScope(): Effect.Effect<void> {
     return Effect.asVoid(tagCurrentSentryScopeWithCurrentOtelSpan);
+  }
+
+  // The DO owns this cause; `instrumentDurableObjectWithSentry` (server.ts) must
+  // not report it a second time when the rejection escapes the method.
+  protected override claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
+    return claimCauseHandledByDurableObject;
   }
 
   // Best-effort export the DO isolate's buffered spans after the RPC settles,
