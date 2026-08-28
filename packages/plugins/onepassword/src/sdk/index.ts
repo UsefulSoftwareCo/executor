@@ -1,12 +1,16 @@
 export {
   onepasswordPlugin,
   makeOnePasswordStore,
+  candidateSecretUris,
   type OnePasswordExtension,
   type OnePasswordPluginOptions,
   type OnePasswordStore,
 } from "./plugin";
 export {
   OnePasswordConfig,
+  LegacyOnePasswordConfig,
+  StoredOnePasswordConfig,
+  normalizeStoredConfig,
   RedactedOnePasswordConfig,
   RedactedOnePasswordAuth,
   redactConfig,
