@@ -40,11 +40,13 @@ import {
 // of onboarding, so it gets a page and a permanent, focused search field rather
 // than a 16rem scroll window behind a header button.
 //
-// ONE ROW PER SERVICE. A service that exposes both an API and an MCP server is
-// one thing you might want, offered two ways — not two search results with the
-// same name and a badge to tell them apart. The surfaces become the actions on
-// the row ("Add MCP", "Add OpenAPI"); a service with a single surface gets a
-// single "Add".
+// ONE ROW PER ADDABLE THING. A service exposing both an API and an MCP server
+// yields two rows, because they really are two different integrations with
+// different tools and different auth — but each row NAMES its surface
+// ("Stripe API", "Stripe MCP") rather than repeating the bare service name and
+// leaving a badge to carry the difference. Two rows reading "Stripe" look like
+// a duplicate; two rows reading "Stripe API" and "Stripe MCP" look like a
+// choice, which is what they are.
 //
 // Rows come from two places the reader never learns about: the curated presets
 // this deployment ships (which carry auth templates and health checks a bare
@@ -67,6 +69,27 @@ const CATALOG_KIND_LABEL: Record<CatalogKind, string> = {
   mcp: "MCP",
   openapi: "OpenAPI",
   graphql: "GraphQL",
+};
+
+/** How a surface is said in a row's NAME. Deliberately not the facet
+ *  vocabulary: a facet filters on the spec format ("OpenAPI"), while a name
+ *  says the thing you would say out loud ("Stripe API"). */
+const SURFACE_WORD: Record<string, string> = {
+  mcp: "MCP",
+  openapi: "API",
+  google: "API",
+  graphql: "GraphQL",
+};
+
+/** `Stripe` + API → `Stripe API`, but `GitHub REST` + API stays `GitHub REST`
+ *  and `Emulate MCP` + MCP stays `Emulate MCP`. Appending a word the name
+ *  already carries reads worse than leaving it off. */
+const withSurface = (name: string, surface: string): string => {
+  const lower = name.toLowerCase();
+  const already =
+    lower.includes(surface.toLowerCase()) ||
+    (surface === "API" && (lower.includes("api") || lower.includes("rest")));
+  return already ? name : `${name} ${surface}`;
 };
 
 const detectionRank: Record<IntegrationDetectionResult["confidence"], number> = {
@@ -118,13 +141,6 @@ type PresetEntry = {
   readonly pluginLabel: string;
 };
 
-interface RowSurface {
-  readonly key: string;
-  /** The surface's name, used as the row action's label ("Add MCP"). */
-  readonly label: string;
-  readonly onSelect: () => void;
-}
-
 interface Row {
   readonly key: string;
   readonly testId: string;
@@ -134,7 +150,7 @@ interface Row {
   readonly domain?: string;
   readonly description?: string;
   readonly iconUrl?: string;
-  readonly surfaces: readonly RowSurface[];
+  readonly onSelect: () => void;
   readonly added: boolean;
   readonly busy: boolean;
 }
@@ -170,7 +186,6 @@ function RowIcon(props: { readonly src?: string; readonly alt: string }) {
 
 function ResultRow(props: { readonly row: Row }) {
   const { row } = props;
-  const single = row.surfaces.length === 1;
   return (
     <div
       data-testid={row.testId}
@@ -201,21 +216,17 @@ function ResultRow(props: { readonly row: Row }) {
         ) : row.busy ? (
           <span className="px-2 text-xs text-muted-foreground">Adding…</span>
         ) : (
-          row.surfaces.map((surface) => (
-            <Button
-              key={surface.key}
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={surface.onSelect}
-              // With one surface the button reads "Add"; the accessible name
-              // still says what is being added, since "Add" alone is useless
-              // when every row has one.
-              aria-label={`Add ${row.title}${single ? "" : ` via ${surface.label}`}`}
-            >
-              {single ? "Add" : `Add ${surface.label}`}
-            </Button>
-          ))
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={row.onSelect}
+            // Every row's button reads "Add", so the visible label alone is
+            // useless to a screen reader; the accessible name carries the row.
+            aria-label={`Add ${row.title}`}
+          >
+            Add
+          </Button>
         )}
       </span>
     </div>
@@ -402,9 +413,9 @@ export function IntegrationBrowsePage() {
     [navigate],
   );
 
-  // --- Preset rows: one per service, surfaces collapsed onto it -------------
+  // --- Preset rows ---------------------------------------------------------
   const presetRows = useMemo<readonly Row[]>(() => {
-    const groups = new Map<string, PresetEntry[]>();
+    const rows: Row[] = [];
     for (const entry of allPresets) {
       if (kind !== null && entry.pluginKey !== kind) continue;
       if (text.length > 0) {
@@ -412,60 +423,48 @@ export function IntegrationBrowsePage() {
           `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
         if (!corpus.includes(text)) continue;
       }
-      // The service is the name. Two presets called "Stripe" are one Stripe
-      // offered two ways, and must not read as two search results.
-      const key = entry.preset.name.trim().toLowerCase();
-      const bucket = groups.get(key);
-      if (bucket) bucket.push(entry);
-      else groups.set(key, [entry]);
-    }
-    return [...groups.values()].map((entries): Row => {
-      const first = entries[0]!;
-      const domain = presetDomain(first.preset);
-      return {
-        key: `preset-${first.preset.name}`,
-        testId: `preset-${first.preset.id}`,
-        title: first.preset.name,
-        ...(first.preset.summary ? { description: first.preset.summary } : {}),
-        ...(first.preset.icon ? { iconUrl: first.preset.icon } : {}),
-        surfaces: entries.map((entry) => ({
-          key: `${entry.pluginKey}-${entry.preset.id}`,
-          label: entry.pluginLabel,
-          onSelect: () => pickPreset(entry),
-        })),
+      const domain = presetDomain(entry.preset);
+      const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
+      rows.push({
+        key: `preset-${entry.pluginKey}-${entry.preset.id}`,
+        testId: `preset-${entry.preset.id}`,
+        title: withSurface(entry.preset.name, surface),
+        ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
+        ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
+        onSelect: () => pickPreset(entry),
         added: domain !== null && installedDomains.has(domain),
         busy: false,
-      };
-    });
+      });
+    }
+    return rows;
   }, [allPresets, kind, text, pickPreset, installedDomains]);
 
-  // --- Catalog rows --------------------------------------------------------
+  // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
-    const rows = catalogEntries.map((entry): Row => {
+    const rows = catalogEntries.flatMap((entry): readonly Row[] => {
       const pretty = domainDisplayName(entry.domain);
-      return {
-        key: `catalog-${entry.domain}`,
-        testId: `catalog-${entry.domain}`,
-        title: pretty,
-        domain: entry.domain,
-        ...(entry.description ? { description: tidyDescription(entry.description) } : {}),
-        iconUrl: catalogLogoUrl(entry.domain, 10),
-        surfaces: entry.kinds.map((entryKind) => ({
-          key: entryKind,
-          label: CATALOG_KIND_LABEL[entryKind],
+      const description = entry.description ? tidyDescription(entry.description) : undefined;
+      return entry.kinds.map((entryKind): Row => {
+        const surface = SURFACE_WORD[entryKind] ?? CATALOG_KIND_LABEL[entryKind];
+        return {
+          key: `catalog-${entry.domain}-${entryKind}`,
+          testId: `catalog-${entry.domain}-${entryKind}`,
+          title: withSurface(pretty, surface),
+          domain: entry.domain,
+          ...(description ? { description } : {}),
+          iconUrl: catalogLogoUrl(entry.domain, 10),
           onSelect: () => void pickCatalogEntry(entry, [entryKind]),
-        })),
-        added: installedDomains.has(entry.domain),
-        busy: resolvingDomain === entry.domain,
-      };
+          added: installedDomains.has(entry.domain),
+          busy: resolvingDomain === entry.domain,
+        };
+      });
     });
     if (text.length === 0) return rows;
     // A name match beats a mention in the blurb: searching "gmail" should not
     // rank a CRM that merely describes itself as living inside Gmail above
     // Gmail. Stable within each group, so the registry's own order survives.
-    const named = rows.filter((row) => `${row.title} ${row.domain}`.toLowerCase().includes(text));
-    const rest = rows.filter((row) => !named.includes(row));
-    return [...named, ...rest];
+    const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
+    return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
   }, [catalogEntries, installedDomains, resolvingDomain, pickCatalogEntry, text]);
 
   const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
