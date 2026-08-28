@@ -1,7 +1,7 @@
 import { Effect, Layer } from "effect";
 import { oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata } from "better-auth/plugins";
 
-import { IdentityProvider } from "@executor-js/api/server";
+import { IdentityProvider, isPlatformPrincipal } from "@executor-js/api/server";
 import {
   authenticated,
   McpAuthProvider,
@@ -233,12 +233,17 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         }).pipe(Effect.orElseSucceed(() => null));
 
       /** (b) The existing cookie / bearer-session / x-api-key path. The fallback's
-       * api `Principal` shape is byte-identical to host-mcp's `Principal`. */
+       * api `Principal` shape is byte-identical to host-mcp's `Principal`. The
+       * neutral seam can also resolve a platform credential, which self-host's
+       * identity never produces — narrowed away rather than asserted, so an MCP
+       * session can never bind to a subject-less credential if that changes. */
       const authenticateSession = (request: Request): Effect.Effect<Principal | null> =>
         fallback.authenticate(request).pipe(
+          Effect.map((principal) => (isPlatformPrincipal(principal) ? null : principal)),
           Effect.catchTags({
             Unauthorized: () => Effect.succeed(null),
             NoOrganization: () => Effect.succeed(null),
+            ReadOnlyCredential: () => Effect.succeed(null),
           }),
         );
 

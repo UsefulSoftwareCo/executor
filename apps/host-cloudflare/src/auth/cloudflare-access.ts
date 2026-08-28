@@ -38,6 +38,7 @@ export const principalFromAccessClaims = (
   const isAdmin = email.length > 0 && config.adminEmails.includes(email.toLowerCase());
 
   return {
+    kind: "member",
     accountId: sub || email || commonName,
     organizationId: config.organizationId,
     organizationName: config.organizationName,
@@ -68,6 +69,7 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
   // fixed admin. Only when explicitly enabled (and the instance is otherwise
   // unprotected). Mirrors the local app's single-user model.
   const devPrincipal: Principal = {
+    kind: "member",
     accountId: "dev",
     organizationId: config.organizationId,
     organizationName: config.organizationName,

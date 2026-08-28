@@ -5,14 +5,33 @@ import addFormats from "ajv-formats";
 import type { StandardSchema } from "./types";
 import { unknownInputSchema } from "./types";
 
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: false,
-  validateSchema: false,
-  allowUnionTypes: true,
-});
+// Built on first use, not at import. Two reasons, and the second is the one
+// that matters beyond this file:
+//
+//   1. Constructing an Ajv instance and registering every format is real work,
+//      and it ran on each cold isolate that so much as imported this package —
+//      including the many that never validate a schema.
+//   2. `new Ajv2020(...)` + `addFormats(...)` at module scope are import-time
+//      side effects, so a bundler must keep this module (and therefore ajv)
+//      whenever anything touches the package barrel. `packages/core/execution`
+//      imports exactly one runtime value from it — `CodeExecutionError` — and
+//      the rest as erased types, yet still dragged ajv AND sucrase into the
+//      server graph. With no module-scope effects left here, `sideEffects:
+//      false` in package.json is honest and the unused modules tree-shake out.
+let ajvInstance: Ajv2020 | undefined;
 
-addFormats(ajv);
+const getAjv = (): Ajv2020 => {
+  if (ajvInstance === undefined) {
+    ajvInstance = new Ajv2020({
+      allErrors: true,
+      strict: false,
+      validateSchema: false,
+      allowUnionTypes: true,
+    });
+    addFormats(ajvInstance);
+  }
+  return ajvInstance;
+};
 
 const decodePointerSegment = (segment: string): PropertyKey => {
   const decoded = segment.replaceAll("~1", "/").replaceAll("~0", "~");
@@ -47,7 +66,7 @@ export const standardSchemaFromJsonSchema = (
 ): StandardSchema => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: AJV compile throws for invalid schemas and this adapter preserves fallback behavior
   try {
-    const validate = ajv.compile(schema as Record<string, unknown>);
+    const validate = getAjv().compile(schema as Record<string, unknown>);
 
     return {
       "~standard": {

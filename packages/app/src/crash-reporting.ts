@@ -12,6 +12,8 @@
  * once initialized — no reporter rewiring needed.
  */
 
+import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
+
 interface CrashReportingConfig {
   readonly dsn: string;
   readonly release: string;
@@ -45,6 +47,11 @@ export const initDesktopCrashReporting = (): void => {
             runId: config.runId,
           },
         },
+        // Route chunks are content-hashed, so an unresolved frame names
+        // `atoms-<hash>` and one bug re-groups on every release. Pin a
+        // fingerprint with the hash normalized out; the event itself keeps its
+        // hashed filenames so sourcemap resolution is unaffected.
+        beforeSend: withStableGroupingFingerprint,
       });
     } catch {
       // Reporting failures stay silent — there is nowhere left to report them.

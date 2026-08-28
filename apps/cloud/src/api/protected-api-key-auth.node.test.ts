@@ -47,7 +47,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -89,6 +89,7 @@ describe("protected API key auth", () => {
       );
 
       expect(identity).toEqual({
+        kind: "member",
         accountId: "user_123",
         organizationId: "org_123",
         organizationName: "Org org_123",

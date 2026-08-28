@@ -12,11 +12,12 @@ import {
   openOAuthSystemBrowser,
   reserveOAuthPopup,
   type OAuthPopupResult,
+  type ReservedOAuthPopup,
 } from "../api/oauth-popup";
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { getActiveOrgSlug } from "../api/server-connection";
 
-type DesktopBridge = {
+export type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
 };
 
@@ -80,7 +81,30 @@ export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
   readonly onError?: (error: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
+  /** Window reserved on the click that began this flow. See `reserve`. */
+  readonly reservation?: OAuthPopupReservation;
 };
+
+/**
+ * A sign-in window claimed synchronously inside a click handler.
+ *
+ * `window.open` requires transient user activation, which Chromium expires
+ * about five seconds after the click. Any flow that awaits the network before
+ * it has an authorization URL (DCR probes then registers, CIMD creates a
+ * client, reconnect starts a session) therefore cannot open the window when the
+ * URL finally arrives: by then the activation is gone and the browser refuses
+ * silently. Those flows reserve a blank window on the click and navigate it
+ * later, however long the round trips take.
+ *
+ * Desktop hosts hand the URL to the real browser, so they reserve nothing and
+ * carry the bridge that will open it instead.
+ */
+export type OAuthPopupReservation =
+  | { readonly kind: "desktop"; readonly bridge: DesktopBridge }
+  | { readonly kind: "window"; readonly popup: ReservedOAuthPopup }
+  | { readonly kind: "blocked" };
+
+const POPUP_BLOCKED_MESSAGE = "Sign-in popup was blocked by the browser";
 
 export type OAuthAuthorizationStartResult = {
   /** OAuth correlation token (was the v1 session id). */
@@ -100,6 +124,8 @@ export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload
   readonly onError?: (error: string, details?: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
   readonly reportMetadata?: Record<string, string | number | boolean | null | undefined>;
+  /** Window reserved on the click that began this flow. See `reserve`. */
+  readonly reservation?: OAuthPopupReservation;
 };
 
 export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
@@ -164,10 +190,21 @@ export function useOAuthPopupFlow<
   const doCancelOAuth = useAtomSet(cancelOAuth, { mode: "promiseExit" });
   const doOAuthConnectionCompleted = useAtomSet(oauthConnectionCompleted, { mode: "promiseExit" });
   const reportHandledError = useReportHandledError();
+  const blockedMessage = popupBlockedMessage ?? POPUP_BLOCKED_MESSAGE;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<{ readonly state: string } | null>(null);
+  // A window reserved on the click but not yet handed to a flow owns nothing
+  // that would close it: `cleanupRef` is only set once the authorization URL
+  // exists. Hold it here so cancel and unmount can close it, or abandoning a
+  // connect mid-probe strands a blank popup on screen.
+  const reservationRef = useRef<ReservedOAuthPopup | null>(null);
+
+  const releaseReservation = useCallback(() => {
+    reservationRef.current?.popup.close();
+    reservationRef.current = null;
+  }, []);
 
   const cancelSession = useCallback(
     (state: string) => {
@@ -181,9 +218,10 @@ export function useOAuthPopupFlow<
     cleanupRef.current?.();
     cleanupRef.current = null;
     sessionRef.current = null;
+    releaseReservation();
     if (session) cancelSession(session.state);
     setBusy(false);
-  }, [cancelSession]);
+  }, [cancelSession, releaseReservation]);
 
   useEffect(
     () => () => {
@@ -191,29 +229,59 @@ export function useOAuthPopupFlow<
       cleanupRef.current?.();
       cleanupRef.current = null;
       sessionRef.current = null;
+      reservationRef.current?.popup.close();
+      reservationRef.current = null;
       if (session) cancelSession(session.state);
     },
     [cancelSession],
   );
 
+  /**
+   * Claim the sign-in window NOW, while the click still carries user
+   * activation, and return what was claimed so the caller can abandon a flow
+   * the browser already refused instead of running a doomed authorization.
+   *
+   * Callers that reach `openAuthorization` synchronously do not need this; it
+   * reserves for itself.
+   */
+  const reserve = useCallback((): OAuthPopupReservation => {
+    // Tear the previous flow down BEFORE opening: `window.open` reuses a window
+    // already carrying `popupName`, so cancelling afterwards would close the
+    // very window just reserved.
+    cancel();
+    const bridge = getDesktopBridge();
+    if (bridge !== null) return { kind: "desktop", bridge };
+    const popup = reserveOAuthPopup({ popupName });
+    if (popup === null) {
+      trackEvent("oauth_popup_blocked");
+      setError(blockedMessage);
+      return { kind: "blocked" };
+    }
+    reservationRef.current = popup;
+    return { kind: "window", popup };
+  }, [blockedMessage, cancel, popupName]);
+
   const openAuthorization = useCallback(
     async (input: StartOAuthAuthorizationInput<TPayload>) => {
-      cancel();
-      setBusy(true);
-      setError(null);
-      const desktopBridge = getDesktopBridge();
-      // Desktop hosts open the auth URL in the user's real browser, so we skip
-      // the in-page popup reservation entirely and rely on the polling channel
-      // for the result.
-      const reservedPopup = desktopBridge ? null : reserveOAuthPopup({ popupName });
-      if (!desktopBridge && !reservedPopup) {
-        const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
-        trackEvent("oauth_popup_blocked");
+      // A caller that reserved on its own click already ran `cancel` inside
+      // `reserve`; cancelling again here would close the window it reserved.
+      const reservation = input.reservation ?? reserve();
+      if (reservation.kind === "blocked") {
         setBusy(false);
-        setError(message);
-        input.onError?.(message);
+        setError(blockedMessage);
+        input.onError?.(blockedMessage);
         return;
       }
+      setBusy(true);
+      setError(null);
+      // Desktop hosts open the auth URL in the user's real browser, so they
+      // reserve no in-page window and rely on the polling channel for the
+      // result.
+      const desktopBridge = reservation.kind === "desktop" ? reservation.bridge : null;
+      const reservedPopup = reservation.kind === "window" ? reservation.popup : null;
+      // The window's lifetime now belongs to this flow's teardown, which closes
+      // it on every failure path below.
+      reservationRef.current = null;
       const startExit = await Effect.runPromiseExit(
         Effect.tryPromise({
           try: input.run,
@@ -319,11 +387,10 @@ export function useOAuthPopupFlow<
         cleanupRef.current = null;
         sessionRef.current = null;
         cancelSession(response.state);
-        const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
         trackEvent("oauth_completed", { success: false });
         setBusy(false);
-        setError(message);
-        input.onError?.(message);
+        setError(blockedMessage);
+        input.onError?.(blockedMessage);
       };
 
       cleanupRef.current = desktopBridge
@@ -348,15 +415,15 @@ export function useOAuthPopupFlow<
           });
     },
     [
-      cancel,
+      blockedMessage,
       cancelSession,
       detectPopupClosed,
       doOAuthConnectionCompleted,
       noAuthorizationUrlMessage,
-      popupBlockedMessage,
       popupClosedMessage,
       popupName,
       reportHandledError,
+      reserve,
       startErrorMessage,
     ],
   );
@@ -368,6 +435,7 @@ export function useOAuthPopupFlow<
         onSuccess: input.onSuccess,
         onError: input.onError,
         onAuthorizationStarted: input.onAuthorizationStarted,
+        ...(input.reservation === undefined ? {} : { reservation: input.reservation }),
         reportMetadata: {
           client: String(input.payload.client),
           integration: String(input.payload.integration),
@@ -414,6 +482,8 @@ export function useOAuthPopupFlow<
     start,
     openAuthorization,
     cancel,
+    reserve,
+    releaseReservation,
   };
 }
 

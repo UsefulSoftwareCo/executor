@@ -19,6 +19,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 interface AuthServerMetadata {
   readonly authorization_endpoint: string;
@@ -78,7 +79,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("A signed-in user is using their Executor instance", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         // Confirm we're in the app, not bounced to sign-in.
         expect(new URL(page.url()).pathname, "the session is active (not on /login)").not.toBe(
           "/login",
@@ -91,7 +92,7 @@ scenario(
           // A connecting MCP client opens this authorize URL. The server forces
           // prompt=consent, so it stops here on the approval screen instead of
           // auto-issuing a code.
-          await page.goto(authorize, { waitUntil: "networkidle" });
+          await visit(page, authorize);
           await page.locator("#mcp-consent-allow").waitFor();
           expect(
             new URL(page.url()).pathname,

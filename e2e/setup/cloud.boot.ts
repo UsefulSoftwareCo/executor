@@ -10,9 +10,12 @@ import { fileURLToPath } from "node:url";
 // Vendored fork import (same pattern as mcporter).
 import { createEmulator } from "@executor-js/emulate";
 
-import { bootProcesses, waitForHttp } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
-import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
+import {
+  E2E_EXECUTION_RATE_LIMIT,
+  E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS,
+} from "./execution-limits";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -56,6 +59,18 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
   const dbPath = resolve(cloudDir, ".e2e-stub-db");
   if (options.fresh ?? true) rmSync(dbPath, { recursive: true, force: true });
 
+  // Fresh worker state per boot, for the same reason as the DB: miniflare
+  // persists the Workers Cache API under .wrangler/state across dev-server
+  // runs, and the JWKS L2 cache (auth/jwks-cache.ts) lives there keyed by
+  // URL. The WorkOS emulator binds this checkout's stable port block, so run
+  // N+1's dev server serves run N's cached JWKS (stale-while-revalidate)
+  // against a fresh emulator's keys — every session verify then fails
+  // signature, falls into single-use refresh, and concurrent requests race
+  // each other's rotation into 401s. One run poisons the next.
+  if (options.fresh ?? true) {
+    rmSync(resolve(cloudDir, ".wrangler", "state"), { recursive: true, force: true });
+  }
+
   // MCP access tokens minted by the emulator's OAuth server must carry the
   // app's client id as audience (what the resource server verifies).
   process.env.EMULATE_WORKOS_AUDIENCE = options.workosClientId;
@@ -93,12 +108,32 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
     MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
     ALLOW_LOCAL_NETWORK: "true",
+    // A first-party GitHub app for the first-party-oauth scenario: proves the
+    // env → HostConfig → executor plumbing end to end. The scenario asserts the
+    // authorize REDIRECT only (client id + callback), never visits github.com.
+    FIRST_PARTY_GITHUB_CLIENT_ID: "e2e-first-party-github",
+    FIRST_PARTY_GITHUB_CLIENT_SECRET: "e2e-first-party-github-secret",
+    // Optional endpoint overrides pass through so a dev instance (`cli up
+    // cloud`) can point the first-party app at an emulated GitHub and run the
+    // complete authorize → token dance instead of stopping at github.com.
+    FIRST_PARTY_GITHUB_AUTHORIZE_URL: process.env.FIRST_PARTY_GITHUB_AUTHORIZE_URL,
+    FIRST_PARTY_GITHUB_TOKEN_URL: process.env.FIRST_PARTY_GITHUB_TOKEN_URL,
+    // Fake Google registration for redirect-only first-party coverage. The
+    // scenario never visits Google or exchanges a code; it proves cloud env,
+    // scope policy, and authorization URL construction end to end.
+    FIRST_PARTY_GOOGLE_CLIENT_ID: "e2e-first-party-google",
+    FIRST_PARTY_GOOGLE_CLIENT_SECRET: "e2e-first-party-google-secret",
     // Shrink the per-org hourly execution cap (prod default 1000) to a number
     // the rate-limit-backstop scenario can actually exhaust with real
     // executions — but see execution-limits.ts: it must stay above every other
     // scenario's per-org execute count. Reaches the worker via
     // CLOUDFLARE_INCLUDE_PROCESS_ENV, same as ALLOW_LOCAL_NETWORK.
     EXECUTION_RATE_LIMIT_PER_HOUR: String(E2E_EXECUTION_RATE_LIMIT),
+    // Set to a value that is NOT the compiled-in default, so the span the
+    // worker exports proves this override was actually read rather than
+    // silently ignored (execution-limits.ts explains why it is longer, not
+    // shorter, than the default).
+    EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS: String(E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS),
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(options.dbPort),
     DEV_DB_PATH: dbPath,
@@ -152,9 +187,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
 
   try {
     const local = `http://127.0.0.1:${options.cloudPort}`;
-    await waitForHttp(local);
+    await waitForBoot(procs, (signal) => waitForHttp(local, { signal }));
     // The API plane is ready when login actually redirects to AuthKit.
-    await waitForHttp(`${local}/api/auth/login`, { expectRedirect: true });
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`${local}/api/auth/login`, { expectRedirect: true, signal }),
+    );
   } catch (error) {
     await teardown();
     throw error;

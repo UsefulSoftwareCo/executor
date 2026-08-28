@@ -23,6 +23,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { settle } from "../src/surfaces/browser";
 
 scenario(
   "Auth routing · signed out → login → onboarding → dashboard, one browser session",
@@ -58,7 +59,7 @@ scenario(
       await step("Create the first org → canonical dashboard at /<slug>", async () => {
         const orgName = "Flow Test Org";
         const orgNameInput = page.getByPlaceholder("Northwind Labs");
-        await page.waitForLoadState("networkidle");
+        await settle(page);
         await orgNameInput.fill(orgName);
         await page.waitForTimeout(250);
         if ((await orgNameInput.inputValue()) !== orgName) {

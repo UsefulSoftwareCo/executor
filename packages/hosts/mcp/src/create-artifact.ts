@@ -199,6 +199,88 @@ const hookCalledInLoop = (code: string): string | undefined => {
 const PAGINATION_HOOKS = new Set(["useQuery", "useInfiniteQuery", "useSuspenseQuery"]);
 
 // ---------------------------------------------------------------------------
+// Edits
+// ---------------------------------------------------------------------------
+//
+// `edit-artifact`'s pure half. An edit is an exact find-and-replace against the
+// stored source, so a model changing one column of a 300-line dashboard sends
+// the changed lines rather than re-emitting the whole component — the tool
+// call's size scales with the edit, not the artifact.
+//
+// The semantics are the ones every model already knows from its own file-edit
+// tool: `oldText` must match verbatim (whitespace included) and exactly once,
+// unless `replaceAll` opts into every occurrence. Edits apply in order, each
+// against the result of the previous, and the whole batch is atomic — any
+// miss rejects the call and nothing is saved. Ambiguity is refused rather than
+// resolved by picking the first hit, because a wrong pick would save silently
+// and the user would see the wrong line change.
+
+export type ArtifactEdit = {
+  /** Exact text to find in the current source. */
+  readonly oldText: string;
+  /** What to put in its place. */
+  readonly newText: string;
+  /** Replace every occurrence instead of requiring `oldText` to be unique. */
+  readonly replaceAll?: boolean | undefined;
+};
+
+export type AppliedArtifactEdits =
+  | { readonly ok: true; readonly code: string }
+  | { readonly ok: false; readonly message: string };
+
+const countOccurrences = (haystack: string, needle: string): number =>
+  haystack.split(needle).length - 1;
+
+/** The edited source, or the first edit that could not be applied. Messages
+ *  name the edit by position and say what to do, because the model retries
+ *  from the message alone. */
+export const applyArtifactEdits = (
+  code: string,
+  edits: readonly ArtifactEdit[],
+): AppliedArtifactEdits => {
+  let current = code;
+  for (const [index, edit] of edits.entries()) {
+    const position = `Edit ${index + 1} of ${edits.length}`;
+    if (edit.oldText === "") {
+      return { ok: false, message: `${position} has an empty oldText, which matches nothing.` };
+    }
+    if (edit.oldText === edit.newText) {
+      return {
+        ok: false,
+        message: `${position} is a no-op: oldText and newText are identical.`,
+      };
+    }
+    const occurrences = countOccurrences(current, edit.oldText);
+    if (occurrences === 0) {
+      return {
+        ok: false,
+        message: [
+          `${position} matched nothing: its oldText does not appear in the current source.`,
+          "Copy oldText verbatim from the source, whitespace included",
+          index > 0 ? "— and remember each edit sees the result of the earlier ones." : ".",
+        ].join(" "),
+      };
+    }
+    if (occurrences > 1 && edit.replaceAll !== true) {
+      return {
+        ok: false,
+        message: [
+          `${position} is ambiguous: its oldText appears ${occurrences} times in the current source.`,
+          "Include enough surrounding text to make it unique, or set replaceAll: true to change every occurrence.",
+        ].join(" "),
+      };
+    }
+    // split/join for both arms: `String.replace` gives `$&` and friends in the
+    // replacement special meaning, and generated JSX is full of `$`.
+    current =
+      edit.replaceAll === true
+        ? current.split(edit.oldText).join(edit.newText)
+        : current.replace(edit.oldText, () => edit.newText);
+  }
+  return { ok: true, code: current };
+};
+
+// ---------------------------------------------------------------------------
 // Create-time smoke render
 // ---------------------------------------------------------------------------
 

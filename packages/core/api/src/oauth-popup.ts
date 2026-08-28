@@ -91,7 +91,7 @@ export const popupDocument = <TAuth>(
   const icon = payload.ok
     ? '<path d="M6 10l3 3 5-6" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
     : '<path d="M7 7l6 6M13 7l-6 6" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-  const escapedChannel = escapeHtml(channelName);
+  const serializedChannel = serializeForScript(channelName);
   const detailsHtml = details
     ? `<details style="margin-top:16px;text-align:left"><summary style="cursor:pointer;font-size:12px;color:#888;user-select:none">Details</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:#52525b;background:#f4f4f5;padding:8px;border-radius:4px;margin:8px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(details)}</pre></details>`
     : "";
@@ -117,8 +117,8 @@ ${detailsHtml}
 // raced by the auto-close — so localStorage (a 'storage' event on the opener) is
 // the reliable fallback. The opener settles on whichever lands first.
 try{if(window.opener)window.opener.postMessage(p,window.location.origin)}catch(e){}
-try{if("BroadcastChannel"in window){const c=new BroadcastChannel("${escapedChannel}");c.postMessage(p);setTimeout(()=>c.close(),100)}}catch(e){}
-try{localStorage.setItem("${escapedChannel}",JSON.stringify(p))}catch(e){}
+try{if("BroadcastChannel"in window){const c=new BroadcastChannel(${serializedChannel});c.postMessage(p);setTimeout(()=>c.close(),100)}}catch(e){}
+try{localStorage.setItem(${serializedChannel},JSON.stringify(p))}catch(e){}
 if(p.ok)setTimeout(()=>window.close(),400);})();
 </script>
 </body></html>`;

@@ -65,7 +65,12 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
 
 export const SelfHostCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
   CodeExecutorProvider,
-  () => makeQuickJsExecutor(),
+  () => {
+    const { sandboxTimeoutMs } = loadConfig();
+    return makeQuickJsExecutor(
+      sandboxTimeoutMs === undefined ? {} : { timeoutMs: sandboxTimeoutMs },
+    );
+  },
 );
 
 /**

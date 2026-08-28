@@ -10,6 +10,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# CI is not a user. Without this, executor's own product telemetry reports to the
+# production PostHog project from every e2e shard: the analytics layer
+# (integration_added, execution_completed, artifact_*) and the
+# integrations-registry fetch, which lands as a `hit` event. Each shard is a
+# fresh container, so it mints a fresh anonymous id and arrives on a fresh
+# runner IP — inflating machine and user counts by roughly an order of
+# magnitude. Both opt-outs are the packages' documented CI/test hooks.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   changes:
     name: Changed paths
@@ -18,6 +30,7 @@ jobs:
     outputs:
       desktop_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop_smoke == 'true' }}
       selfhost_docker_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.selfhost_docker_smoke == 'true' }}
+      cloud_closure: ${{ github.event_name != 'pull_request' || steps.filter.outputs.cloud_closure == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +54,14 @@ jobs:
               - "packages/kernel/runtime-quickjs/**"
               - "packages/plugins/**"
               - "packages/react/**"
+            cloud_closure:
+              - ".github/workflows/**"
+              - "bun.lock"
+              - "package.json"
+              - "turbo.json"
+              - "apps/cloud/**"
+              - "packages/**"
+
             selfhost_docker_smoke:
               - ".github/workflows/**"
               - ".dockerignore"
@@ -144,15 +165,18 @@ jobs:
 
   test:
     name: Test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 15
-    # Tuned for Blacksmith's 4 vCPU runners.
+    # Run eight independent packages at once and cap each Vitest process at two
+    # workers. This uses all 16 vCPUs without every nested runner seeing the
+    # whole machine and oversubscribing it.
     env:
       TURBO_API: ${{ vars.TURBO_API }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
-      TURBO_TEST_CONCURRENCY: 4
+      TURBO_TEST_CONCURRENCY: 8
+      VITEST_MAX_WORKERS: 2
     steps:
       - uses: actions/checkout@v4
 
@@ -184,6 +208,8 @@ jobs:
       # no signal. This is just a few file reads plus greps, so ~zero cost.
       - run: bun run check:patches
 
+      - run: bun run --cwd e2e test:ci-shard
+
       - run: bun run test
 
   e2e:
@@ -192,14 +218,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Each cloud shard boots its own fresh dev stack. On 4 vCPU runners,
-          # four fatter shards keep the longest shard below selfhost while saving
-          # four runner boots and four warm cache restores.
-          - { target: cloud, shard: 1/4, shard-name: 1of4 }
-          - { target: cloud, shard: 2/4, shard-name: 2of4 }
-          - { target: cloud, shard: 3/4, shard-name: 3of4 }
-          - { target: cloud, shard: 4/4, shard-name: 4of4 }
-          - target: selfhost
+          # The planner assigns every file exactly once using recorded slow-file
+          # durations plus a conservative weight for new tests. The cloud DB's
+          # connection teardown and concurrent socket protocol have dedicated
+          # regression tests; these shards balance wall clock, not hide retries.
+          - { target: cloud, shard-index: 1, shard-name: 1of16 }
+          - { target: cloud, shard-index: 2, shard-name: 2of16 }
+          - { target: cloud, shard-index: 3, shard-name: 3of16 }
+          - { target: cloud, shard-index: 4, shard-name: 4of16 }
+          - { target: cloud, shard-index: 5, shard-name: 5of16 }
+          - { target: cloud, shard-index: 6, shard-name: 6of16 }
+          - { target: cloud, shard-index: 7, shard-name: 7of16 }
+          - { target: cloud, shard-index: 8, shard-name: 8of16 }
+          - { target: cloud, shard-index: 9, shard-name: 9of16 }
+          - { target: cloud, shard-index: 10, shard-name: 10of16 }
+          - { target: cloud, shard-index: 11, shard-name: 11of16 }
+          - { target: cloud, shard-index: 12, shard-name: 12of16 }
+          - { target: cloud, shard-index: 13, shard-name: 13of16 }
+          - { target: cloud, shard-index: 14, shard-name: 14of16 }
+          - { target: cloud, shard-index: 15, shard-name: 15of16 }
+          - { target: cloud, shard-index: 16, shard-name: 16of16 }
+          - { target: selfhost, shard-index: 1, shard-name: 1of10 }
+          - { target: selfhost, shard-index: 2, shard-name: 2of10 }
+          - { target: selfhost, shard-index: 3, shard-name: 3of10 }
+          - { target: selfhost, shard-index: 4, shard-name: 4of10 }
+          - { target: selfhost, shard-index: 5, shard-name: 5of10 }
+          - { target: selfhost, shard-index: 6, shard-name: 6of10 }
+          - { target: selfhost, shard-index: 7, shard-name: 7of10 }
+          - { target: selfhost, shard-index: 8, shard-name: 8of10 }
+          - { target: selfhost, shard-index: 9, shard-name: 9of10 }
+          - { target: selfhost, shard-index: 10, shard-name: 10of10 }
+          # Local files own their server, browser and data directory. Separate
+          # runners preserve that isolation while removing its 69-second serial
+          # lane from the two-minute critical path.
+          - { target: local, shard-index: 1, shard-name: 1of2 }
+          - { target: local, shard-index: 2, shard-name: 2of2 }
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
@@ -235,26 +288,31 @@ jobs:
 
       # Install from e2e so bunx resolves ITS pinned playwright (the version
       # the tests run against) rather than floating to the latest.
+      # Blacksmith's Ubuntu image carries the official GitHub runner system
+      # dependencies. Restore the pinned browser binaries without apt-updating
+      # every matrix machine.
       - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        run: bunx playwright install chromium chromium-headless-shell
         working-directory: e2e
 
-      # The globalsetup boots the target's own dev server (ports are claimed
-      # per checkout, so this is hermetic) and tears it down after the run.
-      # --retry=2: browser scenarios can still hit isolated waitFor timeouts
-      # (single-test waitFor timeouts, not systemic failures); a retry on the
-      # same booted stack clears them.
-      - name: Run cloud scenarios
+      # Each target either boots its own shared dev server or lets each file own
+      # its server. Ports and data paths are hermetic in both cases.
+      # Do not retry scenarios: retries hide flakes and multiply slow timeout
+      # failures. The fixtures and process lifecycle are deterministic enough
+      # that the first result is the result.
+      - name: Run cloud shard
         if: matrix.target == 'cloud'
         env:
           MCP_SESSION_TIMEOUT_MS: "3000"
-          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
-        run: bunx vitest run --project cloud --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+          # Still 18x shorter than production, but long enough for a cold Vite
+          # resume route to compile under a fully loaded CI runner.
+          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "30000"
+        run: bun scripts/run-ci-shard.ts cloud ${{ matrix['shard-index'] }}
         working-directory: e2e
 
-      - name: Run selfhost scenarios
-        if: matrix.target == 'selfhost'
-        run: bunx vitest run --project selfhost --retry=2
+      - name: Run scenarios
+        if: matrix.target != 'cloud'
+        run: bun scripts/run-ci-shard.ts ${{ matrix.target }} ${{ matrix['shard-index'] }}
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in
@@ -267,13 +325,23 @@ jobs:
           path: e2e/runs/
           retention-days: 7
 
-  e2e-local:
-    name: E2E (stdio MCP)
-    # Skipped on pull_request: the local scenario boots a real `executor web`
-    # plus a browser and is currently flaky on PRs. Still runs on push to main.
-    if: github.event_name != 'pull_request'
+  cloud-closure:
+    name: Cloud evaluated closure
+    needs: changes
+    if: needs.changes.outputs.cloud_closure == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
+    env:
+      TURBO_API: ${{ vars.TURBO_API }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+      # Every cold isolate evaluates this closure before it can answer a
+      # request, and it only ever grows by accident - a barrel export or a new
+      # module-scope import quietly pulls megabytes into the server graph. The
+      # budget is a ratchet just above today's size, not a discovered limit:
+      # when it trips, make the new dependency lazy rather than raising it.
+      START_CLOSURE_BUDGET_MB: 13.5
     steps:
       - uses: actions/checkout@v4
 
@@ -289,41 +357,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-1.3.11-
 
-      # The local scenarios boot a real `executor web` (which spawns a Node
-      # sidecar) and some drive a browser, so pin Node 24 and install Chromium.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - run: bun install --frozen-lockfile
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-1.60.0
-          restore-keys: |
-            ${{ runner.os }}-playwright-
+      - run: bun run build
+        working-directory: apps/cloud
 
-      # `chromium` and the new `chromium-headless-shell` ship as separate
-      # downloads; the browser-driven scenarios launch the headless shell.
-      # Install from e2e so bunx resolves ITS pinned playwright (the version the
-      # tests run against) rather than floating to the latest, which would fetch
-      # a browser build the test runtime does not look for.
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium chromium-headless-shell
-        working-directory: e2e
-
-      # The `local` project is excluded from the default `test` chain (each
-      # scenario boots its own `executor web`). Run just the stdio MCP scenario
-      # here: it is the auto-connect / env-as-secret regression guard, and
-      # running it alone avoids the boot-resource accumulation and the
-      # pre-existing browser flakiness of the rest of the local suite. Expanding
-      # to the full `local` project (bun run test:local) is a follow-up once
-      # those are stabilized.
-      - name: Run the stdio MCP scenario
-        run: bunx vitest run --project local local/stdio-mcp.test.ts
-        working-directory: e2e
+      - run: node scripts/start-closure.mjs
+        working-directory: apps/cloud
 
   desktop-smoke:
     name: Desktop smoke build
@@ -375,7 +419,13 @@ jobs:
       - name: Run sidecar outside the workspace
         working-directory: apps/desktop
         run: |
-          docker run --rm -d --name sidecar-smoke -p 45841:45841 -e HOME=/tmp \
+          # Containers do not inherit the job environment. Keep the compiled
+          # product smoke from becoming a production analytics/integrations hit.
+          docker run --rm -d --name sidecar-smoke -p 45841:45841 \
+            -e HOME=/tmp \
+            -e DO_NOT_TRACK=1 \
+            -e EXECUTOR_DISABLE_ANALYTICS=1 \
+            -e EXECUTOR_DISABLE_INTEGRATIONS_FETCH=1 \
             -v "$PWD/resources/executor:/opt/executor:ro" \
             debian:bookworm-slim /opt/executor/executor daemon run --foreground \
             --port 45841 --hostname 0.0.0.0 --auth-token=ci-smoke

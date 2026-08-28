@@ -352,8 +352,20 @@ export function ToolTree(props: {
 
   // Keyboard shortcuts — `/` focuses search, Escape clears
   useEffect(() => {
+    const isEditing = (el: Element | null) =>
+      el instanceof HTMLElement &&
+      (el.isContentEditable ||
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT");
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      if (
+        e.key === "/" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !isEditing(document.activeElement)
+      ) {
         e.preventDefault();
         searchRef.current?.focus();
       }

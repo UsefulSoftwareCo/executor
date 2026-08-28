@@ -38,6 +38,7 @@ const memoryProvider = (): CredentialProvider => {
 };
 
 const INTEG = IntegrationSlug.make("demo");
+const PINNED = IntegrationSlug.make("demo-pinned");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const CONN = ConnectionName.make("main");
 
@@ -93,6 +94,15 @@ const demoPlugin = definePlugin(() => ({
         slug: INTEG,
         description: "Demo",
         config: {},
+      }),
+    /** A catalog row the host pins in place (`canRemove: false`), the shape
+     *  `integrations.remove` has to refuse rather than drop. */
+    seedPinned: () =>
+      ctx.core.integrations.register({
+        slug: PINNED,
+        description: "Demo (pinned)",
+        config: {},
+        canRemove: false,
       }),
     storagePut: (owner: "org" | "user", key: string, value: string) =>
       ctx.storage.put(owner, key, value),
@@ -347,6 +357,66 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("removes catalog integrations through the built-in Executor tools", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.demo.seed();
+      yield* executor.demo.seedPinned();
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: String(CONN),
+          integration: String(INTEG),
+          template: String(TEMPLATE),
+          from: { provider: "memory", id: "secret-token" },
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const remove = ToolAddress.make("executor.coreTools.integrations.remove");
+
+      // Removing the integration cascades to the connections under it.
+      const removed = yield* executor.execute(
+        remove,
+        { slug: String(INTEG) },
+        { onElicitation: "accept-all" },
+      );
+      expect(removed).toEqual({ removed: true });
+      const listed = yield* executor.integrations.list();
+      expect(listed.map((integration) => String(integration.slug))).not.toContain(String(INTEG));
+      expect(yield* executor.connections.list()).toHaveLength(0);
+
+      // An already-absent slug and a built-in namespace both report honestly
+      // instead of claiming a removal that never happened.
+      expect(
+        yield* executor.execute(remove, { slug: String(INTEG) }, { onElicitation: "accept-all" }),
+      ).toEqual({ removed: false });
+      expect(
+        yield* executor.execute(remove, { slug: "executor" }, { onElicitation: "accept-all" }),
+      ).toEqual({ removed: false });
+
+      // A pinned integration is refused, and survives the attempt.
+      const refused = yield* Effect.result(
+        executor.execute(remove, { slug: String(PINNED) }, { onElicitation: "accept-all" }),
+      );
+      expect(Result.isFailure(refused)).toBe(true);
+      if (!Result.isFailure(refused)) return;
+      expect(Predicate.isTagged(refused.failure, "ToolInvocationError")).toBe(true);
+      expect(
+        Predicate.isTagged(
+          (refused.failure as { readonly cause?: unknown }).cause,
+          "IntegrationRemovalNotAllowedError",
+        ),
+      ).toBe(true);
+      const afterRefusal = yield* executor.integrations.list();
+      expect(afterRefusal.map((integration) => String(integration.slug))).toContain(String(PINNED));
+    }),
+  );
+
   it.effect("surfaces failed tool sync diagnostics through connection tools", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
@@ -368,7 +438,7 @@ describe("createExecutor", () => {
 
       const listed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.list"),
-        { integration: "diagnostics" },
+        { integration: "diagnostics", verbose: true },
       );
       expect(listed).toMatchObject({
         connections: [
@@ -600,6 +670,63 @@ describe("createExecutor", () => {
           String(suggestion).startsWith(`tools.${INTEG}.org.${CONN}.`),
         ),
       ).toBe(true);
+    }),
+  );
+});
+
+describe("muscle memory (observed output shapes)", () => {
+  const provisioned = Effect.fn(function* () {
+    const executor = yield* makeTestExecutor({
+      plugins: [demoPlugin] as const,
+      coreTools: { webBaseUrl: "http://localhost:3000" },
+    });
+    yield* executor.demo.seed();
+    yield* executor.execute(ToolAddress.make("executor.coreTools.connections.create"), {
+      owner: "org",
+      name: String(CONN),
+      integration: String(INTEG),
+      template: String(TEMPLATE),
+      identityLabel: "Demo",
+      from: { provider: "memory", id: "secret-token" },
+    });
+    return executor;
+  });
+
+  it.effect("serves an observed output shape once a schemaless tool has run", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // Cold: `run` declares no output schema, nothing observed yet.
+      const cold = yield* executor.tools.schema(addr("run"));
+      expect(cold?.outputSchema).toBeUndefined();
+      expect(cold?.outputTypeScript).toBeUndefined();
+
+      yield* executor.execute(addr("run"), {});
+
+      // Warm: the live payload `{ ran: "run" }` becomes the served shape,
+      // with provenance marked on the schema.
+      const warm = yield* executor.tools.schema(addr("run"));
+      expect(warm?.outputSchema).toMatchObject({
+        type: "object",
+        properties: { ran: { type: "string" } },
+        required: ["ran"],
+        description: "Observed from 1 live response; fields may be incomplete.",
+      });
+      expect(warm?.outputTypeScript).toContain("ran");
+      expect(warm?.outputTypeScript).not.toBe("unknown");
+    }),
+  );
+
+  it.effect("never overrides a declared output schema with observations", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // `inspect` declares `outputSchema: { $ref: "#/$defs/Owner" }`; running
+      // it observes `{ ran: "inspect" }`, which must not displace the
+      // declared schema.
+      yield* executor.execute(addr("inspect"), { pet: { lives: 9 } });
+      const schema = yield* executor.tools.schema(addr("inspect"));
+      expect(schema?.outputSchema).toEqual({ $ref: "#/$defs/Owner" });
     }),
   );
 });

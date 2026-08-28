@@ -9,6 +9,16 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
+# CI is not a user — see the note in ci.yml. Applied to every workflow rather
+# than the ones that look like they run product code: the first pass guessed,
+# missed preview/deploy/pkg-pr-new, and kept leaking. These vars are inert
+# where the product is not executed, so the blanket application is the cheap
+# structural answer.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   migrate:
     name: Migrate database
@@ -77,11 +87,29 @@ jobs:
           VITE_PUBLIC_SENTRY_DSN: ${{ secrets.VITE_PUBLIC_SENTRY_DSN }}
 
       - name: Deploy cloud
-        run: bun run wrangler deploy -c dist/server/wrangler.json
+        run: bun run wrangler deploy -c dist/server/wrangler.json --var GIT_COMMIT_SHA:${{ github.sha }}
         working-directory: apps/cloud
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Deploy marker: one event per deploy into the same Axiom dataset the
+      # worker traces land in, so a latency step-change lines up with its
+      # deploy in one query. Skipped (not failed) when the secret is absent,
+      # and never blocks the deploy.
+      - name: Record deploy marker in Axiom
+        env:
+          AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+        run: |
+          if [ -z "$AXIOM_INGEST_TOKEN" ]; then
+            echo "AXIOM_INGEST_TOKEN not configured; skipping deploy marker"
+            exit 0
+          fi
+          curl -sf -X POST "https://api.axiom.co/v1/datasets/executor-cloud/ingest" \
+            -H "Authorization: Bearer $AXIOM_INGEST_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "[{\"event\":\"deploy\",\"service\":\"executor-cloud\",\"commit_sha\":\"${{ github.sha }}\",\"actor\":\"${{ github.actor }}\",\"run_id\":\"${{ github.run_id }}\"}]" \
+            || echo "deploy marker ingest failed (non-blocking)"
 
   deploy-marketing:
     name: Deploy marketing

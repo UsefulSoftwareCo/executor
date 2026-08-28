@@ -68,7 +68,7 @@ export const withLocalServer = (
     yield* Effect.all(
       [
         cli.session(
-          ["bun", "run", "dev:cli", "web", "--foreground", "--port", "0"],
+          ["bun", "run", "apps/cli/src/main.ts", "web", "--foreground", "--port", "0"],
           async (term) => {
             markRecordingStart(runDir, "terminal");
             markFocus(runDir, "terminal");
@@ -107,10 +107,16 @@ export const withLocalServer = (
             // otherwise the orphaned child wedges the terminal teardown.
             markFocus(runDir, "terminal");
             await term.keyboard.press("Control+C");
+            await term.waitForExit({ timeoutMs: 15_000 });
           },
           {
             cwd: repoRoot,
-            env: { EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: dataDir, ...options?.env },
+            env: {
+              EXECUTOR_DEV: "1",
+              EXECUTOR_DATA_DIR: dataDir,
+              EXECUTOR_SCOPE_DIR: dataDir,
+              ...options?.env,
+            },
             record: join(runDir, options?.castName ?? "terminal.cast"),
             viewport: { cols: 120, rows: 40 },
           },

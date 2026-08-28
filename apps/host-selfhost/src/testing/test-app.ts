@@ -5,8 +5,10 @@ import {
   composePluginApi,
   ExecutorApp,
   IdentityProvider,
+  isPlatformPrincipal,
   PluginsProvider,
   type Principal,
+  type ResolvedPrincipal,
   textFailureStrategy,
   Unauthorized,
 } from "@executor-js/api/server";
@@ -79,6 +81,7 @@ export const singleAdminIdentityLayer = (
     IdentityProvider.of({
       authenticate: () =>
         Effect.succeed<Principal>({
+          kind: "member",
           accountId: options.userId,
           organizationId: options.organizationId,
           organizationName: options.organizationName,
@@ -98,10 +101,24 @@ export const headerIdentityLayer: Layer.Layer<IdentityProvider> = Layer.succeed(
   IdentityProvider,
   IdentityProvider.of({
     authenticate: (request) => {
+      // `x-test-platform-org` resolves the org-level PLATFORM credential — the
+      // neutral shape cloud's org-scoped API key produces — so the shared
+      // middleware's platform branch is testable against this harness even
+      // though self-host's real identity never mints one.
+      const platformOrg = request.headers.get("x-test-platform-org");
+      if (platformOrg) {
+        return Effect.succeed<ResolvedPrincipal>({
+          kind: "platform",
+          organizationId: platformOrg,
+          organizationName: `Org ${platformOrg}`,
+          keyId: "test_platform_key",
+        });
+      }
       const userId = request.headers.get("x-test-user");
       const organizationId = request.headers.get("x-test-org");
       if (!userId || !organizationId) return Effect.fail(new Unauthorized());
       return Effect.succeed<Principal>({
+        kind: "member",
         accountId: userId,
         organizationId,
         organizationName: `Org ${organizationId}`,
@@ -143,12 +160,17 @@ const stubMcpAuth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = Layer
       resourceMetadataUrl: resourceMetadataUrlFor,
       authenticate: (request: Request): Effect.Effect<AuthOutcome> =>
         fallback.authenticate(request).pipe(
+          // The test identity never resolves a platform credential; narrow it
+          // away (as the production selfHostMcpAuth does) rather than asserting.
           Effect.map((principal) =>
-            principal ? authenticated(principal) : unauthorized(challengeFor(request)),
+            principal && !isPlatformPrincipal(principal)
+              ? authenticated(principal)
+              : unauthorized(challengeFor(request)),
           ),
           Effect.catchTags({
             Unauthorized: () => Effect.succeed(unauthorized(challengeFor(request))),
             NoOrganization: () => Effect.succeed(unauthorized(challengeFor(request))),
+            ReadOnlyCredential: () => Effect.succeed(unauthorized(challengeFor(request))),
           }),
         ),
     };

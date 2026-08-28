@@ -32,6 +32,7 @@ import { SpecOverridesSchema, type SpecOverrides } from "./spec-overrides";
 const OAuthAuthenticationSchema = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  label: Schema.optional(Schema.String),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),

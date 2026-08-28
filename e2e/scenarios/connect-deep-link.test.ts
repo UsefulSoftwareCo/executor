@@ -30,6 +30,7 @@ import {
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -95,7 +96,7 @@ scenario(
 
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the connect deep link for the seeded integration", async () => {
-            await page.goto(`/connect/${slug}`, { waitUntil: "networkidle" });
+            await visit(page, `/connect/${slug}`);
             // It forwards into the integration's OWN detail route rather than
             // rendering a parallel connect UI, carrying the add-account handoff.
             await page.waitForURL((url) => url.pathname === detailPath, { timeout: 30_000 });
@@ -115,7 +116,7 @@ scenario(
           });
 
           await step("An unknown slug is a clear not-found, not a blank page", async () => {
-            await page.goto("/connect/zz-no-such-integration", { waitUntil: "networkidle" });
+            await visit(page, "/connect/zz-no-such-integration");
             await page
               .getByText("Unknown integration: zz-no-such-integration")
               .waitFor({ timeout: 30_000 });
@@ -139,7 +140,7 @@ scenario(
 
         yield* browser.session(identity, async ({ page, step }) => {
           await step("The deep link surfaces the existing connection", async () => {
-            await page.goto(`/connect/${slug}`, { waitUntil: "networkidle" });
+            await visit(page, `/connect/${slug}`);
             await page.waitForURL((url) => url.pathname === detailPath, { timeout: 30_000 });
             // The connect flow still opens (this link means "connect me"), and
             // the already-saved account is visible behind it.

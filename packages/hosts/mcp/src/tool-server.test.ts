@@ -274,6 +274,44 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("execute tool keeps the returned value in content when output was also emitted", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: { subject: "Flight receipt", total: 42 },
+          output: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Flight receipt",
+              },
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(subject); return receipt;" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content).toHaveLength(2);
+      expect(content[0]).toMatchObject({ type: "text", text: "Flight receipt" });
+      expect(content[1]).toMatchObject({
+        type: "text",
+        text: JSON.stringify({ subject: "Flight receipt", total: 42 }, null, 2),
+      });
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: { subject: "Flight receipt", total: 42 },
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
   it("execute tool renders emitted MCP image content as MCP images", async () => {
     const engine = makeStubEngine({
       execute: () =>
@@ -415,6 +453,10 @@ describe("MCP host server — native elicitation mode", () => {
           uri: "executor-file:///remote.pdf",
           name: "remote.pdf",
           mimeType: "application/pdf",
+        },
+        {
+          type: "text",
+          text: JSON.stringify({ forwarded: true }, null, 2),
         },
       ]);
       expect(result.structuredContent).toMatchObject({
@@ -1602,7 +1644,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
 // ---------------------------------------------------------------------------
 
 describe("MCP host server — elicitation error handling", () => {
-  it("elicitInput failure falls back to cancel", async () => {
+  it("elicitInput failure is not reported as user cancellation", async () => {
     const engine = makeElicitingEngine(
       FormElicitation.make({
         message: "will fail",
@@ -1624,7 +1666,15 @@ describe("MCP host server — elicitation error handling", () => {
         name: "execute",
         arguments: { code: "fail" },
       });
-      expect(result.content).toEqual([{ type: "text", text: "fallback:cancel" }]);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(
+        /^Error: Native elicitation transport failed \[[0-9a-f]{8}\]\. Reconnect the MCP client and try again\.$/,
+      );
+      expect(result.structuredContent).toMatchObject({
+        status: "error",
+        errorCode: "native_elicitation_transport_failed",
+      });
+      expect(textOf(result)).not.toContain("fallback:cancel");
     });
   });
 });
@@ -1757,6 +1807,19 @@ describe("MCP host server — skills tool", () => {
     });
   });
 
+  // pi and other hosts that ship no skill tool of their own read
+  // `executor_skills` as the general skill reader they are missing, so the
+  // description has to scope itself to this server before a model tries to
+  // read a SKILL.md through it.
+  it("scopes the skills tool description to this server's own docs", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === "skills")?.description ?? "";
+      expect(description).toContain("Not a general skill reader");
+      expect(description).toContain("SKILL.md");
+    });
+  });
+
   it("returns the execute skill body by name", async () => {
     await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
       const result = await client.callTool({
@@ -1816,6 +1879,9 @@ describe("MCP host server — skills tool", () => {
       });
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('No skill named "nope"');
+      // The miss is where a model that asked for an outside skill lands, so the
+      // note names the boundary instead of only reporting the bad name.
+      expect(textOf(result)).toContain("only Executor's own docs");
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
     });

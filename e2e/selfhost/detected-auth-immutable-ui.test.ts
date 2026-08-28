@@ -16,6 +16,7 @@ import { OAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const REMOVE_HINT = "Pulled from spec. Remove to override.";
 
@@ -36,9 +37,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the add-MCP flow pointed at the OAuth server", async () => {
-          await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           await page.getByText("How does this server authenticate?").waitFor();
           await page.getByText("Method 1 · Detected").waitFor();
         });
@@ -145,7 +144,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Analyze a spec that declares both API key and OAuth", async () => {
-          await page.goto(`/integrations/add/openapi`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/add/openapi`);
           await page
             .getByPlaceholder(/openapi\.json/i)
             .first()

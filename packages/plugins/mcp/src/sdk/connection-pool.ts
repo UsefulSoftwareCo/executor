@@ -3,6 +3,10 @@ import { Cause, Effect, Exit, Predicate } from "effect";
 import type { McpConnection, McpConnector } from "./connection";
 import type { McpInvocationError } from "./errors";
 
+// The pool preserves sessions for sessionful legacy servers. Stateless
+// 2026-07-28 servers do not need it, but retaining a cheap idle client is
+// harmless and keeps one lifecycle for both protocol eras.
+
 const IDLE_TTL_MS = 5 * 60 * 1_000;
 
 type IdleConnection = {

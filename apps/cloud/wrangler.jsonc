@@ -21,6 +21,12 @@
   "observability": {
     "enabled": true,
   },
+  // Script-level logpush feeds the account's workers_trace_events Logpush job
+  // (invocation logs, outcomes like exceededMemory, console output) into
+  // Axiom. Pinned here because the setting lives on the script: a deploy that
+  // omits it can reset it to false, which is how the export silently died in
+  // the July deploy-tooling migration.
+  "logpush": true,
   "durable_objects": {
     "bindings": [
       {
@@ -88,6 +94,11 @@
       "bucket_name": "executor-cloud-blobs",
     },
   ],
+  // Pins the Worker to the Hyperdrive/Postgres region. Added in #420 to fix
+  // MCP Hyperdrive connection pressure; dropped in #1693 as a placement
+  // experiment, which took `user_store.*` from ~12ms to ~300ms because every
+  // query started crossing regions. Restored to measure that against the
+  // JWKS verify time the experiment also moved.
   "placement": {
     "region": "aws:us-east-1",
   },
@@ -96,8 +107,22 @@
       "binding": "LOADER",
     },
   ],
+  // Stamps spans (`service.version`) and mem-metrics snapshots with the
+  // running Worker version id, so an Axiom step-change maps to the exact
+  // deploy without Cloudflare API archaeology. memory-metrics.ts already
+  // reads this binding; it was never declared before, so it always fell back.
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA",
+  },
   "vars": {
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
+    // Keeps the /__sentry-otel-verify probe live in production: Sentry
+    // delivery failed silently for weeks (zero events after ~Jul 30 with an
+    // active DSN), and without this there is no way to test the pipeline
+    // end-to-end short of waiting for a real error. The endpoint only fires
+    // when its exact path is requested and the events are explicitly tagged
+    // synthetic.
+    "SENTRY_OTEL_VERIFY": "true",
     "VITE_PUBLIC_POSTHOG_KEY": "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL",
     // Browser OTLP spans → same-origin, forwarded to Axiom by the worker
     // (src/observability/browser-traces.ts). Relative on purpose: the

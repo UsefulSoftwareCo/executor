@@ -22,6 +22,7 @@ import { Effect } from "effect";
 import { scenario } from "../src/scenario";
 import { enterFocus, markRecordingStart } from "../src/timeline";
 import { Browser, Cli, Mcp, OpenCode, RunDir, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const SERVER_NAME = "executor";
 
@@ -119,7 +120,7 @@ scenario(
           await step("OpenCode asks to connect — the approval screen", async () => {
             // Authenticated (owner cookies) → authorize forces prompt=consent →
             // the approval screen.
-            await page.goto(authorizeUrl, { waitUntil: "networkidle" });
+            await visit(page, authorizeUrl);
             await page.locator("#mcp-consent-allow").waitFor({ timeout: 30_000 });
             expect(new URL(page.url()).pathname, "lands on the approval screen").toBe(
               "/mcp-consent",

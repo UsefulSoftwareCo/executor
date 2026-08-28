@@ -32,11 +32,9 @@ import { Api, Target } from "../src/services";
 const coreApi = composePluginApi([] as const);
 
 /**
- * How long the scenario waits before approving.
- *
- * Long enough to be a real human pause rather than a same-tick round trip, and
- * well past the 4-minute paused-execution lease the MCP plane advertises being
- * irrelevant here. Kept modest so the scenario stays inside the default timeout.
+ * Long enough to cover the observed human pause while staying well inside the
+ * 15-minute approval lease. The shard planner keeps this file isolated so the
+ * real elapsed-time assertion overlaps the rest of CI instead of blocking it.
  */
 const APPROVAL_DELAY_MS = 65_000;
 
@@ -71,7 +69,7 @@ const pausedExecutionId = (structured: unknown): string | undefined =>
   (structured as { readonly executionId?: string } | null)?.executionId;
 
 scenario(
-  "Artifacts · a destructive action approved from an artifact runs, even minutes later",
+  "Artifacts · a destructive action approved from an artifact runs after a human-scale delay",
   { timeout: 240_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -130,8 +128,9 @@ scenario(
         "the action does not run while it is waiting on approval",
       ).toBe(false);
 
-      // The human reads the request and decides. This is the wait that makes the
-      // approval window a real promise rather than a same-request formality.
+      // Exercise the real API and persistence path across an actual delay. A
+      // private fake clock cannot prove that request-scoped engines and durable
+      // storage still agree after the originating request has been gone.
       yield* Effect.sleep(APPROVAL_DELAY_MS);
 
       const approved = yield* client.executions.resume({
