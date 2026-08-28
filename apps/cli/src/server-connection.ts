@@ -52,6 +52,55 @@ export const canAutoStartCliServerConnection = (connection: ExecutorServerConnec
   return url.protocol === "http:" && canAutoStartLocalDaemonForHost(url.hostname);
 };
 
+export const profileNameFromConnectionKey = (key: string): string | null =>
+  key.startsWith("profile:") ? key.slice("profile:".length) : null;
+
+// A 401 from the server means the stored credential is stale, revoked, or
+// missing: a sign-in problem, not a transport problem. Rendered instead of
+// the raw HTTP client error so the user learns the recovery command, not the
+// failing endpoint.
+//
+// The hint mirrors how the user addressed the server. The common case types
+// no flags (the default profile, normally executor.sh), and login re-targets
+// that same default, so the fix is plain `executor login`: profile names are
+// plumbing and stay invisible. Only an explicit --server / --base-url comes
+// back in the hint.
+export const describeUnauthorizedCliServer = (input: {
+  readonly connection: ExecutorServerConnection;
+  readonly cliPrefix: string;
+  readonly target: { readonly baseUrl?: string; readonly serverName?: string };
+}): string => {
+  const { connection, cliPrefix, target } = input;
+  const loginCommand = target.serverName
+    ? `${cliPrefix} login --server ${target.serverName}`
+    : target.baseUrl
+      ? `${cliPrefix} login --base-url ${connection.origin}`
+      : `${cliPrefix} login`;
+
+  if (!connection.auth) {
+    return [
+      `${connection.origin} requires authentication, and no credentials are stored for it.`,
+      `Run \`${loginCommand}\` to sign in.`,
+    ].join("\n");
+  }
+
+  if (connection.auth.kind === "oauth") {
+    return [
+      `You're signed out of ${connection.origin}.`,
+      `Run \`${loginCommand}\` to sign in again.`,
+    ].join("\n");
+  }
+
+  const envHint =
+    connection.auth.kind === "bearer" && !profileNameFromConnectionKey(connection.key)
+      ? " If the key came from EXECUTOR_API_KEY or EXECUTOR_AUTH_TOKEN, check that value."
+      : "";
+  return [
+    `${connection.origin} rejected the stored ${connection.auth.kind} credentials (401).${envHint}`,
+    `Run \`${loginCommand}\` to sign in again.`,
+  ].join("\n");
+};
+
 export type CliServerConnectionSource =
   | "explicit"
   | "default-profile"

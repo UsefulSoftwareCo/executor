@@ -76,7 +76,7 @@ describe("startServer static/SPA routing (unauthenticated)", () => {
     const baseUrl = await startTestServer();
     // No Authorization header — the shell must still load so the browser can
     // read its `?_token` and authenticate subsequent /api calls.
-    const response = await fetch(`${baseUrl}/sources/add`);
+    const response = await fetch(`${baseUrl}/integrations/add`);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");

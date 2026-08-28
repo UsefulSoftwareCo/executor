@@ -11,8 +11,10 @@ type FakeWebSocket = EventTarget & {
   accepted: boolean;
   closeCode: number | undefined;
   closeReason: string | undefined;
+  sent: string[];
   accept: () => void;
   close: (code?: number, reason?: string) => void;
+  send: (message: string) => void;
 };
 
 type FakeAgentStub = {
@@ -41,7 +43,17 @@ const RotationLogEvent = Schema.Struct({
     Schema.Literal("legacy-sse"),
   ]),
 });
+const DeliveryAck = Schema.Struct({
+  streamId: Schema.String,
+  type: Schema.Literal("cf_mcp_delivery_ack"),
+});
 const decodeRotationLogEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RotationLogEvent));
+const decodeDeliveryAck = Schema.decodeUnknownOption(Schema.fromJsonString(DeliveryAck));
+const deliveryAcks = (sent: ReadonlyArray<string>): ReadonlyArray<string> =>
+  sent.flatMap((line) => {
+    const decoded = decodeDeliveryAck(line);
+    return Option.isSome(decoded) ? [decoded.value.streamId] : [];
+  });
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -120,6 +132,71 @@ const installStallingTransformStream = () => {
   };
 };
 
+const installRejectingTransformStream = () => {
+  let abortReason: unknown;
+  let writeCount = 0;
+  const writer = {
+    abort: (reason: unknown) => {
+      abortReason = reason;
+      return Promise.resolve();
+    },
+    close: () => Promise.resolve(),
+    write: () => {
+      writeCount += 1;
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: fake writer models WHATWG stream write rejection in a unit test.
+      return Promise.reject(new Error("client disconnected"));
+    },
+  };
+
+  vi.stubGlobal(
+    "TransformStream",
+    class {
+      readonly readable = new ReadableStream<Uint8Array>();
+      readonly writable = {
+        getWriter: () => writer,
+      };
+    },
+  );
+
+  return {
+    abortReason: () => abortReason,
+    writeCount: () => writeCount,
+  };
+};
+
+const installClosedRejectingTransformStream = () => {
+  let abortReason: unknown;
+  let rejectClosed: ((error: Error) => void) | undefined;
+  const closed = new Promise<never>((_, reject) => {
+    rejectClosed = reject;
+  });
+  const writer = {
+    abort: (reason: unknown) => {
+      abortReason = reason;
+      return Promise.resolve();
+    },
+    close: () => Promise.resolve(),
+    closed,
+    write: () => Promise.resolve(),
+  };
+
+  vi.stubGlobal(
+    "TransformStream",
+    class {
+      readonly readable = new ReadableStream<Uint8Array>();
+      readonly writable = {
+        getWriter: () => writer,
+      };
+    },
+  );
+
+  return {
+    abortReason: () => abortReason,
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: fake writer models WHATWG writer.closed rejection in a unit test.
+    rejectClosed: () => rejectClosed?.(new Error("client canceled response body")),
+  };
+};
+
 const makeExecutionContext = (): ExecutionContext => ({
   passThroughOnException: () => {},
   props: undefined,
@@ -131,12 +208,16 @@ const makeWebSocket = (): FakeWebSocket => {
   ws.accepted = false;
   ws.closeCode = undefined;
   ws.closeReason = undefined;
+  ws.sent = [];
   ws.accept = () => {
     ws.accepted = true;
   };
   ws.close = (code?: number, reason?: string) => {
     ws.closeCode = code;
     ws.closeReason = reason;
+  };
+  ws.send = (message: string) => {
+    ws.sent.push(message);
   };
   return ws;
 };
@@ -221,13 +302,19 @@ const openPostSse = async () => {
   return { response, ws };
 };
 
-const emitAgentEvent = (ws: FakeWebSocket, event: string, close?: true): void => {
+const emitAgentEvent = (
+  ws: FakeWebSocket,
+  event: string,
+  close?: true,
+  extra?: Record<string, unknown>,
+): void => {
   ws.dispatchEvent(
     new MessageEvent("message", {
       data: JSON.stringify({
         close,
         event,
         type: "cf_mcp_agent_event",
+        ...extra,
       }),
     }),
   );
@@ -309,8 +396,124 @@ describe("agents SSE max-age rotation", () => {
     );
     await drained;
 
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("never acknowledges a POST response delivery, even after a clean drain", async () => {
+    // workerd resolves writer.close() even when the client canceled the POST
+    // response body, so a clean close is not proof of delivery. The bridge must
+    // NOT send cf_mcp_delivery_ack for POST streams: the DO keeps the response
+    // persisted and the client's reconnect GET replays and acks it instead.
+    const { response, ws } = await openPostSse();
+    const drained = drainResponse(response);
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await drained;
+
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("treats an SSE writer rejection as terminal and does not acknowledge delivery", async () => {
+    const transform = installRejectingTransformStream();
+    const { ws } = await openPostSse();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await waitFor(() => ws.closeCode === 1013);
+
+    expect(transform.writeCount()).toBe(1);
+    expect(transform.abortReason()).toBeInstanceOf(Error);
+    expect(ws.closeReason).toBe("SSE client not draining");
+    expect(ws.sent).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not acknowledge a final POST response after the response body was canceled", async () => {
+    const transform = installClosedRejectingTransformStream();
+    const { ws } = await openPostSse();
+
+    transform.rejectClosed();
+    await flushMicrotasks();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: post-stream:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+      true,
+      {
+        eventId: "post-stream:0000000000000001",
+        streamId: "post-stream",
+      },
+    );
+    await flushMicrotasks();
+
+    expect(transform.abortReason()).toBeInstanceOf(Error);
     expect(ws.closeCode).toBeUndefined();
-    expect(ws.closeReason).toBeUndefined();
+    expect(ws.sent).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("acks each replayed stream only after the recovery GET drained and closed", async () => {
+    // The replay path never clears storage on enqueue: the transport sends a
+    // replay-complete close frame and the bridge echoes one delivery ack per
+    // replayed stream only once writer.close() resolved with the client still
+    // attached. McpAgent.onMessage clears storage on those acks.
+    const { response, ws } = await openSse();
+    const drained = drainResponse(response);
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: stream-a:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+    );
+    emitAgentEvent(ws, ": replay-complete\n\n", true, {
+      ackStreamIds: ["stream-a", "stream-b"],
+    });
+    await drained;
+
+    expect(ws.closeCode).toBe(1000);
+    expect(ws.closeReason).toBe("SSE response delivered");
+    expect(deliveryAcks(ws.sent), "one ack per replayed stream").toEqual(["stream-a", "stream-b"]);
+  });
+
+  it("does not ack replayed streams when the recovery GET body was canceled", async () => {
+    // A recovery GET can itself be a dead pipe (workerd surfaces nothing at
+    // write time). The bridge must not ack in that case, so the responses stay
+    // persisted and replayable for the next reconnect.
+    const transform = installClosedRejectingTransformStream();
+    const { ws } = await openSse();
+
+    transform.rejectClosed();
+    await flushMicrotasks();
+
+    emitAgentEvent(
+      ws,
+      `event: message\nid: stream-a:0000000000000001\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n`,
+    );
+    emitAgentEvent(ws, ": replay-complete\n\n", true, {
+      ackStreamIds: ["stream-a"],
+    });
+    await flushMicrotasks();
+
+    expect(transform.abortReason()).toBeInstanceOf(Error);
+    expect(deliveryAcks(ws.sent), "no acks for a dead recovery GET").toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -13,7 +13,9 @@ export const LoginPage = ({ returnTo }: { returnTo?: string | undefined }) => {
       <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-6">
         <div className="flex flex-col items-center gap-2">
           <h1 className="font-mono text-4xl">Executor</h1>
-          <p className="text-sm text-muted-foreground">Sign in to manage your tools and sources</p>
+          <p className="text-sm text-muted-foreground">
+            Sign in to manage your tools and integrations
+          </p>
         </div>
         <a
           href={loginHref}

@@ -49,8 +49,8 @@ describe("buildUserAgent", () => {
     expect(buildUserAgent({ channel: "stable", version: "1.2.3", client: "cli" })).toBe(
       "executor/stable/1.2.3/cli",
     );
-    expect(buildUserAgent({ channel: "beta", version: "1.2.3-beta.0", client: "local" })).toBe(
-      "executor/beta/1.2.3-beta.0/local",
+    expect(buildUserAgent({ channel: "beta", version: "1.2.3-beta.0", client: "desktop" })).toBe(
+      "executor/beta/1.2.3-beta.0/desktop",
     );
   });
 
@@ -131,6 +131,10 @@ describe("IntegrationsRegistry", () => {
           Effect.provide(
             integrationsRegistryLayer({
               userAgent: TEST_USER_AGENT,
+              // Pinned: this case asserts the fetch happens, so it must not
+              // inherit an ambient DO_NOT_TRACK / EXECUTOR_DISABLE_INTEGRATIONS_FETCH
+              // (CI sets both). Mirrors the analytics package's test config.
+              disabled: false,
               cacheDir,
               url: "https://integrations.test/api.json",
             }).pipe(Layer.provide(httpLayer), Layer.provide(NodeFileSystem.layer)),
@@ -164,6 +168,10 @@ describe("IntegrationsRegistry", () => {
           Effect.provide(
             integrationsRegistryLayer({
               userAgent: TEST_USER_AGENT,
+              // Pinned: this case asserts the fetch happens, so it must not
+              // inherit an ambient DO_NOT_TRACK / EXECUTOR_DISABLE_INTEGRATIONS_FETCH
+              // (CI sets both). Mirrors the analytics package's test config.
+              disabled: false,
               cacheDir,
               url: "https://integrations.test/api.json",
             }).pipe(Layer.provide(httpLayer), Layer.provide(NodeFileSystem.layer)),

@@ -35,7 +35,7 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 import {
   addOpenApiTestConnection,
-  makeOpenApiHttpApiTestSourceConfig,
+  makeOpenApiHttpApiTestIntegrationConfig,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
@@ -118,7 +118,7 @@ const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(FailureApi, { slug: "f", baseUrl }),
+      makeOpenApiHttpApiTestIntegrationConfig(FailureApi, { slug: "f", baseUrl }),
     );
     yield* executor.connections.create({
       owner: "org",
@@ -215,6 +215,155 @@ describe("OpenAPI upstream failure modes", () => {
             },
           },
         },
+      });
+    }),
+  );
+
+  // A 403 that names a scope shortfall is unfixable by re-running the same
+  // grant: it must NOT be connection_rejected (whose recovery tells the agent
+  // to oauth.start the identical grant and loop on the identical 403).
+  it.effect(
+    "scope-insufficient 403 (Google ErrorInfo) is classified as oauth_scope_insufficient",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* startScriptedServer(() => ({
+          status: 403,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: {
+              code: 403,
+              message: "Request had insufficient authentication scopes.",
+              status: "PERMISSION_DENIED",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+                  domain: "googleapis.com",
+                  metadata: { service: "drive.googleapis.com" },
+                },
+              ],
+            },
+          }),
+        }));
+        const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+        const result = yield* executor.execute(address, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_scope_insufficient",
+            status: 403,
+            message: expect.stringContaining("does not cover the scope"),
+            details: {
+              category: "authentication",
+              upstream: { status: 403 },
+            },
+          },
+        });
+        const recovery = (
+          result as {
+            error: { details: { recovery: Record<string, string> } };
+          }
+        ).error.details.recovery;
+        expect(
+          recovery.startOAuthTool,
+          "no oauth.start hint: re-running the identical grant cannot satisfy the scope",
+        ).toBeUndefined();
+        expect(recovery.scopeInstructions).toBeDefined();
+      }),
+  );
+
+  it.effect(
+    "scope-insufficient 403 (RFC 6750 WWW-Authenticate challenge) is classified as oauth_scope_insufficient",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* startScriptedServer(() => ({
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate":
+              'Bearer realm="api", error="insufficient_scope", scope="files.read"',
+          },
+          body: '{"message":"forbidden"}',
+        }));
+        const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+        const result = yield* executor.execute(address, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_scope_insufficient",
+            status: 403,
+            // The challenge names the missing scope; the message carries it so
+            // the agent can tell the user exactly what to grant.
+            message: expect.stringContaining("files.read"),
+          },
+        });
+      }),
+  );
+
+  it.effect("scope-insufficient 403 names the operation's declared scopes from the binding", () =>
+    Effect.gen(function* () {
+      // The upstream signals only the CLASS of failure (Google's ErrorInfo
+      // carries no scope name); the operation's own `security` declaration —
+      // extracted into the stored binding — fills in what the operation
+      // needs, so the agent can tell the user exactly what to grant.
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}',
+      }));
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      // Declare the operation's scope in the spec blob before registering it,
+      // so the extracted binding carries requiredScopes.
+      const SpecJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+      const parsed = yield* Schema.decodeUnknownEffect(SpecJson)(server.specJson);
+      const paths = parsed.paths as Record<string, Record<string, Record<string, unknown>>>;
+      paths["/things"]!.get!.security = [{ oauth: ["things.read"] }];
+      yield* executor.openapi.addSpec({
+        spec: { kind: "blob", value: yield* Schema.encodeEffect(SpecJson)(parsed) },
+        slug: "f",
+        baseUrl: server.baseUrl,
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("f"),
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "token",
+      });
+
+      const result = yield* executor.execute(
+        ToolAddress.make(`tools.f.org.main.${LIST_THINGS}`),
+        {},
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "oauth_scope_insufficient",
+          message: expect.stringContaining("things.read"),
+        },
+      });
+    }),
+  );
+
+  it.effect("ordinary 403 without a scope signal stays connection_rejected", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"status":"PERMISSION_DENIED","message":"Caller lacks permission"}}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "connection_rejected", status: 403 },
       });
     }),
   );

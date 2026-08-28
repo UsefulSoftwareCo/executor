@@ -22,6 +22,7 @@ import {
   type Owner,
 } from "./ids";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
+import { HealthCheckResult } from "./health-check";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
 import { ToolResult } from "./tool-result";
@@ -51,6 +52,8 @@ const IntegrationsListOutput = Schema.Struct({
   integrations: Schema.Array(IntegrationOutput),
 });
 
+const IntegrationRemoveInput = Schema.Struct({ slug: Schema.String });
+
 const DetectInput = Schema.Struct({ url: Schema.String });
 const DetectOutput = Schema.Struct({
   results: Schema.Array(
@@ -77,6 +80,7 @@ const ConnectionOutput = Schema.Struct({
   oauthClient: Schema.NullOr(Schema.String),
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScope: Schema.NullOr(Schema.String),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
 const ConnectionsListInput = Schema.Struct({
@@ -85,10 +89,10 @@ const ConnectionsListInput = Schema.Struct({
   verbose: Schema.optional(Schema.Boolean),
 });
 
-/** Lean per-connection shape for list scans. Omits the full `oauthScope`
- *  grant string (a single connection's scope list can run to thousands of
- *  characters and dominates the payload) in favor of `oauthScopeCount`. The
- *  full scope is included only when the caller passes `verbose: true`. */
+/** Lean per-connection shape for list scans. The default projection summarizes
+ *  the full `oauthScope` grant string as `oauthScopeCount` and trims health
+ *  probe diagnostics. Those optional fields are populated only for `verbose:
+ *  true`. */
 const ConnectionListItem = Schema.Struct({
   owner: OwnerSchema,
   name: Schema.String,
@@ -103,6 +107,7 @@ const ConnectionListItem = Schema.Struct({
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScopeCount: Schema.NullOr(Schema.Number),
   oauthScope: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 const ConnectionsListOutput = Schema.Struct({
   connections: Schema.Array(ConnectionListItem),
@@ -172,6 +177,7 @@ const ToolOutput = Schema.Struct({
 });
 const ConnectionsRefreshOutput = Schema.Struct({
   tools: Schema.Array(ToolOutput),
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
 const RemovedOutput = Schema.Struct({ removed: Schema.Boolean });
@@ -310,7 +316,6 @@ const OAuthStartInput = Schema.Struct({
   template: Schema.String,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
-  reconnect: Schema.optional(Schema.Boolean),
 });
 const OAuthStartOutput = Schema.Union([
   Schema.Struct({
@@ -329,6 +334,7 @@ const OAuthCancelInput = Schema.Struct({
 
 // Standard-schema versions for the tool() builder.
 const IntegrationsListOutputStd = schemaToStandard(IntegrationsListOutput);
+const IntegrationRemoveInputStd = schemaToStandard(IntegrationRemoveInput);
 const DetectInputStd = schemaToStandard(DetectInput);
 const DetectOutputStd = schemaToStandard(DetectOutput);
 const ConnectionsListInputStd = schemaToStandard(ConnectionsListInput);
@@ -375,6 +381,7 @@ const connectionToOutput = (connection: Connection) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScope: connection.oauthScope ?? null,
+  lastHealth: connection.lastHealth ?? null,
 });
 
 /** Number of space-separated grants in an `oauthScope` string, or null when
@@ -383,8 +390,8 @@ const connectionToOutput = (connection: Connection) => ({
 const oauthScopeCount = (scope: string | null | undefined): number | null =>
   scope == null ? null : scope.split(/\s+/).filter(Boolean).length;
 
-/** Lean projection for `connections.list`. Summarizes `oauthScope` to a count
- *  unless `verbose`, where the full grant string is included too. */
+/** Lean projection for `connections.list`. Summarizes `oauthScope` and health
+ * diagnostics unless `verbose`, where the full grant string is included too. */
 const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   owner: connection.owner,
   name: String(connection.name),
@@ -398,6 +405,17 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
+  // Keep full probe diagnostics behind the explicit verbose opt-in.
+  lastHealth:
+    connection.lastHealth == null || verbose
+      ? (connection.lastHealth ?? null)
+      : {
+          status: connection.lastHealth.status,
+          ...(connection.lastHealth.identity !== undefined
+            ? { identity: connection.lastHealth.identity }
+            : {}),
+          checkedAt: connection.lastHealth.checkedAt,
+        },
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 
@@ -516,7 +534,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
   storage: () => ({}),
   extension: () => ({}),
 
-  staticSources: () => [
+  staticIntegrations: () => [
     {
       id: "coreTools",
       kind: "executor",
@@ -556,9 +574,33 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
             })),
         }),
         tool({
+          name: "integrations.remove",
+          description:
+            "Remove an integration from the workspace catalog by slug, dropping every connection under it and every tool those produced. `removed: false` means no catalog row matched: the slug was already gone, or it names a built-in namespace that is not catalog-backed. Integrations whose `canRemove` is false are refused.",
+          inputSchema: IntegrationRemoveInputStd,
+          outputSchema: RemovedOutputStd,
+          // Strictly more destructive than `connections.remove`, which is
+          // already approval-gated: this cascades to every connection under the
+          // integration and takes the catalog row with it, so re-adding means
+          // re-importing the definition, not just reconnecting an account.
+          annotations: { requiresApproval: true },
+          execute: (input: typeof IntegrationRemoveInput.Type, { ctx }) =>
+            Effect.gen(function* () {
+              const slug = IntegrationSlug.make(input.slug);
+              // `core.integrations.get` reads catalog ROWS only, so a built-in
+              // static namespace reports absent here. Checking first is what
+              // keeps `removed` honest — the underlying remove is a silent
+              // no-op for a slug it can't find.
+              const existing = yield* ctx.core.integrations.get(slug);
+              if (existing === null) return { removed: false };
+              yield* ctx.core.integrations.remove(slug);
+              return { removed: true };
+            }),
+        }),
+        tool({
           name: "connections.list",
           description:
-            "List saved connections (the credential for one integration). Never returns the credential value. Optionally filter by integration or owner. OAuth scopes are summarized as `oauthScopeCount` by default; pass `verbose: true` to include the full `oauthScope` grant string per connection.",
+            "List saved connections and their last health verdict. Never returns credential values. Optionally filter by integration or owner. OAuth scopes are summarized as `oauthScopeCount` by default; pass `verbose: true` to include the full `oauthScope` grant string per connection.",
           inputSchema: ConnectionsListInputStd,
           outputSchema: ConnectionsListOutputStd,
           execute: (input: typeof ConnectionsListInput.Type, { ctx }) =>
@@ -645,7 +687,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "connections.refresh",
           description:
-            "Re-run an integration's tool production for a saved connection, replacing that connection's persisted tools.",
+            "Re-run an integration's tool production for a saved connection. Returns the tools and the resulting health verdict so an empty catalog is distinguishable from a failed sync.",
           inputSchema: ConnectionRefInputStd,
           outputSchema: ConnectionsRefreshOutputStd,
           // Refresh replaces a connection's persisted tool set; for a mutable
@@ -654,9 +696,15 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // `sources.refresh`.
           annotations: { requiresApproval: true },
           execute: (input: typeof ConnectionRefInput.Type, { ctx }) =>
-            Effect.map(ctx.connections.refresh(connectionRefFromInput(input)), (tools) => ({
-              tools: tools.map(toolToOutput),
-            })),
+            Effect.gen(function* () {
+              const ref = connectionRefFromInput(input);
+              const tools = yield* ctx.connections.refresh(ref);
+              const connection = yield* ctx.connections.get(ref);
+              return {
+                tools: tools.map(toolToOutput),
+                lastHealth: connection?.lastHealth ?? null,
+              };
+            }),
         }),
         // removed: tools.list — the cross-connection tool catalog is an
         // executor-surface read, not exposed on PluginCtx.
@@ -798,7 +846,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.clients.remove",
           description:
-            "Remove an owner-scoped OAuth client by owner and slug. Existing connections are not cascaded.",
+            "Remove an owner-scoped OAuth client by owner and slug. `removed: false` means no client matched that owner and slug — clients are keyed by BOTH, so the same slug can exist separately under `org` and `user`. Existing connections are not cascaded.",
           inputSchema: OAuthRemoveClientInputStd,
           outputSchema: RemovedOutputStd,
           // Removing a client breaks token refresh for every connection that
@@ -807,10 +855,22 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // `sources.bindings.remove`.
           annotations: { requiresApproval: true },
           execute: (input: typeof OAuthRemoveClientInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.oauth.removeClient(input.owner as Owner, OAuthClientSlug.make(input.slug)),
-              () => ({ removed: true }),
-            ),
+            Effect.gen(function* () {
+              const owner = input.owner as Owner;
+              const slug = OAuthClientSlug.make(input.slug);
+              // `removeClient` is idempotent by design at the storage layer, so
+              // on its own it cannot distinguish a real deletion from a typo'd
+              // slug or the wrong owner — and a caller sweeping a list of slugs
+              // under one hardcoded owner would read every no-op as success.
+              // Checking the visible set first is what keeps `removed` honest.
+              const clients = yield* ctx.oauth.listClients();
+              const matched = clients.some(
+                (client) => client.owner === owner && String(client.slug) === String(slug),
+              );
+              if (!matched) return { removed: false };
+              yield* ctx.oauth.removeClient(owner, slug);
+              return { removed: true };
+            }),
         }),
         tool({
           name: "oauth.probe",
@@ -833,7 +893,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.start",
           description:
-            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state. Fails if the connection name is already taken unless `reconnect: true` re-runs the flow for that existing connection.",
+            "Start OAuth through a registered client to mint a connection for an integration. `client_credentials` clients return `connected`; authorization-code clients return an authorization URL and state.",
           inputSchema: OAuthStartInputStd,
           outputSchema: OAuthStartOutputStd,
           // This is the materialization step that turns a registered client
@@ -855,7 +915,6 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 template: AuthTemplateSlug.make(input.template),
                 identityLabel: input.identityLabel,
                 redirectUri: input.redirectUri,
-                reconnect: input.reconnect ?? undefined,
               }),
               (result) =>
                 result.status === "connected"

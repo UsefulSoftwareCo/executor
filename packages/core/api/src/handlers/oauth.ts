@@ -45,6 +45,7 @@ const connectionToResponse = (c: Connection) => ({
   oauthClient: c.oauthClient ?? null,
   oauthClientOwner: c.oauthClientOwner ?? null,
   oauthScope: c.oauthScope ?? null,
+  missingOAuthScopes: c.missingOAuthScopes ?? [],
 });
 
 const startResultToResponse = (result: ConnectResult) =>
@@ -160,8 +161,12 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             integration: payload.integration,
             template: payload.template,
             identityLabel: payload.identityLabel,
+            newConnection: payload.newConnection,
             redirectUri: payload.redirectUri,
-            reconnect: payload.reconnect,
+            // Enterprise-managed authorization inputs. Ignored by every other
+            // grant, and REQUIRED by `id_jag` — the identity assertion is held
+            // by the caller, never by the server.
+            enterprise: payload.enterprise,
           });
           return startResultToResponse(result);
         }),

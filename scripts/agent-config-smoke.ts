@@ -268,10 +268,10 @@ const runSmoke = async (oauth: OAuthTestServerShape, graph: GraphqlTestServerSha
       `OAuth connection was not listed: ${JSON.stringify(connections)}`,
     );
 
-    console.log("[agent-config-smoke] add OAuth-backed GraphQL source through approval flow");
-    const addSource = await approvePausedCall(
+    console.log("[agent-config-smoke] add OAuth-backed GraphQL integration through approval flow");
+    const addIntegration = await approvePausedCall(
       ctx,
-      await callTool(ctx, ["executor", "graphql", "addSource"], {
+      await callTool(ctx, ["executor", "graphql", "addIntegration"], {
         scope: ctx.scopeDir,
         endpoint: graph.endpoint,
         name: "Agent Smoke GraphQL",
@@ -297,8 +297,8 @@ const runSmoke = async (oauth: OAuthTestServerShape, graph: GraphqlTestServerSha
         },
       }),
     );
-    const added = parseJsonOutput<{ readonly ok: boolean }>(addSource);
-    assert(added.ok === true, `GraphQL addSource failed: ${addSource.text}`);
+    const added = parseJsonOutput<{ readonly ok: boolean }>(addIntegration);
+    assert(added.ok === true, `GraphQL addIntegration failed: ${addIntegration.text}`);
 
     console.log("[agent-config-smoke] invoke configured OAuth-backed tool");
     const invoked = parseJsonOutput<{ readonly ok: boolean; readonly data?: unknown }>(

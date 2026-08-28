@@ -4,7 +4,7 @@
 // discovers Better Auth's device endpoints via /api/auth/cli-login, prints the
 // verification URL, and polls. The browser leg is REAL (session.mp4): Playwright
 // opens the self-host /device page (signed in via the session cookie) and clicks
-// "Authorize device". The terminal then runs `whoami` and `tools sources`; a
+// "Authorize device". The terminal then runs `whoami` and `tools integrations`; a
 // clean exit of that chain proves the Better Auth device token is accepted as a
 // Bearer on the protected /api/* plane.
 import { readFileSync } from "node:fs";
@@ -64,7 +64,7 @@ scenario(
       const journey =
         `${cli_} login --base-url ${SELFHOST_BASE_URL} --no-browser --name selfhost && ` +
         `${cli_} whoami --server selfhost && ` +
-        `${cli_} tools sources --server selfhost`;
+        `${cli_} tools integrations --server selfhost`;
 
       const terminal = cli.session(
         ["bash", "-c", journey],
@@ -113,7 +113,7 @@ scenario(
       });
 
       // Reaching here means the whole `&&` chain exited 0, including the
-      // authenticated `tools sources` /api call.
+      // authenticated `tools integrations` /api call.
       yield* Effect.all([terminal, browserApproval], { concurrency: "unbounded" });
 
       // The stored profile carries an oauth device-login credential, not a key.

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { IntegrationSlug } from "@executor-js/sdk/shared";
+import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
   registrationScopes,
   resolveOriginIntegration,
 } from "./oauth-client-form";
+import { oauthAppSetupFor } from "./oauth-app-setup";
 
 const validBase = {
   submitting: false,
@@ -15,6 +17,21 @@ const validBase = {
   authorizationUrl: "https://us.posthog.com/oauth/authorize",
   tokenUrl: "https://us.posthog.com/oauth/token",
 } as const;
+
+const SlackDeepLinkManifest = Schema.Struct({
+  oauth_config: Schema.Struct({
+    redirect_urls: Schema.Array(Schema.String),
+    scopes: Schema.Struct({ user: Schema.Array(Schema.String) }),
+  }),
+  settings: Schema.Struct({
+    is_mcp_enabled: Schema.Boolean,
+    agent_view: Schema.optional(Schema.Unknown),
+  }),
+});
+
+const decodeSlackDeepLinkManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(SlackDeepLinkManifest),
+);
 
 describe("registrationScopes", () => {
   it("sends declared scopes and ignores discovered when declared scopes exist", () => {
@@ -94,5 +111,50 @@ describe("canSubmitOAuthClientForm", () => {
         authorizationUrl: "",
       }),
     ).toBe(false);
+  });
+});
+
+describe("oauthAppSetupFor", () => {
+  it("returns the Slack entry for slack.com authorization URLs", () => {
+    expect(
+      oauthAppSetupFor({ authorizationUrl: "https://slack.com/oauth/v2_user/authorize" })?.id,
+    ).toBe("slack");
+  });
+
+  it("returns the Slack entry for mcp.slack.com resources", () => {
+    expect(oauthAppSetupFor({ resource: "https://mcp.slack.com" })?.id).toBe("slack");
+  });
+
+  it("returns undefined for other providers", () => {
+    expect(
+      oauthAppSetupFor({ authorizationUrl: "https://github.com/login/oauth/authorize" }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for malformed URLs without throwing", () => {
+    expect(oauthAppSetupFor({ authorizationUrl: "not a url" })).toBeUndefined();
+  });
+
+  it("builds a Slack app manifest deep link", () => {
+    const setup = oauthAppSetupFor({
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+    });
+    expect(setup).toBeDefined();
+    const createUrl = setup!.createUrl("https://executor.sh/api/oauth/callback");
+    const url = new URL(createUrl);
+    expect(`${url.origin}${url.pathname}`).toBe("https://api.slack.com/apps");
+    expect(url.searchParams.get("new_app")).toBe("1");
+
+    const rawManifest = url.searchParams.get("manifest_json");
+    expect(rawManifest).not.toBeNull();
+    const manifest = decodeSlackDeepLinkManifest(decodeURIComponent(rawManifest!));
+
+    expect(manifest.settings.is_mcp_enabled).toBe(true);
+    expect(manifest.oauth_config.redirect_urls).toEqual(["https://executor.sh/api/oauth/callback"]);
+    expect(manifest.oauth_config.scopes.user.length).toBe(26);
+    expect(manifest.oauth_config.scopes.user).toContain("search:read.private");
+    expect(manifest.oauth_config.scopes.user).toContain("search:read.users");
+    expect(manifest.oauth_config.scopes.user).toContain("chat:write");
+    expect(manifest.settings.agent_view).toBeUndefined();
   });
 });

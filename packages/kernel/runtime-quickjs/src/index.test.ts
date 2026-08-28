@@ -150,6 +150,54 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it("suspends the execution deadline while a tool dispatch is in flight", async () => {
+    const timeoutMs = 100;
+    const slowInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("slow result")),
+    };
+    const slowExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      slowExecutor.execute("return await tools.slow.wait({});", slowInvoker),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBe("slow result");
+  });
+
+  it("still times out continuous autonomous compute", async () => {
+    const timeoutMs = 100;
+    const timedExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      timedExecutor.execute("while (true) {}", makeTestInvoker({})),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`QuickJS execution timed out after ${timeoutMs}ms`);
+  });
+
+  it("resets the execution deadline after a tool dispatch returns", async () => {
+    const timeoutMs = 100;
+    const slowInvoker: SandboxToolInvoker = {
+      invoke: () => Effect.sleep(timeoutMs * 3).pipe(Effect.as("done")),
+    };
+    const timedExecutor = makeQuickJsExecutor({ timeoutMs });
+
+    const result = await Effect.runPromise(
+      timedExecutor.execute(
+        `
+        await tools.slow.wait({});
+        while (true) {}
+        `,
+        slowInvoker,
+      ),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(`QuickJS execution timed out after ${timeoutMs}ms`);
+  });
+
   it.effect("invokes multiple tools in sequence", () =>
     Effect.gen(function* () {
       const invoker = makeTestInvoker({
@@ -336,6 +384,52 @@ describe("quickjs executor", () => {
         customer: "cus_1",
         amount: 5000,
       });
+    }),
+  );
+
+  it.effect("tools proxy throws a search hint on enumeration", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        const outcomes = {};
+        try {
+          Object.keys(tools);
+          outcomes.keys = "no error";
+        } catch (e) {
+          outcomes.keys = e instanceof Error ? e.message : String(e);
+        }
+        try {
+          ({ ...tools.github });
+          outcomes.spread = "no error";
+        } catch (e) {
+          outcomes.spread = e instanceof Error ? e.message : String(e);
+        }
+        return outcomes;
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        spread:
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, tools.search({ namespace: "<integration>", query: "" }) to list every tool in an integration, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+      });
+    }),
+  );
+
+  it.effect("tools proxy still invokes and chains after the enumeration traps", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        try { Object.keys(tools); } catch {}
+        return tools.a.b.c({});
+        `,
+        makeTestInvoker({ "a.b.c": () => "a.b.c" }),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toBe("a.b.c");
     }),
   );
 });

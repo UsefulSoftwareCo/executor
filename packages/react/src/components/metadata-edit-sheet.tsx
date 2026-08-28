@@ -25,16 +25,24 @@ import { Textarea } from "./textarea";
 // ---------------------------------------------------------------------------
 // Metadata edit sheets — the user-curated, AGENT-VISIBLE metadata for an
 // integration and for a connection. The point of the sheet (vs. an inline
-// input) is the preview: it shows the exact inventory line an agent reads, so
-// editing the description is editing what the model sees.
+// input) is the preview: it shows the record an agent reads, so editing a
+// field is editing what the model sees.
 // ---------------------------------------------------------------------------
 
-/** The connection's callable prefix under `tools.`: the path an agent reaches
- *  this connection's tools through (`tools.<prefix>.<tool>`). The execute tool's
- *  inventory now lists integrations, not per-connection prefixes. */
-const connectionPrefix = (connection: Connection): string => {
-  const address = String(connection.address);
-  return address.startsWith("tools.") ? address.slice("tools.".length) : address;
+/** The `connections.list` item an agent reads for this connection, reduced to
+ *  the fields the sheet edits. The callable name is fixed at connect time and
+ *  is not editable here; only the label and description are. */
+const connectionListItemPreview = (input: {
+  readonly name: string;
+  readonly identityLabel: string;
+  readonly description: string;
+}): string => {
+  const fields = [
+    `name: ${JSON.stringify(input.name)}`,
+    ...(input.identityLabel ? [`identityLabel: ${JSON.stringify(input.identityLabel)}`] : []),
+    ...(input.description ? [`description: ${JSON.stringify(input.description)}`] : []),
+  ];
+  return `{ ${fields.join(", ")}, ... }`;
 };
 
 function AgentPreview(props: { readonly label: string; readonly line: string }) {
@@ -88,8 +96,13 @@ export function ConnectionEditSheet(props: {
     props.onOpenChange(false);
   };
 
-  const previewDescription = description.trim().split("\n", 1)[0];
-  const prefix = connection ? connectionPrefix(connection) : "";
+  const previewLine = connection
+    ? connectionListItemPreview({
+        name: String(connection.name),
+        identityLabel: identityLabel.trim(),
+        description: description.trim(),
+      })
+    : "";
 
   return (
     <Sheet open={connection !== null} onOpenChange={props.onOpenChange}>
@@ -97,8 +110,9 @@ export function ConnectionEditSheet(props: {
         <SheetHeader>
           <SheetTitle>Edit connection</SheetTitle>
           <SheetDescription>
-            The description is agent-visible: it rides this connection's prefix in the tool
-            inventory, so it is the place to say what this credential reaches and how to use it.
+            Both fields are agent-visible: agents read them from <code>connections.list</code> when
+            they pick an account, so this is the place to say which account this is and what it is
+            for.
           </SheetDescription>
         </SheetHeader>
 
@@ -128,18 +142,12 @@ export function ConnectionEditSheet(props: {
               disabled={saving}
             />
             <p className="text-xs text-muted-foreground">
-              Display-only; shown in the accounts list instead of the connection name.
+              Shown in the accounts list instead of the connection name. Agents see it too, but the
+              callable name stays as it was at connect time.
             </p>
           </div>
 
-          {connection ? (
-            <AgentPreview
-              label="What agents see"
-              line={
-                previewDescription ? `- \`${prefix}\` — ${previewDescription}` : `- \`${prefix}\``
-              }
-            />
-          ) : null}
+          {connection ? <AgentPreview label="What agents see" line={previewLine} /> : null}
         </div>
 
         <SheetFooter>
@@ -232,7 +240,8 @@ export function IntegrationEditSheet(props: {
           <SheetTitle>Edit integration</SheetTitle>
           <SheetDescription>
             The name is what people see; the description is agent-visible context — agents read it
-            when browsing sources and as fallback context on connections without one of their own.
+            when browsing integrations and as fallback context on connections without one of their
+            own.
           </SheetDescription>
         </SheetHeader>
 
@@ -275,7 +284,7 @@ export function IntegrationEditSheet(props: {
 
           {props.pluginSection ? (
             <Suspense fallback={null}>
-              <props.pluginSection sourceId={slug} onPendingChange={handlePendingChange} />
+              <props.pluginSection integrationId={slug} onPendingChange={handlePendingChange} />
             </Suspense>
           ) : null}
         </div>

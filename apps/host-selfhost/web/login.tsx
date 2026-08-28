@@ -6,7 +6,7 @@ import { Label } from "@executor-js/react/components/label";
 
 import { authClient } from "./auth-client";
 import { AuthLayout } from "./auth-layout";
-import { mcpAuthorizeResumeTarget, safeReturnTo } from "../src/auth/return-to";
+import { postLoginTarget } from "../src/auth/return-to";
 
 // Self-host login: email + password sign-in via Better Auth. On success we
 // reload so the shared AuthProvider re-reads /account/me and the AuthGate swaps
@@ -17,15 +17,10 @@ import { mcpAuthorizeResumeTarget, safeReturnTo } from "../src/auth/return-to";
 // redeeming an invite — either the full /join/<code> link, or by entering the
 // code here ("Have an invite code?"), which forwards to the same join page.
 export const LoginPage = () => {
-  const search = window.location.search;
-  // Where to go after sign-in: resume an interrupted MCP OAuth authorize if we
-  // arrived from one (Better Auth redirects it here with the OAuth params),
-  // otherwise honor a safe returnTo (e.g. an integration OAuth callback), else
-  // land on the dashboard.
-  const postLogin =
-    mcpAuthorizeResumeTarget(search) ??
-    safeReturnTo(new URLSearchParams(search).get("returnTo")) ??
-    "/";
+  // Where to go after sign-in. The gate renders this page IN PLACE of the
+  // requested route without navigating, so the live location is what carries a
+  // deep link (`/connect/linear`) across sign-in — see `postLoginTarget`.
+  const postLogin = postLoginTarget(window.location);
   const [mode, setMode] = useState<"signin" | "code">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

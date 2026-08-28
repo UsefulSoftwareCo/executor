@@ -60,7 +60,7 @@ describe("stripTypeScript", () => {
     // a function expression.
     const code = `
       const fetchResources = async (sourceId: string): Promise<Array<{ id: string }>> => {
-        const result = await tools.executor.sources.list();
+        const result = await tools.executor.integrations.list();
         return result.items;
       };
       return fetchResources('example-source');

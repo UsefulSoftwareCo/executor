@@ -10,7 +10,7 @@ import {
   convertGoogleDiscoveryToOpenApi,
   fetchGoogleDiscoveryDocument,
   isGoogleDiscoveryUrl,
-} from "../packages/plugins/google/src/sdk/discovery";
+} from "../packages/plugins/openapi/src/providers/google/discovery";
 import { mcpPlugin } from "../packages/plugins/mcp/src/sdk/plugin";
 import { graphqlPlugin } from "../packages/plugins/graphql/src/sdk/plugin";
 import { introspect } from "../packages/plugins/graphql/src/sdk/introspect";
@@ -176,7 +176,7 @@ describe("public preset URLs are detected by the correct plugin", () => {
       () =>
         Effect.gen(function* () {
           const executor = yield* makeExecutor();
-          const results = yield* executor.sources.detect(preset.url);
+          const results = yield* executor.integrations.detect(preset.url);
 
           expect(
             results.length,

@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 
 import { claimAndBoot } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
-import { waitForHttp } from "./boot";
+import { isBootReadinessTimeout, waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
 import { ensureE2eMcpSessionTimeoutEnv } from "./mcp-session-timeouts";
 import { bootMotel, motelExporterEnv } from "./motel";
@@ -32,8 +32,21 @@ const optionalCloudEnv = (): Record<string, string> => {
   const env: Record<string, string> = {
     SENTRY_OTEL_VERIFY: "true",
     SENTRY_OTEL_LOG_PAYLOAD: "true",
+    // Boot the BROWSER crash reporter too, so what the frontend actually
+    // reports is observable to a scenario. Production always has this set;
+    // without it the reporter the app wires into ExecutorProvider is a no-op
+    // and "the frontend reports nothing at all" looks identical to health.
+    // Nothing leaves the machine: the SDK is configured with
+    // `tunnel: "/api/sentry-tunnel"`, so envelopes are POSTed same-origin,
+    // and that route 204s unless a server-side SENTRY_DSN is configured.
+    VITE_PUBLIC_SENTRY_DSN: "https://e2epublickey@ingest.e2e.invalid/1",
   };
-  for (const key of ["SENTRY_DSN", "SENTRY_OTEL_LOG_PAYLOAD", "SENTRY_OTEL_VERIFY"]) {
+  for (const key of [
+    "SENTRY_DSN",
+    "SENTRY_OTEL_LOG_PAYLOAD",
+    "SENTRY_OTEL_VERIFY",
+    "VITE_PUBLIC_SENTRY_DSN",
+  ]) {
     const value = process.env[key];
     if (value) env[key] = value;
   }
@@ -93,7 +106,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
         });
         return { teardown: cloud.teardown, value: cloud };
       },
-      { label: "cloud" },
+      { label: "cloud", retryWhen: isBootReadinessTimeout },
     );
     // Publish the Autumn emulator URL to the test workers (they inherit this
     // process's env): scenarios that assert on tracked usage yield the Autumn

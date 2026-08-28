@@ -1,6 +1,6 @@
 // Parse / extract / preview coverage against a big real-world spec.
 // DB-touching behaviour (addSpec, removeSpec, tool registration) moved
-// to apps/cloud/src/services/sources-api.node.test.ts — those run
+// to the apps/cloud integrations API node tests — those run
 // through the real Drizzle/FumaDB path so storage regressions
 // (e.g. a per-row createMany fallback) surface automatically instead
 // of needing a dedicated budget assertion.

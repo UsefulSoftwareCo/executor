@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-mcp",
-  "version": "1.5.29",
+  "version": "1.6.2",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/mcp",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"
@@ -58,13 +58,16 @@
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
+    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json",
+    "gen:call-tool-result-schema": "bun scripts/gen-call-tool-result-schema.ts"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "4.3.6"
   },
@@ -73,6 +76,7 @@
     "@effect/vitest": "catalog:",
     "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "bun-types": "catalog:",

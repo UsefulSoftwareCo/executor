@@ -1,5 +1,119 @@
 # @executor-js/runtime-quickjs
 
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.6.2
+
+## 1.6.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.6.1
+
+## 1.6.0
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.6.0
+
+## 1.5.42
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.42
+
+## 1.5.41
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.41
+
+## 1.5.40
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.40
+
+## 1.5.39
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.39
+
+## 1.5.38
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.38
+
+## 1.5.37
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.37
+
+## 1.5.36
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.36
+
+## 1.5.35
+
+### Patch Changes
+
+- [#1437](https://github.com/UsefulSoftwareCo/executor/pull/1437) [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Suspend sandbox execution deadlines while tool calls await the host, and reset the autonomous-compute budget after each dispatch returns.
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.35
+
+## 1.5.34
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.34
+
+## 1.5.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.33
+
+## 1.5.32
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.32
+
+## 1.5.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.31
+
+## 1.5.30
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/codemode-core@1.5.30
+
 ## 1.5.29
 
 ### Patch Changes

@@ -3,6 +3,7 @@ import type * as Cause from "effect/Cause";
 import type * as Effect from "effect/Effect";
 
 import type { CodeExecutionError } from "./effect-errors";
+import type { ExecuteErrorKind } from "./error-kind";
 
 /** Branded tool path */
 export type ToolPath = string & { readonly __toolPath: unique symbol };
@@ -42,6 +43,8 @@ export type ExecuteResult = {
   result: unknown;
   output?: ExecuteOutputItem[];
   error?: string;
+  /** Enumerable failure class for telemetry; never carries message content. */
+  errorKind?: ExecuteErrorKind;
   logs?: string[];
 };
 
@@ -56,6 +59,14 @@ export type ExecuteResult = {
  */
 export interface CodeExecutor<E extends Cause.YieldableError = CodeExecutionError> {
   execute(code: string, toolInvoker: SandboxToolInvoker): Effect.Effect<ExecuteResult, E>;
+  /**
+   * The effective in-sandbox execution timeout, in milliseconds, that this
+   * runtime enforces on the code it runs. Exposed so a host can derive its own
+   * outer backstop (e.g. this bound plus a grace margin) for the case where the
+   * in-sandbox timer itself is defeated by a wedged isolate. Optional: runtimes
+   * that do not bound execution leave it undefined and hosts skip the backstop.
+   */
+  readonly timeoutMs?: number;
 }
 
 /** Accept-anything schema for tools with no input validation */

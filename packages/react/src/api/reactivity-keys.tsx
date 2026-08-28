@@ -26,6 +26,8 @@ export const ReactivityKey = {
   /** Credential-provider discovery. */
   providers: "providers",
   policies: "policies",
+  /** Saved generative-UI artifacts. */
+  artifacts: "artifacts",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
   /** An integration's declared health check (the operation/identity-field spec). */
@@ -35,7 +37,14 @@ export const ReactivityKey = {
   orgDomains: "org:domains",
   orgInfo: "org:info",
   apiKeys: "api-keys",
+  /** Org-owned keys (the platform credential) — separate from `apiKeys` so
+   *  minting one does not refetch every member's personal-key list. */
+  orgApiKeys: "org:api-keys",
   auth: "auth",
+  /** The tenant-wide admin users view. Read-only today (the admin plane has no
+   *  writes), so nothing invalidates it — it exists so the pages refresh
+   *  together and so a future lifecycle mutation has a key to publish. */
+  adminUsers: "admin:users",
 } as const;
 
 /** Mutations that add/remove/refresh an integration also affect tool listings. */
@@ -67,6 +76,10 @@ export const healthCheckWriteKeys = [
  *  policy changes what the tools page shows. */
 export const policyWriteKeys = [ReactivityKey.policies, ReactivityKey.tools] as const;
 
+/** Mutations that rename or delete a saved artifact. Artifacts are a leaf
+ *  resource — nothing else reads them — so they invalidate only themselves. */
+export const artifactWriteKeys = [ReactivityKey.artifacts] as const;
+
 /** Cloud-only: org membership mutations. */
 export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
 
@@ -78,6 +91,9 @@ export const orgInfoWriteKeys = [ReactivityKey.orgInfo, ReactivityKey.auth] as c
 
 /** Cloud-only: user API key mutations. */
 export const apiKeyWriteKeys = [ReactivityKey.apiKeys] as const;
+
+/** Cloud-only: org API key mutations. */
+export const orgApiKeyWriteKeys = [ReactivityKey.orgApiKeys] as const;
 
 /** Cloud-only: auth mutations (org switch/create) — invalidate everything user-visible. */
 export const authWriteKeys = [

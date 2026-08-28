@@ -98,6 +98,107 @@ it.effect("serializes form-exploded query arrays as repeated parameters", () =>
   ),
 );
 
+it.effect("serializes default form query objects using their fields", () =>
+  Effect.promise(() =>
+    withServer(async ({ baseUrl, requests }) => {
+      const operation = OperationBinding.make({
+        method: "get",
+        servers: [],
+        pathTemplate: "/domains",
+        requestBody: Option.none(),
+        responseBody: Option.none(),
+        parameters: [
+          OperationParameter.make({
+            name: "params",
+            location: "query",
+            required: false,
+            schema: Option.some({
+              type: "object",
+              additionalProperties: { type: "string" },
+            }),
+            // Query parameters default to form + explode=true in OAS.
+            style: Option.none(),
+            explode: Option.none(),
+            allowReserved: Option.none(),
+            description: Option.none(),
+          }),
+        ],
+      });
+
+      await Effect.runPromise(
+        invokeWithLayer(
+          operation,
+          { params: { region: "west", tier: "standard" } },
+          baseUrl,
+          {},
+          {},
+          FetchHttpClient.layer,
+        ),
+      );
+
+      const url = new URL(requests[0]!, "http://executor.test");
+      expect(url.searchParams.get("region")).toBe("west");
+      expect(url.searchParams.get("tier")).toBe("standard");
+      expect(url.searchParams.has("params")).toBe(false);
+    }),
+  ),
+);
+
+it.effect("serializes non-exploded and deep-object query objects", () =>
+  Effect.promise(() =>
+    withServer(async ({ baseUrl, requests }) => {
+      const operation = OperationBinding.make({
+        method: "get",
+        servers: [],
+        pathTemplate: "/filters",
+        requestBody: Option.none(),
+        responseBody: Option.none(),
+        parameters: [
+          OperationParameter.make({
+            name: "color",
+            location: "query",
+            required: false,
+            schema: Option.some({ type: "object" }),
+            style: Option.some("form"),
+            explode: Option.some(false),
+            allowReserved: Option.none(),
+            description: Option.none(),
+          }),
+          OperationParameter.make({
+            name: "filter",
+            location: "query",
+            required: false,
+            schema: Option.some({ type: "object" }),
+            style: Option.some("deepObject"),
+            explode: Option.some(true),
+            allowReserved: Option.none(),
+            description: Option.none(),
+          }),
+        ],
+      });
+
+      await Effect.runPromise(
+        invokeWithLayer(
+          operation,
+          {
+            color: { R: 100, G: 200, B: 150 },
+            filter: { status: "active", owner: "alice" },
+          },
+          baseUrl,
+          {},
+          {},
+          FetchHttpClient.layer,
+        ),
+      );
+
+      const url = new URL(requests[0]!, "http://executor.test");
+      expect(url.searchParams.get("color")).toBe("R,100,G,200,B,150");
+      expect(url.searchParams.get("filter[status]")).toBe("active");
+      expect(url.searchParams.get("filter[owner]")).toBe("alice");
+    }),
+  ),
+);
+
 it.effect("uses operation base URL and preserves reserved path expansion when allowed", () =>
   Effect.promise(() =>
     withServer(async ({ baseUrl, requests }) => {
@@ -220,4 +321,47 @@ it.effect("falls back to the base URL for bindings persisted without servers", (
       expect(new URL(requests[0]!, "http://executor.test").pathname).toBe("/ping");
     }),
   ),
+);
+
+it.effect(
+  "targets Google media upload paths at the origin root when the base URL includes the service path",
+  () =>
+    Effect.promise(() =>
+      withServer(async ({ baseUrl, requests }) => {
+        const operation = OperationBinding.make({
+          method: "patch",
+          servers: [],
+          pathTemplate: "/upload/drive/v3/files/{fileId}",
+          requestBody: Option.none(),
+          responseBody: Option.none(),
+          parameters: [
+            OperationParameter.make({
+              name: "fileId",
+              location: "path",
+              required: true,
+              schema: Option.some({ type: "string" }),
+              style: Option.none(),
+              explode: Option.none(),
+              allowReserved: Option.none(),
+              description: Option.none(),
+            }),
+          ],
+        });
+
+        await Effect.runPromise(
+          invokeWithLayer(
+            operation,
+            { fileId: "abc123" },
+            `${baseUrl}/drive/v3/`,
+            {},
+            {},
+            FetchHttpClient.layer,
+          ),
+        );
+
+        expect(new URL(requests[0]!, "http://executor.test").pathname).toBe(
+          "/upload/drive/v3/files/abc123",
+        );
+      }),
+    ),
 );

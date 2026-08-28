@@ -8,10 +8,13 @@ import {
   ToolResult,
   authToolFailure,
   classifyHttpStatus,
+  detectInsufficientScope,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
   extractResponseFields,
+  pathNamesASecret,
   projectResponseFields,
+  REDACTED_SAMPLE_VALUE,
   type HealthCheckCandidate,
   type HealthCheckResponseField,
   type HealthCheckResult,
@@ -30,15 +33,22 @@ import {
   requiredTemplateVariables,
   type OpenApiIntegrationConfig,
 } from "./config";
-import { OpenApiExtractionError, OpenApiParseError } from "./errors";
+import { OpenApiExtractionError, OpenApiInvocationError, OpenApiParseError } from "./errors";
 import {
   buildInputSchema,
   extract,
+  outputSchemaFromResponseBody,
   streamOperationBindings,
   streamOperationBindingsFromStructure,
 } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
-import { annotationsForOperation, buildRequest, invokeWithLayer, REQUIRE_APPROVAL } from "./invoke";
+import {
+  annotationsForOperation,
+  buildRequest,
+  invokeWithLayer,
+  REQUIRE_APPROVAL,
+  type InvokeOptions,
+} from "./invoke";
 import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
@@ -135,7 +145,7 @@ const openApiAuthToolFailure = (failure: {
   authToolFailure({
     code: failure.code as Parameters<typeof authToolFailure>[0]["code"],
     message: failure.message,
-    source: { id: failure.integration, scope: failure.owner },
+    integration: { id: failure.integration, scope: failure.owner },
     credential: {
       kind: failure.credentialKind,
       ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),
@@ -190,6 +200,9 @@ const toBinding = (def: ToolDefinition): OperationBinding =>
     parameters: [...def.operation.parameters],
     requestBody: def.operation.requestBody,
     responseBody: def.operation.responseBody,
+    ...(def.operation.requiredScopeAlternatives
+      ? { requiredScopeAlternatives: def.operation.requiredScopeAlternatives }
+      : {}),
   });
 
 const descriptionFor = (def: ToolDefinition): string => {
@@ -410,7 +423,7 @@ const toolDefFromStoredOperation = (op: StoredOperation): ToolDef => {
       : Option.match(binding.responseBody, {
           onNone: () => undefined,
           onSome: (responseBody) =>
-            normalizeOpenApiRefs(Option.getOrUndefined(responseBody.schema)),
+            normalizeOpenApiRefs(outputSchemaFromResponseBody(responseBody)),
         }),
     annotations: annotationsForOperation(binding.method, binding.pathTemplate),
   };
@@ -579,24 +592,37 @@ export const resolveOpenApiBackedTools = ({
   readonly storage: OpenapiStore;
 }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
   Effect.gen(function* () {
+    const incomplete = (reason: string): ResolveToolsResult => ({
+      tools: [],
+      definitions: {},
+      incomplete: true,
+      incompleteReason: reason,
+    });
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
     if (!openApiConfig) return { tools: [], definitions: {} };
     if (openApiConfig.specHash != null) {
-      const defsJson = yield* storage.getDefs(openApiConfig.specHash);
+      const defsJson = yield* storage
+        .getDefs(openApiConfig.specHash)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
       if (defsJson != null) {
         const definitions = Option.getOrNull(decodeDefsJson(defsJson));
         if (definitions != null) {
-          const ops = yield* storage.listOperations(String(integration.slug));
+          const ops = yield* storage
+            .listOperations(String(integration.slug))
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          if (ops == null) return incomplete("OpenAPI operation bindings could not be loaded.");
           return { tools: ops.map(toolDefFromStoredOperation), definitions };
         }
       }
     }
-    const specText = yield* loadOpenApiSpecText(storage, openApiConfig);
-    if (specText == null) return { tools: [], definitions: {} };
+    const specText = yield* loadOpenApiSpecText(storage, openApiConfig).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (specText == null) return incomplete("OpenAPI spec blob could not be loaded.");
     const compiled = yield* compileOpenApiSpecCached(openApiConfig.specHash, specText).pipe(
       Effect.catch(() => Effect.succeed(null)),
     );
-    if (!compiled) return { tools: [], definitions: {} };
+    if (!compiled) return incomplete("OpenAPI spec could not be parsed.");
     return {
       tools: openApiToolDefsFromCompiled(compiled),
       definitions: compiled.hoistedDefs,
@@ -609,6 +635,7 @@ export const invokeOpenApiBackedTool = (input: {
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
   readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>;
+  readonly invokeOptions?: InvokeOptions;
 }) =>
   Effect.gen(function* () {
     const integration = input.toolRow.integration;
@@ -671,18 +698,80 @@ export const invokeOpenApiBackedTool = (input: {
       Object.assign(queryParams, rendered.queryParams);
     }
 
-    const result = yield* invokeWithLayer(
+    const invocation = yield* invokeWithLayer(
       binding,
       (input.args ?? {}) as Record<string, unknown>,
       config?.baseUrl ?? "",
       headers,
       queryParams,
       input.httpClientLayer,
+      input.invokeOptions,
+    ).pipe(
+      Effect.map((result) => ({ ok: true as const, result })),
+      Effect.catchTag("OpenApiInvocationError", (error: OpenApiInvocationError) =>
+        error.reason === "response_headers_timeout"
+          ? Effect.succeed({
+              ok: false as const,
+              failure: ToolResult.fail({
+                code: "upstream_response_headers_timeout",
+                message: error.message,
+                details: error.cause ?? error,
+              }),
+            })
+          : error.reason === "response_body_timeout"
+            ? Effect.succeed({
+                ok: false as const,
+                failure: ToolResult.fail({
+                  code: "upstream_response_body_timeout",
+                  message: error.message,
+                  details: error.cause ?? error,
+                }),
+              })
+            : Effect.fail(error),
+      ),
     );
 
+    if (!invocation.ok) return invocation.failure;
+
+    const result = invocation.result;
     const ok = result.status >= 200 && result.status < 300;
     if (!ok) {
       if (result.status === 401 || result.status === 403) {
+        // A 403 naming a scope shortfall (RFC 6750 insufficient_scope,
+        // Google's ACCESS_TOKEN_SCOPE_INSUFFICIENT) cannot be fixed by
+        // re-running the same grant, so it gets its own code and recovery
+        // guidance instead of the re-authenticate loop.
+        const insufficientScope =
+          result.status === 403
+            ? detectInsufficientScope({ body: result.error, headers: result.headers })
+            : null;
+        if (insufficientScope) {
+          // Name the shortfall as precisely as the data allows: the scopes
+          // the upstream challenge asked for, else the operation's declared
+          // requirement (from the binding; alternatives joined with "or",
+          // since each Security Requirement Object is one acceptable set),
+          // plus what the connection's grant actually holds. Advisory only —
+          // the upstream made the call; this annotation tells the agent/user
+          // what to reconnect with.
+          const required =
+            insufficientScope.requiredScopes.length > 0
+              ? insufficientScope.requiredScopes.join(" ")
+              : (binding.requiredScopeAlternatives ?? [])
+                  .map((alternative) => alternative.join(" "))
+                  .join(", or ");
+          const granted = input.credential.grantedScopes;
+          return openApiAuthToolFailure({
+            code: "oauth_scope_insufficient",
+            status: result.status,
+            message: `The connection "${input.credential.connection}" for "${integration}" is authorized, but its grant${granted && granted.length > 0 ? ` (${granted.join(" ")})` : ""} does not cover the scope this operation requires${required.length > 0 ? ` (${required})` : ""}. Re-authenticating with the same grant will return the same error; reconnect with broader access.`,
+            owner: input.credential.owner,
+            integration,
+            connection: String(input.credential.connection),
+            credentialKind: "oauth",
+            credentialLabel: "Upstream authorization",
+            details: result.error,
+          });
+        }
         return openApiAuthToolFailure({
           code: "connection_rejected",
           status: result.status,
@@ -885,13 +974,33 @@ export const checkHealthOpenApi = (input: {
     }
 
     const status = classifyHttpStatus(probe.result.status);
-    const identity =
+    const rawIdentity =
       status === "healthy" ? extractIdentity(probe.result.data, spec.identityField) : undefined;
+    // The identity is read straight off the raw body, so unlike the sample it
+    // passes through neither redaction pass — and it is persisted to
+    // `connection.last_health` just the same. `identityField` is user-chosen
+    // from whatever the picker listed, which on a key-listing endpoint includes
+    // `api_keys.0.value`. Run both passes over it: the key reading first, then
+    // the known-value scrub.
+    const identity =
+      rawIdentity === undefined
+        ? undefined
+        : pathNamesASecret(spec.identityField ?? "")
+          ? REDACTED_SAMPLE_VALUE
+          : scrubSecrets(rawIdentity);
     // Sample the returned body ONLY on a healthy probe: the sample exists to
     // pick an identity field, and error bodies (upstream internals, auth error
     // envelopes) have no business in the preview. Non-healthy runs carry the
     // classified `detail` instead.
-    const responseSample = status === "healthy" ? extractResponseFields(probe.result.data) : [];
+    // Same scrub the `detail` branch below uses, for the same reason: a body
+    // can echo back the key it was authenticated with. `extractResponseFields`
+    // already redacts leaves whose KEY names a credential; this covers the
+    // other direction, a credential value under an innocent-looking key. It is
+    // handed to the walker rather than mapped over the result so it runs before
+    // the 120-char truncation, which would otherwise leave an unrecognisable —
+    // and unscrubbable — prefix of a long secret.
+    const responseSample =
+      status === "healthy" ? extractResponseFields(probe.result.data, { scrub: scrubSecrets }) : [];
     return {
       status,
       httpStatus: probe.result.status,

@@ -9,7 +9,9 @@ import {
 } from "@executor-js/host-mcp";
 import {
   currentPropagationHeaders,
+  readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
@@ -78,6 +80,8 @@ const propsForPrincipal = (
         organizationId: principal.organizationId,
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        artifactsEnabled: readArtifactsEnabled(request),
+        searchToolsEnabled: readSearchToolsEnabled(request),
         // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
         // bridge (see worker.ts), so the session always serves the default
         // resource.
@@ -123,6 +127,11 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       });
       if (owner === "not_found") {
         return jsonRpcResponse(404, -32001, "Session not found");
+      }
+      if (owner === "terminated") {
+        // DELETE-condemned but the deferred destroy alarm hasn't wiped storage
+        // yet; the terminated id must read as dead immediately.
+        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
       }
       if (owner === "forbidden") {
         return jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");

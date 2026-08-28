@@ -1,5 +1,6 @@
-import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect } from "effect";
+// oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
+import { afterEach, describe, expect, it } from "@effect/vitest";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
@@ -17,6 +18,8 @@ import {
 class MemoryStorage {
   private readonly data = new Map<string, unknown>();
   alarm: number | undefined;
+
+  private idName: string | undefined = "streamable-http:session-reconnect";
 
   readonly sql = {
     exec: () => [],
@@ -68,8 +71,18 @@ class MemoryStorage {
     return callback();
   }
 
-  get id(): { readonly name: string } {
-    return { name: "streamable-http:session-reconnect" };
+  get id(): { readonly name: string | undefined } {
+    return { name: this.idName };
+  }
+
+  /**
+   * Model a Durable Object invocation the runtime does not give a
+   * `ctx.id.name` — the shape an alarm fires in when it is running against an
+   * alarm record that never carried one.
+   */
+  withoutIdName(): this {
+    this.idName = undefined;
+    return this;
   }
 
   get storage(): MemoryStorage {
@@ -84,6 +97,7 @@ type HarnessSession = {
   ctx: MemoryStorage;
   dbHandle: { readonly end: () => void } | null;
   engine: ExecutionEngine<Cause.YieldableError> | null;
+  getConnections?: () => Iterable<unknown>;
   getSessionId: () => string;
   initialized: boolean;
   lastActivityMs: number;
@@ -103,7 +117,7 @@ type HarnessSession = {
   validateMcpSessionOwner: (identity: {
     readonly accountId: string;
     readonly organizationId: string;
-  }) => Promise<"ok" | "not_found" | "forbidden">;
+  }) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
 
 class StaleCloseTransport implements Transport {
@@ -133,6 +147,9 @@ class RestoredTransport implements Transport {
 }
 
 const makeServer = () => new McpServer({ name: "executor-test", version: "1.0.0" });
+
+/** The DO's structured logs are JSON lines; assertions read them back. */
+const decodeLogLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: () => void } => {
   let resolve: () => void = () => undefined;
@@ -171,6 +188,8 @@ const makeEngine = (
       pausedExecutionCount: () => Effect.succeed(0),
       hasPausedExecutions: () => Effect.succeed(false),
       getDescription: Effect.succeed("test engine"),
+      // The fake forks nothing, so there is no sandbox fiber to end.
+      shutdown: Effect.void,
     },
   };
 };
@@ -216,7 +235,260 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   return session;
 };
 
+// The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
+// in the rebuilt server's memory. These pin the storage round-trip that lets a
+// cold-restored session rebuild with it instead of silently downgrading every
+// artifact to a deep link.
+describe("McpAgentSessionDOBase apps capability persistence", () => {
+  type CapabilitySession = HarnessSession & {
+    persistAppsEnabled: (appsEnabled: boolean) => Effect.Effect<void>;
+    loadSessionMeta: () => Effect.Effect<SessionMeta | null>;
+    resolveSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+    resolveAndStoreSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+  };
+
+  const baseMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const makeCapabilitySession = async (
+    stored: SessionMeta = baseMeta,
+  ): Promise<{ session: CapabilitySession; storage: MemoryStorage }> => {
+    const storage = new MemoryStorage();
+    await storage.put("session-meta", stored);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+    return { session, storage };
+  };
+
+  it("persists the negotiated capability so a later restore can read it back", async () => {
+    const { session, storage } = await makeCapabilitySession();
+
+    await Effect.runPromise(session.persistAppsEnabled(true));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({
+      organizationId: "org-1",
+      appsEnabled: true,
+    });
+  });
+
+  it("records a client that loses apps support just as durably", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+
+    await Effect.runPromise(session.persistAppsEnabled(false));
+
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: false });
+  });
+
+  // `init` runs again on every cold restore and rebuilds meta from the bearer
+  // token, which carries no capabilities. If that overwrite won, restoring the
+  // session would erase the very bit meant to survive it.
+  it("carries the stored capability through the re-resolve on cold restore", async () => {
+    const { session, storage } = await makeCapabilitySession({ ...baseMeta, appsEnabled: true });
+    // What the token resolves to: no `appsEnabled` anywhere in sight.
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBe(true);
+    expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: true });
+  });
+
+  it("leaves a session with no negotiated capability untouched", async () => {
+    const { session, storage } = await makeCapabilitySession();
+    session.resolveSessionMeta = () => Effect.succeed(baseMeta);
+
+    const resolved = await Effect.runPromise(
+      session.resolveAndStoreSessionMeta({ organizationId: "org-1", userId: "user-1" }),
+    );
+
+    expect(resolved.appsEnabled).toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).not.toHaveProperty("appsEnabled");
+  });
+
+  // Persistence is best-effort observation of a capability, never a reason to
+  // fail the session that was merely trying to render something.
+  it("stays silent when there is no stored meta to merge into", async () => {
+    const storage = new MemoryStorage();
+    const session = Object.create(McpAgentSessionDOBase.prototype) as CapabilitySession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-caps";
+
+    await expect(Effect.runPromise(session.persistAppsEnabled(true))).resolves.toBeUndefined();
+    expect(await storage.get<SessionMeta>("session-meta")).toBeUndefined();
+  });
+});
+
+// A cold restore used to re-resolve the org identity through the host's backing
+// store (on cloud: a brand-new Postgres connection) BEFORE it ever looked at
+// the meta this DO had already persisted for the very session it is restoring.
+// A transient failure of that lookup killed `init` and the restore with it —
+// for a row the DO was already holding. The DO's own storage is the
+// authoritative copy of the org identity of a session it already minted, so it
+// is offered to the host first; the host still rebuilds everything the CONNECT
+// carries (resource, elicitation mode, capability flags) from the token.
+describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
+  type RestoreSession = {
+    ctx: MemoryStorage;
+    getSessionId: () => string;
+    loadSessionMeta: () => Effect.Effect<SessionMeta | null>;
+    resolveSessionMeta: (
+      token: unknown,
+      storedMeta: SessionMeta | null,
+    ) => Effect.Effect<SessionMeta>;
+    resolveAndStoreSessionMeta: (token: unknown) => Effect.Effect<SessionMeta>;
+  };
+
+  const storedMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org One",
+    organizationSlug: "org-one",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const token = {
+    organizationId: "org-1",
+    userId: "user-1",
+    elicitationMode: "model" as const,
+    resource: defaultMcpResource,
+  };
+
+  const makeRestoreSession = async (
+    stored: SessionMeta | null,
+  ): Promise<{ session: RestoreSession; storage: MemoryStorage }> => {
+    const storage = new MemoryStorage();
+    if (stored) await storage.put("session-meta", stored);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as RestoreSession;
+    session.ctx = storage;
+    session.getSessionId = () => "session-restore";
+    return { session, storage };
+  };
+
+  // The host stands in for cloud with an unreachable database: it can only
+  // answer when the DO hands it what it already knows.
+  const hostWithUnreachableStore =
+    (seen: { storedMeta: SessionMeta | null; calls: number }) =>
+    (tokenIn: unknown, stored: SessionMeta | null): Effect.Effect<SessionMeta> => {
+      seen.calls += 1;
+      seen.storedMeta = stored;
+      if (!stored) return Effect.die("organization lookup: CONNECT_TIMEOUT");
+      const t = tokenIn as { readonly userId: string; readonly organizationId: string };
+      return Effect.succeed({
+        organizationId: t.organizationId,
+        organizationName: stored.organizationName,
+        organizationSlug: stored.organizationSlug,
+        userId: t.userId,
+        resource: defaultMcpResource,
+      } satisfies SessionMeta);
+    };
+
+  it("restores from its own stored meta when the backing store is unreachable", async () => {
+    const { session } = await makeRestoreSession(storedMeta);
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = hostWithUnreachableStore(seen);
+
+    const resolved = await Effect.runPromise(session.resolveAndStoreSessionMeta(token));
+
+    expect(seen.calls).toBe(1);
+    expect(seen.storedMeta).toMatchObject({ organizationId: "org-1", organizationName: "Org One" });
+    expect(resolved.organizationName).toBe("Org One");
+    expect(resolved.organizationSlug).toBe("org-one");
+  });
+
+  // Stored meta is only a shortcut for the SAME organization. A session id
+  // reused across orgs must never inherit the previous org's identity.
+  it("offers nothing when the stored meta belongs to another organization", async () => {
+    const { session } = await makeRestoreSession({ ...storedMeta, organizationId: "org-other" });
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = hostWithUnreachableStore(seen);
+
+    const exit = await Effect.runPromiseExit(session.resolveAndStoreSessionMeta(token));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(seen.storedMeta).toBeNull();
+  });
+
+  // A brand-new session has nothing stored; the host must resolve from scratch.
+  it("offers nothing on a first init", async () => {
+    const { session } = await makeRestoreSession(null);
+    const seen = { storedMeta: null as SessionMeta | null, calls: 0 };
+    session.resolveSessionMeta = (tokenIn, stored) => {
+      seen.calls += 1;
+      seen.storedMeta = stored;
+      const t = tokenIn as { readonly userId: string; readonly organizationId: string };
+      return Effect.succeed({
+        organizationId: t.organizationId,
+        organizationName: "Freshly Resolved",
+        userId: t.userId,
+        resource: defaultMcpResource,
+      } satisfies SessionMeta);
+    };
+
+    const resolved = await Effect.runPromise(session.resolveAndStoreSessionMeta(token));
+
+    expect(seen.storedMeta).toBeNull();
+    expect(resolved.organizationName).toBe("Freshly Resolved");
+  });
+});
+
 describe("McpAgentSessionDOBase transport restore", () => {
+  it("preserves hibernated response streams when a cold isolate starts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.initialized = false;
+    session.engine = null;
+    session.dbHandle = null;
+    delete session.server;
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
+    };
+
+    await session.onStart();
+
+    expect(closeCalls).toBe(0);
+    expect(session.initialized).toBe(true);
+  });
+
+  it("closes response streams when an in-memory runtime restarts", async () => {
+    const session = await makeHarnessSession();
+    let closeCalls = 0;
+
+    session.getConnections = () => [
+      {
+        close: () => {
+          closeCalls += 1;
+        },
+      },
+    ];
+    session.runMcpAgentOnStart = async () => {
+      session.server = makeServer();
+      session.engine = makeEngine().engine;
+      session.initialized = true;
+    };
+
+    await session.onStart();
+
+    expect(closeCalls).toBe(1);
+    expect(session.initialized).toBe(true);
+  });
+
   it("restores a same-session request after idle disposal leaves a stale server transport", async () => {
     const session = await makeHarnessSession();
 
@@ -340,5 +612,311 @@ describe("McpAgentSessionDOBase transport restore", () => {
     });
     expect(onStartCalls).toBe(1);
     expect(restoredEngine.calls).toEqual([{ executionId: "exec-model", response: approval }]);
+  });
+});
+
+// Every Cloudflare deploy resets live Durable Objects: workerd aborts whatever
+// storage operation is in flight with "Durable Object reset because its code was
+// updated." That is the guaranteed consequence of shipping, not a defect — but
+// it lands on whichever write `init()` happens to be doing, and the last thing
+// `init()` does is `markActivity`, which writes a timestamp and arms the idle
+// alarm. Nothing about a session depends on that write succeeding: the in-memory
+// clock is already set, and every later touch re-arms the alarm. Losing a fully
+// built, working session over it — and paging for the privilege — is the bug.
+describe("McpAgentSessionDOBase init survives a platform reset of its bookkeeping write", () => {
+  const CODE_UPDATE_RESET = "Durable Object reset because its code was updated.";
+
+  class ResettingStorage extends MemoryStorage {
+    /** Storage keys whose `put` should fail, and with what. */
+    readonly putFailures = new Map<string, () => Error>();
+    setAlarmFailure: (() => Error) | null = null;
+
+    override async put(key: string, value: unknown): Promise<void> {
+      const failure = this.putFailures.get(key);
+      if (failure) {
+        this.putFailures.delete(key);
+        throw failure();
+      }
+      await super.put(key, value);
+    }
+
+    override async setAlarm(time: number | Date): Promise<void> {
+      if (this.setAlarmFailure) {
+        const failure = this.setAlarmFailure;
+        this.setAlarmFailure = null;
+        throw failure();
+      }
+      await super.setAlarm(time);
+    }
+  }
+
+  type InitSession = {
+    ctx: ResettingStorage;
+    captureCause: (cause: Cause.Cause<unknown>) => void;
+    dbHandle: { readonly end: () => void } | null;
+    engine: ExecutionEngine<Cause.YieldableError> | null;
+    getSessionId: () => string;
+    init: () => Promise<void>;
+    initialized: boolean;
+    lastActivityMs: number;
+    pendingApprovalLeases: Map<string, never>;
+    props: Record<string, unknown>;
+    server?: McpServer;
+    sessionTimeoutMs: () => number;
+    buildMcpServer: () => Effect.Effect<{ mcpServer: McpServer; engine: unknown }>;
+    openSessionDb: () => { readonly end: () => void };
+    resolveSessionMeta: () => Effect.Effect<SessionMeta>;
+    validateMcpSessionOwner: (identity: McpApprovalOwner) => Promise<string>;
+  };
+
+  const sessionMeta: SessionMeta = {
+    organizationId: "org-1",
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  };
+
+  const makeInitSession = (): {
+    session: InitSession;
+    storage: ResettingStorage;
+    captured: Cause.Cause<unknown>[];
+  } => {
+    const storage = new ResettingStorage();
+    const captured: Cause.Cause<unknown>[] = [];
+    const session = Object.create(McpAgentSessionDOBase.prototype) as InitSession;
+    session.ctx = storage;
+    session.captureCause = (cause) => {
+      captured.push(cause);
+    };
+    session.dbHandle = null;
+    session.engine = null;
+    session.getSessionId = () => "session-init";
+    session.initialized = false;
+    session.lastActivityMs = 0;
+    session.pendingApprovalLeases = new Map<string, never>();
+    session.props = { session: { organizationId: "org-1", userId: "user-1" } };
+    session.sessionTimeoutMs = () => 60_000;
+    session.resolveSessionMeta = () => Effect.succeed(sessionMeta);
+    session.openSessionDb = () => ({ end: () => undefined });
+    session.buildMcpServer = () =>
+      Effect.succeed({ mcpServer: makeServer(), engine: makeEngine().engine });
+    return { session, storage, captured };
+  };
+
+  it("keeps the session when a deploy resets the last-activity write", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("last-activity-ms", () => new Error(CODE_UPDATE_RESET));
+
+    await expect(
+      session.init(),
+      "a healthy session is not torn down by a lost timestamp",
+    ).resolves.toBeUndefined();
+
+    expect(session.initialized, "the runtime stays installed").toBe(true);
+    expect(session.engine, "the execution engine survives").not.toBeNull();
+    expect(session.server, "the MCP server survives").toBeDefined();
+    expect(captured, "a platform reset of bookkeeping is not paged as a defect").toEqual([]);
+  });
+
+  it("keeps the session when a deploy resets the idle-alarm write", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.setAlarmFailure = () => new Error(CODE_UPDATE_RESET);
+
+    await expect(session.init()).resolves.toBeUndefined();
+
+    expect(session.initialized).toBe(true);
+    expect(captured).toEqual([]);
+  });
+
+  // The alarm is the only durable consequence of a dropped markActivity, and it
+  // must self-heal: the next request re-arms it. Otherwise "best effort" would
+  // quietly mean "this session never times out".
+  it("re-arms the idle alarm on the next touch after a lost bookkeeping write", async () => {
+    const { session, storage } = makeInitSession();
+    storage.setAlarmFailure = () => new Error(CODE_UPDATE_RESET);
+
+    await session.init();
+    expect(storage.alarm, "the write that failed left no alarm").toBeUndefined();
+
+    await expect(
+      session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
+    ).resolves.toBe("ok");
+    expect(storage.alarm, "the next request re-establishes the idle clock").toBeGreaterThan(0);
+  });
+
+  // Best-effort is scoped to the platform's own resets. A bookkeeping write that
+  // fails for any other reason is still a defect and must still be reported —
+  // otherwise this change trades a noisy bug for a silent one.
+  it("still fails and reports when the bookkeeping write breaks for an unknown reason", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("last-activity-ms", () => new Error("quota exceeded for namespace"));
+
+    await expect(session.init()).rejects.toThrow(/quota exceeded/);
+    expect(captured.length, "an unrecognized failure is still captured").toBe(1);
+  });
+
+  // Session meta is not bookkeeping — ownership validation reads it back — so a
+  // reset there must still fail init. What it must NOT do is escape as an
+  // unclassified defect: the caller renders it as a retryable error, and the DO
+  // stops paging for a condition every deploy guarantees.
+  it("fails a meta write reset without paging, so the caller can render a retry", async () => {
+    const { session, storage, captured } = makeInitSession();
+    storage.putFailures.set("session-meta", () => new Error(CODE_UPDATE_RESET));
+
+    await expect(session.init()).rejects.toThrow(/code was updated/);
+    expect(captured, "a deploy reset is expected platform behaviour, not a defect").toEqual([]);
+  });
+});
+
+// PartyServer answers "what is this DO's name" from three sources and does not
+// consult them in one place: the `name` getter reads `ctx.id.name` and an
+// in-memory field hydrated during initialization, while the durable `__ps_name`
+// record is read only BY that initialization. The alarm entry point makes most
+// of its decisions itself and delegates to `super.alarm()` on one branch only,
+// so it never runs that hydration — an alarm could read the durable record,
+// conclude the session was addressable, and then die reading the session id for
+// a LOG LINE about the decision it had just made.
+//
+// This cannot be provoked through the dev stack, which addresses every Durable
+// Object by name, so the shape is pinned here instead: an unnamed `ctx.id`, a
+// faithful stand-in for PartyServer's throwing getter, and the alarm driven end
+// to end.
+describe("McpAgentSessionDOBase alarm name resolution", () => {
+  type NameSession = HarnessSession & {
+    /** Installed by {@link installPartyServerName}, as PartyServer installs it. */
+    readonly name: string;
+    sessionIdForTelemetry: () => string;
+  };
+
+  const storedName = "streamable-http:session-stale-alarm";
+
+  const restoreConsole: Array<() => void> = [];
+  afterEach(() => {
+    while (restoreConsole.length > 0) restoreConsole.pop()?.();
+  });
+
+  // Stand-in for PartyServer's `name` getter and the agents SDK's
+  // `getSessionId`: `ctx.id.name`, else the in-memory field, else the throw.
+  // `inMemoryName` stays absent by default because the alarm path is exactly
+  // the one that never runs the initialization which would populate it.
+  const installPartyServerName = (
+    session: NameSession,
+    options: { readonly inMemoryName?: string } = {},
+  ): void => {
+    Object.defineProperty(session, "name", {
+      configurable: true,
+      get: () => {
+        const ctxName = session.ctx.id.name;
+        if (ctxName !== undefined) return ctxName;
+        if (options.inMemoryName !== undefined) return options.inMemoryName;
+        throw new Error(
+          "Attempting to read .name on McpSessionDOSqlite, but this.ctx.id.name is not set and no __ps_name fallback record is available.",
+        );
+      },
+    });
+    session.getSessionId = () => {
+      const [, sessionId] = session.name.split(":");
+      if (!sessionId) throw new Error("Invalid session id.");
+      return sessionId;
+    };
+  };
+
+  const makeUnnamedSession = async (
+    options: { readonly storeName?: boolean } = {},
+  ): Promise<{ session: NameSession; storage: MemoryStorage; logs: string[] }> => {
+    const storage = new MemoryStorage().withoutIdName();
+    if (options.storeName ?? true) await storage.put("__ps_name", storedName);
+
+    const session = (await makeHarnessSession()) as NameSession;
+    session.ctx = storage;
+    session.lastActivityMs = Date.now() - 10;
+    session.sessionTimeoutMs = () => 1;
+    installPartyServerName(session);
+
+    const logs: string[] = [];
+    const info = console.info;
+    const warn = console.warn;
+    console.info = (line: unknown) => logs.push(String(line));
+    console.warn = (line: unknown) => logs.push(String(line));
+    restoreConsole.push(() => {
+      console.info = info;
+      console.warn = warn;
+    });
+
+    return { session, storage, logs };
+  };
+
+  const parsed = (logs: readonly string[]): readonly unknown[] =>
+    logs.map((line) => decodeLogLine(line));
+
+  it("disposes the right session when only the durable record carries the name", async () => {
+    const { session, storage, logs } = await makeUnnamedSession();
+
+    await expect(
+      session.alarm(),
+      "an alarm whose guard found a name must not die on the next read of that name",
+    ).resolves.toBeUndefined();
+
+    expect(
+      parsed(logs),
+      "the session the stored record names is the one reported as disposed",
+    ).toContainEqual(
+      expect.objectContaining({
+        event: "mcp_session_idle_runtime_dispose",
+        sessionId: "session-stale-alarm",
+      }),
+    );
+    expect(session.initialized, "the idle runtime is torn down").toBe(false);
+    expect(session.engine, "the execution engine is released").toBeNull();
+    expect(storage.alarm, "the idle alarm is cleared").toBeUndefined();
+    expect(await storage.get("last-activity-ms"), "the idle clock is cleared").toBeUndefined();
+  });
+
+  // The lease branches log BEFORE they act, so a throwing read there loses the
+  // extension itself and not merely the line: the alarm dies and the session is
+  // left pinned without making progress.
+  it("extends a paused lease from the durable record instead of dying on its log", async () => {
+    const { session, storage, logs } = await makeUnnamedSession();
+    session.maxPausedSessionIdleMs = () => 1_000_000;
+    session.engine = {
+      ...(session.engine as ExecutionEngine<Cause.YieldableError>),
+      pausedExecutionCount: () => Effect.succeed(1),
+    };
+
+    await expect(session.alarm()).resolves.toBeUndefined();
+
+    expect(parsed(logs)).toContainEqual(
+      expect.objectContaining({
+        event: "mcp_session_paused_lease_extension",
+        sessionId: "session-stale-alarm",
+      }),
+    );
+    expect(storage.alarm, "the lease is actually extended").toBeGreaterThan(0);
+    expect(session.initialized, "a leased session keeps its runtime").toBe(true);
+  });
+
+  it("completes and cleans up when no source has a name at all", async () => {
+    const { session, storage, logs } = await makeUnnamedSession({ storeName: false });
+    await storage.setAlarm(Date.now());
+
+    await expect(
+      session.alarm(),
+      "an unaddressable session exits rather than throwing into an endless alarm retry",
+    ).resolves.toBeUndefined();
+
+    expect(parsed(logs)).toContainEqual(
+      expect.objectContaining({ event: "mcp_session_unaddressable_alarm_cleanup" }),
+    );
+    expect(storage.alarm, "the alarm does not retry forever").toBeUndefined();
+    expect(session.initialized, "the runtime it cannot address is released").toBe(false);
+  });
+
+  it("never throws on an observational read of the session id", async () => {
+    const { session } = await makeUnnamedSession({ storeName: false });
+
+    expect(() => session.sessionIdForTelemetry()).not.toThrow();
+    expect(session.sessionIdForTelemetry(), "a placeholder keeps the log shape stable").toBe(
+      "unresolved",
+    );
   });
 });

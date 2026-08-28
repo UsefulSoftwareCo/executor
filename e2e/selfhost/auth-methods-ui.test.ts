@@ -7,9 +7,10 @@
 // selfhost instance runs with EXECUTOR_ALLOW_LOCAL_NETWORK so its outbound
 // probe/dial can reach the loopback test servers. Video is the artifact.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import {
@@ -22,8 +23,122 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
+
+const SlackDeepLinkManifest = Schema.Struct({
+  oauth_config: Schema.Struct({
+    redirect_urls: Schema.Array(Schema.String),
+  }),
+  settings: Schema.Struct({
+    is_mcp_enabled: Schema.Boolean,
+  }),
+});
+
+const decodeSlackDeepLinkManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(SlackDeepLinkManifest),
+);
+
+const SLACK_SCOPES = [
+  "search:read.public",
+  "search:read.private",
+  "search:read.mpim",
+  "search:read.im",
+  "search:read.files",
+  "search:read.users",
+  "chat:write",
+  "channels:history",
+  "groups:history",
+  "mpim:history",
+  "im:history",
+  "canvases:read",
+  "canvases:write",
+  "users:read",
+  "users:read.email",
+  "reactions:write",
+  "reactions:read",
+  "emoji:read",
+  "files:read",
+  "channels:write",
+  "groups:write",
+  "im:write",
+  "mpim:write",
+  "channels:read",
+  "groups:read",
+  "mpim:read",
+] as const;
+
+const serveSlackLikeMcpOAuthServer = () =>
+  Effect.acquireRelease(
+    Effect.callback<{ readonly endpoint: string; readonly close: () => void }>((resume) => {
+      const server = createServer((request, response) => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        const origin = `http://127.0.0.1:${port}`;
+        const pathname = new URL(request.url ?? "/", origin).pathname;
+
+        if (pathname === "/mcp") {
+          response.writeHead(401, {
+            "content-type": "application/json",
+            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+          });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32001, message: "missing_token" },
+            }),
+          );
+          return;
+        }
+
+        if (pathname === "/.well-known/oauth-protected-resource/mcp") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              resource: `${origin}/mcp`,
+              authorization_servers: [`${origin}/oauth`],
+              scopes_supported: SLACK_SCOPES,
+            }),
+          );
+          return;
+        }
+
+        if (pathname === "/.well-known/oauth-authorization-server/oauth") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              issuer: `${origin}/oauth`,
+              authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+              token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+              code_challenge_methods_supported: ["S256"],
+              token_endpoint_auth_methods_supported: ["client_secret_post"],
+            }),
+          );
+          return;
+        }
+
+        response.writeHead(404, { "content-type": "text/plain" });
+        response.end("not found");
+      });
+
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        resume(
+          Effect.succeed({
+            endpoint: `http://127.0.0.1:${port}/mcp`,
+            close: () => {
+              server.close();
+              server.closeAllConnections();
+            },
+          }),
+        );
+      });
+    }),
+    (server) => Effect.sync(server.close),
+  );
 
 scenario(
   "Auth methods · a detected-OAuth server gets an API key declared alongside",
@@ -46,9 +161,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the add-MCP flow pointed at the server", async () => {
-          await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           // Generous timeout: the debounced probe request can queue behind a
           // busy dev server under CI load, and there is no clean client-side
           // re-trigger to poke it mid-flight.
@@ -83,6 +196,90 @@ scenario(
       });
     }),
   ).pipe(Effect.provide(OAuthTestServer.layer())),
+);
+
+scenario(
+  "Slack MCP · Register OAuth app shows the Slack setup deep link",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeApiClient } = yield* Api;
+      const server = yield* serveSlackLikeMcpOAuthServer();
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+      const integrationSlug = `slack-mcp-setup-${randomBytes(3).toString("hex")}`;
+      let slug: string | null = null;
+
+      yield* Effect.gen(function* () {
+        yield* browser.session(identity, async ({ page, step }) => {
+          await step("Open the add-MCP flow pointed at the Slack-shaped server", async () => {
+            await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
+            await page.getByText("How does this server authenticate?").waitFor({ timeout: 90_000 });
+            await page.getByText("OAuth metadata is discovered from this server").waitFor();
+          });
+
+          await step("Add the OAuth MCP integration", async () => {
+            await page.getByPlaceholder("e.g. Linear").fill("Slack MCP Setup");
+            await page.getByPlaceholder("sentry_api").fill(integrationSlug);
+            await page.getByRole("button", { name: "Add integration" }).click();
+            await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, {
+              timeout: 30_000,
+            });
+            const pathname = new URL(page.url()).pathname;
+            slug = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
+            await page.getByText("Connections").first().waitFor();
+          });
+
+          await step("Fall back from automatic setup to app registration", async () => {
+            await page.getByRole("button", { name: "Add connection" }).first().click();
+            await page
+              .getByRole("dialog")
+              .getByRole("button", { name: "Connect", exact: true })
+              .click();
+            await page.getByRole("button", { name: "Register app", exact: true }).waitFor({
+              timeout: 30_000,
+            });
+            await page.getByRole("button", { name: "Register app", exact: true }).click();
+            await page.getByRole("heading", { name: "Register OAuth app" }).waitFor();
+          });
+
+          await step("The Slack setup panel embeds this form's callback URL", async () => {
+            await page.getByText("Slack requires a pre-registered app").waitFor();
+            const callbackUrl = await page.locator("#oauth-callback-url").innerText();
+            const href = await page
+              .getByRole("link", { name: "Create the Slack app" })
+              .getAttribute("href");
+            expect(
+              href?.startsWith("https://api.slack.com/apps?new_app=1&manifest_json="),
+              "the Slack app link targets Slack's manifest deep link",
+            ).toBe(true);
+
+            const url = new URL(href ?? "https://invalid.example");
+            const rawManifest = url.searchParams.get("manifest_json");
+            expect(rawManifest, "manifest_json is present").not.toBeNull();
+            const manifest = decodeSlackDeepLinkManifest(decodeURIComponent(rawManifest ?? "{}"));
+            expect(manifest.settings.is_mcp_enabled, "MCP access is enabled").toBe(true);
+            expect(
+              manifest.oauth_config.redirect_urls,
+              "the deep link uses the displayed callback URL",
+            ).toEqual([callbackUrl]);
+          });
+        });
+      }).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            if (slug !== null) {
+              yield* client.mcp
+                .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+                .pipe(Effect.ignore);
+            }
+          }),
+        ),
+      );
+    }),
+  ),
 );
 
 scenario(
@@ -124,9 +321,7 @@ scenario(
       yield* Effect.gen(function* () {
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the integration's connect modal", async () => {
-            await page.goto(`/integrations/${slug}`, {
-              waitUntil: "networkidle",
-            });
+            await visit(page, `/integrations/${slug}`);
             await page.getByRole("button", { name: "Add connection" }).first().click();
             await page.getByRole("tab", { name: "OAuth" }).waitFor();
           });
@@ -226,9 +421,7 @@ scenario(
       yield* Effect.gen(function* () {
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the integration's connect modal", async () => {
-            await page.goto(`/integrations/${slug}`, {
-              waitUntil: "networkidle",
-            });
+            await visit(page, `/integrations/${slug}`);
             await page.getByRole("button", { name: "Add connection" }).first().click();
             await page.getByRole("tab", { name: "API key (Authorization)" }).waitFor();
           });

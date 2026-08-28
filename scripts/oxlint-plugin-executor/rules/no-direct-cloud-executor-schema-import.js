@@ -3,7 +3,17 @@ import { getPropertyName, isIdentifier, toRepoRelative, unwrapExpression } from 
 const message =
   "Do not access cloud executor tables directly outside DB schema wiring. Executor-domain table access must go through the scoped SDK adapter so scope_id filtering cannot be skipped.";
 
-const allowedFiles = new Set(["apps/cloud/src/db/db.ts", "apps/cloud/src/db/db.schema.test.ts"]);
+// Sanctioned DB-wiring files that legitimately touch executor tables directly.
+// `org-deletion` is a cross-tenant purge (org deletion) that must span every
+// tenant table at the DB layer; it scopes every statement by `tenant`, which is
+// exactly the isolation this rule protects, so a scoped per-request SDK adapter
+// is neither available nor the right seam for it.
+const allowedFiles = new Set([
+  "apps/cloud/src/db/db.ts",
+  "apps/cloud/src/db/db.schema.test.ts",
+  "apps/cloud/src/db/org-deletion.ts",
+  "apps/cloud/src/db/org-deletion.test.ts",
+]);
 
 const isCloudSource = (filename) => toRepoRelative(filename).startsWith("apps/cloud/src/");
 

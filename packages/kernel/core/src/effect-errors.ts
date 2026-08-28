@@ -56,3 +56,26 @@ export class SandboxRuntimeError extends Data.TaggedError("SandboxRuntimeError")
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+/**
+ * Raised on the host side when a sandbox execution never settles within its
+ * effective timeout bound (plus a grace margin) AND is not merely blocked in a
+ * host round-trip (a tool call or an approval pause). This is the backstop for
+ * a wedged isolate: if the isolate is evicted / OOM-killed in a way that hangs
+ * the cross-isolate RPC without rejecting, the in-sandbox timer never fires and
+ * the host would otherwise wait forever, surfacing to the client as pure
+ * silence. Like `SandboxRuntimeError`, this is a safe-to-report condition (the
+ * execution is unrecoverable but the failure is descriptive, not an internal
+ * defect), so runtimes surface its `message` through the descriptive
+ * `ExecuteResult.error` channel rather than collapsing it to an opaque internal
+ * error. The host clock is suspended while the sandbox is blocked in a host
+ * round-trip, so a long-running tool call or a minutes-long approval pause does
+ * NOT trip it: it fires only when the sandbox is supposed to be computing on
+ * its own and has gone unresponsive.
+ */
+export class SandboxHostTimeoutError extends Data.TaggedError("SandboxHostTimeoutError")<{
+  readonly runtime: string;
+  readonly message: string;
+  readonly timeoutMs: number;
+  readonly elapsedMs: number;
+}> {}

@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bootProcesses, waitForHttp, type BootedProcesses } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp, type BootedProcesses } from "./boot";
 
 export const selfhostDir = fileURLToPath(new URL("../../apps/host-selfhost/", import.meta.url));
 
@@ -21,6 +21,13 @@ export interface SelfhostBootOptions {
   /** vite --host (e.g. "0.0.0.0" to be tailnet-reachable). */
   readonly host?: string;
   readonly logFile?: string;
+  /** Shrink the sandbox execution budget (EXECUTOR_SANDBOX_TIMEOUT_MS) so
+   *  deadline scenarios prove their race in seconds. Omit for production. */
+  readonly sandboxTimeoutMs?: number;
+  /** Shrink the MCP session idle window (EXECUTOR_MCP_SESSION_IDLE_TTL_MS) so
+   *  the eviction scenario proves in seconds what otherwise takes 30 minutes.
+   *  Omit for production; the app then uses the store's own default. */
+  readonly mcpSessionIdleTtlMs?: number;
 }
 
 export const bootSelfhost = async (options: SelfhostBootOptions): Promise<BootedProcesses> => {
@@ -51,6 +58,12 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
           // instance at them; the hosted SSRF guard would otherwise block
           // outbound probes/dials to localhost. Hermetic test instance only.
           EXECUTOR_ALLOW_LOCAL_NETWORK: "true",
+          ...(options.sandboxTimeoutMs !== undefined
+            ? { EXECUTOR_SANDBOX_TIMEOUT_MS: String(options.sandboxTimeoutMs) }
+            : {}),
+          ...(options.mcpSessionIdleTtlMs !== undefined
+            ? { EXECUTOR_MCP_SESSION_IDLE_TTL_MS: String(options.mcpSessionIdleTtlMs) }
+            : {}),
         },
         logFile: options.logFile,
       },
@@ -62,7 +75,9 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
     // Probe via `localhost`, not 127.0.0.1 — without --host, vite binds the
     // resolver's first answer for localhost (::1 on macOS), so the IPv4
     // loopback literal never answers.
-    await waitForHttp(`http://localhost:${options.port}`);
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`http://localhost:${options.port}`, { signal }),
+    );
   } catch (error) {
     await procs.teardown();
     throw error;

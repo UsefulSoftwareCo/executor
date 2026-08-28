@@ -608,7 +608,7 @@ export interface V1OpenApiSourceConfig extends V1OpenApiAuthConfig {
 
 export interface V2OpenApiIntegrationConfig {
   readonly spec?: string;
-  readonly sourceUrl?: string;
+  readonly specUrl?: string;
   readonly baseUrl?: string;
   readonly googleDiscoveryUrls?: readonly string[];
   readonly headers?: Record<string, string>;
@@ -630,7 +630,7 @@ export const migrateOpenApiSourceConfig = (v1: V1OpenApiSourceConfig): MigratedS
   const auth = migrateOpenApiAuthTemplate(v1);
   const config: V2OpenApiIntegrationConfig = {
     ...(v1.spec !== undefined ? { spec: v1.spec } : {}),
-    ...(v1.sourceUrl !== undefined ? { sourceUrl: v1.sourceUrl } : {}),
+    ...(v1.sourceUrl !== undefined ? { specUrl: v1.sourceUrl } : {}),
     ...(v1.baseUrl !== undefined ? { baseUrl: v1.baseUrl } : {}),
     ...(v1.googleDiscoveryUrls !== undefined
       ? { googleDiscoveryUrls: v1.googleDiscoveryUrls }

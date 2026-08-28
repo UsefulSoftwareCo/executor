@@ -16,7 +16,11 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
-import { type DenoPermissions, spawnDenoWorkerProcess } from "./deno-worker-process";
+import {
+  type DenoPermissions,
+  type DenoWorkerProcess,
+  spawnDenoWorkerProcess,
+} from "./deno-worker-process";
 
 export type { DenoPermissions };
 
@@ -46,6 +50,15 @@ class DenoSpawnError extends Data.TaggedError("DenoSpawnError")<{
     return code === "ENOENT"
       ? `Failed to spawn Deno subprocess: Deno executable "${this.executable}" was not found. Install Deno or set DENO_BIN.`
       : `Failed to spawn Deno subprocess: ${this.reason instanceof Error ? this.reason.message : String(this.reason)}`;
+  }
+}
+
+class DenoProcessWriteError extends Data.TaggedError("DenoProcessWriteError")<{
+  readonly reason: unknown;
+}> {
+  override get message() {
+    const detail = this.reason instanceof Error ? this.reason.message : String(this.reason);
+    return `Failed to write to Deno subprocess stdin: ${detail}`;
   }
 }
 
@@ -149,9 +162,14 @@ const causeMessage = (cause: Cause.Cause<unknown>): string => {
   return String(squashed);
 };
 
-const writeMessage = (stdin: NodeJS.WritableStream, message: HostToWorkerMessage): void => {
-  stdin.write(`${JSON.stringify(message)}\n`);
-};
+const writeMessage = (
+  worker: DenoWorkerProcess,
+  message: HostToWorkerMessage,
+): Effect.Effect<void, DenoProcessWriteError> =>
+  Effect.tryPromise({
+    try: () => worker.write(`${JSON.stringify(message)}\n`),
+    catch: (reason) => new DenoProcessWriteError({ reason }),
+  });
 
 // ---------------------------------------------------------------------------
 // Core execution
@@ -217,6 +235,14 @@ const executeInDeno = (
                 }),
               );
             },
+            onStdinError: (cause) => {
+              runSync(
+                completeWith({
+                  result: null,
+                  error: new DenoProcessWriteError({ reason: cause }).message,
+                }),
+              );
+            },
             onExit: (exitCode, signal) => {
               runSync(
                 completeWith({
@@ -230,11 +256,34 @@ const executeInDeno = (
       catch: (cause) => new DenoSpawnError({ executable: denoExecutable, reason: cause }),
     });
 
-    // Send code to the subprocess
-    writeMessage(worker.stdin, { type: "start", code: recoveredBody, nonce });
+    const start = Date.now();
+    let inFlight = 0;
+    let lastReturnedAt = start;
 
-    // Set up timeout — kills process and completes the deferred
-    const timer = setTimeout(() => {
+    const startError = yield* Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: () => worker.ready,
+        catch: (reason) => new DenoSpawnError({ executable: denoExecutable, reason }),
+      });
+      yield* writeMessage(worker, { type: "start", code: recoveredBody, nonce });
+    }).pipe(
+      Effect.as<Error | undefined>(undefined),
+      Effect.catch((error) => Effect.succeed(error)),
+      Effect.onInterrupt(() => Effect.sync(worker.dispose)),
+    );
+    if (startError) {
+      worker.dispose();
+      return { result: null, error: startError.message };
+    }
+
+    // Measure only continuous autonomous subprocess compute. Tool dispatches
+    // suspend the clock and each return grants a fresh timeout budget.
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (inFlight > 0 || now - Math.max(start, lastReturnedAt) < timeoutMs) {
+        return;
+      }
+
       worker.dispose();
       runSync(
         completeWith({
@@ -242,7 +291,7 @@ const executeInDeno = (
           error: `Deno subprocess execution timed out after ${timeoutMs}ms`,
         }),
       );
-    }, timeoutMs);
+    }, 1_000);
 
     // -----------------------------------------------------------------------
     // Message processing fiber — tool calls happen here, inside Effect
@@ -255,7 +304,11 @@ const executeInDeno = (
 
           switch (msg.type) {
             case "tool_call": {
-              const toolResult = yield* toolInvoker
+              // Symmetric bracket (mirrors ToolDispatcher.call): the decrement
+              // must run even if the invoke or write dies, or the watchdog's
+              // in-flight guard would suspend the timeout forever.
+              inFlight += 1;
+              const writeSucceeded = yield* toolInvoker
                 .invoke({ path: msg.toolPath, args: msg.args })
                 .pipe(
                   Effect.map(
@@ -276,9 +329,21 @@ const executeInDeno = (
                       error: causeMessage(cause),
                     }),
                   ),
+                  Effect.flatMap((toolResult) => writeMessage(worker, toolResult)),
+                  Effect.as(true),
+                  Effect.catchTag("DenoProcessWriteError", (error) =>
+                    completeWith({ result: null, error: error.message }).pipe(Effect.as(false)),
+                  ),
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      inFlight -= 1;
+                      lastReturnedAt = Date.now();
+                    }),
+                  ),
                 );
-
-              writeMessage(worker.stdin, toolResult);
+              if (!writeSucceeded) {
+                return;
+              }
               break;
             }
 
@@ -318,7 +383,7 @@ const executeInDeno = (
     const output = yield* Deferred.await(result).pipe(
       Effect.ensuring(
         Effect.gen(function* () {
-          clearTimeout(timer);
+          clearInterval(timer);
           yield* Fiber.interrupt(processFiber);
           worker.dispose();
         }),

@@ -1,7 +1,8 @@
-import { Suspense, useCallback, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { PlusIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
@@ -33,11 +34,24 @@ import {
   CardStackEntryDescription,
   CardStackEntryMedia,
   CardStackEntryTitle,
+  CardStackHeader,
 } from "../components/card-stack";
 import {
+  IntegrationFavicon,
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
+import { groupIntegrations, type IntegrationFamilyGroup } from "../lib/integration-grouping";
+import {
+  availableCatalogKinds,
+  catalogLogoUrl,
+  filterCatalogEntries,
+  presetDomains,
+  resolveConnectTarget,
+  useCatalogSearch,
+  type CatalogKind,
+  type CatalogSearchEntry,
+} from "../lib/integrations-sh-catalog";
 import { IntegrationHealthSummary } from "../components/integration-health-summary";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
@@ -324,6 +338,12 @@ type PresetEntry = {
   pluginLabel: string;
 };
 
+const CATALOG_KIND_LABEL: Record<CatalogKind, string> = {
+  mcp: "MCP",
+  openapi: "OpenAPI",
+  graphql: "GraphQL",
+};
+
 function PresetGrid(props: {
   plugins: readonly IntegrationPlugin[];
   onPick: () => void;
@@ -331,6 +351,7 @@ function PresetGrid(props: {
    *  search/URL input. Empty string disables filtering. */
   searchQuery?: string;
 }) {
+  const navigate = useNavigate();
   const allPresets = useMemo(() => {
     const entries: PresetEntry[] = [];
     for (const plugin of props.plugins) {
@@ -345,14 +366,66 @@ function PresetGrid(props: {
     return entries;
   }, [props.plugins]);
 
+  const query = (props.searchQuery ?? "").trim();
+
   const filtered = useMemo(() => {
-    const q = (props.searchQuery ?? "").trim().toLowerCase();
+    const q = query.toLowerCase();
     if (q.length === 0) return allPresets;
     return allPresets.filter(({ preset, pluginLabel }) => {
-      const corpus = `${preset.name} ${preset.summary ?? ""} ${pluginLabel}`.toLowerCase();
+      const corpus =
+        `${preset.name} ${preset.summary ?? ""} ${preset.family ?? ""} ${preset.specFormat ?? ""} ${pluginLabel}`.toLowerCase();
       return corpus.includes(q);
     });
-  }, [allPresets, props.searchQuery]);
+  }, [allPresets, query]);
+
+  // Long-tail search over the public integrations.sh registry, shown under the
+  // curated presets. Domains a preset already covers stay preset-only.
+  const catalog = useCatalogSearch(query);
+  const excludeDomains = useMemo(() => presetDomains(props.plugins), [props.plugins]);
+  const availableKinds = useMemo(() => availableCatalogKinds(props.plugins), [props.plugins]);
+  const catalogEntries = useMemo(
+    () => filterCatalogEntries(catalog.entries, { excludeDomains, availableKinds }),
+    [catalog.entries, excludeDomains, availableKinds],
+  );
+  const [resolvingDomain, setResolvingDomain] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  const pickCatalogEntry = useCallback(
+    async (entry: CatalogSearchEntry) => {
+      if (resolvingDomain !== null) return;
+      setResolvingDomain(entry.domain);
+      setCatalogError(null);
+      const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, entry.kinds));
+      setResolvingDomain(null);
+      if (Exit.isFailure(exit)) {
+        setCatalogError(
+          `Couldn't load connect details for ${entry.domain}. Paste a URL above instead.`,
+        );
+        return;
+      }
+      const target = exit.value;
+      if (!target) {
+        setCatalogError(
+          `No connectable endpoint is on record for ${entry.domain}. Paste a URL above to detect one.`,
+        );
+        return;
+      }
+      trackEvent("integration_add_started", {
+        plugin_key: target.kind,
+        via: "catalog",
+        catalog_domain: entry.domain,
+      });
+      props.onPick();
+      void navigate({
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
+        params: { pluginKey: target.kind },
+        search: { url: target.url, ...(target.slug ? { namespace: target.slug } : {}) },
+      });
+    },
+    [navigate, props, resolvingDomain],
+  );
+
+  const showCatalogSection = query.length > 0 && (catalogEntries.length > 0 || catalog.loading);
 
   if (allPresets.length === 0) return null;
 
@@ -364,9 +437,9 @@ function PresetGrid(props: {
          *  inner area scrolls when the list overflows and shows an empty
          *  state when no presets match. */}
         <CardStackContent className="h-64 overflow-y-auto">
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && !showCatalogSection ? (
             <div className="flex h-full flex-col items-center justify-center gap-1 px-4 py-6 text-center">
-              <p className="text-sm text-muted-foreground">No matching presets</p>
+              <p className="text-sm text-muted-foreground">No matching integrations</p>
               <p className="text-xs text-muted-foreground/70">
                 Paste a URL above to auto-detect, or pick an integration type manually.
               </p>
@@ -416,8 +489,59 @@ function PresetGrid(props: {
               );
             })
           )}
+          {showCatalogSection && (
+            <>
+              {catalogEntries.map((entry) => (
+                <CardStackEntry key={`catalog-${entry.domain}`} asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void pickCatalogEntry(entry)}
+                    className="h-auto w-full justify-start rounded-none text-left font-normal whitespace-normal hover:bg-accent/40 dark:hover:bg-accent/40"
+                  >
+                    <CardStackEntryMedia>
+                      <img
+                        src={catalogLogoUrl(entry.domain, 10)}
+                        alt=""
+                        className="size-5 object-contain"
+                        loading="lazy"
+                      />
+                    </CardStackEntryMedia>
+                    <CardStackEntryContent>
+                      <CardStackEntryTitle>{entry.domain}</CardStackEntryTitle>
+                      <CardStackEntryDescription>{entry.description}</CardStackEntryDescription>
+                    </CardStackEntryContent>
+                    <CardStackEntryActions>
+                      {resolvingDomain === entry.domain ? (
+                        <span className="text-xs text-muted-foreground">Resolving…</span>
+                      ) : (
+                        entry.kinds.map((kind) => (
+                          <Badge key={kind} variant="secondary">
+                            {CATALOG_KIND_LABEL[kind]}
+                          </Badge>
+                        ))
+                      )}
+                    </CardStackEntryActions>
+                  </Button>
+                </CardStackEntry>
+              ))}
+              {catalog.loading &&
+                catalogEntries.length === 0 &&
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={`catalog-skeleton-${i}`} className="flex items-center gap-3 px-4 py-3">
+                    <Skeleton className="size-5 shrink-0 rounded-md" />
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <Skeleton className="h-3.5" style={{ width: `${35 + ((i * 13) % 25)}%` }} />
+                      <Skeleton className="h-3" style={{ width: `${55 + ((i * 9) % 20)}%` }} />
+                    </div>
+                    <Skeleton className="h-5 w-14 rounded-full" />
+                  </div>
+                ))}
+            </>
+          )}
         </CardStackContent>
       </CardStack>
+      {catalogError && <p className="text-xs text-destructive">{catalogError}</p>}
     </div>
   );
 }
@@ -434,47 +558,101 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
     return out;
   }, [integrationPlugins]);
 
+  const items = useMemo(() => groupIntegrations(props.integrations), [props.integrations]);
+
+  const renderEntry = (integration: Integration) => {
+    const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
+    const plugin = pluginByKind.get(pluginKey);
+    const SummaryComponent = plugin?.summary;
+    const slug = String(integration.slug);
+    const name = integration.name || slug;
+    return (
+      <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
+        <Link
+          to="/{-$orgSlug}/integrations/$namespace"
+          params={{ namespace: slug }}
+          data-testid={`integration-entry-${slug}`}
+        >
+          <IntegrationIconWithAccount
+            icon={integrationPresetIconUrl(
+              { id: slug, kind: integration.kind, name, url: integration.displayUrl },
+              integrationPlugins,
+            )}
+            integrationId={slug}
+            url={integration.displayUrl ?? integrationInferredUrl({ id: slug, name }) ?? undefined}
+          />
+          <CardStackEntryContent>
+            <CardStackEntryTitle>{name}</CardStackEntryTitle>
+            <CardStackEntryDescription>{slug}</CardStackEntryDescription>
+          </CardStackEntryContent>
+          <CardStackEntryActions>
+            {SummaryComponent && (
+              <Suspense fallback={null}>
+                <SummaryComponent integrationId={slug} />
+              </Suspense>
+            )}
+            <IntegrationHealthSummary integration={integration.slug} />
+          </CardStackEntryActions>
+        </Link>
+      </CardStackEntry>
+    );
+  };
+
+  const rendered: ReactNode[] = [];
+  let flatRun: Integration[] = [];
+  const flushFlat = () => {
+    if (flatRun.length === 0) return;
+    const run = flatRun;
+    flatRun = [];
+    rendered.push(
+      <CardStack key={`flat-${String(run[0]!.slug)}`} searchable>
+        <CardStackContent>{run.map(renderEntry)}</CardStackContent>
+      </CardStack>,
+    );
+  };
+
+  for (const item of items) {
+    if (item.type === "single") {
+      flatRun.push(item.integration);
+      continue;
+    }
+    flushFlat();
+    rendered.push(
+      <IntegrationFamilyGroupCard
+        key={`group-${item.family}`}
+        group={item}
+        plugin={pluginByKind.get("openapi")}
+        renderEntry={renderEntry}
+      />,
+    );
+  }
+  flushFlat();
+
+  return <div className="space-y-3">{rendered}</div>;
+}
+
+function IntegrationFamilyGroupCard(props: {
+  group: IntegrationFamilyGroup;
+  plugin: IntegrationPlugin | undefined;
+  renderEntry: (integration: Integration) => ReactNode;
+}) {
+  const { group, plugin, renderEntry } = props;
+  const headerIcon =
+    plugin?.presets?.find((preset) => preset.family === group.family && preset.icon)?.icon ?? null;
   return (
-    <CardStack searchable>
-      <CardStackContent>
-        {props.integrations.map((integration) => {
-          const pluginKey = KIND_TO_PLUGIN_KEY[integration.kind] ?? integration.kind;
-          const plugin = pluginByKind.get(pluginKey);
-          const SummaryComponent = plugin?.summary;
-          const slug = String(integration.slug);
-          const name = integration.name || slug;
-          return (
-            <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
-              <Link to="/{-$orgSlug}/integrations/$namespace" params={{ namespace: slug }}>
-                <IntegrationIconWithAccount
-                  icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
-                    integrationPlugins,
-                  )}
-                  sourceId={slug}
-                  url={
-                    integration.displayUrl ??
-                    integrationInferredUrl({ id: slug, name }) ??
-                    undefined
-                  }
-                />
-                <CardStackEntryContent>
-                  <CardStackEntryTitle>{name}</CardStackEntryTitle>
-                  <CardStackEntryDescription>{slug}</CardStackEntryDescription>
-                </CardStackEntryContent>
-                <CardStackEntryActions>
-                  {SummaryComponent && (
-                    <Suspense fallback={null}>
-                      <SummaryComponent sourceId={slug} />
-                    </Suspense>
-                  )}
-                  <IntegrationHealthSummary integration={integration.slug} />
-                </CardStackEntryActions>
-              </Link>
-            </CardStackEntry>
-          );
-        })}
-      </CardStackContent>
+    <CardStack collapsible defaultOpen data-testid={`integration-group-${group.family}`}>
+      <CardStackHeader>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <IntegrationFavicon icon={headerIcon} size={16} />
+          </span>
+          <span className="truncate">{group.label}</span>
+          <span className="shrink-0 font-mono text-xs font-normal text-muted-foreground">
+            {group.members.length}
+          </span>
+        </span>
+      </CardStackHeader>
+      <CardStackContent>{group.members.map(renderEntry)}</CardStackContent>
     </CardStack>
   );
 }

@@ -106,16 +106,19 @@ const serveMutableSpec = (initial: string) =>
   );
 
 // ── Session plumbing over the real auth endpoints (mirrors the web app) ──────
-const cookieOf = (identity: Identity): string => identity.headers?.["cookie"] ?? "";
+const ORG_SELECTOR_HEADER = "x-executor-organization";
 
 const postJson = (target: TargetShape, path: string, identity: Identity, body: unknown) =>
   Effect.promise(async () => {
     const response = await fetch(new URL(path, target.baseUrl), {
       method: "POST",
       headers: {
+        // The identity's own headers (session cookie + org selector) exactly
+        // as its API client would send them — org-scoped endpoints fail
+        // closed without the selector.
+        ...(identity.headers ?? {}),
         "content-type": "application/json",
         origin: new URL(target.baseUrl).origin,
-        cookie: cookieOf(identity),
       },
       body: JSON.stringify(body),
     });
@@ -125,17 +128,28 @@ const postJson = (target: TargetShape, path: string, identity: Identity, body: u
     return response;
   });
 
-const withRefreshedSession = (identity: Identity, response: Response): Identity => {
+const withRefreshedSession = (
+  identity: Identity,
+  response: Response,
+  orgSelector: string,
+): Identity => {
   const refreshed = (response.headers.getSetCookie?.() ?? [])
     .find((header) => header.startsWith("wos-session="))
     ?.split(";")[0];
   if (!refreshed) throw new Error("response did not refresh the session cookie");
-  return { ...identity, headers: { cookie: refreshed } };
+  return {
+    ...identity,
+    headers: { cookie: refreshed, [ORG_SELECTOR_HEADER]: orgSelector },
+  };
 };
 
-/** Invite `member` into `admin`'s org and accept — the real invite flow. */
+/** Invite `member` into `admin`'s org and accept — the real invite flow.
+ *  The member's requests inherit the admin's org selector (org-scoped reads
+ *  fail closed without the header). */
 const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
+    const adminSelector = admin.headers?.[ORG_SELECTOR_HEADER];
+    if (!adminSelector) throw new Error("admin identity carries no org selector header");
     const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
       email: member.credentials?.email,
     });
@@ -143,7 +157,7 @@ const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
     const acceptResponse = yield* postJson(target, "/api/auth/accept-invitation", member, {
       invitationId: invitation.id,
     });
-    return withRefreshedSession(member, acceptResponse);
+    return withRefreshedSession(member, acceptResponse, adminSelector);
   });
 
 const apiKeyTemplate = [

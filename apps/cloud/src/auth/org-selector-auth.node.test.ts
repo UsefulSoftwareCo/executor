@@ -7,9 +7,11 @@ import { resolveSessionPrincipal } from "./workos-auth-provider";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
 
 // The org a console request resolves to is the URL's org (sent in the
-// `x-executor-organization` selector header), not the session's stored org —
-// with the session org as the fallback for non-console callers, and live
-// membership re-checked either way. This is what makes two browser tabs on
+// `x-executor-organization` selector header) — NEVER the session's stored org.
+// The sealed cookie's org is a browser-global pinned to whichever org WorkOS
+// last touched, so a fallback to it silently scopes a multi-org user's request
+// to the wrong org; a header-less request fails closed instead. Live
+// membership is re-checked either way. This is what makes two browser tabs on
 // different orgs independent.
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
@@ -27,6 +29,9 @@ const stubApiKeys = Layer.succeed(ApiKeyService)({
   listUserKeys: () => Effect.succeed([]),
   createUserKey: () => Effect.die("not used"),
   revokeUserKey: () => Effect.void,
+  listOrgKeys: () => Effect.die("auth resolution test does not list org API keys"),
+  createOrgKey: () => Effect.die("auth resolution test does not create org API keys"),
+  revokeOrgKey: () => Effect.die("auth resolution test does not revoke org API keys"),
 });
 
 const stubWorkOS = Layer.succeed(
@@ -35,7 +40,11 @@ const stubWorkOS = Layer.succeed(
     get: (_t, prop) => {
       if (prop === "authenticateRequest") {
         return () =>
-          Effect.succeed({ userId: MEMBER, email: "u@e2e.test", organizationId: SESSION_ORG });
+          Effect.succeed({
+            userId: MEMBER,
+            email: "u@e2e.test",
+            organizationId: SESSION_ORG,
+          });
       }
       if (prop === "listUserMemberships") {
         return (userId: string) =>
@@ -55,7 +64,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -66,7 +75,12 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug: org.id,
           createdAt,
         }),
-        getOrganization: async (id: string) => ({ id, name: `Org ${id}`, slug: id, createdAt }),
+        getOrganization: async (id: string) => ({
+          id,
+          name: `Org ${id}`,
+          slug: id,
+          createdAt,
+        }),
         // The URL slug maps to URL_ORG (the member's other org); any other slug
         // maps to an org the caller is NOT a member of, so membership rejects it.
         getOrganizationBySlug: async (slug: string) => ({
@@ -75,6 +89,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });
@@ -85,10 +100,15 @@ const run = (headers: Record<string, string>) =>
   );
 
 describe("resolveSessionPrincipal · URL org selector", () => {
-  it.effect("falls back to the session org when no selector header is sent", () =>
+  it.effect("fails closed when no selector header is sent", () =>
     Effect.gen(function* () {
-      const principal = yield* run({ cookie: "wos-session=x" });
-      expect(principal.organizationId, "scopes to the session org").toBe(SESSION_ORG);
+      // No fallback to the session org: the cookie's org is browser-global
+      // and can name a different org than the tab's URL for a multi-org user.
+      const error = yield* Effect.flip(run({ cookie: "wos-session=x" }));
+      expect(error, "rejects instead of scoping to the session org").toMatchObject({
+        _tag: "NoOrganization",
+        code: "no_organization",
+      });
     }),
   );
 
@@ -117,7 +137,10 @@ describe("resolveSessionPrincipal · URL org selector", () => {
       // The slug resolves to a real org id, but membership is re-checked — a
       // slug is a selector, not a trust boundary, so a non-member is rejected.
       const error = yield* Effect.flip(
-        run({ cookie: "wos-session=x", "x-executor-organization": "outsider-slug" }),
+        run({
+          cookie: "wos-session=x",
+          "x-executor-organization": "outsider-slug",
+        }),
       );
       expect(error).toMatchObject({ _tag: "NoOrganization" });
     }),

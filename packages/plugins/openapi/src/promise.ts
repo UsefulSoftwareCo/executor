@@ -6,6 +6,7 @@ export type {
   OpenApiSpecInput,
   OpenApiPreviewInput,
 } from "./sdk/plugin";
+export type { JsonPatchOperation, SpecOverrides } from "./sdk/spec-overrides";
 
 // Auth-template authoring helpers. Author apikey methods as canonical
 // placements, or request-shaped: `headers: { Authorization: ["Bearer ",

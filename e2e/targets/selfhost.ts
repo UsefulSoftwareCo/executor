@@ -2,6 +2,8 @@
 // on a throwaway data dir, with Better Auth + the bootstrap admin. MCP OAuth is
 // headless via `forcedMcpConsent` below. Boot lives in
 // setup/selfhost.globalsetup.ts.
+import { randomBytes } from "node:crypto";
+
 import { Effect } from "effect";
 
 import { e2ePort } from "../src/ports";
@@ -50,7 +52,7 @@ export const signInSession = async (
 // mcporter's `cookieConsentStrategy` only handles the old direct-code redirect,
 // so this completes the screen the way the page does: sign in, drive authorize,
 // then POST the same `/api/auth/oauth2/consent` grant the Allow button fires.
-const forcedMcpConsent =
+export const forcedMcpConsent =
   (baseUrl: string, credentials: { readonly email: string; readonly password: string }) =>
   async ({ authorizationUrl }: { authorizationUrl: string }): Promise<{ code: string }> => {
     const origin = new URL(baseUrl).origin;
@@ -98,6 +100,53 @@ const forcedMcpConsent =
     }
     return { code };
   };
+
+// A second, distinct member of the (single) selfhost org: admin invite →
+// invited email signup → Better Auth session. What multi-user scenarios use
+// until per-test invite-signup isolation lands in newIdentity itself.
+export const createInvitedIdentity = async (
+  baseUrl: string,
+  admin: Identity,
+  options?: { readonly role?: "admin" | "member"; readonly emailPrefix?: string },
+): Promise<Identity> => {
+  const cookie = admin.headers?.cookie;
+  if (typeof cookie !== "string") {
+    throw new Error("createInvitedIdentity: the admin identity has no Better Auth session cookie");
+  }
+  const origin = new URL(baseUrl).origin;
+
+  const invite = await fetch(new URL("/api/admin/invites", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie, origin },
+    body: JSON.stringify({ role: options?.role ?? "member" }),
+  });
+  if (invite.status !== 200) {
+    throw new Error(`createInvitedIdentity: invite create failed (${await invite.text()})`);
+  }
+  const inviteBody = (await invite.json()) as { readonly code?: string };
+  if (typeof inviteBody.code !== "string") {
+    throw new Error("createInvitedIdentity: invite response carried no redeemable code");
+  }
+
+  const email = `${options?.emailPrefix ?? "invited-member"}-${randomBytes(5).toString("hex")}@e2e.test`;
+  const password = "invited-member-password-123";
+  const signup = await fetch(new URL("/api/auth/sign-up/email", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ email, password, name: email, inviteCode: inviteBody.code }),
+  });
+  if (signup.status !== 200) {
+    throw new Error(`createInvitedIdentity: invited signup failed (${await signup.text()})`);
+  }
+
+  const session = await signInSession(baseUrl, { email, password });
+  return {
+    label: email,
+    credentials: { email, password },
+    headers: { cookie: session.cookieHeader },
+    cookies: session.cookies,
+  };
+};
 
 export const selfhostTarget = (): Target => ({
   name: "selfhost",

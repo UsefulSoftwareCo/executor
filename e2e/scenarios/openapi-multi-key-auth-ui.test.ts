@@ -13,6 +13,7 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -61,7 +62,7 @@ scenario(
 
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the Cloudflare-style integration", async () => {
-            await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+            await visit(page, `/integrations/${slug}`);
             await page.getByText("Connections").first().waitFor();
           });
 

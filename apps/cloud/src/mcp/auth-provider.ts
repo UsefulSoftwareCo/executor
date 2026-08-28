@@ -9,21 +9,27 @@
 // AuthOutcome:
 //   - missing bearer       -> Unauthorized (challenge: Bearer resource_metadata=…)
 //   - invalid token/api key -> Unauthorized (challenge: Bearer error="invalid_token" …)
-//   - transient JWKS infra  -> Unavailable (caught here; envelope renders 503 -32001)
+//   - transient JWKS OR membership-lookup infra -> Unavailable (caught here;
+//       envelope renders a retryable 503 -32001). A WorkOS blip during the live
+//       org check is a TRANSIENT failure, not evidence the org is gone, so it
+//       must NOT reach the Forbidden/destroy path below.
 //   - no org / revoked org  -> Forbidden ("No organization in session …", -32001).
-//       Because authenticate reads the mcp-session-id header to do the live org
-//       check, the envelope's dispose-on-Forbidden-with-sessionId path reproduces
-//       the old inline clearExistingSession.
+//       This requires a POSITIVE determination (the lookup SUCCEEDED and the org
+//       is absent), never a failed lookup. Because authenticate reads the
+//       mcp-session-id header to do the live org check, the envelope's
+//       dispose-on-Forbidden-with-sessionId path reproduces the old inline
+//       clearExistingSession.
 //   - verified + org allowed -> Authenticated(principal)
 //
-// The rich `mcp.request.annotate` client-fingerprint span (cloud-specific, no
-// envelope seam) is emitted from here so telemetry parity is preserved.
+// The rich client-fingerprint annotations (cloud-specific, no envelope seam)
+// are stamped onto the `mcp.request` span from here so telemetry parity is
+// preserved.
 //
 // The OAuth endpoints (/authorize, /token, /register) are NOT cloud's — they
 // live at WorkOS/AuthKit (external); only the two discovery docs are mounted.
 // ---------------------------------------------------------------------------
 
-import { Cause, Effect, Layer, Predicate, Result } from "effect";
+import { Effect, Layer, Predicate, Result } from "effect";
 
 import {
   authenticated,
@@ -37,6 +43,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { ApiKeyService } from "../auth/api-keys";
+import { isDefinitiveWorkOSDenial } from "../auth/errors";
 import { CoreSharedServices } from "../auth/workos";
 import {
   bearerChallengeFor,
@@ -48,6 +55,7 @@ import {
   McpAuthLive,
   McpOrganizationAuth,
   McpOrganizationAuthLive,
+  type AuthorizedMcpOrganization,
   type McpAuthResult,
   type VerifiedToken,
 } from "./auth";
@@ -62,18 +70,43 @@ const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
+// A transient WorkOS failure (429 / 5xx / timeout / network) during the live
+// membership lookup must NOT masquerade as "org revoked" — but the failure
+// channel alone is not enough to tell them apart: WorkOS also answers with
+// DEFINITIVE 4xx denials (401 revoked/invalid API key, 403, 404 deleted org)
+// that the SDK throws as typed exceptions. So the classification is:
+//   - lookup SUCCEEDS with `null`            -> genuine absence -> Forbidden
+//   - lookup FAILS with WorkOS 401/403/404   -> definitive denial -> Forbidden
+//       (fail CLOSED: WorkOS answered and said no; retrying cannot help)
+//   - lookup FAILS any other way (429/5xx/timeout/network/no status)
+//       -> transient -> retryable 503, session preserved
+// The status rides on `WorkOSError.status` (threaded from the SDK exception at
+// the service boundary in auth/workos.ts); `isDefinitiveWorkOSDenial` is the
+// single predicate. This mirrors the JWKS/api-key `reason: "system"`
+// classification already used on the verify path.
+const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
+  "Organization authorization temporarily unavailable - please retry";
+
 /**
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
- * organizationId) into the full {@link Principal} the seam validates. The
- * envelope only uses `accountId` + `organizationId` for ownership; cloud
- * resolves org name/email inside the DO, so the cosmetic identity fields carry
- * empty placeholders. `organizationId` is guaranteed non-null here because the
- * Forbidden branch already rejected the no-org case before Authenticated.
+ * organizationId) into the full {@link Principal} the seam validates.
+ *
+ * The org name and slug come from the record the live membership check just
+ * resolved — this is the whole point of `authorize` returning the record rather
+ * than an id. They used to be dropped here (`organizationName: ""`), which left
+ * the session Durable Object to re-read the same row over a fresh database
+ * connection on every cold init. `email` stays a placeholder: the envelope only
+ * uses `accountId` + `organizationId` for ownership, and nothing downstream
+ * reads it.
  */
-const principalFromToken = (token: VerifiedToken, organizationId: string): Principal => ({
+const principalFromToken = (
+  token: VerifiedToken,
+  organization: AuthorizedMcpOrganization,
+): Principal => ({
   accountId: token.accountId,
-  organizationId,
-  organizationName: "",
+  organizationId: organization.id,
+  organizationName: organization.name,
+  ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
   email: "",
   name: null,
   avatarUrl: null,
@@ -155,31 +188,63 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
           return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
         }
 
-        const organizationId = yield* orgAuth.authorize(token.accountId, organizationSelector).pipe(
-          Effect.catchCause((error) =>
-            Effect.gen(function* () {
-              yield* Effect.annotateCurrentSpan({
-                "mcp.auth.organization_authorize_error": Cause.pretty(error),
-              });
-              return null;
+        // Capture success-vs-failure explicitly instead of collapsing both into
+        // `null`, then classify the failure (see the classification table on
+        // ORGANIZATION_AUTHORIZE_UNAVAILABLE above): a definitive WorkOS 4xx
+        // denial fails CLOSED as Forbidden, anything else is a transient error
+        // that must become a retryable 503 with the session left intact.
+        const authorizeResult = yield* orgAuth
+          .authorize(token.accountId, organizationSelector)
+          .pipe(
+            Effect.result,
+            Effect.withSpan("mcp.auth.authorize_organization", {
+              attributes: {
+                "mcp.auth.organization_selector": organizationSelector,
+              },
             }),
-          ),
-          Effect.withSpan("mcp.auth.authorize_organization", {
-            attributes: { "mcp.auth.organization_selector": organizationSelector },
-          }),
-        );
+          );
 
         yield* annotateMcpRequest(request, { token, parseBody });
 
-        if (!organizationId) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
-        return authenticated(principalFromToken(token, organizationId));
+        if (Result.isFailure(authorizeResult)) {
+          if (isDefinitiveWorkOSDenial(authorizeResult.failure)) {
+            // WorkOS ANSWERED and said no (revoked key, forbidden, deleted
+            // org). Deterministic denial — same as a successful lookup with no
+            // membership, so the Forbidden/condemn path applies.
+            yield* Effect.annotateCurrentSpan({
+              "mcp.auth.outcome": "denied",
+              "mcp.auth.organization_authorize_error": String(authorizeResult.failure).slice(
+                0,
+                500,
+              ),
+            });
+            return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+          }
+          yield* Effect.annotateCurrentSpan({
+            "mcp.auth.outcome": "system_error",
+            "mcp.auth.system_error.reason": "organization_authorize",
+            "mcp.auth.organization_authorize_error": String(authorizeResult.failure).slice(0, 500),
+          });
+          return unavailable(ORGANIZATION_AUTHORIZE_UNAVAILABLE);
+        }
+
+        // Positive determination: the lookup succeeded. `null` here means the
+        // caller genuinely holds no active membership (revoked / never a member)
+        // — a real Forbidden, which the handler may act on by condemning the
+        // session.
+        const organization = authorizeResult.success;
+        if (!organization) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+        return authenticated(principalFromToken(token, organization));
       });
 
     const toOutcome = (request: Request, result: McpAuthResult): Effect.Effect<AuthOutcome> => {
       if (Predicate.isTagged(result, "Authorized")) {
         return finishAuthorized(request, result.token);
       }
-      return annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
+      return annotateMcpRequest(request, {
+        token: null,
+        parseBody: false,
+      }).pipe(
         Effect.as(
           unauthorized(
             bearerChallengeFor(
@@ -202,7 +267,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         Effect.result,
         Effect.flatMap((result) =>
           Result.isFailure(result)
-            ? annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
+            ? annotateMcpRequest(request, {
+                token: null,
+                parseBody: false,
+              }).pipe(
                 Effect.flatMap(() =>
                   Effect.annotateCurrentSpan({
                     "mcp.auth.outcome": "system_error",

@@ -11,6 +11,7 @@ import type {
 import {
   annotateToolResultOutcome,
   authToolFailure,
+  isUserActionableError,
   isToolResult,
   ToolResult,
   ToolAddress,
@@ -30,8 +31,12 @@ const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: str
 const TOOL_FILE_TYPESCRIPT =
   '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
 
-const wrapOutputTypeScript = (outputTypeScript?: string): string =>
-  `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+const wrapOutputTypeScript = (outputTypeScript?: string, marker?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+
+/** Inline provenance for observed types — a model that copies only the type
+ *  string still sees the hint, since the compact render drops descriptions. */
+const OBSERVED_TYPE_MARKER = " /* observed; may be incomplete */";
 
 const withToolResultDefinitions = (
   definitions?: Record<string, string>,
@@ -75,6 +80,7 @@ type DescribedTool = {
   readonly description?: string;
   readonly inputTypeScript?: string;
   readonly outputTypeScript?: string;
+  readonly outputTypeScriptNote?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
   readonly error?: {
@@ -93,7 +99,8 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     {
       path: "search",
       name: "search",
-      description: "Search available Executor tools.",
+      description:
+        "Search available Executor tools. An empty query with a namespace enumerates that integration's full catalog, sorted by path.",
       inputTypeScript: "{ query: string; namespace?: string; limit?: number; offset?: number; }",
       outputTypeScript:
         "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
@@ -104,16 +111,16 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
     },
   ],
   [
-    "executor.sources.list",
+    "executor.integrations.list",
     {
-      path: "executor.sources.list",
-      name: "executor.sources.list",
+      path: "executor.integrations.list",
+      name: "executor.integrations.list",
       description: "List configured Executor integrations.",
       inputTypeScript: "{ query?: string; limit?: number; offset?: number; }",
       outputTypeScript:
-        "{ items: ExecutorSourceListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+        "{ items: ExecutorIntegrationListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
       typeScriptDefinitions: {
-        ExecutorSourceListItem:
+        ExecutorIntegrationListItem:
           "{ id: string; name: string; description?: string; kind: string; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
       },
     },
@@ -175,6 +182,7 @@ const credentialResolutionToolFailure = (input: {
   readonly label: string;
   readonly message: string;
   readonly reauthRequired?: boolean;
+  readonly oauthErrorCode?: string;
 }) =>
   authToolFailure({
     code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
@@ -186,9 +194,43 @@ const credentialResolutionToolFailure = (input: {
       kind: "oauth",
       label: input.label,
     },
+    // The AS's own RFC 6749 §5.2 verdict, when there was one — structured so
+    // the agent (and anyone reading the failure) can distinguish a dead grant
+    // from a misconfigured app without parsing the message.
+    ...(input.oauthErrorCode !== undefined
+      ? { upstream: { details: { oauthErrorCode: input.oauthErrorCode } } }
+      : {}),
   });
 
+const bindingToolFailure = (value: unknown): ToolError | null => {
+  if (!Predicate.isTagged(value, "BindingError")) return null;
+  const maybeBinding = value as {
+    readonly message?: unknown;
+    readonly role?: unknown;
+    readonly integration?: unknown;
+    readonly requestedConnection?: unknown;
+  };
+  const details: Record<string, string> = {};
+  if (typeof maybeBinding.role === "string") details.role = maybeBinding.role;
+  if (typeof maybeBinding.integration === "string") details.integration = maybeBinding.integration;
+  if (typeof maybeBinding.requestedConnection === "string") {
+    details.requestedConnection = maybeBinding.requestedConnection;
+  }
+  return {
+    code: "binding_error",
+    message:
+      typeof maybeBinding.message === "string" ? maybeBinding.message : "Tool binding failed.",
+    ...(Object.keys(details).length > 0 ? { details } : {}),
+  };
+};
+
 const expectedToolFailure = (value: unknown): ToolError | null => {
+  if (isUserActionableError(value)) {
+    return {
+      code: value.code,
+      message: value.userMessage,
+    };
+  }
   if (Predicate.isTagged(value, "ToolNotFoundError") && "address" in value) {
     const suggestions =
       "suggestions" in value && Array.isArray(value.suggestions)
@@ -210,6 +252,14 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
   }
   if (Predicate.isTagged(value, "ToolInvocationError")) {
     const cause = (value as { readonly cause?: unknown }).cause;
+    if (isUserActionableError(cause)) {
+      return {
+        code: cause.code,
+        message: cause.userMessage,
+      };
+    }
+    const binding = bindingToolFailure(cause);
+    if (binding) return binding;
     const issues = validationIssues(cause);
     if (issues) {
       return {
@@ -232,7 +282,7 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
 /**
  * Extract the integration namespace from a tool path. v2 addresses look like
  * `<integration>.<owner>.<connection>.<tool>`; static fqids look like
- * `<source>.<op>`. We take the first segment as a cheap, non-lookup namespace
+ * `<integration>.<op>`. We take the first segment as a cheap, non-lookup namespace
  * for the span attribute so it's always populated without a catalog read.
  */
 const extractNamespace = (path: string): string => {
@@ -272,6 +322,7 @@ export const makeExecutorToolInvoker = (
             label: `${err.integration}.${err.owner}.${err.name}`,
             message: err.message,
             reauthRequired: err.reauthRequired,
+            oauthErrorCode: err.oauthErrorCode,
           }),
         ),
       ),
@@ -351,7 +402,7 @@ export type ToolDiscoveryResult = {
   readonly score: number;
 };
 
-export type ExecutorSourceListItem = {
+export type ExecutorIntegrationListItem = {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
@@ -377,7 +428,7 @@ export interface ToolDiscoveryProvider {
 
 /**
  * Page of results from a list-style discovery tool. Shared by
- * `tools.search` and `tools.executor.sources.list` so the model sees one
+ * `tools.search` and `tools.executor.integrations.list` so the model sees one
  * consistent shape:
  *
  *   - `items`      — the page (slice).
@@ -618,15 +669,20 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ...(options?.namespace ? { "executor.search.namespace": options.namespace } : {}),
   });
 
-  const empty: PagedResult<ToolDiscoveryResult> = {
-    items: [],
-    total: 0,
-    hasMore: false,
-    nextOffset: null,
-  };
+  const emptyQuery = normalizeSearchText(query).length === 0;
+  const hasNamespace =
+    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0;
 
-  if (normalizeSearchText(query).length === 0) {
-    return empty;
+  // An empty query with no namespace stays empty: it carries neither a
+  // ranking signal nor a scope, and listing the whole workspace "by default"
+  // is exactly the arbitrary dump the ranked search refuses to be.
+  if (emptyQuery && !hasNamespace) {
+    return {
+      items: [],
+      total: 0,
+      hasMore: false,
+      nextOffset: null,
+    } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
   const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
@@ -639,11 +695,31 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ),
   );
   const searchable = all.map(toSearchableTool);
-  const ranked = searchable
-    .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-    .map((tool: SearchableTool) => scoreToolMatch(tool, query))
-    .filter(Predicate.isNotNull)
-    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  // An empty query WITH a namespace is enumeration, not search: there is no
+  // ranking signal, so the namespace's whole catalog comes back sorted by
+  // path (score 0) and paged. Enumeration scopes by EXACT integration slug —
+  // the token-prefix `matchesNamespace` used for ranked search would also
+  // sweep in prefix-sibling integrations (namespace "google" matching
+  // google_gmail and google_sheets), which would silently break the census
+  // guarantee: `total` here must reconcile against
+  // `executor.integrations.list`'s per-integration toolCount.
+  const ranked: readonly ToolDiscoveryResult[] = emptyQuery
+    ? searchable
+        .filter((tool) => tool.integration === options?.namespace?.trim())
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .map((tool) => ({
+          path: tool.path,
+          name: tool.name,
+          integration: tool.integration,
+          score: 0,
+          ...(tool.description !== undefined ? { description: tool.description } : {}),
+        }))
+    : searchable
+        .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+        .filter(Predicate.isNotNull)
+        .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
 
@@ -661,10 +737,10 @@ export const defaultToolDiscoveryProvider: ToolDiscoveryProvider = {
     searchTools(executor, query, limit, { namespace, offset }),
 };
 
-/** What `tools.executor.sources.list()` calls inside the sandbox. v2: the
- *  "sources" are the integration catalog; tool counts come from the
+/** What `tools.executor.integrations.list()` calls inside the sandbox. v2: the
+ *  integrations are the integration catalog; tool counts come from the
  *  per-connection tool list. */
-export const listExecutorSources = Effect.fn("executor.sources.list")(function* (
+export const listExecutorIntegrations = Effect.fn("executor.integrations.list")(function* (
   executor: Executor,
   options?: {
     readonly query?: string;
@@ -718,7 +794,7 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
           id: String(integration.slug),
           name: String(integration.slug),
           // The integration's catalog description — user-editable context the
-          // agent can use to pick a source. Omitted when it just repeats the
+          // agent can use to pick an integration. Omitted when it just repeats the
           // slug or display name (no information beyond identity).
           ...(integration.description &&
           integration.description.toLowerCase() !== String(integration.slug).toLowerCase() &&
@@ -729,17 +805,17 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
           canRemove: integration.canRemove,
           canRefresh: integration.canRefresh,
           toolCount: toolCountByIntegration.get(String(integration.slug)) ?? 0,
-        }) satisfies ExecutorSourceListItem,
+        }) satisfies ExecutorIntegrationListItem,
     )
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
   const page = paginate(sortedWithCounts, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
-    "executor.sources.candidate_count": integrations.length,
-    "executor.sources.match_count": sortedWithCounts.length,
-    "executor.sources.result_count": page.items.length,
-    "executor.sources.has_more": page.hasMore,
+    "executor.integrations.candidate_count": integrations.length,
+    "executor.integrations.match_count": sortedWithCounts.length,
+    "executor.integrations.result_count": page.items.length,
+    "executor.integrations.has_more": page.hasMore,
   });
   return page;
 });
@@ -794,7 +870,18 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    outputTypeScript: wrapOutputTypeScript(
+      schema.outputTypeScript,
+      schema.outputSchemaSource === "observed" ? OBSERVED_TYPE_MARKER : undefined,
+    ),
+    // The compact TS render drops the schema's provenance description, so an
+    // observed (runtime-inferred) shape gets an explicit note: the model
+    // should treat the fields as reliable but not exhaustive.
+    ...(schema.outputSchemaSource === "observed"
+      ? {
+          outputTypeScriptNote: `data type observed from ${schema.outputSchemaObservations ?? 1} live response(s), not declared by the provider; fields may be incomplete.`,
+        }
+      : {}),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
   return described;

@@ -9,6 +9,7 @@ import {
 } from "@executor-js/react/multiplayer/auth-context";
 import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 
+import { writeLastOrgCookie } from "../auth/last-org-cookie";
 import { CloudApiClient } from "./client";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,8 @@ export const organizationsAtom = Atom.refreshOnWindowFocus(
 
 export const createOrganization = CloudApiClient.mutation("cloudAuth", "createOrganization");
 
+export const deleteOrganization = CloudApiClient.mutation("cloudAuth", "deleteOrganization");
+
 export const pendingInvitationsAtom = CloudApiClient.query("cloudAuth", "pendingInvitations", {
   timeToLive: "1 minute",
   reactivityKeys: [ReactivityKey.auth],
@@ -55,9 +58,22 @@ export const AuthProvider = ({
 
   const onIdentify = React.useCallback<IdentifyFn>(
     (state) => {
+      // Record the org this browser is verifiably viewing: onIdentify fires
+      // only on resolved `/account/me` answers (never hint optimism), and that
+      // call is URL-scoped, so `state.organization` IS the org of the current
+      // tab. The cookie makes the next bare entry (`/`) and the next login
+      // land here instead of the session's login-time org — see
+      // ../auth/last-org-cookie.ts. Deliberately not cleared on signout: the
+      // preference is the point of surviving the session.
+      if (state.status === "authenticated" && state.organization) {
+        writeLastOrgCookie(state.organization.slug);
+      }
       if (!posthog) return;
       if (state.status === "authenticated") {
-        posthog.identify(state.user.id, { email: state.user.email, name: state.user.name });
+        posthog.identify(state.user.id, {
+          email: state.user.email,
+          name: state.user.name,
+        });
         if (state.organization) {
           posthog.group("organization", state.organization.id, {
             name: state.organization.name,

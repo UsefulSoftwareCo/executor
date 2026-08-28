@@ -408,14 +408,14 @@ export const buildSearchToolsCode = (input: {
   return `return await tools.search(${JSON.stringify(payload)});`;
 };
 
-export const buildListSourcesCode = (input: { query?: string; limit: number }): string => {
+export const buildListIntegrationsCode = (input: { query?: string; limit: number }): string => {
   const payload: Record<string, unknown> = {
     limit: input.limit,
   };
   if (input.query && input.query.trim().length > 0) {
     payload.query = input.query;
   }
-  return `return await tools.executor.sources.list(${JSON.stringify(payload)});`;
+  return `return await tools.executor.integrations.list(${JSON.stringify(payload)});`;
 };
 
 export const buildDescribeToolCode = (toolPath: string): string =>

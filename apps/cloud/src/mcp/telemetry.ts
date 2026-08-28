@@ -102,8 +102,21 @@ const InitializeParams = Schema.Struct({
   capabilities: Schema.optional(UnknownRecord),
 });
 
-const NamedParams = Schema.Struct({ name: Schema.optional(Schema.String) });
+const NamedParams = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  arguments: Schema.optional(UnknownRecord),
+});
 const UriParams = Schema.Struct({ uri: Schema.optional(Schema.String) });
+
+// `notifications/cancelled` carries no JSON-RPC id of its own, but its params
+// name the request the client gave up on. Surfacing that id as
+// `mcp.rpc.cancelled_id` makes "a client gave up" joinable to the exact
+// `tools/call` (and the execution spans, which carry `mcp.rpc.id`) that hung —
+// the best available proxy for a killed execution.
+const CancelledParams = Schema.Struct({
+  requestId: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+  reason: Schema.optional(Schema.String),
+});
 
 const decodeJsonRpcEnvelopeString = Schema.decodeUnknownOption(
   Schema.fromJsonString(JsonRpcEnvelope),
@@ -111,6 +124,7 @@ const decodeJsonRpcEnvelopeString = Schema.decodeUnknownOption(
 const decodeInitializeParams = Schema.decodeUnknownOption(InitializeParams);
 const decodeNamedParams = Schema.decodeUnknownOption(NamedParams);
 const decodeUriParams = Schema.decodeUnknownOption(UriParams);
+const decodeCancelledParams = Schema.decodeUnknownOption(CancelledParams);
 const decodeElicitationReplyResult = Schema.decodeUnknownOption(ElicitationReplyResult);
 
 const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<JsonRpcEnvelope>> =>
@@ -122,6 +136,29 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
     Effect.catchCause(() => Effect.succeed(Option.none())),
     Effect.withSpan("mcp.request.read_json_rpc"),
   );
+
+// Managed-cloud capture of the executed script, on the `mcp.request` span
+// beside the client fingerprint. This module is cloud-only by construction —
+// local/self-host telemetry never records content — and cloud persists
+// executions for the execution-history feature anyway, so the script is
+// already tenant-visible data. Capped so a pathological payload can't
+// balloon the span.
+const MAX_CODE_ATTR_CHARS = 10_000;
+
+const executeCodeAttrs = (
+  name: string | undefined,
+  args: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  if (name !== "execute" && name !== "execute-action") return {};
+  const code = args?.["code"];
+  if (typeof code !== "string") return {};
+  return {
+    "mcp.execute.code":
+      code.length > MAX_CODE_ATTR_CHARS
+        ? `${code.slice(0, MAX_CODE_ATTR_CHARS)}\n… [truncated ${code.length - MAX_CODE_ATTR_CHARS} chars]`
+        : code,
+  };
+};
 
 const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
   const params = envelope.params ?? {};
@@ -143,7 +180,10 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
     Match.when("tools/call", () =>
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
-        onSome: ({ name }) => (name ? { "mcp.tool.name": name } : {}),
+        onSome: ({ name, arguments: args }) => ({
+          ...(name ? { "mcp.tool.name": name } : {}),
+          ...executeCodeAttrs(name, args),
+        }),
       }),
     ),
     Match.whenOr("resources/read", "resources/subscribe", () =>
@@ -156,6 +196,15 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,
         onSome: ({ name }) => (name ? { "mcp.prompt.name": name } : {}),
+      }),
+    ),
+    Match.when("notifications/cancelled", () =>
+      Option.match(decodeCancelledParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
+        onSome: ({ requestId, reason }) => ({
+          ...(requestId !== undefined && { "mcp.rpc.cancelled_id": String(requestId) }),
+          ...(reason && { "mcp.rpc.cancelled_reason": reason }),
+        }),
       }),
     ),
     Match.option,
@@ -217,5 +266,4 @@ export const annotateMcpRequest = (
     };
 
     yield* Effect.annotateCurrentSpan(attrs);
-    yield* Effect.annotateCurrentSpan(attrs).pipe(Effect.withSpan("mcp.request.annotate"));
   });

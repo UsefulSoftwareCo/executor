@@ -1,5 +1,30 @@
+diff --git a/node_modules/agents/.bun-tag-37e67b70862be2b2 b/.bun-tag-37e67b70862be2b2
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/agents/.bun-tag-61b2f1517ab5ced4 b/.bun-tag-61b2f1517ab5ced4
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/agents/.bun-tag-c0c639aa2299e502 b/.bun-tag-c0c639aa2299e502
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/agent-tool-types-CNyE1iz_.d.ts b/dist/agent-tool-types-CNyE1iz_.d.ts
+index 571eececebd5a1eaf7f2fbf5278801c4d34728ba..317e526489fcd3fd477a50525da0df666253bf0b 100644
+--- a/dist/agent-tool-types-CNyE1iz_.d.ts
++++ b/dist/agent-tool-types-CNyE1iz_.d.ts
+@@ -480,7 +480,10 @@ declare class DurableObjectEventStore implements EventStore {
+   private readonly seqByStream;
+   private readonly seqInit;
+   constructor(storage: DurableObjectStorage);
+-  storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId>;
++  /** Resolves `undefined` for a message too large for DO storage's 128 KiB
++   *  per-value cap: the event is delivered live without a replay id rather
++   *  than failing the send. */
++  storeEvent(streamId: StreamId, message: JSONRPCMessage): Promise<EventId | undefined>;
+   getStreamIdForEventId(eventId: EventId): Promise<StreamId | undefined>;
+   replayEventsAfter(
+     lastEventId: EventId,
 diff --git a/dist/mcp/index.d.ts b/dist/mcp/index.d.ts
-index c8fad448e8797b89690a99d93490d1363851b225..439da01e789713d217778e8bdebfa1a9d52a71e2 100644
+index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202fe75b3bd 100644
 --- a/dist/mcp/index.d.ts
 +++ b/dist/mcp/index.d.ts
 @@ -29,6 +29,7 @@ import {
@@ -19,7 +44,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..439da01e789713d217778e8bdebfa1a9
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576cedf13d8f 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..cb04fc39d14db9f7fcdfa2613b1c5babd1219e17 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -62,7 +87,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  				request.headers.forEach((value, key) => {
  					existingHeaders[key] = value;
  				});
-@@ -206,45 +215,71 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -206,45 +215,99 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  						jsonrpc: "2.0"
  					});
  					return new Response(body, { status: 500 });
@@ -74,6 +99,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +					}
 +					ws.accept();
 +					const __closeSse = () => {
++						if (__sseClosed) return;
 +						__sseClosed = true;
 +						try {
 +							clearInterval(keepAlive);
@@ -83,6 +109,18 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +						} catch {}
 +						writer.abort(new Error("SSE client not draining")).catch(() => {});
 +					};
++					const __markSseClientClosed = () => {
++						if (__sseClosed) return;
++						__sseClosed = true;
++						try {
++							clearInterval(keepAlive);
++						} catch {}
++						writer.abort(new Error("SSE client disconnected")).catch(() => {});
++					};
++					writer.closed?.catch(() => {
++						__markSseClientClosed();
++					});
++					request.signal.addEventListener("abort", __closeSse, { once: true });
 +					const __forwardSse = (frame) => {
 +						if (__sseClosed) return __writeChain;
 +						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
@@ -90,7 +128,9 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +							return Promise.resolve();
 +						}
 +						__pendingBytes += frame.byteLength;
-+						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {}).finally(() => {
++						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {
++							__closeSse();
++						}).finally(() => {
 +							__pendingBytes -= frame.byteLength;
 +						});
 +						return __writeChain;
@@ -126,9 +166,22 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +								const writePromise = __forwardSse(encoder.encode(message.event));
 +								if (message.close) {
 +									clearInterval(keepAlive);
-+									ws?.close();
 +									await writePromise;
-+									await writer.close().catch(() => {});
++									await writer.close();
++									if (!__sseClosed && !request.signal.aborted) {
++										// workerd resolves writer.close() even when the client
++										// canceled the POST response body, and request.signal does
++										// not reliably fire for that cancellation, so a successful
++										// close is NOT proof of delivery. Never ack POST-stream
++										// deliveries: the DO keeps each response persisted for its
++										// own Last-Event-ID recovery or an explicitly cursorless
++										// fresh GET. A client that DID receive the result closes the
++										// POST body reader without recovery, so the worst case of
++										// this at-least-once choice is a duplicate on that fresh-GET
++										// fallback, never a response injected into another cursor's
++										// recovery stream.
++										ws?.close(1000, "SSE response delivered");
++									}
 +								}
  						} catch (error) {
  							console.error("Error forwarding message to SSE:", error);
@@ -160,7 +213,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  					}
  					onClose().catch(console.error);
  				});
-@@ -279,10 +314,16 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -279,10 +342,16 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  					id: null,
  					jsonrpc: "2.0"
  				}), { status: 400 });
@@ -181,7 +234,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  					props: ctx.props,
  					jurisdiction: options.jurisdiction
  				});
-@@ -306,27 +347,86 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -306,27 +375,116 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  				if (!ws) {
  					await writer.close();
  					return new Response("Failed to establish WS to DO", { status: 500 });
@@ -191,6 +244,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +					}
 +					ws.accept();
 +					const __abortSse = () => {
++						if (__sseClosed) return;
 +						__sseClosed = true;
 +						try {
 +							clearInterval(keepAlive);
@@ -200,7 +254,12 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +						} catch {}
 +						writer.abort(new Error("SSE client not draining")).catch(() => {});
 +					};
++					writer.closed?.catch(() => {
++						__abortSse();
++					});
++					request.signal.addEventListener("abort", __abortSse, { once: true });
 +					const __closeSseGracefully = () => {
++						if (__sseClosed) return __writeChain;
 +						__sseClosed = true;
 +						try {
 +							clearInterval(keepAlive);
@@ -239,7 +298,9 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +							return Promise.resolve();
 +						}
 +						__pendingBytes += frame.byteLength;
-+						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {}).finally(() => {
++						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {
++							__abortSse();
++						}).finally(() => {
 +							__pendingBytes -= frame.byteLength;
 +						});
 +						return __writeChain;
@@ -256,7 +317,29 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
 +								const data = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
 +								const message = JSON.parse(data);
 +								if (message.type !== "cf_mcp_agent_event") return;
-+								__forwardSse(encoder.encode(message.event));
++								const writePromise = __forwardSse(encoder.encode(message.event));
++								if (message.close) {
++									clearInterval(keepAlive);
++									await writePromise;
++									await writer.close();
++									if (!__sseClosed && !request.signal.aborted) {
++										// Storage is cleared only on this ack, which fires only
++										// after writer.close() resolved with the client still
++										// attached; a replayed response enqueued into a dead GET
++										// never acks and stays replayable. `ackStreamIds` lets a
++										// replay-complete frame confirm several replayed streams
++										// at once; a live final response carries its `streamId`.
++										const ackStreamIds = Array.isArray(message.ackStreamIds) ? message.ackStreamIds : message.streamId ? [message.streamId] : [];
++										for (const ackStreamId of ackStreamIds) try {
++											ws.send(JSON.stringify({
++												type: "cf_mcp_delivery_ack",
++												eventId: message.eventId,
++												streamId: ackStreamId
++											}));
++										} catch {}
++										ws?.close(1000, "SSE response delivered");
++									}
++								}
 +							}
  						onMessage(event).catch(console.error);
  					} catch (e) {
@@ -283,7 +366,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  				return new Response(readable, {
  					headers: {
  						"Cache-Control": "no-cache",
-@@ -389,10 +489,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -389,10 +547,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  		const url = new URL(request.url);
  		if (request.method === "GET" && basePattern.test(url)) {
  			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
@@ -304,7 +387,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  			endpointUrl.pathname = encodeURI(`${basePath}/message`);
  			endpointUrl.searchParams.set("sessionId", sessionId);
  			const endpointMessage = `event: endpoint\ndata: ${endpointUrl.pathname + endpointUrl.search + endpointUrl.hash}\n\n`;
-@@ -414,35 +520,94 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -414,35 +578,94 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  				console.error("Failed to establish WebSocket connection");
  				await writer.close();
  				return new Response("Failed to establish WebSocket connection", { status: 500 });
@@ -417,11 +500,554 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576c
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -1698,6 +1863,6 @@ var McpAgent = class McpAgent extends Agent {
+@@ -586,6 +809,7 @@ var StreamableHTTPServerTransport = class {
+ 	constructor(options) {
+ 		this._started = false;
+ 		this._streamResponseIds = /* @__PURE__ */ new Map();
++		this._replayInFlight = /* @__PURE__ */ new Map();
+ 		const { agent } = getCurrentAgent();
+ 		if (!agent) throw new Error("McpAgent was not found in Transport constructor");
+ 		this._agent = agent;
+@@ -627,23 +851,74 @@ var StreamableHTTPServerTransport = class {
+ 			const resumedStreamId = await this._eventStore.getStreamIdForEventId?.(lastEventId);
+ 			if (resumedStreamId) {
+ 				const resumeState = { streamId: resumedStreamId };
+-				if (resumedStreamId === STANDALONE_STREAM_ID) resumeState._standaloneSse = true;
+-				else {
++				if (resumedStreamId === STANDALONE_STREAM_ID) {
++					resumeState._standaloneSse = true;
++					resumeState._attachedAt = Date.now();
++				} else {
+ 					const persistedReqs = await agent.getStreamRequestIds(resumedStreamId);
+ 					if (persistedReqs && persistedReqs.length > 0) resumeState.requestIds = persistedReqs;
+ 				}
+-				this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
++				// A POST stream has a single owner, so resuming it takes the
++				// stream over from any prior connection. The standalone stream
++				// id is shared by EVERY listener the client holds, so it must
++				// never be superseded: with two listeners (mcp-remote holds
++				// two), each eviction triggers the SDK's reconnect, which
++				// evicts the other listener, which reconnects — a permanent
++				// mutual-eviction storm. Standalone resumes attach alongside.
++				if (resumedStreamId !== STANDALONE_STREAM_ID) this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
+ 				connection.setState(resumeState);
+-				await this.replayEvents(lastEventId);
++				const ackStreamIds = [];
++				const replayedResponse = await this.replayEvents(lastEventId);
++				if (resumedStreamId !== STANDALONE_STREAM_ID && replayedResponse) ackStreamIds.push(resumedStreamId);
++				// Last-Event-ID identifies one disconnected stream. Keep replay
++				// scoped to that stream: mixing another POST's response into this
++				// recovery stream can make a client stop reconnecting before the
++				// response it is actually waiting for arrives.
++				// Storage is NOT cleared here: replayed events are only enqueued
++				// on the WS bridge, and workerd cannot tell a dead client from a
++				// live one at write time. The close frame below makes the bridge
++				// drain the writes, close the HTTP response, and send one
++				// cf_mcp_delivery_ack per replayed stream only if the client was
++				// still attached; McpAgent.onMessage clears storage on that ack.
++				// A dead recovery GET therefore leaves everything replayable.
++				if (ackStreamIds.length > 0) this.sendReplayComplete(connection, ackStreamIds);
+ 				return;
+ 			}
+ 		}
+-		this.supersedePriorStreamConnections(agent, connection.id, STANDALONE_STREAM_ID);
++		// A fresh listener attaches ALONGSIDE any existing ones — see the
++		// supersede note in the resume branch above for why evicting the
++		// incumbent (latest-listener-wins) storms with multi-listener
++		// clients. Dead listeners are reaped by bridge keepalive write
++		// failures and max-age rotation, and sendStandalone routes to the
++		// newest attachment.
+ 		const standaloneState = {
+ 			streamId: STANDALONE_STREAM_ID,
+-			_standaloneSse: true
++			_standaloneSse: true,
++			_attachedAt: Date.now()
+ 		};
+ 		connection.setState(standaloneState);
++		const replayedStreamIds = await this.replayUndeliveredResponsesOnFreshGet(agent, connection);
++		// A GET without Last-Event-ID has no identified stream to preserve, so
++		// retain the existing fallback that drains completed POST responses.
++		// Same delivery-confirmed clearing as the resume branch above. When
++		// nothing was replayed no close frame is sent and this stays the
++		// session's long-lived standalone listener.
++		if (replayedStreamIds.length > 0) this.sendReplayComplete(connection, replayedStreamIds);
++	}
++	/**
++	* Ask the Worker bridge to flush everything queued on `connection`,
++	* close the client-facing SSE response, and, only if the writer close
++	* completed with the client still attached, echo one
++	* `cf_mcp_delivery_ack` per stream id in `ackStreamIds`. The event
++	* payload is an SSE comment so client parsers drop it.
++	*/
++	sendReplayComplete(connection, ackStreamIds) {
++		return connection.send(JSON.stringify({
++			type: "cf_mcp_agent_event",
++			event: ": replay-complete\n\n",
++			ackStreamIds,
++			close: true
++		}));
+ 	}
+ 	/**
+ 	* Close any connection (other than `selfId`) currently bound to
+@@ -651,6 +926,9 @@ var StreamableHTTPServerTransport = class {
+ 	* Closing rather than mutating sibling state mirrors how the SDK's
+ 	* single `_streamMapping` entry gives last-writer-wins for free, and
+ 	* keeps `send()` from routing to a stale bridge.
++	*
++	* Only ever called for single-owner POST streams. The shared
++	* STANDALONE_STREAM_ID must not go through here — see handleGetRequest.
+ 	*/
+ 	supersedePriorStreamConnections(agent, selfId, streamId) {
+ 		for (const other of agent.getConnections()) {
+@@ -664,12 +942,14 @@ var StreamableHTTPServerTransport = class {
+ 	* Only used when resumability is enabled
+ 	*/
+ 	async replayEvents(lastEventId) {
+-		if (!this._eventStore) return;
++		if (!this._eventStore) return false;
+ 		const { connection } = getCurrentAgent();
+ 		if (!connection) throw new Error("Connection was not available in replayEvents");
++		let replayedResponse = false;
+ 		try {
+ 			await this._eventStore?.replayEventsAfter(lastEventId, { send: async (eventId, message) => {
+ 				try {
++					if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) replayedResponse = true;
+ 					this.writeSSEEvent(connection, message, eventId);
+ 				} catch (error) {
+ 					this.onerror?.(error);
+@@ -678,6 +958,45 @@ var StreamableHTTPServerTransport = class {
+ 		} catch (error) {
+ 			this.onerror?.(error);
+ 		}
++		return replayedResponse;
++	}
++	/**
++	* For a fresh GET without Last-Event-ID, enqueue every undelivered
++	* stream's events on `connection` and return the stream ids whose
++	* replay included a response. A cursor-bearing GET never calls this:
++	* MCP requires that replay to stay on the stream the cursor identifies.
++	* Deliberately does NOT clear storage: the caller sends a replay-complete
++	* close frame and the bridge acks each stream only after the client-facing
++	* writer drained and closed with the client still attached.
++	*/
++	async replayUndeliveredResponsesOnFreshGet(agent, connection) {
++		const replayedStreamIds = [];
++		if (!this._eventStore?.replayEventsForStream) return replayedStreamIds;
++		const liveConnectionIds = new Set(Array.from(agent.getConnections(), (conn) => conn.id));
++		const streamIds = await agent.getUndeliveredStreamIds();
++		for (const streamId of streamIds) {
++			// Listeners now attach alongside each other, so two fresh GETs can
++			// arrive within milliseconds (a multi-listener client starting up)
++			// and both see the same undelivered markers. Without this guard
++			// each would replay the same response and the client would receive
++			// it twice. First live replayer wins; if it dies before its ack,
++			// its id drops out of getConnections() and a later GET replays the
++			// stream again — the at-least-once contract is preserved.
++			const replayingConnectionId = this._replayInFlight.get(streamId);
++			if (replayingConnectionId !== void 0 && replayingConnectionId !== connection.id && liveConnectionIds.has(replayingConnectionId)) continue;
++			this._replayInFlight.set(streamId, connection.id);
++			let replayedResponse = false;
++			await this._eventStore.replayEventsForStream(streamId, { send: async (eventId, message) => {
++				try {
++					if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) replayedResponse = true;
++					this.writeSSEEvent(connection, message, eventId);
++				} catch (error) {
++					this.onerror?.(error);
++				}
++			} });
++			if (replayedResponse) replayedStreamIds.push(streamId);
++		}
++		return replayedStreamIds;
+ 	}
+ 	/**
+ 	* Writes an event to the SSE stream with proper formatting
+@@ -689,10 +1008,65 @@ var StreamableHTTPServerTransport = class {
+ 		return connection.send(JSON.stringify({
+ 			type: "cf_mcp_agent_event",
+ 			event: eventData,
++			eventId,
++			streamId: eventId ? eventId.slice(0, eventId.lastIndexOf(":")) : void 0,
+ 			close
+ 		}));
+ 	}
+ 	/**
++	* Persist and write the priming SSE event for a freshly opened POST
++	* stream. The stored message is a benign JSON-RPC notification so that
++	* if a plain recovery GET ever replays this stream via
++	* {@link writeSSEEvent} (which forces `event: message`), a compliant
++	* client parses and ignores it rather than erroring. The live priming
++	* frame, however, uses a non-`message` SSE event type so the SDK
++	* records the id (setting hasPrimingEvent / lastEventId) WITHOUT
++	* dispatching it as a JSON-RPC message: its SSE loop skips any event
++	* whose type is not `message`. A data line is required because the
++	* SDK's SSE parser drops events with empty data before recording the
++	* id, so an id-only frame would not prime.
++	*/
++	async emitPrimingEvent(agent, connection, streamId) {
++		if (!this._eventStore) return;
++		const primingMessage = {
++			jsonrpc: "2.0",
++			method: "notifications/message",
++			params: {
++				level: "debug",
++				data: "mcp-stream-priming"
++			}
++		};
++		let eventId;
++		try {
++			eventId = await this._eventStore.storeEvent(streamId, primingMessage);
++		} catch (error) {
++			this.onerror?.(error);
++			return;
++		}
++		if (!eventId) return;
++		try {
++			this.writePrimingSSEEvent(connection, primingMessage, eventId);
++		} catch (error) {
++			this.onerror?.(error);
++		}
++	}
++	/**
++	* Write a priming SSE frame: `event: mcp-priming`, an `id:` carrying a
++	* real replayable event-store id, and a data line the SDK ignores
++	* because the event type is not `message`. Never sets `close`.
++	*/
++	writePrimingSSEEvent(connection, message, eventId) {
++		let eventData = "event: mcp-priming\n";
++		eventData += `id: ${eventId}\n`;
++		eventData += `data: ${JSON.stringify(message)}\n\n`;
++		return connection.send(JSON.stringify({
++			type: "cf_mcp_agent_event",
++			event: eventData,
++			eventId,
++			streamId: eventId.slice(0, eventId.lastIndexOf(":"))
++		}));
++	}
++	/**
+ 	* Handles POST requests containing JSON-RPC messages
+ 	*/
+ 	async handlePostRequest(req, parsedBody) {
+@@ -733,6 +1107,22 @@ var StreamableHTTPServerTransport = class {
+ 			};
+ 			connection.setState(postState);
+ 			if (this._eventStore) await agent.setStreamRequestIds(streamId, requestIds);
++			// Emit a priming SSE event as the very first frame on this POST
++			// response stream, before dispatching the request(s). The MCP TS SDK
++			// only auto-reconnects a dropped POST SSE stream when it saw an event
++			// `id:` before the drop (hasPrimingEvent). Without this, a network
++			// blip or edge close mid-call leaves the SDK with hasPrimingEvent
++			// false, so it never issues the recovery GET that replays the
++			// persisted result, and callTool hangs forever. The priming event is
++			// a real event-store entry so its id sorts BEFORE the eventual
++			// response; a reconnect with `last-event-id: <primingId>` replays
++			// everything after it (i.e. the result). See patches/agents patch.
++			// Scoped to tools/call streams: reconnect-with-replay only matters
++			// where the result can outlive the connection (long-running tool
++			// calls). initialize/tools/list resolve in milliseconds and clients
++			// retry them; priming those streams adds a storage write and an
++			// extra SSE frame per request for nothing.
++			if (messages.some((message) => isJSONRPCRequest(message) && message.method === "tools/call")) await this.emitPrimingEvent(agent, connection, streamId);
+ 			for (const message of messages) {
+ 				if (this.messageInterceptor) {
+ 					if (await this.messageInterceptor(message, {
+@@ -760,7 +1150,22 @@ var StreamableHTTPServerTransport = class {
+ 	* when the originating WS has dropped.
+ 	*/
+ 	async sendOnStream(agent, streamId, relatedIds, liveConnection, message, requestId) {
+-		const eventId = await this._eventStore?.storeEvent(streamId, message);
++		// Persistence is best-effort and must never block live delivery: a
++		// storeEvent failure (storage cap, storage outage) used to throw here,
++		// before writeSSEEvent, so the response was neither stored NOR sent and
++		// the client hung on keepalives. Deliver-live-first; a message without
++		// an eventId just isn't replayable after a drop.
++		let eventId;
++		try {
++			eventId = await this._eventStore?.storeEvent(streamId, message);
++		} catch (error) {
++			console.warn(JSON.stringify({
++				event: "mcp_event_store_put_failed",
++				streamId,
++				error: String(error)
++			}));
++			this.onerror?.(error);
++		}
+ 		let shouldClose = false;
+ 		if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+ 			let responseIds = this._streamResponseIds.get(streamId);
+@@ -777,9 +1182,11 @@ var StreamableHTTPServerTransport = class {
+ 		} catch (error) {
+ 			this.onerror?.(error);
+ 		}
+-		if (shouldClose) {
++		if (shouldClose && !this._eventStore) {
++			await agent.deleteStreamRequestIds(streamId);
++		} else if (shouldClose) {
++			await agent.markStreamUndelivered(streamId);
+ 			await agent.deleteStreamRequestIds(streamId);
+-			if (this._eventStore && isClearableEventStore(this._eventStore)) await this._eventStore.clearStream(streamId);
+ 		}
+ 	}
+ 	async send(message, options) {
+@@ -798,14 +1205,19 @@ var StreamableHTTPServerTransport = class {
+ 	*
+ 	* Sent on exactly one stream, per MCP: "the server MUST send each of
+ 	* its JSON-RPC messages on only one of the connected streams; it MUST
+-	* NOT broadcast the same message across multiple streams."
+-	* `handleGetRequest` supersedes prior standalone connections, so
+-	* there is at most one to send on.
++	* NOT broadcast the same message across multiple streams." A session
++	* may hold several standalone listeners (they attach alongside each
++	* other); the newest attachment is the most likely to have a live
++	* client behind it, so the message goes there.
+ 	*/
+ 	async sendStandalone(message) {
+ 		const agent = this._agent;
+ 		const eventId = await this._eventStore?.storeEvent(STANDALONE_STREAM_ID, message);
+-		const standalone = Array.from(agent.getConnections()).find((conn) => conn.state?._standaloneSse);
++		let standalone;
++		for (const conn of agent.getConnections()) {
++			if (!conn.state?._standaloneSse) continue;
++			if (!standalone || (conn.state._attachedAt ?? 0) > (standalone.state?._attachedAt ?? 0)) standalone = conn;
++		}
+ 		if (standalone) this.writeSSEEvent(standalone, message, eventId);
+ 	}
+ 	/**
+@@ -861,12 +1273,10 @@ var StreamableHTTPServerTransport = class {
+ *
+ * ## Lifecycle
+ *
+-* Each POST tool-call stream's events live only until the final
+-* response is delivered. The transport calls {@link clearStream}
+-* immediately after writing the close frame, so storage growth is
+-* bounded by the in-flight POST streams plus the standalone GET
+-* stream. There is no background sweep — quiescent agents do no work,
+-* and the DO itself dies with the session.
++* Each POST tool-call stream's response events live until the Worker
++* bridge confirms the final SSE write or a reconnect GET replays them.
++* Per-stream storage is capped at 64 events or roughly 2 MB; oldest
++* entries are evicted first.
+ *
+ * Standalone GET stream events (`_GET_stream`) are *not* cleared
+ * automatically; they accumulate for the lifetime of the DO. Bounded
+@@ -893,12 +1303,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+ 	}
+ 	async storeEvent(streamId, message) {
+ 		if (streamId.includes(":")) throw new Error(`DurableObjectEventStore: streamId must not contain ':' (got ${JSON.stringify(streamId)})`);
++		// DO storage caps each value at 128 KiB; storage.put of a larger
++		// message throws, and before this guard that throw escaped through
++		// sendOnStream BEFORE the live SSE write, so an oversize response
++		// (e.g. the ~5MB ui:// shell document) was never delivered at all —
++		// the client saw only keepalives. Skip persistence instead: the
++		// event is delivered live without a replay id, which is strictly
++		// better than never delivering it. Undeliverable-if-dropped is the
++		// documented cost, logged so it is visible.
++		let messageBytes = 0;
++		try {
++			messageBytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
++		} catch {}
++		if (messageBytes > DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES) {
++			console.warn(JSON.stringify({
++				event: "mcp_event_store_skipped_oversize",
++				streamId,
++				messageBytes,
++				limit: DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES
++			}));
++			return void 0;
++		}
+ 		await this.ensureSeqLoaded(streamId);
+ 		const seq = (this.seqByStream.get(streamId) ?? 0) + 1;
+ 		this.seqByStream.set(streamId, seq);
+ 		const eventId = `${streamId}:${seq.toString(16).padStart(DurableObjectEventStore.SEQ_PAD, "0")}`;
+ 		const eventKey = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${eventId}`;
+ 		await this.storage.put(eventKey, message);
++		await this.trimStream(streamId);
+ 		return eventId;
+ 	}
+ 	async getStreamIdForEventId(eventId) {
+@@ -915,9 +1347,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+ 			start: startKey,
+ 			limit: DurableObjectEventStore.REPLAY_LIMIT
+ 		});
+-		for (const [key, message] of rows) await send(key.slice(DurableObjectEventStore.EVENT_KEY_PREFIX.length), message);
++		for (const [key, message] of rows) try {
++			await send(key.slice(DurableObjectEventStore.EVENT_KEY_PREFIX.length), message);
++		} catch {}
++		return streamId;
++	}
++	async replayEventsForStream(streamId, { send }) {
++		const prefix = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${streamId}:`;
++		const rows = await this.storage.list({
++			prefix,
++			limit: DurableObjectEventStore.REPLAY_LIMIT
++		});
++		for (const [key, message] of rows) try {
++			await send(key.slice(DurableObjectEventStore.EVENT_KEY_PREFIX.length), message);
++		} catch {}
+ 		return streamId;
+ 	}
++	async trimStream(streamId) {
++		const prefix = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${streamId}:`;
++		const rows = await this.storage.list({
++			prefix,
++			limit: DurableObjectEventStore.REPLAY_LIMIT
++		});
++		let totalBytes = 0;
++		const entries = [...rows].map(([key, message]) => {
++			let bytes = DurableObjectEventStore.MAX_EVENT_BYTES;
++			try {
++				bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
++			} catch {}
++			totalBytes += bytes;
++			return { key, bytes };
++		});
++		const deleteKeys = [];
++		// Never evict the newest entry: trimStream runs right after storeEvent
++		// put it, and for a final tool response it is the only copy a recovery
++		// GET can replay. An oversize final response is kept even past the byte
++		// cap; the cap then squeezes out older events instead.
++		while (entries.length > 1 && (entries.length > DurableObjectEventStore.MAX_EVENTS_PER_STREAM || totalBytes > DurableObjectEventStore.MAX_BYTES_PER_STREAM)) {
++			const evicted = entries.shift();
++			if (!evicted) break;
++			deleteKeys.push(evicted.key);
++			totalBytes -= evicted.bytes;
++		}
++		if (deleteKeys.length > 0) {
++			console.warn(JSON.stringify({
++				event: "mcp_event_store_evicted",
++				streamId,
++				evictedCount: deleteKeys.length,
++				remainingCount: entries.length,
++				remainingBytes: totalBytes
++			}));
++			for (let i = 0; i < deleteKeys.length; i += DurableObjectEventStore.DELETE_CHUNK) await this.storage.delete(deleteKeys.slice(i, i + DurableObjectEventStore.DELETE_CHUNK));
++		}
++	}
+ 	/**
+ 	* Drop the event log for a single stream. Called by the transport
+ 	* immediately after a POST's final response has been written to the
+@@ -973,6 +1455,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+ DurableObjectEventStore.SEQ_PAD = 16;
+ DurableObjectEventStore.DELETE_CHUNK = 128;
+ DurableObjectEventStore.REPLAY_LIMIT = 1e3;
++DurableObjectEventStore.MAX_EVENTS_PER_STREAM = 64;
++DurableObjectEventStore.MAX_BYTES_PER_STREAM = 2 * 1024 * 1024;
++DurableObjectEventStore.MAX_EVENT_BYTES = 2 * 1024 * 1024;
++// DO storage's per-value hard cap is 128 KiB. The JSON byte length measured in
++// storeEvent is a close proxy for the runtime's serialized size; the margin
++// below it absorbs the difference. Anything larger is delivered live only.
++DurableObjectEventStore.MAX_STORABLE_EVENT_BYTES = 120 * 1024;
+ //#endregion
+ //#region src/mcp/client-transports.ts
+ /**
+@@ -1381,6 +1870,48 @@ var McpAgent = class McpAgent extends Agent {
+ 	async deleteStreamRequestIds(streamId) {
+ 		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
+ 	}
++	async markStreamUndelivered(streamId) {
++		await this.ctx.storage.put(`${McpAgent.UNDELIVERED_STREAM_KEY_PREFIX}${streamId}`, true);
++	}
++	async deleteUndeliveredStream(streamId) {
++		await this.ctx.storage.delete(`${McpAgent.UNDELIVERED_STREAM_KEY_PREFIX}${streamId}`);
++	}
++	async getUndeliveredStreamIds() {
++		const rows = await this.ctx.storage.list({
++			prefix: McpAgent.UNDELIVERED_STREAM_KEY_PREFIX,
++			limit: 1e3
++		});
++		return [...rows.keys()].map((key) => key.slice(McpAgent.UNDELIVERED_STREAM_KEY_PREFIX.length));
++	}
++	/** List persisted POST stream request ids for replay and idle accounting. @internal */
++	async getOpenStreamRequestIds() {
++		const rows = await this.ctx.storage.list({
++			prefix: McpAgent.STREAM_REQS_KEY_PREFIX,
++			limit: 1e3
++		});
++		return [...rows].flatMap(([key, requestIds]) => Array.isArray(requestIds) && requestIds.length > 0 ? [{
++			streamId: key.slice(McpAgent.STREAM_REQS_KEY_PREFIX.length),
++			requestIds
++		}] : []);
++	}
++	async acknowledgeDeliveredStream(streamId) {
++		await this.deleteStreamRequestIds(streamId);
++		await this.deleteUndeliveredStream(streamId);
++		this._transport?.["_replayInFlight"]?.delete(streamId);
++		const eventStore = this._transport?.["_eventStore"];
++		if (eventStore && isClearableEventStore(eventStore)) await eventStore.clearStream(streamId);
++	}
++	async onMessage(connection, message) {
++		if (typeof message !== "string") return super.onMessage(connection, message);
++		try {
++			const parsed = JSON.parse(message);
++			if (parsed?.type === "cf_mcp_delivery_ack" && typeof parsed.streamId === "string") {
++				await this.acknowledgeDeliveredStream(parsed.streamId);
++				return;
++			}
++		} catch {}
++		return super.onMessage(connection, message);
++	}
+ 	/**
+ 	* Reverse lookup: find which POST stream a given `requestId` belongs
+ 	* to, and return the stream's full `requestIds` list in the same
+@@ -1516,23 +2047,36 @@ var McpAgent = class McpAgent extends Agent {
+ 					return;
+ 				}
+ 				break;
+-			case "streamable-http": if (this._transport instanceof StreamableHTTPServerTransport) switch (req.headers.get(MCP_HTTP_METHOD_HEADER)) {
+-				case "POST": {
+-					const payloadHeader = req.headers.get(MCP_MESSAGE_HEADER);
+-					let rawPayload;
+-					if (!payloadHeader) rawPayload = "{}";
+-					else try {
+-						rawPayload = Buffer.from(payloadHeader, "base64").toString("utf-8");
+-					} catch (_error) {
+-						throw new Error("Internal Server Error: Failed to decode MCP message header");
++			case "streamable-http": {
++				if (!(this._transport instanceof StreamableHTTPServerTransport)) {
++					// onStart failed or has not completed: without a transport
++					// the request is never dispatched, so the client would sit
++					// on a silent stream until its own timeout (~30s) and the
++					// session would look bricked. Close the WS so the worker
++					// surfaces an error immediately and the client's retry
++					// lands on a restarted DO that reruns onStart.
++					conn.close(1011, "MCP transport not initialized");
++					return;
++				}
++				switch (req.headers.get(MCP_HTTP_METHOD_HEADER)) {
++					case "POST": {
++						const payloadHeader = req.headers.get(MCP_MESSAGE_HEADER);
++						let rawPayload;
++						if (!payloadHeader) rawPayload = "{}";
++						else try {
++							rawPayload = Buffer.from(payloadHeader, "base64").toString("utf-8");
++						} catch (_error) {
++							throw new Error("Internal Server Error: Failed to decode MCP message header");
++						}
++						const parsedBody = JSON.parse(rawPayload);
++						this._transport.handlePostRequest(req, parsedBody);
++						break;
+ 					}
+-					const parsedBody = JSON.parse(rawPayload);
+-					this._transport?.handlePostRequest(req, parsedBody);
+-					break;
++					case "GET":
++						this._transport.handleGetRequest(req);
++						break;
+ 				}
+-				case "GET":
+-					this._transport?.handleGetRequest(req);
+-					break;
++				break;
+ 			}
+ 		}
+ 	}
+@@ -1697,7 +2241,8 @@ var McpAgent = class McpAgent extends Agent {
+ 	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
++McpAgent.UNDELIVERED_STREAM_KEY_PREFIX = "__mcp_undelivered_stream__:";
  //#endregion
 -export { DurableObjectEventStore, ElicitRequestSchema, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
 +export { DurableObjectEventStore, ElicitRequestSchema, MAX_SSE_AGE_MS, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
  
  //# sourceMappingURL=index.js.map
+\ No newline at end of file

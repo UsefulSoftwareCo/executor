@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/react",
-  "version": "1.4.49",
+  "version": "1.4.65",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,6 +10,7 @@
       "default": "./dist/console-routes.js"
     },
     "./api/oauth-popup": "./src/api/oauth-popup.ts",
+    "./api/shell-host": "./src/api/shell-host.ts",
     "./api/*": "./src/api/*.tsx",
     "./plugins/*": "./src/plugins/*.tsx",
     "./pages/*": "./src/pages/*.tsx",
@@ -69,7 +70,9 @@
     "@tanstack/router-generator": "^1.167.17",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
     "hast-util-to-jsx-runtime": "^2.3.6",
+    "react-dom": "catalog:",
     "tailwindcss": "catalog:",
     "tsup": "^8.5.1",
     "typescript": "catalog:",

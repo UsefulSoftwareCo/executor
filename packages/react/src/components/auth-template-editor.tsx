@@ -31,6 +31,9 @@ export type AuthTemplateEditorValue =
   | { readonly kind: "apikey"; readonly placements: readonly Placement[] }
   | {
       readonly kind: "oauth";
+      /** Display label of the stored method, carried through untouched so an
+       *  editor round-trip doesn't strip it. Not edited here. */
+      readonly label?: string;
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
       readonly resource?: string | null;

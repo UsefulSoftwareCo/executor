@@ -50,6 +50,15 @@ export interface DeviceTokens {
   readonly organizationId?: string;
 }
 
+export interface DeviceLoginHttpOptions {
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly serverOrigin?: string;
+}
+
+export interface PollForDeviceTokensOptions extends DeviceLoginHttpOptions {
+  readonly now?: () => number;
+}
+
 const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 const DEFAULT_INTERVAL_SECONDS = 5;
 
@@ -126,17 +135,43 @@ const definedFields = (fields: Record<string, string | undefined>): Record<strin
     string
   >;
 
+const isSameOrigin = (url: string, origin: string): boolean => {
+  try {
+    return new URL(url).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+};
+
+const headersForUrl = (
+  url: string,
+  baseHeaders: Record<string, string>,
+  options: DeviceLoginHttpOptions = {},
+): Record<string, string> => {
+  const configured =
+    options.headers && (!options.serverOrigin || isSameOrigin(url, options.serverOrigin))
+      ? options.headers
+      : {};
+  return { ...configured, ...baseHeaders };
+};
+
 const post = async (
   url: string,
   fields: Record<string, string | undefined>,
   format: "form" | "json",
+  options: DeviceLoginHttpOptions = {},
 ) =>
   fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": format === "json" ? "application/json" : "application/x-www-form-urlencoded",
-      accept: "application/json",
-    },
+    headers: headersForUrl(
+      url,
+      {
+        "content-type":
+          format === "json" ? "application/json" : "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      options,
+    ),
     body: format === "json" ? JSON.stringify(definedFields(fields)) : formBody(fields),
   });
 
@@ -150,10 +185,16 @@ const readJson = async (response: Response): Promise<Record<string, unknown>> =>
   }
 };
 
-export const discoverCliLogin = async (origin: string): Promise<CliLoginDiscovery> => {
+export const discoverCliLogin = async (
+  origin: string,
+  options: DeviceLoginHttpOptions = {},
+): Promise<CliLoginDiscovery> => {
   let response: Response;
+  const url = cliLoginUrl(origin);
   try {
-    response = await fetch(cliLoginUrl(origin), { headers: { accept: "application/json" } });
+    response = await fetch(url, {
+      headers: headersForUrl(url, { accept: "application/json" }, options),
+    });
   } catch (cause) {
     throw new DeviceLoginError(
       `Could not reach ${origin} to start login: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -182,11 +223,15 @@ export const discoverCliLogin = async (origin: string): Promise<CliLoginDiscover
   };
 };
 
-export const requestDeviceCode = async (discovery: CliLoginDiscovery): Promise<DeviceCodeGrant> => {
+export const requestDeviceCode = async (
+  discovery: CliLoginDiscovery,
+  options: DeviceLoginHttpOptions = {},
+): Promise<DeviceCodeGrant> => {
   const response = await post(
     discovery.deviceAuthorizationEndpoint,
     { client_id: discovery.clientId, scope: discovery.scope },
     discovery.requestFormat,
+    options,
   );
   const body = await readJson(response);
   if (!response.ok) {
@@ -220,7 +265,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export const pollForDeviceTokens = async (
   discovery: CliLoginDiscovery,
   grant: DeviceCodeGrant,
-  options: { readonly now?: () => number } = {},
+  options: PollForDeviceTokensOptions = {},
 ): Promise<DeviceTokens> => {
   const now = options.now ?? (() => Date.now());
   const deadline = now() + grant.expiresInSeconds * 1000;
@@ -240,6 +285,7 @@ export const pollForDeviceTokens = async (
         client_id: discovery.clientId,
       },
       discovery.requestFormat,
+      options,
     );
     const body = await readJson(response);
 
@@ -286,6 +332,8 @@ export const refreshDeviceTokens = async (input: {
   readonly tokenEndpoint: string;
   readonly clientId: string;
   readonly refreshToken: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly serverOrigin?: string;
 }): Promise<DeviceTokens> => {
   const response = await post(
     input.tokenEndpoint,
@@ -295,6 +343,7 @@ export const refreshDeviceTokens = async (input: {
       client_id: input.clientId,
     },
     "form",
+    input,
   );
   const body = await readJson(response);
   if (!response.ok) {

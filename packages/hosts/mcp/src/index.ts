@@ -36,4 +36,10 @@ export {
   type McpResource,
 } from "./seams";
 
-export { McpServingRoutes, McpDiscoveryRoutes, jsonRpcErrorBody } from "./envelope";
+export {
+  McpServingRoutes,
+  McpDiscoveryRoutes,
+  jsonRpcErrorBody,
+  preInitializeMethodNotFound,
+  UNAVAILABLE_RETRY_AFTER_SECONDS,
+} from "./envelope";

@@ -34,7 +34,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -44,32 +44,40 @@ const stubUsers = Layer.succeed(UserStoreService)({
           slug: org.id,
           createdAt,
         }),
-        getOrganization: async (id: string) => ({ id, name: `Org ${id}`, slug: id, createdAt }),
+        getOrganization: async (id: string) => ({
+          id,
+          name: `Org ${id}`,
+          slug: id,
+          createdAt,
+        }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug === URL_SLUG ? URL_ORG : "org_outsider",
           name: `Org ${slug}`,
           slug,
           createdAt,
         }),
+        deleteOrganizationCascade: async () => {},
       }),
     ),
 });
 
-const run = (headers: Record<string, string>, organizationId: string | null = SESSION_ORG) =>
+const run = (headers: Record<string, string>) =>
   resolveBillingOrganization(
     new Request("https://executor.test/api/billing/customer", { headers }),
-    { userId: MEMBER, organizationId },
+    { userId: MEMBER },
   ).pipe(Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers)));
 
 describe("billing route org selector", () => {
-  it.effect("falls back to the session org when no selector header is sent", () =>
+  it.effect("fails closed when no selector header is sent", () =>
     Effect.gen(function* () {
-      const org = yield* run({});
-      expect(org.id).toBe(SESSION_ORG);
+      // No fallback to the session org: the cookie's org is browser-global
+      // and can name a different org than the tab's URL for a multi-org user.
+      const error = yield* Effect.flip(run({}));
+      expect(error).toMatchObject({ _tag: "HttpResponseError", status: 401 });
     }),
   );
 
-  it.effect("scopes billing to the URL org selector over the session org", () =>
+  it.effect("scopes billing to the URL org selector", () =>
     Effect.gen(function* () {
       const org = yield* run({ "x-executor-organization": URL_SLUG });
       expect(org.id).toBe(URL_ORG);
@@ -80,13 +88,6 @@ describe("billing route org selector", () => {
     Effect.gen(function* () {
       const error = yield* Effect.flip(run({ "x-executor-organization": "outsider-slug" }));
       expect(error).toMatchObject({ _tag: "HttpResponseError", status: 403 });
-    }),
-  );
-
-  it.effect("requires either a selector header or a session org", () =>
-    Effect.gen(function* () {
-      const error = yield* Effect.flip(run({}, null));
-      expect(error).toMatchObject({ _tag: "HttpResponseError", status: 401 });
     }),
   );
 });

@@ -13,7 +13,7 @@ export const Route = createFileRoute("/{-$orgSlug}/billing")({
 
 const PLAN_TAGLINES: Record<string, string> = {
   free: "Free for up to 3 members",
-  team: "$150 per organization",
+  team: "$15 per member per month",
   enterprise: "Custom enterprise agreement",
 };
 

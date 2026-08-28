@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { ExternalLink } from "lucide-react";
 import {
   OAuthClientSlug,
   type IntegrationSlug,
@@ -25,6 +26,7 @@ import { Button } from "./button";
 import { CopyButton } from "./copy-button";
 import { Input } from "./input";
 import { Label } from "./label";
+import { oauthAppSetupFor } from "./oauth-app-setup";
 import { RadioGroup, RadioGroupItem } from "./radio-group";
 
 // ---------------------------------------------------------------------------
@@ -244,6 +246,14 @@ export function OAuthClientForm(props: {
   // it refused our non-loopback redirect URI), don't lead the user back into the
   // path that just failed: suppress the auto CTA and lead with manual entry.
   const showAutoRegister = canRegisterDynamic && autoRegisterRejectedReason === null;
+  const appSetup = oauthAppSetupFor({
+    authorizationUrl,
+    tokenUrl,
+    issuer: discoveredIssuer,
+    resource,
+  });
+  const showAppSetup =
+    appSetup !== undefined && grant === "authorization_code" && !showAutoRegister;
 
   const handleDiscover = async () => {
     const url = issuerUrl.trim();
@@ -367,6 +377,26 @@ export function OAuthClientForm(props: {
         <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
           <p className="text-sm font-medium text-destructive">Automatic registration unavailable</p>
           <p className="text-xs text-muted-foreground">{autoRegisterRejectedReason}</p>
+        </div>
+      ) : null}
+
+      {showAppSetup ? (
+        <div className="space-y-3 rounded-lg border border-ring/40 bg-accent/30 p-3">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">{appSetup.title}</p>
+            <p className="text-xs text-muted-foreground">{appSetup.body}</p>
+          </div>
+          <ol className="list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
+            {appSetup.steps.map((step: string) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+          <Button asChild>
+            <a href={appSetup.createUrl(callbackUrl)} target="_blank" rel="noreferrer">
+              {appSetup.createLabel}
+              <ExternalLink aria-hidden="true" className="size-4" />
+            </a>
+          </Button>
         </div>
       ) : null}
 

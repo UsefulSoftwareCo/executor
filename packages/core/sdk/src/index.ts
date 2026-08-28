@@ -36,7 +36,12 @@ export type {
   IFumaClient,
   StorageFailure,
 } from "./fuma-runtime";
-export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
+export {
+  StorageError,
+  StorageConnectionError,
+  UniqueViolationError,
+  isStorageFailure,
+} from "./fuma-runtime";
 
 // IDs (branded) — the v2 set.
 export {
@@ -52,6 +57,7 @@ export {
   ToolName,
   ElicitationId,
   PolicyId,
+  ArtifactId,
   Tenant,
   Subject,
   Owner,
@@ -72,8 +78,11 @@ export {
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
+  ArtifactNotFoundError,
+  isUserActionableError,
   type ExecuteError,
   type ExecutorError,
+  type UserActionableError,
 } from "./errors";
 
 // Integration / connection / tool domain contracts.
@@ -82,6 +91,7 @@ export type {
   AuthMethodOAuthDescriptor,
   AuthPlacementDescriptor,
   Integration,
+  IntegrationChangeEvent,
   IntegrationConfig,
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
@@ -119,6 +129,8 @@ export {
   sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  pathNamesASecret,
+  REDACTED_SAMPLE_VALUE,
   identityPathTier,
   rankResponseSample,
 } from "./health-check";
@@ -141,6 +153,7 @@ export {
   TOOL_POLICY_ACTIONS,
   type CoreSchema,
   type IntegrationRow,
+  type SubjectRow,
   type ConnectionRow,
   type OAuthClientRow,
   type OAuthSessionRow,
@@ -148,6 +161,7 @@ export {
   type ToolInvocationRow,
   type DefinitionRow,
   type ToolPolicyRow,
+  type ArtifactRow,
   type PluginStorageRow,
   type BlobRow,
   type ToolPolicyAction,
@@ -159,7 +173,17 @@ export {
   executorOwnerPolicyName,
   executorUnscopedPolicyName,
   type ExecutorOwnerPolicyContext,
+  type ExecutorReach,
+  type ExecutorWrites,
 } from "./owner-policy";
+
+// Provider item-id owner grammar — the partition credential providers file
+// rows under (issues #950, #1453).
+export {
+  OWNER_SCOPED_ITEM_ID_PREFIXES,
+  embeddedItemOwner,
+  ownerForItemId,
+} from "./provider-item-owner";
 
 // Tool policies.
 export {
@@ -175,6 +199,23 @@ export {
   type EffectivePolicy,
   type PolicySource,
 } from "./policies";
+
+// Artifacts — saved generative-UI components.
+export {
+  rowToArtifact,
+  rowToArtifactSummary,
+  previewFromColumn,
+  ArtifactBinding,
+  ArtifactBindings,
+  type Artifact,
+  type ArtifactPreview,
+  type ArtifactSummary,
+  type SaveArtifactInput,
+  type RenameArtifactInput,
+  type RemoveArtifactInput,
+  type SetArtifactPreviewInput,
+} from "./artifact";
+export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
 
 // Elicitation.
 export {
@@ -203,6 +244,15 @@ export {
   type PluginBlobStore,
   type OwnerPartitions,
 } from "./blob";
+
+// Durable pending approvals — how an artifact action that paused on a human
+// survives a host whose HTTP API builds a fresh engine per request.
+export {
+  makePendingApprovalStore,
+  PendingApproval,
+  PENDING_APPROVAL_TTL_MS,
+  type PendingApprovalStore,
+} from "./pending-approval";
 
 // Plugin storage.
 export {
@@ -249,6 +299,18 @@ export {
   OAuthProbeError,
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
+  FIRST_PARTY_OAUTH_CLIENT_PREFIX,
+  SubjectTokenTypeSchema,
+  DEFAULT_SUBJECT_TOKEN_TYPE,
+  EnterpriseManagedStartInputSchema,
+  EnterpriseIdentityProviderDescriptorSchema,
+  type SubjectTokenType,
+  type EnterpriseManagedStartInput,
+  type EnterpriseIdentityProviderDescriptor,
+  firstPartyOAuthClientSlug,
+  isFirstPartyOAuthClientSlug,
+  type FirstPartyOAuthClientConfig,
+  type OAuthClientOrigin,
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,
@@ -263,6 +325,18 @@ export {
   type OAuthService,
 } from "./oauth-client";
 
+// The enterprise-managed rollout PORT (not its implementation): hosts that
+// operate a feature-flag service implement this and hand it to
+// `createExecutor`. Core depends on no vendor.
+export {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
+  type EnterpriseManagedRolloutWithheldReason,
+} from "./oauth-ema";
+
 // NOTE: the OAuth 2.1 implementation helpers (`./oauth-helpers`,
 // `makeOAuthService` in `./oauth-service`, discovery in `./oauth-discovery`)
 // are SDK-internal — consumed only by `createExecutor`. The hosted HTTP client
@@ -272,15 +346,20 @@ export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
   DEFAULT_EXECUTOR_SERVER_USERNAME,
   EXECUTOR_ORG_SELECTOR_HEADER,
+  ExecutorServerHeaderResolutionError,
   apiBaseUrlForServerOrigin,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
   originFromApiBaseUrl,
+  resolveExecutorServerConfiguredHeaders,
+  resolveExecutorServerRequestHeaders,
   type ExecutorServerAuth,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
   type ExecutorServerConnectionKind,
+  type ExecutorServerHeaders,
+  type ExecutorServerHeaderValue,
 } from "./server-connection";
 
 export {
@@ -302,7 +381,7 @@ export {
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
   type IntegrationRecord,
-  type StaticSourceDecl,
+  type StaticIntegrationDecl,
   type StaticToolDecl,
   type StaticToolSchema,
   type StaticToolExecuteContext,
@@ -315,6 +394,7 @@ export {
   type IntegrationConfigureDecl,
   type IntegrationConfigureSchema,
   type IntegrationPreset,
+  type IntegrationPresetAuthentication,
   type IntegrationPresetCatalogEntry,
   type ResolveToolsInput,
   type ResolveToolsResult,
@@ -332,12 +412,20 @@ export {
 // local/cloud DB bring-up). Its definition stays here because `createExecutor`
 // uses it; the host surface (`@executor-js/api/server`) re-exports it.
 export {
+  ADMIN_DEFAULT_PAGE_SIZE,
+  ADMIN_MAX_PAGE_SIZE,
+  type AdminConnection,
+  type AdminListSubjectsOptions,
+  type AdminSubject,
+  type AdminSubjectWithConnections,
   type Executor,
+  type ExecutorAdmin,
   type ExecutorConfig,
   type ExecutorDb,
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,
   collectTables,
   parseToolAddress,
@@ -402,6 +490,12 @@ export {
 } from "./sqlite-oauth-client-gc-migration";
 export {
   authToolFailure,
+  isUnauthorizedToolFailure,
   type AuthToolFailureCode,
   type AuthToolFailureInput,
 } from "./auth-tool-failure";
+export {
+  detectInsufficientScope,
+  insufficientScopeFromEmbeddedJson,
+  type InsufficientScopeDetection,
+} from "./insufficient-scope";

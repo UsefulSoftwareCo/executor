@@ -140,6 +140,10 @@ export function OrgPage(props: {
   // an upgrade prompt instead of the invite form. Self-host has no seat limit,
   // so it never reaches this and can omit it.
   upgradeAction?: React.ReactNode;
+  // Cloud injects a destructive "delete organization" section here. It hangs
+  // off the cloud-only `/auth/delete-organization` endpoint (WorkOS + billing
+  // teardown), so self-host omits it. Rendered last, below members.
+  dangerZoneSection?: React.ReactNode;
 }) {
   useExecutorDocumentTitle("Organization");
   const auth = useAuth();
@@ -191,7 +195,10 @@ export function OrgPage(props: {
       payload: { roleSlug },
       reactivityKeys: orgMemberWriteKeys,
     });
-    trackEvent("org_member_role_changed", { role: roleSlug, success: Exit.isSuccess(exit) });
+    trackEvent("org_member_role_changed", {
+      role: roleSlug,
+      success: Exit.isSuccess(exit),
+    });
     toast[Exit.isSuccess(exit) ? "success" : "error"](
       Exit.isSuccess(exit) ? `Role changed to ${roleName}` : "Failed to change role",
     );
@@ -417,6 +424,8 @@ export function OrgPage(props: {
         )}
       </section>
 
+      {props.dangerZoneSection}
+
       <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />
       <UpgradeDialog
         open={upgradeOpen}
@@ -442,8 +451,8 @@ function UpgradeDialog(props: {
         <DialogHeader>
           <DialogTitle className="font-display text-xl">You are at your member limit</DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">
-            Your plan includes {props.granted} member{props.granted === 1 ? "" : "s"}. Upgrade your
-            plan to invite more.
+            Your plan includes {props.granted} member
+            {props.granted === 1 ? "" : "s"}. Upgrade your plan to invite more.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -477,7 +486,10 @@ function InviteDialog(props: {
       },
       reactivityKeys: orgMemberWriteKeys,
     });
-    trackEvent("org_member_invited", { role: state.roleSlug, success: Exit.isSuccess(exit) });
+    trackEvent("org_member_invited", {
+      role: state.roleSlug,
+      success: Exit.isSuccess(exit),
+    });
     if (Exit.isSuccess(exit)) {
       toast.success(`Invitation sent to ${state.email.trim()}`);
       dispatch({ type: "reset" });
@@ -488,7 +500,10 @@ function InviteDialog(props: {
     // 403 AccountForbidden carrying a message) so the admin knows WHY and that
     // retrying will not help. Transient/untyped failures fall back to the
     // generic retry copy.
-    dispatch({ type: "error", message: messageFromExit(exit, GENERIC_INVITE_ERROR) });
+    dispatch({
+      type: "error",
+      message: messageFromExit(exit, GENERIC_INVITE_ERROR),
+    });
   };
 
   return (

@@ -8,7 +8,7 @@
 // that — the proxy flattens plugin extension methods too.
 //
 // Not a goal: authoring plugins in Promise style. The plugin model
-// (storage, schema, staticSources, Effect ctx) is Effect-only. Bring
+// (storage, schema, staticIntegrations, Effect ctx) is Effect-only. Bring
 // your own `@executor-js/plugin-*` from the Effect side.
 // ---------------------------------------------------------------------------
 

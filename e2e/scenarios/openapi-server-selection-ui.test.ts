@@ -1,5 +1,5 @@
 // Cross-target (browser): the UI side of per-call server selection. When a
-// pasted spec declares more than one server, the Add OpenAPI source form turns
+// pasted spec declares more than one server, the Add OpenAPI integration form turns
 // the Base URL field into a picker over those servers and relabels it an
 // optional override — the host is otherwise resolved per tool call. The session
 // video + per-step screenshots are the artifact; this scenario skips on targets
@@ -9,6 +9,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 // Two servers — production and staging — so the form offers a base-URL picker
 // instead of the single locked input a one-server spec gets.
@@ -34,8 +35,8 @@ scenario(
       const identity = yield* target.newIdentity();
 
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Open the Add OpenAPI source form", async () => {
-          await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
+        await step("Open the Add OpenAPI integration form", async () => {
+          await visit(page, "/integrations/add/openapi");
           await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
         });
 

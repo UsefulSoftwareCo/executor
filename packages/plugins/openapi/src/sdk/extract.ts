@@ -1,4 +1,5 @@
 import { Effect, Option } from "effect";
+import { ToolFileJsonSchema } from "@executor-js/sdk/core";
 
 import { planToolPaths, type OperationPathInput, type PlannedToolPath } from "./definitions";
 import { OpenApiExtractionError } from "./errors";
@@ -14,6 +15,8 @@ import {
 import {
   declaredContents,
   DocResolver,
+  isNdjsonMediaType,
+  ndjsonArrayOutputSchema,
   preferredResponseContent,
   type OperationObject,
   type ParameterObject,
@@ -133,7 +136,7 @@ const extractRequestBody = (
   const contents = declaredContents(body.content).map(({ mediaType, media }) =>
     MediaBinding.make({
       contentType: mediaType,
-      schema: Option.fromNullishOr(media.schema),
+      schema: Option.fromNullishOr(multipartFileInputSchema(media.schema, mediaType)),
       encoding: Option.fromNullishOr(
         buildEncodingRecord((media as { encoding?: Record<string, unknown> }).encoding),
       ),
@@ -181,6 +184,81 @@ const isJsonMediaType = (mediaType: string): boolean => {
 
 const binaryStringSchema = (schema: Record<string, unknown>): boolean =>
   stringType(schema) && (schema.format === "binary" || schema.format === "byte");
+
+const arrayType = (schema: Record<string, unknown>): boolean =>
+  schema.type === "array" || (Array.isArray(schema.type) && schema.type.includes("array"));
+
+const nullableType = (schema: Record<string, unknown>): boolean =>
+  Array.isArray(schema.type) && schema.type.includes("null");
+
+const isMultipartMediaType = (mediaType: string): boolean =>
+  normalizedMediaType(mediaType) === "multipart/form-data";
+
+/**
+ * Replace one binary/byte string node with the tool-file schema, carrying the
+ * spec author's own annotations across. A `type: ["string", "null"]` node stays
+ * nullable as `anyOf: [<file>, { type: "null" }]`, since the tool-file schema is
+ * an object and cannot express null through a type array.
+ */
+const toolFileSchemaFor = (node: Record<string, unknown>): Record<string, unknown> => {
+  const annotations: Record<string, unknown> = {};
+  if (typeof node.title === "string") annotations.title = node.title;
+  if (typeof node.description === "string") annotations.description = node.description;
+
+  return nullableType(node)
+    ? { anyOf: [ToolFileJsonSchema, { type: "null" }], ...annotations }
+    : { ...(ToolFileJsonSchema as Record<string, unknown>), ...annotations };
+};
+
+/**
+ * Rewrite one multipart property. Deliberately limited to the two shapes the
+ * invoke-side form encoder can actually deliver: a property that IS a binary
+ * string, and an array property whose direct items are binary strings.
+ */
+const multipartFileProperty = (property: unknown): unknown => {
+  if (!isRecord(property)) return property;
+  if (binaryStringSchema(property)) return toolFileSchemaFor(property);
+
+  const items = property.items;
+  if (arrayType(property) && isRecord(items) && binaryStringSchema(items)) {
+    return { ...property, items: toolFileSchemaFor(items) };
+  }
+
+  return property;
+};
+
+/**
+ * Advertise `multipart/form-data` binary fields as tool files.
+ *
+ * The rewrite is scoped to the request schema's own `properties` map — never a
+ * blind walk of every object key — so `default`, `example`, and vendor
+ * extensions that happen to look like a binary string schema are left alone.
+ *
+ * Two shapes are NOT rewritten, because the invoke-side encoder cannot honor
+ * them and advertising an input it would silently JSON-stringify is worse than
+ * not advertising it at all:
+ *   - binary fields nested inside an object property (only top-level properties
+ *     and direct array items become form parts);
+ *   - a body schema, or a property, behind a `$ref`. Component schemas are
+ *     carried through unresolved by design — the streaming compile path never
+ *     materializes `components.schemas` — so there is nothing to inspect here.
+ */
+const multipartFileInputSchema = (schema: unknown, mediaType: string): unknown => {
+  if (!isMultipartMediaType(mediaType) || !isRecord(schema)) return schema;
+
+  const properties = schema.properties;
+  if (!isRecord(properties)) return schema;
+
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [name, property] of Object.entries(properties)) {
+    const next = multipartFileProperty(property);
+    if (next !== property) changed = true;
+    out[name] = next;
+  }
+
+  return changed ? { ...schema, properties: out } : schema;
+};
 
 const base64EncodingFromDescription = (schema: Record<string, unknown>): "base64" | "base64url" =>
   typeof schema.description === "string" &&
@@ -257,6 +335,22 @@ const extractResponseBody = (
   }
 
   return undefined;
+};
+
+/**
+ * Derive an operation's output schema from its response body. NDJSON bodies
+ * (`application/stream+json` and friends) are spec'd per LINE but returned by
+ * the invoke path as an array of parsed lines, so the advertised schema wraps
+ * the line schema in an array; otherwise describe previews promise a single
+ * object that invocations never return. Used by both the whole-tree extract
+ * and the serve path's stored-binding rebuild so the two stay in lockstep.
+ */
+export const outputSchemaFromResponseBody = (
+  responseBody: OperationResponseBody,
+): unknown | undefined => {
+  const schema = Option.getOrUndefined(responseBody.schema);
+  if (schema === undefined) return undefined;
+  return isNdjsonMediaType(responseBody.contentType) ? ndjsonArrayOutputSchema(schema) : schema;
 };
 
 // ---------------------------------------------------------------------------
@@ -477,6 +571,49 @@ const operationServers = (
   return docServers;
 };
 
+/** OAuth scope requirements an operation declares via `security`, with the
+ *  spec's semantics preserved (OpenAPI 3.x Security Requirement Objects):
+ *
+ *  - Each requirement object is one acceptable ALTERNATIVE; the array is an
+ *    OR. Alternatives stay separate — unioning them would tell a user to
+ *    grant scopes from mutually alternative schemes at once.
+ *  - Within one requirement object the schemes are ANDed, so their scopes
+ *    union into that alternative's set (sorted, deduped).
+ *  - An ABSENT operation `security` inherits the document-level default;
+ *    an explicit `security: []` disables auth. Both yield `undefined` only
+ *    when nothing (or nothing scoped) is genuinely declared. */
+const securityScopeAlternatives = (
+  operation: OperationObject,
+  documentSecurity: unknown,
+): readonly (readonly string[])[] | undefined => {
+  const security = operation.security !== undefined ? operation.security : documentSecurity;
+  if (!Array.isArray(security) || security.length === 0) return undefined;
+  const alternatives: (readonly string[])[] = [];
+  const seen = new Set<string>();
+  for (const requirement of security) {
+    if (requirement === null || typeof requirement !== "object") continue;
+    const scopes = new Set<string>();
+    for (const schemeScopes of Object.values(requirement)) {
+      if (!Array.isArray(schemeScopes)) continue;
+      for (const scope of schemeScopes) {
+        if (typeof scope === "string" && scope.trim().length > 0) scopes.add(scope);
+      }
+    }
+    if (scopes.size === 0) continue;
+    const alternative = [...scopes].sort();
+    const key = alternative.join(" ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    alternatives.push(alternative);
+  }
+  return alternatives.length > 0 ? alternatives : undefined;
+};
+
+const documentSecurityOf = (doc: unknown): unknown =>
+  doc !== null && typeof doc === "object" && !Array.isArray(doc)
+    ? (doc as Record<string, unknown>).security
+    : undefined;
+
 // ---------------------------------------------------------------------------
 // Main extraction
 // ---------------------------------------------------------------------------
@@ -508,10 +645,14 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
       const responseBody = extractResponseBody(operation, r);
       const servers = operationServers(pathItem, operation, docServers);
       const inputSchema = buildInputSchema(parameters, requestBody, servers);
-      const outputSchema = responseBody ? Option.getOrUndefined(responseBody.schema) : undefined;
+      const outputSchema = responseBody ? outputSchemaFromResponseBody(responseBody) : undefined;
       const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
       const operationPathTemplate = explicitPathTemplate(operation) ?? pathTemplate;
 
+      const requiredScopeAlternatives = securityScopeAlternatives(
+        operation,
+        documentSecurityOf(doc),
+      );
       operations.push(
         ExtractedOperation.make({
           operationId: OperationId.make(deriveOperationId(method, pathTemplate, operation)),
@@ -528,6 +669,7 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
           inputSchema: Option.fromNullishOr(inputSchema),
           outputSchema: Option.fromNullishOr(outputSchema),
           deprecated: operation.deprecated === true,
+          ...(requiredScopeAlternatives ? { requiredScopeAlternatives } : {}),
         }),
       );
     }
@@ -643,6 +785,10 @@ export const streamOperationBindings = <E, R>(
       const requestBody = extractRequestBody(ref.operation, r);
       const responseBody = extractResponseBody(ref.operation, r);
       const servers = operationServers(ref.pathItem, ref.operation, docServers);
+      const requiredScopeAlternatives = securityScopeAlternatives(
+        ref.operation,
+        documentSecurityOf(doc),
+      );
       chunk.push({
         toolName: plan.toolPath,
         description:
@@ -656,6 +802,7 @@ export const streamOperationBindings = <E, R>(
           parameters,
           requestBody: Option.fromNullishOr(requestBody),
           responseBody: Option.fromNullishOr(responseBody),
+          ...(requiredScopeAlternatives ? { requiredScopeAlternatives } : {}),
         }),
       });
       if (chunk.length >= chunkSize) {
@@ -670,6 +817,23 @@ export const streamOperationBindings = <E, R>(
 
 const isPathItemValue = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Parse one path-item range to its kept (optionally trimmed) value. Applied
+ *  identically wherever a structure is walked more than once, so per-operation
+ *  indexes stay aligned across passes. */
+const parseKeptPathItem = (
+  structure: SpecStructure,
+  range: ByteRange,
+  keepPathItem: KeepPathItem | undefined,
+): readonly [string, PathItemObject] | null => {
+  const entry = parseEntry(structure.text, range, 2);
+  if (!entry) return null;
+  const [path, rawValue] = entry;
+  if (!isPathItemValue(rawValue)) return null;
+  if (!keepPathItem) return [path, rawValue as PathItemObject];
+  const kept = keepPathItem(path, rawValue);
+  return kept ? [path, kept as PathItemObject] : null;
+};
 
 /**
  * Stream invocation bindings straight from a `SpecStructure` (the structural
@@ -704,15 +868,8 @@ export const streamOperationBindingsFromStructure = <E, R>(
 
     // Parse one path-item range to its kept (optionally trimmed) value, applying
     // `keepPathItem` identically in both passes so the operation index aligns.
-    const keptPathItem = (range: ByteRange): readonly [string, PathItemObject] | null => {
-      const entry = parseEntry(structure.text, range, 2);
-      if (!entry) return null;
-      const [path, rawValue] = entry;
-      if (!isPathItemValue(rawValue)) return null;
-      if (!keepPathItem) return [path, rawValue as PathItemObject];
-      const kept = keepPathItem(path, rawValue);
-      return kept ? [path, kept as PathItemObject] : null;
-    };
+    const keptPathItem = (range: ByteRange): readonly [string, PathItemObject] | null =>
+      parseKeptPathItem(structure, range, keepPathItem);
 
     // Pass 1 (light): collect schema-free tool-path planning metadata in
     // document order. No bindings, no schemas; one path-item resident at a time.
@@ -773,6 +930,10 @@ export const streamOperationBindingsFromStructure = <E, R>(
         const requestBody = extractRequestBody(operation, r);
         const responseBody = extractResponseBody(operation, r);
         const servers = operationServers(pathItem, operation, docServers);
+        const requiredScopeAlternatives = securityScopeAlternatives(
+          operation,
+          documentSecurityOf(resolverDoc),
+        );
         chunk.push({
           toolName: plan.toolPath,
           description:
@@ -786,6 +947,7 @@ export const streamOperationBindingsFromStructure = <E, R>(
             parameters,
             requestBody: Option.fromNullishOr(requestBody),
             responseBody: Option.fromNullishOr(responseBody),
+            ...(requiredScopeAlternatives ? { requiredScopeAlternatives } : {}),
           }),
         });
         if (chunk.length >= chunkSize) {
@@ -798,3 +960,162 @@ export const streamOperationBindingsFromStructure = <E, R>(
 
     return { toolCount: plans.length, toolNames: plans.map((plan) => plan.toolPath) };
   }).pipe(Effect.withSpan("OpenApi.streamOperationBindingsFromStructure"));
+
+// ---------------------------------------------------------------------------
+// Streaming preview extraction
+// ---------------------------------------------------------------------------
+
+export interface StreamedPreviewParameter {
+  readonly name: string;
+  readonly location: ParameterLocation;
+  readonly required: boolean;
+  readonly description?: string;
+}
+
+/** Schema-free per-operation metadata for the preview path: everything the
+ *  add screen's operation list and health-check candidate ranking need, and
+ *  nothing that scales with schema size. */
+export interface StreamedPreviewOperation {
+  readonly operationId: string;
+  /** Tool path planned over the full kept operation set, so preview candidates
+   *  match the names registration will assign. */
+  readonly toolPath: string;
+  readonly method: HttpMethod;
+  readonly pathTemplate: string;
+  readonly summary: string | undefined;
+  readonly description: string | undefined;
+  readonly tags: readonly string[];
+  readonly deprecated: boolean;
+  readonly parameters: readonly StreamedPreviewParameter[];
+  /** Position in kept-document order; key for `streamOutputSchemas`. */
+  readonly operationIndex: number;
+}
+
+export interface StreamedPreviewExtraction {
+  /** Parsed document head (openapi, info, servers, tags, security, ...). */
+  readonly head: Record<string, unknown>;
+  /** Schema-free components (parameters / requestBodies / responses /
+   *  securitySchemes / ...) for `$ref` resolution and auth extraction. */
+  readonly components: Record<string, unknown>;
+  readonly servers: readonly ServerInfo[];
+  readonly operations: readonly StreamedPreviewOperation[];
+}
+
+/**
+ * Streaming twin of `extract` for the preview path: walk a `SpecStructure`
+ * path-item by path-item (each parsed in isolation and discarded) and keep only
+ * schema-free per-operation metadata, so previewing a Graph-sized spec never
+ * materializes the whole-document tree that OOMs a 128MB Workers isolate.
+ * `keepPathItem` applies the same selection filter as the streaming compile, so
+ * the preview describes exactly the operation set registration would persist.
+ */
+export const streamPreviewOperations = (
+  structure: SpecStructure,
+  keepPathItem?: KeepPathItem,
+): StreamedPreviewExtraction => {
+  const head = parseHead(structure);
+  const components = parseSmallComponents(structure);
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: same schema-free resolver doc as `streamOperationBindingsFromStructure` (head + small components, empty paths), read only for .servers and `$ref` resolution.
+  const resolverDoc = { ...head, paths: {}, components } as unknown as ParsedDocument;
+  const r = new DocResolver(resolverDoc);
+  const docServers = extractServers(resolverDoc);
+
+  const inputs: OperationPathInput[] = [];
+  const metas: Omit<StreamedPreviewOperation, "toolPath">[] = [];
+  for (const range of structure.pathItems) {
+    const kept = parseKeptPathItem(structure, range, keepPathItem);
+    if (!kept) continue;
+    const [path, pathItem] = kept;
+    for (const method of HTTP_METHODS) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const resolvedPathTemplate = explicitPathTemplate(operation) ?? path;
+      const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
+      const operationId = deriveOperationId(method, path, operation);
+      inputs.push({
+        operationId,
+        explicitToolPath: explicitToolPath(operation),
+        method,
+        pathTemplate: resolvedPathTemplate,
+        tag0: tags[0],
+      });
+      const parameters = extractParameters(pathItem, operation, r).map(
+        (parameter): StreamedPreviewParameter => ({
+          name: parameter.name,
+          location: parameter.location,
+          required: parameter.required,
+          ...(Option.isSome(parameter.description)
+            ? { description: parameter.description.value }
+            : {}),
+        }),
+      );
+      metas.push({
+        operationId,
+        method,
+        pathTemplate: resolvedPathTemplate,
+        summary: operation.summary,
+        description: operation.description,
+        tags,
+        deprecated: operation.deprecated === true,
+        parameters,
+        operationIndex: metas.length,
+      });
+    }
+  }
+
+  const plans = planToolPaths(inputs);
+  const toolPathByOpIndex: (string | undefined)[] = new Array(inputs.length);
+  for (const plan of plans) toolPathByOpIndex[plan.operationIndex] = plan.toolPath;
+
+  return {
+    head,
+    components,
+    servers: docServers,
+    operations: metas.flatMap((meta) => {
+      const toolPath = toolPathByOpIndex[meta.operationIndex];
+      return toolPath === undefined ? [] : [{ ...meta, toolPath }];
+    }),
+  };
+};
+
+/**
+ * Re-walk the structure and build the raw output schema (component `$ref`s
+ * intact) for just the operations in `wanted` — the bounded response-schema
+ * walk behind the preview's typed identity picker. Iteration order and
+ * `keepPathItem` application match `streamPreviewOperations`, so the indexes
+ * line up.
+ */
+export const streamOutputSchemas = (
+  structure: SpecStructure,
+  wanted: ReadonlySet<number>,
+  keepPathItem?: KeepPathItem,
+): ReadonlyMap<number, unknown> => {
+  const result = new Map<number, unknown>();
+  if (wanted.size === 0) return result;
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: same schema-free resolver doc as `streamPreviewOperations`.
+  const resolverDoc = {
+    ...parseHead(structure),
+    paths: {},
+    components: parseSmallComponents(structure),
+  } as unknown as ParsedDocument;
+  const r = new DocResolver(resolverDoc);
+
+  let opIndex = 0;
+  for (const range of structure.pathItems) {
+    if (result.size >= wanted.size) break;
+    const kept = parseKeptPathItem(structure, range, keepPathItem);
+    if (!kept) continue;
+    const [, pathItem] = kept;
+    for (const method of HTTP_METHODS) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const index = opIndex;
+      opIndex += 1;
+      if (!wanted.has(index)) continue;
+      const responseBody = extractResponseBody(operation, r);
+      const outputSchema = responseBody ? outputSchemaFromResponseBody(responseBody) : undefined;
+      if (outputSchema !== undefined) result.set(index, outputSchema);
+    }
+  }
+  return result;
+};

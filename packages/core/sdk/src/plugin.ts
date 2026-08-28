@@ -26,9 +26,11 @@ import type {
   ConnectionName,
   IntegrationSlug,
   Owner,
+  ProviderItemId,
   ProviderKey,
   Subject,
   Tenant,
+  ToolAddress,
 } from "./ids";
 import type { IntegrationDetectionResult } from "./types";
 import type {
@@ -36,9 +38,11 @@ import type {
   ElicitationHandler,
   ElicitationRequest,
   ElicitationResponse,
+  InvokeOptions,
 } from "./elicitation";
 import type {
   ConnectionAlreadyExistsError,
+  ExecuteError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   IntegrationNotFoundError,
@@ -146,9 +150,9 @@ export interface IntegrationRecord extends Integration {
 
 // ---------------------------------------------------------------------------
 // PluginCtx — threaded into every extension method, static tool handler, and
-// dynamic tool handler. The v2 fold: `core.sources` → `core.integrations`,
-// `secrets`/`connections`/`credentialBindings` → `connections` (provider-
-// resolved) + `providers`, `scopes` → `owner`.
+// dynamic tool handler. The v2 fold folded `core.sources` into
+// `core.integrations`, `secrets`/`connections`/`credentialBindings` into
+// `connections` (provider-resolved) + `providers`, and `scopes` into `owner`.
 // ---------------------------------------------------------------------------
 
 export interface PluginCtx<TStore = unknown> {
@@ -246,14 +250,63 @@ export interface PluginCtx<TStore = unknown> {
     readonly items: (
       provider: ProviderKey,
     ) => Effect.Effect<readonly ProviderEntry[], StorageFailure>;
+    /** Read an opaque item from a provider. Plugins use this for secret values
+     *  they own that are not modeled as connections. */
+    readonly get: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<string | null, StorageFailure>;
+    readonly has: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<boolean, StorageFailure>;
+    /** Write through the executor's default writable provider and return the
+     *  provider key that owns the item. */
+    readonly setDefault: (
+      id: ProviderItemId,
+      value: string,
+    ) => Effect.Effect<ProviderKey, CredentialProviderNotRegisteredError | StorageFailure>;
+    readonly remove: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<void, StorageFailure>;
   };
 
   /** Shared OAuth service. */
   readonly oauth: OAuthService;
 
+  /** Invoke another catalog tool through the same executor request context:
+   *  policy, approval, credential resolution, and plugin dispatch all stay in
+   *  the core path. Intended for plugin sandboxes that expose higher-level
+   *  virtual tools over existing integration tools. */
+  readonly execute: (
+    address: ToolAddress,
+    args: unknown,
+    options?: InvokeOptions,
+  ) => Effect.Effect<unknown, ExecuteError>;
+
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
   readonly transaction: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E | StorageFailure>;
+
+  /** Defer `effect` until the OUTERMOST transaction commits; discard it if that
+   *  transaction rolls back. With none active it runs immediately.
+   *
+   *  Use this for anything that reaches OUTSIDE the database — revoking a token
+   *  at the provider's API, deleting a remote object, sending a webhook. Such
+   *  work does not enlist in the transaction and cannot be rolled back with it,
+   *  so performing it inline means a later abort leaves the database restored
+   *  and the outside world already changed. That gap is not theoretical: the
+   *  lifecycle hooks below run inside core's own transaction.
+   *
+   *  Sequencing it after your `transaction(...)` call is NOT the same thing.
+   *  `transaction` nests by pass-through, so inside an active transaction the
+   *  inner call just runs its effect and "afterwards" is still before any
+   *  commit. This is the only construct that waits for the real one.
+   *
+   *  Best-effort by contract: failures and defects are swallowed, so a hook that
+   *  cannot tidy up never fails the operation that triggered it. */
+  readonly afterCommit: (effect: Effect.Effect<void>) => Effect.Effect<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +316,7 @@ export interface PluginCtx<TStore = unknown> {
 // ---------------------------------------------------------------------------
 
 export interface ResolveToolsInput<TStore = unknown> {
+  readonly ctx?: PluginCtx<TStore>;
   /** The catalog record (public projection) whose connection is being resolved. */
   readonly integration: Integration;
   /** The plugin's stored opaque config for that integration. */
@@ -292,13 +346,28 @@ export interface ResolveToolsResult {
   readonly tools: readonly ToolDef[];
   /** Shared JSON-schema `$defs` reachable from the tools' `$ref`s. */
   readonly definitions?: Record<string, unknown>;
-  /** The source could not be (fully) enumerated: unreachable server, auth not
+  /** The integration could not be (fully) enumerated: unreachable server, auth not
    *  ready, listing aborted. The result is non-authoritative, so the executor
    *  keeps the connection's existing persisted catalog instead of replacing it
    *  (a transient outage must not wipe working tools). Omit / `false` when the
-   *  listing is authoritative, including a genuine "this source has zero
+   *  listing is authoritative, including a genuine "this integration has zero
    *  tools". */
   readonly incomplete?: boolean;
+  /** Human-readable reason for an incomplete listing. Persisted by core when it
+   *  preserves the prior catalog so operators can see why data is stale. */
+  readonly incompleteReason?: string;
+}
+
+export interface ProjectToolSchemaInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly toolRow: ToolInvocationRow;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+export interface ProjectToolSchemaResult {
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +390,12 @@ export interface ToolInvocationCredential {
   readonly values: Record<string, string | null>;
   /** The integration's stored config, for template rendering. */
   readonly config: IntegrationConfig;
+  /** The OAuth scopes the connection's grant actually covers, from the
+   *  connection row's `oauth_scope` (space-delimited, as returned by the
+   *  token endpoint). Absent for non-OAuth connections and for OAuth
+   *  providers that never echo a scope; consumers comparing against an
+   *  operation's declared scopes must fail open when this is undefined. */
+  readonly grantedScopes?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +428,7 @@ export interface HealthCheckCandidatesInput<TStore = unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Static tool / source declarations. Unchanged from v1 except the ctx shape.
+// Static tool / integration declarations. Unchanged from v1 except the ctx shape.
 // ---------------------------------------------------------------------------
 
 export interface StaticToolHandlerInput<TStore = unknown> {
@@ -432,7 +507,7 @@ export const tool = <
     ),
 });
 
-export interface StaticSourceDecl<TStore = unknown> {
+export interface StaticIntegrationDecl<TStore = unknown> {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
@@ -456,6 +531,8 @@ export interface InvokeToolInput<TStore = unknown> {
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
   readonly elicit: Elicit;
+  /** Original caller options for nested same-request tool calls. */
+  readonly invokeOptions?: InvokeOptions;
 }
 
 /** Input for `validateToolArgs` — no credential/elicit: validation runs
@@ -474,6 +551,11 @@ export interface ConnectionLifecycleInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   readonly integration: IntegrationSlug;
   readonly connection: ConnectionRef;
+}
+
+export interface IntegrationLifecycleInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly integration: IntegrationRecord;
 }
 
 export interface ConfigureIntegrationHandlerInput<TStore = unknown> {
@@ -504,11 +586,39 @@ export interface IntegrationPreset {
   readonly endpoint?: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
+  readonly specFormat?: string;
+  readonly defaultSlug?: string;
+  /** Plugin-specific RFC 6902 operations applied to a fetched specification. */
+  readonly specOverrides?: readonly unknown[];
+  readonly authTemplate?: readonly IntegrationPresetAuthentication[];
+  readonly healthCheck?: HealthCheckSpec;
   readonly transport?: "remote" | "stdio";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
 }
+
+export type IntegrationPresetAuthentication =
+  | {
+      readonly slug: string;
+      readonly kind: "oauth2";
+      readonly label?: string;
+      readonly authorizationUrl: string;
+      readonly tokenUrl: string;
+      readonly resource?: string | null;
+      readonly scopes: readonly string[];
+      readonly supportsClientIdMetadataDocument?: boolean;
+    }
+  | {
+      readonly kind: "apiKey";
+      readonly slug?: string;
+      readonly name?: string;
+      readonly placements?: readonly unknown[];
+      readonly headers?: Readonly<Record<string, readonly unknown[]>>;
+      readonly queryParams?: Readonly<Record<string, readonly unknown[]>>;
+      readonly cookies?: Readonly<Record<string, readonly unknown[]>>;
+    };
 
 export interface IntegrationPresetCatalogEntry extends IntegrationPreset {
   readonly pluginId: string;
@@ -548,12 +658,14 @@ export interface PluginSpec<
   readonly integrationPresets?: readonly IntegrationPreset[];
 
   /** Build the plugin's extension API — becomes `executor[plugin.id]` and the
-   *  `self` passed to `staticSources`. Field order matters: `extension` MUST
-   *  appear before `staticSources`. */
+   *  `self` passed to `staticIntegrations`. Field order matters: `extension` MUST
+   *  appear before `staticIntegrations`. */
   readonly extension?: (ctx: PluginCtx<TStore>) => TExtension;
 
-  /** Static sources contributed by this plugin with inline tool handlers. */
-  readonly staticSources?: (self: NoInfer<TExtension>) => readonly StaticSourceDecl<TStore>[];
+  /** Static integrations contributed by this plugin with inline tool handlers. */
+  readonly staticIntegrations?: (
+    self: NoInfer<TExtension>,
+  ) => readonly StaticIntegrationDecl<TStore>[];
 
   /** HttpApiGroup contributed by this plugin. */
   readonly routes?: () => TGroup;
@@ -587,6 +699,13 @@ export interface PluginSpec<
    *  for catalogs derived purely from stored state (specs, static config). */
   readonly remoteToolCatalog?: boolean;
 
+  /** Project a persisted tool row's stable schemas into the request-visible
+   *  schema view. Use this only for volatile presentation data that should be
+   *  current at read time, not persisted at catalog-refresh time. */
+  readonly projectToolSchema?: (
+    input: ProjectToolSchemaInput<TStore>,
+  ) => Effect.Effect<ProjectToolSchemaResult, unknown>;
+
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the
    *  address. The plugin applies `input.credential` to the outbound request. */
   readonly invokeTool?: (input: InvokeToolInput<TStore>) => Effect.Effect<unknown, unknown>;
@@ -609,9 +728,29 @@ export interface PluginSpec<
     readonly toolRows: readonly ToolInvocationRow[];
   }) => Effect.Effect<Record<string, ToolAnnotations>, unknown>;
 
-  /** Plugin-side cleanup when a connection is removed. */
+  /** Plugin-side cleanup when a connection is removed.
+   *
+   *  RUNS INSIDE core's removal transaction, so database work here is atomic
+   *  with the row deletions — which is the point. The consequence is that
+   *  anything reaching outside the database is NOT: revoking the token at the
+   *  provider's API, deleting a remote object, notifying a third party. If the
+   *  transaction later aborts, the connection is restored and that external
+   *  action has already happened, with nothing left to undo it.
+   *
+   *  Wrap such work in `ctx.afterCommit(...)`. It runs once the removal is
+   *  durable and is discarded if the removal rolls back. */
   readonly removeConnection?: (
     input: ConnectionLifecycleInput<TStore>,
+  ) => Effect.Effect<void, unknown>;
+
+  /** Plugin-side cleanup when a removable integration is removed. Core still
+   *  owns deleting the integration, connection, tool, and definition rows.
+   *
+   *  Runs inside core's removal transaction, with the same consequence as
+   *  `removeConnection` above: defer any work that reaches outside the database
+   *  through `ctx.afterCommit(...)`. */
+  readonly removeIntegration?: (
+    input: IntegrationLifecycleInput<TStore>,
   ) => Effect.Effect<void, unknown>;
 
   /** Core-dispatched integration configuration (beyond auth). */

@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
 // End-to-end test for the Cloudflare host: boots the REAL worker on workerd via
@@ -17,6 +21,18 @@ import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const runId = randomUUID().slice(0, 8);
+
+const ensureStaticAssets = () => {
+  // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
+  // assets dir wrangler.jsonc points `assets.directory` at) is absent and
+  // `unstable_dev`'s assets validation aborts boot. These tests drive the
+  // API/MCP surface (all `run_worker_first` paths), not the SPA.
+  const distIndex = resolve(dir, "../dist/index.html");
+  if (!existsSync(distIndex)) {
+    mkdirSync(resolve(dir, "../dist"), { recursive: true });
+    writeFileSync(distIndex, "<!doctype html><title>executor</title>");
+  }
+};
 
 // Inline spec (no network); registers one tool, exercising the D1 write path.
 const SPEC = JSON.stringify({
@@ -43,34 +59,46 @@ const readMcpJson = async <A>(response: JsonReadableResponse): Promise<A> => {
   if (contentType.includes("application/json")) {
     return (await response.json()) as A;
   }
+  // Parse the SSE stream properly instead of grabbing the first `data:` line:
+  // the server may legally interleave other events (e.g. the priming event a
+  // tools/call stream emits so clients can reconnect) before the JSON-RPC
+  // message. Only `message`-typed events (the SSE default) carry JSON-RPC.
   const text = await response.text();
-  const data = text
-    .split("\n")
-    .find((line) => line.startsWith("data: "))
-    ?.slice("data: ".length);
-  expect(data).toBeTruthy();
-  return decodeUnknownJson(data!) as A;
+  let responseMessage: unknown;
+  for (const block of text.split("\n\n")) {
+    let eventType = "message";
+    let data = "";
+    for (const line of block.replace(/\r/g, "").split("\n")) {
+      if (line.startsWith("event:")) eventType = line.slice("event:".length).trim();
+      if (line.startsWith("data:")) data += line.slice("data:".length).trimStart();
+    }
+    if (eventType !== "message" || data.length === 0) continue;
+    const parsed = decodeUnknownJson(data);
+    // Skip protocol-legal notifications; the tests want the response.
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      ("result" in parsed || "error" in parsed)
+    ) {
+      responseMessage = parsed;
+      break;
+    }
+  }
+  expect(responseMessage, "a JSON-RPC response arrives on the SSE stream").toBeTruthy();
+  return responseMessage as A;
 };
 
 describe("cloudflare host e2e (workerd/miniflare)", () => {
   let worker: Unstable_DevWorker;
 
   beforeAll(async () => {
-    // CI runs from a fresh checkout with no `vite build`, so `./dist` (the SPA
-    // assets dir wrangler.jsonc points `assets.directory` at) is absent and
-    // `unstable_dev`'s assets validation aborts boot. This e2e drives the
-    // API/MCP surface (all `run_worker_first` paths), not the SPA, so a minimal
-    // placeholder index.html satisfies the validation without a real build.
-    const distIndex = resolve(dir, "../dist/index.html");
-    if (!existsSync(distIndex)) {
-      mkdirSync(resolve(dir, "../dist"), { recursive: true });
-      writeFileSync(distIndex, "<!doctype html><title>executor</title>");
-    }
+    ensureStaticAssets();
 
     worker = await unstable_dev(resolve(dir, "worker.ts"), {
       config: resolve(dir, "../wrangler.jsonc"),
       ip: "127.0.0.1",
       local: true,
+      persist: false,
       experimental: { disableExperimentalWarning: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
@@ -167,13 +195,48 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(integration?.slug).toBe(slug);
   }, 60_000);
 
-  it("registers the Microsoft Graph API route in the runtime plugin set", async () => {
-    const res = await worker.fetch("/api/microsoft/graph", {
+  it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {
+    const microsoftFilesPreset = microsoftCatalog.find(
+      (preset) => preset.defaultSlug === "microsoft_files",
+    );
+    expect(microsoftFilesPreset).toBeTruthy();
+
+    const removedProviderRoute = await worker.fetch("/api/microsoft/graph", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(400);
+    expect(removedProviderRoute.status).toBe(404);
+
+    const slug = `microsoft-files-${runId}`;
+    const add = await worker.fetch("/api/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: SPEC },
+        slug,
+        name: microsoftFilesPreset?.name,
+        description: microsoftFilesPreset?.summary,
+        family: microsoftFilesPreset?.family,
+        authenticationTemplate: microsoftFilesPreset?.authTemplate,
+      }),
+    });
+    expect(add.status).toBe(200);
+
+    const res = await worker.fetch(`/api/integrations/${slug}`);
+    expect(res.status).toBe(200);
+    const integration = (await res.json()) as {
+      readonly slug: string;
+      readonly kind: string;
+      readonly family?: string;
+      readonly authMethods: readonly { readonly template: string; readonly kind: string }[];
+    };
+    expect(integration.slug).toBe(slug);
+    expect(integration.kind).toBe("openapi");
+    expect(integration.family).toBe("microsoft");
+    expect(integration.authMethods.some((method) => method.template === "azureAdDelegated")).toBe(
+      true,
+    );
   });
 
   it("gates the API when dev-auth is on but treats the request as the dev admin", async () => {
@@ -326,6 +389,43 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(result.result?.structuredContent?.result).toBe(42);
   }, 60_000);
 
+  it("delivers native elicitation on the approval-gated tool call stream", async () => {
+    const client = new Client(
+      { name: "native-elicitation-test", version: "1.0.0" },
+      { capabilities: { elicitation: { form: {}, url: {} } } },
+    );
+    let receivedElicitation = false;
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      receivedElicitation = true;
+      return { action: "accept" as const, content: {} };
+    });
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=native", `http://${worker.address}:${worker.port}`),
+    );
+    await client.connect(transport);
+
+    const result = await client.callTool(
+      {
+        name: "execute",
+        arguments: {
+          code: [
+            "return await tools.executor.coreTools.policies.create({",
+            '  owner: "org",',
+            `  pattern: "native-elicitation-${runId}.*",`,
+            '  action: "require_approval"',
+            "});",
+          ].join("\n"),
+        },
+      },
+      undefined,
+      { timeout: 5_000 },
+    );
+
+    expect(receivedElicitation).toBe(true);
+    expect(result.isError).toBeFalsy();
+    await client.close();
+  }, 60_000);
+
   it("resumes a model-paused execution from a fresh MCP session", async () => {
     const accept = "application/json, text/event-stream";
     const rpc = (sessionId: string | null, body: unknown) =>
@@ -417,4 +517,38 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(resumed.result?.isError).toBeFalsy();
     expect(resumed.result?.structuredContent?.status).toBe("completed");
   }, 60_000);
+});
+
+describe("cloudflare host configuration errors", () => {
+  let worker: Unstable_DevWorker;
+
+  beforeAll(async () => {
+    ensureStaticAssets();
+    worker = await unstable_dev(resolve(dir, "worker.ts"), {
+      config: resolve(dir, "../wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      experimental: { disableExperimentalWarning: true },
+      vars: {
+        EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
+      },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await worker?.stop();
+  });
+
+  it("returns an actionable response when Cloudflare Access is not configured", async () => {
+    for (const path of ["/api/account/me", "/mcp"]) {
+      const response = await worker.fetch(path);
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.text()).resolves.toBe(
+        "Cloudflare Access is not configured. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD before serving requests.\n",
+      );
+    }
+  });
 });

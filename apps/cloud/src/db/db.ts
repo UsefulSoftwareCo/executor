@@ -24,7 +24,7 @@ import * as executorSchema from "./executor-schema";
 
 // Exported so every drizzle() call in the cloud app shares one schema
 // object. Historically `mcp-session.ts` built its own and forgot to spread
-// `executorSchema`, producing runtime "unknown model source" errors that
+// `executorSchema`, producing runtime "unknown model integration" errors that
 // only surfaced in prod. See apps/cloud/src/db/db.schema.test.ts.
 export const combinedSchema = { ...cloudSchema, ...executorSchema };
 

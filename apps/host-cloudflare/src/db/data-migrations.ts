@@ -7,7 +7,15 @@ import {
   type SqliteDataMigration,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
-import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
+import { openApiNdjsonOutputDataMigration } from "@executor-js/plugin-openapi";
+import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
+import { encryptedSecretsRepartitionDataMigration } from "@executor-js/plugin-encrypted-secrets";
+
+import {
+  providerServiceSplitDataMigration,
+  runSqliteProviderServiceSplitMigration,
+  type BlobRow,
+} from "@executor-js/plugin-provider-service-split";
 
 const TX_CONTROL = new Set(["BEGIN", "BEGIN TRANSACTION", "COMMIT", "ROLLBACK"]);
 
@@ -101,7 +109,8 @@ const rebuildLegacyConnectionTable = async (db: D1Database): Promise<void> => {
   }
 };
 
-export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Promise<void> => {
+export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Promise<boolean> => {
+  let schemaChanged = false;
   const integrationColumns = await tableColumns(db, "integration");
   if (integrationColumns.has("config")) {
     await db
@@ -115,14 +124,17 @@ export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Pro
   }
 
   const connectionColumns = await tableColumns(db, "connection");
-  if (connectionColumns.size === 0) return;
+  if (connectionColumns.size === 0) return schemaChanged;
   if (!connectionColumns.has("item_ids")) {
     await db.prepare(`ALTER TABLE connection ADD COLUMN item_ids json NOT NULL DEFAULT '{}'`).run();
+    schemaChanged = true;
   }
   const updatedConnectionColumns = await tableColumns(db, "connection");
   if (updatedConnectionColumns.has("item_id")) {
     await rebuildLegacyConnectionTable(db);
+    schemaChanged = true;
   }
+  return schemaChanged;
 };
 
 const r2ObjectName = (tenant: string, pluginId: string, key: string): string =>
@@ -161,6 +173,61 @@ const copyGoogleOpenApiSpecBlobsToR2 = (
       }),
   });
 
+const copyProviderServiceSplitBlobsToR2 = (
+  client: SqliteDataMigrationClient,
+  bucket: R2Bucket,
+): Effect.Effect<readonly BlobRow[], DataMigrationError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const present: BlobRow[] = [];
+      const result = await client.execute(
+        `SELECT tenant, plugin_id, json_extract(config, '$.specHash') AS spec_hash
+         FROM integration
+         WHERE ((plugin_id = 'google' AND slug = 'google')
+             OR (plugin_id = 'microsoft' AND slug = 'microsoft'))
+           AND config IS NOT NULL
+           AND json_valid(config)
+           AND json_extract(config, '$.specHash') IS NOT NULL
+           AND json_extract(config, '$.specHash') <> ''`,
+      );
+      const seen = new Set<string>();
+      for (const row of result.rows) {
+        if (
+          typeof row.tenant !== "string" ||
+          typeof row.plugin_id !== "string" ||
+          typeof row.spec_hash !== "string"
+        ) {
+          continue;
+        }
+        for (const key of [`spec/${row.spec_hash}`, `defs/${row.spec_hash}`]) {
+          const sourceNamespace = `o:${row.tenant}/${row.plugin_id}`;
+          const sourceKey = r2ObjectName(row.tenant, row.plugin_id, key);
+          const targetKey = r2ObjectName(row.tenant, "openapi", key);
+          const source = await bucket.get(sourceKey);
+          if (source == null) continue;
+          const presenceKey = `${sourceNamespace}/${key}`;
+          if (!seen.has(presenceKey)) {
+            seen.add(presenceKey);
+            present.push({
+              id: JSON.stringify([sourceNamespace, key]),
+              namespace: sourceNamespace,
+              key,
+            });
+          }
+          if ((await bucket.head(targetKey)) == null) {
+            await bucket.put(targetKey, await source.text());
+          }
+        }
+      }
+      return present;
+    },
+    catch: (cause) =>
+      new DataMigrationError({
+        migration: providerServiceSplitDataMigration.name,
+        cause,
+      }),
+  });
+
 const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly SqliteDataMigration[] => [
   {
     name: googleOpenApiOwnershipDataMigration.name,
@@ -170,16 +237,43 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
         yield* googleOpenApiOwnershipDataMigration.run(client);
       }),
   },
+  {
+    name: providerServiceSplitDataMigration.name,
+    run: (client) =>
+      Effect.gen(function* () {
+        const blobs = bucket ? yield* copyProviderServiceSplitBlobsToR2(client, bucket) : [];
+        yield* runSqliteProviderServiceSplitMigration(client, {
+          blobBackend: bucket ? "external" : "database",
+          blobs,
+        }).pipe(Effect.asVoid);
+      }),
+  },
+  // Stale-mark connections whose operations return NDJSON so their tool rows
+  // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
+  openApiNdjsonOutputDataMigration,
+  // Re-file credential rows the pre-fix provider stored under the acting
+  // caller's partition instead of the owner embedded in the item id (#1453).
+  encryptedSecretsRepartitionDataMigration,
 ];
 
-export const runCloudflareDataMigrations = (
+export const prepareCloudflareD1Data = (
   db: D1Database,
   bucket: R2Bucket | undefined,
-): Promise<readonly string[]> =>
+): Promise<{
+  readonly appliedMigrations: readonly string[];
+  readonly schemaChanged: boolean;
+}> =>
   Effect.runPromise(
     Effect.promise(() => ensureCloudflareD1SchemaCompatibility(db)).pipe(
-      Effect.flatMap(() =>
-        runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)),
+      Effect.flatMap((schemaChanged) =>
+        runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)).pipe(
+          Effect.map((appliedMigrations) => ({ appliedMigrations, schemaChanged })),
+        ),
       ),
     ),
   );
+
+export const runCloudflareDataMigrations = async (
+  db: D1Database,
+  bucket: R2Bucket | undefined,
+): Promise<readonly string[]> => (await prepareCloudflareD1Data(db, bucket)).appliedMigrations;
