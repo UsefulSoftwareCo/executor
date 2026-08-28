@@ -82,8 +82,30 @@ export const OAuthAuthorizationServerMetadataSchema = Schema.Struct({
   introspection_endpoint: Schema.optional(Schema.String),
   userinfo_endpoint: Schema.optional(Schema.String),
   id_token_signing_alg_values_supported: Schema.optional(StringArray),
+  /** draft-ietf-oauth-identity-assertion-authz-grant-04 §7.2 — the
+   *  authorization grant profiles this Resource Authorization Server
+   *  implements. Advertising a profile says only that the server implements
+   *  its processing rules; it promises nothing about any particular issuer,
+   *  client, or subject being accepted. */
+  authorization_grant_profiles_supported: Schema.optional(StringArray),
 }).annotate({ identifier: "OAuthAuthorizationServerMetadata" });
 export type OAuthAuthorizationServerMetadata = typeof OAuthAuthorizationServerMetadataSchema.Type;
+
+/** draft-ietf-oauth-identity-assertion-authz-grant-04 §7.2 — the profile
+ *  identifier a Resource Authorization Server advertises when it can process
+ *  an Identity Assertion JWT Authorization Grant (ID-JAG). */
+export const ID_JAG_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:id-jag";
+
+/** Whether a Resource Authorization Server advertises the ID-JAG grant profile
+ *  (§7.2). This is the ONLY discovery signal that gates enterprise-managed
+ *  authorization: a server that stays silent gets the ordinary interactive
+ *  flow. It is deliberately not inferred from `grant_types_supported`
+ *  containing `jwt-bearer` — that grant type predates this profile and says
+ *  nothing about ID-JAG processing rules. */
+export const supportsIdJagGrantProfile = (
+  metadata: Pick<OAuthAuthorizationServerMetadata, "authorization_grant_profiles_supported">,
+): boolean =>
+  metadata.authorization_grant_profiles_supported?.includes(ID_JAG_GRANT_PROFILE) === true;
 
 export type DynamicClientMetadata = {
   readonly client_name?: string;

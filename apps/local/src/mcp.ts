@@ -19,6 +19,7 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -220,6 +221,7 @@ export const createMcpRequestHandler = (
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
+            searchToolsEnabled: readSearchToolsEnabled(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {

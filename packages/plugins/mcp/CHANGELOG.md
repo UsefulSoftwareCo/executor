@@ -1,5 +1,27 @@
 # @executor-js/plugin-mcp
 
+## 1.6.0
+
+### Minor Changes
+
+- [#1733](https://github.com/UsefulSoftwareCo/executor/pull/1733) [`0b0b74f`](https://github.com/UsefulSoftwareCo/executor/commit/0b0b74f673b8098c5248159be36c648097f3c87b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Restore MCP spec 2026-07-28 negotiation for outbound MCP connections. Remote Streamable HTTP connections auto-negotiate the modern protocol era again, stdio servers can opt in per integration, and the negotiated era is recorded on connection handshake traces.
+
+### Patch Changes
+
+- [#1660](https://github.com/UsefulSoftwareCo/executor/pull/1660) [`c11bef2`](https://github.com/UsefulSoftwareCo/executor/commit/c11bef2cd049db7bbf51b15e18761b14acccb534) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Cloudflare ships as MCP-only, with code mode opted out**
+
+  The Cloudflare OpenAPI preset is gone from the default catalog; the MCP preset is the one Cloudflare entry. Its endpoint now pins `?codemode=false` because Cloudflare's MCP server otherwise hides the tool catalog behind a single code-execution tool, and executor already provides the code-execution surface. Hand-entered `mcp.cloudflare.com` URLs missing the opt-out get an inline warning in the add flow telling the user to append `?codemode=false`.
+
+- [#1654](https://github.com/UsefulSoftwareCo/executor/pull/1654) [`256e25e`](https://github.com/UsefulSoftwareCo/executor/commit/256e25e7b291b0c023bc7547d092004b66781bba) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Interrupted stdio dials no longer strand the spawned child process**
+
+  Cancelling an in-flight health check or tool discovery (a UI refresh aborting the request, or the 15s discovery timeout) abandoned the MCP connect handshake without closing the transport, leaving the spawned stdio child running indefinitely: for `docker run -i --rm` integrations, one stranded container per interrupted dial. The connect handshake now aborts on interruption (the SDK closes the transport, ending stdin and escalating to SIGTERM/SIGKILL), and tool discovery closes the connection even when the interrupt lands between the handshake completing and discovery starting.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+  - @executor-js/config@1.6.0
+
 ## 1.5.42
 
 ### Patch Changes

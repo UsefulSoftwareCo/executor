@@ -2,8 +2,15 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect } from "effect";
 import type * as Tracer from "effect/Tracer";
 
+import type { ErrorEvent } from "@sentry/cloudflare";
+
 import {
   addCurrentOtelCorrelationTags,
+  beforeSendCloudEvent,
+  beforeSendWithOtelCorrelation,
+  cloudSentryOptions,
+  DO_CAUSE_OWNER_TAG,
+  DO_CAUSE_OWNER_VALUE,
   OTEL_SPAN_ID_TAG,
   OTEL_TRACE_ID_TAG,
   sentryPayloadForCause,
@@ -79,6 +86,83 @@ describe("sentryPayloadForCause", () => {
   });
 });
 
+// Grouping keys are decided inside the Sentry SDK and never appear on any
+// product surface, so the e2e harness cannot observe them. The split is:
+// e2e/cloud/sentry-otel-correlation.test.ts proves the worker really installs
+// `cloudSentryOptions.beforeSend` (its correlation payload only exists if that
+// hook ran), and the tests here prove the hook it installs fingerprints.
+describe("Sentry grouping", () => {
+  // The worker bundle ships as content-hashed chunks, so the only module name
+  // Sentry ever sees for a given frame changes on every deploy.
+  const workerEvent = (chunkHash: string): ErrorEvent => ({
+    type: undefined,
+    exception: {
+      values: [
+        {
+          type: "GateCheckTimeoutError",
+          value: "balance check timed out",
+          stacktrace: {
+            frames: [
+              {
+                filename: `/assets/execution-rate-limit-${chunkHash}.js`,
+                module: `execution-rate-limit-${chunkHash}`,
+                function: "timeoutOrElse",
+                in_app: true,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  it("pins one fingerprint across two deploys of the same chunk", () => {
+    const before = beforeSendCloudEvent(workerEvent("BAuwphPA"), {});
+    const after = beforeSendCloudEvent(workerEvent("DkcPBbWe"), {});
+
+    expect(before?.fingerprint).toBeDefined();
+    expect(before?.fingerprint).toEqual(after?.fingerprint);
+  });
+
+  it("leaves unhashed events on Sentry's default grouping", () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      exception: {
+        values: [
+          {
+            type: "AutumnError",
+            stacktrace: {
+              frames: [
+                { filename: "/src/engine/execution-gate.ts", function: "checkExecutionBalance" },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    const sent = beforeSendCloudEvent(event, {});
+
+    expect(sent).not.toBeNull();
+    expect(sent?.fingerprint).toBeUndefined();
+  });
+
+  // The wiring check: this is the exact object handed to `Sentry.withSentry`
+  // and `instrumentDurableObjectWithSentry` in server.ts. If the normalizer is
+  // ever dropped from the hook the worker installs, this fails.
+  it("the options the worker and DOs install carry the fingerprinting hook", () => {
+    const options = cloudSentryOptions({ SENTRY_DSN: "https://public@example.invalid/1" } as Env);
+    const sent = options.beforeSend(workerEvent("BAuwphPA"));
+
+    expect(sent?.fingerprint).toEqual([
+      "GateCheckTimeoutError",
+      "timeoutOrElse@execution-rate-limit",
+    ]);
+    // Same source, next deploy, new chunk hash — one issue, not two.
+    expect(options.beforeSend(workerEvent("DkcPBbWe"))?.fingerprint).toEqual(sent?.fingerprint);
+  });
+});
+
 describe("Sentry OTel correlation", () => {
   it.effect("adds tags from the active Effect span", () =>
     Effect.gen(function* () {
@@ -90,4 +174,129 @@ describe("Sentry OTel correlation", () => {
       expect(event.tags[OTEL_SPAN_ID_TAG]).toBe(spanId);
     }).pipe(Effect.withSpan("test.sentry_capture"), Effect.withTracer(makeFixedTracer())),
   );
+});
+
+// One Durable Object failure used to open two Sentry issues: the DO's own
+// `captureCause` seam reported it (mechanism `generic`), and then
+// `instrumentDurableObjectWithSentry` reported the very same rejection again as
+// it escaped the method (mechanism `auto.faas.cloudflare.durable_object`). The
+// DO is the owner — it has the session, the classification and the OTel
+// correlation — so its claim suppresses the echo and nothing else.
+describe("Durable Object capture ownership", () => {
+  const doEcho = (overrides: Partial<ErrorEvent> = {}): ErrorEvent => ({
+    type: undefined,
+    tags: { [DO_CAUSE_OWNER_TAG]: DO_CAUSE_OWNER_VALUE },
+    exception: {
+      values: [
+        {
+          type: "Error",
+          value: "Durable Object reset because its code was updated.",
+          mechanism: { type: "auto.faas.cloudflare.durable_object", handled: false },
+        },
+      ],
+    },
+    ...overrides,
+  });
+
+  it("drops the auto-instrumentation's copy of a cause the DO already claimed", () => {
+    expect(beforeSendWithOtelCorrelation(doEcho())).toBeNull();
+  });
+
+  it("keeps the DO's own report, which carries no auto mechanism", () => {
+    const own = doEcho({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "Durable Object reset because its code was updated.",
+            mechanism: { type: "generic", handled: true },
+          },
+        ],
+      },
+    });
+    expect(beforeSendWithOtelCorrelation(own)).not.toBeNull();
+  });
+
+  // An alarm crash or a transport fault is never claimed by the DO seam, and
+  // the auto-instrumentation is the ONLY thing that reports it. Dropping those
+  // would trade duplicate noise for silence.
+  it("keeps an unclaimed Durable Object failure", () => {
+    const unclaimed = doEcho({ tags: {} });
+    expect(beforeSendWithOtelCorrelation(unclaimed)).not.toBeNull();
+  });
+
+  it("keeps ordinary worker events untouched", () => {
+    const workerEvent: ErrorEvent = {
+      type: undefined,
+      tags: { [OTEL_TRACE_ID_TAG]: traceId },
+      exception: {
+        values: [
+          {
+            type: "TypeError",
+            value: "x is not a function",
+            mechanism: { type: "auto.http.cloudflare", handled: false },
+          },
+        ],
+      },
+    };
+    expect(beforeSendWithOtelCorrelation(workerEvent)).not.toBeNull();
+  });
+
+  // The two stages of the installed `beforeSend` answer different questions and
+  // must both keep working: capture ownership decides WHETHER an event is
+  // reported, stable grouping decides HOW a reported one is grouped. A dropped
+  // event is never fingerprinted, and a surviving one still is.
+  describe("composed with stable grouping", () => {
+    const hashedFrames = (chunkHash: string) => ({
+      stacktrace: {
+        frames: [
+          {
+            filename: `/assets/session-durable-object-${chunkHash}.js`,
+            module: `session-durable-object-${chunkHash}`,
+            function: "handleSessionRequest",
+            in_app: true,
+          },
+        ],
+      },
+    });
+
+    it("drops a claimed echo rather than fingerprinting it", () => {
+      const echo = doEcho({
+        exception: {
+          values: [
+            {
+              type: "Error",
+              value: "Durable Object reset because its code was updated.",
+              mechanism: { type: "auto.faas.cloudflare.durable_object", handled: false },
+              ...hashedFrames("BAuwphPA"),
+            },
+          ],
+        },
+      });
+
+      expect(beforeSendCloudEvent(echo, {})).toBeNull();
+    });
+
+    it("pins a stable fingerprint on the report the DO itself owns", () => {
+      const ownReport = (chunkHash: string): ErrorEvent =>
+        doEcho({
+          exception: {
+            values: [
+              {
+                type: "Error",
+                value: "Durable Object reset because its code was updated.",
+                mechanism: { type: "generic", handled: true },
+                ...hashedFrames(chunkHash),
+              },
+            ],
+          },
+        });
+
+      const before = beforeSendCloudEvent(ownReport("BAuwphPA"), {});
+      const after = beforeSendCloudEvent(ownReport("DkcPBbWe"), {});
+
+      expect(before?.fingerprint).toBeDefined();
+      expect(before?.fingerprint).toEqual(after?.fingerprint);
+    });
+  });
 });
