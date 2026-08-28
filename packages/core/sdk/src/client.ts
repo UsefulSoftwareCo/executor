@@ -204,6 +204,11 @@ export interface IntegrationPlugin {
      *  seed their auth-method editor from it. */
     readonly initialAuthHeader?: string;
     readonly initialAuthNote?: string;
+    /** Registry-declared credential kind ("none", "oauth", "api_key", …).
+     *  Lets a flow whose live probe fails, or whose surface can't be probed,
+     *  still declare the right method — an authless MCP server is a fact the
+     *  registry already knows. */
+    readonly initialAuthKind?: string;
   }>;
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */

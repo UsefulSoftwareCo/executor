@@ -37,6 +37,7 @@ import {
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
+import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
 import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
@@ -168,6 +169,9 @@ export default function AddMcpIntegration(props: {
   onCancel: () => void;
   initialUrl?: string;
   initialPreset?: string;
+  initialAuthHeader?: string;
+  initialAuthNote?: string;
+  initialAuthKind?: string;
   /** Whether the stdio transport is enabled on the server. */
   allowStdio?: boolean;
 }) {
@@ -217,28 +221,45 @@ export default function AddMcpIntegration(props: {
   // without OAuth metadata → a bearer-header row; an open server → a no-auth
   // row. The user can edit any row or add alternate methods alongside.
   const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(() => {
-    if (!probe) return [];
+    const registryPlacement = props.initialAuthHeader
+      ? placementFromHeaderPattern(props.initialAuthHeader)
+      : null;
+    if (!probe) {
+      // No probe result (pending, or the server was unreachable from here).
+      // The registry's declared facts still stand: an authless server or a
+      // known header pattern seeds the list the probe would have produced.
+      if (registryPlacement)
+        return [{ value: { kind: "apikey", placements: [registryPlacement] } }];
+      if (props.initialAuthKind === "none") return [{ value: { kind: "none" } }];
+      return [];
+    }
     if (probe.requiresOAuth) {
-      return [
-        {
-          value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
-          label: "Detected",
-        },
-      ];
+      const oauth: AuthMethodSeed = {
+        value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
+        label: "Detected",
+      };
+      // GitHub's MCP server takes a PAT bearer header in clients without
+      // OAuth; when the registry declared that placement, offer it alongside.
+      return registryPlacement
+        ? [oauth, { value: { kind: "apikey", placements: [registryPlacement] } }]
+        : [oauth];
     }
     if (probe.requiresAuthentication) {
+      // The registry's exact placement beats the generic Bearer guess.
       return [
         {
           value: {
             kind: "apikey",
-            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+            placements: [
+              registryPlacement ?? { carrier: "header", name: "Authorization", prefix: "Bearer " },
+            ],
           },
           label: "Detected",
         },
       ];
     }
     return [{ value: { kind: "none" }, label: "Detected" }];
-  }, [probe]);
+  }, [probe, props.initialAuthHeader, props.initialAuthKind]);
   const authMethodList = useAuthMethodList(authMethodSeeds);
 
   const remoteIdentity = useIntegrationIdentity({
@@ -459,6 +480,10 @@ export default function AddMcpIntegration(props: {
               footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
             />
           )}
+
+          {probe && props.initialAuthNote ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">{props.initialAuthNote}</p>
+          ) : null}
 
           {/* Error (add server). Probe errors show inline on the field. */}
           {otherError && (

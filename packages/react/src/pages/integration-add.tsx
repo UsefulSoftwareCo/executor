@@ -17,9 +17,10 @@ export function AddIntegrationPage(props: {
   namespace?: string;
   authHeader?: string;
   authNote?: string;
+  authKind?: string;
 }) {
   useExecutorDocumentTitle("Add integration");
-  const { pluginKey, url, preset, namespace, authHeader, authNote } = props;
+  const { pluginKey, url, preset, namespace, authHeader, authNote, authKind } = props;
   const navigate = useNavigate();
   const integrationPlugins = useIntegrationPlugins();
   const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
@@ -61,6 +62,7 @@ export function AddIntegrationPage(props: {
             initialNamespace={namespace}
             initialAuthHeader={authHeader}
             initialAuthNote={authNote}
+            initialAuthKind={authKind}
             onComplete={(slug?: string) => {
               trackEvent("integration_added", {
                 plugin_key: pluginKey,

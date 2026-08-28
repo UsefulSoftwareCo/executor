@@ -434,6 +434,7 @@ export function IntegrationBrowsePage() {
           ...(input.slug ? { namespace: input.slug } : {}),
           ...(input.auth?.header ? { authHeader: input.auth.header } : {}),
           ...(input.auth?.note ? { authNote: input.auth.note } : {}),
+          ...(input.auth?.kind ? { authKind: input.auth.kind } : {}),
         },
       });
     },
@@ -489,6 +490,7 @@ export function IntegrationBrowsePage() {
       // header pattern.
       if (auth?.header) search.authHeader = auth.header;
       if (auth?.note) search.authNote = auth.note;
+      if (auth?.kind) search.authKind = auth.kind;
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey: entry.pluginKey },

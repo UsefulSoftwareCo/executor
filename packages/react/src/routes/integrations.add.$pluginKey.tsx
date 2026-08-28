@@ -13,6 +13,7 @@ const SearchParams = Schema.toStandardSchemaV1(
     // (GraphQL endpoints have no spec document).
     authHeader: Schema.optional(Schema.String),
     authNote: Schema.optional(Schema.String),
+    authKind: Schema.optional(Schema.String),
   }),
 );
 
@@ -20,7 +21,7 @@ export const Route = createFileRoute("/{-$orgSlug}/integrations/add/$pluginKey")
   validateSearch: SearchParams,
   component: () => {
     const { pluginKey } = Route.useParams();
-    const { url, preset, namespace, authHeader, authNote } = Route.useSearch();
+    const { url, preset, namespace, authHeader, authNote, authKind } = Route.useSearch();
     return (
       <AddIntegrationPage
         pluginKey={pluginKey}
@@ -29,6 +30,7 @@ export const Route = createFileRoute("/{-$orgSlug}/integrations/add/$pluginKey")
         namespace={namespace}
         authHeader={authHeader}
         authNote={authNote}
+        authKind={authKind}
       />
     );
   },
