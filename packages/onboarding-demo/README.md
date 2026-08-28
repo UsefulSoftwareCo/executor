@@ -12,15 +12,17 @@ bun run --cwd packages/onboarding-demo dev   # http://localhost:5199
 Every screen is addressable: `#integrations-empty`, `#connect-dialog`,
 `#add-openapi`, `#detail-accounts`, `#add-account-credential`,
 `#add-account-place`, `#oauth-stuck`, `#integrations-populated`. `[` and `]`
-step through them. The right-hand panel names the route and source component
-each screen was reproduced from, and quotes the first-run reactions recorded
-against it.
+step through them. `src/flow.ts` records, per screen, the route and source
+component it was reproduced from plus the first-run reactions against it.
+
+A floating Current / Reworked control in the bottom-right corner switches
+between the two flows.
 
 ## Reworked flow
 
 `#reworked` — the picker, `#reworked/installed`, `#reworked/custom`,
-`#reworked/<domain>`, `#reworked/<domain>/auth`. No sidebar; Browse/Installed
-carries navigation. A deep link to a domain you have not added in this session
+`#reworked/<domain>`, `#reworked/<domain>/auth`. Browse/Installed carries
+navigation within the picker; the console sidebar stays as it is today. A deep link to a domain you have not added in this session
 says so rather than rendering an empty screen — the prototype keeps no state
 across reloads.
 

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@executor-js/react/components/button";
 import { cn } from "@executor-js/react/lib/utils";
+import { Shell } from "./shell";
 import { BrowsePage } from "./screens/next/browse";
 import {
   InstalledList,
@@ -22,6 +23,7 @@ import {
 import { AuthenticateDialog } from "./screens/next/authenticate";
 import { AddCustomDialog } from "./screens/next/custom";
 import { fromCatalogItem, type AddedIntegration, type CatalogItem } from "./catalog";
+import type { DemoIntegration } from "./fixtures";
 
 interface Added {
   readonly item: AddedIntegration;
@@ -65,6 +67,16 @@ const routeToHash = (route: NextRoute): string => {
 
 const toolsFor = (accounts: readonly DemoAccount[]): number =>
   accounts.some((account) => account.status === "connected") ? 24 : 0;
+
+/** What the console sidebar lists: the same added integrations, in the shape
+ *  the shell already renders. */
+const asSidebarIntegration = (added: Added): DemoIntegration => ({
+  slug: added.item.domain,
+  name: added.item.name,
+  kind: "openapi",
+  icon: added.item.icon,
+  toolCount: toolsFor(added.accounts),
+});
 
 export function NextFlow() {
   const [added, setAdded] = useState<readonly Added[]>([]);
@@ -130,112 +142,121 @@ export function NextFlow() {
   const showingBrowse = route.kind === "browse" || route.kind === "custom";
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-8 py-10">
-        {open && !missing ? (
-          <NextIntegrationDetail
-            item={open.item}
-            accounts={open.accounts}
-            toolCount={toolsFor(open.accounts)}
-            onBack={() => go({ kind: "installed" })}
-            onAuthenticate={() => go({ kind: "auth", domain: open.item.domain })}
-            onAddAccount={() =>
-              setAdded((previous) =>
-                previous.map((entry) =>
-                  entry.item.domain === open.item.domain
-                    ? {
-                        ...entry,
-                        accounts: [
-                          ...entry.accounts,
-                          {
-                            label: `account ${entry.accounts.length + 1}`,
-                            status: "needs-auth" as const,
-                          },
-                        ],
-                      }
-                    : entry,
-                ),
-              )
-            }
-            onRemove={() => {
-              setAdded((previous) =>
-                previous.filter((entry) => entry.item.domain !== open.item.domain),
-              );
-              go({ kind: "installed" });
-            }}
-          />
-        ) : missing ? (
-          <div className="rounded-lg border border-dashed border-border py-16 text-center">
-            <p className="text-sm font-medium text-foreground">
-              {activeDomain} isn&apos;t added in this session
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              This prototype keeps nothing between reloads.
-            </p>
-            <Button type="button" size="sm" className="mt-4" onClick={() => go({ kind: "browse" })}>
-              Browse integrations
-            </Button>
-          </div>
-        ) : (
-          <>
-            <div className="mb-6 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
-                {/* oxlint-disable-next-line react/forbid-elements */}
-                <button
-                  type="button"
-                  onClick={() => go({ kind: "browse" })}
-                  className={cn(
-                    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                    showingBrowse
-                      ? "bg-background text-foreground shadow-xs"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  Browse
-                </button>
-                {/* oxlint-disable-next-line react/forbid-elements */}
-                <button
-                  type="button"
-                  onClick={() => go({ kind: "installed" })}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                    showingInstalled
-                      ? "bg-background text-foreground shadow-xs"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  Installed
-                  {added.length > 0 ? (
-                    <span className="font-mono text-xs text-muted-foreground">{added.length}</span>
-                  ) : null}
-                </button>
-              </div>
-              {pendingCount > 0 ? (
-                <span className="shrink-0 text-xs font-medium text-amber-500">
-                  {pendingCount} need{pendingCount === 1 ? "s" : ""} auth
-                </span>
-              ) : null}
+    <Shell integrations={added.map(asSidebarIntegration)}>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-4xl px-8 py-10">
+          {open && !missing ? (
+            <NextIntegrationDetail
+              item={open.item}
+              accounts={open.accounts}
+              toolCount={toolsFor(open.accounts)}
+              onBack={() => go({ kind: "installed" })}
+              onAuthenticate={() => go({ kind: "auth", domain: open.item.domain })}
+              onAddAccount={() =>
+                setAdded((previous) =>
+                  previous.map((entry) =>
+                    entry.item.domain === open.item.domain
+                      ? {
+                          ...entry,
+                          accounts: [
+                            ...entry.accounts,
+                            {
+                              label: `account ${entry.accounts.length + 1}`,
+                              status: "needs-auth" as const,
+                            },
+                          ],
+                        }
+                      : entry,
+                  ),
+                )
+              }
+              onRemove={() => {
+                setAdded((previous) =>
+                  previous.filter((entry) => entry.item.domain !== open.item.domain),
+                );
+                go({ kind: "installed" });
+              }}
+            />
+          ) : missing ? (
+            <div className="rounded-lg border border-dashed border-border py-16 text-center">
+              <p className="text-sm font-medium text-foreground">
+                {activeDomain} isn&apos;t added in this session
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                This prototype keeps nothing between reloads.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-4"
+                onClick={() => go({ kind: "browse" })}
+              >
+                Browse integrations
+              </Button>
             </div>
+          ) : (
+            <>
+              <div className="mb-6 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
+                  {/* oxlint-disable-next-line react/forbid-elements */}
+                  <button
+                    type="button"
+                    onClick={() => go({ kind: "browse" })}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                      showingBrowse
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    Browse
+                  </button>
+                  {/* oxlint-disable-next-line react/forbid-elements */}
+                  <button
+                    type="button"
+                    onClick={() => go({ kind: "installed" })}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                      showingInstalled
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    Installed
+                    {added.length > 0 ? (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {added.length}
+                      </span>
+                    ) : null}
+                  </button>
+                </div>
+                {pendingCount > 0 ? (
+                  <span className="shrink-0 text-xs font-medium text-amber-500">
+                    {pendingCount} need{pendingCount === 1 ? "s" : ""} auth
+                  </span>
+                ) : null}
+              </div>
 
-            {showingInstalled ? (
-              <InstalledList
-                items={added}
-                onOpen={(domain) => go({ kind: "detail", domain })}
-                onBrowse={() => go({ kind: "browse" })}
-              />
-            ) : (
-              <BrowsePage
-                addedDomains={added.map((entry) => entry.item.domain)}
-                onAdd={addFromCatalog}
-                onOpen={(item) => {
-                  addFromCatalog(item);
-                  go({ kind: "detail", domain: item.domain });
-                }}
-                onAddCustom={() => go({ kind: "custom" })}
-              />
-            )}
-          </>
-        )}
+              {showingInstalled ? (
+                <InstalledList
+                  items={added}
+                  onOpen={(domain) => go({ kind: "detail", domain })}
+                  onBrowse={() => go({ kind: "browse" })}
+                />
+              ) : (
+                <BrowsePage
+                  addedDomains={added.map((entry) => entry.item.domain)}
+                  onAdd={addFromCatalog}
+                  onOpen={(item) => {
+                    addFromCatalog(item);
+                    go({ kind: "detail", domain: item.domain });
+                  }}
+                  onAddCustom={() => go({ kind: "custom" })}
+                />
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {route.kind === "custom" ? (
@@ -278,6 +299,6 @@ export function NextFlow() {
           }}
         />
       ) : null}
-    </div>
+    </Shell>
   );
 }
