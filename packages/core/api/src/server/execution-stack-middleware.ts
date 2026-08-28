@@ -178,6 +178,13 @@ export const makeExecutionStackMiddleware = <
       | PluginExtensionServices<TPlugins>;
   }>()(
     Effect.gen(function* () {
+      // Captured ONCE, at layer-build time, so the per-request body can carry
+      // the boot-scoped `RCapture` services. Note what else rides along: a
+      // captured context also holds Effect's `CurrentMemoMap`, and the
+      // `Effect.provideContext(captured)` below re-applies it to every request
+      // fiber — overwriting the fresh per-request map the host installed. Every
+      // per-request `Effect.provide` in this body must therefore build with
+      // `{ local: true }`; see the two `options.stackLayer` sites.
       const captured = yield* Effect.context<RCapture>();
       return (httpEffect) =>
         Effect.gen(function* () {
@@ -216,7 +223,7 @@ export const makeExecutionStackMiddleware = <
             const { executor } = yield* makePlatformExecutionStack<TPlugins>(
               resolved.organizationId,
             ).pipe(
-              Effect.provide(options.stackLayer),
+              Effect.provide(options.stackLayer, { local: true }),
               Effect.withSpan("executor.stack.http.resolve_platform"),
             );
             return yield* httpEffect.pipe(
@@ -240,7 +247,7 @@ export const makeExecutionStackMiddleware = <
             resolved.organizationId,
             resolved.organizationName,
           ).pipe(
-            Effect.provide(options.stackLayer),
+            Effect.provide(options.stackLayer, { local: true }),
             Effect.provideService(RequestWebOrigin, {
               origin: requestWebOriginFromRequest(webRequest),
             }),
@@ -281,6 +288,10 @@ export const makeExecutionStackMiddleware = <
           );
           // Provide the boot-captured context; uncaptured deps (cloud's
           // request-scoped `DbService`) remain residual and flow through here.
+          // This also reinstates the BOOT `CurrentMemoMap` on the request
+          // fiber, which is why the stack builds above are `{ local: true }`:
+          // without that, concurrent requests memoize into one shared map and
+          // reuse a single stack build — and so a single database connection.
         }).pipe(Effect.provideContext(captured as Context.Context<RCapture>));
     }),
   );
