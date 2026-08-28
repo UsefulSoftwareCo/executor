@@ -16,6 +16,7 @@
 //   - invalid api key            -> Unauthorized  401 invalid_api_key
 //   - api-key org not authorized -> NoOrganization 403 no_organization
 //   - no/invalid session         -> NoOrganization 403 no_organization
+//   - session without org header -> NoOrganization 403 no_organization (fail closed)
 //   - session org not authorized -> NoOrganization 403 no_organization
 //   - no auth header             -> falls through to the sealed-session path
 // The org-resolution infra errors (`UserStoreError` / `WorkOSError`) are
@@ -37,7 +38,13 @@ import {
   Unauthorized,
   Unavailable,
 } from "@executor-js/api/server";
-import type { FailureRenderingStrategy, IdentityFailure, Principal } from "@executor-js/api/server";
+import type {
+  FailureRenderingStrategy,
+  IdentityFailure,
+  PlatformPrincipal,
+  Principal,
+  ResolvedPrincipal,
+} from "@executor-js/api/server";
 
 import { ApiKeyService } from "./api-keys";
 import { workosApiJwtBearerConfig } from "./api-jwt-bearer";
@@ -46,6 +53,7 @@ import {
   authorizeOrganization,
   authorizeOrganizationSelector,
   orgSelectorFromRequest,
+  resolveOrganization,
 } from "./organization";
 import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
@@ -86,6 +94,10 @@ const NO_ORGANIZATION_IN_SESSION = {
   code: "no_organization",
   message: "No organization in session",
 };
+const NO_ORGANIZATION_SELECTOR = {
+  code: "no_organization",
+  message: "No organization selector in request",
+};
 const INVALID_ACCESS_TOKEN = {
   code: "invalid_access_token",
   message: "Invalid or expired access token",
@@ -98,7 +110,6 @@ const NO_ORGANIZATION_IN_ACCESS_TOKEN = {
   code: "no_organization",
   message: "No organization in access token",
 };
-
 // A bearer value with three dot-separated segments is a JWT (a WorkOS access
 // token from the CLI device-login); anything else is treated as an API key.
 // Same discriminator the MCP plane uses (`mcp/auth.ts`).
@@ -134,6 +145,7 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_ACCESS_TOKEN);
 
     return {
+      kind: "member",
       accountId: verified.accountId,
       organizationId: org.id,
       organizationName: org.name,
@@ -146,13 +158,49 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
   });
 
 /**
- * Resolve a `Bearer` credential into a `Principal`: a WorkOS access-token JWT
- * (when `jwt` config is supplied and the value looks like a JWT) or a WorkOS
- * API key. Returns `null` when there is no `Authorization` header, so the
- * caller falls through to the sealed-session path. (Kept the historical name,
- * the re-export and resolver tests reference it.)
+ * What an ORG-level API key resolves to: the platform view. Deliberately NOT a
+ * `Principal` — a `Principal` names an acting member (`accountId: string`), and
+ * an org key has none. Keeping it a separate shape means no product code path
+ * can accidentally treat it as a member, and the executor built from it binds
+ * `subject: null` + the read-only tenant reach rather than inventing a subject.
+ *
+ * The `/admin/*` mount turns this into an executor with `{ tenant:
+ * organizationId, subject: undefined, platformView: true }`.
  */
-export const resolveApiKeyPrincipal = (request: Request, jwt: JwtBearerConfig | null = null) =>
+export interface PlatformAuth {
+  readonly kind: "platform";
+  readonly organizationId: string;
+  readonly organizationName: string;
+  readonly organizationSlug?: string;
+  readonly keyId: string;
+}
+
+/** A resolved bearer credential: an acting member, or the org-level platform
+ *  view. `null` means no `Authorization` header at all. */
+export type BearerAuth = Principal | PlatformAuth | null;
+
+export const isPlatformAuth = (value: BearerAuth): value is PlatformAuth =>
+  value !== null && "kind" in value && value.kind === "platform";
+
+/**
+ * Resolve a `Bearer` credential into either a member `Principal` or the
+ * org-level {@link PlatformAuth}. Returns `null` when there is no
+ * `Authorization` header, so the caller falls through to the sealed-session
+ * path.
+ *
+ * The org branch does NOT call `authorizeOrganization`: that checks a USER's
+ * live membership, and there is no user here. The key itself is the authority —
+ * WorkOS validated it and reported which org owns it — so the org row is merely
+ * resolved (mirrored on first read) for its name and slug.
+ */
+export const resolveBearerAuth = (
+  request: Request,
+  jwt: JwtBearerConfig | null = null,
+): Effect.Effect<
+  BearerAuth,
+  Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
+  WorkOSClient | ApiKeyService | UserStoreService
+> =>
   Effect.gen(function* () {
     const authHeader = request.headers.get("authorization");
     if (!authHeader) return null;
@@ -167,7 +215,7 @@ export const resolveApiKeyPrincipal = (request: Request, jwt: JwtBearerConfig | 
     if (jwt && looksLikeJwt(value)) return yield* resolveJwtPrincipal(value, jwt);
 
     const apiKeys = yield* ApiKeyService;
-    const principal = yield* apiKeys
+    const owner = yield* apiKeys
       .validate(value)
       .pipe(
         Effect.catchTag("ApiKeyValidationError", () =>
@@ -175,13 +223,29 @@ export const resolveApiKeyPrincipal = (request: Request, jwt: JwtBearerConfig | 
         ),
       );
 
-    if (!principal) return yield* new Unauthorized(INVALID_API_KEY);
+    if (!owner) return yield* new Unauthorized(INVALID_API_KEY);
 
-    const org = yield* authorizeOrganization(principal.accountId, principal.organizationId);
+    if (owner.scope === "org") {
+      const org = yield* resolveOrganization(owner.organizationId);
+      return {
+        kind: "platform",
+        organizationId: org.id,
+        organizationName: org.name,
+        ...(org.slug === undefined || org.slug === null ? {} : { organizationSlug: org.slug }),
+        keyId: owner.keyId,
+      } satisfies PlatformAuth;
+    }
+
+    // A `"user"` key always carries an accountId (see `ownerFromApiKey`); the
+    // guard keeps the narrowing honest rather than asserting.
+    if (owner.accountId == null) return yield* new Unauthorized(INVALID_API_KEY);
+
+    const org = yield* authorizeOrganization(owner.accountId, owner.organizationId);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_API_KEY);
 
     return {
-      accountId: principal.accountId,
+      kind: "member",
+      accountId: owner.accountId,
       organizationId: org.id,
       organizationName: org.name,
       organizationSlug: org.slug,
@@ -192,6 +256,40 @@ export const resolveApiKeyPrincipal = (request: Request, jwt: JwtBearerConfig | 
     } satisfies Principal;
   });
 
+/**
+ * The PRODUCT-plane bearer resolver. An org-level key resolves to the neutral
+ * seam's {@link PlatformPrincipal} — NOT a member `Principal` — and the shared
+ * middleware routes it to the subject-less, read-only platform executor
+ * (refusing non-GET up front). Previously the product plane rejected org keys
+ * outright; serving tenant-level READS to them is deliberate: the catalog,
+ * tools, policies, and org-owned connection listings are tenant-shared answers
+ * a machine credential can honestly receive, while everything subject-bound
+ * stays structurally out of reach (a platform executor binds no subject, so no
+ * member's personal rows resolve). (Kept the historical name; the re-export and
+ * resolver tests reference it.)
+ */
+export const resolveApiKeyPrincipal = (
+  request: Request,
+  jwt: JwtBearerConfig | null = null,
+): Effect.Effect<
+  ResolvedPrincipal | null,
+  Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
+  WorkOSClient | ApiKeyService | UserStoreService
+> =>
+  Effect.gen(function* () {
+    const auth = yield* resolveBearerAuth(request, jwt);
+    if (isPlatformAuth(auth)) {
+      return {
+        kind: "platform",
+        organizationId: auth.organizationId,
+        organizationName: auth.organizationName,
+        ...(auth.organizationSlug === undefined ? {} : { organizationSlug: auth.organizationSlug }),
+        keyId: auth.keyId,
+      } satisfies PlatformPrincipal;
+    }
+    return auth;
+  });
+
 export const resolveSessionPrincipal = (request: Request) =>
   Effect.gen(function* () {
     const workos = yield* WorkOSClient;
@@ -199,17 +297,27 @@ export const resolveSessionPrincipal = (request: Request) =>
     if (!session) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }
-    // The console URL's org is the scope authority (sent as a header); the
-    // session's own org is the fallback for non-console callers. Membership is
-    // re-checked live either way — the header is a selector, not a trust
-    // boundary (see organization.ts).
-    const selector = orgSelectorFromRequest(request) ?? session.organizationId;
+    // The console URL's org is the scope authority, sent as a header on every
+    // request. FAIL CLOSED when it's missing: the sealed cookie's org is
+    // browser-global and pinned to whichever org WorkOS last touched, so
+    // falling back to it silently serves ANOTHER org's data to a multi-org
+    // user (the wrong-tenant connection-list bug, 2026-07). A header-less
+    // session call gets a clear 403 instead. Membership is re-checked live —
+    // the header is a selector, not a trust boundary (see organization.ts).
+    // A bare-URL first paint (no org in the path yet) may 403 here; that's
+    // the safe outcome — OrgSlugGate immediately canonicalizes the URL onto
+    // an org slug, the org-keyed atom registry remounts, and everything
+    // refetches with the header. `/account/me` — which deliberately DOES fall
+    // back to the session org to pick that landing org — lives on the account
+    // plane, not here.
+    const selector = orgSelectorFromRequest(request);
     if (!selector) {
-      return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
+      return yield* new NoOrganization(NO_ORGANIZATION_SELECTOR);
     }
     const org = yield* authorizeOrganizationSelector(session.userId, selector);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     return {
+      kind: "member",
       accountId: session.userId,
       organizationId: org.id,
       organizationName: org.name,
@@ -236,7 +344,7 @@ export const resolveProtectedPrincipal = (
   request: Request,
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
-  Principal,
+  ResolvedPrincipal,
   Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
   WorkOSClient | ApiKeyService | UserStoreService
 > =>
@@ -316,6 +424,11 @@ export const cloudIdentityFailureStrategy: FailureRenderingStrategy<IdentityFail
           503,
           "service_unavailable",
           "Service temporarily unavailable",
+        ),
+        ReadOnlyCredential: renderIdentityFailure(
+          403,
+          "read_only_credential",
+          "Organization API keys are read-only",
         ),
       }),
     ),

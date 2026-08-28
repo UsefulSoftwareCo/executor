@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@source "./**/*.{ts,tsx}";
+@source "../../../../react/src/components/**/*.{ts,tsx}";
+
+/* ---------------------------------------------------------------------------
+   Fonts
+
+   Vendored and inlined as `data:` URLs, not fetched. The inner renderer runs
+   under `font-src data:` (see `buildRendererSrcDoc`), so a network font would
+   simply be blocked and model-written UI would render in `system-ui` — the one
+   executor surface not set in Geist. `vite.config.shell.ts` raises
+   `assetsInlineLimit` above these files' size so the build inlines them, and
+   `collectShellCss` then copies the whole compiled stylesheet, fonts included,
+   into the sandboxed frame.
+
+   These live HERE rather than in `theme.css` because `url()` needs the build to
+   resolve it; `theme.css` is also shipped as raw source to the in-frame
+   compiler, which has no bundler and no filesystem.
+
+   Variable faces: one file each covers 400 (body) and 500/600 (labels,
+   headings) without a second request's worth of bytes.
+   --------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "Geist";
+  src: url("./fonts/geist-sans.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/geist-mono.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Executor's tokens, variants and base layer. Shared verbatim with the inner
+   frame's Tailwind compiler — keep anything build-resolved out of it. */
+@import "./theme.css";
+
+/* Provenance marker. The shell's tokens deliberately mirror the console's
+   (theme.css is pinned against the console's globals.css), so no token name or
+   value distinguishes this compiled stylesheet from the console's own. This
+   property is the one declaration unique to it: e2e proves style containment
+   by finding it computed inside the shell document and absent from the console
+   document — see e2e/scenarios/artifacts.test.ts. */
+:root {
+  --mcp-apps-shell-stylesheet: 1;
+}

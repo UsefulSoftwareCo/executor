@@ -57,7 +57,34 @@ describe("isValidOrgSlug", () => {
   });
 
   it("reserves the segments routing depends on", () => {
-    for (const critical of ["api", "mcp", "integrations", "policies", "login", "cdn-cgi"]) {
+    for (const critical of [
+      "api",
+      "mcp",
+      "integrations",
+      "policies",
+      "login",
+      "cdn-cgi",
+      // The connect deep link's root. Cloud's post-auth callback reads the
+      // first path segment as an org selector, so leaving `connect` claimable
+      // made `/connect/<slug>` look like a request for an org named "connect"
+      // — which suppressed the active-membership fallback and could drop the
+      // deep link into org onboarding after sign-in.
+      "connect",
+      // The shared console's own root segments. Each one is a route the
+      // console links to at the top level, so an org holding the slug would
+      // shadow it for every member of that org: `/toolkits` would resolve to
+      // that org's console index instead of the shared toolkits page.
+      // `CONSOLE_ROUTE_PATHS` is the list these come from — the derived check
+      // that catches a NEW console route added without a reservation lives in
+      // `packages/react/src/console-routes.test.ts`, which is the package that
+      // can see both lists.
+      "users",
+      "toolkits",
+      "secrets",
+      "tools",
+      "resume",
+      "plugins",
+    ]) {
       expect(RESERVED_ORG_SLUGS.has(critical), critical).toBe(true);
     }
   });

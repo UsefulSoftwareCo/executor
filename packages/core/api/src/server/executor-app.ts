@@ -69,7 +69,12 @@ import {
   type FailureRenderingStrategy,
 } from "./execution-stack-middleware";
 import { makeFixedExecutionMiddleware, FixedExecutionProvider } from "./fixed-execution-middleware";
-import { IdentityProvider, type IdentityFailure, type Principal } from "./identity";
+import {
+  IdentityProvider,
+  type IdentityFailure,
+  type Principal,
+  type ResolvedPrincipal,
+} from "./identity";
 import {
   makeAccountApiLayer,
   makeProtectedApiLayer,
@@ -418,7 +423,7 @@ export const make = <
   // `Unauthorized | NoOrganization | Unavailable`.
   const authenticate = (
     request: Request,
-  ): Effect.Effect<Principal, IdentityFailure, IdentityProvider> =>
+  ): Effect.Effect<ResolvedPrincipal, IdentityFailure, IdentityProvider> =>
     Effect.flatMap(IdentityProvider.asEffect(), (provider) => provider.authenticate(request));
 
   // The per-request layer combined into the middleware: cloud's `requestScoped`

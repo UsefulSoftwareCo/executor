@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
 import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
@@ -13,10 +13,11 @@ import {
   OAuthClientSlug,
 } from "@executor-js/sdk/shared";
 
+import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
-import type { BrowserSurface } from "../src/surfaces/browser";
+import { type BrowserSurface, clickToReveal, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -69,14 +70,13 @@ const completeGoogleConsent = (authorizationUrl: string) =>
     return code;
   });
 
-const createGoogleEmulator = Effect.promise(async () => {
-  const response = await fetch("https://google.emulators.dev/_emulate/instances", {
-    method: "POST",
-  });
-  if (!response.ok) throw new Error(`Google emulator instance failed: ${response.status}`);
-  const instance = (await response.json()) as { readonly providerBaseUrl: string };
-  const client = await connectEmulator({ baseUrl: instance.providerBaseUrl });
-  return { client, baseUrl: instance.providerBaseUrl };
+const createGoogleEmulator = Effect.gen(function* () {
+  // Through the shared helper: it bounds and retries the one request in this
+  // scenario that leaves the runner, so a blip on the way to the edge doesn't
+  // read as a Google health-check failure.
+  const baseUrl = yield* createEmulatorInstance("google", "google-health");
+  const client = yield* Effect.promise(() => connectEmulator({ baseUrl }));
+  return { client, baseUrl };
 });
 
 const addGooglePresetFromCatalog = (
@@ -87,13 +87,9 @@ const addGooglePresetFromCatalog = (
 ) =>
   browser.session(identity, async ({ page, step }) => {
     await step(`Open ${presetName} from the connect catalog`, async () => {
-      await page.goto("/integrations", { waitUntil: "networkidle" });
-      await page
-        .getByRole("button", { name: /Connect/ })
-        .first()
-        .click();
+      await visit(page, "/integrations");
       const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-      await dialog.waitFor();
+      await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
       await dialog.getByPlaceholder(/Search or paste a URL/).fill(presetName);
       await dialog.getByRole("link", { name: new RegExp(`^${presetName}\\b`) }).click();
     });
@@ -116,6 +112,7 @@ const connectGoogleAccount = (input: {
   readonly target: TargetShape;
   readonly integration: IntegrationSlug;
   readonly oauthClient: OAuthClientSlug;
+  readonly newConnection?: boolean;
 }) =>
   Effect.gen(function* () {
     const redirectUri = new URL("/api/oauth/callback", input.target.baseUrl).toString();
@@ -146,6 +143,25 @@ const connectGoogleAccount = (input: {
       },
     });
 
+    return yield* runGoogleOAuthFlow(input, redirectUri);
+  });
+
+/** Run one authorize+complete round through the already-registered app. Split
+ *  from `connectGoogleAccount` so a scenario can connect a SECOND account
+ *  through the same app (`newConnection: true`) without re-registering it. */
+const runGoogleOAuthFlow = (
+  input: {
+    readonly client: Client;
+    readonly target: TargetShape;
+    readonly integration: IntegrationSlug;
+    readonly oauthClient: OAuthClientSlug;
+    readonly newConnection?: boolean;
+  },
+  redirectUriOverride?: string,
+) =>
+  Effect.gen(function* () {
+    const redirectUri =
+      redirectUriOverride ?? new URL("/api/oauth/callback", input.target.baseUrl).toString();
     const started = yield* input.client.oauth.start({
       payload: {
         client: input.oauthClient,
@@ -155,6 +171,7 @@ const connectGoogleAccount = (input: {
         integration: input.integration,
         template: GOOGLE_AUTH_TEMPLATE,
         redirectUri,
+        ...(input.newConnection === true ? { newConnection: true } : {}),
       },
     });
     expect(started.status, "OAuth starts with an emulator redirect").toBe("redirect");
@@ -167,6 +184,7 @@ const connectGoogleAccount = (input: {
     expect(completed.integration, "OAuth completion creates the connection").toBe(
       input.integration,
     );
+    return completed;
   });
 
 scenario(
@@ -248,13 +266,29 @@ scenario(
             health.status,
             `${row.presetName} health check is healthy: ${JSON.stringify(health)}`,
           ).toBe("healthy");
-        }
 
-        const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
-        for (const row of rows) {
+          // Check this row's ledger entry HERE, not after both rows have run.
+          // `ledger.list(n)` is the last n entries, and connecting the second
+          // account is easily a hundred emulator requests, so the first row's
+          // health check can be evicted from the window before a combined
+          // assertion at the end ever looks for it — which reads as "Calendar's
+          // health check never reached the emulator" when it plainly did (the
+          // probe above came back healthy, and only the emulator can answer
+          // that). The hosted emulator also acknowledges a request before its
+          // ledger entry is readable, so poll rather than read once.
+          const reached = yield* Effect.promise(() => emulator.client.ledger.list(50)).pipe(
+            Effect.map((ledger) =>
+              ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+            ),
+            Effect.repeat({
+              schedule: Schedule.spaced("500 millis"),
+              until: (seen) => seen,
+              times: 19,
+            }),
+          );
           expect(
-            ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
-            `${row.presetName} health check reached the Google emulator`,
+            reached,
+            `${row.presetName}'s health check reached the Google emulator as ${row.expectedLedgerOperation}`,
           ).toBe(true);
         }
       }),
@@ -334,13 +368,53 @@ scenario(
           refreshed.find((connection) => connection.name === CONNECTION)?.identityLabel,
           "Google Sheets still shows the OAuth grant identity after no-probe health",
         ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+
+        // Reconnecting the SAME connection must not clobber a curated label
+        // with the grant identity.
+        yield* client.connections.update({
+          params: { owner: "org", integration: slug, name: CONNECTION },
+          payload: { identityLabel: "Finance account" },
+        });
+        yield* runGoogleOAuthFlow({ client, target, integration: slug, oauthClient });
+        const reconnected = yield* client.connections.list({
+          query: { owner: "org", integration: slug },
+        });
+        expect(
+          reconnected.find((connection) => connection.name === CONNECTION)?.identityLabel,
+          "reconnect keeps the curated label over the grant identity",
+        ).toBe("Finance account");
+
+        // A `newConnection` connect under a taken name mints a SECOND
+        // connection with a suffixed name instead of replacing the first.
+        const second = yield* runGoogleOAuthFlow({
+          client,
+          target,
+          integration: slug,
+          oauthClient,
+          newConnection: true,
+        });
+        expect(String(second.name), "second account mints a suffixed connection").toBe(
+          `${String(CONNECTION)}2`,
+        );
+        expect(second.identityLabel, "second account label comes from the grant identity").toBe(
+          GOOGLE_EMULATOR_ACCOUNT_EMAIL,
+        );
+        const both = yield* client.connections.list({
+          query: { owner: "org", integration: slug },
+        });
+        expect(
+          both.map((connection) => String(connection.name)).sort(),
+          "both accounts coexist",
+        ).toEqual([String(CONNECTION), `${String(CONNECTION)}2`]);
       }),
       Effect.gen(function* () {
-        yield* client.connections
-          .remove({
-            params: { owner: "org", integration: slug, name: CONNECTION },
-          })
-          .pipe(Effect.ignore);
+        for (const name of [CONNECTION, ConnectionName.make(`${String(CONNECTION)}2`)]) {
+          yield* client.connections
+            .remove({
+              params: { owner: "org", integration: slug, name },
+            })
+            .pipe(Effect.ignore);
+        }
         yield* client.oauth
           .removeClient({ params: { slug: oauthClient }, payload: { owner: "org" } })
           .pipe(Effect.ignore);

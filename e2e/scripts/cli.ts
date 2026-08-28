@@ -303,6 +303,11 @@ const run = async (target: "selfhost" | "cloud", flags: ReadonlySet<string>) => 
         workosPublicUrl,
         host,
         logFile,
+        // The boot recipe shrinks the per-org execution cap to a number the
+        // rate-limit-backstop scenario can exhaust (execution-limits.ts). An
+        // interactive instance is a human clicking around — artifact pages
+        // alone run several executions per open — so restore the prod cap.
+        extraEnv: { EXECUTION_RATE_LIMIT_PER_HOUR: "1000" },
       });
       teardown = async () => {
         await booted.teardown();

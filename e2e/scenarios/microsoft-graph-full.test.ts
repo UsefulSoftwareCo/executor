@@ -5,9 +5,9 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
-  MICROSOFT_GRAPH_OPENAPI_URL,
   microsoftCatalog,
   microsoftGraphAdapter,
+  microsoftGraphSliceUrl,
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
@@ -57,7 +57,7 @@ scenario(
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
+              url: microsoftGraphSliceUrl(MICROSOFT_FILES_PRESET_ID),
             },
             slug: integration,
             name: "Microsoft Graph Files",

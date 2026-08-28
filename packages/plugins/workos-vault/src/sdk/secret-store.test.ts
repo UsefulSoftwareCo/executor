@@ -336,7 +336,9 @@ describe("WorkOS Vault credential provider", () => {
     }),
   );
 
-  it.effect("retries value writes on 409 version conflicts", () =>
+  // `it.live` (real clock): a conflicted write now waits before retrying, and
+  // the TestClock never advances that wait on its own.
+  it.live("retries value writes on 409 version conflicts", () =>
     Effect.gen(function* () {
       const provider = makeProvider(makeFakeClient({ conflictOnNextSecretUpdate: true }));
 

@@ -8,6 +8,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit, settle } from "../src/surfaces/browser";
 
 scenario(
   "Organizations · switching organizations switches the workspace",
@@ -20,7 +21,7 @@ scenario(
     yield* browser.session(identity, async ({ page, step }) => {
       // ── Step 1: onboarding, create the first org ─────────────────────
       await step("Fresh user lands on onboarding (no organization yet)", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.getByPlaceholder("Northwind Labs").waitFor();
       });
 
@@ -43,7 +44,7 @@ scenario(
         await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
           timeout: 30_000,
         });
-        await page.waitForLoadState("networkidle");
+        await settle(page);
       });
 
       // ── Step 2: create the second org via the account-menu switcher ──
@@ -89,7 +90,7 @@ scenario(
       // rendered with data-disabled="" (Radix convention). The only item without
       // data-disabled that isn't "Create organization" is ORG_1.
       await step(`Open the org switcher and switch back to "${ORG_1}"`, async () => {
-        await page.waitForLoadState("networkidle");
+        await settle(page);
         await page.getByRole("button", { name: /Test User/ }).click();
         // Click the SubTrigger (shows current org name = ORG_2) to expand the list.
         await page.getByRole("menuitem", { name: ORG_2 }).click();

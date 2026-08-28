@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cloud",
-  "version": "1.4.50",
+  "version": "1.4.63",
   "private": true,
   "type": "module",
   "scripts": {
@@ -30,7 +30,10 @@
     "typecheck:slow": "tsc --noEmit",
     "db:backfill-org-slugs:prod": "op run --env-file=.env.production -- bun run scripts/backfill-org-slugs.ts",
     "db:backfill-org-slugs:dev": "op run --env-file=.env.op -- bun run scripts/backfill-org-slugs.ts",
-    "routes:gen": "bun scripts/gen-routes.ts"
+    "db:backfill-subjects:prod": "op run --env-file=.env.production -- bun run scripts/backfill-subjects.ts",
+    "db:backfill-subjects:dev": "op run --env-file=.env.op -- bun run scripts/backfill-subjects.ts",
+    "routes:gen": "bun scripts/gen-routes.ts",
+    "vendor-wasm": "bun run scripts/vendor-quickjs-wasm.ts"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.31.1",
@@ -41,7 +44,7 @@
     "@executor-js/execution": "workspace:*",
     "@executor-js/fumadb": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
-    "@executor-js/plugin-apps": "workspace:*",
+    "@executor-js/mcp-apps-shell": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
@@ -52,6 +55,7 @@
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
+    "@jitl/quickjs-wasmfile-release-sync": "catalog:",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "~1.9.0",
     "@opentelemetry/exporter-logs-otlp-http": "^0.214.0",
@@ -73,6 +77,7 @@
     "jose": "^5.6.3",
     "postgres": "^3.4.9",
     "posthog-js": "^1.372.5",
+    "quickjs-emscripten-core": "0.31.0",
     "react": "catalog:",
     "react-dom": "catalog:",
     "sonner": "^2.0.7"

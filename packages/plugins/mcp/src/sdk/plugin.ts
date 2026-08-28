@@ -1,9 +1,9 @@
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import * as z from "zod/v4";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
+
+import { callToolResultJsonSchema } from "./call-tool-result-schema.gen";
 
 import {
   authToolFailure,
@@ -14,6 +14,7 @@ import {
   IntegrationSlug,
   mergeAuthTemplates,
   OAuthClientSlug,
+  sha256Hex,
   tool,
   ToolResult,
   type AuthMethodDescriptor,
@@ -41,6 +42,7 @@ import {
 } from "@executor-js/sdk/http-auth";
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
+import { createMcpConnectionPool } from "./connection-pool";
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
@@ -51,6 +53,7 @@ import { invokeMcpTool, isUnknownToolMessage } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
+import { recoverSlackConnectFile } from "./slack-connect-file";
 import {
   McpAuthMethodInput,
   McpAuthShorthand,
@@ -60,6 +63,7 @@ import {
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
+  McpStdioVersionNegotiation,
   parseMcpIntegrationConfig,
   type McpIntegrationConfig as McpIntegrationConfigType,
   type McpStdioEnvMethod,
@@ -206,6 +210,11 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  instead and leaves the values to the connect step. */
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   cwd: Schema.optional(Schema.String),
+  /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
+   *  2026-07-28) for modern-only servers. Defaults to the legacy `initialize`
+   *  handshake — the right call for spawn-per-call servers, where the auto
+   *  probe costs an extra child process per connect. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
   slug: Schema.optional(Schema.String),
 });
 
@@ -369,6 +378,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
+      versionNegotiation: input.versionNegotiation,
       authenticationTemplate:
         vars.length > 0
           ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars }]
@@ -391,7 +401,11 @@ type JsonSchemaObject = Record<string, unknown> & {
   readonly properties?: Record<string, unknown>;
 };
 
-const McpCallToolResultJsonSchema = z.toJSONSchema(CallToolResultSchema) as JsonSchemaObject;
+// Baked at generation time rather than derived from @modelcontextprotocol/core
+// at module scope — importing core costs ~8.6MB of heap per Cloudflare isolate
+// (see client-module.ts), and this schema is the only thing the plugin needs
+// from it outside a live connection.
+const McpCallToolResultJsonSchema: JsonSchemaObject = callToolResultJsonSchema;
 
 const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonSchemaObject => {
   const defaultStructuredContentSchema =
@@ -492,7 +506,9 @@ export const userFacingProbeMessage = (
 // MCP-SDK OAuth provider adapter — wraps a pre-resolved access token so the
 // transport sends it as a Bearer header. Refresh is core's responsibility
 // (the connection row carries the OAuth grant); this adapter never initiates
-// a new flow and fails loudly if the SDK tries to.
+// a new flow and fails loudly if the SDK tries to. V2 stamps stored credentials
+// with the authorization-server issuer and offers scoped invalidation; this
+// single-token boundary intentionally persists neither.
 // ---------------------------------------------------------------------------
 
 const makeOAuthProvider = (accessToken: string): OAuthClientProvider => ({
@@ -585,6 +601,7 @@ const buildConnectorInput = (
       args: config.args,
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
+      versionNegotiation: config.versionNegotiation,
     } satisfies McpStdioIntegrationConfig);
   }
 
@@ -615,6 +632,58 @@ const buildConnectorInput = (
   });
 };
 
+// Record fields are key-sorted before stringifying: the key only guards
+// same-identity reuse (a mismatch merely costs a fresh dial), but insertion
+// order must not make two equal identities look distinct.
+const sortedRecord = (
+  record: Record<string, string | null | undefined> | undefined,
+): Record<string, string | null> =>
+  Object.fromEntries(
+    Object.entries(record ?? {})
+      .filter((entry): entry is [string, string | null] => entry[1] !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+
+/** The pooled remote connection's identity, as an opaque digest.
+ *
+ *  HASHED, not carried in the clear, because three of the fields below hold a
+ *  live credential: `values` is the connection's resolved secret inputs, and
+ *  `headers` / `queryParams` are those SAME secrets already rendered onto the
+ *  outbound request by `buildConnectorInput`. The result is retained as a `Map`
+ *  key for the POOL's lifetime (`connection-pool.ts`), which outlives by far the
+ *  call that needed the secret — so a plaintext key leaves credentials sitting
+ *  in process memory with no reader.
+ *
+ *  Hashing the WHOLE serialized identity rather than only the fields known to
+ *  be sensitive keeps equality exactly (same identity → same digest, so reuse is
+ *  unchanged) and keeps any field added later covered without anyone having to
+ *  remember it carries a secret. Nothing reads the key back: the pool only ever
+ *  compares it, and it reaches no log, span or error message.
+ *
+ *  SHA-256 rather than a cheap non-cryptographic hash on purpose. A collision
+ *  means reusing a connection authenticated as somebody else, so the hash has to
+ *  be one an attacker who controls their own credential values cannot aim.
+ *
+ *  Exported for tests (not re-exported from `sdk/index.ts`, so this widens no
+ *  public API): the retention property is a property of the KEY, and asserting
+ *  it through pool behaviour alone would not see it. */
+export const connectionPoolKey = (
+  input: Extract<ConnectorInput, { readonly transport: "remote" }>,
+  template: string,
+  values: Record<string, string | null>,
+): Effect.Effect<string> =>
+  sha256Hex(
+    JSON.stringify({
+      endpoint: input.endpoint,
+      transport: input.transport,
+      remoteTransport: input.remoteTransport,
+      headers: sortedRecord(input.headers),
+      queryParams: sortedRecord(input.queryParams),
+      template,
+      values: sortedRecord(values),
+    }),
+  );
+
 // ---------------------------------------------------------------------------
 // Declared auth methods — project the stored MCP config into the catalog's
 // plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. Pure and
@@ -625,9 +694,9 @@ const buildConnectorInput = (
 //   stdio                → []          (no remote connection to configure)
 //   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
-//                          (`discoveryUrl`). Endpoints/scopes are discovered
-//                          live at connect time, so they are NOT pre-resolved
-//                          here. We mark
+//                          (`discoveryUrl`). Endpoints are discovered live at
+//                          connect time. Scopes are discovered too unless the
+//                          method declares them explicitly. We mark
 //                          `supportsDynamicRegistration: true` because MCP
 //                          OAuth servers are expected to support RFC 7591 DCR;
 //                          the connect flow probes to confirm and falls back.
@@ -666,7 +735,15 @@ export const describeMcpAuthMethods = (
         // oauth2.
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
           supportsDynamicRegistration: true,
+          // Present only when this server was configured with an enterprise
+          // identity provider. The connect path re-checks the server's metadata
+          // for the ID-JAG grant profile and falls back to interactive OAuth
+          // when it is absent, so this is an opt-in, not an override.
+          ...(method.enterpriseIdentityProvider === undefined
+            ? {}
+            : { enterpriseIdentityProvider: method.enterpriseIdentityProvider }),
         },
       };
     }
@@ -699,6 +776,7 @@ export interface McpPluginOptions {
 
 export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
   const allowStdio = options?.dangerouslyAllowStdioMCP ?? false;
+  const connectionPool = createMcpConnectionPool();
 
   const presetEntries = (
     allowStdio
@@ -731,6 +809,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // factory reads `allowStdio` and gates the stdio tab + presets.
     clientConfig: { allowStdio },
     storage: () => ({}),
+    close: () => connectionPool.close(),
 
     extension: (ctx: PluginCtx) => {
       const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
@@ -1014,6 +1093,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 command: config.command,
                 args: config.args,
                 cwd: config.cwd,
+                versionNegotiation: config.versionNegotiation,
                 authenticationTemplate: hasEnv
                   ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars: envVars }]
                   : [{ slug: "none", kind: "none" }],
@@ -1203,20 +1283,28 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
-
-        if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+        if (Result.isFailure(built)) {
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: built.failure.message,
+          };
         }
-        return { tools: manifest.manifest.tools.map(toToolDef) };
+
+        const discovered = yield* discoverTools(built.success).pipe(
+          Effect.result,
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
+        if (Result.isFailure(discovered)) {
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: discovered.failure.message,
+          };
+        }
+        return { tools: discovered.success.tools.map(toToolDef) };
       }).pipe(
         Effect.withSpan("mcp.plugin.resolve_tools", {
           attributes: { "mcp.connection.name": String(connection.name) },
@@ -1266,13 +1354,23 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }
         }
 
-        const connector: McpConnector = yield* buildConnectorInput(
+        const invokeHttpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
+        const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           String(credential.template),
           allowStdio,
-          options?.httpClientLayer ?? ctx.httpClientLayer,
-        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+          invokeHttpClientLayer,
+        );
+        const connector: McpConnector = createMcpConnector(connectorInput);
+        const poolKey =
+          connectorInput.transport === "remote"
+            ? yield* connectionPoolKey(
+                connectorInput,
+                String(credential.template),
+                credential.values,
+              )
+            : undefined;
 
         const connectionRef = {
           owner: credential.owner,
@@ -1293,6 +1391,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           args,
           transport,
           connector,
+          ...(poolKey === undefined ? {} : { connectionPool, connectionPoolKey: poolKey }),
           elicit,
           onToolListChanged: () => {
             toolListChanged = true;
@@ -1316,6 +1415,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return yield* ctx.connections
               .markToolsStale(connectionRef)
               .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
+          }
+          if (parsed.transport === "remote") {
+            const recoveredSlackConnectFile = yield* recoverSlackConnectFile({
+              endpoint: parsed.endpoint,
+              toolName: stamp.toolName,
+              args,
+              accessToken: credential.values[TOKEN_VARIABLE],
+              upstreamErrorMessage: errorMessage,
+            }).pipe(Effect.provide(invokeHttpClientLayer));
+            if (Option.isSome(recoveredSlackConnectFile)) {
+              return ToolResult.ok(recoveredSlackConnectFile.value);
+            }
           }
           return ToolResult.fail({
             code: "mcp_tool_error",
@@ -1487,6 +1598,30 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         if (!parsed) {
           return { status: "unknown" as const, checkedAt: Date.now() } satisfies HealthCheckResult;
         }
+        // An unresolved apikey input reports `expired`, not `healthy`.
+        //
+        // Rendering skips a placement whose value is missing, so without this the
+        // probe dials UNAUTHENTICATED — and any server that lists tools without
+        // auth answers, making a connection whose credential is gone report as
+        // healthy. Health is the signal that tells a user to re-authenticate, so
+        // that is the one status it must never give here. The invoke path already
+        // refuses for the same reason, and the OpenAPI health check reports
+        // `expired` in exactly this case.
+        if (parsed.transport === "remote") {
+          const method = selectAuthMethod(parsed, String(credential.template));
+          if (method?.kind === "apikey") {
+            const missing = requiredPlacementVariables(method.placements).filter(
+              (variable) => credential.values[variable] == null,
+            );
+            if (missing.length > 0) {
+              return {
+                status: "expired" as const,
+                checkedAt: Date.now(),
+                detail: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}.`,
+              } satisfies HealthCheckResult;
+            }
+          }
+        }
         const connector = yield* buildConnectorInput(
           parsed,
           credential.values,
@@ -1519,7 +1654,23 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             detail: error.message,
           } satisfies HealthCheckResult),
         ),
-        Effect.withSpan("mcp.plugin.check_health"),
+        // Every failure above folds onto the SUCCESS channel, so without this
+        // the span ends green on an expired credential — a 401 auth wall and a
+        // healthy dial were indistinguishable in traces.
+        Effect.tap((result) =>
+          Effect.annotateCurrentSpan({
+            "mcp.health.status": result.status,
+            ...("httpStatus" in result && result.httpStatus !== undefined
+              ? { "mcp.health.http_status": result.httpStatus }
+              : {}),
+          }),
+        ),
+        Effect.withSpan("mcp.plugin.check_health", {
+          attributes: {
+            "executor.integration": String(credential.integration),
+            "mcp.connection.name": String(credential.connection),
+          },
+        }),
       ),
 
     describeAuthMethods: describeMcpAuthMethods,

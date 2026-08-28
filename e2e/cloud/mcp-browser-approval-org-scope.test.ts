@@ -14,6 +14,7 @@ import { composePluginApi } from "@executor-js/api/server";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import { type McpBrowserApproval, parseBrowserApproval } from "../src/surfaces/mcp";
+import { visit } from "../src/surfaces/browser";
 
 const coreApi = composePluginApi([] as const);
 
@@ -168,13 +169,13 @@ scenario(
           mcpSession.awaitResume(approval.executionId),
           browser.session(identity, async ({ page, step }) => {
             await step("Land in the original organization", async () => {
-              await page.goto(`/${orgA.slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/${orgA.slug}`);
               await expectOrgShell(page, orgA);
             });
 
             await step("The browser session is switched to another organization", async () => {
               await setWorkosSessionCookie(page, target.baseUrl, sessionB);
-              await page.goto(`/${orgB.slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/${orgB.slug}`);
               await expectOrgShell(page, orgB);
             });
 
@@ -182,7 +183,7 @@ scenario(
               const loadRequest = page.waitForRequest(approvalApiRequest(approval, "GET"), {
                 timeout: 30_000,
               });
-              await page.goto(approval.approvalUrl, { waitUntil: "networkidle" });
+              await visit(page, approval.approvalUrl);
               expect(
                 (await loadRequest).headers()["x-executor-organization"],
                 "loading the approval page scopes the paused execution lookup to org A",

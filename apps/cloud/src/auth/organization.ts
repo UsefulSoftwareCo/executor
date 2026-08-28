@@ -38,12 +38,14 @@ import { WorkOSClient } from "./workos";
 export const resolveOrganization = (organizationId: string) =>
   Effect.gen(function* () {
     const users = yield* UserStoreService;
-    const existing = yield* users.use((s) => s.getOrganization(organizationId));
+    const existing = yield* users.use("getOrganization", (s) => s.getOrganization(organizationId));
     if (existing) return existing;
 
     const workos = yield* WorkOSClient;
     const fresh = yield* workos.getOrganization(organizationId);
-    return yield* users.use((s) => s.upsertOrganization({ id: fresh.id, name: fresh.name }));
+    return yield* users.use("upsertOrganization", (s) =>
+      s.upsertOrganization({ id: fresh.id, name: fresh.name }),
+    );
   });
 
 // ---------------------------------------------------------------------------
@@ -125,7 +127,7 @@ export const authorizeOrganizationSelector = (userId: string, selector: string) 
       return yield* authorizeOrganization(userId, selector);
     }
     const users = yield* UserStoreService;
-    const org = yield* users.use((s) => s.getOrganizationBySlug(selector));
+    const org = yield* users.use("getOrganizationBySlug", (s) => s.getOrganizationBySlug(selector));
     if (!org) return null;
     return yield* authorizeOrganization(userId, org.id);
   });

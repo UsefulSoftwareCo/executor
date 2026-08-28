@@ -165,4 +165,38 @@ describe("toolkitsPlugin", () => {
       ).toContain("executor.coreTools.* approve");
     }),
   );
+
+  it.effect("applies a broad approve policy over a narrower connection", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+      });
+
+      const toolkit = yield* executor.toolkits.create({
+        owner: "org",
+        name: "Docs Kit",
+      });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "google_docs.org.main.*",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "google_docs.org.*",
+        action: "approve",
+      });
+
+      const result = yield* executor.toolkits.resolvePolicyForSlug(
+        toolkit.slug,
+        "google_docs.org.main.documents.update",
+        true,
+      );
+      expect(result.action).toBe("approve");
+      expect(result.source).toBe("user");
+
+      const rules = yield* executor.toolkits.policyRulesForSlug(toolkit.slug);
+      expect(
+        rules.map((rule) => `${rule.pattern} ${rule.action}`),
+        "policy listing agrees with toolkit enforcement",
+      ).toContain("google_docs.org.* approve");
+    }),
+  );
 });

@@ -23,6 +23,7 @@ import { AccountHttpApi } from "@executor-js/api";
 
 import { scenario } from "../src/scenario";
 import { Api, Billing, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 // apps/cloud/src/extensions/billing/plans.ts → MEMBER_LIMITS.free
 const FREE_MEMBER_SEATS = 3;
@@ -45,7 +46,7 @@ scenario(
       let slug = "";
 
       await step("Land in the app and canonicalize onto the org slug", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
           timeout: 30_000,
         });
@@ -54,7 +55,7 @@ scenario(
       });
 
       await step("Open the organization members page", async () => {
-        await page.goto(`/${slug}/org`, { waitUntil: "networkidle" });
+        await visit(page, `/${slug}/org`);
         await page.getByRole("button", { name: "Invite member" }).waitFor();
       });
 

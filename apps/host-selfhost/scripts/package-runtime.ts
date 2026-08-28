@@ -91,8 +91,7 @@ const copyPackage = (name: string): void => {
   cpSync(packageDir(name), destination, { recursive: true, dereference: true });
 };
 
-// The worker-bundler backend (packages/plugins/apps/src/pipeline/
-// worker-bundler-artifact.ts) loads `dist/index.bundled.js` from the resolved
+// Worker-bundler consumers load `dist/index.bundled.js` from the resolved
 // package, falling back to bundling `dist/index.js` with esbuild at runtime.
 // The npm package doesn't ship the bundled entry and the runtime image has no
 // esbuild, so produce it here, the same way apps/cli/src/build.ts does for the

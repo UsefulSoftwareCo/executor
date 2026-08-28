@@ -20,6 +20,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Autumn, Billing, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "Billing · completing the trial checkout shows the new plan without a reload",
@@ -51,12 +52,12 @@ scenario(
         // "/undefined/billing/plans" — the billing fetches fire under the bogus
         // slug, fail, and are never refetched (autumn-js staleTime 60s), leaving
         // the plans grid empty forever.
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
           timeout: 30_000,
         });
         const slug = new URL(page.url()).pathname.split("/").filter(Boolean)[0];
-        await page.goto(`/${slug}/billing/plans`, { waitUntil: "networkidle" });
+        await visit(page, `/${slug}/billing/plans`);
         await page.getByRole("heading", { name: "Choose a plan" }).waitFor();
         await startTrial.waitFor();
       });

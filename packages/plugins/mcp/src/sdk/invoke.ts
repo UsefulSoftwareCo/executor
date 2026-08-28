@@ -2,10 +2,13 @@
 // MCP tool invocation — shared helper called from plugin.invokeTool.
 //
 // Responsible for:
-//   1. Dialing a fresh MCP client connection for the call (no DB-connection
-//      caching — request-scoped per the Hyperdrive rule; each invoke acquires
-//      and releases its own connection).
-//   2. Installing a per-invocation `ElicitRequestSchema` handler that bridges
+//   1. Leasing remote connections from a per-plugin-instance pool when one is
+//      provided. MCP streamable-http is a series of HTTP requests keyed by the
+//      application-level `Mcp-Session-Id`, not a raw pooled socket, and servers
+//      legitimately retain state in that session. The pool keeps one idle
+//      connection per resolved identity and leases it exclusively per invoke;
+//      stdio and callers without a pool remain strictly per-call.
+//   2. Installing a per-invocation `elicitation/create` handler that bridges
 //      MCP's elicit capability into the host's elicit function threaded via
 //      `InvokeToolInput.elicit`.
 //   3. Calling `client.callTool({ name, arguments })`.
@@ -13,12 +16,11 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import {
-  ElicitRequestSchema,
-  ErrorCode,
-  McpError,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { ProtocolError } from "@modelcontextprotocol/client";
+
+// SDK error classes come through the lazy loader; by the time a tool call can
+// fail, the connect path has always loaded the module (see client-module.ts).
+import { mcpClientSdkIfLoaded } from "./client-module";
 
 import {
   ElicitationId,
@@ -30,6 +32,7 @@ import {
 
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
+import type { McpConnectionPool } from "./connection-pool";
 import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
 
 // ---------------------------------------------------------------------------
@@ -60,12 +63,25 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
   ).test(message);
 };
 
-const isUnknownToolCause = (cause: unknown, toolName: string): boolean =>
+const asProtocolError = (cause: unknown): ProtocolError | undefined => {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined) return undefined;
   // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK surfaces JSON-RPC protocol errors as this Error subclass
-  cause instanceof McpError &&
-  (cause.code === ErrorCode.InvalidParams || cause.code === ErrorCode.MethodNotFound) &&
-  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: instanceof narrows to the SDK's McpError, whose message carries the only unknown-tool discriminator the protocol provides
-  isUnknownToolMessage(cause.message, toolName);
+  return cause instanceof sdk.client.ProtocolError ? cause : undefined;
+};
+
+const isUnknownToolCause = (cause: unknown, toolName: string): boolean => {
+  const sdk = mcpClientSdkIfLoaded();
+  const protocolError = asProtocolError(cause);
+  return (
+    sdk !== undefined &&
+    protocolError !== undefined &&
+    (protocolError.code === sdk.client.ProtocolErrorCode.InvalidParams ||
+      protocolError.code === sdk.client.ProtocolErrorCode.MethodNotFound) &&
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message carries the only unknown-tool discriminator the protocol provides
+    isUnknownToolMessage(protocolError.message, toolName)
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge — decode incoming MCP ElicitRequest, route through
@@ -89,6 +105,17 @@ const McpElicitParams = Schema.Union([
 type McpElicitParams = typeof McpElicitParams.Type;
 
 const decodeElicitParams = Schema.decodeUnknownSync(McpElicitParams);
+const decodeElicitContent = Schema.decodeUnknownSync(
+  Schema.Record(
+    Schema.String,
+    Schema.Union([
+      Schema.String,
+      Schema.Number,
+      Schema.Boolean,
+      Schema.mutable(Schema.Array(Schema.String)),
+    ]),
+  ),
+);
 
 const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
   params.mode === "url"
@@ -103,7 +130,7 @@ const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
       });
 
 const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
-  client.setRequestHandler(ElicitRequestSchema, async (request: { params: unknown }) => {
+  client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {
     const params = decodeElicitParams(request.params);
     const req = toElicitationRequest(params);
     // Use runPromiseExit so we can inspect typed failures — `elicit`
@@ -115,7 +142,9 @@ const installElicitationHandler = (client: McpConnection["client"], elicit: Elic
       const response = exit.value;
       return {
         action: response.action,
-        ...(response.action === "accept" && response.content ? { content: response.content } : {}),
+        ...(response.action === "accept" && response.content
+          ? { content: decodeElicitContent(response.content) }
+          : {}),
       };
     }
     const failure = exit.cause.reasons.find(Cause.isFailReason);
@@ -145,7 +174,7 @@ const installToolListChangedHandler = (
   onToolListChanged: (() => void) | undefined,
 ): void => {
   if (!onToolListChanged) return;
-  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+  client.setNotificationHandler("notifications/tools/list_changed", () => {
     onToolListChanged();
   });
 };
@@ -181,13 +210,16 @@ const useConnection = (
             message: `MCP tool call failed for ${toolName}`,
             status: 403,
             insufficientScope: true,
+            transportFailure: true,
           });
         }
         const status = httpStatusFromCause(cause);
+        const protocolFailure = asProtocolError(cause) !== undefined;
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,
           ...(status === undefined ? {} : { status }),
+          ...(!protocolFailure ? { transportFailure: true } : {}),
           ...(isUnknownToolCause(cause, toolName) ? { unknownTool: true } : {}),
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }
@@ -211,8 +243,12 @@ export interface InvokeMcpToolInput {
   readonly toolName: string;
   readonly args: unknown;
   readonly transport: string;
-  /** Dials a fresh connection. The connection is closed after the call. */
+  /** Dials a fresh connection when no reusable remote session is available. */
   readonly connector: McpConnector;
+  /** Optional per-plugin-instance pool and resolved remote identity key. Both
+   *  must be present to enable reuse; otherwise the connection is per-call. */
+  readonly connectionPool?: McpConnectionPool;
+  readonly connectionPoolKey?: string;
   readonly elicit: Elicit;
   /** Fired when the server sends `notifications/tools/list_changed` during
    *  the call window. Synchronous and non-throwing by contract; the caller
@@ -228,6 +264,20 @@ export const invokeMcpTool = (
 > =>
   Effect.gen(function* () {
     const args = argsRecord(input.args);
+    const use = (connection: McpConnection) =>
+      useConnection(connection, input.toolName, args, input.elicit, input.onToolListChanged);
+
+    if (input.connectionPool && input.connectionPoolKey) {
+      return yield* input.connectionPool.withConnection(
+        input.connectionPoolKey,
+        input.connector.pipe(
+          Effect.withSpan("plugin.mcp.connection.acquire", {
+            attributes: { "plugin.mcp.transport": input.transport },
+          }),
+        ),
+        use,
+      );
+    }
 
     const connection = yield* Effect.acquireRelease(
       input.connector.pipe(
@@ -248,13 +298,7 @@ export const invokeMcpTool = (
         ),
     );
 
-    return yield* useConnection(
-      connection,
-      input.toolName,
-      args,
-      input.elicit,
-      input.onToolListChanged,
-    );
+    return yield* use(connection);
   }).pipe(
     Effect.scoped,
     Effect.withSpan("plugin.mcp.invoke", {

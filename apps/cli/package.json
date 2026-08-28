@@ -1,6 +1,6 @@
 {
   "name": "executor",
-  "version": "1.5.32",
+  "version": "1.6.2",
   "private": true,
   "bin": {
     "executor": "./bin/executor.ts"
@@ -36,9 +36,11 @@
     "quickjs-emscripten": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/worker-bundler": "0.2.1",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "esbuild": "^0.27.3",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

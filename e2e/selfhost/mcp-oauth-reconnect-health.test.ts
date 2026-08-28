@@ -1,6 +1,9 @@
-// Selfhost repros for two MCP OAuth bugs seen with a DCR connection whose
-// refresh token is rejected by the provider as `invalid_grant`.
+// Selfhost repros for MCP OAuth bugs seen with a DCR connection whose
+// refresh token is rejected by the provider as `invalid_grant`, including the
+// reconnect journey: completing Reconnect must refresh the health verdict on
+// the page without a hard reload.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 
 import { Effect } from "effect";
 import { expect } from "@effect/vitest";
@@ -18,6 +21,7 @@ import { serveOAuthTestServer, type OAuthTestServerShape } from "@executor-js/sd
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -48,31 +52,136 @@ const requiredRedirect = (response: Response, from: string): string => {
   return new URL(location, from).toString();
 };
 
+/** The test server's login page is plain text with Basic-auth POST — nothing a
+ *  browser can click. Complete it out of band and hand back the callback URL. */
+const submitProviderLogin = async (loginUrl: string): Promise<string> => {
+  const credentials = Buffer.from("alice:password").toString("base64");
+  const response = await fetch(loginUrl, {
+    method: "POST",
+    redirect: "manual",
+    headers: { authorization: `Basic ${credentials}` },
+  });
+  const location = response.headers.get("location");
+  if (response.status !== 302 || !location) {
+    throw new Error(`provider login did not redirect (${response.status})`);
+  }
+  return new URL(location, loginUrl).toString();
+};
+
 const completeAuthorization = (authorizationUrl: string) =>
   Effect.promise(async () => {
     const login = await fetch(authorizationUrl, { redirect: "manual" });
     const loginUrl = requiredRedirect(login, authorizationUrl);
-    const credentials = Buffer.from("alice:password").toString("base64");
-    const callback = await fetch(loginUrl, {
-      method: "POST",
-      headers: { authorization: `Basic ${credentials}` },
-      redirect: "manual",
-    });
-    const callbackUrl = requiredRedirect(callback, loginUrl);
+    const callbackUrl = await submitProviderLogin(loginUrl);
     const parsed = new URL(callbackUrl);
     const code = parsed.searchParams.get("code");
     if (!code) throw new Error(`OAuth callback did not include a code: ${callbackUrl}`);
     return { code };
   });
 
-const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
+/** AS whose refresh grants are dead forever — every token it mints is already
+ *  expired and refresh is rejected as `invalid_grant`. */
+const serveDeadGrantOAuthServer = () =>
+  serveOAuthTestServer({
+    scopes: ["channels:history", "users:read"],
+    supportRefresh: false,
+    tokenExpiresInSeconds: 0,
+    invalidRefreshTokenDescription: "Grant not found",
+  });
+
+interface GrantRevocationGate {
+  /** Token endpoint to register with executor instead of the real one. */
+  readonly tokenUrl: string;
+  /** The provider comes back: minted tokens get their real lifetime and
+   *  refresh grants are honored again. */
+  readonly restore: () => void;
+  readonly refreshRejections: () => number;
+  readonly close: () => void;
+}
+
+/** Token-endpoint proxy in front of the test AS. While "revoked" it behaves
+ *  like a provider whose grants are dead — authorization_code exchanges still
+ *  succeed but mint already-expired tokens, and refresh grants are rejected
+ *  with `invalid_grant` — and after `restore()` it is a plain passthrough. The
+ *  test server itself cannot flip behavior after construction, and this repro
+ *  needs "expired now, healthy after a fresh reconnect". */
+const serveGrantRevocationGate = (upstreamTokenUrl: string) =>
+  Effect.acquireRelease(
+    Effect.callback<GrantRevocationGate>((resume) => {
+      let revoked = true;
+      let refreshRejections = 0;
+      const server = createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          if (revoked && new URLSearchParams(body).get("grant_type") === "refresh_token") {
+            refreshRejections += 1;
+            response.writeHead(400, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({ error: "invalid_grant", error_description: "Grant not found" }),
+            );
+            return;
+          }
+          fetch(upstreamTokenUrl, {
+            method: "POST",
+            headers: {
+              "content-type":
+                request.headers["content-type"] ?? "application/x-www-form-urlencoded",
+              ...(request.headers.authorization
+                ? { authorization: request.headers.authorization }
+                : {}),
+            },
+            body,
+          })
+            .then(async (upstream) => {
+              const text = await upstream.text();
+              if (revoked && upstream.ok) {
+                const parsed = JSON.parse(text) as Record<string, unknown>;
+                parsed["expires_in"] = 0;
+                response.writeHead(upstream.status, { "content-type": "application/json" });
+                response.end(JSON.stringify(parsed));
+                return;
+              }
+              response.writeHead(upstream.status, {
+                "content-type": upstream.headers.get("content-type") ?? "application/json",
+              });
+              response.end(text);
+            })
+            .catch(() => {
+              response.writeHead(502, { "content-type": "application/json" });
+              response.end(JSON.stringify({ error: "bad_gateway" }));
+            });
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address !== null ? address.port : 0;
+        resume(
+          Effect.succeed({
+            tokenUrl: `http://127.0.0.1:${port}/token`,
+            restore: () => {
+              revoked = false;
+            },
+            refreshRejections: () => refreshRejections,
+            close: () => {
+              server.close();
+              server.closeAllConnections();
+            },
+          }),
+        );
+      });
+    }),
+    (gate) => Effect.sync(gate.close),
+  );
+
+const seedDcrMcpOAuthConnection = (
+  client: Client,
+  prefix: string,
+  oauth: OAuthTestServerShape,
+  options?: { readonly tokenUrl?: string },
+) =>
   Effect.gen(function* () {
-    const oauth = yield* serveOAuthTestServer({
-      scopes: ["channels:history", "users:read"],
-      supportRefresh: false,
-      tokenExpiresInSeconds: 0,
-      invalidRefreshTokenDescription: "Grant not found",
-    });
     const slug = IntegrationSlug.make(freshSlug(prefix));
     const clientSlug = OAuthClientSlug.make(freshSlug(`${prefix}-client`));
 
@@ -101,7 +210,7 @@ const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
         issuer: probe.issuer ?? null,
         registrationEndpoint: probe.registrationEndpoint,
         authorizationUrl: probe.authorizationUrl,
-        tokenUrl: probe.tokenUrl,
+        tokenUrl: options?.tokenUrl ?? probe.tokenUrl,
         resource: probe.resource ?? oauth.mcpResourceUrl,
         scopes: probe.scopesSupported ?? [],
         tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
@@ -138,6 +247,12 @@ const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
     yield* oauth.clearRequests;
 
     return { oauth, slug };
+  });
+
+const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
+  Effect.gen(function* () {
+    const oauth = yield* serveDeadGrantOAuthServer();
+    return yield* seedDcrMcpOAuthConnection(client, prefix, oauth);
   });
 
 const logTokenRequests = (label: string, oauth: OAuthTestServerShape) =>
@@ -186,7 +301,7 @@ scenario(
         const menuTrigger = connections.locator('button[aria-haspopup="menu"]').first();
 
         await step("Open the MCP integration with its expired OAuth connection", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}`);
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
         });
 
@@ -224,6 +339,94 @@ scenario(
   ),
 );
 
+// The reconnect journey from the bug report: a connection reads Expired, the
+// user completes Reconnect through the OAuth popup, and the page must show the
+// recovered health WITHOUT a hard refresh. The gate makes the provider's
+// grants dead during seeding (already-expired tokens, refresh rejected) and
+// healthy again before the reconnect, so the only thing standing between the
+// user and a green dot is the UI updating itself.
+scenario(
+  "MCP OAuth · completed reconnect refreshes the health verdict without a page reload",
+  {
+    timeout: 240_000,
+  },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+
+      const oauth = yield* serveOAuthTestServer({
+        scopes: ["channels:history", "users:read"],
+      });
+      const gate = yield* serveGrantRevocationGate(`${oauth.issuerUrl}/token`);
+      const { slug } = yield* seedDcrMcpOAuthConnection(client, "mcp-reconnect-live", oauth, {
+        tokenUrl: gate.tokenUrl,
+      });
+
+      // Persist the expired verdict exactly as the user's "Check now" would.
+      const seededHealth = yield* client.connections.checkHealth({
+        params: { owner: "org", integration: slug, name },
+        query: {},
+      });
+      expect(seededHealth.status, "the dead grant seeds an expired verdict").toBe("expired");
+      expect(gate.refreshRejections(), "the expiry came from a rejected refresh").toBeGreaterThan(
+        0,
+      );
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        const connections = connectionsSection(page);
+        const menuTrigger = connections.locator('button[aria-haspopup="menu"]').first();
+
+        await step("Open the integration: the connection reads Expired", async () => {
+          await visit(page, `/integrations/${slug}`);
+          await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
+          await connections.getByLabel("Status: Expired").waitFor({ timeout: 30_000 });
+        });
+
+        await step("Reconnect and complete the OAuth flow in the popup", async () => {
+          // The provider comes back before the user reconnects — fresh grants
+          // are fully healthy from here on.
+          gate.restore();
+
+          const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+          await menuTrigger.click();
+          await page.getByRole("menuitem", { name: "Reconnect" }).click();
+          const popup = await popupPromise;
+
+          // The test AS login page is plain text driven by Basic-auth POST, so
+          // complete it out of band and drive the popup to the callback — the
+          // same journey a user's click-through consent takes.
+          await popup.waitForURL(/\/login\?/, { timeout: 30_000 });
+          const callbackUrl = await submitProviderLogin(popup.url());
+          await popup.goto(callbackUrl);
+          await page.getByText("Reconnected", { exact: true }).waitFor({ timeout: 30_000 });
+        });
+
+        await step("The backend already sees the connection as healthy", async () => {
+          // Evidence that only the UI is stale: the same health endpoint the
+          // page would call classifies the re-minted grant as healthy.
+          const response = await page.request.post(healthPath(slug));
+          const body = (await response.json()) as { readonly status?: string };
+          console.info(`[BUG repro] post-reconnect health: ${response.status()} ${body.status}`);
+          expect(response.status(), "post-reconnect health check succeeds").toBe(200);
+          expect(body.status, "the re-minted grant is healthy").toBe("healthy");
+        });
+
+        await step("BUG: the row must flip to Healthy without a hard page refresh", async () => {
+          await connections.getByLabel("Status: Healthy").waitFor({ timeout: 30_000 });
+          await connections.getByText("Expired", { exact: true }).waitFor({
+            state: "hidden",
+            timeout: 5_000,
+          });
+        });
+      });
+    }),
+  ),
+);
+
 scenario(
   "MCP OAuth · DCR reconnect keeps the dialog open and reaches OAuth start",
   {
@@ -249,7 +452,7 @@ scenario(
         });
 
         await step("Open the MCP integration with its DCR OAuth connection", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}`);
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
         });
 

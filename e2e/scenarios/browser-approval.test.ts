@@ -25,6 +25,7 @@ import { Api, Browser, Mcp, Target } from "../src/services";
 import { type McpBrowserApproval, parseBrowserApproval } from "../src/surfaces/mcp";
 import type { BrowserSurface } from "../src/surfaces/browser";
 import type { Identity } from "../src/target";
+import { visit } from "../src/surfaces/browser";
 
 const coreApi = composePluginApi([] as const);
 
@@ -70,7 +71,7 @@ const decideInBrowser = (
     await step(
       `Open the approval page and ${decision.toLowerCase()} the paused action`,
       async () => {
-        await page.goto(approval.approvalUrl, { waitUntil: "networkidle" });
+        await visit(page, approval.approvalUrl);
         await page.getByRole("button", { name: decision }).click();
         // The page confirms the decision was recorded ("Approve sent" / "Decline sent").
         await page.getByText(`${decision} sent`).waitFor();

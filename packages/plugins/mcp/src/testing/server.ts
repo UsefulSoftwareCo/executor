@@ -1,7 +1,8 @@
-import { Context, Data, Effect, Layer, Ref, Scope } from "effect";
+import { Context, Data, Effect, Layer, Option, Ref, Schema, Scope } from "effect";
 import * as http from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { OAuthTestServer } from "@executor-js/sdk/testing";
 import z from "zod";
 
@@ -10,8 +11,14 @@ export type McpTestServer = {
   readonly endpoint: string;
   /** Number of MCP sessions created (each connect = 1 session) */
   readonly sessionCount: () => number;
+  /** Requests the server has accepted and not yet finished answering. */
+  readonly inFlightRequests: () => number;
   readonly requests: Effect.Effect<readonly McpTestRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
+  /** Drops all server-side session registrations without notifying clients. */
+  readonly forgetSessions: Effect.Effect<void>;
+  /** Rejects the next request carrying an MCP session id with this status. */
+  readonly rejectNextSessionRequest: (status: number) => Effect.Effect<void>;
 };
 
 export type McpTestRequest = {
@@ -53,6 +60,22 @@ const writeText = (response: http.ServerResponse, status: number, body: string) 
   response.end(body);
 };
 
+const readRequestBody = (
+  request: http.IncomingMessage,
+): Effect.Effect<string, McpTestServerError> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        request.on("error", reject);
+      }),
+    catch: (cause) => new McpTestServerError({ cause }),
+  });
+
+const decodeJsonBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
 const isMcpPath = (url: string, path: string): boolean => {
   const parsed = new URL(url, "http://executor.test");
   return parsed.pathname === path;
@@ -64,9 +87,11 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
   Effect.acquireRelease(
     Effect.gen(function* () {
       const transports = new Map<string, StreamableHTTPServerTransport>();
+      const allTransports = new Set<StreamableHTTPServerTransport>();
       const requests = yield* Ref.make<readonly McpTestRequest[]>([]);
       const path = options.path ?? "/";
       let sessions = 0;
+      let nextSessionRequestStatus: number | undefined;
 
       const handleMcpRequest = (
         request: http.IncomingMessage,
@@ -130,6 +155,13 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             }
           }
 
+          if (sessionId && request.method === "POST" && nextSessionRequestStatus !== undefined) {
+            const status = nextSessionRequestStatus;
+            nextSessionRequestStatus = undefined;
+            writeText(response, status, `Forced HTTP ${status}`);
+            return;
+          }
+
           const existingTransport = sessionId ? transports.get(sessionId) : undefined;
           if (sessionId && !existingTransport) {
             writeText(response, 404, "Session not found");
@@ -144,12 +176,31 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             return;
           }
 
+          // Mirror the real v1 transport's stateful contract: only an
+          // `initialize` POST opens a session; any other sessionless POST
+          // (e.g. a v2 client's `server/discover` era probe) is rejected
+          // with 400 + a JSON-RPC error and no session is minted.
+          let parsedBody: unknown;
+          if (request.method === "POST") {
+            const body = yield* readRequestBody(request);
+            parsedBody = Option.getOrUndefined(decodeJsonBody(body));
+            if (!isInitializeRequest(parsedBody)) {
+              writeJson(response, 400, {
+                jsonrpc: "2.0",
+                error: { code: -32000, message: "Bad Request: Server not initialized" },
+                id: null,
+              });
+              return;
+            }
+          }
+
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             onsessioninitialized: (sid) => {
               transports.set(sid, transport);
             },
           });
+          allTransports.add(transport);
           sessions += 1;
 
           const mcpServer = factory();
@@ -158,7 +209,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             catch: (cause) => new McpTestServerError({ cause }),
           });
           yield* Effect.tryPromise({
-            try: () => transport.handleRequest(request, response),
+            try: () => transport.handleRequest(request, response, parsedBody),
             catch: (cause) => new McpTestServerError({ cause }),
           });
         }).pipe(
@@ -173,7 +224,16 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           ),
         );
 
+      // An abandoned SSE `GET` leaves the session gone but the request open,
+      // which `sessionCount` cannot see and socket counting cannot either
+      // (keep-alive holds idle sockets open regardless).
+      let inFlight = 0;
+
       const nodeServer = http.createServer((request, response) => {
+        inFlight += 1;
+        response.once("close", () => {
+          inFlight -= 1;
+        });
         void Effect.runPromise(handleMcpRequest(request, response));
       });
 
@@ -200,23 +260,35 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
         url: endpoint,
         endpoint,
         sessionCount: () => sessions,
+        inFlightRequests: () => inFlight,
         requests: Ref.get(requests),
         clearRequests: Ref.set(requests, []),
+        forgetSessions: Effect.sync(() => transports.clear()),
+        rejectNextSessionRequest: (status: number) =>
+          Effect.sync(() => {
+            nextSessionRequestStatus = status;
+          }),
         close: Effect.gen(function* () {
-          for (const transport of transports.values()) {
+          for (const transport of allTransports) {
             yield* Effect.tryPromise({
               try: () => transport.close(),
               catch: (cause) => new McpTestServerError({ cause }),
             }).pipe(Effect.ignore);
           }
-          yield* Effect.sync(() => {
-            nodeServer.close();
+          yield* Effect.callback<void>((resume) => {
+            nodeServer.close(() => resume(Effect.void));
             nodeServer.closeAllConnections?.();
           });
+          // closeAllConnections destroys sockets out from under in-flight SDK
+          // reads; give those rejections a beat to settle before the scope
+          // ends so they surface inside the test, not as unhandled rejections.
+          // A raw timer, not Effect.sleep: this runs inside it.effect tests
+          // whose TestClock never advances wall-clock sleeps.
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)));
         }),
       };
     }),
-    (server) => server.close,
+    (server) => server.close.pipe(Effect.ignore),
   ).pipe(Effect.map(({ close: _close, ...server }) => server));
 
 export const serveMcpServerWithOAuth = (

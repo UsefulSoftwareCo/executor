@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { toolSchemaAtom } from "../api/atoms";
@@ -506,18 +506,23 @@ function PolicyBadgeMenu(props: {
 // Empty state
 // ---------------------------------------------------------------------------
 
-export function ToolDetailEmpty(props: { hasTools: boolean }) {
+export function ToolDetailEmpty(props: {
+  hasTools: boolean;
+  title?: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  const title = props.title ?? (props.hasTools ? "Select a tool" : "No tools available");
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="text-center">
-        <p className="text-sm font-medium text-foreground">
-          {props.hasTools ? "Select a tool" : "No tools available"}
-        </p>
-        {props.hasTools && (
+      <div className="max-w-sm text-center">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        {props.description || props.hasTools ? (
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Choose from the list to see what it does.
+            {props.description ?? "Choose from the list to see what it does."}
           </p>
-        )}
+        ) : null}
+        {props.action ? <div className="mt-4">{props.action}</div> : null}
       </div>
     </div>
   );

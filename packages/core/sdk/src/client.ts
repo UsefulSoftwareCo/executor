@@ -116,6 +116,8 @@ export interface IntegrationPreset {
   readonly family?: string;
   readonly specFormat?: string;
   readonly defaultSlug?: string;
+  /** Plugin-specific RFC 6902 operations applied to a fetched specification. */
+  readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
 }
@@ -124,6 +126,7 @@ export type IntegrationPresetAuthentication =
   | {
       readonly slug: string;
       readonly kind: "oauth2";
+      readonly label?: string;
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
       readonly resource?: string | null;

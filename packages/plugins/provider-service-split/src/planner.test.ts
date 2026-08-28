@@ -140,6 +140,7 @@ const youtubeDiscoveryUrl = "https://www.googleapis.com/discovery/v1/apis/youtub
 
 const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> = new Map([
   ["google-calendar", ["calendar.events.list"]],
+  ["google-meet", ["meet.spaces.get", "meet.conferenceRecords.list"]],
   ["google-gmail", ["gmail.users.messages.list"]],
   ["google-sheets", ["sheets.spreadsheets.get"]],
   ["google-drive", ["drive.files.list"]],
@@ -151,7 +152,6 @@ const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> 
   ["google-photos-library", ["photoslibrary.albums.list"]],
   ["google-photos-picker", ["photospicker.sessions.create"]],
   ["google-chat", ["chat.spaces.list"]],
-  ["google-keep", ["keep.notes.list"]],
   ["google-youtube-data", ["youtube.channels.list"]],
   ["google-search-console", ["searchconsole.sites.list", "webmasters.sites.list"]],
   ["google-classroom", ["classroom.courses.list"]],
@@ -517,6 +517,89 @@ describe("provider service split migration planner", () => {
       "Missing source blob o:org_1/google/defs/mono-hash for migrated OpenAPI service namespace o:org_1/openapi",
     ]);
     expect(plan.summary.hardErrorOrgs).toBe(1);
+  });
+
+  it("records a hard error instead of throwing when a monolith has no specHash", () => {
+    const plan = planMigration(
+      input({
+        integrations: [
+          integration({
+            config: {
+              googleDiscoveryUrls: [
+                "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+              ],
+            },
+          }),
+        ],
+        collectPolicyErrors: true,
+      }),
+    );
+
+    expect(plan.orgs[0]?.hardErrors).toEqual([
+      expect.stringContaining("has no specHash; serving state cannot be migrated"),
+    ]);
+    expect(plan.summary.hardErrorOrgs).toBe(1);
+  });
+
+  it("a specHash-less monolith only skips its own org", () => {
+    const plan = planMigration(
+      input({
+        integrations: [
+          integration({
+            config: {
+              googleDiscoveryUrls: [
+                "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+              ],
+            },
+          }),
+          integration({ tenant: "org_2", row_id: "int_2" }),
+        ],
+        connections: [connection(), connection({ tenant: "org_2", row_id: "conn_2" })],
+        tools: [
+          tool("calendar.events.list"),
+          tool("calendar.events.list", { tenant: "org_2", row_id: "tool_2" }),
+        ],
+        pluginStorage: [
+          operation("calendar.events.list"),
+          operation("calendar.events.list", {
+            tenant: "org_2",
+            row_id: "op_2",
+          }),
+        ],
+        blobs: [
+          blob("spec/mono-hash"),
+          blob("defs/mono-hash"),
+          blob("spec/mono-hash", { namespace: "o:org_2/google", id: "blob_3" }),
+          blob("defs/mono-hash", { namespace: "o:org_2/google", id: "blob_4" }),
+        ],
+        collectPolicyErrors: true,
+      }),
+    );
+
+    const broken = plan.orgs.find((org) => org.tenant === "org_1");
+    const healthy = plan.orgs.find((org) => org.tenant === "org_2");
+    expect(broken?.hardErrors).toHaveLength(1);
+    expect(healthy?.hardErrors).toEqual([]);
+    expect(healthy?.integrations.map((row) => row.target.slug)).toEqual(["google_calendar"]);
+    expect(plan.summary.hardErrorOrgs).toBe(1);
+  });
+
+  it("still throws on a missing specHash outside collectPolicyErrors mode", () => {
+    expect(() =>
+      planMigration(
+        input({
+          integrations: [
+            integration({
+              config: {
+                googleDiscoveryUrls: [
+                  "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+                ],
+              },
+            }),
+          ],
+        }),
+      ),
+    ).toThrow(/has no specHash; serving state cannot be migrated/);
   });
 
   it("retargets orphan block policies in boot-rail mode", () => {

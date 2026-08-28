@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   HttpApi,
@@ -39,6 +39,14 @@ const JsonNameBody = Schema.fromJsonString(
   }),
 );
 const decodeJsonNameBody = Schema.decodeUnknownSync(JsonNameBody);
+
+const JsonAttachmentBody = Schema.fromJsonString(
+  Schema.Struct({
+    attachment: Schema.String,
+    name: Schema.String,
+  }),
+);
+const decodeJsonAttachmentBody = Schema.decodeUnknownSync(JsonAttachmentBody);
 
 const testPlugins = () =>
   [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
@@ -182,6 +190,361 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       expect(body).toContain("7");
       // Regression guard: never ship [object Object] over multipart.
       expect(body).not.toContain("[object Object]");
+    }),
+  );
+
+  it.effect("multipart/form-data: binary file fields use ToolFile and real file parts", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "upload",
+        path: "/upload",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent(
+          "/upload",
+          "post",
+          {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  document: {
+                    type: "string",
+                    format: "binary",
+                    description: "PDF document to upload.",
+                  },
+                  title: { type: "string" },
+                },
+                required: ["document"],
+              },
+            },
+          },
+          { document: { contentType: "application/pdf" } },
+        ),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "paperless" });
+
+      const schema = yield* executor.tools.schema(conn.address("body.upload"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: {
+          body: {
+            properties: {
+              document: {
+                properties: {
+                  _tag: { enum: ["ToolFile"] },
+                  data: { contentEncoding: "base64" },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const pdfBytes = Buffer.from("%PDF-1.4\nexecutor upload test\n");
+      yield* executor.execute(conn.address("body.upload"), {
+        body: {
+          document: {
+            _tag: "ToolFile",
+            name: "invoice.pdf",
+            mimeType: "application/pdf",
+            encoding: "base64",
+            data: pdfBytes.toString("base64"),
+            byteLength: pdfBytes.byteLength,
+          },
+          title: "Invoice",
+        },
+      });
+
+      expect(captured.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      const body = captured.body.toString("utf8");
+      expect(body).toContain('name="document"; filename="invoice.pdf"');
+      expect(body).toMatch(
+        /name="document"; filename="invoice\.pdf"[\s\S]*?Content-Type: application\/pdf/,
+      );
+      expect(body).toContain("%PDF-1.4");
+      expect(body).toContain('name="title"');
+      expect(body).toContain("Invoice");
+      expect(body).not.toContain("[object Object]");
+    }),
+  );
+
+  it.effect("multipart/form-data: file arrays become file parts with the encoding type", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "uploadPages",
+        path: "/upload-pages",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent(
+          "/upload-pages",
+          "post",
+          {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  pages: {
+                    type: "array",
+                    items: { type: "string", format: "binary" },
+                  },
+                },
+                required: ["pages"],
+              },
+            },
+          },
+          // A per-part content type on a file array describes each file part,
+          // not a JSON serialization of the array.
+          { pages: { contentType: "image/png" } },
+        ),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "pages" });
+
+      const schema = yield* executor.tools.schema(conn.address("body.uploadPages"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: {
+          body: {
+            properties: {
+              pages: {
+                type: "array",
+                items: {
+                  properties: {
+                    _tag: { enum: ["ToolFile"] },
+                    data: { contentEncoding: "base64" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const first = Buffer.from("page-one-bytes");
+      const second = Buffer.from("page-two-bytes");
+      yield* executor.execute(conn.address("body.uploadPages"), {
+        body: {
+          pages: [
+            {
+              _tag: "ToolFile",
+              name: "one.png",
+              mimeType: "application/octet-stream",
+              encoding: "base64",
+              data: first.toString("base64"),
+              byteLength: first.byteLength,
+            },
+            {
+              _tag: "ToolFile",
+              name: "two.png",
+              mimeType: "application/octet-stream",
+              encoding: "base64",
+              data: second.toString("base64"),
+              byteLength: second.byteLength,
+            },
+          ],
+        },
+      });
+
+      expect(captured.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      const body = captured.body.toString("utf8");
+      expect(body).toContain('name="pages"; filename="one.png"');
+      expect(body).toContain('name="pages"; filename="two.png"');
+      // The encoding contentType overrides each file's own mime type.
+      expect(body.match(/Content-Type: image\/png/g)).toHaveLength(2);
+      expect(body).toContain("page-one-bytes");
+      expect(body).toContain("page-two-bytes");
+      // Regression guard for the branch-ordering bug: the array must not be
+      // JSON-stringified into a single part.
+      expect(body).not.toContain("_tag");
+      expect(body).not.toContain(first.toString("base64"));
+      expect(body).not.toContain("[object Object]");
+    }),
+  );
+
+  it.effect("multipart/form-data: a file whose base64 does not decode fails before dispatch", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "uploadBroken",
+        path: "/upload-broken",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent("/upload-broken", "post", {
+          "multipart/form-data": {
+            schema: {
+              type: "object",
+              properties: { document: { type: "string", format: "binary" } },
+              required: ["document"],
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "broken" });
+
+      const exit = yield* executor
+        .execute(conn.address("body.uploadBroken"), {
+          body: {
+            document: {
+              _tag: "ToolFile",
+              name: "broken.pdf",
+              mimeType: "application/pdf",
+              encoding: "base64",
+              data: "@@@@not base64@@@@",
+              byteLength: 12,
+            },
+          },
+        })
+        .pipe(Effect.exit);
+
+      // Never silently JSON.stringify the file envelope into the form body.
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "<succeeded>";
+      expect(failure).toContain("`document`");
+      expect(captured.contentType).toBe("");
+      expect(captured.body.length).toBe(0);
+    }),
+  );
+
+  it.effect("application/json: binary string properties are left untouched", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "createNote",
+        path: "/notes",
+        payload: JsonNameObject,
+        transformSpec: replaceRequestBodyContent("/notes", "post", {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                attachment: { type: "string", format: "byte" },
+                name: { type: "string" },
+              },
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "notes" });
+
+      // The rewrite is scoped to multipart bodies: a JSON body keeps its
+      // declared base64 string field.
+      const schema = yield* executor.tools.schema(conn.address("body.createNote"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: { body: { properties: { attachment: { type: "string", format: "byte" } } } },
+      });
+      expect(JSON.stringify(schema?.inputSchema)).not.toContain("ToolFile");
+
+      yield* executor.execute(conn.address("body.createNote"), {
+        body: { attachment: "aGVsbG8=", name: "Acme" },
+      });
+
+      expect(captured.contentType).toBe("application/json");
+      expect(decodeJsonAttachmentBody(captured.body.toString("utf8"))).toEqual({
+        attachment: "aGVsbG8=",
+        name: "Acme",
+      });
+    }),
+  );
+
+  it.effect("multipart/form-data: only encoder-supported file shapes are advertised", () =>
+    Effect.gen(function* () {
+      const { server } = yield* startEchoServer({
+        name: "uploadMixed",
+        path: "/upload-mixed",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent("/upload-mixed", "post", {
+          "multipart/form-data": {
+            schema: {
+              type: "object",
+              properties: {
+                document: {
+                  type: "string",
+                  format: "binary",
+                  title: "Document",
+                  description: "PDF document to upload.",
+                },
+                optionalDocument: { type: ["string", "null"], format: "binary" },
+                // Nested files are a documented limitation: the form encoder
+                // only builds parts from top-level properties and direct
+                // array items, so this stays a plain binary string.
+                metadata: {
+                  type: "object",
+                  properties: { thumbnail: { type: "string", format: "binary" } },
+                },
+                // Scoping guard: a non-schema keyword that happens to look
+                // like a binary string schema is never rewritten.
+                title: { type: "string", default: { type: "string", format: "binary" } },
+              },
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mixed" });
+
+      const schema = yield* executor.tools.schema(conn.address("body.uploadMixed"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: {
+          body: {
+            properties: {
+              // Annotations survive the rewrite.
+              document: {
+                title: "Document",
+                description: "PDF document to upload.",
+                properties: { _tag: { enum: ["ToolFile"] } },
+              },
+              // Nullability survives as an anyOf branch, since the file
+              // schema is an object and cannot carry a "null" type entry.
+              optionalDocument: {
+                anyOf: [{ properties: { _tag: { enum: ["ToolFile"] } } }, { type: "null" }],
+              },
+              // Untouched: nested and non-schema positions stay verbatim.
+              metadata: {
+                type: "object",
+                properties: { thumbnail: { type: "string", format: "binary" } },
+              },
+              title: { type: "string", default: { type: "string", format: "binary" } },
+            },
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("multipart/form-data: a $ref'd body schema is left unrewritten", () =>
+    Effect.gen(function* () {
+      const { server } = yield* startEchoServer({
+        name: "uploadRef",
+        path: "/upload-ref",
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+        transformSpec: (spec) => {
+          const components = { ...((spec.components as Record<string, unknown>) ?? {}) };
+          components.schemas = {
+            ...((components.schemas as Record<string, unknown>) ?? {}),
+            UploadForm: {
+              type: "object",
+              properties: { document: { type: "string", format: "binary" } },
+            },
+          };
+          return replaceRequestBodyContent("/upload-ref", "post", {
+            "multipart/form-data": { schema: { $ref: "#/components/schemas/UploadForm" } },
+          })({ ...spec, components });
+        },
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "reffed" });
+
+      // Documented limitation: component schemas are carried through
+      // unresolved, so a $ref'd multipart body reaches the tool schema as the
+      // reference itself and is never rewritten to a file input.
+      const schema = yield* executor.tools.schema(conn.address("body.uploadRef"));
+      expect(schema?.inputSchema).toMatchObject({
+        properties: { body: { $ref: "#/$defs/UploadForm" } },
+      });
+      expect(JSON.stringify(schema?.inputSchema)).not.toContain("ToolFile");
     }),
   );
 

@@ -169,7 +169,9 @@ describe("MCP multi-placement auth", () => {
         { marker: "h" },
         { onElicitation: "accept-all" },
       );
-      const headerRequests = (yield* server.requests).slice(beforeHeader);
+      const headerRequests = (yield* server.requests)
+        .slice(beforeHeader)
+        .filter((request) => request.method === "POST");
       expect(headerRequests.every((r) => r.authorization === "Bearer header-secret")).toBe(true);
       expect(headerRequests.every((r) => !r.url.includes("auth_token="))).toBe(true);
 
@@ -179,7 +181,9 @@ describe("MCP multi-placement auth", () => {
         { marker: "q" },
         { onElicitation: "accept-all" },
       );
-      const queryRequests = (yield* server.requests).slice(beforeQuery);
+      const queryRequests = (yield* server.requests)
+        .slice(beforeQuery)
+        .filter((request) => request.method === "POST");
       expect(queryRequests.every((r) => r.url.includes("auth_token=query-secret"))).toBe(true);
       expect(queryRequests.every((r) => r.authorization === undefined)).toBe(true);
     }),

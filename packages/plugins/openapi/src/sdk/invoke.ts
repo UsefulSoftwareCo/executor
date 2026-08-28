@@ -1,6 +1,6 @@
 import { Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import type { ToolFileValue } from "@executor-js/sdk/core";
+import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
 import { isNdjsonMediaType, NDJSON_MEDIA_TYPES, resolveServerUrl } from "./openapi-utils";
@@ -57,17 +57,51 @@ const encodeReservedAware = (raw: string, allowReserved: boolean): string => {
   return out;
 };
 
-const queryParamValues = (value: unknown, param: OperationParameter): string[] => {
+type QueryParamEntry = readonly [name: string, value: string];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const queryParamEntries = (value: unknown, param: OperationParameter): QueryParamEntry[] => {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) return [primitiveToString(value)];
 
   const style = Option.getOrUndefined(param.style) ?? "form";
   const explode = Option.getOrElse(param.explode, () => true);
 
-  if (explode) return value.map(primitiveToString);
+  if (isRecord(value)) {
+    const entries = Object.entries(value).filter(
+      ([, nested]) => nested !== undefined && nested !== null,
+    );
+
+    if (style === "form") {
+      if (explode) {
+        // OAS form + explode=true serializes an object as top-level query
+        // fields, e.g. `{ region: "west", tier: "standard" }` ->
+        // `region=west&tier=standard`.
+        return entries.map(([name, nested]) => [name, primitiveToString(nested)]);
+      }
+
+      return [
+        [
+          param.name,
+          entries.flatMap(([name, nested]) => [name, primitiveToString(nested)]).join(","),
+        ],
+      ];
+    }
+
+    if (style === "deepObject") {
+      return entries.map(([name, nested]) => [`${param.name}[${name}]`, primitiveToString(nested)]);
+    }
+
+    return [[param.name, primitiveToString(value)]];
+  }
+
+  if (!Array.isArray(value)) return [[param.name, primitiveToString(value)]];
+
+  if (explode) return value.map((nested) => [param.name, primitiveToString(nested)]);
 
   const separator = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
-  return [value.map(primitiveToString).join(separator)];
+  return [[param.name, value.map(primitiveToString).join(separator)]];
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +187,9 @@ const normalizeContentType = (ct: string | null | undefined): string =>
 
 export const STREAM_MAX_BYTES = 1_000_000;
 export const STREAM_MAX_MS = 10_000;
+// Buffered bodies should normally finish soon after headers arrive. This is
+// deliberately generous while still providing plain Node runtimes a backstop.
+export const RESPONSE_BODY_TIMEOUT_MS = 60_000;
 // Below Cloudflare's ~125s subrequest limit so cloud fails first with an
 // actionable error, but above the slowest legitimate buffered upstreams
 // observed in production (30d telemetry: successful calls cluster under
@@ -170,6 +207,7 @@ export interface StreamingResponseCaps {
 
 export interface InvokeOptions {
   readonly responseHeadersTimeoutMs?: number;
+  readonly responseBodyTimeoutMs?: number;
 }
 
 const formatTimeout = (timeoutMs: number): string =>
@@ -177,6 +215,9 @@ const formatTimeout = (timeoutMs: number): string =>
 
 const responseHeadersTimeoutMessage = (timeoutMs: number): string =>
   `Upstream returned no response headers within ${formatTimeout(timeoutMs)}. The endpoint may be a live stream with no data to send (for example, runtime logs of an idle deployment); the request was aborted. Retry when the resource has activity, or use a non-streaming endpoint.`;
+
+const responseBodyTimeoutMessage = (timeoutMs: number): string =>
+  `Upstream response body did not finish within ${formatTimeout(timeoutMs)}. The request was aborted. Retry the operation; if it times out again, check the upstream service health or use an endpoint with a bounded response.`;
 
 const STREAMING_RESPONSE_CONTENT_TYPES = new Set([...NDJSON_MEDIA_TYPES, "text/event-stream"]);
 
@@ -547,6 +588,21 @@ const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   return copy;
 };
 
+const formPartFromToolFile = (
+  file: ToolFileValue,
+  contentTypeOverride?: string,
+): Blob | File | null => {
+  const bytes = base64ToUint8Array(file.data);
+  if (!bytes) return null;
+
+  const type = contentTypeOverride ?? file.mimeType;
+  const body = toArrayBuffer(bytes);
+  if (typeof File !== "undefined") {
+    return new File([body], file.name ?? "file", { type });
+  }
+  return new Blob([body], { type });
+};
+
 // ---------------------------------------------------------------------------
 // OpenAPI 3.x encoding — per-property style/explode/allowReserved/contentType
 // for multipart/form-data and application/x-www-form-urlencoded bodies.
@@ -645,13 +701,31 @@ const serializeFormUrlEncoded = (
   return parts.join("&");
 };
 
+const isFormDataPrimitive = (value: unknown): boolean =>
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  value instanceof Blob ||
+  (typeof File !== "undefined" && value instanceof File);
+
+type FormDataCoercion =
+  | { readonly ok: true; readonly record: FormDataRecord }
+  // The named field carried a tool file whose base64 payload does not decode.
+  | { readonly ok: false; readonly field: string };
+
 /**
  * Best-effort build of a multipart FormData entry record.
  *
- * If `encoding[key].contentType` is declared (OAS3 §4.8.15), wrap the value
- * in a `Blob` with that type so the runtime multipart framer emits the
- * per-part `Content-Type` header (e.g. `application/json` for a metadata
- * part whose server expects parsed JSON).
+ * Tool files come first: a file value — bare, or as an item of an array
+ * property — becomes a real file part, with `encoding[key].contentType`
+ * applied as the per-part content type override. A file whose base64 payload
+ * does not decode fails the whole coercion rather than silently degrading to
+ * a JSON string the upstream cannot use.
+ *
+ * If `encoding[key].contentType` is declared (OAS3 §4.8.15) for a non-file
+ * value, wrap it in a `Blob` with that type so the runtime multipart framer
+ * emits the per-part `Content-Type` header (e.g. `application/json` for a
+ * metadata part whose server expects parsed JSON).
  *
  * Otherwise: primitives pass through, arrays handle their item types, byte
  * shapes wrap as Blob, nested objects JSON-stringify (never `[object Object]`).
@@ -659,7 +733,7 @@ const serializeFormUrlEncoded = (
 const coerceFormDataRecord = (
   value: Record<string, unknown>,
   encoding: Record<string, EncodingObject> | undefined,
-): FormDataRecord => {
+): FormDataCoercion => {
   const out: Record<string, FormDataCoercible> = {};
   for (const [key, raw] of Object.entries(value)) {
     if (raw === undefined || raw === null) continue;
@@ -667,6 +741,31 @@ const coerceFormDataRecord = (
     const partType = encoding?.[key]
       ? Option.getOrUndefined(encoding[key]!.contentType)
       : undefined;
+
+    if (isToolFile(raw)) {
+      const filePart = formPartFromToolFile(raw, partType);
+      if (!filePart) return { ok: false, field: key };
+      out[key] = filePart;
+      continue;
+    }
+
+    // Files inside an array are matched BEFORE the per-part content type
+    // branch below: for a file array, `encoding[key].contentType` describes
+    // each file part, not a JSON serialization of the whole array.
+    if (Array.isArray(raw) && raw.some(isToolFile)) {
+      const parts: FormDataCoercible[] = [];
+      for (const item of raw) {
+        if (isToolFile(item)) {
+          const filePart = formPartFromToolFile(item, partType);
+          if (!filePart) return { ok: false, field: key };
+          parts.push(filePart);
+          continue;
+        }
+        parts.push(isFormDataPrimitive(item) ? (item as FormDataCoercible) : JSON.stringify(item));
+      }
+      out[key] = parts as FormDataCoercible;
+      continue;
+    }
 
     // Explicit per-part content type: wrap in a typed Blob so the framer
     // emits `Content-Type: <partType>` on this part. JSON types get the
@@ -685,25 +784,14 @@ const coerceFormDataRecord = (
       continue;
     }
 
-    if (
-      typeof raw === "string" ||
-      typeof raw === "number" ||
-      typeof raw === "boolean" ||
-      raw instanceof Blob ||
-      (typeof File !== "undefined" && raw instanceof File)
-    ) {
+    if (isFormDataPrimitive(raw)) {
       out[key] = raw as FormDataCoercible;
       continue;
     }
     if (Array.isArray(raw)) {
+      // No tool files here — that array shape returned above.
       out[key] = raw.map((v) =>
-        typeof v === "string" ||
-        typeof v === "number" ||
-        typeof v === "boolean" ||
-        v instanceof Blob ||
-        (typeof File !== "undefined" && v instanceof File)
-          ? (v as FormDataCoercible)
-          : JSON.stringify(v),
+        isFormDataPrimitive(v) ? (v as FormDataCoercible) : JSON.stringify(v),
       ) as FormDataCoercible;
       continue;
     }
@@ -714,7 +802,7 @@ const coerceFormDataRecord = (
     }
     out[key] = JSON.stringify(raw);
   }
-  return out;
+  return { ok: true, record: out };
 };
 
 // ---------------------------------------------------------------------------
@@ -732,82 +820,94 @@ const coerceFormDataRecord = (
 // — never `String(body)` (which produces the useless `[object Object]`).
 // ---------------------------------------------------------------------------
 
+type AppliedRequestBody =
+  | { readonly ok: true; readonly request: HttpClientRequest.HttpClientRequest }
+  // Only the multipart branch can reject a body: a tool file whose base64
+  // payload does not decode names the offending field here.
+  | { readonly ok: false; readonly invalidFileField: string };
+
 const applyRequestBody = (
   request: HttpClientRequest.HttpClientRequest,
   contentType: string,
   bodyValue: unknown,
   encoding: Record<string, EncodingObject> | undefined,
-): HttpClientRequest.HttpClientRequest => {
+): AppliedRequestBody => {
+  const sent = (req: HttpClientRequest.HttpClientRequest): AppliedRequestBody => ({
+    ok: true,
+    request: req,
+  });
+
   if (isJsonContentType(contentType)) {
     // Pre-serialized JSON strings pass through with the declared media
     // type preserved (important for `application/vnd.foo+json` etc.).
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
-    return HttpClientRequest.bodyJsonUnsafe(request, bodyValue);
+    return sent(HttpClientRequest.bodyJsonUnsafe(request, bodyValue));
   }
 
   if (isFormUrlEncoded(contentType)) {
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     if (typeof bodyValue === "object" && bodyValue !== null && !Array.isArray(bodyValue)) {
       // Serialize ourselves so OAS3 encoding (style/explode/deepObject)
       // is honored. bodyUrlParams doesn't know about per-field style.
       const serialized = serializeFormUrlEncoded(bodyValue as Record<string, unknown>, encoding);
-      return HttpClientRequest.bodyText(request, serialized, contentType);
+      return sent(HttpClientRequest.bodyText(request, serialized, contentType));
     }
     // Non-object body — fall back to platform helper (handles URLSearchParams).
-    return HttpClientRequest.bodyUrlParams(
-      request,
-      bodyValue as Parameters<typeof HttpClientRequest.bodyUrlParams>[1],
+    return sent(
+      HttpClientRequest.bodyUrlParams(
+        request,
+        bodyValue as Parameters<typeof HttpClientRequest.bodyUrlParams>[1],
+      ),
     );
   }
 
   if (isMultipartFormData(contentType)) {
     if (bodyValue instanceof FormData) {
-      return HttpClientRequest.bodyFormData(request, bodyValue);
+      return sent(HttpClientRequest.bodyFormData(request, bodyValue));
     }
     if (typeof bodyValue === "object" && bodyValue !== null) {
-      return HttpClientRequest.bodyFormDataRecord(
-        request,
-        coerceFormDataRecord(bodyValue as Record<string, unknown>, encoding),
-      );
+      const coerced = coerceFormDataRecord(bodyValue as Record<string, unknown>, encoding);
+      if (!coerced.ok) return { ok: false, invalidFileField: coerced.field };
+      return sent(HttpClientRequest.bodyFormDataRecord(request, coerced.record));
     }
     // String / primitive under multipart is almost certainly wrong on the
     // caller's end — send it as text with their declared content type and
     // let the server produce a useful error.
-    return HttpClientRequest.bodyText(request, String(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, String(bodyValue), contentType));
   }
 
   if (isOctetStream(contentType)) {
     const bytes = toUint8Array(bodyValue);
-    if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
+    if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     // Unknown shape — serialize as JSON so at least the payload is visible.
-    return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
   }
 
   if (isXmlContentType(contentType) || isTextContentType(contentType)) {
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     const bytes = toUint8Array(bodyValue);
-    if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
+    if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
     // Object body under text/xml is unusual — stringify so the caller sees
     // their own payload instead of `[object Object]`.
-    return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
   }
 
   // Unknown content type: respect what the caller supplied.
   if (typeof bodyValue === "string") {
-    return HttpClientRequest.bodyText(request, bodyValue, contentType);
+    return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
   }
   const bytes = toUint8Array(bodyValue);
-  if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
-  return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+  if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
+  return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
 };
 
 // ---------------------------------------------------------------------------
@@ -896,8 +996,8 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   for (const param of operation.parameters) {
     if (param.location !== "query") continue;
     const value = readParamValue(args, param);
-    for (const paramValue of queryParamValues(value, param)) {
-      request = HttpClientRequest.appendUrlParam(request, param.name, paramValue);
+    for (const [name, paramValue] of queryParamEntries(value, param)) {
+      request = HttpClientRequest.appendUrlParam(request, name, paramValue);
     }
   }
 
@@ -1027,7 +1127,14 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
         : contentsOpt && contentsOpt[0]
           ? Option.getOrUndefined(contentsOpt[0].encoding)
           : undefined;
-      request = applyRequestBody(request, chosenCt, bodyValue, chosenEncoding);
+      const applied = applyRequestBody(request, chosenCt, bodyValue, chosenEncoding);
+      if (!applied.ok) {
+        return yield* new OpenApiInvocationError({
+          message: `Request body field \`${applied.invalidFileField}\` is not a valid file: \`data\` is not valid base64`,
+          statusCode: Option.none(),
+        });
+      }
+      request = applied.request;
     }
   }
 
@@ -1069,6 +1176,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   const request = yield* buildRequest(operation, args, resolvedHeaders, integrationQueryParams);
 
   const responseHeadersTimeoutMs = options.responseHeadersTimeoutMs ?? RESPONSE_HEADERS_TIMEOUT_MS;
+  const responseBodyTimeoutMs = options.responseBodyTimeoutMs ?? RESPONSE_BODY_TIMEOUT_MS;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const responseExitOption = yield* Effect.callback<
     Option.Option<Exit.Exit<HttpClientResponse.HttpClientResponse, OpenApiInvocationError>>
@@ -1136,6 +1244,51 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         cause: err,
       }),
   );
+  const readResponseBody = <A>(body: Effect.Effect<A, OpenApiInvocationError, never>) =>
+    Effect.gen(function* () {
+      const bodyExitOption = yield* Effect.callback<
+        Option.Option<Exit.Exit<A, OpenApiInvocationError>>
+      >((resume, signal) => {
+        let settled = false;
+        const bodyEffect = body.pipe(
+          Effect.exit,
+          Effect.tap((exit) =>
+            Effect.sync(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resume(Effect.succeed(Option.some(exit)));
+            }),
+          ),
+        );
+        const fiber = runFork(bodyEffect);
+        const interrupt = () => {
+          runFork(Fiber.interrupt(fiber));
+        };
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          interrupt();
+          resume(Effect.succeed(Option.none()));
+        }, responseBodyTimeoutMs);
+        signal.addEventListener("abort", interrupt, { once: true });
+        return Effect.sync(() => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", interrupt);
+          if (!settled) interrupt();
+        });
+      });
+      if (Option.isNone(bodyExitOption)) {
+        return yield* new OpenApiInvocationError({
+          message: responseBodyTimeoutMessage(responseBodyTimeoutMs),
+          statusCode: Option.some(status),
+          reason: "response_body_timeout",
+        });
+      }
+      const bodyExit = bodyExitOption.value;
+      if (Exit.isFailure(bodyExit)) return yield* Effect.failCause(bodyExit.cause);
+      return bodyExit.value;
+    });
   const responseBodyBinding = Option.getOrUndefined(operation.responseBody);
   const fileHint = responseBodyBinding
     ? Option.getOrUndefined(responseBodyBinding.fileHint)
@@ -1151,23 +1304,21 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   if (streamingBody) {
     Object.assign(responseHeaders, streamingBody.headers);
   }
+  const bufferedBody = Effect.suspend(() =>
+    ok && fileHint?.kind === "binaryResponse"
+      ? response.arrayBuffer.pipe(
+          Effect.map((bytes) => fileFromBinaryBytes(new Uint8Array(bytes), fileHint, contentType)),
+        )
+      : isJsonContentType(contentType)
+        ? response.json.pipe(Effect.catch(() => response.text))
+        : response.text,
+  );
   const responseBody: unknown =
     status === 204
       ? null
-      : ok && fileHint?.kind === "binaryResponse"
-        ? fileFromBinaryBytes(
-            new Uint8Array(yield* response.arrayBuffer.pipe(mapBodyError)),
-            fileHint,
-            contentType,
-          )
-        : streamingBody
-          ? streamingBody.data
-          : isJsonContentType(contentType)
-            ? yield* response.json.pipe(
-                Effect.catch(() => response.text),
-                mapBodyError,
-              )
-            : yield* response.text.pipe(mapBodyError);
+      : streamingBody
+        ? streamingBody.data
+        : yield* readResponseBody(bufferedBody.pipe(mapBodyError));
 
   const dataBody =
     ok && fileHint?.kind === "byteField"
@@ -1207,6 +1358,21 @@ const resolveRequestHost = (
   return resolveServerUrl(chosen.url, Option.getOrUndefined(chosen.variables), overrides);
 };
 
+const baseUrlForPathTemplate = (baseUrl: string, pathTemplate: string): string => {
+  if (!baseUrl || !pathTemplate.startsWith("/upload/") || !URL.canParse(baseUrl)) return baseUrl;
+
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  if (basePath && basePath !== "/" && pathTemplate.startsWith(`/upload${basePath}/`)) {
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  return baseUrl;
+};
+
 // ---------------------------------------------------------------------------
 // Invoke with a provided HttpClient layer + per-call host resolution
 // ---------------------------------------------------------------------------
@@ -1220,7 +1386,11 @@ export const invokeWithLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
   options: InvokeOptions = {},
 ) => {
-  const effectiveBaseUrl = resolveRequestHost(operation.servers ?? [], args.server, baseUrl);
+  const effectiveBaseUrl = baseUrlForPathTemplate(
+    resolveRequestHost(operation.servers ?? [], args.server, baseUrl),
+    operation.pathTemplate,
+  );
+
   const clientWithBaseUrl = effectiveBaseUrl
     ? Layer.effect(
         HttpClient.HttpClient,

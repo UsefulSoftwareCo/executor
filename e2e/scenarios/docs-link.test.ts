@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 // A user inside the console should be able to reach the documentation without
 // leaving the app for the marketing site (the original friction: docs were
@@ -18,7 +19,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the console", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.getByText("Integrations").first().waitFor();
       });
 
