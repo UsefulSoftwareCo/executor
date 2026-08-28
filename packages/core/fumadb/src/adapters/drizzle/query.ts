@@ -22,6 +22,28 @@ type P_DBType = PostgreSQL.PgDatabase<
 
 const CREATE_MANY_BATCH_SIZE = 500;
 
+// A multi-row write binds (rows * columns) parameters in one statement, and
+// engines cap bound parameters per statement (older SQLite: 999, Cloudflare
+// D1: 100). When the adapter does not advertise its limit, budget against the
+// conservative 999 floor so a wide table cannot overflow with "too many SQL
+// variables" on stricter engines.
+const DEFAULT_MAX_BOUND_PARAMETERS = 999;
+
+function parameterBoundedBatchSize(
+  columnsPerRow: number,
+  reservedParameters: number,
+  maxBoundParameters: number | undefined
+): number {
+  const budget = maxBoundParameters ?? DEFAULT_MAX_BOUND_PARAMETERS;
+  return Math.max(
+    1,
+    Math.min(
+      CREATE_MANY_BATCH_SIZE,
+      Math.floor(Math.max(1, budget - reservedParameters) / columnsPerRow)
+    )
+  );
+}
+
 function buildWhere(
   toDrizzle: (col: AnyColumn) => ColumnType,
   condition: Condition
@@ -352,15 +374,11 @@ export function fromDrizzle(
       const where = v.where ? buildWhere(toDrizzleColumn, v.where) : undefined;
       const whereParameters = v.where ? countConditionParameters(v.where) : 0;
       const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
-      const batchSize = maxBoundParameters
-        ? Math.max(
-            1,
-            Math.min(
-              CREATE_MANY_BATCH_SIZE,
-              Math.floor(Math.max(1, maxBoundParameters - whereParameters) / columnsPerRow),
-            ),
-          )
-        : CREATE_MANY_BATCH_SIZE;
+      const batchSize = parameterBoundedBatchSize(
+        columnsPerRow,
+        whereParameters,
+        maxBoundParameters,
+      );
       const target = v.target.map((column) => drizzleTable[column.names.drizzle]);
       const set = Object.fromEntries(
         v.update.map((column) => [
@@ -457,15 +475,8 @@ export function fromDrizzle(
       const idField = table.getIdColumn().names.drizzle;
       const drizzleTable = toDrizzle(table);
       values = values.map((v) => mapValues(v, table));
-      // A multi-row insert binds (rows * columns) parameters in one statement.
-      // Some engines cap bound parameters per query (Cloudflare D1: 100), so
-      // size the batch by PARAMETER count, not row count — otherwise a wide
-      // table (e.g. tools) overflows with "too many SQL variables". Engines
-      // without a tight cap keep the row-count batch.
       const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
-      const batchSize = maxBoundParameters
-        ? Math.max(1, Math.min(CREATE_MANY_BATCH_SIZE, Math.floor(maxBoundParameters / columnsPerRow)))
-        : CREATE_MANY_BATCH_SIZE;
+      const batchSize = parameterBoundedBatchSize(columnsPerRow, 0, maxBoundParameters);
       const batches: (typeof values)[] = [];
       for (let i = 0; i < values.length; i += batchSize) {
         batches.push(values.slice(i, i + batchSize));

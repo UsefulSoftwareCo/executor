@@ -184,14 +184,18 @@ export function memoryAdapter(options: MemoryAdapterOptions = {}): FumaDBAdapter
             throw new Error("[FumaDB] upsertMany requires at least one update column.");
           }
           for (const value of v.values) {
-            const existing = tableRows(db, table).find(
-              (row) =>
-                matchesCondition(row, v.where) &&
-                v.target.every((column) => row[column.ormName] === value[column.ormName]),
+            // Mirror SQL `ON CONFLICT ... DO UPDATE ... WHERE`: the unique
+            // target alone detects the conflict, and the predicate only
+            // decides whether the conflicting row may be updated. A
+            // policy-excluded conflict skips the row; it never inserts a
+            // duplicate of the unique target.
+            const conflicting = tableRows(db, table).find((row) =>
+              v.target.every((column) => row[column.ormName] === value[column.ormName]),
             );
-            if (existing) {
+            if (conflicting) {
+              if (!matchesCondition(conflicting, v.where)) continue;
               Object.assign(
-                existing,
+                conflicting,
                 cloneValue(
                   Object.fromEntries(
                     v.update.map((column) => [column.ormName, value[column.ormName]]),

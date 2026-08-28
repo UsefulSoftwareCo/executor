@@ -272,6 +272,43 @@ describe("plugin storage collections", () => {
     }),
   );
 
+  it.effect("stores and overwrites every row when a bulk write spans multiple batches", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      // A plugin_storage row binds ~9 values, so 300 rows exceed one
+      // 999-bound-variable statement budget and must span several batches.
+      const entries = (status: "ok" | "failed") =>
+        Array.from({ length: 300 }, (_, index) => ({
+          key: `batched-call-${String(index).padStart(3, "0")}`,
+          data: call({
+            runId: "run-batched",
+            toolId: "browser",
+            status,
+            startedAt: new Date(Date.UTC(2026, 4, 29, 12, 0, index)).toISOString(),
+          }),
+        }));
+
+      yield* executor.executionHistory.recordMany("org", entries("ok"));
+      const total = yield* executor.executionHistory.count({
+        where: { runId: "run-batched" },
+      });
+      expect(total).toBe(300);
+
+      yield* executor.executionHistory.recordMany("org", entries("failed"));
+      const failed = yield* executor.executionHistory.count({
+        where: { runId: "run-batched", status: "failed" },
+      });
+      expect(failed).toBe(300);
+      const totalAfterOverwrite = yield* executor.executionHistory.count({
+        where: { runId: "run-batched" },
+      });
+      expect(totalAfterOverwrite).toBe(300);
+    }),
+  );
+
   it.effect("rolls back every plugin storage row when a bulk write fails", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({

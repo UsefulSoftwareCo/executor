@@ -8,6 +8,7 @@ import {
   createDrizzleRuntimeSchemaSqlFromTables,
   drizzleAdapter,
 } from "@executor-js/fumadb/adapters/drizzle";
+import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
 import { withQueryContext, type AbstractQuery } from "@executor-js/fumadb/query";
 import { column, idColumn, schema, table } from "@executor-js/fumadb/schema";
 
@@ -16,6 +17,7 @@ interface TenantPolicyContext {
   readonly deniedTables: ReadonlySet<string>;
   readonly marker: string;
   readonly observed: string[];
+  readonly allowedRegionId?: bigint;
 }
 
 const observe = (context: TenantPolicyContext, event: string) => {
@@ -103,12 +105,39 @@ const comments = table("policy_comments", {
   },
 });
 
+// Policy predicate carries a bigint value; string-keyed grouping of these
+// predicates (e.g. JSON.stringify) throws on bigint.
+const quotas = table("policy_quotas", {
+  id: idColumn("id", "varchar(255)"),
+  region: column("region", "bigint"),
+  label: column("label", "string"),
+}).policy<TenantPolicyContext>({
+  name: "tenant.quotas",
+  onUpdate: ({ builder, context }) => builder("region", "=", context.allowedRegionId ?? BigInt(-1)),
+});
+
+// Ten columns, so a row-count-sized batch would bind ten parameters per row.
+const wideRows = table("policy_wide_rows", {
+  id: idColumn("id", "varchar(255)"),
+  c1: column("c1", "string"),
+  c2: column("c2", "string"),
+  c3: column("c3", "string"),
+  c4: column("c4", "string"),
+  c5: column("c5", "string"),
+  c6: column("c6", "string"),
+  c7: column("c7", "string"),
+  c8: column("c8", "string"),
+  c9: column("c9", "string"),
+});
+
 const v1 = schema({
   version: "1.0.0",
   tables: {
     authors,
     posts,
     comments,
+    quotas,
+    wideRows,
   },
   relations: {
     authors: ({ many }) => ({
@@ -154,7 +183,15 @@ const makeHarness = async (options?: {
     version: "1.0.0",
     provider: "sqlite",
   });
-  const drizzleDb = drizzle(sqlite, { schema: runtimeSchema });
+  const statements: { readonly sql: string; readonly paramCount: number }[] = [];
+  const drizzleDb = drizzle(sqlite, {
+    schema: runtimeSchema,
+    logger: {
+      logQuery: (query: string, params: unknown[]) => {
+        statements.push({ sql: query, paramCount: params.length });
+      },
+    },
+  });
   let batchCalls = 0;
 
   if (options?.nativeBatch) {
@@ -187,6 +224,8 @@ const makeHarness = async (options?: {
   return {
     orm: client.orm("1.0.0"),
     getBatchCalls: () => batchCalls,
+    getStatements: (): readonly { readonly sql: string; readonly paramCount: number }[] =>
+      statements,
     close: async () => {
       sqlite.close();
     },
@@ -197,6 +236,18 @@ const useHarness = <A>(run: (orm: TablePolicyQuery) => Promise<A>) =>
   Effect.acquireUseRelease(
     Effect.promise(() => makeHarness()),
     ({ orm }) => Effect.promise(() => run(orm)),
+    ({ close }) => Effect.promise(close),
+  );
+
+const useStatementHarness = <A>(
+  run: (harness: {
+    readonly orm: TablePolicyQuery;
+    readonly getStatements: () => readonly { readonly sql: string; readonly paramCount: number }[];
+  }) => Promise<A>,
+) =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => makeHarness()),
+    (harness) => Effect.promise(() => run(harness)),
     ({ close }) => Effect.promise(close),
   );
 
@@ -540,6 +591,124 @@ describe("FumaDB table policies", () => {
       ).rejects.toThrow("[FumaDB] upsertMany requires at least one update column.");
     }),
   );
+
+  it.effect("keeps every bulk upsert statement inside the bound-variable budget", () =>
+    useStatementHarness(async ({ orm, getStatements }) => {
+      // 250 rows * 10 columns = 2,500 bound variables in a single statement —
+      // over older SQLite's 999-variable cap. The adapter advertises no limit
+      // here, so batching must fall back to the conservative 999 budget.
+      const values = Array.from({ length: 250 }, (_, index) => ({
+        id: `wide-${String(index).padStart(3, "0")}`,
+        c1: `value-${index}-1`,
+        c2: `value-${index}-2`,
+        c3: `value-${index}-3`,
+        c4: `value-${index}-4`,
+        c5: `value-${index}-5`,
+        c6: `value-${index}-6`,
+        c7: `value-${index}-7`,
+        c8: `value-${index}-8`,
+        c9: `value-${index}-9`,
+      }));
+
+      await orm.upsertMany("wideRows", {
+        target: ["id"],
+        update: ["c1"],
+        values,
+      });
+
+      const inserts = getStatements().filter((statement) =>
+        statement.sql.toLowerCase().startsWith("insert into"),
+      );
+      expect(inserts.length).toBeGreaterThanOrEqual(3);
+      for (const statement of inserts) {
+        expect(statement.paramCount).toBeLessThanOrEqual(999);
+      }
+      await expect(orm.count("wideRows")).resolves.toBe(250);
+    }),
+  );
+
+  it.effect("bulk upserts through a policy predicate that contains a bigint", () =>
+    useHarness(async (orm) => {
+      const region = withQueryContext(orm, {
+        ...makeContext(["tenant-a"], "region"),
+        allowedRegionId: BigInt(7),
+      });
+
+      await region.createMany("quotas", [
+        { id: "quota-in-region", region: BigInt(7), label: "before" },
+        { id: "quota-out-of-region", region: BigInt(9), label: "before" },
+      ]);
+
+      await region.upsertMany("quotas", {
+        target: ["id"],
+        update: ["label"],
+        values: [
+          { id: "quota-in-region", region: BigInt(7), label: "after" },
+          { id: "quota-out-of-region", region: BigInt(9), label: "after" },
+          { id: "quota-created", region: BigInt(7), label: "created" },
+        ],
+      });
+
+      await expect(
+        region.findMany("quotas", {
+          select: ["id", "label"],
+          orderBy: ["id", "asc"],
+        }),
+      ).resolves.toEqual([
+        { id: "quota-created", label: "created" },
+        { id: "quota-in-region", label: "after" },
+        { id: "quota-out-of-region", label: "before" },
+      ]);
+    }),
+  );
+
+  it.effect("skips policy-excluded conflicts identically on drizzle and memory adapters", () => {
+    // `post-b-1` already exists for tenant-b, so its unique target conflicts,
+    // and the tenant-a update policy excludes the conflicting row. SQL detects
+    // the conflict first and the predicate only gates the update, so the row
+    // is skipped — never duplicated.
+    const upsertAcrossPolicyExcludedConflict = async (orm: TablePolicyQuery) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      await tenantA.upsertMany("posts", {
+        target: ["id"],
+        update: ["title"],
+        values: [
+          {
+            id: "post-b-1",
+            tenantId: "tenant-a",
+            authorId: "author-a",
+            title: "hijack attempt",
+          },
+          {
+            id: "post-a-9",
+            tenantId: "tenant-a",
+            authorId: "author-a",
+            title: "A Nine",
+          },
+        ],
+      });
+      const allTenants = withQueryContext(orm, makeContext(["tenant-a", "tenant-b"], "all"));
+      return allTenants.findMany("posts", {
+        select: ["id", "tenantId", "title"],
+        orderBy: ["id", "asc"],
+      });
+    };
+
+    const expected = [
+      { id: "post-a-1", tenantId: "tenant-a", title: "A One" },
+      { id: "post-a-2", tenantId: "tenant-a", title: "A Two" },
+      { id: "post-a-9", tenantId: "tenant-a", title: "A Nine" },
+      { id: "post-b-1", tenantId: "tenant-b", title: "B One" },
+    ];
+
+    return useHarness(async (orm) => {
+      await expect(upsertAcrossPolicyExcludedConflict(orm)).resolves.toEqual(expected);
+
+      const memoryOrm = tablePolicyDB.client(memoryAdapter()).orm("1.0.0");
+      await expect(upsertAcrossPolicyExcludedConflict(memoryOrm)).resolves.toEqual(expected);
+    });
+  });
 
   it.effect("rolls back every bounded upsert statement when a native batch fails", () =>
     useNativeBatchHarness(async ({ orm, getBatchCalls }) => {

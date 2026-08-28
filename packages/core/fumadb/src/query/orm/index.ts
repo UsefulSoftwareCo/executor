@@ -237,25 +237,62 @@ const applyUpdatePolicies = async (
   return nextWhere;
 };
 
-const conditionKey = (condition: Condition | undefined): string => {
-  if (!condition) return "none";
-  if (condition.type === ConditionType.Compare) {
-    const right =
-      condition.b instanceof Column ? { column: condition.b.ormName } : { value: condition.b };
-    return JSON.stringify({
-      type: "compare",
-      left: condition.a.ormName,
-      operator: condition.operator,
-      right,
-    });
+// Structural equality over predicate values. Policy predicates may carry any
+// column value shape — string, number, bigint, boolean, null, Date, binary,
+// JSON objects, and arrays of those — so serializing them to string keys
+// (e.g. JSON.stringify) either throws (bigint) or collides (values with the
+// same serialized form). Comparing structurally is unambiguous; a false
+// negative only splits a group and never merges rows under the wrong
+// predicate.
+const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
   }
-  if (condition.type === ConditionType.Not) {
-    return JSON.stringify({ type: "not", item: conditionKey(condition.item) });
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return (
+      a instanceof Uint8Array &&
+      b instanceof Uint8Array &&
+      a.length === b.length &&
+      a.every((byte, index) => byte === b[index])
+    );
   }
-  return JSON.stringify({
-    type: condition.type === ConditionType.And ? "and" : "or",
-    items: condition.items.map(conditionKey),
-  });
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => predicateValuesEqual(item, b[index]))
+    );
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return (
+      aKeys.length === bKeys.length &&
+      aKeys.every((key) => Object.hasOwn(b, key) && predicateValuesEqual(a[key], b[key]))
+    );
+  }
+  return false;
+};
+
+const conditionsEqual = (a: Condition | undefined, b: Condition | undefined): boolean => {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.type === ConditionType.Compare || b.type === ConditionType.Compare) {
+    if (a.type !== ConditionType.Compare || b.type !== ConditionType.Compare) return false;
+    if (a.a !== b.a || a.operator !== b.operator) return false;
+    if (a.b instanceof Column || b.b instanceof Column) return a.b === b.b;
+    return predicateValuesEqual(a.b, b.b);
+  }
+  if (a.type === ConditionType.Not || b.type === ConditionType.Not) {
+    if (a.type !== ConditionType.Not || b.type !== ConditionType.Not) return false;
+    return conditionsEqual(a.item, b.item);
+  }
+  return (
+    a.type === b.type &&
+    a.items.length === b.items.length &&
+    a.items.every((item, index) => conditionsEqual(item, b.items[index]))
+  );
 };
 
 const applyDeletePolicies = async (
@@ -451,20 +488,19 @@ export function toORM<S extends AnySchema>(
       if (permittedRows.length === 0) return;
 
       if (internal.upsertMany) {
-        const groups = new Map<
-          string,
-          { readonly where: Condition | undefined; readonly values: Record<string, unknown>[] }
-        >();
+        const groups: {
+          readonly where: Condition | undefined;
+          readonly values: Record<string, unknown>[];
+        }[] = [];
         for (const row of permittedRows) {
-          const key = conditionKey(row.where);
-          const group = groups.get(key);
+          const group = groups.find((candidate) => conditionsEqual(candidate.where, row.where));
           if (group) {
             group.values.push(row.value);
           } else {
-            groups.set(key, { where: row.where, values: [row.value] });
+            groups.push({ where: row.where, values: [row.value] });
           }
         }
-        for (const group of groups.values()) {
+        for (const group of groups) {
           await internal.upsertMany(table, {
             target: targetColumns,
             update: updateColumns,
