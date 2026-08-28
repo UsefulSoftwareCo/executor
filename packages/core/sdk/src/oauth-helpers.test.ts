@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Ref, Schema } from "effect";
+import type * as Tracer from "effect/Tracer";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -108,6 +109,45 @@ const tokenResponse =
   (body: unknown): TokenHandler =>
   () =>
     json(200, body);
+
+/** Records each span's attributes and its ending exit, so a test can assert on
+ *  exactly what telemetry would export for the token-request span. */
+interface RecordedSpan {
+  readonly attributes: Map<string, unknown>;
+  endExit?: unknown;
+}
+
+const makeRecordingTracer = (spans: Map<string, RecordedSpan>): Tracer.Tracer => ({
+  span: (options) => {
+    const record: RecordedSpan = { attributes: new Map() };
+    spans.set(options.name, record);
+    let status: Tracer.SpanStatus = { _tag: "Started", startTime: options.startTime };
+    return {
+      _tag: "Span",
+      name: options.name,
+      spanId: "0000000000000001",
+      traceId: "00000000000000000000000000000001",
+      parent: options.parent,
+      annotations: options.annotations,
+      get status() {
+        return status;
+      },
+      attributes: record.attributes,
+      links: options.links,
+      sampled: options.sampled,
+      kind: options.kind,
+      end: (endTime, exit) => {
+        record.endExit = exit;
+        status = { _tag: "Ended", startTime: options.startTime, endTime, exit };
+      },
+      attribute: (key, value) => {
+        record.attributes.set(key, value);
+      },
+      event: () => undefined,
+      addLinks: () => undefined,
+    };
+  },
+});
 
 const tokenResponseFetch =
   (body: unknown): typeof globalThis.fetch =>
@@ -821,6 +861,9 @@ describe("exchangeAuthorizationCode", () => {
     }),
   );
 
+  // Non-secret description text must keep propagating even from a confidential
+  // client: the scrub below removes ONLY the exact submitted secret, never the
+  // AS's verdict prose around it.
   it.effect("propagates RFC 6749 error_description text in the OAuth2Error", () =>
     withTokenEndpoint(
       () =>
@@ -834,6 +877,7 @@ describe("exchangeAuthorizationCode", () => {
             exchangeAuthorizationCode({
               tokenUrl,
               clientId: "cid",
+              clientSecret: "csecret",
               redirectUrl: "https://cb",
               codeVerifier: "v",
               code: "c",
@@ -842,9 +886,66 @@ describe("exchangeAuthorizationCode", () => {
           expect(Exit.isFailure(exit)).toBe(true);
           if (!Exit.isFailure(exit)) return;
           expect(JSON.stringify(exit.cause)).toContain("Code expired");
+          const failure = Cause.squash(exit.cause) as OAuth2Error;
+          expect(failure.error).toBe("invalid_grant");
         }),
     ),
   );
+
+  // The review's canary for the first-party secret leak. A provider that
+  // echoes the submitted client_secret inside error_description would carry a
+  // DEPLOYMENT-WIDE credential into the OAuth2Error message — and from there
+  // into OAuthCompleteError, the popup's browser-visible errorDetails, and the
+  // token-request span. Assert on the WHOLE rendered failure, not just the
+  // message: what a log line or a `JSON.stringify` prints includes the retained
+  // rejection, so an echo surviving anywhere in the cause is still a leak.
+  it.effect("scrubs a client secret echoed in error_description from the whole failure", () => {
+    const spans = new Map<string, RecordedSpan>();
+    return withTokenEndpoint(
+      () =>
+        json(400, {
+          error: "invalid_client",
+          error_description:
+            "authentication failed for secret SECRET-CANARY-must-not-escape, check your credentials",
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              clientSecret: "SECRET-CANARY-must-not-escape",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          for (const rendered of [Cause.pretty(exit.cause), JSON.stringify(exit.cause)]) {
+            expect(rendered).not.toContain("SECRET-CANARY-must-not-escape");
+          }
+          const failure = Cause.squash(exit.cause) as OAuth2Error;
+          expect(failure).toBeInstanceOf(OAuth2Error);
+          // Masked, not dropped: the verdict prose around the secret survives,
+          // and so does everything classification and the span read.
+          expect(failure.message).toContain("[redacted]");
+          expect(failure.message).toContain("check your credentials");
+          expect(failure.message).not.toContain("SECRET-CANARY-must-not-escape");
+          expect(failure.error).toBe("invalid_client");
+          expect(failure.status).toBe(400);
+          // The token-request span — attributes AND ending exit — is what the
+          // exporter sees; the echo must not survive there either.
+          const tokenSpan = spans.get("executor.oauth.token_request");
+          expect(tokenSpan?.attributes.get("executor.oauth.error_code")).toBe("invalid_client");
+          const spanRendered = JSON.stringify({
+            attributes: [...(tokenSpan?.attributes ?? [])],
+            exit: tokenSpan?.endExit,
+          });
+          expect(spanRendered).not.toContain("SECRET-CANARY-must-not-escape");
+        }),
+    ).pipe(Effect.withTracer(makeRecordingTracer(spans)));
+  });
 
   it.effect("includes HTTP status and body preview for non-OAuth token endpoint errors", () =>
     withTokenEndpoint(
