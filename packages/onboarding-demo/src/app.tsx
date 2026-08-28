@@ -9,6 +9,7 @@ import { IntegrationDetailPage } from "./screens/integration-detail";
 import { AddAccountModal } from "./screens/add-account-modal";
 import { flowSteps, type FlowStep, type StepId } from "./flow";
 import { stepState, type AccountModal, type ScreenView } from "./step-state";
+import { NextFlow } from "./next-flow";
 import {
   gmailAuthMethods,
   gmailIntegration,
@@ -33,13 +34,12 @@ function Inspector(props: {
   readonly step: FlowStep;
   readonly onSelect: (id: StepId) => void;
   readonly onClose: () => void;
+  readonly modeSwitch: React.ReactNode;
 }) {
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-        <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          Current flow
-        </span>
+        {props.modeSwitch}
         {/* oxlint-disable-next-line react/forbid-elements */}
         <button
           type="button"
@@ -102,7 +102,7 @@ const stepFromHash = (): StepId => {
   return flowSteps.some((step) => step.id === hash) ? (hash as StepId) : "integrations-empty";
 };
 
-export function App() {
+function CurrentFlowApp(props: { readonly modeSwitch: React.ReactNode }) {
   // Each screen is addressable as `#<step-id>`, so a specific screen can be
   // linked to directly rather than clicked toward.
   const [stepId, setStepId] = useState<StepId>(stepFromHash);
@@ -181,7 +181,12 @@ export function App() {
       </div>
 
       {inspectorOpen ? (
-        <Inspector step={step} onSelect={goToStep} onClose={() => setInspectorOpen(false)} />
+        <Inspector
+          step={step}
+          onSelect={goToStep}
+          onClose={() => setInspectorOpen(false)}
+          modeSwitch={props.modeSwitch}
+        />
       ) : (
         // oxlint-disable-next-line react/forbid-elements
         <button
@@ -221,3 +226,101 @@ export function App() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Mode switch — the current flow and the reworked one, same chrome, same
+// tokens, so the comparison is about the flow rather than the styling.
+// ---------------------------------------------------------------------------
+
+type Mode = "current" | "next";
+
+function ModeSwitch(props: { readonly mode: Mode; readonly onChange: (mode: Mode) => void }) {
+  const option = (mode: Mode, label: string) => (
+    // oxlint-disable-next-line react/forbid-elements
+    <button
+      key={mode}
+      type="button"
+      onClick={() => props.onChange(mode)}
+      className={cn(
+        "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+        props.mode === mode
+          ? "bg-background text-foreground shadow-xs"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
+      {option("current", "Current")}
+      {option("next", "Reworked")}
+    </div>
+  );
+}
+
+const modeFromHash = (): Mode =>
+  (globalThis.location?.hash ?? "").startsWith("#next") ? "next" : "current";
+
+export function App() {
+  const [mode, setMode] = useState<Mode>(modeFromHash);
+
+  useEffect(() => {
+    const onHashChange = () => setMode(modeFromHash());
+    globalThis.addEventListener("hashchange", onHashChange);
+    return () => globalThis.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const changeMode = (next: Mode) => {
+    setMode(next);
+    if (globalThis.location) {
+      globalThis.location.hash = next === "next" ? "next" : "integrations-empty";
+    }
+  };
+
+  const modeSwitch = <ModeSwitch mode={mode} onChange={changeMode} />;
+
+  if (mode === "next") {
+    return (
+      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <NextFlow />
+        </div>
+        <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card">
+          <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
+            {modeSwitch}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              What changed
+            </p>
+            <div className="mt-3 flex flex-col gap-3 text-[13px] leading-relaxed text-foreground/80">
+              {NEXT_NOTES.map((note) => (
+                <p key={note}>{note}</p>
+              ))}
+            </div>
+            <p className="mt-6 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              Data
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-foreground/80">
+              The picker lists the live integrations.sh registry. The authenticate screen is built
+              from that domain&apos;s credential record. Categories are a keyword stand-in — the
+              registry has no taxonomy yet.
+            </p>
+          </div>
+        </aside>
+      </div>
+    );
+  }
+
+  return <CurrentFlowApp modeSwitch={modeSwitch} />;
+}
+
+const NEXT_NOTES: readonly string[] = [
+  "The picker is the page, not a dialog behind a button. Search is the first thing on it.",
+  "Add happens in place. The row flips to Added, the list holds still, and you can keep adding.",
+  "No add-integration form. Spec URL, base URL and auth methods all come from the registry, so there is nothing to fill in and no locked Method 1 to misread.",
+  "Auth is deferred, not skipped. An add leaves one account reading Needs auth next to the button that fixes it — so the second step is visibly the same task, not a second add.",
+  "The authenticate screen names the key, links straight to the page that mints it, and shows the provider's own setup steps. The paste field is focused and never gated.",
+  "Owner is not asked during setup. Personal appears zero times.",
+];
