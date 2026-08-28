@@ -151,14 +151,43 @@ export interface InMemoryMcpSessionStore {
   readonly close: () => Promise<void>;
 }
 
-const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
-  close
-    ? Effect.runPromise(Effect.ignore(Effect.tryPromise({ try: close, catch: () => undefined })))
-    : Promise.resolve();
-
 const formatBoundaryError = (error: unknown): unknown =>
   // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: log unknown MCP SDK/runtime failures
   error instanceof Error ? (error.stack ?? error.message) : error;
+
+/** One session handle refused to close. Reported, never propagated. */
+class McpHandleCloseError extends Data.TaggedError("McpHandleCloseError")<{
+  readonly cause: unknown;
+}> {}
+
+/**
+ * Release one session handle, best effort. Disposal must finish even when a
+ * handle refuses to close — the other handles still have to go, and a rejection
+ * here would surface as an unhandled rejection on a sweep tick nobody awaits.
+ * But a silently swallowed failure is a leaked transport, server, or engine that
+ * nothing can see, so name the handle and the session in a warning.
+ */
+const ignoreClose = (
+  sessionId: string | null,
+  handle: string,
+  close: (() => Promise<void>) | undefined,
+): Promise<void> => {
+  if (!close) return Promise.resolve();
+  const warn = (detail: unknown): Effect.Effect<void> =>
+    Effect.sync(() => {
+      console.warn(
+        `[mcp] failed to close ${handle} for session ${sessionId ?? "<uninitialized>"}:`,
+        formatBoundaryError(detail),
+      );
+    });
+  return Effect.runPromise(
+    Effect.tryPromise({ try: close, catch: (cause) => new McpHandleCloseError({ cause }) }).pipe(
+      Effect.catch((error) => warn(error.cause)),
+      // A defect cannot escape either: this runs detached from any request.
+      Effect.catchCause((cause) => warn(Cause.squash(cause))),
+    ),
+  );
+};
 
 // The store's error bodies are INNER responses (no CORS): the serving envelope
 // re-wraps the store `Response` with CORS before it leaves the origin, so the
@@ -211,9 +240,17 @@ export const makeInMemoryMcpSessionStore = (
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
-  // Monotonic-ish last-touch stamp per live session, the only input the idle
+  // Monotonic-ish last-touch stamp per live session, the first input the idle
   // sweep reads. Written on create and on every forwarded request.
   const lastSeen = new Map<string, number>();
+  // Requests currently inside `transport.handleRequest` for a session, the
+  // sweep's second input. A stamp alone cannot describe a long call: it is
+  // written BEFORE the await, so a single `execute` that outruns the TTL (a
+  // browser approval waiting on a human, a slow upstream) would look exactly
+  // like an abandoned session and have its transport, server, and engine closed
+  // out from under the request that is still using them. Counting requests in
+  // flight makes "idle" mean what it says.
+  const activeRequests = new Map<string, number>();
 
   const idleTtlMs = options.sessionIdleTtlMs ?? DEFAULT_SESSION_IDLE_TTL_MS;
   const sweepIntervalMs =
@@ -223,16 +260,50 @@ export const makeInMemoryMcpSessionStore = (
     if (lastSeen.has(id)) lastSeen.set(id, Date.now());
   };
 
+  /** Claim a session for one in-flight request, so the sweep cannot take it. */
+  const beginRequest = (id: string): void => {
+    activeRequests.set(id, (activeRequests.get(id) ?? 0) + 1);
+  };
+
+  /**
+   * Release the claim and restamp: a call that ran for an hour leaves the
+   * session idle from the moment it FINISHED, not from the moment it started.
+   * `touch` is a no-op once the session is gone, so this can never resurrect a
+   * disposed id.
+   */
+  const endRequest = (id: string): void => {
+    const remaining = (activeRequests.get(id) ?? 1) - 1;
+    if (remaining > 0) activeRequests.set(id, remaining);
+    else activeRequests.delete(id);
+    touch(id);
+  };
+
+  /**
+   * Shut down a session's engine. Dropping the reference is not enough: the
+   * engine's paused executions hold detached sandbox fibers that keep running —
+   * and keep querying the host's database handle — until `shutdown` interrupts
+   * them. Every disposal path goes through here.
+   */
+  const shutdownEngine = (
+    id: string | null,
+    engine: ExecutionEngine<Cause.YieldableError> | undefined,
+  ): Promise<void> =>
+    ignoreClose(id, "engine", engine ? () => Effect.runPromise(engine.shutdown) : undefined);
+
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
     const server = servers.get(id);
+    const engine = engines.get(id);
     transports.delete(id);
     servers.delete(id);
     owners.delete(id);
     engines.delete(id);
     lastSeen.delete(id);
-    if (opts.transport) await ignoreClose(transport ? () => transport.close() : undefined);
-    if (opts.server) await ignoreClose(server ? () => server.close() : undefined);
+    activeRequests.delete(id);
+    if (opts.transport)
+      await ignoreClose(id, "transport", transport ? () => transport.close() : undefined);
+    if (opts.server) await ignoreClose(id, "server", server ? () => server.close() : undefined);
+    await shutdownEngine(id, engine);
   };
 
   /**
@@ -272,7 +343,14 @@ export const makeInMemoryMcpSessionStore = (
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
     touch(sessionId);
-    return runHandleRequest(transport, request);
+    // Claim before the await, release in the finalizer — `runHandleRequest`
+    // already recovers every failure to a 500, but `ensuring` also covers an
+    // interrupt, so the counter cannot be left permanently raised (which would
+    // make the session immortal, the opposite leak).
+    beginRequest(sessionId);
+    return runHandleRequest(transport, request).pipe(
+      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+    );
   };
 
   /**
@@ -343,8 +421,12 @@ export const makeInMemoryMcpSessionStore = (
           // The session id is minted on the first (initialize) request, so we
           // drive `handleRequest` here; if no id results we close eagerly.
           return yield* runHandleRequest(transport, request, () => {
-            void ignoreClose(() => transport.close());
-            void ignoreClose(() => mcpServer.close());
+            // Nothing was ever registered under a session id, so `dispose` has
+            // no entry to work from — release the three handles by hand, engine
+            // included.
+            void ignoreClose(null, "transport", () => transport.close());
+            void ignoreClose(null, "server", () => mcpServer.close());
+            void shutdownEngine(null, engine);
           });
         }),
       ),
@@ -439,11 +521,16 @@ export const makeInMemoryMcpSessionStore = (
     });
   };
 
-  /** Dispose every session whose last request is older than the idle window. */
+  /**
+   * Dispose every session whose last request is older than the idle window AND
+   * which has nothing in flight. A session serving a request is busy, however
+   * long ago that request started; it gets a fresh stamp the moment it ends, so
+   * a later sweep still reclaims it if the client then goes quiet.
+   */
   const sweepIdleSessions = async (now: number = Date.now()): Promise<number> => {
     if (idleTtlMs <= 0) return 0;
     const stale = [...lastSeen.entries()]
-      .filter(([, seen]) => now - seen >= idleTtlMs)
+      .filter(([id, seen]) => now - seen >= idleTtlMs && (activeRequests.get(id) ?? 0) === 0)
       .map(([id]) => id);
     // Both flags: an evicted session's transport has no other owner, and leaving
     // it open would keep the very handles the eviction exists to release.
@@ -475,7 +562,7 @@ export const makeInMemoryMcpSessionStore = (
     sweepIdleSessions,
     close: async () => {
       if (sweepTimer !== undefined) clearInterval(sweepTimer);
-      const ids = new Set([...transports.keys(), ...servers.keys()]);
+      const ids = new Set([...transports.keys(), ...servers.keys(), ...engines.keys()]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };
