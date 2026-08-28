@@ -19,10 +19,10 @@ import { resolveSecretKey } from "./src/config";
 // Single source of truth for the self-hosted app's plugin list.
 //
 // Self-host runs the same protocol/provider plugins as cloud, minus the
-// multi-tenant-only secret backends (WorkOS Vault). `dangerouslyAllowStdioMCP`
-// is false: a server reachable by multiple users must not let one user spawn
-// arbitrary stdio MCP processes on the host. The encrypted DB secret provider
-// (slice 4) is added here as the first writable secret provider.
+// multi-tenant-only secret backends (WorkOS Vault). Stdio MCP remains opt-in:
+// a server reachable by multiple users must not let one user spawn arbitrary
+// stdio MCP processes on the host. The encrypted DB secret provider (slice 4)
+// is added here as the first writable secret provider.
 // ---------------------------------------------------------------------------
 
 interface SelfHostPluginDeps {
@@ -39,7 +39,9 @@ export default defineExecutorConfig({
         presets: [...googleCatalog, ...microsoftCatalog],
         specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
       }),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
+      mcpHttpPlugin({
+        dangerouslyAllowStdioMCP: process.env.EXECUTOR_ALLOW_STDIO_MCP === "true",
+      }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.

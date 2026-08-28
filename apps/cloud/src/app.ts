@@ -13,7 +13,6 @@ import { ApiKeyService } from "./auth/api-keys";
 import { cloudIdentityFailureStrategy, workosIdentityLayer } from "./auth/workos-auth-provider";
 import { DbService } from "./db/db";
 import { cloudMcpAuth } from "./mcp";
-import { McpSessionDOSqlite } from "./mcp/session-durable-object";
 import { ErrorCaptureLive } from "./observability";
 import { AutumnService } from "./extensions/billing/service";
 import {
@@ -31,7 +30,7 @@ import { WorkerTelemetryLive } from "./observability/telemetry";
 // The whole scenario in 60 seconds: WorkOS identity (api-key Bearer OR sealed-
 // session cookie, api-key wins) over a per-request Hyperdrive→Postgres socket,
 // the Cloudflare dynamic-worker code substrate, MCP served by a Durable-Object
-// session store (the DO surfaced via `config.mcpExport`), console+Sentry error
+// session store (the DO class is exported straight from server.ts), console+Sentry error
 // capture — and Autumn BILLING entering ONLY as extensions: the engine
 // metering decorator, the account seat-gate, the `/api/billing/*` proxy route,
 // and the createOrganization free-limit gate. `diff` against
@@ -66,7 +65,7 @@ const controlPlane = Layer.mergeAll(CoreSharedServices, apiKeyService);
 // satisfied by `boot`, `DbService` per request via `requestScoped`).
 const cloudDb: Layer.Layer<DbProvider, never, DbService | AutumnService> = CloudDbProvider;
 
-const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
+const { appLayer, toWebHandler } = ExecutorApp.make({
   plugins: cloudPlugins,
   providers: {
     // Identity: the NEUTRAL `IdentityProvider`. WorkOS api-key Bearer BEATS
@@ -112,7 +111,6 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
     failure: cloudIdentityFailureStrategy,
     // The MCP session Durable Object class — a top-level Workers export a Layer
     // can't return; surfaced so `server.ts` can re-export it.
-    mcpExport: McpSessionDOSqlite,
   },
   // The long-lived (boot-scoped) context provideMerge'd under everything: the
   // WorkOS control plane (the raw `WorkOSClient` + `ApiKeyService` the per-request
@@ -135,10 +133,7 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
   requestScoped: RequestScopedServicesLive,
 });
 
-export { McpSessionDOSqlite };
-
 export const CloudAppLayer = appLayer;
-export const cloudMcpExport = mcpExport;
 
 // The unified cloud web handler: serves /api/* (incl. /api/billing/*, /api/docs),
 // /mcp, /.well-known/* — everything the worker dispatches.

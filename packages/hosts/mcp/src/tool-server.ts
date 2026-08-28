@@ -1,4 +1,4 @@
-import { Duration, Effect, Match, Option, Schema } from "effect";
+import { Data, Duration, Effect, Match, Option, Predicate, Result, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
@@ -39,6 +39,7 @@ import {
   formatPausedExecution,
   formatTtlDuration,
   findSkill,
+  parseIntegrationInventory,
   renderSkillsIndex,
   skillCatalogFor,
   EXECUTE_SKILL,
@@ -53,8 +54,10 @@ import {
 } from "@executor-js/execution";
 import {
   MCP_APPS_SHELL_RESOURCE_URI,
+  applyArtifactEdits,
   smokeRenderRejection,
   validateArtifactCode,
+  type ArtifactEdit,
   type ArtifactSmokeRenderResult,
 } from "./create-artifact";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "./tool-call-code";
@@ -163,6 +166,16 @@ type SharedMcpServerConfig = {
    * serves. `execute`, `skills` and `resume` are untouched.
    */
   readonly artifactsEnabled?: boolean;
+  /**
+   * Per-connection opt-IN for the per-integration search tools. Defaults to
+   * false. A client that connects with `?search_tools=true` gets one
+   * `search_<integration>` tool per connected integration (the same inventory
+   * the `execute` description lists). The tools exist to carry the namespaces
+   * into the model's context as tool names; each call routes through the same
+   * execution flow as `tools.search({ namespace })` inside `execute`, so the
+   * results match what code-side search returns.
+   */
+  readonly searchToolsEnabled?: boolean;
   /**
    * Renders an artifact once, server-side, before it is saved — so a component
    * that throws on its first render is refused at create time with the real
@@ -316,6 +329,12 @@ const capabilitySnapshot = (server: McpServer) => ({
   elicitationSupport: getElicitationSupport(server),
 });
 
+class McpNativeElicitationTransportError extends Data.TaggedError(
+  "McpNativeElicitationTransportError",
+)<{
+  readonly cause: unknown;
+}> {}
+
 type ElicitInputParams =
   | {
       mode?: "form";
@@ -372,6 +391,7 @@ const elicitationRequestToParams: (request: ElicitationRequest) => ElicitInputPa
 const makeMcpElicitationHandler =
   (
     server: McpServer,
+    relatedRequestId: string | number,
     debugLog?: (event: string, data: Record<string, unknown>) => void,
   ): ElicitationHandler =>
   (ctx: ElicitationContext): Effect.Effect<typeof ElicitationResponse.Type> => {
@@ -405,35 +425,39 @@ const makeMcpElicitationHandler =
         clientCapabilities: server.server.getClientCapabilities() ?? null,
       });
 
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK elicitInput is a Promise API; failures become a cancel response
-      try {
-        const response = await server.server.elicitInput(
-          params as Parameters<typeof server.server.elicitInput>[0],
-        );
+      const response = await server.server.elicitInput(
+        params as Parameters<typeof server.server.elicitInput>[0],
+        { relatedRequestId },
+      );
 
-        debugLog?.("elicitation.response", {
-          requestTag,
-          action: response.action,
-          hasContent:
-            typeof response.content === "object" &&
-            response.content !== null &&
-            Object.keys(response.content).length > 0,
-        });
+      debugLog?.("elicitation.response", {
+        requestTag,
+        action: response.action,
+        hasContent:
+          typeof response.content === "object" &&
+          response.content !== null &&
+          Object.keys(response.content).length > 0,
+      });
 
-        return {
-          action: response.action as typeof ElicitationResponse.Type.action,
-          content: response.content,
-        };
-      } catch (err) {
-        const error = formatBoundaryError(err);
-        debugLog?.("elicitation.error", {
-          requestTag,
-          error,
-          clientCapabilities: server.server.getClientCapabilities() ?? null,
-        });
-        return { action: "cancel" as const } as ElicitationResponse;
-      }
-    });
+      return {
+        action: response.action as typeof ElicitationResponse.Type.action,
+        content: response.content,
+      };
+    }).pipe(
+      Effect.tapDefect((defect) =>
+        Effect.sync(() => {
+          debugLog?.("elicitation.error", {
+            requestTag: elicitationRequestTag(ctx.request),
+            error: formatBoundaryError(defect),
+            clientCapabilities: server.server.getClientCapabilities() ?? null,
+          });
+        }),
+      ),
+      Effect.catchDefect((cause) =>
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ElicitationHandler has no error channel, so retain a classified defect for the MCP result boundary.
+        Effect.die(new McpNativeElicitationTransportError({ cause })),
+      ),
+    );
   };
 
 const formatBoundaryError = (err: unknown): { name?: string; message: string; stack?: string } => {
@@ -574,6 +598,11 @@ const toMcpOutputResult = (
   const extraText: string[] = [];
   if (result.error) {
     extraText.push(formatted.text);
+  } else if (result.result != null) {
+    // A script may both emit() and return: keep the returned value in the
+    // content channel too, or clients that ignore structuredContent drop it.
+    // formatted.text already renders the return value plus any logs.
+    extraText.push(formatted.text);
   } else if (result.logs && result.logs.length > 0) {
     extraText.push(`Logs:\n${result.logs.join("\n")}`);
   }
@@ -655,6 +684,10 @@ const formatResumeApprovalRequired = (input: {
 
 const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   const correlationId = newCorrelationId();
+  const defect = Cause.findDefect(cause);
+  const nativeElicitationFailed =
+    Result.isSuccess(defect) &&
+    Predicate.isTagged("McpNativeElicitationTransportError")(defect.success);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort defect logging must tolerate non-serializable causes
   try {
     console.error(
@@ -664,10 +697,16 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   } catch {
     /* ignore logger failures */
   }
-  const text = `Internal tool error [${correlationId}]`;
+  const text = nativeElicitationFailed
+    ? `Native elicitation transport failed [${correlationId}]. Reconnect the MCP client and try again.`
+    : `Internal tool error [${correlationId}]`;
   return {
     content: [{ type: "text", text: `Error: ${text}` }],
-    structuredContent: { status: "error", error: text },
+    structuredContent: {
+      status: "error",
+      error: text,
+      ...(nativeElicitationFailed ? { errorCode: "native_elicitation_transport_failed" } : {}),
+    },
     isError: true,
   };
 };
@@ -743,6 +782,11 @@ const fallbackOutcomeResult = (
 // skill's body; an unknown name -> the index plus a not-found note so the model
 // retries with a listed name instead of the same miss.
 //
+// The miss is also where a model that mistook this for a general skill reader
+// arrives — a host with no skill tool of its own reads `executor_skills` as the
+// one it is missing and asks it for the harness's or the user's skills — so the
+// note names the boundary rather than only reporting the bad name.
+//
 // The skill body IS the payload, returned as plain text content. We do NOT
 // attach `structuredContent`: a client that prefers structured output (Claude
 // Code does) will surface only that and drop the text, so the long-form guide
@@ -769,7 +813,10 @@ const skillsResult = (
   if (!skill) {
     return {
       content: [
-        { type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex(catalog)}` },
+        {
+          type: "text",
+          text: `No skill named "${trimmed}". This tool serves only Executor's own docs, listed below — a skill from your harness or the user's project is not reachable from here.\n\n${renderSkillsIndex(catalog)}`,
+        },
       ],
       isError: true,
     };
@@ -838,6 +885,22 @@ const startMarker = (name: string, attributes: Record<string, unknown>): Effect.
 const renderRejectedResult = (reason: string): McpToolResult => ({
   content: [{ type: "text", text: `create-artifact rejected: ${reason}` }],
   structuredContent: { status: "error", error: reason },
+  isError: true,
+});
+
+/** An edit batch that could not be applied. Carries the current stored source
+ *  so the model can rebuild its edits without a `show-artifact` round trip. */
+const editRejectedResult = (reason: string, currentCode: string): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: [
+        `edit-artifact rejected: ${reason}`,
+        "Nothing was changed. The artifact's current source is in structuredContent.code — build the retry against it.",
+      ].join("\n"),
+    },
+  ],
+  structuredContent: { status: "error", error: reason, code: currentCode },
   isError: true,
 });
 
@@ -1042,6 +1105,9 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // the skills catalog below.
     const artifactsEnabled = config.artifactsEnabled ?? true;
     const skillCatalog: readonly Skill[] = skillCatalogFor({ artifacts: artifactsEnabled });
+    // Per-integration search tools are off unless this connection opted in
+    // (`?search_tools=true`).
+    const searchToolsEnabled = config.searchToolsEnabled ?? false;
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -1139,6 +1205,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
 
+    const executeWithNativeElicitation = (
+      code: string,
+      extra: McpRequestJoinKeys,
+    ): Effect.Effect<McpToolResult, E> =>
+      engine
+        .execute(code, {
+          onElicitation: makeMcpElicitationHandler(server, extra.requestId, debugLog),
+        })
+        .pipe(Effect.map(toMcpResult));
+
     const executeCode = (
       code: string,
       extra: McpRequestJoinKeys,
@@ -1155,10 +1231,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           codeLength: code.length,
         });
         if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(code, {
-            onElicitation: makeMcpElicitationHandler(server, debugLog),
-          });
-          return toMcpResult(result);
+          return yield* executeWithNativeElicitation(code, extra);
         }
         const outcome = yield* engine.executeWithPause(code);
         debugLog("execute.paused_flow_result", {
@@ -1191,6 +1264,15 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
         Effect.annotateSpans(joinKeyAttributes(extra)),
       );
+
+    // `search_<integration>` is `execute` running `tools.search` with the
+    // namespace pinned. The code is built HERE, from the slug the tool was
+    // registered under and a JSON-encoded query — never concatenated from
+    // raw model input — and then takes the exact `executeCode` path, so the
+    // results, formatting, and telemetry match a hand-written
+    // `tools.search({ namespace })` call.
+    const searchNamespaceCode = (integration: string, query: string | undefined): string =>
+      `return tools.search(${JSON.stringify({ query: query ?? "", namespace: integration })})`;
 
     /** What the caller could bind an unresolved role to. Best effort: the
      *  connections port is optional, and a failure to enumerate must not
@@ -1242,6 +1324,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const executeCodeFromApp = (
       code: string,
       artifactId: string | undefined,
+      extra: McpRequestJoinKeys,
     ): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
         const resolution = yield* resolveArtifactAction({ code, artifactId, loadArtifact });
@@ -1274,10 +1357,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const boundCode = resolution.code;
 
         if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(boundCode, {
-            onElicitation: makeMcpElicitationHandler(server, debugLog),
-          });
-          return toMcpResult(result);
+          return yield* executeWithNativeElicitation(boundCode, extra);
         }
         const outcome = yield* engine.executeWithPause(boundCode);
         debugLog("execute_action.paused_flow_result", {
@@ -1456,15 +1536,18 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         "skills",
         {
           description: [
-            "Fetch a named how-to skill. Skills hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
+            "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
+            "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
             'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
-            "Call with no name to list the available skills.",
+            "Call with no name to list the few docs available.",
           ].join("\n"),
           inputSchema: {
             name: z
               .string()
               .optional()
-              .describe('The skill to fetch, e.g. "execute". Omit to list available skills.'),
+              .describe(
+                'A doc from this server\'s own catalog, e.g. "execute" — not a path or an outside skill name. Omit to list the catalog.',
+              ),
           },
         },
         ({ name }) =>
@@ -1526,6 +1609,62 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         attributes: { "mcp.tool.name": "resume" },
       }),
     );
+
+    // --- per-integration search tools (opt-in, `?search_tools=true`) ---
+    //
+    // One minimally-described tool per connected integration, named
+    // `search_<integration>`. Their job is to put the integration namespaces
+    // into the model's context as tool names it can see without calling
+    // anything; a call routes through the same flow as
+    // `tools.search({ namespace })` inside `execute` (see searchNamespaceCode).
+    // The inventory comes from the same built description the model reads, so
+    // the two surfaces cannot list different integrations.
+    //
+    // A session serves up to 50 of these, so every definition byte is paid ~50
+    // times in the client's context. The NAME is the payload; everything else
+    // stays as small as it can: one shared description sentence (the slug
+    // would only repeat the name) and a single bare `query` parameter — no
+    // paging knobs, because anything past the first page belongs in `execute`.
+    // `namespace-search-tools.test.ts` pins the serialized size.
+    if (searchToolsEnabled) {
+      // The MCP tool-name grammar ([A-Za-z0-9_-]). Integration slugs already
+      // conform (they are `tools.<slug>` property names in sandbox code); one
+      // that somehow doesn't is skipped rather than failing the whole session.
+      const TOOL_NAME_SAFE_SLUG = /^[A-Za-z0-9_-]+$/;
+      const namespaces = parseIntegrationInventory(description).filter((slug) =>
+        TOOL_NAME_SAFE_SLUG.test(slug),
+      );
+      yield* Effect.sync(() => {
+        for (const integration of namespaces) {
+          server.registerTool(
+            `search_${integration}`,
+            {
+              description:
+                "Search this integration's tools; empty query lists all. Run results with execute.",
+              inputSchema: { query: z.string().optional() },
+            },
+            ({ query }, extra) =>
+              runToolEffect(
+                executeCode(searchNamespaceCode(integration, query), extra).pipe(
+                  Effect.withSpan("mcp.host.tool.namespace_search", {
+                    attributes: {
+                      "mcp.tool.name": `search_${integration}`,
+                      "executor.integration": integration,
+                    },
+                  }),
+                ),
+              ),
+          );
+        }
+      }).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: {
+            "mcp.tool.name": "search_<integration>",
+            "mcp.namespace_search.count": namespaces.length,
+          },
+        }),
+      );
+    }
 
     // --- artifacts / MCP Apps ---
     //
@@ -1650,53 +1789,21 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     };
 
     /**
-     * Bind the integration roles an artifact's code uses, at create time.
-     *
-     * Binding happens HERE rather than at render time because this is the only
-     * moment the author, the code and their connections are all in hand — and
-     * because a create that can't bind is a create that would have saved a
-     * broken artifact. The model finds out now, with the candidate list, rather
-     * than the user finding out later through a query error inside the UI.
-     *
-     * `artifactId` turns the same call into an update in place. A model tweaking
-     * a dashboard has the whole component in hand already — it fetched it with
-     * `show-artifact`, edited it, and is calling back with the result — so a
-     * separate `update-artifact` tool would take the same four arguments and
-     * differ only in whether a row is minted. One tool keeps the catalog small
-     * and makes the wrong thing (a copy per tweak) the thing the model has to
-     * ask for rather than the thing it gets by default.
-     *
-     * An update replaces the code outright — v1 keeps no version history — and
-     * re-extracts and re-resolves the bindings from the NEW source, because the
-     * roles the new code uses are not necessarily the ones the old code did.
-     * `title` and `description` are optional on an update and absent means keep
-     * what is stored, so a pure code tweak doesn't have to restate them.
+     * The shared back half of `create-artifact` and `edit-artifact`: everything
+     * that happens once the full candidate source is in hand. Static checks,
+     * the smoke render, binding and the save are identical whether the code
+     * arrived whole or was assembled from stored source plus edits — sharing
+     * the pipeline is what guarantees an edit cannot save anything a create
+     * would have refused.
      */
-    const createArtifact = (input: {
+    const validateRenderAndSave = (input: {
       readonly code: string;
-      readonly title?: string;
-      readonly description?: string;
-      readonly connections?: Readonly<Record<string, string>>;
-      readonly artifactId?: string;
+      readonly title: string;
+      readonly description?: string | undefined;
+      readonly connections?: Readonly<Record<string, string>> | undefined;
+      readonly existing: Artifact | null;
     }): Effect.Effect<McpToolResult, unknown> =>
       Effect.gen(function* () {
-        // An update reads the existing row FIRST, both to carry its title and
-        // description forward and to refuse a foreign id before any work. The
-        // refusal is `artifact_unavailable` — the same answer `execute-action`
-        // gives — so create-artifact cannot be used to probe which ids exist.
-        const existing =
-          input.artifactId === undefined ? null : yield* loadArtifact(input.artifactId);
-        if (input.artifactId !== undefined && !existing) return actionArtifactUnavailableResult();
-
-        const title = input.title ?? existing?.title;
-        if (title === undefined) {
-          return renderRejectedResult(
-            "title is required when creating an artifact. Give it a short human-readable name.",
-          );
-        }
-        // Only an update inherits; a create with no description stores none.
-        const description = input.description ?? existing?.description ?? undefined;
-
         const rejection = validateArtifactCode(input.code);
         if (rejection) return renderRejectedResult(rejection);
 
@@ -1739,10 +1846,10 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
         const saveInput = {
           code: input.code,
-          title,
+          title: input.title,
           preview,
-          ...(description === undefined ? {} : { description }),
-          ...(existing === null ? {} : { existingId: existing.id }),
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.existing === null ? {} : { existingId: input.existing.id }),
         };
 
         const roles = extractArtifactRoles(input.code);
@@ -1770,12 +1877,113 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           "mcp.artifact.role_count": roles.length,
         });
         return yield* saveAndDeliverArtifact({ ...saveInput, bindings: resolved.bindings });
+      });
+
+    /**
+     * Bind the integration roles an artifact's code uses, at create time.
+     *
+     * Binding happens HERE rather than at render time because this is the only
+     * moment the author, the code and their connections are all in hand — and
+     * because a create that can't bind is a create that would have saved a
+     * broken artifact. The model finds out now, with the candidate list, rather
+     * than the user finding out later through a query error inside the UI.
+     *
+     * `artifactId` turns the same call into an update in place — for a REWRITE,
+     * where the new source shares little with the old and edits would be longer
+     * than the code. A tweak belongs on `edit-artifact`, which patches the
+     * stored source instead of replacing it. Either way one row is kept: a copy
+     * per revision is the thing the model has to ask for, never the default.
+     *
+     * An update replaces the code outright — v1 keeps no version history — and
+     * re-extracts and re-resolves the bindings from the NEW source, because the
+     * roles the new code uses are not necessarily the ones the old code did.
+     * `title` and `description` are optional on an update and absent means keep
+     * what is stored, so a pure code tweak doesn't have to restate them.
+     */
+    const createArtifact = (input: {
+      readonly code: string;
+      readonly title?: string;
+      readonly description?: string;
+      readonly connections?: Readonly<Record<string, string>>;
+      readonly artifactId?: string;
+    }): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        // An update reads the existing row FIRST, both to carry its title and
+        // description forward and to refuse a foreign id before any work. The
+        // refusal is `artifact_unavailable` — the same answer `execute-action`
+        // gives — so create-artifact cannot be used to probe which ids exist.
+        const existing =
+          input.artifactId === undefined ? null : yield* loadArtifact(input.artifactId);
+        if (input.artifactId !== undefined && !existing) return actionArtifactUnavailableResult();
+
+        const title = input.title ?? existing?.title;
+        if (title === undefined) {
+          return renderRejectedResult(
+            "title is required when creating an artifact. Give it a short human-readable name.",
+          );
+        }
+        // Only an update inherits; a create with no description stores none.
+        const description = input.description ?? existing?.description ?? undefined;
+
+        return yield* validateRenderAndSave({
+          code: input.code,
+          title,
+          description,
+          connections: input.connections,
+          existing,
+        });
       }).pipe(
         Effect.withSpan("mcp.host.tool.create_artifact", {
           attributes: {
             "mcp.tool.name": "create-artifact",
             "mcp.artifact.update": input.artifactId !== undefined,
             "mcp.execute.code_length": input.code.length,
+          },
+        }),
+      );
+
+    /**
+     * `edit-artifact`: the update path for tweaks, patching the stored source
+     * with exact find-and-replace edits so the call scales with the change
+     * rather than the component. The edited result runs the same
+     * validate → smoke-render → bind → save pipeline as a full create, so an
+     * edit cannot save anything a create would have refused.
+     *
+     * A failed edit hands the CURRENT source back in `structuredContent.code`.
+     * The model's usual recovery — `show-artifact`, re-read, retry — is a whole
+     * extra round trip to fetch a thing this call already loaded; giving it
+     * back here makes the retry immediate.
+     */
+    const editArtifact = (input: {
+      readonly artifactId: string;
+      readonly edits: readonly ArtifactEdit[];
+      readonly title?: string;
+      readonly description?: string;
+      readonly connections?: Readonly<Record<string, string>>;
+    }): Effect.Effect<McpToolResult, unknown> =>
+      Effect.gen(function* () {
+        // Same probe-proof refusal as create-artifact's update arm.
+        const existing = yield* loadArtifact(input.artifactId);
+        if (!existing) return actionArtifactUnavailableResult();
+
+        const applied = applyArtifactEdits(existing.code, input.edits);
+        if (!applied.ok) return editRejectedResult(applied.message, existing.code);
+
+        yield* Effect.annotateCurrentSpan({
+          "mcp.artifact.edit_count": input.edits.length,
+        });
+        return yield* validateRenderAndSave({
+          code: applied.code,
+          title: input.title ?? existing.title,
+          description: input.description ?? existing.description ?? undefined,
+          connections: input.connections,
+          existing,
+        });
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.edit_artifact", {
+          attributes: {
+            "mcp.tool.name": "edit-artifact",
+            "mcp.artifact.id": input.artifactId,
           },
         }),
       );
@@ -1858,7 +2066,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               'To use two accounts of the same integration, tag each call site with a role — `tools.linear("prod").issues.list` and `tools.linear("staging").issues.list` — and map every role in `connections`.',
               "All data access is declarative `tools.*`: `.queryOptions()` to read, `.infiniteQueryOptions()` to page through a cursor, `.mutationOptions()` to write. There is no `run()` and no arbitrary code — never hand-roll `useQuery({ queryKey, queryFn })`, or invalidation breaks.",
               "To read every page of a paginated tool, call `useInfiniteQuery(tools.<integration>.<tool>.infiniteQueryOptions(args, { cursorKey, getNextPageParam }))` once and render `data.pages`. Never call hooks inside a loop — a `useQuery` per page is rejected.",
-              "To CHANGE an artifact that already exists — a tweak, a fix, a new column — pass its `artifactId` and it is updated in place. Fetch the current source with `show-artifact` first, edit that, and send the whole component back. Never create a second artifact for a revision of an existing one.",
+              "To CHANGE an artifact that already exists, use `edit-artifact` — it patches the stored source with find-and-replace edits, so a tweak costs only the changed lines. Only use create-artifact with `artifactId` for a full rewrite, sending the complete new component. Never create a second artifact for a revision of an existing one.",
               "Clients that cannot display MCP apps receive a link to the saved artifact instead; pass it to the user.",
             ].join("\n"),
             inputSchema: {
@@ -1869,7 +2077,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 .min(1)
                 .optional()
                 .describe(
-                  "The artifact to update in place, from `list-artifacts` or a previous create. Omit to create a new one. `code` fully replaces the stored source and the connection bindings are re-resolved from it, so send the complete component, not a fragment.",
+                  "The artifact to REWRITE in place, from `list-artifacts` or a previous create. Omit to create a new one. `code` fully replaces the stored source and the connection bindings are re-resolved from it, so send the complete component, not a fragment. For a tweak, use `edit-artifact` instead.",
                 ),
               connections: z
                 .record(z.string(), z.string())
@@ -1902,6 +2110,72 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       ).pipe(
         Effect.withSpan("mcp.host.register_tool", {
           attributes: { "mcp.tool.name": "create-artifact" },
+        }),
+      );
+
+      yield* Effect.sync(() =>
+        registerAppTool(
+          server,
+          "edit-artifact",
+          {
+            description: [
+              "Change an existing artifact by patching its stored source with exact find-and-replace edits, and re-render it.",
+              "PREFER THIS over create-artifact for tweaks — a new column, a fixed label, a restyled section — because you send only the changed lines, not the whole component. Use create-artifact with `artifactId` only for a rewrite where most of the code changes.",
+              "Each edit's `oldText` must appear EXACTLY ONCE in the current source, verbatim (whitespace included); include enough surrounding lines to make it unique, or set `replaceAll: true` to change every occurrence. Edits apply in order, each seeing the previous one's result.",
+              "The batch is atomic: if any edit fails to match, nothing is saved and the error returns the current source in structuredContent.code — rebuild the edits from that instead of calling show-artifact again.",
+              "The edited component is validated and smoke-rendered exactly like a create, and connection bindings are re-resolved from the result; pass `connections` if an edit introduces an ambiguous integration.",
+            ].join("\n"),
+            inputSchema: {
+              artifactId: z
+                .string()
+                .trim()
+                .min(1)
+                .describe("The artifact to edit, from `list-artifacts` or a previous create."),
+              edits: z
+                .array(
+                  z.object({
+                    oldText: z
+                      .string()
+                      .min(1)
+                      .describe(
+                        "Exact text to find in the current source, whitespace included. Must match exactly once unless replaceAll is true.",
+                      ),
+                    newText: z.string().describe("The replacement text."),
+                    replaceAll: z
+                      .boolean()
+                      .optional()
+                      .describe("Replace every occurrence instead of requiring a unique match."),
+                  }),
+                )
+                .min(1)
+                .describe("Find-and-replace edits, applied in order. All-or-nothing."),
+              connections: z
+                .record(z.string(), z.string())
+                .optional()
+                .describe(
+                  "Connection for each integration role the EDITED code uses, exactly as on create-artifact. Only needed when an edit introduces an integration with several connections.",
+                ),
+              title: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe("New title. Omit to keep the current one."),
+              description: z
+                .string()
+                .optional()
+                .describe("New description. Omit to keep the current one."),
+            },
+            _meta: {
+              ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["model"] },
+            },
+          },
+          ({ artifactId, edits, connections, title, description }) =>
+            runToolEffect(editArtifact({ artifactId, edits, connections, title, description })),
+        ),
+      ).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "edit-artifact" },
         }),
       );
 
@@ -1970,7 +2244,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ui: { resourceUri: MCP_APPS_SHELL_RESOURCE_URI, visibility: ["app"] },
             },
           },
-          ({ code, artifactId }) => runToolEffect(executeCodeFromApp(code, artifactId)),
+          ({ code, artifactId }, extra) =>
+            runToolEffect(executeCodeFromApp(code, artifactId, extra)),
         );
 
         executeActionResumeTool = registerAppTool(

@@ -6,6 +6,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "Onboarding · the MCP setup step hands the user their org-scoped MCP server URL",
@@ -19,7 +20,7 @@ scenario(
       await step(
         "A fresh user without an org lands on the create-org onboarding page",
         async () => {
-          await page.goto("/", { waitUntil: "networkidle" });
+          await visit(page, "/");
           // Step 1 of 2 — the org-name input is the landmark that proves we're on onboarding.
           await page.getByPlaceholder("Northwind Labs").waitFor();
         },

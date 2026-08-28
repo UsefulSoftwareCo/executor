@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
@@ -384,6 +387,43 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       result?: { structuredContent?: { result?: number } };
     }>(call);
     expect(result.result?.structuredContent?.result).toBe(42);
+  }, 60_000);
+
+  it("delivers native elicitation on the approval-gated tool call stream", async () => {
+    const client = new Client(
+      { name: "native-elicitation-test", version: "1.0.0" },
+      { capabilities: { elicitation: { form: {}, url: {} } } },
+    );
+    let receivedElicitation = false;
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      receivedElicitation = true;
+      return { action: "accept" as const, content: {} };
+    });
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=native", `http://${worker.address}:${worker.port}`),
+    );
+    await client.connect(transport);
+
+    const result = await client.callTool(
+      {
+        name: "execute",
+        arguments: {
+          code: [
+            "return await tools.executor.coreTools.policies.create({",
+            '  owner: "org",',
+            `  pattern: "native-elicitation-${runId}.*",`,
+            '  action: "require_approval"',
+            "});",
+          ].join("\n"),
+        },
+      },
+      undefined,
+      { timeout: 5_000 },
+    );
+
+    expect(receivedElicitation).toBe(true);
+    expect(result.isError).toBeFalsy();
+    await client.close();
   }, 60_000);
 
   it("resumes a model-paused execution from a fresh MCP session", async () => {

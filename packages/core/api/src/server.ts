@@ -48,6 +48,7 @@ export { RouterConfigLive } from "./server/router-config";
 export { consoleErrorCapture } from "./server/console-error-capture";
 export {
   makeExecutionStack,
+  makePlatformExecutionStack,
   CodeExecutorProvider,
   EngineDecorator,
   EngineDecoratorNoop,
@@ -95,8 +96,13 @@ export {
   Unauthorized,
   NoOrganization,
   Unavailable,
+  ReadOnlyCredential,
   authContextFromPrincipal,
+  authContextFromPlatform,
+  isPlatformPrincipal,
   type Principal,
+  type PlatformPrincipal,
+  type ResolvedPrincipal,
   type IdentityProviderShape,
   type IdentityFailure,
 } from "./server/identity";

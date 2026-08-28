@@ -38,7 +38,13 @@ import {
   Unauthorized,
   Unavailable,
 } from "@executor-js/api/server";
-import type { FailureRenderingStrategy, IdentityFailure, Principal } from "@executor-js/api/server";
+import type {
+  FailureRenderingStrategy,
+  IdentityFailure,
+  PlatformPrincipal,
+  Principal,
+  ResolvedPrincipal,
+} from "@executor-js/api/server";
 
 import { ApiKeyService } from "./api-keys";
 import { workosApiJwtBearerConfig } from "./api-jwt-bearer";
@@ -104,14 +110,6 @@ const NO_ORGANIZATION_IN_ACCESS_TOKEN = {
   code: "no_organization",
   message: "No organization in access token",
 };
-// An org-level key resolves to the PLATFORM view, which has no acting member.
-// The product endpoints are bound to one subject, so they reject it outright
-// rather than inventing a subject for it to act as.
-const ORG_KEY_ON_PRODUCT_SURFACE = {
-  code: "invalid_api_key",
-  message: "Organization API keys cannot be used on this endpoint",
-};
-
 // A bearer value with three dot-separated segments is a JWT (a WorkOS access
 // token from the CLI device-login); anything else is treated as an API key.
 // Same discriminator the MCP plane uses (`mcp/auth.ts`).
@@ -147,6 +145,7 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_ACCESS_TOKEN);
 
     return {
+      kind: "member",
       accountId: verified.accountId,
       organizationId: org.id,
       organizationName: org.name,
@@ -245,6 +244,7 @@ export const resolveBearerAuth = (
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_API_KEY);
 
     return {
+      kind: "member",
       accountId: owner.accountId,
       organizationId: org.id,
       organizationName: org.name,
@@ -257,23 +257,36 @@ export const resolveBearerAuth = (
   });
 
 /**
- * The PRODUCT-view bearer resolver: as {@link resolveBearerAuth}, but an
- * org-level key is REJECTED rather than downgraded. The product endpoints are
- * bound to one acting subject, so there is no honest way to serve them an
- * org key — those belong at the `/admin/*` mount instead. (Kept the historical
- * name; the re-export and resolver tests reference it.)
+ * The PRODUCT-plane bearer resolver. An org-level key resolves to the neutral
+ * seam's {@link PlatformPrincipal} — NOT a member `Principal` — and the shared
+ * middleware routes it to the subject-less, read-only platform executor
+ * (refusing non-GET up front). Previously the product plane rejected org keys
+ * outright; serving tenant-level READS to them is deliberate: the catalog,
+ * tools, policies, and org-owned connection listings are tenant-shared answers
+ * a machine credential can honestly receive, while everything subject-bound
+ * stays structurally out of reach (a platform executor binds no subject, so no
+ * member's personal rows resolve). (Kept the historical name; the re-export and
+ * resolver tests reference it.)
  */
 export const resolveApiKeyPrincipal = (
   request: Request,
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
-  Principal | null,
+  ResolvedPrincipal | null,
   Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
   WorkOSClient | ApiKeyService | UserStoreService
 > =>
   Effect.gen(function* () {
     const auth = yield* resolveBearerAuth(request, jwt);
-    if (isPlatformAuth(auth)) return yield* new Unauthorized(ORG_KEY_ON_PRODUCT_SURFACE);
+    if (isPlatformAuth(auth)) {
+      return {
+        kind: "platform",
+        organizationId: auth.organizationId,
+        organizationName: auth.organizationName,
+        ...(auth.organizationSlug === undefined ? {} : { organizationSlug: auth.organizationSlug }),
+        keyId: auth.keyId,
+      } satisfies PlatformPrincipal;
+    }
     return auth;
   });
 
@@ -304,6 +317,7 @@ export const resolveSessionPrincipal = (request: Request) =>
     const org = yield* authorizeOrganizationSelector(session.userId, selector);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     return {
+      kind: "member",
       accountId: session.userId,
       organizationId: org.id,
       organizationName: org.name,
@@ -330,7 +344,7 @@ export const resolveProtectedPrincipal = (
   request: Request,
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
-  Principal,
+  ResolvedPrincipal,
   Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
   WorkOSClient | ApiKeyService | UserStoreService
 > =>
@@ -410,6 +424,11 @@ export const cloudIdentityFailureStrategy: FailureRenderingStrategy<IdentityFail
           503,
           "service_unavailable",
           "Service temporarily unavailable",
+        ),
+        ReadOnlyCredential: renderIdentityFailure(
+          403,
+          "read_only_credential",
+          "Organization API keys are read-only",
         ),
       }),
     ),

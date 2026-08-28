@@ -140,6 +140,7 @@ const youtubeDiscoveryUrl = "https://www.googleapis.com/discovery/v1/apis/youtub
 
 const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> = new Map([
   ["google-calendar", ["calendar.events.list"]],
+  ["google-meet", ["meet.spaces.get", "meet.conferenceRecords.list"]],
   ["google-gmail", ["gmail.users.messages.list"]],
   ["google-sheets", ["sheets.spreadsheets.get"]],
   ["google-drive", ["drive.files.list"]],
@@ -151,7 +152,6 @@ const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> 
   ["google-photos-library", ["photoslibrary.albums.list"]],
   ["google-photos-picker", ["photospicker.sessions.create"]],
   ["google-chat", ["chat.spaces.list"]],
-  ["google-keep", ["keep.notes.list"]],
   ["google-youtube-data", ["youtube.channels.list"]],
   ["google-search-console", ["searchconsole.sites.list", "webmasters.sites.list"]],
   ["google-classroom", ["classroom.courses.list"]],

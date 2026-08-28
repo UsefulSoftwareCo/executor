@@ -7,6 +7,10 @@ exports[`classifies every Google service for bundle OAuth UX 1`] = `
     "oauthAudience": "standard-user",
   },
   {
+    "id": "google-meet",
+    "oauthAudience": "standard-user",
+  },
+  {
     "id": "google-gmail",
     "oauthAudience": "standard-user",
   },
@@ -48,7 +52,7 @@ exports[`classifies every Google service for bundle OAuth UX 1`] = `
   },
   {
     "id": "google-chat",
-    "oauthAudience": "workspace-admin",
+    "oauthAudience": "advanced-user",
   },
   {
     "id": "google-keep",

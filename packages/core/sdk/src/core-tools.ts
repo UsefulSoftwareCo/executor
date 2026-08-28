@@ -51,6 +51,8 @@ const IntegrationsListOutput = Schema.Struct({
   integrations: Schema.Array(IntegrationOutput),
 });
 
+const IntegrationRemoveInput = Schema.Struct({ slug: Schema.String });
+
 const DetectInput = Schema.Struct({ url: Schema.String });
 const DetectOutput = Schema.Struct({
   results: Schema.Array(
@@ -86,10 +88,10 @@ const ConnectionsListInput = Schema.Struct({
   verbose: Schema.optional(Schema.Boolean),
 });
 
-/** Lean per-connection shape for list scans. Omits the full `oauthScope`
- *  grant string (a single connection's scope list can run to thousands of
- *  characters and dominates the payload) in favor of `oauthScopeCount`. The
- *  full scope is included only when the caller passes `verbose: true`. */
+/** Lean per-connection shape for list scans. The default projection summarizes
+ *  the full `oauthScope` grant string as `oauthScopeCount` and trims health
+ *  probe diagnostics. Those optional fields are populated only for `verbose:
+ *  true`. */
 const ConnectionListItem = Schema.Struct({
   owner: OwnerSchema,
   name: Schema.String,
@@ -331,6 +333,7 @@ const OAuthCancelInput = Schema.Struct({
 
 // Standard-schema versions for the tool() builder.
 const IntegrationsListOutputStd = schemaToStandard(IntegrationsListOutput);
+const IntegrationRemoveInputStd = schemaToStandard(IntegrationRemoveInput);
 const DetectInputStd = schemaToStandard(DetectInput);
 const DetectOutputStd = schemaToStandard(DetectOutput);
 const ConnectionsListInputStd = schemaToStandard(ConnectionsListInput);
@@ -386,8 +389,8 @@ const connectionToOutput = (connection: Connection) => ({
 const oauthScopeCount = (scope: string | null | undefined): number | null =>
   scope == null ? null : scope.split(/\s+/).filter(Boolean).length;
 
-/** Lean projection for `connections.list`. Summarizes `oauthScope` to a count
- *  unless `verbose`, where the full grant string is included too. */
+/** Lean projection for `connections.list`. Summarizes `oauthScope` and health
+ * diagnostics unless `verbose`, where the full grant string is included too. */
 const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   owner: connection.owner,
   name: String(connection.name),
@@ -401,7 +404,17 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
-  lastHealth: connection.lastHealth ?? null,
+  // Keep full probe diagnostics behind the explicit verbose opt-in.
+  lastHealth:
+    connection.lastHealth == null || verbose
+      ? (connection.lastHealth ?? null)
+      : {
+          status: connection.lastHealth.status,
+          ...(connection.lastHealth.identity !== undefined
+            ? { identity: connection.lastHealth.identity }
+            : {}),
+          checkedAt: connection.lastHealth.checkedAt,
+        },
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 
@@ -558,6 +571,30 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 slug: r.slug,
               })),
             })),
+        }),
+        tool({
+          name: "integrations.remove",
+          description:
+            "Remove an integration from the workspace catalog by slug, dropping every connection under it and every tool those produced. `removed: false` means no catalog row matched: the slug was already gone, or it names a built-in namespace that is not catalog-backed. Integrations whose `canRemove` is false are refused.",
+          inputSchema: IntegrationRemoveInputStd,
+          outputSchema: RemovedOutputStd,
+          // Strictly more destructive than `connections.remove`, which is
+          // already approval-gated: this cascades to every connection under the
+          // integration and takes the catalog row with it, so re-adding means
+          // re-importing the definition, not just reconnecting an account.
+          annotations: { requiresApproval: true },
+          execute: (input: typeof IntegrationRemoveInput.Type, { ctx }) =>
+            Effect.gen(function* () {
+              const slug = IntegrationSlug.make(input.slug);
+              // `core.integrations.get` reads catalog ROWS only, so a built-in
+              // static namespace reports absent here. Checking first is what
+              // keeps `removed` honest — the underlying remove is a silent
+              // no-op for a slug it can't find.
+              const existing = yield* ctx.core.integrations.get(slug);
+              if (existing === null) return { removed: false };
+              yield* ctx.core.integrations.remove(slug);
+              return { removed: true };
+            }),
         }),
         tool({
           name: "connections.list",
@@ -792,7 +829,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.clients.remove",
           description:
-            "Remove an owner-scoped OAuth client by owner and slug. Existing connections are not cascaded.",
+            "Remove an owner-scoped OAuth client by owner and slug. `removed: false` means no client matched that owner and slug — clients are keyed by BOTH, so the same slug can exist separately under `org` and `user`. Existing connections are not cascaded.",
           inputSchema: OAuthRemoveClientInputStd,
           outputSchema: RemovedOutputStd,
           // Removing a client breaks token refresh for every connection that
@@ -801,10 +838,22 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // `sources.bindings.remove`.
           annotations: { requiresApproval: true },
           execute: (input: typeof OAuthRemoveClientInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.oauth.removeClient(input.owner as Owner, OAuthClientSlug.make(input.slug)),
-              () => ({ removed: true }),
-            ),
+            Effect.gen(function* () {
+              const owner = input.owner as Owner;
+              const slug = OAuthClientSlug.make(input.slug);
+              // `removeClient` is idempotent by design at the storage layer, so
+              // on its own it cannot distinguish a real deletion from a typo'd
+              // slug or the wrong owner — and a caller sweeping a list of slugs
+              // under one hardcoded owner would read every no-op as success.
+              // Checking the visible set first is what keeps `removed` honest.
+              const clients = yield* ctx.oauth.listClients();
+              const matched = clients.some(
+                (client) => client.owner === owner && String(client.slug) === String(slug),
+              );
+              if (!matched) return { removed: false };
+              yield* ctx.oauth.removeClient(owner, slug);
+              return { removed: true };
+            }),
         }),
         tool({
           name: "oauth.probe",

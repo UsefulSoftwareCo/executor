@@ -208,9 +208,10 @@ describe("MCP host — artifact tool visibility", () => {
       NO_APPS_CAPS,
       async (client) => {
         const names = await toolNames(client);
-        // The model-facing three are always advertised — they degrade to a
+        // The model-facing tools are always advertised — they degrade to a
         // deep link rather than disappearing.
         expect(names).toContain("create-artifact");
+        expect(names).toContain("edit-artifact");
         expect(names).toContain("list-artifacts");
         expect(names).toContain("show-artifact");
         // `execute-action` is only callable from inside a rendered app.
@@ -491,6 +492,7 @@ describe("MCP host — artifact tool visibility", () => {
       async (client) => {
         const names = await toolNames(client);
         expect(names).not.toContain("create-artifact");
+        expect(names).not.toContain("edit-artifact");
         expect(names).not.toContain("list-artifacts");
         expect(names).not.toContain("show-artifact");
         expect(names).not.toContain("execute-action");
@@ -554,6 +556,7 @@ describe("MCP host — artifact tool visibility", () => {
       async (client) => {
         const names = await toolNames(client);
         expect(names).toContain("create-artifact");
+        expect(names).toContain("edit-artifact");
         expect(names).toContain("list-artifacts");
         expect(names).toContain("show-artifact");
         expect(names).toContain("execute-action");
@@ -1679,6 +1682,295 @@ describe("MCP host — create-artifact update in place", () => {
         artifacts: store.port,
         artifactUrl: artifactUrlFor("https://executor.test"),
       },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// edit-artifact — patch-based updates
+// ---------------------------------------------------------------------------
+//
+// The contract: an edit is exact find-and-replace against the stored source,
+// applied in order, all-or-nothing, and the result goes through the same
+// validate → smoke-render → bind → save pipeline as a full create. A failed
+// batch changes nothing and hands the current source back so the retry needs
+// no show-artifact round trip.
+
+describe("MCP host — edit-artifact", () => {
+  const seed = async (client: Client, code: string = COUNTER_CODE) =>
+    client.callTool({
+      name: "create-artifact",
+      arguments: { code, title: "Draft", description: "First pass" },
+    });
+
+  it("patches the stored source and delivers the edited component", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const edited = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [{ oldText: "<div>hi</div>", newText: "<div>hi again</div>" }],
+          },
+        });
+        expect(edited.isError).toBeFalsy();
+        expect(structuredOf(edited)).toEqual({ code: UPDATED_CODE, artifactId: "art_1" });
+        expect(store.rows.get("art_1")).toMatchObject({
+          code: UPDATED_CODE,
+          // An edit that says nothing about title/description keeps them.
+          title: "Draft",
+          description: "First pass",
+        });
+        // One artifact, not two.
+        expect(store.rows.size).toBe(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("applies edits in order, each against the previous result", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const edited = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [
+              { oldText: "<div>hi</div>", newText: "<div>hello</div>" },
+              // Matches only the first edit's output, proving sequencing.
+              { oldText: "<div>hello</div>", newText: "<div>hello there</div>" },
+            ],
+          },
+        });
+        expect(edited.isError).toBeFalsy();
+        expect(store.rows.get("art_1")?.code).toBe(
+          "function App() { return <div>hello there</div>; }",
+        );
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("replaces every occurrence only under replaceAll, and refuses ambiguity otherwise", async () => {
+    const store = makeArtifactStore();
+    const REPEATED = "function App() { return <div><b>x</b><b>x</b></div>; }";
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client, REPEATED);
+
+        const ambiguous = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [{ oldText: "<b>x</b>", newText: "<b>y</b>" }],
+          },
+        });
+        expect(ambiguous.isError).toBe(true);
+        expect(textOf(ambiguous)).toContain("appears 2 times");
+        expect(textOf(ambiguous)).toContain("replaceAll");
+        expect(store.rows.get("art_1")?.code).toBe(REPEATED);
+
+        const replaced = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [{ oldText: "<b>x</b>", newText: "<b>y</b>", replaceAll: true }],
+          },
+        });
+        expect(replaced.isError).toBeFalsy();
+        expect(store.rows.get("art_1")?.code).toBe(
+          "function App() { return <div><b>y</b><b>y</b></div>; }",
+        );
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("rejects the whole batch on a miss, returns the current source, and saves nothing", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const missed = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [
+              { oldText: "<div>hi</div>", newText: "<div>hello</div>" },
+              { oldText: "not in the source", newText: "anything" },
+            ],
+          },
+        });
+        expect(missed.isError).toBe(true);
+        expect(textOf(missed)).toContain("Edit 2 of 2");
+        expect(textOf(missed)).toContain("matched nothing");
+        // The retry material: the stored source rides along on the error.
+        expect(structuredOf(missed)).toMatchObject({ code: COUNTER_CODE });
+        // Atomic: the first (valid) edit was not half-applied.
+        expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
+        expect(store.calls.length).toBe(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("validates the edited result like a create, and leaves the stored row untouched", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const rejected = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [
+              {
+                oldText: "return <div>hi</div>;",
+                newText: "const Card = 1; return <div>hi</div>;",
+              },
+            ],
+          },
+        });
+        expect(rejected.isError).toBe(true);
+        expect(textOf(rejected)).toContain("cannot be redeclared");
+        expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
+        expect(store.calls.length).toBe(1);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("smoke-renders the edited result, so a patch cannot break a working artifact", async () => {
+    const store = makeArtifactStore();
+    const smokeRenderArtifact = vi.fn((code: string) =>
+      Promise.resolve(
+        code.includes("boom")
+          ? { status: "failed" as const, message: "boom is not defined" }
+          : { status: "ok" as const },
+      ),
+    );
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const broken = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [{ oldText: "return", newText: "boom(); return" }],
+          },
+        });
+        expect(broken.isError).toBe(true);
+        expect(textOf(broken)).toContain("boom is not defined");
+        expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
+        // The candidate it rendered was the EDITED source, not the stored one.
+        expect(smokeRenderArtifact).toHaveBeenLastCalledWith(
+          expect.stringContaining("boom(); return"),
+        );
+      },
+      { artifacts: store.port, smokeRenderArtifact },
+    );
+  });
+
+  it("refuses an artifact id that is not the caller's, without saying whether it exists", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_someone_else",
+            edits: [{ oldText: "a", newText: "b" }],
+          },
+        });
+        expect(result.isError).toBe(true);
+        // The probe-proof answer, with no stored source riding along.
+        expect(structuredOf(result)).toMatchObject({ error: "artifact_unavailable" });
+        expect(structuredOf(result)).not.toHaveProperty("code");
+        expect(store.calls).toEqual([]);
+      },
+      { artifacts: store.port },
+    );
+  });
+
+  it("re-resolves bindings when an edit introduces an integration", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        expect(store.calls[0]?.bindings).toEqual({});
+        const edited = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [
+              {
+                oldText: "return <div>hi</div>;",
+                newText:
+                  "const q = useQuery(tools.vercel.domains.getDomains.queryOptions({})); return <div>hi</div>;",
+              },
+            ],
+          },
+        });
+        expect(edited.isError).toBeFalsy();
+        expect(store.calls[1]?.bindings).toEqual({
+          vercel: {
+            integration: "vercel",
+            owner: "user",
+            connection: "personalVercel",
+          },
+        });
+      },
+      {
+        artifacts: store.port,
+        connections: connectionsPort([conn("vercel", "user", "personalVercel")]),
+      },
+    );
+  });
+
+  it("updates the title and description when asked, keeping the patched code", async () => {
+    const store = makeArtifactStore();
+    await withClient(
+      makeStubEngine({}),
+      APPS_CAPS,
+      async (client) => {
+        await seed(client);
+        const edited = await client.callTool({
+          name: "edit-artifact",
+          arguments: {
+            artifactId: "art_1",
+            edits: [{ oldText: "hi", newText: "hi again" }],
+            title: "Active users dashboard",
+            description: "Second pass",
+          },
+        });
+        expect(edited.isError).toBeFalsy();
+        expect(store.rows.get("art_1")).toMatchObject({
+          title: "Active users dashboard",
+          description: "Second pass",
+          code: UPDATED_CODE,
+        });
+      },
+      { artifacts: store.port },
     );
   });
 });

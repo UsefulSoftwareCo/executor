@@ -115,9 +115,11 @@ describe("popupDocument", () => {
     expect(html).not.toContain("<details");
   });
 
-  it("HTML-escapes the BroadcastChannel name so attacker-controlled names cannot break out", () => {
-    const html = popupDocument(successPayload, 'evil"name');
-    expect(html).toContain('new BroadcastChannel("evil&quot;name")');
+  it("serializes the channel name as JavaScript so the exact channel is preserved", () => {
+    const html = popupDocument(successPayload, 'evil"name\\path');
+    expect(html).toContain('new BroadcastChannel("evil\\"name\\\\path")');
+    expect(html).toContain('localStorage.setItem("evil\\"name\\\\path",JSON.stringify(p))');
+    expect(html).not.toContain("evil&quot;name");
   });
 
   it("escapes < > & in the serialized script payload to prevent </script> breakout", () => {
@@ -136,6 +138,15 @@ describe("popupDocument", () => {
     const scriptLiteral = scriptLiteralMatch![1]!;
     expect(scriptLiteral).not.toContain("</script>");
     expect(scriptLiteral).toContain("\\u003c/script\\u003e");
+  });
+
+  it("escapes < > & in the serialized channel name to prevent </script> breakout", () => {
+    const html = popupDocument(successPayload, 'channel</script><img src=x onerror="alert(1)">');
+    const scriptMatch = /<script>([\s\S]*?)<\/script>/.exec(html);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1]!;
+    expect(script).not.toContain("</script>");
+    expect(script).toContain("channel\\u003c/script\\u003e");
   });
 
   it("posts to window.opener AND falls back to BroadcastChannel with the given channel name", () => {

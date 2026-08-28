@@ -14,12 +14,14 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import {
+  classifyThrownExecuteError,
   CodeCompilationError,
   recoverExecutionBody,
   SandboxHostTimeoutError,
   SandboxRuntimeError,
   stripTypeScript,
   type CodeExecutor,
+  type ExecuteErrorKind,
   type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
@@ -230,6 +232,23 @@ const RUNTIME_SIGNATURES = [
 ] as const;
 
 export type SandboxFailureKind = "compilation" | "runtime" | "internal";
+
+/**
+ * Signatures of the serialization subset of `RUNTIME_SIGNATURES`, used to
+ * split `SandboxRuntimeError` into its two telemetry classes: the user
+ * returned something that can't cross the sandbox boundary vs the isolate
+ * hit a CPU/memory/capacity limit.
+ */
+const SERIALIZATION_SIGNATURES = [
+  "could not be cloned",
+  "does not support serialization",
+  "Could not serialize",
+] as const;
+
+const sandboxRuntimeErrorKind = (message: string): ExecuteErrorKind =>
+  SERIALIZATION_SIGNATURES.some((signature) => message.includes(signature))
+    ? "serialization_error"
+    : "resource_limit";
 
 /**
  * Classify a sandbox rejection so the runtime knows whether to surface
@@ -785,6 +804,9 @@ const evaluate = (
     return {
       result: error ? null : response.result,
       error,
+      ...(response.error
+        ? { errorKind: classifyThrownExecuteError(serializedErrorName(response.error.primary)) }
+        : {}),
       output:
         Array.isArray(response.output) && response.output.length > 0 ? response.output : undefined,
       logs: response.logs,
@@ -812,16 +834,28 @@ const runInDynamicWorker = (
     // `DynamicWorkerExecutionError` and remain opaque.
     Effect.catchTags({
       CodeCompilationError: (error) =>
-        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+        Effect.succeed({
+          result: null,
+          error: error.message,
+          errorKind: "syntax_error",
+        } satisfies ExecuteResult),
       SandboxRuntimeError: (error) =>
-        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+        Effect.succeed({
+          result: null,
+          error: error.message,
+          errorKind: sandboxRuntimeErrorKind(error.message),
+        } satisfies ExecuteResult),
       // A wedged isolate that the in-sandbox timer failed to catch is
       // unrecoverable, but reporting it as a delivered, descriptive error beats
       // the original symptom (open-ended silence). Fold it into the success
       // channel like the other safe-to-report conditions so it reaches the
       // model instead of collapsing to an opaque internal error.
       SandboxHostTimeoutError: (error) =>
-        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+        Effect.succeed({
+          result: null,
+          error: error.message,
+          errorKind: "timeout",
+        } satisfies ExecuteResult),
     }),
     Effect.withSpan("executor.code.exec.dynamic_worker", {
       attributes: { "executor.runtime": "dynamic-worker" },

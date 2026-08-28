@@ -52,6 +52,9 @@ export const buildMcpHttpEndpoint = (input: {
   /** Artifacts are on by default, so only the opt-out is spelled out on the
    *  URL (`&artifacts=false`) and a default endpoint stays clean. */
   readonly artifacts?: boolean;
+  /** Per-integration search tools are off by default, so only the opt-in is
+   *  spelled out on the URL (`&search_tools=true`). */
+  readonly searchTools?: boolean;
   // Cloud only: pins the URL to `/<org-slug>/mcp` (the server also accepts the
   // legacy `/<org_id>/mcp` form). Desktop/local pass nothing and get the bare
   // `/mcp` path.
@@ -73,6 +76,7 @@ export const buildMcpHttpEndpoint = (input: {
     params.push(["elicitation_mode", input.elicitationMode]);
   }
   if (input.artifacts === false) params.push(["artifacts", "false"]);
+  if (input.searchTools === true) params.push(["search_tools", "true"]);
   if (params.length === 0) return endpoint;
 
   const query = params.map(([key, value]) => `${key}=${value}`).join("&");
@@ -94,6 +98,7 @@ export const buildMcpInstallCommand = (input: {
   readonly authorizationHeader?: string | null;
   readonly elicitationMode?: McpElicitationMode;
   readonly artifacts?: boolean;
+  readonly searchTools?: boolean;
   readonly devCliCwd?: string;
   readonly organizationSlug?: string | null;
 }): string => {
@@ -103,6 +108,7 @@ export const buildMcpInstallCommand = (input: {
       desktop: input.desktop ? { port: input.desktop.port } : null,
       elicitationMode: input.elicitationMode,
       artifacts: input.artifacts,
+      searchTools: input.searchTools,
       organizationSlug: input.organizationSlug,
     });
     const headerFlags: string[] = [];
@@ -130,6 +136,9 @@ export const buildMcpInstallCommand = (input: {
   if (input.artifacts === false) {
     innerArgs.push("--no-artifacts");
   }
+  if (input.searchTools === true) {
+    innerArgs.push("--search-tools");
+  }
   return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
 };
 
@@ -138,6 +147,7 @@ export function McpInstallCard(props: { className?: string }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
   const [artifacts, setArtifacts] = useState(true);
+  const [searchTools, setSearchTools] = useState(false);
   const organizationSlug = useOrganizationSlug();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
@@ -181,6 +191,7 @@ export function McpInstallCard(props: { className?: string }) {
     authorizationHeader,
     elicitationMode,
     artifacts,
+    searchTools,
     devCliCwd,
     organizationSlug,
   });
@@ -218,6 +229,24 @@ export function McpInstallCard(props: { className?: string }) {
               trackEvent("mcp_install_artifacts_toggled", { artifacts: next });
             }}
             aria-label="Artifacts"
+          />
+        </div>
+        <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">Integration search tools</div>
+            <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              {searchTools
+                ? "One search tool per connected integration, so agents see your integrations as tool names."
+                : "Disabled: agents discover tools through search inside execute."}
+            </div>
+          </div>
+          <Switch
+            checked={searchTools}
+            onCheckedChange={(next) => {
+              setSearchTools(next);
+              trackEvent("mcp_install_search_tools_toggled", { search_tools: next });
+            }}
+            aria-label="Integration search tools"
           />
         </div>
         <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">

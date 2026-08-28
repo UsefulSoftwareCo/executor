@@ -1,3 +1,6 @@
+diff --git a/node_modules/agents/.bun-tag-61b2f1517ab5ced4 b/.bun-tag-61b2f1517ab5ced4
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/agents/.bun-tag-c0c639aa2299e502 b/.bun-tag-c0c639aa2299e502
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
@@ -38,7 +41,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756cd72faef 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..cab60ce74ac9430f06700436ac352341695c6666 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -494,9 +497,36 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -634,7 +857,23 @@ var StreamableHTTPServerTransport = class {
+@@ -586,6 +809,7 @@ var StreamableHTTPServerTransport = class {
+ 	constructor(options) {
+ 		this._started = false;
+ 		this._streamResponseIds = /* @__PURE__ */ new Map();
++		this._replayInFlight = /* @__PURE__ */ new Map();
+ 		const { agent } = getCurrentAgent();
+ 		if (!agent) throw new Error("McpAgent was not found in Transport constructor");
+ 		this._agent = agent;
+@@ -627,23 +851,74 @@ var StreamableHTTPServerTransport = class {
+ 			const resumedStreamId = await this._eventStore.getStreamIdForEventId?.(lastEventId);
+ 			if (resumedStreamId) {
+ 				const resumeState = { streamId: resumedStreamId };
+-				if (resumedStreamId === STANDALONE_STREAM_ID) resumeState._standaloneSse = true;
+-				else {
++				if (resumedStreamId === STANDALONE_STREAM_ID) {
++					resumeState._standaloneSse = true;
++					resumeState._attachedAt = Date.now();
++				} else {
+ 					const persistedReqs = await agent.getStreamRequestIds(resumedStreamId);
+ 					if (persistedReqs && persistedReqs.length > 0) resumeState.requestIds = persistedReqs;
  				}
- 				this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
+-				this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
++				// A POST stream has a single owner, so resuming it takes the
++				// stream over from any prior connection. The standalone stream
++				// id is shared by EVERY listener the client holds, so it must
++				// never be superseded: with two listeners (mcp-remote holds
++				// two), each eviction triggers the SDK's reconnect, which
++				// evicts the other listener, which reconnects — a permanent
++				// mutual-eviction storm. Standalone resumes attach alongside.
++				if (resumedStreamId !== STANDALONE_STREAM_ID) this.supersedePriorStreamConnections(agent, connection.id, resumedStreamId);
  				connection.setState(resumeState);
 -				await this.replayEvents(lastEventId);
 +				const ackStreamIds = [];
@@ -519,8 +549,18 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  				return;
  			}
  		}
-@@ -644,6 +883,26 @@ var StreamableHTTPServerTransport = class {
- 			_standaloneSse: true
+-		this.supersedePriorStreamConnections(agent, connection.id, STANDALONE_STREAM_ID);
++		// A fresh listener attaches ALONGSIDE any existing ones — see the
++		// supersede note in the resume branch above for why evicting the
++		// incumbent (latest-listener-wins) storms with multi-listener
++		// clients. Dead listeners are reaped by bridge keepalive write
++		// failures and max-age rotation, and sendStandalone routes to the
++		// newest attachment.
+ 		const standaloneState = {
+ 			streamId: STANDALONE_STREAM_ID,
+-			_standaloneSse: true
++			_standaloneSse: true,
++			_attachedAt: Date.now()
  		};
  		connection.setState(standaloneState);
 +		const replayedStreamIds = await this.replayUndeliveredResponses(agent, connection);
@@ -546,7 +586,17 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	}
  	/**
  	* Close any connection (other than `selfId`) currently bound to
-@@ -664,12 +923,14 @@ var StreamableHTTPServerTransport = class {
+@@ -651,6 +926,9 @@ var StreamableHTTPServerTransport = class {
+ 	* Closing rather than mutating sibling state mirrors how the SDK's
+ 	* single `_streamMapping` entry gives last-writer-wins for free, and
+ 	* keeps `send()` from routing to a stale bridge.
++	*
++	* Only ever called for single-owner POST streams. The shared
++	* STANDALONE_STREAM_ID must not go through here — see handleGetRequest.
+ 	*/
+ 	supersedePriorStreamConnections(agent, selfId, streamId) {
+ 		for (const other of agent.getConnections()) {
+@@ -664,12 +942,14 @@ var StreamableHTTPServerTransport = class {
  	* Only used when resumability is enabled
  	*/
  	async replayEvents(lastEventId) {
@@ -562,7 +612,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  					this.writeSSEEvent(connection, message, eventId);
  				} catch (error) {
  					this.onerror?.(error);
-@@ -678,6 +939,33 @@ var StreamableHTTPServerTransport = class {
+@@ -678,6 +958,44 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -578,9 +628,20 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
 +	async replayUndeliveredResponses(agent, connection, skipStreamId) {
 +		const replayedStreamIds = [];
 +		if (!this._eventStore?.replayEventsForStream) return replayedStreamIds;
++		const liveConnectionIds = new Set(Array.from(agent.getConnections(), (conn) => conn.id));
 +		const streamIds = await agent.getUndeliveredStreamIds();
 +		for (const streamId of streamIds) {
 +			if (skipStreamId !== void 0 && streamId === skipStreamId) continue;
++			// Listeners now attach alongside each other, so two fresh GETs can
++			// arrive within milliseconds (a multi-listener client starting up)
++			// and both see the same undelivered markers. Without this guard
++			// each would replay the same response and the client would receive
++			// it twice. First live replayer wins; if it dies before its ack,
++			// its id drops out of getConnections() and a later GET replays the
++			// stream again — the at-least-once contract is preserved.
++			const replayingConnectionId = this._replayInFlight.get(streamId);
++			if (replayingConnectionId !== void 0 && replayingConnectionId !== connection.id && liveConnectionIds.has(replayingConnectionId)) continue;
++			this._replayInFlight.set(streamId, connection.id);
 +			let replayedResponse = false;
 +			await this._eventStore.replayEventsForStream(streamId, { send: async (eventId, message) => {
 +				try {
@@ -596,7 +657,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	}
  	/**
  	* Writes an event to the SSE stream with proper formatting
-@@ -689,10 +977,65 @@ var StreamableHTTPServerTransport = class {
+@@ -689,10 +1007,65 @@ var StreamableHTTPServerTransport = class {
  		return connection.send(JSON.stringify({
  			type: "cf_mcp_agent_event",
  			event: eventData,
@@ -662,7 +723,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	* Handles POST requests containing JSON-RPC messages
  	*/
  	async handlePostRequest(req, parsedBody) {
-@@ -733,6 +1076,22 @@ var StreamableHTTPServerTransport = class {
+@@ -733,6 +1106,22 @@ var StreamableHTTPServerTransport = class {
  			};
  			connection.setState(postState);
  			if (this._eventStore) await agent.setStreamRequestIds(streamId, requestIds);
@@ -685,7 +746,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  			for (const message of messages) {
  				if (this.messageInterceptor) {
  					if (await this.messageInterceptor(message, {
-@@ -760,7 +1119,22 @@ var StreamableHTTPServerTransport = class {
+@@ -760,7 +1149,22 @@ var StreamableHTTPServerTransport = class {
  	* when the originating WS has dropped.
  	*/
  	async sendOnStream(agent, streamId, relatedIds, liveConnection, message, requestId) {
@@ -709,7 +770,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		let shouldClose = false;
  		if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
  			let responseIds = this._streamResponseIds.get(streamId);
-@@ -777,9 +1151,11 @@ var StreamableHTTPServerTransport = class {
+@@ -777,9 +1181,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -723,7 +784,31 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1237,10 @@ var StreamableHTTPServerTransport = class {
+@@ -798,14 +1204,19 @@ var StreamableHTTPServerTransport = class {
+ 	*
+ 	* Sent on exactly one stream, per MCP: "the server MUST send each of
+ 	* its JSON-RPC messages on only one of the connected streams; it MUST
+-	* NOT broadcast the same message across multiple streams."
+-	* `handleGetRequest` supersedes prior standalone connections, so
+-	* there is at most one to send on.
++	* NOT broadcast the same message across multiple streams." A session
++	* may hold several standalone listeners (they attach alongside each
++	* other); the newest attachment is the most likely to have a live
++	* client behind it, so the message goes there.
+ 	*/
+ 	async sendStandalone(message) {
+ 		const agent = this._agent;
+ 		const eventId = await this._eventStore?.storeEvent(STANDALONE_STREAM_ID, message);
+-		const standalone = Array.from(agent.getConnections()).find((conn) => conn.state?._standaloneSse);
++		let standalone;
++		for (const conn of agent.getConnections()) {
++			if (!conn.state?._standaloneSse) continue;
++			if (!standalone || (conn.state._attachedAt ?? 0) > (standalone.state?._attachedAt ?? 0)) standalone = conn;
++		}
+ 		if (standalone) this.writeSSEEvent(standalone, message, eventId);
+ 	}
+ 	/**
+@@ -861,12 +1272,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -740,7 +825,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -893,12 +1267,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -893,12 +1302,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  	}
  	async storeEvent(streamId, message) {
  		if (streamId.includes(":")) throw new Error(`DurableObjectEventStore: streamId must not contain ':' (got ${JSON.stringify(streamId)})`);
@@ -775,7 +860,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1311,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1346,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -836,7 +921,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1419,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1454,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -850,7 +935,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1834,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1869,48 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -881,6 +966,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
 +	async acknowledgeDeliveredStream(streamId) {
 +		await this.deleteStreamRequestIds(streamId);
 +		await this.deleteUndeliveredStream(streamId);
++		this._transport?.["_replayInFlight"]?.delete(streamId);
 +		const eventStore = this._transport?.["_eventStore"];
 +		if (eventStore && isClearableEventStore(eventStore)) await eventStore.clearStream(streamId);
 +	}
@@ -898,7 +984,59 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..444312ff41fbcff60e2ea681a9d5c756
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2191,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1516,23 +2046,36 @@ var McpAgent = class McpAgent extends Agent {
+ 					return;
+ 				}
+ 				break;
+-			case "streamable-http": if (this._transport instanceof StreamableHTTPServerTransport) switch (req.headers.get(MCP_HTTP_METHOD_HEADER)) {
+-				case "POST": {
+-					const payloadHeader = req.headers.get(MCP_MESSAGE_HEADER);
+-					let rawPayload;
+-					if (!payloadHeader) rawPayload = "{}";
+-					else try {
+-						rawPayload = Buffer.from(payloadHeader, "base64").toString("utf-8");
+-					} catch (_error) {
+-						throw new Error("Internal Server Error: Failed to decode MCP message header");
++			case "streamable-http": {
++				if (!(this._transport instanceof StreamableHTTPServerTransport)) {
++					// onStart failed or has not completed: without a transport
++					// the request is never dispatched, so the client would sit
++					// on a silent stream until its own timeout (~30s) and the
++					// session would look bricked. Close the WS so the worker
++					// surfaces an error immediately and the client's retry
++					// lands on a restarted DO that reruns onStart.
++					conn.close(1011, "MCP transport not initialized");
++					return;
++				}
++				switch (req.headers.get(MCP_HTTP_METHOD_HEADER)) {
++					case "POST": {
++						const payloadHeader = req.headers.get(MCP_MESSAGE_HEADER);
++						let rawPayload;
++						if (!payloadHeader) rawPayload = "{}";
++						else try {
++							rawPayload = Buffer.from(payloadHeader, "base64").toString("utf-8");
++						} catch (_error) {
++							throw new Error("Internal Server Error: Failed to decode MCP message header");
++						}
++						const parsedBody = JSON.parse(rawPayload);
++						this._transport.handlePostRequest(req, parsedBody);
++						break;
+ 					}
+-					const parsedBody = JSON.parse(rawPayload);
+-					this._transport?.handlePostRequest(req, parsedBody);
+-					break;
++					case "GET":
++						this._transport.handleGetRequest(req);
++						break;
+ 				}
+-				case "GET":
+-					this._transport?.handleGetRequest(req);
+-					break;
++				break;
+ 			}
+ 		}
+ 	}
+@@ -1697,7 +2240,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";

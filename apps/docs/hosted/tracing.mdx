@@ -1,0 +1,115 @@
+---
+title: Tracing
+description: "Export traces from a self-hosted server to an OpenTelemetry collector, so a slow request becomes a waterfall instead of a stopwatch."
+---
+
+When a request through your server is slow, the useful question is which part was
+slow: building the executor stack, initializing plugins, a storage query, or the
+upstream integration answering. The server already produces spans for all of
+that — pointing it at a collector is what makes them readable.
+
+Export is off by default and stays off until you set an endpoint. With none set
+there is no exporter and no buffer, and nothing leaves the process.
+
+## Turn it on
+
+Set the collector's base URL. The server appends `/v1/traces`.
+
+```bash
+docker run -d \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.local:4318 \
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
+```
+
+Traces are sent as OTLP over HTTP with a JSON payload, which every collector
+accepts — the OpenTelemetry Collector, Grafana Alloy, Jaeger, or a hosted backend.
+Port `4318` is the OTLP/HTTP convention, but the URL is whatever you point it at.
+
+| Variable                             | Default | Purpose                                                                     |
+| ------------------------------------ | ------- | --------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | unset   | Collector base URL. Turns on trace export; `/v1/traces` is appended.        |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset   | Full traces URL, used as-is. Overrides the base for this signal.            |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | unset   | `key=value,key2=value2` headers, for a collector that needs authentication. |
+| `EXECUTOR_OTEL_EXPORT_LOGS`          | `false` | Also export logs. A separate opt-in — logs carry more than timings.         |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`   | unset   | Full logs URL. Required if only the traces endpoint is set.                 |
+
+Traces report under the service name `executor-selfhost`. On boot the server logs
+the endpoint it will export to, so a missing line means export is off.
+
+For a hosted backend, put the credential in the headers:
+
+```bash
+-e OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com \
+-e OTEL_EXPORTER_OTLP_HEADERS='authorization=Bearer <token>'
+```
+
+## Using motel locally
+
+[motel](https://github.com/kitlangton/motel) is a local OTLP store and viewer: one
+command, a SQLite file, no Docker and no account. It is the quickest way to look at
+a trace on your own machine.
+
+It needs [Bun](https://bun.sh/), and listens on port `27686`:
+
+```bash
+bunx @kitlangton/motel
+```
+
+That starts the ingest server and opens the terminal UI. For ingest without the
+UI, run `bunx @kitlangton/motel server`.
+
+If Executor runs directly on the same machine, point it at motel:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:27686
+```
+
+From a container, motel is on the host, not in the container's network — and it
+binds loopback by default, so it also has to listen on an address the container
+can reach:
+
+```bash
+# start motel so it accepts connections from outside the host
+MOTEL_OTEL_HOST=0.0.0.0 bunx @kitlangton/motel server
+
+docker run -d \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  --add-host host.docker.internal:host-gateway \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:27686 \
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
+```
+
+<Warning>
+  `MOTEL_OTEL_HOST=0.0.0.0` exposes the trace store to your whole network. Traces carry request URLs
+  and timings, and logs carry more. Use it on a trusted network, or publish the port only to the
+  container.
+</Warning>
+
+## Reading a trace
+
+A single API request looks like this — each line a span, indented under its parent,
+with the time it took:
+
+```
+http.server GET                        31ms
+  executor.stack.http.resolve          28ms
+    executor.stack.build               28ms
+      executor.stack.scoped_executor   27ms
+        executor.plugins.init          16ms
+        executor.stack.create_executor  2ms
+        executor.subject.touch          7ms
+          fumadb.subject.findFirst      2ms
+          fumadb.subject.create         5ms
+  fumadb.integration.findMany           1ms
+```
+
+The indentation is where the answer lives. Time held by `http.server` but not by
+any child is time spent outside the instrumented code — the network in front of
+the server, or a tunnel. Time inside a single child is the phase to look at next.
+
+Requests arriving with a `traceparent` header continue that trace rather than
+starting a new one, so a request through a proxy or tunnel keeps one trace id from
+end to end.

@@ -57,6 +57,7 @@ const initSession = async (token: string): Promise<string> => {
     },
   });
   expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("application/json");
   const sessionId = res.headers.get("mcp-session-id") ?? "";
   expect(sessionId).not.toBe("");
   await res.text();

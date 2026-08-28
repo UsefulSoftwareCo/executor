@@ -62,6 +62,47 @@ export type ResumeResponse = {
 // caller is itself the human approver (the operator-facing Run/Test panel).
 const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
 
+/**
+ * Approximate size of the value a script returned, before any preview
+ * truncation. This is the "did the model narrow in code or dump the raw
+ * payload" metric: a compact JSON length, not the pretty-printed preview the
+ * model receives, so treat it as magnitude. -1 means unmeasurable (a value
+ * `JSON.stringify` rejects, e.g. a BigInt) — unknown size, not zero.
+ */
+const measureResultChars = (value: unknown): number => {
+  if (value == null) return 0;
+  if (typeof value === "string") return value.length;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort size probe over an arbitrary sandbox value; a stringify rejection must not fail the execution path
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return -1;
+  }
+};
+
+/**
+ * Stamp the current `mcp.execute` / `mcp.execute.resume` span with how the
+ * execution ended and how much data it sent back toward model context.
+ * Sandbox failures ride the success channel as `ExecuteResult.error`, so
+ * without this the span reads OK and the failure class is unqueryable.
+ * Attributes stay enumerable identifiers and sizes — never the error message
+ * or result content itself.
+ */
+const annotateExecuteOutcome = (result: ExecuteResult) =>
+  Effect.annotateCurrentSpan({
+    "mcp.execute.result_chars": measureResultChars(result.result),
+    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
+    "mcp.execute.emitted": result.output?.length ?? 0,
+    ...(result.error
+      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
+      : { "mcp.execute.outcome": "ok" }),
+  });
+
+const annotateExecutionOutcome = (execution: ExecutionResult) =>
+  execution.status === "paused"
+    ? Effect.annotateCurrentSpan({ "mcp.execute.outcome": "paused" })
+    : annotateExecuteOutcome(execution.result);
+
 // ---------------------------------------------------------------------------
 // Result formatting
 // ---------------------------------------------------------------------------
@@ -529,6 +570,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     if (options?.autoApprove) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.auto_approve": true });
       const result = yield* runInlineExecution(code, { onElicitation: acceptAllHandler });
+      yield* annotateExecuteOutcome(result);
       return { status: "completed", result } satisfies ExecutionResult;
     }
 
@@ -596,7 +638,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       ),
     );
 
-    return (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
+    const outcome = (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
+    yield* annotateExecutionOutcome(outcome);
+    return outcome;
   });
 
   /**
@@ -619,13 +663,17 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const settled = settledOutcomes.get(executionId);
     if (settled) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.replayed": true });
-      return (yield* settled) as ExecutionResult;
+      const replayed = (yield* settled) as ExecutionResult;
+      yield* annotateExecutionOutcome(replayed);
+      return replayed;
     }
 
     const pending = pendingResumes.get(executionId);
     if (pending) {
       yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.joined_inflight": true });
-      return (yield* Deferred.await(pending)) as ExecutionResult;
+      const joined = (yield* Deferred.await(pending)) as ExecutionResult;
+      yield* annotateExecutionOutcome(joined);
+      return joined;
     }
 
     const paused = pausedExecutions.get(executionId);
@@ -640,7 +688,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       content: response.content,
     });
 
-    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
+    const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           recordSettledOutcome(executionId, exit);
@@ -649,6 +697,8 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         }),
       ),
     )) as ExecutionResult;
+    yield* annotateExecutionOutcome(outcome);
+    return outcome;
   });
 
   /**
@@ -670,7 +720,11 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       },
       toolDiscoveryProvider,
     );
-    return yield* codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec"));
+    const result = yield* codeExecutor
+      .execute(code, invoker)
+      .pipe(Effect.withSpan("executor.code.exec"));
+    yield* annotateExecuteOutcome(result);
+    return result;
   });
 
   return {

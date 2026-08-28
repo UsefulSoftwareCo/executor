@@ -1,5 +1,61 @@
 # @executor-js/react
 
+## 1.4.63
+
+### Patch Changes
+
+- [#1703](https://github.com/UsefulSoftwareCo/executor/pull/1703) [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A slow OAuth discovery no longer kills the connect with no popup and no error**
+
+  The transparent connect flows opened the sign-in window only after their setup round trips had answered: DCR after probe and dynamic registration, CIMD after minting the client, reconnect after starting the session. `window.open` needs transient user activation, which browsers expire a few seconds after the click, so once the API was slow enough the browser refused the window and the connect ended with nothing on screen but the button returning to "Connect". Every MCP integration takes that path.
+
+  The window is now claimed on the click itself and navigated when the authorization URL arrives, however long that takes, and it is closed again on the paths that end without signing in (failed probe, no registration endpoint, rejected registration, failed client mint) as well as on cancel and unmount. A window the browser does refuse is now reported instead of swallowed: the flows stop before their round trips, and the sign-in error renders above the dialog footer, where the automatic flows can actually show it, rather than inside a method tab panel they never render.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/api@1.4.63
+
+## 1.4.62
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/api@1.4.62
+
+## 1.4.61
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+
+## 1.4.60
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/api@1.4.60
+
+## 1.4.59
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/api@1.4.59
+
+## 1.4.58
+
+### Patch Changes
+
+- [#1240](https://github.com/UsefulSoftwareCo/executor/pull/1240) [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8) Thanks [@jackulau](https://github.com/jackulau)! - Keep native `<select>` dropdown options readable in dark mode. The console themes through `prefers-color-scheme` and never sets a `.dark` class, so Tailwind `dark:` utilities never matched and the native option popup rendered with a light color scheme over dark text. `NativeSelect` now uses a solid themed surface (`bg-popover`) and pins `color-scheme` to the active theme, so the browser draws a matching, readable popup.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/api@1.4.58
+
 ## 1.4.57
 
 ### Patch Changes

@@ -1,5 +1,7 @@
 const DEFAULT_E2E_MCP_SESSION_TIMEOUT_MS = 3_000;
-const DEFAULT_E2E_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS = 6_000;
+// Keep expiry coverage fast while leaving enough room for a cold browser route
+// to compile under CI contention. Production allows nine minutes.
+const DEFAULT_E2E_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS = 30_000;
 const PRODUCTION_MCP_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS = 9 * 60 * 1000;
 

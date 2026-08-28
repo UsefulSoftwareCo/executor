@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 
 import { claimAndBoot } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
-import { waitForHttp } from "./boot";
+import { isBootReadinessTimeout, waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
 import { ensureE2eMcpSessionTimeoutEnv } from "./mcp-session-timeouts";
 import { bootMotel, motelExporterEnv } from "./motel";
@@ -93,7 +93,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
         });
         return { teardown: cloud.teardown, value: cloud };
       },
-      { label: "cloud" },
+      { label: "cloud", retryWhen: isBootReadinessTimeout },
     );
     // Publish the Autumn emulator URL to the test workers (they inherit this
     // process's env): scenarios that assert on tracked usage yield the Autumn
