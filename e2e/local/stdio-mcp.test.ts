@@ -222,6 +222,48 @@ scenario(
             autoTools.map((t) => t.name),
             "auto negotiation falls back to legacy and still discovers tools",
           ).toContain("echo_tool");
+          expect(
+            autoTools.map((t) => t.name),
+            "this server declared no env, so the env-gated tool is absent to begin with",
+          ).not.toContain("saw_declared_env");
+
+          // --- Editing a stdio server's config (what the integration Edit sheet
+          // now does instead of telling you to remove and recreate). The tool
+          // catalog is persisted per connection, so a plain config replace is
+          // only enough because core stamps `config_revised_at` on a config
+          // write and every connection whose catalog predates that stamp is
+          // rebuilt on the next read. The edit path therefore needs NO explicit
+          // refresh of its own — this asserts that, so nobody adds one back.
+          //
+          // Adding a declared env var is the lever: the fixture advertises
+          // `saw_declared_env` only when that variable reached the child, so the
+          // tool appearing with no further action proves both halves — the new
+          // config reached the spawn, and the catalog was rebuilt from it. ---
+          const editedConfig = {
+            ...autoStored!.config,
+            env: { EXECUTOR_E2E_SECRET: SECRET },
+          } as typeof autoStored.config;
+
+          yield* client.mcp.configureServer({
+            params: { slug: autoSlug },
+            payload: { config: editedConfig },
+          });
+
+          const editedStored = yield* client.mcp.getServer({ params: { slug: autoSlug } });
+          expect(
+            JSON.stringify(editedStored?.config ?? {}),
+            "the edit persisted, and left the untouched negotiation mode alone",
+          ).toContain('"versionNegotiation":"auto"');
+
+          const editedTools = yield* client.tools.list({ query: { integration: autoSlug } });
+          expect(
+            editedTools.map((t) => t.name),
+            "the edited config reached the spawn and the catalog was rediscovered",
+          ).toContain("saw_declared_env");
+          expect(
+            editedTools.map((t) => t.name),
+            "rediscovery replaced the catalog rather than dropping what still exists",
+          ).toContain("echo_tool");
         }),
       { env: DAEMON_ENV },
     );

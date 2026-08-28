@@ -20,8 +20,7 @@ receives those plus a small fixed base set — it does not inherit executor's
 environment — and secret values still belong to the connection, entered per
 account against the server's declared `stdio_env` method.
 
-Persisting a new config now also re-runs discovery on the integration's
-connections, for stdio and remote alike. The tool catalog is derived from the
-config, so a changed command left the previously discovered tools advertised
-until something else refreshed them. Rediscovery is best-effort: a server that
-will not dial leaves the saved config in place and lists no tools until it does.
+Saving revises the integration config, which is already enough to rebuild the
+tool catalog: connections whose catalog predates the revision re-list on their
+next read, so an edited command's tools are correct without an explicit
+refresh.

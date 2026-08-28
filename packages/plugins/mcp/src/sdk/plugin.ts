@@ -1195,24 +1195,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
-      /** Replace the stored config, then rediscover on every connection. The
-       *  tool catalog is derived from the config — the stdio command, the
-       *  remote endpoint — so leaving the previous catalog in place after a
-       *  config change advertises tools the server no longer serves.
-       *  Rediscovery is best-effort: the config is already persisted, and a
-       *  server that will not dial must not roll the edit back. It simply
-       *  lists no tools until it does. */
       const configureServer = (slug: string, config: McpIntegrationConfigType) =>
-        Effect.gen(function* () {
-          const integration = slugFrom(slug);
-          yield* ctx.core.integrations.update(integration, { config });
-          const connections = yield* ctx.connections.list({ integration });
-          yield* Effect.forEach(
-            connections,
-            (connection) => Effect.ignore(ctx.connections.refresh(connection)),
-            { discard: true },
-          );
-        }).pipe(
+        ctx.core.integrations.update(slugFrom(slug), { config }).pipe(
           Effect.withSpan("mcp.plugin.configure_server", {
             attributes: { "mcp.integration.slug": slug },
           }),
