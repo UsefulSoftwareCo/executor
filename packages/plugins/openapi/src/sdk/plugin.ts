@@ -288,6 +288,7 @@ const AuthenticationSchema = Schema.Union([
   Schema.Struct({
     slug: Schema.String,
     kind: Schema.Literal("oauth2"),
+    label: Schema.optional(Schema.String),
     authorizationUrl: Schema.String,
     tokenUrl: Schema.String,
     resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -580,7 +581,7 @@ export const describeOpenApiAuthMethods = (
       if (template.kind === "oauth2") {
         return {
           id: String(template.slug),
-          label: "OAuth2",
+          label: template.label ?? "OAuth2",
           kind: "oauth",
           template: String(template.slug),
           oauth: {

@@ -13,7 +13,7 @@ import { AutumnProvider } from "autumn-js/react";
 import { isValidOrgSlug } from "@executor-js/api";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
-import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
+import { createSentryFrontendErrorReporter } from "@executor-js/react/api/error-reporting";
 import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
@@ -73,20 +73,15 @@ const analyticsClient: AnalyticsClient | undefined =
     ? (name, properties) => posthog.capture(name, properties)
     : undefined;
 
-const captureFrontendError: FrontendErrorReporter = (error, context) => {
+// Shared with the desktop renderer: the factory normalizes the reported value
+// to a real Error (handed an Effect Cause, Sentry has no message to title or
+// group on) and owns the executor.ui tags. Only the transport differs.
+const captureFrontendError = createSentryFrontendErrorReporter((error, applyScope) => {
   Sentry.captureException(error, (scope) => {
-    scope.setTag("executor.ui.surface", context.surface);
-    scope.setTag("executor.ui.action", context.action);
-    scope.setTag("executor.ui.severity", context.severity ?? "error");
-    scope.setContext("executor.ui", {
-      surface: context.surface,
-      action: context.action,
-      message: context.message,
-      metadata: context.metadata,
-    });
+    applyScope(scope);
     return scope;
   });
-};
+});
 
 function NotFoundPage() {
   return (

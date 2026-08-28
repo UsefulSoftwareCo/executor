@@ -1354,7 +1354,14 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
             method.kind === "oauth2"
               ? [TOKEN_VARIABLE]
               : requiredPlacementVariables(method.placements)
-          ).filter((variable) => credential.values[variable] == null);
+          )
+            // An empty value is as unusable as an absent one, and forwarding it
+            // sends an empty credential upstream — the 401 that follows names the
+            // wrong problem. Matches the OpenAPI backing's check.
+            .filter((variable) => {
+              const value = credential.values[variable];
+              return value == null || value === "";
+            });
           if (missing.length > 0) {
             return yield* new GraphqlAuthRequiredError({
               code:

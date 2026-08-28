@@ -47,6 +47,43 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("names the enterprise identity provider when the server declares one", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+        authenticationTemplate: [
+          {
+            slug: "oauth2",
+            kind: "oauth2",
+            enterpriseIdentityProvider: { client: "acme-idp", clientOwner: "org" },
+          },
+        ],
+      }),
+    );
+
+    expect(methods[0]?.oauth?.enterpriseIdentityProvider).toEqual({
+      client: "acme-idp",
+      clientOwner: "org",
+    });
+    expect(
+      methods[0]?.oauth?.supportsDynamicRegistration,
+      "declaring an identity provider does not remove the interactive fallback",
+    ).toBe(true);
+  });
+
+  it("omits the enterprise identity provider when none is declared", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+        authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+      }),
+    );
+
+    expect(methods[0]?.oauth).not.toHaveProperty("enterpriseIdentityProvider");
+  });
+
   it("projects an apikey header method carrying the placement", () => {
     const methods = describeMcpAuthMethods(
       recordWith({

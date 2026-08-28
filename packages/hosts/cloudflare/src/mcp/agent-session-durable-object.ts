@@ -21,6 +21,7 @@ import {
 import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
+import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
 import type {
   McpExecutionOwnerDirectory,
   McpExecutionOwnerRecord,
@@ -38,6 +39,13 @@ export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
 export interface McpSessionInit {
   readonly organizationId: string;
+  /** The organization's display name, as the worker resolved it while
+   *  authorizing this very request. Carried so the session DO never has to
+   *  re-read a row the request already loaded. Absent when the auth plane could
+   *  not name the org, in which case the host resolves it itself. */
+  readonly organizationName?: string;
+  /** The organization's URL slug, from the same resolved record. */
+  readonly organizationSlug?: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
   /** Whether this session serves artifacts, read off `?artifacts=` at connect
@@ -246,7 +254,20 @@ export abstract class McpAgentSessionDOBase<
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
-  protected abstract resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta>;
+  /**
+   * Build the session's {@link SessionMeta} for this init.
+   *
+   * `storedMeta` is what this DO already persisted for the SAME organization on
+   * an earlier init, or `null`. It is offered first so a host never has to
+   * re-resolve an org identity it is already holding — on cloud that resolution
+   * is a fresh Postgres connection, and a cold restore used to die on it. Every
+   * field the CONNECT carries (resource, elicitation mode, capability flags)
+   * still comes from `token`; only the org identity may be reused.
+   */
+  protected abstract resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta>;
 
   protected abstract buildMcpServer(
     sessionMeta: SessionMeta,
@@ -270,6 +291,23 @@ export abstract class McpAgentSessionDOBase<
   }
 
   protected prepareErrorCaptureScope(): Effect.Effect<void> {
+    return Effect.void;
+  }
+
+  /**
+   * Declare that the Durable Object has finished deciding what to do about this
+   * cause — either it reported it through `captureCauseEffect`, or it
+   * recognized it as expected platform behaviour and deliberately did not.
+   *
+   * Either way the cause is *owned here*. The host's outer error
+   * instrumentation wraps the DO's entry points and would otherwise report the
+   * same rejection a second time as it escapes, producing two issues per
+   * failure; this is the hook that lets the host drop its own echo. Anything the
+   * DO never claims (an alarm crash, a transport fault) is untouched and keeps
+   * being reported by that instrumentation, which is the whole point of
+   * claiming explicitly instead of disabling it.
+   */
+  protected claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
     return Effect.void;
   }
 
@@ -506,12 +544,21 @@ export abstract class McpAgentSessionDOBase<
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
     const self = this;
     return Effect.gen(function* () {
-      const resolved = yield* self.resolveSessionMeta(token);
-      // `init` runs again on every cold restore, and `resolveSessionMeta`
-      // rebuilds meta from the bearer token — which carries no negotiated
-      // capabilities. Carry the stored value forward, or restoring the session
-      // would erase the very bit that survives the restore.
+      // Read what this DO already knows BEFORE asking the host to resolve
+      // anything. `init` runs again on every cold restore, and the stored meta
+      // is this session's own durable record of the organization it was minted
+      // for — re-deriving that identity from the host's backing store is the
+      // single most failure-prone step of a restore (on cloud, a brand-new
+      // Postgres connection) and it is redundant for a session that already
+      // exists. It is offered only for the SAME organization; a token naming a
+      // different org resolves from scratch.
       const stored = yield* self.loadSessionMeta();
+      const reusable = stored && stored.organizationId === token.organizationId ? stored : null;
+      // The stored meta also carries the capabilities negotiated at
+      // `initialize`, which the bearer token knows nothing about. Carry them
+      // forward, or restoring the session would erase the very bit that
+      // survives the restore.
+      const resolved = yield* self.resolveSessionMeta(token, reusable);
       const sessionMeta: SessionMeta = {
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
@@ -522,6 +569,61 @@ export abstract class McpAgentSessionDOBase<
       );
       return sessionMeta;
     }).pipe(Effect.withSpan("mcp.session.resolve_and_store_meta"));
+  }
+
+  /**
+   * A Cloudflare platform reset happened. Record what KIND it was, on the span
+   * and in a structured log, so the volume stays countable per cause (deploy
+   * reset vs storage timeout vs backend blip) instead of collapsing into one
+   * opaque bucket the moment it stops being an error report.
+   */
+  private recordDurableObjectReset(input: {
+    readonly operation: string;
+    readonly failure: DurableObjectFailure;
+    readonly cause: Cause.Cause<unknown>;
+  }): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      console.warn(
+        JSON.stringify({
+          event: "mcp_session_durable_object_reset",
+          operation: input.operation,
+          sessionId: self.sessionId,
+          resetKind: input.failure.kind,
+          disposition: input.failure.disposition,
+          cause: Cause.pretty(input.cause),
+        }),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "mcp.do.reset_kind": input.failure.kind,
+        "mcp.do.reset_disposition": input.failure.disposition,
+        "mcp.do.reset_operation": input.operation,
+      });
+    });
+  }
+
+  /**
+   * Run a storage write whose only job is bookkeeping, and let the Cloudflare
+   * platform take it away without taking the session with it.
+   *
+   * A platform reset (a deploy, a storage timeout, a backend blip) cancels
+   * whatever write is in flight. For a write nothing depends on, the right
+   * answer is to note it and carry on — the alternative, which is what used to
+   * happen, is that a fully built and perfectly healthy session is torn down and
+   * the user's request fails because a timestamp did not land.
+   *
+   * Scoped deliberately: only failures the classifier RECOGNIZES as platform
+   * resets are absorbed. Anything else is still a defect and still fails.
+   */
+  private bestEffortBookkeeping(operation: string, run: () => Promise<void>): Effect.Effect<void> {
+    const self = this;
+    return Effect.promise(run).pipe(
+      Effect.catchCause((cause) => {
+        const failure = classifyDurableObjectError(cause);
+        if (!failure) return Effect.failCause(cause);
+        return self.recordDurableObjectReset({ operation, failure, cause });
+      }),
+    );
   }
 
   private recordCauseOnSpan(cause: Cause.Cause<unknown>): Effect.Effect<void> {
@@ -722,15 +824,36 @@ export abstract class McpAgentSessionDOBase<
       self.server = mcpServer;
       self.engine = engine;
       self.initialized = true;
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
-      );
+      // Last statement, and pure bookkeeping: the runtime above is already
+      // installed and serving. Losing the timestamp/alarm write to a platform
+      // reset must not undo any of it — the in-memory clock is already set and
+      // the next request re-arms the alarm.
+      yield* self
+        .bestEffortBookkeeping("init.mark_activity", () => self.markActivity())
+        .pipe(Effect.withSpan("McpSessionDO.markActivity"));
     }).pipe(
+      // ONE capture owner for an init defect. `init` can only reject its
+      // Promise, and the host's DO-level error instrumentation captures that
+      // rejection too — so the DO claims the cause below and the host drops its
+      // own echo, rather than both filing the same failure as two issues with
+      // the same trace id and span id.
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
-          console.error("[mcp-session] init failed:", Cause.pretty(cause));
-          yield* self.captureCauseEffect(cause);
+          // A Cloudflare platform reset of an in-flight init is not a defect —
+          // every deploy causes one, by design. Record the kind so the volume
+          // stays measurable, let the caller render it as a retry, and do not
+          // page for it. Everything else is reported exactly as before.
+          const failure = classifyDurableObjectError(cause);
+          if (failure) {
+            yield* self.recordDurableObjectReset({ operation: "init", failure, cause });
+          } else {
+            console.error("[mcp-session] init failed:", Cause.pretty(cause));
+            yield* self.captureCauseEffect(cause);
+          }
           yield* self.recordCauseOnSpan(cause);
+          // Claimed AFTER any capture above, so the DO's own event is not
+          // mistaken for the host instrumentation's duplicate of it.
+          yield* self.claimCauseHandled(cause);
         }),
       ),
       Effect.catchCause((cause) =>
@@ -777,9 +900,9 @@ export abstract class McpAgentSessionDOBase<
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
         if (self.initialized) {
-          yield* Effect.promise(() => self.markActivity()).pipe(
-            Effect.withSpan("McpSessionDO.markActivity"),
-          );
+          yield* self
+            .bestEffortBookkeeping("validate_owner.mark_activity", () => self.markActivity())
+            .pipe(Effect.withSpan("McpSessionDO.markActivity"));
         } else {
           yield* Effect.promise(() => self.onStart()).pipe(
             Effect.withSpan("McpSessionDO.restore_transport_runtime"),
@@ -1178,9 +1301,9 @@ export abstract class McpAgentSessionDOBase<
       // which used to hold a ref across the pause and mask this by keeping
       // the ref transition away from 0->1.)
       const disposeKeepAlive = yield* Effect.promise(() => self.keepAlive());
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
-      );
+      yield* self
+        .bestEffortBookkeeping("approval_lease.mark_activity", () => self.markActivity())
+        .pipe(Effect.withSpan("McpSessionDO.markActivity"));
       const timeout = setTimeout(() => {
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);

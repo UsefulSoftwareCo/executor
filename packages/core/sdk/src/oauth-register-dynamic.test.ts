@@ -145,6 +145,7 @@ describe("oauth.registerDynamicClient", () => {
         expect(registerRequest!.body).toContain(FLOW_REDIRECT_URI);
         expect(registerRequest!.body).toContain("authorization_code");
         expect(registerRequest!.body).toContain("refresh_token");
+        expect(registerRequest!.body).toContain('"application_type":"web"');
         const authorizationRequest = requests.find(
           (r) => r.path === "/authorize" && r.method === "GET",
         );
@@ -156,6 +157,39 @@ describe("oauth.registerDynamicClient", () => {
         expect(tokenRequest).toBeDefined();
         expect(tokenRequest!.body).not.toContain("client_secret");
         expect(new URLSearchParams(tokenRequest!.body).get("resource")).toBe(server.mcpResourceUrl);
+      }),
+    ),
+  );
+
+  it.effect("registers loopback callbacks as native applications", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: "http://127.0.0.1:5394/api/oauth/callback",
+          originIntegration: INTEG,
+        });
+
+        const requests = yield* server.requests;
+        const registerRequest = requests.find(
+          (request) => request.path === "/register" && request.method === "POST",
+        );
+        expect(registerRequest).toBeDefined();
+        expect(registerRequest!.body).toContain('"application_type":"native"');
       }),
     ),
   );

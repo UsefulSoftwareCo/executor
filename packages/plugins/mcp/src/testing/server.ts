@@ -11,6 +11,8 @@ export type McpTestServer = {
   readonly endpoint: string;
   /** Number of MCP sessions created (each connect = 1 session) */
   readonly sessionCount: () => number;
+  /** Requests the server has accepted and not yet finished answering. */
+  readonly inFlightRequests: () => number;
   readonly requests: Effect.Effect<readonly McpTestRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
   /** Drops all server-side session registrations without notifying clients. */
@@ -222,7 +224,16 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           ),
         );
 
+      // An abandoned SSE `GET` leaves the session gone but the request open,
+      // which `sessionCount` cannot see and socket counting cannot either
+      // (keep-alive holds idle sockets open regardless).
+      let inFlight = 0;
+
       const nodeServer = http.createServer((request, response) => {
+        inFlight += 1;
+        response.once("close", () => {
+          inFlight -= 1;
+        });
         void Effect.runPromise(handleMcpRequest(request, response));
       });
 
@@ -249,6 +260,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
         url: endpoint,
         endpoint,
         sessionCount: () => sessions,
+        inFlightRequests: () => inFlight,
         requests: Ref.get(requests),
         clearRequests: Ref.set(requests, []),
         forgetSessions: Effect.sync(() => transports.clear()),

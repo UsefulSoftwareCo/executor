@@ -203,11 +203,14 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
               class="rise-4 mt-10 inline-flex"
               aria-label="Backed by Y Combinator"
             >
+              {/* Shadow lives here, not in the SVG: WebKit rasterizes SVG
+                  filter regions in <img> at 1x, blurring the badge on mobile. */}
               <img
                 src={ycBackedBy}
                 alt="Backed by Y Combinator"
                 width="140"
-                height="52"
+                height="50"
+                class="rounded-[4px] shadow-[0_1.6px_1.6px_rgba(0,0,0,0.25)]"
               />
             </a>
           </div>
@@ -615,7 +618,7 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
               <ul class="check-list">
                 {[
                   "Up to 3 members",
-                  "10,000 included executions per month",
+                  "100,000 included executions per month",
                   "$0.20 per 1,000 additional executions",
                   "Unlimited integrations",
                 ].map((f) => (

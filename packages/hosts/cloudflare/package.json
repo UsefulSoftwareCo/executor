@@ -16,6 +16,10 @@
       "types": "./src/mcp/agent-session-durable-object.ts",
       "default": "./src/mcp/agent-session-durable-object.ts"
     },
+    "./mcp/durable-object-errors": {
+      "types": "./src/mcp/durable-object-errors.ts",
+      "default": "./src/mcp/durable-object-errors.ts"
+    },
     "./mcp/execution-owner-directory": {
       "types": "./src/mcp/execution-owner-directory.ts",
       "default": "./src/mcp/execution-owner-directory.ts"

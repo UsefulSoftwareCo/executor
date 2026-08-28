@@ -55,6 +55,7 @@ import {
   McpAuthLive,
   McpOrganizationAuth,
   McpOrganizationAuthLive,
+  type AuthorizedMcpOrganization,
   type McpAuthResult,
   type VerifiedToken,
 } from "./auth";
@@ -88,16 +89,24 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
 
 /**
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
- * organizationId) into the full {@link Principal} the seam validates. The
- * envelope only uses `accountId` + `organizationId` for ownership; cloud
- * resolves org name/email inside the DO, so the cosmetic identity fields carry
- * empty placeholders. `organizationId` is guaranteed non-null here because the
- * Forbidden branch already rejected the no-org case before Authenticated.
+ * organizationId) into the full {@link Principal} the seam validates.
+ *
+ * The org name and slug come from the record the live membership check just
+ * resolved — this is the whole point of `authorize` returning the record rather
+ * than an id. They used to be dropped here (`organizationName: ""`), which left
+ * the session Durable Object to re-read the same row over a fresh database
+ * connection on every cold init. `email` stays a placeholder: the envelope only
+ * uses `accountId` + `organizationId` for ownership, and nothing downstream
+ * reads it.
  */
-const principalFromToken = (token: VerifiedToken, organizationId: string): Principal => ({
+const principalFromToken = (
+  token: VerifiedToken,
+  organization: AuthorizedMcpOrganization,
+): Principal => ({
   accountId: token.accountId,
-  organizationId,
-  organizationName: "",
+  organizationId: organization.id,
+  organizationName: organization.name,
+  ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
   email: "",
   name: null,
   avatarUrl: null,
@@ -223,9 +232,9 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // caller genuinely holds no active membership (revoked / never a member)
         // — a real Forbidden, which the handler may act on by condemning the
         // session.
-        const organizationId = authorizeResult.success;
-        if (!organizationId) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
-        return authenticated(principalFromToken(token, organizationId));
+        const organization = authorizeResult.success;
+        if (!organization) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+        return authenticated(principalFromToken(token, organization));
       });
 
     const toOutcome = (request: Request, result: McpAuthResult): Effect.Effect<AuthOutcome> => {
