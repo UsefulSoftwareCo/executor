@@ -54,17 +54,32 @@ import type { BrowserApprovalStore } from "./tool-server";
 // ---------------------------------------------------------------------------
 
 // A streamable-HTTP session only leaves these maps when the client sends
-// `DELETE /mcp`. Nothing else can free it: with `enableJsonResponse` there is no
-// stream whose teardown signals the client is gone, and a client that crashes,
-// is killed, or simply calls the MCP SDK's `transport.close()` (which aborts
-// locally and sends nothing) never issues that DELETE. Without a sweep, one
-// abandoned session pins its `McpServer`, its tool registry, and its
-// `ExecutionEngine` for the lifetime of the process.
+// `DELETE /mcp`, and nothing sends it: `StreamableHTTPClientTransport.close()`
+// aborts locally and puts nothing on the wire (only `terminateSession()` sends
+// the DELETE, and `Client.close()` does not call it), and a client that crashes
+// or is killed cannot send it at all. Without a sweep, one abandoned session
+// pins its `McpServer`, its tool registry, and its `ExecutionEngine` for the
+// lifetime of the process.
+//
+// The standalone SSE stream is NOT a substitute teardown signal, and it is not
+// absent either. `enableJsonResponse` governs only how a POST carrying requests
+// answers; a POST carrying just the `notifications/initialized` notification
+// still gets a bare 202, which is exactly the cue the client SDK uses to open
+// the long-lived `GET /mcp` stream. So essentially every session holds an open
+// server-to-client stream for its whole life. That stream is silent by design
+// (it exists for server-initiated messages) and this transport does no max-age
+// rotation, so it produces no recurring request to stamp against — an open
+// stream tells us the socket is up, never that the peer is still working.
 //
 // So the store treats a session as abandoned once it has gone `idleTtlMs`
-// without a request and disposes it. That is what the streamable-HTTP spec
-// allows a server to do: a request carrying an evicted id gets the store's
-// existing "not-found" (404, -32001), which is the client's cue to re-initialize.
+// without a REQUEST and disposes it, open stream or not. That mirrors cloud's
+// `decideSessionAlarm`, where an active stream extends the lease only up to
+// `MAX_RUNNING_SESSION_IDLE_MS` and the session is then destroyed regardless;
+// the default here is that same order of ceiling. It is also what the
+// streamable-HTTP spec allows a server to do: a request carrying an evicted id
+// gets the store's existing "not-found" (404, -32001), the client's cue to
+// re-initialize. The cost is bounded and visible — a connected-but-quiet client
+// loses its stream at the ceiling and re-initializes on its next call.
 /** Idle window after which an untouched session is evicted. */
 const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
 /** Floor on the sweep interval, so a small TTL cannot spin the timer. */

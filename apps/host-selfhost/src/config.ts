@@ -51,6 +51,10 @@ export interface SelfHostConfig {
    * minutes (the same pattern as MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS on cloud).
    */
   readonly sandboxTimeoutMs: number | undefined;
+  /**
+   * How long an MCP session may sit idle before the in-process store evicts it,
+   * or undefined for the store's own default (30 minutes). 0 disables eviction.
+   */
   readonly mcpSessionIdleTtlMs: number | undefined;
 }
 
