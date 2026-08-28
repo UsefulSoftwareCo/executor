@@ -125,6 +125,52 @@ describe("UrlRedactingSpanProcessor", () => {
     expect(links).toContain("https://api.test/graphql");
   });
 
+  it("scrubs a credential URL inside an array attribute on the span and on a link", () => {
+    // OTel attributes permit string[] values, so an array element is a fifth
+    // way a credential-bearing URL reaches the exporter. The arrays are
+    // planted by direct mutation: `setAttribute` sanitization would drop a
+    // mixed-type array, but the processor's contract is
+    // `Record<string, unknown>` — upstream bridges and hand-built
+    // ReadableSpans hand it arbitrary bags.
+    const SECRET = "synthetic-array-canary-secret";
+    const canary = () => [`https://canary:${SECRET}@api.test/graphql?key=${SECRET}`, 42];
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({
+      spanProcessors: [new UrlRedactingSpanProcessor(new SimpleSpanProcessor(exporter))],
+    });
+    const tracer = provider.getTracer("test");
+    const upstream = tracer.startSpan("upstream");
+    const span = tracer.startSpan("http.server GET", {
+      // The placeholder attribute keeps the link's bag defined — the SDK
+      // normalizes an empty bag away, and the canary is planted by mutation.
+      links: [{ context: upstream.spanContext(), attributes: { "peer.kind": "canary" } }],
+    });
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: planting an out-of-contract attribute bag on the SDK span IS the fixture; no public API accepts a mixed-type array
+    const bags = span as unknown as {
+      attributes: Record<string, unknown>;
+      links: ReadonlyArray<{ attributes?: Record<string, unknown> }>;
+    };
+    bags.attributes["url.full"] = canary();
+    const linkAttributes = bags.links[0]?.attributes;
+    expect(linkAttributes).toBeDefined();
+    if (linkAttributes !== undefined) linkAttributes["peer.urls"] = canary();
+    span.end();
+    upstream.end();
+
+    const exported = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === "http.server GET");
+    const serialized = JSON.stringify({
+      attributes: exported?.attributes,
+      links: exported?.links,
+    });
+    expect(serialized).not.toContain(SECRET);
+    // Non-vacuous: the scrubbed URL and the non-string element survive.
+    expect(exported?.attributes["url.full"]).toEqual(["https://api.test/graphql", 42]);
+    expect(exported?.links[0]?.attributes?.["peer.urls"]).toEqual(["https://api.test/graphql", 42]);
+    expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBe("key,userinfo");
+  });
+
   it("scrubs the URL out of exception events and the status message", () => {
     // The shape `@effect/opentelemetry` exports for a failed request:
     // `TransportError.message` embeds the raw URL, and the bridge copies it

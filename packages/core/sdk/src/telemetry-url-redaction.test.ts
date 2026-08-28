@@ -148,6 +148,28 @@ describe("redactSpanUrlAttributes", () => {
     expect(attributes["url.full"]).toBe("http://exa mple.test/graphql");
   });
 
+  it("redacts the string elements of an array attribute value in place", () => {
+    // OTel attributes permit string[] values — an array element carries a
+    // credential-bearing URL exactly as a scalar does. Non-string elements
+    // pass through untouched and the array keeps its identity.
+    const SECRET = "synthetic-array-element-secret";
+    const urlArray = [`https://canary:${SECRET}@host.test/graphql?key=${SECRET}`, 42];
+    const attributes: Record<string, unknown> = {
+      "url.full": urlArray,
+      "url.query": [`key=${SECRET}`, 7],
+      "error.notes": [`request to https://api.test/graphql?key=${SECRET} failed`, true],
+    };
+
+    const stripped = redactSpanUrlAttributes(attributes);
+
+    expect(stripped).toEqual(["key", "userinfo"]);
+    expect(JSON.stringify(attributes)).not.toContain(SECRET);
+    expect(attributes["url.full"]).toBe(urlArray);
+    expect(attributes["url.full"]).toEqual(["https://host.test/graphql", 42]);
+    expect(attributes["url.query"]).toEqual(["", 7]);
+    expect(attributes["error.notes"]).toEqual(["request to https://api.test/graphql failed", true]);
+  });
+
   it("leaves a query-, fragment-, and userinfo-free URL untouched", () => {
     const attributes: Record<string, unknown> = {
       "url.full": "https://app.test/api/integrations",

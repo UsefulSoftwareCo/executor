@@ -139,30 +139,60 @@ const URL_IN_TEXT = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`<>()[\]{}]+/g;
 export const redactUrlsInText = (text: string): string =>
   text.replace(URL_IN_TEXT, (match) => redactUrlForTelemetry(match).url);
 
+/** Applies `redact` to each string element of `values` in place, leaving
+ *  non-string elements untouched. OTel attributes permit string[] values, so
+ *  an array element carries a URL exactly as a scalar does. In-place mutation
+ *  preserves the array's identity, which is how the change reaches a span
+ *  whose bag was shallow-copied before redaction. */
+const redactStringElements = (values: unknown[], redact: (value: string) => string): void => {
+  for (let index = 0; index < values.length; index += 1) {
+    const element = values[index];
+    if (typeof element === "string") values[index] = redact(element);
+  }
+};
+
 /** Rewrites the URL-bearing attributes of a span attribute bag in place,
  *  dropping userinfo, every query parameter value, and the fragment. Every
  *  other string attribute is scrubbed as free text, so a URL embedded in an
- *  error-message attribute cannot slip through either. Returns the stripped
- *  parameter names/markers. */
+ *  error-message attribute cannot slip through either. Array values get the
+ *  same treatment element by element — OTel attributes permit string[].
+ *  Returns the stripped parameter names/markers. */
 export const redactSpanUrlAttributes = (attributes: Record<string, unknown>): readonly string[] => {
   const stripped = new Set<string>();
-  for (const name of URL_ATTRIBUTES) {
-    const value = attributes[name];
-    if (typeof value !== "string") continue;
+  const redactWholeUrl = (value: string): string => {
     const result = redactUrlForTelemetry(value);
     for (const key of result.stripped) stripped.add(key);
-    if (result.url !== value) attributes[name] = result.url;
+    return result.url;
+  };
+  for (const name of URL_ATTRIBUTES) {
+    const value = attributes[name];
+    if (Array.isArray(value)) {
+      redactStringElements(value, redactWholeUrl);
+      continue;
+    }
+    if (typeof value !== "string") continue;
+    const redacted = redactWholeUrl(value);
+    if (redacted !== value) attributes[name] = redacted;
   }
+  // The raw query attribute never survives; its parameter names are already
+  // reported via the stripped-keys list.
+  const dropQuery = (value: string): string => {
+    for (const key of queryParameterNames(value)) stripped.add(key);
+    return "";
+  };
   const query = attributes[QUERY_ATTRIBUTE];
-  if (typeof query === "string" && query !== "") {
-    // The raw query attribute never survives; its parameter names are already
-    // reported via the stripped-keys list.
-    for (const key of queryParameterNames(query)) stripped.add(key);
-    attributes[QUERY_ATTRIBUTE] = "";
+  if (Array.isArray(query)) {
+    redactStringElements(query, dropQuery);
+  } else if (typeof query === "string" && query !== "") {
+    attributes[QUERY_ATTRIBUTE] = dropQuery(query);
   }
   for (const [name, value] of Object.entries(attributes)) {
-    if (typeof value !== "string") continue;
     if (isUrlAttribute(name) || name === QUERY_ATTRIBUTE) continue;
+    if (Array.isArray(value)) {
+      redactStringElements(value, redactUrlsInText);
+      continue;
+    }
+    if (typeof value !== "string") continue;
     const redacted = redactUrlsInText(value);
     if (redacted !== value) attributes[name] = redacted;
   }
