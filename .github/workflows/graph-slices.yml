@@ -1,0 +1,47 @@
+# Refresh the Microsoft Graph slice release assets.
+#
+# The Graph OpenAPI monolith (~43MB) cannot be processed inside a Workers
+# isolate, so the runtime reads per-selection slices published on the
+# `graph-slices` release tag (see packages/plugins/openapi/src/providers/
+# microsoft/slices.ts). This workflow rebuilds the slices from the current
+# upstream spec on a schedule and on demand.
+name: Graph slices
+
+on:
+  schedule:
+    # Weekly; Microsoft's msgraph-metadata automation lands upstream refreshes
+    # on a similar cadence. A failed run leaves the previous assets serving.
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  slices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate slices
+        working-directory: packages/plugins/openapi
+        run: bun scripts/generate-graph-slices.ts --out "$RUNNER_TEMP/graph-slices"
+
+      - name: Publish to the graph-slices release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view graph-slices --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create graph-slices --repo "$GITHUB_REPOSITORY" \
+              --title "Microsoft Graph slices" --latest=false \
+              --notes "Generated per-preset Microsoft Graph OpenAPI slices. Data release consumed by the openapi plugin's Microsoft adapter; refreshed by the graph-slices workflow."
+          gh release upload graph-slices "$RUNNER_TEMP/graph-slices"/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

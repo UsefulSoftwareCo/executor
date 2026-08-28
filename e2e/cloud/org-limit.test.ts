@@ -8,6 +8,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Billing, Browser, Target } from "../src/services";
+import { visit, settle } from "../src/surfaces/browser";
 
 const FREE_LIMIT = 3;
 
@@ -23,7 +24,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("A fresh user lands on onboarding (no organization yet)", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.getByPlaceholder("Northwind Labs").waitFor();
       });
 
@@ -43,7 +44,7 @@ scenario(
         await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
           timeout: 30_000,
         });
-        await page.waitForLoadState("networkidle");
+        await settle(page);
       });
 
       const openCreateOrgModal = async (currentOrg: string) => {

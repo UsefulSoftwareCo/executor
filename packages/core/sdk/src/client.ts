@@ -126,6 +126,7 @@ export type IntegrationPresetAuthentication =
   | {
       readonly slug: string;
       readonly kind: "oauth2";
+      readonly label?: string;
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
       readonly resource?: string | null;

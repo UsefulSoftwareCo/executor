@@ -91,7 +91,7 @@ export const popupDocument = <TAuth>(
   const icon = payload.ok
     ? '<path d="M6 10l3 3 5-6" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
     : '<path d="M7 7l6 6M13 7l-6 6" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-  const escapedChannel = escapeHtml(channelName);
+  const serializedChannel = serializeForScript(channelName);
   const detailsHtml = details
     ? `<details style="margin-top:16px;text-align:left"><summary style="cursor:pointer;font-size:12px;color:#888;user-select:none">Details</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:#52525b;background:#f4f4f5;padding:8px;border-radius:4px;margin:8px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(details)}</pre></details>`
     : "";
@@ -117,9 +117,20 @@ ${detailsHtml}
 // raced by the auto-close — so localStorage (a 'storage' event on the opener) is
 // the reliable fallback. The opener settles on whichever lands first.
 try{if(window.opener)window.opener.postMessage(p,window.location.origin)}catch(e){}
-try{if("BroadcastChannel"in window){const c=new BroadcastChannel("${escapedChannel}");c.postMessage(p);setTimeout(()=>c.close(),100)}}catch(e){}
-try{localStorage.setItem("${escapedChannel}",JSON.stringify(p))}catch(e){}
-if(p.ok)setTimeout(()=>window.close(),400);})();
+try{if("BroadcastChannel"in window){const c=new BroadcastChannel(${serializedChannel});c.postMessage(p);setTimeout(()=>c.close(),100)}}catch(e){}
+try{localStorage.setItem(${serializedChannel},JSON.stringify(p))}catch(e){}
+// The payload carries the identity label — an email — and, on failure, the
+// error preview, so it must not outlive the handover. Clearing it cannot cost a
+// listener the result: a 'storage' event captures newValue at dispatch, so an
+// opener that has been notified already holds it. Leaving it would park that
+// data in the user's browser profile indefinitely whenever nobody is listening,
+// which is every abandoned or opener-less flow. pagehide backs the timers up:
+// the failure page never auto-closes (the user must be able to read the error),
+// and closing it kills any pending timer — without pagehide the entry would
+// outlive the document after all.
+const clear=()=>{try{localStorage.removeItem(${serializedChannel})}catch(e){}};
+window.addEventListener("pagehide",clear);
+if(p.ok)setTimeout(()=>{clear();window.close()},400);else setTimeout(clear,5000);})();
 </script>
 </body></html>`;
 };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { createClient } from "@libsql/client";
 import { Effect, Predicate } from "effect";
 
 import {
@@ -73,6 +74,66 @@ describe("runSqliteDataMigrations", () => {
       const applied = yield* runSqliteDataMigrations(client, [a.migration]);
       expect(applied).toEqual([]);
       expect(a.calls.length).toBe(1);
+    }),
+  );
+
+  it.effect("converges when concurrent runners stamp the same migration", () =>
+    Effect.gen(function* () {
+      const client = createClient({ url: ":memory:" });
+      let bodiesStarted = 0;
+      let releaseBodies: (() => void) | undefined;
+      // Hold both bodies until both runners have read the ledger as empty.
+      const bothBodiesStarted = new Promise<void>((resolve) => {
+        releaseBodies = resolve;
+      });
+      const migration: SqliteDataMigration = {
+        name: "2026-06-05-concurrent",
+        run: () =>
+          Effect.promise(() => {
+            bodiesStarted++;
+            if (bodiesStarted === 2) releaseBodies?.();
+            return bothBodiesStarted;
+          }),
+      };
+
+      const results = yield* Effect.all(
+        [
+          runSqliteDataMigrations(client, [migration]),
+          runSqliteDataMigrations(client, [migration]),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      expect(results).toEqual([["2026-06-05-concurrent"], ["2026-06-05-concurrent"]]);
+      expect(bodiesStarted).toBe(2);
+      const stamps = yield* Effect.promise(() =>
+        client.execute("SELECT name FROM data_migration ORDER BY name"),
+      );
+      expect(stamps.rows.map((row) => row.name)).toEqual(["2026-06-05-concurrent"]);
+      client.close();
+    }),
+  );
+
+  it.effect("surfaces non-conflict stamp failures", () =>
+    Effect.gen(function* () {
+      const client: SqliteDataMigrationClient = {
+        execute: (stmt) => {
+          const sql = typeof stmt === "string" ? stmt : stmt.sql;
+          if (typeof stmt === "object" && sql.startsWith("INSERT INTO data_migration")) {
+            // oxlint-disable-next-line executor/no-promise-reject -- simulates a storage-driver rejection at the adapter boundary under test
+            return Promise.reject("disk full");
+          }
+          return Promise.resolve({ rows: [] });
+        },
+      };
+      const migration = migrationSpy("2026-06-05-unstamped");
+
+      const failure = yield* runSqliteDataMigrations(client, [migration.migration]).pipe(
+        Effect.flip,
+      );
+
+      expect(Predicate.isTagged(failure, "DataMigrationError")).toBe(true);
+      expect((failure as DataMigrationError).cause).toBe("disk full");
     }),
   );
 

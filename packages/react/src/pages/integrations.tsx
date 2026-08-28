@@ -2,6 +2,7 @@ import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react"
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { PlusIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
@@ -41,6 +42,16 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { groupIntegrations, type IntegrationFamilyGroup } from "../lib/integration-grouping";
+import {
+  availableCatalogKinds,
+  catalogLogoUrl,
+  filterCatalogEntries,
+  presetDomains,
+  resolveConnectTarget,
+  useCatalogSearch,
+  type CatalogKind,
+  type CatalogSearchEntry,
+} from "../lib/integrations-sh-catalog";
 import { IntegrationHealthSummary } from "../components/integration-health-summary";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
@@ -49,7 +60,6 @@ import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
-  apps: "apps",
   openapi: "openapi",
   mcp: "mcp",
   graphql: "graphql",
@@ -66,41 +76,6 @@ const bestDetection = (
   results: readonly IntegrationDetectionResult[],
 ): IntegrationDetectionResult | undefined =>
   [...results].sort((a, b) => detectionRank[b.confidence] - detectionRank[a.confidence])[0];
-
-// Hosts where a two-segment path (owner/repo) is unambiguously a git remote.
-const GIT_REPO_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"]);
-
-// Deliberately conservative: only claim URLs that are unambiguously git
-// remotes (a `.git` suffix, or owner/repo on a known git host). Anything else
-// falls through to the server-side detection so OpenAPI/MCP/GraphQL URLs keep
-// their existing flows.
-const detectGitRepository = (
-  raw: string,
-): { readonly endpoint: string; readonly slug: string } | null => {
-  const value = raw.trim();
-  if (!URL.canParse(value)) return null;
-  const parsed = new URL(value);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
-  if (parsed.username || parsed.password) return null;
-  const segments = parsed.pathname.split("/").filter(Boolean);
-  const knownGitHost =
-    GIT_REPO_HOSTS.has(parsed.hostname.toLowerCase()) &&
-    segments.length === 2 &&
-    parsed.search === "";
-  if (!parsed.pathname.endsWith(".git") && !knownGitHost) return null;
-  const name = segments.at(-1)?.replace(/\.git$/, "") ?? "";
-  if (!name) return null;
-  parsed.hash = "";
-  return {
-    endpoint: parsed.toString(),
-    slug: name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80),
-  };
-};
 
 // ---------------------------------------------------------------------------
 // Page
@@ -212,22 +187,6 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
     if (!trimmed) return;
     setDetecting(true);
     setError(null);
-    const gitRepository = detectGitRepository(trimmed);
-    if (gitRepository && integrationPlugins.some((p) => p.key === "apps")) {
-      trackEvent("integration_detect_submitted", {
-        success: true,
-        detected_kind: "apps",
-        confidence: "high",
-      });
-      trackEvent("integration_add_started", { plugin_key: "apps", via: "detect" });
-      closeAndReset();
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey: "apps" },
-        search: { url: gitRepository.endpoint, namespace: gitRepository.slug },
-      });
-      return;
-    }
     // Detection is read-only — it inspects a URL and returns candidates without
     // mutating the catalog, so it invalidates nothing.
     const exit = await doDetect({
@@ -379,6 +338,12 @@ type PresetEntry = {
   pluginLabel: string;
 };
 
+const CATALOG_KIND_LABEL: Record<CatalogKind, string> = {
+  mcp: "MCP",
+  openapi: "OpenAPI",
+  graphql: "GraphQL",
+};
+
 function PresetGrid(props: {
   plugins: readonly IntegrationPlugin[];
   onPick: () => void;
@@ -386,6 +351,7 @@ function PresetGrid(props: {
    *  search/URL input. Empty string disables filtering. */
   searchQuery?: string;
 }) {
+  const navigate = useNavigate();
   const allPresets = useMemo(() => {
     const entries: PresetEntry[] = [];
     for (const plugin of props.plugins) {
@@ -400,15 +366,66 @@ function PresetGrid(props: {
     return entries;
   }, [props.plugins]);
 
+  const query = (props.searchQuery ?? "").trim();
+
   const filtered = useMemo(() => {
-    const q = (props.searchQuery ?? "").trim().toLowerCase();
+    const q = query.toLowerCase();
     if (q.length === 0) return allPresets;
     return allPresets.filter(({ preset, pluginLabel }) => {
       const corpus =
         `${preset.name} ${preset.summary ?? ""} ${preset.family ?? ""} ${preset.specFormat ?? ""} ${pluginLabel}`.toLowerCase();
       return corpus.includes(q);
     });
-  }, [allPresets, props.searchQuery]);
+  }, [allPresets, query]);
+
+  // Long-tail search over the public integrations.sh registry, shown under the
+  // curated presets. Domains a preset already covers stay preset-only.
+  const catalog = useCatalogSearch(query);
+  const excludeDomains = useMemo(() => presetDomains(props.plugins), [props.plugins]);
+  const availableKinds = useMemo(() => availableCatalogKinds(props.plugins), [props.plugins]);
+  const catalogEntries = useMemo(
+    () => filterCatalogEntries(catalog.entries, { excludeDomains, availableKinds }),
+    [catalog.entries, excludeDomains, availableKinds],
+  );
+  const [resolvingDomain, setResolvingDomain] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  const pickCatalogEntry = useCallback(
+    async (entry: CatalogSearchEntry) => {
+      if (resolvingDomain !== null) return;
+      setResolvingDomain(entry.domain);
+      setCatalogError(null);
+      const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, entry.kinds));
+      setResolvingDomain(null);
+      if (Exit.isFailure(exit)) {
+        setCatalogError(
+          `Couldn't load connect details for ${entry.domain}. Paste a URL above instead.`,
+        );
+        return;
+      }
+      const target = exit.value;
+      if (!target) {
+        setCatalogError(
+          `No connectable endpoint is on record for ${entry.domain}. Paste a URL above to detect one.`,
+        );
+        return;
+      }
+      trackEvent("integration_add_started", {
+        plugin_key: target.kind,
+        via: "catalog",
+        catalog_domain: entry.domain,
+      });
+      props.onPick();
+      void navigate({
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
+        params: { pluginKey: target.kind },
+        search: { url: target.url, ...(target.slug ? { namespace: target.slug } : {}) },
+      });
+    },
+    [navigate, props, resolvingDomain],
+  );
+
+  const showCatalogSection = query.length > 0 && (catalogEntries.length > 0 || catalog.loading);
 
   if (allPresets.length === 0) return null;
 
@@ -420,9 +437,9 @@ function PresetGrid(props: {
          *  inner area scrolls when the list overflows and shows an empty
          *  state when no presets match. */}
         <CardStackContent className="h-64 overflow-y-auto">
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && !showCatalogSection ? (
             <div className="flex h-full flex-col items-center justify-center gap-1 px-4 py-6 text-center">
-              <p className="text-sm text-muted-foreground">No matching presets</p>
+              <p className="text-sm text-muted-foreground">No matching integrations</p>
               <p className="text-xs text-muted-foreground/70">
                 Paste a URL above to auto-detect, or pick an integration type manually.
               </p>
@@ -472,8 +489,59 @@ function PresetGrid(props: {
               );
             })
           )}
+          {showCatalogSection && (
+            <>
+              {catalogEntries.map((entry) => (
+                <CardStackEntry key={`catalog-${entry.domain}`} asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void pickCatalogEntry(entry)}
+                    className="h-auto w-full justify-start rounded-none text-left font-normal whitespace-normal hover:bg-accent/40 dark:hover:bg-accent/40"
+                  >
+                    <CardStackEntryMedia>
+                      <img
+                        src={catalogLogoUrl(entry.domain, 10)}
+                        alt=""
+                        className="size-5 object-contain"
+                        loading="lazy"
+                      />
+                    </CardStackEntryMedia>
+                    <CardStackEntryContent>
+                      <CardStackEntryTitle>{entry.domain}</CardStackEntryTitle>
+                      <CardStackEntryDescription>{entry.description}</CardStackEntryDescription>
+                    </CardStackEntryContent>
+                    <CardStackEntryActions>
+                      {resolvingDomain === entry.domain ? (
+                        <span className="text-xs text-muted-foreground">Resolving…</span>
+                      ) : (
+                        entry.kinds.map((kind) => (
+                          <Badge key={kind} variant="secondary">
+                            {CATALOG_KIND_LABEL[kind]}
+                          </Badge>
+                        ))
+                      )}
+                    </CardStackEntryActions>
+                  </Button>
+                </CardStackEntry>
+              ))}
+              {catalog.loading &&
+                catalogEntries.length === 0 &&
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={`catalog-skeleton-${i}`} className="flex items-center gap-3 px-4 py-3">
+                    <Skeleton className="size-5 shrink-0 rounded-md" />
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <Skeleton className="h-3.5" style={{ width: `${35 + ((i * 13) % 25)}%` }} />
+                      <Skeleton className="h-3" style={{ width: `${55 + ((i * 9) % 20)}%` }} />
+                    </div>
+                    <Skeleton className="h-5 w-14 rounded-full" />
+                  </div>
+                ))}
+            </>
+          )}
         </CardStackContent>
       </CardStack>
+      {catalogError && <p className="text-xs text-destructive">{catalogError}</p>}
     </div>
   );
 }

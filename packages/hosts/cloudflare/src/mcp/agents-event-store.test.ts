@@ -62,7 +62,13 @@ describe("DurableObjectEventStore trimStream", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps an oversize final response instead of evicting the only event", async () => {
+  it("skips storing a message beyond DO storage's per-value cap, returning no replay id", async () => {
+    // Real DO storage rejects any value over 128 KiB. This used to be
+    // discovered inside storage.put — thrown BEFORE the live SSE write, so an
+    // oversize response (the ~5MB ui:// shell document) was neither stored nor
+    // delivered and the client hung on keepalives. The pinned contract now:
+    // oversize messages skip persistence with a warning and resolve undefined,
+    // and the caller delivers them live without a replay id.
     const { storage, store } = makeStore();
     const hugeResult = {
       jsonrpc: "2.0" as const,
@@ -72,33 +78,56 @@ describe("DurableObjectEventStore trimStream", () => {
 
     const eventId = await store.storeEvent("post-stream", hugeResult);
 
-    expect(eventId, "storeEvent returns the event id").toBe("post-stream:0000000000000001");
-    expect(eventKeys(storage), "the >2MB final response survives its own trim pass").toEqual([
-      "__mcp_event__:post-stream:0000000000000001",
-    ]);
-    expect(warnings, "no eviction happened, so no eviction warning").toEqual([]);
+    expect(eventId, "no replay id for an unstorable message").toBeUndefined();
+    expect(eventKeys(storage), "nothing was persisted").toEqual([]);
+    expect(warnings.length, "the skip is logged").toBeGreaterThan(0);
+    expect(warnings.at(-1)).toContain("mcp_event_store_skipped_oversize");
+    expect(warnings.at(-1)).toContain("post-stream");
+  });
+
+  it("does not advance the stream sequence when an oversize message is skipped", async () => {
+    const { storage, store } = makeStore();
+    await store.storeEvent("post-stream", {
+      jsonrpc: "2.0" as const,
+      method: "notifications/progress",
+      params: { blob: "x".repeat(3 * 1024 * 1024) },
+    });
+
+    const eventId = await store.storeEvent("post-stream", {
+      jsonrpc: "2.0" as const,
+      id: 1,
+      result: { ok: true },
+    });
+
+    expect(eventId, "the next storable event takes the first sequence slot").toBe(
+      "post-stream:0000000000000001",
+    );
+    expect(eventKeys(storage)).toEqual(["__mcp_event__:post-stream:0000000000000001"]);
   });
 
   it("evicts oldest events at the byte cap but never the newest", async () => {
     const { storage, store } = makeStore();
+    // 100 KiB each: storable (under the 120 KiB per-value guard), but 25 of
+    // them exceed the 2 MB per-stream byte cap.
     const bigMessage = (marker: string) => ({
       jsonrpc: "2.0" as const,
       method: "notifications/progress",
-      params: { marker, blob: "y".repeat(1024 * 1024) },
+      params: { marker, blob: "y".repeat(100 * 1024) },
     });
 
-    await store.storeEvent("post-stream", bigMessage("one"));
-    await store.storeEvent("post-stream", bigMessage("two"));
-    await store.storeEvent("post-stream", bigMessage("three"));
+    const total = 25;
+    for (let index = 0; index < total; index += 1) {
+      await store.storeEvent("post-stream", bigMessage(`msg-${index}`));
+    }
 
     const remaining = eventKeys(storage);
     expect(remaining[remaining.length - 1], "the newest event is always retained").toBe(
-      "__mcp_event__:post-stream:0000000000000003",
+      `__mcp_event__:post-stream:${total.toString(16).padStart(16, "0")}`,
     );
     expect(
       remaining.length,
       "older events were evicted to satisfy the 2MB stream cap",
-    ).toBeLessThan(3);
+    ).toBeLessThan(total);
     expect(warnings.length, "eviction logs a warning").toBeGreaterThan(0);
     expect(warnings.at(-1)).toContain("mcp_event_store_evicted");
     expect(warnings.at(-1)).toContain("post-stream");

@@ -31,8 +31,12 @@ const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: str
 const TOOL_FILE_TYPESCRIPT =
   '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
 
-const wrapOutputTypeScript = (outputTypeScript?: string): string =>
-  `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+const wrapOutputTypeScript = (outputTypeScript?: string, marker?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}${marker ?? ""}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+
+/** Inline provenance for observed types — a model that copies only the type
+ *  string still sees the hint, since the compact render drops descriptions. */
+const OBSERVED_TYPE_MARKER = " /* observed; may be incomplete */";
 
 const withToolResultDefinitions = (
   definitions?: Record<string, string>,
@@ -76,6 +80,7 @@ type DescribedTool = {
   readonly description?: string;
   readonly inputTypeScript?: string;
   readonly outputTypeScript?: string;
+  readonly outputTypeScriptNote?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
   readonly error?: {
@@ -177,6 +182,7 @@ const credentialResolutionToolFailure = (input: {
   readonly label: string;
   readonly message: string;
   readonly reauthRequired?: boolean;
+  readonly oauthErrorCode?: string;
 }) =>
   authToolFailure({
     code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
@@ -188,6 +194,12 @@ const credentialResolutionToolFailure = (input: {
       kind: "oauth",
       label: input.label,
     },
+    // The AS's own RFC 6749 §5.2 verdict, when there was one — structured so
+    // the agent (and anyone reading the failure) can distinguish a dead grant
+    // from a misconfigured app without parsing the message.
+    ...(input.oauthErrorCode !== undefined
+      ? { upstream: { details: { oauthErrorCode: input.oauthErrorCode } } }
+      : {}),
   });
 
 const bindingToolFailure = (value: unknown): ToolError | null => {
@@ -310,6 +322,7 @@ export const makeExecutorToolInvoker = (
             label: `${err.integration}.${err.owner}.${err.name}`,
             message: err.message,
             reauthRequired: err.reauthRequired,
+            oauthErrorCode: err.oauthErrorCode,
           }),
         ),
       ),
@@ -857,7 +870,18 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    outputTypeScript: wrapOutputTypeScript(
+      schema.outputTypeScript,
+      schema.outputSchemaSource === "observed" ? OBSERVED_TYPE_MARKER : undefined,
+    ),
+    // The compact TS render drops the schema's provenance description, so an
+    // observed (runtime-inferred) shape gets an explicit note: the model
+    // should treat the fields as reliable but not exhaustive.
+    ...(schema.outputSchemaSource === "observed"
+      ? {
+          outputTypeScriptNote: `data type observed from ${schema.outputSchemaObservations ?? 1} live response(s), not declared by the provider; fields may be incomplete.`,
+        }
+      : {}),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
   return described;

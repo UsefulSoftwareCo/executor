@@ -32,6 +32,15 @@ interface AsciicastEvent {
   bytes?: number[];
 }
 
+// E2E subprocesses must never report product usage or fetch the production
+// integrations catalog. Keep these after caller-provided values below so a
+// scenario cannot accidentally turn outbound telemetry back on.
+const E2E_OUTBOUND_OPT_OUT = {
+  DO_NOT_TRACK: "1",
+  EXECUTOR_DISABLE_ANALYTICS: "1",
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1",
+} as const;
+
 /** terminal-control's JSONL recording → asciicast v2 (what asciinema plays). */
 const toAsciicast = (recording: Uint8Array): string => {
   const events = new TextDecoder()
@@ -74,7 +83,7 @@ export const makeCliSurface = (): CliSurface => ({
         const session: Session = await tc.launch({
           command,
           cwd: options?.cwd,
-          env: options?.env,
+          env: { ...options?.env, ...E2E_OUTBOUND_OPT_OUT },
           record: options?.record ? true : undefined,
           viewport: options?.viewport,
         });

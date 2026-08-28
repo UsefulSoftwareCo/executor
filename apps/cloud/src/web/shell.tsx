@@ -1,6 +1,7 @@
 import type React from "react";
 
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
+import { useAdminNavItems } from "@executor-js/react/multiplayer/use-admin-nav";
 import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../auth/api";
 import { OrgMenuSlot } from "./components/org-menu-slot";
@@ -25,6 +26,12 @@ const navItems = [
   { to: "/billing", label: "Billing" },
 ];
 
+// Sections only an admin of the org may open. The Users page reads the
+// tenant-wide admin plane, which cloud gates on an admin-role membership — so
+// a plain member is not shown a link that would only refuse them. The page
+// still renders its own denied state if one arrives by URL.
+const adminNavItems = [{ to: "/users", label: "Users" }];
+
 // A top-level form POST, not fetch: the logout response 302s through the
 // WorkOS logout endpoint (ending the hosted AuthKit session) before landing
 // back home. A fetch would follow that chain invisibly inside the XHR and
@@ -39,10 +46,11 @@ const signOut = () => {
 };
 
 export function Shell(props: { readonly content?: React.ReactNode }) {
+  const items = useAdminNavItems(navItems, adminNavItems);
   return (
     <SharedShell
       onSignOut={signOut}
-      navItems={navItems}
+      navItems={items}
       orgMenuSlot={<OrgMenuSlot />}
       supportSlot={<SupportSlot />}
       content={props.content}

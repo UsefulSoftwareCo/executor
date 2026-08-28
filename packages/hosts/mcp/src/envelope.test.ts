@@ -79,6 +79,13 @@ const buildHandler = (
 };
 
 describe("McpServingRoutes envelope", () => {
+  it("rejects HEAD with a JSON-RPC 405 before dispatch", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const response = await handler(new Request("https://host.test/mcp", { method: "HEAD" }));
+    expect(response.status).toBe(405);
+    expect(response.headers.get("content-type")).toContain("application/json");
+  });
+
   it("rejects a non-GET/POST/DELETE/OPTIONS method with 405 -32001 before dispatch", async () => {
     const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
     for (const method of ["PUT", "PATCH"] as const) {

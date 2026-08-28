@@ -2,7 +2,14 @@ import { Schema } from "effect";
 
 import { ElicitationDeclinedError } from "./elicitation";
 import type { StorageFailure } from "./fuma-runtime";
-import { ConnectionName, IntegrationSlug, Owner, ProviderKey, ToolAddress } from "./ids";
+import {
+  ArtifactId,
+  ConnectionName,
+  IntegrationSlug,
+  Owner,
+  ProviderKey,
+  ToolAddress,
+} from "./ids";
 
 export interface UserActionableError {
   readonly __executorUserActionable: true;
@@ -25,7 +32,8 @@ export const isUserActionableError = (value: unknown): value is UserActionableEr
 /* The failure set the SDK surfaces. `execute`'s invoke failures are ported from
  * v1 but re-keyed by `address` (the full `tools.<integration>.<owner>.<connection>.<tool>`
  * handle) instead of an opaque tool id. Storage failures reuse fuma-runtime's
- * `StorageError`/`UniqueViolationError` (`StorageFailure`) — not redefined here. */
+ * `StorageError`/`StorageConnectionError`/`UniqueViolationError`
+ * (`StorageFailure`) — not redefined here. */
 
 // ---------------------------------------------------------------------------
 // Tool lifecycle
@@ -43,10 +51,16 @@ export class ToolNotFoundError extends Schema.TaggedErrorClass<ToolNotFoundError
   {
     address: ToolAddress,
     suggestions: Schema.optional(Schema.Array(ToolAddress)),
+    /** Why the address did not resolve, when something more useful than the
+     *  address is known — a connection that produced no tools, say. Optional:
+     *  an ordinary unknown tool name has nothing to add. */
+    reason: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
-    return `Tool not found: ${this.address}`;
+    return this.reason === undefined
+      ? `Tool not found: ${this.address}`
+      : `Tool not found: ${this.address} — ${this.reason}`;
   }
 }
 
@@ -181,8 +195,36 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
     /** True when the stored grant is permanently invalid and the user must
      *  sign in again (RFC 6749 §5.2 invalid_grant and friends). */
     reauthRequired: Schema.optional(Schema.Boolean),
+    /** The authorization server's RFC 6749 §5.2 error code (`invalid_grant`,
+     *  `invalid_client`, …), when the failure came from a token-endpoint
+     *  refusal. A typed field rather than message text so telemetry and
+     *  classification read it structurally — the misclassification where
+     *  `invalid_client` (rotated app secret, fleet-wide) surfaced as a vague
+     *  "degraded" was only findable by grepping persisted message strings. */
+    oauthErrorCode: Schema.optional(Schema.String),
+    /** True when an enterprise identity provider declined to authorize this
+     *  connection under administrator policy. Distinct from `reauthRequired`
+     *  because signing in again cannot help, and — critically — the client must
+     *  NOT offer the ordinary per-server OAuth flow as an alternative route:
+     *  that would let the user walk around the policy the IdP just enforced. */
+    blockedByAdmin: Schema.optional(Schema.Boolean),
   },
 ) {}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+/** No artifact with this id is visible to the bound owner scope — it was never
+ *  saved, was deleted, or belongs to another subject. */
+export class ArtifactNotFoundError extends Schema.TaggedErrorClass<ArtifactNotFoundError>()(
+  "ArtifactNotFoundError",
+  { id: ArtifactId },
+) {
+  override get message(): string {
+    return `Artifact not found: ${this.id}`;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Union — the failure channel of `execute`.
@@ -204,4 +246,5 @@ export type ExecuteError =
 export type ExecutorError =
   | ExecuteError
   | IntegrationNotFoundError
-  | IntegrationRemovalNotAllowedError;
+  | IntegrationRemovalNotAllowedError
+  | ArtifactNotFoundError;

@@ -17,6 +17,11 @@ import { Forbidden, OrgHttpApi } from "./api";
 
 const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
+  // This plane is mounted behind the session-only `orgAuthMiddleware`, so the
+  // caller is always a member — but `AuthContext.accountId` is nullable for the
+  // platform credential, and membership of "no member" is not a question worth
+  // asking WorkOS. Refuse rather than assert.
+  if (auth.accountId === null) return yield* new Forbidden();
   const workos = yield* WorkOSClient;
   const currentMembership = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
   if (!currentMembership || currentMembership.role?.slug !== "admin") {

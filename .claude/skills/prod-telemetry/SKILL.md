@@ -29,6 +29,20 @@ join the same traces via traceparent).
 
 **Span names worth querying** (and their custom attrs):
 
+- `mcp.execute` / `mcp.execute.resume` — `mcp.execute.mode`
+  (`pausable`/`inline`), `mcp.execute.code_length`, and
+  `mcp.execute.outcome` (`ok`/`fail`/`paused`) with, on failures,
+  `mcp.execute.error_kind` (`type_error` | `reference_error` |
+  `syntax_error` | `range_error` | `tool_error` | `timeout` |
+  `resource_limit` | `serialization_error` | `thrown` | `unknown`).
+  Sandbox script failures ride the MCP success channel, so `status.code`
+  stays OK — filter on these attributes, not span status. Spans from
+  before the attributes shipped carry neither; absence is not success.
+  Also `mcp.execute.result_chars` (compact-JSON size of the returned
+  value, pre-truncation; -1 = unmeasurable), `mcp.execute.log_chars`,
+  `mcp.execute.emitted` — the dump-vs-narrow signal (the model preview
+  truncates at 30k chars, so `result_chars > 30000` means the model tried
+  to pull a truncated blob into context).
 - `executor.tool.execute` — `mcp.tool.name` (full address), and since
   PR #992: `executor.tool.outcome` (`ok`/`fail`),
   `executor.tool.error_code`, `executor.tool.error_status`,
@@ -39,7 +53,10 @@ join the same traces via traceparent).
   `base_url`, and since PR #992 `http.status_code`.
 - `mcp.request` (outer) — `mcp.auth.organization_id`,
   `mcp.auth.account_id`, `mcp.tool.name`, CF edge fields (`cf.country`…),
-  MCP client fingerprint (`mcp.client.name`…).
+  MCP client fingerprint (`mcp.client.name`…), and on managed-cloud
+  `execute`/`execute-action` calls `mcp.execute.code` (the script itself,
+  capped at 10k chars — cloud-only content capture; local/self-host
+  telemetry never records content).
 
 **Recipe — error signatures by class (the daily-digest query):**
 

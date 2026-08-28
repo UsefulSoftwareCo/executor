@@ -10,7 +10,9 @@ import {
   PluginsProvider,
   type ExecutorDbHandle,
 } from "@executor-js/api/server";
+import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { env } from "cloudflare:workers";
 
 import type { CloudflareConfig } from "./config";
 import { makeCloudflarePlugins } from "./plugins";
@@ -20,10 +22,10 @@ import { makeCloudflarePlugins } from "./plugins";
 // substrate, no-op engine decorator), with the plugins + host config built from
 // the per-request `env`-derived config rather than process.env.
 //
-// QuickJS-wasm is the default code substrate because it runs in a single Worker
-// with no extra binding. When Cloudflare's dynamic Worker Loader leaves closed
-// beta, swap CodeExecutorProvider for the dynamic-worker executor (cloud's) —
-// it's a one-Layer change behind this same seam.
+// Code substrate: when the Worker declares a `worker_loaders` LOADER binding,
+// use the dynamic-worker executor (cloud's substrate) — real isolates with
+// `globalOutbound: null`. Without the binding, fall back to QuickJS-wasm,
+// which runs in a single Worker with no extra binding.
 // ---------------------------------------------------------------------------
 
 export { makeExecutionStack } from "@executor-js/api/server";
@@ -31,7 +33,10 @@ export { EngineDecoratorNoop };
 
 export const CloudflareCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
   CodeExecutorProvider,
-  () => makeQuickJsExecutor(),
+  () => {
+    const loader = (env as { LOADER?: WorkerLoader }).LOADER;
+    return loader ? makeDynamicWorkerExecutor({ loader }) : makeQuickJsExecutor();
+  },
 );
 
 export const makeCloudflarePluginsProvider = (

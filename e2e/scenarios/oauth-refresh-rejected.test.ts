@@ -118,6 +118,7 @@ type ToolEnvelope = {
     readonly details?: {
       readonly category?: string;
       readonly recovery?: Record<string, string>;
+      readonly upstream?: { readonly details?: { readonly oauthErrorCode?: string } };
     };
   };
 };
@@ -249,6 +250,10 @@ scenario(
             failure.error?.message ?? "",
             "the message carries the AS's RFC 6749 error code",
           ).toContain("invalid_request");
+          expect(
+            failure.error?.details?.upstream?.details?.oauthErrorCode,
+            "the AS's code is ALSO a structured field, so agents and telemetry never parse the message for it",
+          ).toBe("invalid_request");
           expect(
             failure.error?.message ?? "",
             "the message carries the AS's error description",

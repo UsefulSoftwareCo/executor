@@ -45,6 +45,7 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 
+import { SpanHeaderRedactionLive } from "./header-redaction";
 import {
   CountingSpanExporter,
   CountingSpanProcessor,
@@ -53,7 +54,36 @@ import {
 } from "./memory-metrics";
 
 const SERVICE_NAME = "executor-cloud";
-const SERVICE_VERSION = "1.0.0";
+
+// `service.version` is the Cloudflare Worker version id (from the
+// `version_metadata` binding) so any span links back to the exact deploy in a
+// step-change investigation; "dev" is the documented default for hosts without
+// the binding (local dev, older test workers). `executor.commit_sha` rides
+// along when CI passed it (`wrangler deploy --var GIT_COMMIT_SHA:...`).
+const serviceVersion = (): string => env.CF_VERSION_METADATA?.id ?? "dev";
+
+// One id per isolate: distinguishes "many isolates each paying a cold cost"
+// from "one isolate is slow", and makes per-isolate cache behavior (JWKS,
+// module caches) measurable from Axiom. The Aug 2026 latency investigation
+// stalled for lack of exactly this attribute.
+//
+// Generated LAZILY on first use, not at module scope: workerd forbids random
+// generation (and I/O) in global scope and Cloudflare's upload validation
+// rejects the whole deploy for it (error 10021). First use is inside
+// `installTracerProvider()` / the telemetry layer build, which both run in a
+// request handler, so the id is still one-per-isolate.
+let isolateInstanceId: string | null = null;
+let isolateStartedAt: number | null = null;
+
+const resourceAttributes = (): Record<string, string | number> => {
+  isolateInstanceId ??= crypto.randomUUID();
+  isolateStartedAt ??= Date.now();
+  return {
+    "service.instance.id": isolateInstanceId,
+    "executor.isolate_started_at": new Date(isolateStartedAt).toISOString(),
+    ...(env.GIT_COMMIT_SHA === undefined ? {} : { "executor.commit_sha": env.GIT_COMMIT_SHA }),
+  };
+};
 
 // Module-scope: one provider per isolate, never shut down. The provider holds
 // the SimpleSpanProcessor + OTLP exporter, so any tracer reference captured by
@@ -65,7 +95,8 @@ const ensureGlobalTracerProvider = (): boolean => {
   provider = new WebTracerProvider({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: SERVICE_NAME,
-      [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
+      [ATTR_SERVICE_VERSION]: serviceVersion(),
+      ...resourceAttributes(),
     }),
     spanProcessors: (() => {
       let countingProcessor: CountingSpanProcessor;
@@ -124,15 +155,25 @@ export const flushTracerProvider = async (): Promise<void> => {
 };
 
 const makeTelemetryLive = (): Layer.Layer<never> =>
-  Layer.unwrap(
-    Effect.sync(() =>
-      ensureGlobalTracerProvider()
-        ? OtelTracer.layerGlobal.pipe(
-            Layer.provide(
-              Resource.layer({ serviceName: SERVICE_NAME, serviceVersion: SERVICE_VERSION }),
-            ),
-          )
-        : Layer.empty,
+  Layer.mergeAll(
+    // Redaction applies even when the exporter is not installed: Effect still
+    // builds spans (and their header attributes) in-memory, and any future
+    // consumer of those spans must never observe an unredacted credential.
+    SpanHeaderRedactionLive,
+    Layer.unwrap(
+      Effect.sync(() =>
+        ensureGlobalTracerProvider()
+          ? OtelTracer.layerGlobal.pipe(
+              Layer.provide(
+                Resource.layer({
+                  serviceName: SERVICE_NAME,
+                  serviceVersion: serviceVersion(),
+                  attributes: resourceAttributes(),
+                }),
+              ),
+            )
+          : Layer.empty,
+      ),
     ),
   );
 

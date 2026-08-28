@@ -11,6 +11,7 @@ import {
   ToolName,
 } from "./ids";
 import type { AuthMethodDescriptor } from "./integration";
+import { firstPartyOAuthClientSlug } from "./oauth-client";
 import { definePlugin, type IntegrationRecord } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveTestHttpApp } from "./testing";
@@ -528,6 +529,51 @@ describe("oauth.start integration-driven scopes", () => {
             }),
           );
           expect(Exit.isFailure(exit)).toBe(true);
+        }),
+      ),
+  );
+
+  it.effect(
+    "(i) a scope-limited first-party MCP app caps the provider's advertised scope catalog",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveMetadataServer({
+            prm: { scopesSupported: ["read", "write", "admin"] },
+          });
+          const plugins = [
+            memoryCredentialsPlugin(),
+            makeMcpScopePlugin({ scopes: null }),
+          ] as const;
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            firstPartyOAuthClients: [
+              {
+                name: "acme",
+                authorizationUrl: server.authorizationEndpoint,
+                tokenUrl: server.tokenEndpoint,
+                resource: server.mcpResourceUrl,
+                clientId: "test-client",
+                clientSecret: "test-secret",
+                integrations: [INTEG],
+                allowedScopes: ["read", "write"],
+              },
+            ],
+          });
+          yield* executor.mcp.seed();
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: firstPartyOAuthClientSlug("acme"),
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["read", "write"]);
         }),
       ),
   );

@@ -64,6 +64,7 @@
         "apps/desktop/src/main.ts",
         "scripts/**/*.{ts,js}",
         "apps/*/scripts/**/*.{ts,js}",
+        "packages/*/*/scripts/**/*.{ts,js}",
         "packages/kernel/runtime-*/src/**/*.{ts,tsx,js,mjs}",
       ],
       "rules": {
@@ -117,6 +118,31 @@
       "files": ["packages/core/vite-plugin/src/**/*.{ts,tsx}"],
       "rules": {
         "executor/no-try-catch-or-throw": "off",
+      },
+    },
+    {
+      // boundary: the MCP-Apps shell is browser code, not Effect domain code.
+      // It runs inside a sandboxed iframe and talks to the host over
+      // postMessage and the MCP bridge — both of which are throw/Promise APIs
+      // with no Effect runtime present. `new Function` evaluation of generated
+      // JSX, CSS harvesting off `document.styleSheets`, and JSON on the wire
+      // all surface untyped JS errors that must be caught and rendered rather
+      // than modelled. Scoped to the iframe payload plus its build config; the
+      // package's Effect-facing loader (`src/shell-html.ts`) is deliberately
+      // NOT listed and uses inline suppressions instead.
+      "files": [
+        "packages/hosts/mcp-apps-shell/src/shell/**/*.{ts,tsx}",
+        "packages/hosts/mcp-apps-shell/vite.config.shell.ts",
+      ],
+      "rules": {
+        "executor/no-double-cast": "off",
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-json-parse": "off",
+        "executor/no-promise-catch": "off",
+        "executor/no-promise-reject": "off",
+        "executor/no-try-catch-or-throw": "off",
+        "executor/no-unknown-error-message": "off",
       },
     },
     {

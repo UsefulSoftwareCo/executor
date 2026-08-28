@@ -7,10 +7,21 @@
  * everywhere else the bridge is absent (or returns null in DSN-less builds)
  * and Sentry is never imported, let alone initialized.
  *
- * Handled UI errors already flow through `globalThis.reportError` (see
- * packages/react error-reporting), which Sentry's global handlers pick up
- * once initialized — no reporter rewiring needed.
+ * Handled UI errors are reported through `reportRendererHandledError`, which
+ * the root route hands to `ExecutorProvider`. Letting them fall through to
+ * `globalThis.reportError` instead — as this module used to — filed them via
+ * Sentry's global `onerror` handler, i.e. as UNHANDLED crashes, with the
+ * surface/action context dropped on the floor. Until the DSN arrives (and in
+ * every build without one) the global-event fallback still applies, so nothing
+ * is lost in self-host.
  */
+import {
+  createSentryFrontendErrorReporter,
+  reportViaGlobalErrorEvent,
+  type FrontendErrorReporter,
+} from "@executor-js/react/api/error-reporting";
+
+import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
 
 interface CrashReportingConfig {
   readonly dsn: string;
@@ -22,6 +33,16 @@ interface CrashReportingConfig {
 interface CrashReportingBridge {
   readonly getCrashReporting?: () => Promise<CrashReportingConfig | null>;
 }
+
+let initializedReporter: FrontendErrorReporter | null = null;
+
+/**
+ * The reporter the renderer's `ExecutorProvider` uses. Stable identity, so it
+ * can be passed as a prop, and safe to call before (or without) Sentry init.
+ */
+export const reportRendererHandledError: FrontendErrorReporter = (error, context) => {
+  (initializedReporter ?? reportViaGlobalErrorEvent)(error, context);
+};
 
 export const initDesktopCrashReporting = (): void => {
   if (typeof window === "undefined") return;
@@ -45,6 +66,17 @@ export const initDesktopCrashReporting = (): void => {
             runId: config.runId,
           },
         },
+        // Route chunks are content-hashed, so an unresolved frame names
+        // `atoms-<hash>` and one bug re-groups on every release. Pin a
+        // fingerprint with the hash normalized out; the event itself keeps its
+        // hashed filenames so sourcemap resolution is unaffected.
+        beforeSend: withStableGroupingFingerprint,
+      });
+      initializedReporter = createSentryFrontendErrorReporter((error, applyScope) => {
+        Sentry.captureException(error, (scope) => {
+          applyScope(scope);
+          return scope;
+        });
       });
     } catch {
       // Reporting failures stay silent — there is nowhere left to report them.

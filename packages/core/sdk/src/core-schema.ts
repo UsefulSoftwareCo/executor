@@ -5,6 +5,7 @@ import { StorageError, type FumaRow } from "./fuma-runtime";
 import {
   assertOwnerPatch,
   assertOwnerWritable,
+  assertReachReadOnly,
   executorOwnerPolicyName,
   executorTenantPolicyName,
   executorUnscopedPolicyName,
@@ -67,6 +68,10 @@ const tenantExecutorTable = <const TColumns extends UserColumns>(
     name: executorTenantPolicyName,
     onRead: ({ builder, context }) => builder("tenant", "=", context.tenant),
     onCreate: ({ values, context }) => {
+      // Tenant-scoped reads are already tenant-wide, so reach doesn't widen
+      // them — but the platform view must stay read-only on EVERY table it can
+      // reach, and `subject` is one of these.
+      assertReachReadOnly(name, "write", context);
       if (values.tenant !== context.tenant) {
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB table policy callbacks are promise callbacks, not Effect effects
         throw new StorageError({
@@ -75,8 +80,14 @@ const tenantExecutorTable = <const TColumns extends UserColumns>(
         });
       }
     },
-    onUpdate: ({ builder, context }) => builder("tenant", "=", context.tenant),
-    onDelete: ({ builder, context }) => builder("tenant", "=", context.tenant),
+    onUpdate: ({ builder, context }) => {
+      assertReachReadOnly(name, "write", context);
+      return builder("tenant", "=", context.tenant);
+    },
+    onDelete: ({ builder, context }) => {
+      assertReachReadOnly(name, "delete", context);
+      return builder("tenant", "=", context.tenant);
+    },
   });
 };
 
@@ -104,7 +115,13 @@ const ownedExecutorTable = <const TColumns extends UserColumns>(
       assertOwnerPatch(name, create, context);
       return ownerVisibility(builder, context);
     },
-    onDelete: ({ builder, context }) => ownerVisibility(builder, context),
+    // A delete carries no values to assert against, so the reach guard is the
+    // ONLY thing standing between a widened (platform-view) context and a
+    // tenant-wide delete — `ownerVisibility` would happily match every row.
+    onDelete: ({ builder, context }) => {
+      assertReachReadOnly(name, "delete", context);
+      return ownerVisibility(builder, context);
+    },
   });
 };
 
@@ -149,6 +166,35 @@ export const coreTables = defineTables({
       updated_at: dateColumn("updated_at"),
     },
     ["tenant", "slug"],
+  ),
+
+  // The join between a host's identity system (WorkOS accounts, Better Auth
+  // members, the local single-user sentinel) and the `subject` partition key
+  // smeared across the owned tables. NOT an identity system of its own: the
+  // hosts stay authoritative for names, emails, and membership. This table
+  // only records that a principal has been seen under this tenant, so a user
+  // who has no connection row is still answerable.
+  //
+  // Tenant-scoped, not owner-scoped, on purpose: any executor bound to the
+  // tenant may read it, which is what an operator-level (cross-subject) view
+  // needs, and it costs zero policy changes.
+  subject: tenantExecutorTable(
+    "subject",
+    {
+      // The host-auth principal id (cloud: the WorkOS accountId). Opaque here
+      // — it also carries host sentinels like "local", so nothing may parse it.
+      external_id: keyColumn("external_id"),
+      created_at: dateColumn("created_at"),
+      // Epoch ms of the last sighting on the request path. Nullable so a row
+      // can be created (e.g. at connection-create) before any sighting is
+      // recorded; bigint rather than a timestamp to match the other
+      // "last X happened at" columns here (`tools_synced_at`, `expires_at`).
+      last_seen_at: nullableBigintColumn("last_seen_at"),
+      // Subject lifecycle. Left as an unconstrained nullable string until the
+      // lifecycle values are actually defined; null means "no state recorded".
+      status: nullableTextColumn("status"),
+    },
+    ["tenant", "external_id"],
   ),
 
   // THE saved credential, one per (owner, integration, name). Resolves each named
@@ -290,7 +336,12 @@ export const coreTables = defineTables({
       integration: keyColumn("integration"),
       connection: keyColumn("connection"),
       plugin_id: textColumn("plugin_id"),
-      name: keyColumn("name"),
+      // text, NOT keyColumn: $def names exceed 255 chars in production (deep
+      // OpenAPI component paths), and the live cloud column has been TEXT
+      // since the baseline was patched for it. A varchar(255) here re-emits a
+      // narrowing ALTER on every drizzle-kit generate, which fails on real
+      // rows (22001) — that drift broke cloud migration 0013 once already.
+      name: textColumn("name"),
       schema: jsonColumn("schema"),
       created_at: dateColumn("created_at"),
     },
@@ -305,6 +356,47 @@ export const coreTables = defineTables({
       pattern: textColumn("pattern"),
       action: textColumn("action"),
       position: textColumn("position"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "id"],
+  ),
+
+  // A saved generative-UI artifact — the JSX source a model produced, kept so
+  // it can be re-rendered later and matched by title/description from any MCP
+  // client. Owner-scoped like every other personal row: artifacts are created
+  // at the `user` tier, and the `org` tier the table already carries is what
+  // sharing will use later without new machinery.
+  artifact: ownedExecutorTable(
+    "artifact",
+    {
+      id: keyColumn("id"),
+      title: textColumn("title"),
+      // Model-supplied prose the agent matches against ("my active users
+      // dashboard"). Nullable: the title alone is enough to save one.
+      description: nullableTextColumn("description"),
+      // The JSX source. Free-form TEXT, never indexed.
+      code: textColumn("code"),
+      // `role -> { integration, owner, connection }`: which connection each
+      // integration role in `code` resolves to. Artifact source addresses
+      // integrations, not connections (`tools.vercel.domains.getDomains`), so
+      // the account identity lives HERE, out of the source, where rebinding a
+      // shared artifact is a row update rather than a rewrite.
+      //
+      // Nullable for the artifacts saved before this contract existed: their
+      // code carries full five-segment paths and runs as written. See
+      // `resolveCallAddress` in `@executor-js/host-mcp`.
+      bindings: nullableJsonColumn("bindings"),
+      // What the gallery shows instead of a schematic: sanitized markup from
+      // the create-time smoke render, or a raster snapshot captured once the
+      // artifact has been opened and settled. Discriminated by shape — a data
+      // URL is the image, anything else is markup. See `artifact-preview.ts`
+      // for the sanitizer and for why the markup carries no live data.
+      //
+      // Nullable, and every reader falls back: artifacts saved before this
+      // column existed have none, and so does one whose render was too large,
+      // failed open, or has never been opened.
+      preview: nullableTextColumn("preview"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -338,6 +430,7 @@ export const coreSchema = coreTables;
 export type CoreSchema = typeof coreTables;
 
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
+export type SubjectRow = FumaRow<CoreSchema["subject"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
@@ -363,6 +456,29 @@ export const TOOL_INVOCATION_COLUMNS = [
 ] as const satisfies readonly (keyof ToolRow)[];
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
+export type ArtifactRow = FumaRow<CoreSchema["artifact"]>;
+/**
+ * The columns a list projects — everything except the JSX source, which only a
+ * full read needs.
+ *
+ * `preview` is here on purpose, and it is the one heavy-ish column that earns
+ * its place: the gallery IS the list, so a preview fetched anywhere else would
+ * be a second round trip per card to render the thing the card is made of.
+ * It is bounded at
+ * {@link ARTIFACT_PREVIEW_MARKUP_LIMIT} precisely so this projection stays
+ * affordable — `code` has no such bound, which is why it stays out.
+ */
+export const ARTIFACT_SUMMARY_COLUMNS = [
+  "owner",
+  "id",
+  "title",
+  "description",
+  "preview",
+  "created_at",
+  "updated_at",
+] as const satisfies readonly (keyof ArtifactRow)[];
+/** The artifact-row projection {@link ARTIFACT_SUMMARY_COLUMNS} selects. */
+export type ArtifactSummaryRow = Pick<ArtifactRow, (typeof ARTIFACT_SUMMARY_COLUMNS)[number]>;
 export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
 export type BlobRow = FumaRow<CoreSchema["blob"]>;
 

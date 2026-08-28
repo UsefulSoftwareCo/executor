@@ -110,7 +110,26 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     // are re-emitted by the shared envelope (MCP clients probe the origin root,
     // not the /api/auth basePath).
     plugins: [
-      organization(),
+      // SINGLE-ORG INSTANCE, ENFORCED. `allowUserToCreateOrganization: false`
+      // closes `POST /api/auth/organization/create` to every session. Left at
+      // its default (true) it was the first step of a privilege escalation: any
+      // invited member could create an organization of their own, become its
+      // `owner` (the creator role), get it set as their active org, and then
+      // pass an admin gate that resolved the caller's role from
+      // `session.activeOrganizationId` — reading the whole instance's user
+      // directory and minting themselves a durable `role: "admin"` invite code.
+      // The load-bearing fix is `admin/require-admin.ts`, which authorizes
+      // against THIS instance's org id instead of the session's; this flag is
+      // defense in depth, and is also just true of the product — self-host
+      // serves exactly one organization, so a second one is never legitimate.
+      //
+      // The bootstrap seed is unaffected: `seed.ts` calls `createOrganization`
+      // with `userId` and NO session, which better-auth 1.6.12 treats as
+      // `isSystemAction` and short-circuits past the `canCreateOrg` check
+      // (`plugins/organization/routes/crud-org.mjs` — verified against the
+      // installed build, and covered by every node test here, all of which boot
+      // through that path).
+      organization({ allowUserToCreateOrganization: false }),
       admin(),
       apiKey({ enableSessionForAPIKeys: true, rateLimit: { enabled: false } }),
       bearer(),

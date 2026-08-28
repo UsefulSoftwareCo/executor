@@ -18,6 +18,7 @@ import { AccountHttpApi, isValidOrgSlug } from "@executor-js/api";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "Org URLs · console paths carry the organization slug",
@@ -38,7 +39,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("A bare deep link canonicalizes onto the org slug", async () => {
-        await page.goto("/policies", { waitUntil: "networkidle" });
+        await visit(page, "/policies");
         await page.waitForURL((url) => url.pathname === `/${slug}/policies`, {
           timeout: 30_000,
         });
@@ -52,13 +53,13 @@ scenario(
       // legitimately does not.
       if (!target.name.startsWith("selfhost")) {
         await step("An unknown org slug is a wrong address, not a redirect", async () => {
-          await page.goto("/zz-no-such-org/policies", { waitUntil: "networkidle" });
+          await visit(page, "/zz-no-such-org/policies");
           await page.getByText("Page not found").waitFor({ timeout: 30_000 });
         });
       }
 
       await step("In-shell navigation keeps the slug prefix", async () => {
-        await page.goto(`/${slug}`, { waitUntil: "networkidle" });
+        await visit(page, `/${slug}`);
         await page.getByRole("link", { name: "Policies" }).first().click();
         await page.waitForURL((url) => url.pathname === `/${slug}/policies`, {
           timeout: 30_000,
