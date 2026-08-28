@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
@@ -352,7 +352,20 @@ function OnePasswordItemSelect(props: {
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
-  const itemsResult = useAtomValue(providerItemsAtom(ONEPASSWORD_PROVIDER));
+  const itemsAtom = providerItemsAtom(ONEPASSWORD_PROVIDER);
+  const itemsResult = useAtomValue(itemsAtom);
+  const refreshItems = useAtomRefresh(itemsAtom);
+
+  // Stale-while-revalidate: with a retained value the list renders instantly
+  // and one background refresh per mount picks up vault changes (refreshing
+  // keeps the previous value, so nothing flashes). A cold mount is already
+  // fetching — refreshing it would only restart the request. The ref carries
+  // the latest cached-ness into the effect without re-running it.
+  const isCachedRef = useRef(false);
+  isCachedRef.current = AsyncResult.isSuccess(itemsResult);
+  useEffect(() => {
+    if (isCachedRef.current) refreshItems();
+  }, [refreshItems]);
   const state = AsyncResult.matchWithError(
     itemsResult as AsyncResult.AsyncResult<readonly OnePasswordItem[], Error>,
     {

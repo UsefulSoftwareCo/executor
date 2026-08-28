@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useEffect, useRef, useState } from "react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { Button } from "@executor-js/react/components/button";
@@ -57,7 +57,20 @@ function VaultPicker(props: {
   onSelectedChange: (vaults: ReadonlyArray<Vault>) => void;
 }) {
   const account = props.accountName.trim();
-  const vaultsResult = useAtomValue(onepasswordVaultsAtom(props.authKind, account));
+  const vaultsAtom = onepasswordVaultsAtom(props.authKind, account);
+  const vaultsResult = useAtomValue(vaultsAtom);
+  const refreshVaults = useAtomRefresh(vaultsAtom);
+
+  // Stale-while-revalidate: with a retained value the vault list renders
+  // instantly and one background refresh per atom key picks up changes
+  // (refreshing keeps the previous value, so nothing flashes). A cold key is
+  // already fetching — refreshing it would only restart the request. The ref
+  // carries the latest cached-ness into the effect without re-running it.
+  const isCachedRef = useRef(false);
+  isCachedRef.current = AsyncResult.isSuccess(vaultsResult);
+  useEffect(() => {
+    if (isCachedRef.current) refreshVaults();
+  }, [refreshVaults]);
 
   const { vaults, isLoading, error } = AsyncResult.matchWithError(
     vaultsResult as AsyncResult.AsyncResult<
