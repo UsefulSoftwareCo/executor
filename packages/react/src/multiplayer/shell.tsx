@@ -390,8 +390,8 @@ function SidebarContent(
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label="Connect an integration"
-            title="Connect an integration"
+            aria-label="Add integration"
+            title="Add integration"
             onClick={props.onOpenIntegrationConnect}
             className="-my-1 text-muted-foreground hover:bg-sidebar-active/60 hover:text-foreground"
           >

@@ -19,7 +19,7 @@ scenario(
         await clickToReveal(
           page
             .getByRole("navigation")
-            .getByRole("button", { name: "Connect an integration", exact: true }),
+            .getByRole("button", { name: "Add integration", exact: true }),
           page.getByRole("dialog", { name: "Connect an integration" }),
         );
       });
