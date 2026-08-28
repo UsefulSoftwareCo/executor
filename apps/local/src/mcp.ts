@@ -17,7 +17,9 @@ import {
   approvalUrlForRequest,
   decodeResumeResponse,
   formatResumeAcknowledgement,
+  readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -183,8 +185,16 @@ export const createMcpRequestHandler = (
       let createdSessionId: string | null = null;
       let resourceConfig: LocalMcpServerConfig | null = null;
       const transport = new WebStandardStreamableHTTPServerTransport({
+        // SSE streaming (the spec default), NOT `enableJsonResponse: true`.
+        // JSON mode holds the POST open as a bare Promise and resolves it with
+        // one buffered body once every response is ready, so the transport has
+        // no open stream to write on: a server-to-client `elicitation/create`
+        // issued DURING a `tools/call` is dropped, and native elicitation dies
+        // on the client's request timeout (#1555). Streaming keeps the tool
+        // call's own stream writable in both directions, which is what native
+        // elicitation rides. Clients must already accept `text/event-stream`
+        // (the transport rejects a POST otherwise), so this costs nothing.
         sessionIdGenerator: () => crypto.randomUUID(),
-        enableJsonResponse: true,
         onsessioninitialized: (sid) => {
           createdSessionId = sid;
           transports.set(sid, transport);
@@ -210,6 +220,8 @@ export const createMcpRequestHandler = (
           createExecutorMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
+            artifactsEnabled: readArtifactsEnabled(request),
+            searchToolsEnabled: readSearchToolsEnabled(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {

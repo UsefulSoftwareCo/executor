@@ -1,4 +1,4 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import { Deferred, Duration, Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -7,6 +7,7 @@ import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/sch
 import type { AnyColumn } from "@executor-js/fumadb/schema";
 import {
   StorageError,
+  afterCommit,
   isStorageFailure,
   makeFumaClient,
   type FumaDb,
@@ -15,6 +16,7 @@ import {
   type StorageFailure,
 } from "./fuma-runtime";
 import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartitions } from "./blob";
+import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
 import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
@@ -28,6 +30,7 @@ import type {
 import { HealthCheckResult, HealthCheckSpec } from "./health-check";
 import type { HealthCheckCandidate } from "./health-check";
 import {
+  ARTIFACT_SUMMARY_COLUMNS,
   coreSchema,
   isToolPolicyAction,
   TOOL_INVOCATION_COLUMNS,
@@ -51,6 +54,17 @@ import {
 
 export type { OnElicitation, InvokeOptions } from "./elicitation";
 import {
+  rowToArtifact,
+  rowToArtifactSummary,
+  type Artifact,
+  type ArtifactSummary,
+  type RemoveArtifactInput,
+  type RenameArtifactInput,
+  type SaveArtifactInput,
+  type SetArtifactPreviewInput,
+} from "./artifact";
+import {
+  ArtifactNotFoundError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
@@ -65,6 +79,7 @@ import {
   type ExecuteError,
 } from "./errors";
 import {
+  ArtifactId,
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
@@ -83,6 +98,7 @@ import {
 import type {
   AuthMethodDescriptor,
   Integration,
+  IntegrationChangeEvent,
   IntegrationConfig,
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
@@ -92,7 +108,8 @@ import {
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
-import type { OAuthService } from "./oauth-client";
+import { isFirstPartyOAuthClientSlug, type OAuthService } from "./oauth-client";
+import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
   isValidPattern,
@@ -107,6 +124,7 @@ import {
   type UpdateToolPolicyInput,
 } from "./policies";
 import type { CredentialProvider, ProviderEntry } from "./provider";
+import { touchSubject } from "./subject-registry";
 import type {
   AnyPlugin,
   Elicit,
@@ -146,11 +164,23 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  isPermanentTokenRejection,
+  isUnusableSuccessTokenResponse,
   shouldRefreshToken,
+  type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
+import {
+  ENTERPRISE_MANAGED_PROVIDER_STATE_KEY,
+  enterpriseManagedStateFrom,
+  mintEnterpriseManagedAccessToken,
+  type EnterpriseManagedMintError,
+  type EnterpriseManagedRollout,
+} from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult } from "./tool-result";
+import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
+import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
 const PLUGIN_STORAGE_CREATE_ROW_BATCH_SIZE = 90;
@@ -367,6 +397,44 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly resolve: (address: ToolAddress) => Effect.Effect<EffectivePolicy, StorageFailure>;
   };
 
+  /**
+   * The PLATFORM VIEW: read-only, tenant-wide reads across every subject.
+   * Present only when the executor was built with `platformView: true`
+   * (default off) — every other surface on this executor stays bound to the
+   * single `{ tenant, subject }` product view and is unaffected by this one.
+   * Internal admin surface; the public HTTP shape is a separate concern.
+   */
+  readonly admin?: ExecutorAdmin;
+  /** Saved generative-UI artifacts, visible to the bound owner scope. */
+  readonly artifacts: {
+    /** Newest first, without the JSX source — lists stay light. */
+    readonly list: () => Effect.Effect<readonly ArtifactSummary[], StorageFailure>;
+    readonly get: (id: string) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
+    /** Create, or overwrite an existing artifact in place when `id` is given. */
+    readonly save: (
+      input: SaveArtifactInput,
+    ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
+    readonly rename: (
+      input: RenameArtifactInput,
+    ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
+    readonly remove: (input: RemoveArtifactInput) => Effect.Effect<void, StorageFailure>;
+    /** Upgrade the stored preview to a snapshot of a settled render. Touches
+     *  only `preview`, and never `updated_at`. */
+    readonly setPreview: (
+      input: SetArtifactPreviewInput,
+    ) => Effect.Effect<void, ArtifactNotFoundError | StorageFailure>;
+  };
+
+  /**
+   * Approvals recorded for artifact-originated calls that paused on a human.
+   *
+   * Scoped to this executor's owner, so a record is only readable by the caller
+   * who created it — the ownership check on resume is the same read that fetches
+   * it. See `pending-approval.ts` for why an artifact pause is reconstructible
+   * when a general codemode pause is not.
+   */
+  readonly pendingApprovals: PendingApprovalStore;
+
   readonly execute: (
     address: ToolAddress,
     args: unknown,
@@ -375,6 +443,147 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 
   readonly close: () => Effect.Effect<void, StorageFailure>;
 } & PluginExtensions<TPlugins>;
+
+// ---------------------------------------------------------------------------
+// The platform view — internal admin reads.
+//
+// Everything else on the executor is the PRODUCT view: bound to one
+// { tenant, subject }. This is the read-only escape hatch beside it, reading
+// the same store through a `reach: "tenant"` context so it can answer
+// "who exists under this tenant, and what have they connected".
+//
+// Vocabulary note: internal code says subject/tenant/reach. Anything
+// public-facing says users/owners — the translation happens at the HTTP edge,
+// not here.
+//
+// FIELD DISCIPLINE: these shapes are a hand-picked allowlist, not a projection
+// of the row. Nothing secret-bearing may appear — no `item_ids`, no
+// `refresh_item_id`, no oauth client secrets, no credential material of any
+// kind. Adding a field here is a deliberate act.
+// ---------------------------------------------------------------------------
+
+/** One principal seen under the tenant (a row of the `subject` table). */
+export interface AdminSubject {
+  /** The host-auth principal id. Opaque — it also carries host sentinels
+   *  like "local", so nothing may parse it. */
+  readonly externalId: string;
+  readonly createdAt: Date;
+  /** Epoch ms of the last sighting on the request path; null when never seen
+   *  (a subject can be created at connection-create before any sighting). */
+  readonly lastSeenAt: number | null;
+  readonly status: string | null;
+}
+
+/** A connection as the platform view sees it: enough to answer "what has this
+ *  user connected and is it healthy", and nothing that could resolve a
+ *  credential. */
+export interface AdminConnection {
+  readonly owner: Owner;
+  /** The owning principal — `null` for org-owned connections, which belong to
+   *  the tenant rather than to any one user. */
+  readonly subject: string | null;
+  readonly integration: IntegrationSlug;
+  readonly name: ConnectionName;
+  /** The scope set the provider actually granted, space-delimited as recorded
+   *  at connect/refresh. Null for static credentials. A summary of ACCESS —
+   *  never a token. */
+  readonly oauthScope: string | null;
+  readonly lastHealth: HealthCheckResult | null;
+}
+
+/** A subject together with every connection it owns in the tenant. */
+export interface AdminSubjectWithConnections extends AdminSubject {
+  readonly connections: readonly AdminConnection[];
+}
+
+export interface AdminListSubjectsOptions {
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/**
+ * Page size applied when a caller names none. Every admin list is BOUNDED:
+ * `listSubjects()` with no arguments is the obvious call, and unbounded it
+ * returns every subject in the tenant — an unbounded row count to build,
+ * serialize, and ship, and an unbounded `in` predicate for the joined read to
+ * carry. A default is what keeps the no-args call honest; a caller who wants
+ * more asks for more, up to {@link ADMIN_MAX_PAGE_SIZE}.
+ *
+ * 100 rather than the maximum: large enough that no realistic operator UI pages
+ * twice for a first screen, small enough that one response stays a bounded
+ * amount of work even at its worst.
+ */
+export const ADMIN_DEFAULT_PAGE_SIZE = 100;
+
+/** Hard ceiling on an admin page, matching the HTTP contract's `limit` maximum.
+ *  A larger `limit` is clamped rather than honored. */
+export const ADMIN_MAX_PAGE_SIZE = 500;
+
+/**
+ * Normalize paging for every admin list.
+ *
+ * THREE things happen here, each fixing a real failure:
+ *   - a `limit` is ALWAYS produced. Drizzle's SQLite dialect emits OFFSET only
+ *     alongside LIMIT, and SQLite rejects a bare OFFSET, so `{ offset: 25 }`
+ *     was a syntax error on every SQLite host (local, self-host, D1).
+ *   - the limit is clamped to `[1, ADMIN_MAX_PAGE_SIZE]`, so no caller can ask
+ *     for an unbounded scan.
+ *   - both values are floored to integers. The HTTP contract rejects a
+ *     fractional `?limit=` outright (a 400, not a coerced value); this is the
+ *     SDK-level backstop so no driver ever receives a fraction and answers with
+ *     `datatype mismatch`.
+ */
+const normalizeAdminPaging = (
+  options: AdminListSubjectsOptions | undefined,
+): { readonly limit: number; readonly offset: number } => {
+  const requested = options?.limit ?? ADMIN_DEFAULT_PAGE_SIZE;
+  const limit = Math.min(Math.max(Math.floor(requested), 1), ADMIN_MAX_PAGE_SIZE);
+  const offset = Math.max(Math.floor(options?.offset ?? 0), 0);
+  return { limit, offset };
+};
+
+export interface ExecutorAdmin {
+  /** One page of subjects under the tenant, oldest first (stable: ties break on
+   *  `external_id`). ALWAYS bounded: no arguments means
+   *  {@link ADMIN_DEFAULT_PAGE_SIZE} rows from offset 0, and `limit` is clamped
+   *  to {@link ADMIN_MAX_PAGE_SIZE}. There is no way to ask for every subject
+   *  in one call. */
+  readonly listSubjects: (
+    options?: AdminListSubjectsOptions,
+  ) => Effect.Effect<readonly AdminSubject[], StorageFailure>;
+  /**
+   * One subject by its `external_id`, or `null` when the tenant has no such
+   * row. A keyed read on the `(tenant, external_id)` unique index rather than
+   * a filtered `listSubjects`, because the caller asking for ONE principal
+   * must not pay for a tenant-wide scan — this is the read behind a per-user
+   * check that runs far more often than the bulk list.
+   *
+   * `null` is a normal answer, not a failure: it means "this tenant has never
+   * recorded that principal". Distinguishing that from a storage fault is the
+   * whole point of the nullable return.
+   */
+  readonly getSubject: (externalId: string) => Effect.Effect<AdminSubject | null, StorageFailure>;
+  /** Every connection in the tenant owned by `externalId`. Org-owned
+   *  connections are NOT attributed to a user and are excluded. */
+  readonly listSubjectConnections: (
+    externalId: string,
+  ) => Effect.Effect<readonly AdminConnection[], StorageFailure>;
+  /** `listSubjects` joined with each subject's connections in TWO queries —
+   *  the page of subjects, then one batched connection read over that page.
+   *  The cost does not scale with page size, so {@link ADMIN_DEFAULT_PAGE_SIZE}
+   *  and {@link ADMIN_MAX_PAGE_SIZE} bound the ROWS returned rather than the
+   *  round trips taken. A subject with no connections reports an empty array;
+   *  it is never dropped from the page. */
+  readonly listSubjectsWithConnections: (
+    options?: AdminListSubjectsOptions,
+  ) => Effect.Effect<readonly AdminSubjectWithConnections[], StorageFailure>;
+  /** `getSubject` joined with that subject's connections, in ONE call — the
+   *  shape a per-user check needs. `null` on the same terms as `getSubject`,
+   *  and no connection read is issued when the subject row is absent. */
+  readonly getSubjectWithConnections: (
+    externalId: string,
+  ) => Effect.Effect<AdminSubjectWithConnections | null, StorageFailure>;
+}
 
 export interface ExecutorDb {
   readonly db: FumaDb<any>;
@@ -429,6 +638,33 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
+   * Host-owned rollout gate for enterprise-managed authorization (the MCP EMA
+   * profile). Core declares the port and depends on no feature-flag or
+   * analytics vendor; a host that operates one supplies an implementation.
+   *
+   * ROLLOUT SEMANTIC: the gate decides only whether a NEW connect may attempt
+   * the enterprise-managed path. It is consulted once per `oauth.start` on an
+   * `id_jag` client, before discovery, and never after the identity provider
+   * has ruled. The verdict is then frozen onto the connection's
+   * `provider_state`, and the credential-refresh path
+   * (`performEnterpriseManagedRefresh`) follows that stored state rather than
+   * re-evaluating — so switching the flag off never strands or downgrades an
+   * existing enterprise-managed connection, and no third-party network
+   * dependency ever enters credential resolution.
+   *
+   * Omitted -> enterprise-managed authorization is attempted, which is exactly
+   * what every host did before this seam existed.
+   */
+  readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
+  /**
+   * Host-operated OAuth apps (the deployment's own registered GitHub/Google/…
+   * apps), addressed as `first-party:<name>`. Users connect through them with
+   * nothing to paste. Config-resolved — never persisted; secrets stay in host
+   * env and are never written to a credential provider or returned over any
+   * read surface. Minted connections and their tokens remain per-owner.
+   */
+  readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
+  /**
    * Enable the built-in `core-tools` plugin which contributes agent-facing
    * static tools over the v2 surface (integrations / connections / policies).
    */
@@ -446,6 +682,33 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * config-revision re-sync still apply).
    */
   readonly toolsSyncTtlMs?: number | null;
+  /**
+   * Notified after a durable integration-catalog change commits (a row
+   * created or removed). Best-effort observation only: the notification runs
+   * AFTER the transaction, its failures are swallowed, and it cannot affect
+   * the operation's outcome. Hosts use it for product analytics; core stays
+   * analytics-agnostic.
+   */
+  readonly onIntegrationChange?: (event: IntegrationChangeEvent) => Effect.Effect<void>;
+  /**
+   * Opt into the PLATFORM VIEW: a read-only, tenant-wide `executor.admin`
+   * surface that reads across every subject in the tenant (see
+   * {@link ExecutorAdmin}). Default OFF — `admin` is simply absent, so the
+   * escape hatch has to be asked for by a host that has authorized an
+   * org-level caller.
+   *
+   * Enabling it makes the WHOLE executor read-only, not just `admin`: the base
+   * owner context carries `writes: "denied"`, so `connections`, `policies`,
+   * `integrations` and `oauth` refuse every create/update/delete at the storage
+   * boundary. An executor built for an org-level caller is an observer, and
+   * `admin` being its only tenant-wide surface is not the same as it being its
+   * only guarded one.
+   *
+   * READS still differ by surface: only `admin` is tenant-wide. Every other
+   * surface stays bound to `{ tenant, subject }` — widening them would expose
+   * every subject's connection rows, credential item ids included.
+   */
+  readonly platformView?: boolean;
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -557,6 +820,20 @@ const missingOAuthScopesFromProviderState = (value: unknown): readonly string[] 
     ? scopes.filter((scope): scope is string => typeof scope === "string")
     : [];
 };
+
+/** The definitive refresh rejection recorded on `provider_state`, or null.
+ *  Set when the AS rejects the grant itself (RFC 6749 invalid_grant — retrying
+ *  cannot change the verdict); cleared by the reconnect mint, which rewrites
+ *  `provider_state` wholesale. While set, refresh attempts are skipped. */
+const decodeOAuthReauthRequiredProviderState = Schema.decodeUnknownOption(
+  Schema.Struct({
+    oauthReauthRequiredAt: Schema.Number,
+    oauthReauthRequiredDetail: Schema.optional(Schema.String),
+  }),
+);
+
+const oauthReauthRequiredFromProviderState = (value: unknown) =>
+  Option.getOrNull(decodeOAuthReauthRequiredProviderState(decodeJsonColumn(value)));
 
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
@@ -1368,12 +1645,34 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       catch: (cause) => storageFailureFromUnknown("Failed to validate executor tables", cause),
     });
 
-    const ownerContext: ExecutorOwnerPolicyContext = { tenant, subject };
+    // The platform view is read-only ACROSS THE WHOLE EXECUTOR, not just on the
+    // `admin` handle: `writes: "denied"` rides on the base context, so
+    // `connections`, `policies`, `integrations` and `oauth` are guarded by the
+    // owner policy too. Without it a platform executor is subject-less but
+    // still bound to the tenant's ORG partition, and could create/update/delete
+    // every `owner: "org"` row through those ordinary surfaces.
+    //
+    // Deliberately NOT `reach: "tenant"` here — that would widen this context's
+    // reads to every subject's `connection` rows, credential item ids included.
+    // Reach stays "bound"; only the write axis changes. See
+    // `ExecutorOwnerPolicyContext.writes`.
+    const ownerContext: ExecutorOwnerPolicyContext = {
+      tenant,
+      subject,
+      ...(config.platformView === true ? { writes: "denied" as const } : {}),
+    };
     const rootDb = withQueryContext(rootDbUntyped, ownerContext);
     const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
+
+    // Runtime-observed output shapes ("muscle memory"): learned on the
+    // execute success path, served by tools.schema when a tool declares no
+    // output schema. Backed by plugin_storage under a reserved system id.
+    const shapeMemory = makeShapeMemory(
+      makePluginStorageFacade({ core, pluginId: SHAPE_MEMORY_PLUGIN_ID, owner: ownerBinding }),
+    );
 
     // Populated once, never mutated after startup.
     const staticTools = new Map<string, StaticTools>();
@@ -1419,6 +1718,87 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       static: true,
     });
 
+    /** How long a credential provider gets to answer one call.
+     *
+     *  A provider is frequently REMOTE — an HTTP secret store, or under sealed custody
+     *  a vault that may live in another enclave — so "stopped answering" is one of its
+     *  ordinary failure modes, not an exotic one. Without a bound, a vault that goes
+     *  away does not fail a tool invocation, it hangs it, and nothing in the resulting
+     *  silence names the provider.
+     *
+     *  Generous on purpose: this is a backstop against a dead dependency, not a latency
+     *  budget. A store legitimately slower than this is better served by the operator
+     *  hearing about it than by the request waiting indefinitely.
+     *
+     *  Executor already bounds its other remote calls this way — OAuth discovery, and
+     *  the MCP plugin's probes. Credential resolution was the one that did not. */
+    const CREDENTIAL_PROVIDER_TIMEOUT_MS = 30_000;
+
+    /** Bound one provider call, failing with an error that names the provider and the
+     *  operation — so the diagnostic points at the store rather than at whatever the
+     *  caller happened to be doing. */
+    const boundedCall = <A>(
+      effect: Effect.Effect<A, StorageFailure>,
+      key: string,
+      operation: string,
+    ): Effect.Effect<A, StorageFailure> =>
+      effect.pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(CREDENTIAL_PROVIDER_TIMEOUT_MS),
+          orElse: () =>
+            Effect.fail(
+              new StorageError({
+                message:
+                  `Credential provider "${key}" did not answer ${operation} within ` +
+                  `${CREDENTIAL_PROVIDER_TIMEOUT_MS}ms. The store is unreachable or not responding; ` +
+                  `the credential was not resolved.`,
+                cause: undefined,
+              }),
+            ),
+        }),
+      );
+
+    /** Wrap a provider so every call it exposes is bounded.
+     *
+     *  Done once at the registration funnel rather than at each call site: every
+     *  provider passes through here on its way in, rather than every call site
+     *  remembering. The five methods `CredentialProvider` has today are named
+     *  explicitly, so a sixth added to the interface must be added here too.
+     *  Optional methods stay optional — a provider that cannot enumerate must not
+     *  appear to. */
+    const boundedProvider = (provider: CredentialProvider, key: string): CredentialProvider => {
+      // Wrapping must change neither how the provider's methods are CALLED nor what the
+      // object LOOKS like.
+      //
+      // Spreading would break the second: a spread copies only own ENUMERABLE properties, so
+      // everything on a class's prototype — its methods, and accessors like `writable` — is
+      // dropped silently. Nothing raises; the wrapper simply appears not to have the capability
+      // and the caller takes a path the provider meant to own. `Object.create` keeps the whole
+      // object reachable, including anything added to the interface later.
+      //
+      // Each bounded method is invoked ON the provider, which is the first half: a destructured
+      // binding called bare loses `this`, and a class-based provider throws TypeError on its
+      // first call. Every provider in this repo is an object literal and cannot notice either
+      // problem, but "wrap any provider" is the whole point of this funnel.
+      const bounded: Record<string, unknown> = {
+        get: (id: ProviderItemId) => boundedCall(provider.get(id), key, "get"),
+      };
+      if (provider.has) {
+        bounded.has = (id: ProviderItemId) => boundedCall(provider.has!(id), key, "has");
+      }
+      if (provider.set) {
+        bounded.set = (id: ProviderItemId, value: string) =>
+          boundedCall(provider.set!(id, value), key, "set");
+      }
+      if (provider.delete) {
+        bounded.delete = (id: ProviderItemId) => boundedCall(provider.delete!(id), key, "delete");
+      }
+      if (provider.list) {
+        bounded.list = () => boundedCall(provider.list!(), key, "list");
+      }
+      return Object.assign(Object.create(provider) as CredentialProvider, bounded);
+    };
+
     const registerCredentialProvider = (
       provider: CredentialProvider,
       sourceLabel: string,
@@ -1432,7 +1812,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
       }
-      credentialProviders.set(key, provider);
+      credentialProviders.set(key, boundedProvider(provider, key));
       credentialProviderOrder.push(key);
       return Effect.void;
     };
@@ -1500,10 +1880,264 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         where: (b: AnyCb) => b.and(byOwner(owner)(b), b("slug", "=", slug)),
       });
 
+    // Config-declared first-party apps, keyed by prefixed slug — the refresh
+    // path's counterpart to the OAuth service's config-first resolution.
+    const firstPartyOAuthBySlug = new Map(
+      (config.firstPartyOAuthClients ?? []).map((client) => [`first-party:${client.name}`, client]),
+    );
+
+    /** The app identity a refresh runs against, uniformly resolved: a stored
+     *  row's secret comes out of the credential provider by item id; a
+     *  first-party app's comes from host config and never touches a provider. */
+    interface RefreshClient {
+      readonly clientId: string;
+      readonly clientSecret: string;
+      readonly tokenUrl: string;
+      readonly grant: string;
+      readonly resource: string | null;
+    }
+
+    /** What drove a refresh: the pre-call expiry check (`proactive`), or an
+     *  upstream 401 on a token we believed was still valid (`reactive`). */
+    type RefreshTrigger = "proactive" | "reactive";
+
+    /** Record the AS's invalid_grant verdict on the row so later refreshes
+     *  skip the doomed token request, and stamp `last_health` expired so the
+     *  accounts list shows the dead connection at a glance instead of only
+     *  after a manual probe. Merges into `provider_state` (preserving
+     *  `missingOAuthScopes`); the reconnect mint rewrites the column wholesale,
+     *  which is what re-arms refresh. Best-effort: a bookkeeping write failure
+     *  must not mask the refresh failure being reported. */
+    const markRefreshGrantDead = (
+      row: ConnectionRow,
+      detail: string,
+    ): Effect.Effect<void, never> => {
+      const existingState = decodeJsonColumn(row.provider_state);
+      const mergedState =
+        existingState != null && typeof existingState === "object" && !Array.isArray(existingState)
+          ? (existingState as Record<string, unknown>)
+          : {};
+      const health: HealthCheckResult = {
+        status: "expired",
+        checkedAt: Date.now(),
+        detail,
+      };
+      return core
+        .updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(row.owner as Owner)(b),
+              b("integration", "=", String(row.integration)),
+              b("name", "=", String(row.name)),
+            ),
+          set: {
+            provider_state: {
+              ...mergedState,
+              oauthReauthRequiredAt: Date.now(),
+              oauthReauthRequiredDetail: detail,
+            },
+            last_health: health,
+            updated_at: new Date(),
+          },
+        })
+        .pipe(Effect.ignore);
+    };
+
+    /** Write a re-minted token back: a ROTATED refresh token into the refresh
+     *  item, the access token into the connection's primary provider item, and
+     *  the new expiry/scope onto the row. Shared by every grant so their
+     *  persistence stays identical — the grants differ in how they mint, not in
+     *  what a mint means.
+     *
+     *  The refresh token goes FIRST because the writes are not atomic and the
+     *  two credentials are not equally replaceable. Minting rotated the refresh
+     *  token, which spends the one we sent, so the new one is the only thing
+     *  that can mint again; the access token is disposable and one more grant
+     *  re-mints it. Persisting the access token first means a failure in
+     *  between drops a single-use credential the authorization server has
+     *  already consumed, and every later refresh comes back `invalid_grant` —
+     *  a connection that silently disconnects itself. */
+    const persistRefreshedToken = (
+      row: ConnectionRow,
+      provider: CredentialProvider,
+      token: OAuth2TokenResponse,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.gen(function* () {
+        if (provider.set) {
+          // OAuth is always single-input: the access token lives in the `token`
+          // item. Fall back to a deterministic id if the map is somehow empty.
+          const tokenItemId =
+            connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
+            `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
+          if (token.refresh_token && row.refresh_item_id) {
+            yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
+          }
+          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
+        }
+
+        const nextExpiresAt =
+          typeof token.expires_in === "number" ? Date.now() + token.expires_in * 1000 : null;
+        const set: Record<string, unknown> = {
+          expires_at: nextExpiresAt,
+          updated_at: new Date(),
+        };
+        if (token.scope !== undefined) set.oauth_scope = token.scope;
+        yield* core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(row.owner as Owner)(b),
+              b("integration", "=", String(row.integration)),
+              b("name", "=", String(row.name)),
+            ),
+          set,
+        });
+      });
+
+    /** The rendered message of a typed enterprise-managed failure. */
+    const enterpriseManagedMessage = (cause: EnterpriseManagedMintError): string =>
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
+      cause.message;
+
+    /** Re-mint an enterprise-managed access token: exchange the stored identity
+     *  assertion for a fresh ID-JAG at the enterprise IdP, then redeem it at the
+     *  MCP server's authorization server. Runs with no user interaction, which
+     *  is the point of the profile.
+     *
+     *  The grant profile is NOT re-discovered here. It was confirmed when the
+     *  connection was made and persisted as part of its enterprise state; a
+     *  fresh discovery round trip on every renewal could only ever restate it.
+     *
+     *  Neither is the rollout gate (`ExecutorConfig.enterpriseManagedRollout`)
+     *  re-consulted: this function does not receive it and must not. The flag
+     *  gates whether a connection MAY BE MADE this way; a connection that
+     *  already exists renews from its persisted state. Wiring the flag in here
+     *  would mean an operator dialling the rollout back, or the flag service
+     *  simply being unreachable, could strand or silently downgrade live
+     *  credentials — and would put a third-party network dependency inside
+     *  credential resolution, which is the last place one belongs. */
+    const performEnterpriseManagedRefresh = (input: {
+      readonly row: ConnectionRow;
+      readonly provider: CredentialProvider;
+      readonly client: RefreshClient;
+      readonly tokenUrl: string;
+      readonly scopes: readonly string[];
+      readonly reauth: (message: string) => CredentialResolutionError;
+    }): Effect.Effect<OAuth2TokenResponse, StorageFailure | CredentialResolutionError> =>
+      Effect.gen(function* () {
+        const { row, provider, client } = input;
+        const owner = row.owner as Owner;
+        const state = enterpriseManagedStateFrom(decodeJsonColumn(row.provider_state));
+        if (state === null) {
+          return yield* input.reauth(
+            "This connection is missing its enterprise-managed authorization settings. Reconnect to continue.",
+          );
+        }
+        const idpRow = yield* loadOAuthClientRow(state.idpClientOwner, state.idpClient);
+        if (!idpRow) {
+          return yield* input.reauth(
+            `The enterprise identity provider OAuth app "${state.idpClient}" is no longer registered.`,
+          );
+        }
+        if (!row.refresh_item_id) {
+          return yield* input.reauth(
+            "No enterprise identity assertion is stored for this connection.",
+          );
+        }
+        const subjectToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
+        if (!subjectToken) {
+          return yield* input.reauth(
+            "The stored enterprise identity assertion could not be resolved.",
+          );
+        }
+        const idpClientSecret = idpRow.client_secret_item_id
+          ? ((yield* provider.get(ProviderItemId.make(String(idpRow.client_secret_item_id)))) ?? "")
+          : "";
+
+        const grant = yield* mintEnterpriseManagedAccessToken({
+          idp: {
+            tokenUrl: String(idpRow.token_url),
+            clientId: String(idpRow.client_id),
+            clientSecret: idpClientSecret,
+          },
+          resourceAuthorizationServer: {
+            tokenUrl: input.tokenUrl,
+            issuer: state.audience,
+            clientId: client.clientId,
+            clientSecret: client.clientSecret,
+          },
+          subjectToken,
+          subjectTokenType: state.subjectTokenType,
+          resource: client.resource,
+          scopes: input.scopes,
+          endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+          fetch: config.fetch,
+        }).pipe(
+          // A policy denial and a dead identity assertion are both definitive —
+          // neither retries into success — but they are DIFFERENT products: one
+          // is "your administrator has not allowed this", the other is "sign in
+          // again". Only the transport failure stays a StorageError so the next
+          // invoke retries it.
+          Effect.catchTags({
+            EmaPolicyDenied: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: true,
+                  blockedByAdmin: true,
+                  oauthErrorCode: cause.error,
+                }),
+              ),
+            EmaSubjectTokenRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: true,
+                }),
+              ),
+            EmaRedemptionRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: cause.error === "invalid_grant",
+                  ...(cause.error === undefined ? {} : { oauthErrorCode: cause.error }),
+                }),
+              ),
+            EmaUpstreamUnavailable: (cause) =>
+              Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
+          }),
+          Effect.tapError((error) =>
+            Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
+              ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+                markRefreshGrantDead(row, error.message)
+              : Effect.void,
+          ),
+        );
+
+        // Draft §4.4.3: the Resource Authorization Server SHOULD NOT issue a
+        // refresh token here. Drop one that arrives anyway — persisting it
+        // would overwrite the identity assertion that shares that slot, and the
+        // ID-JAG chain is already the renewal path.
+        const { refresh_token: _unused, ...token } = grant.token;
+        return {
+          ...token,
+          ...(grant.scope === null ? {} : { scope: grant.scope }),
+        } satisfies OAuth2TokenResponse;
+      });
+
     // Perform the actual refresh-token grant and persist the rotated material.
     const performTokenRefresh = (
       row: ConnectionRow,
       provider: CredentialProvider,
+      trigger: RefreshTrigger,
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const owner = row.owner as Owner;
@@ -1516,19 +2150,65 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             reauthRequired: true,
           });
 
-        // Load the backing app by the owner STORED on the connection (a Personal
-        // connection may be backed by a shared Workspace app) — no derivation.
-        const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
-        const clientRow = yield* loadOAuthClientRow(clientOwner, String(row.oauth_client));
+        // A recorded invalid_grant is the AS's standing verdict on this grant:
+        // re-sending it cannot succeed, so don't. Fail as reauth-required
+        // without a token request — the reconnect mint rewrites
+        // `provider_state` and thereby re-arms refresh. Without this gate a
+        // dead connection re-sent its dead grant on every proactive cycle,
+        // indefinitely (owner.com's Datadog connections: 100+ identical
+        // rejections over two days, surfacing nothing).
+        const reauthState = oauthReauthRequiredFromProviderState(row.provider_state);
+        if (reauthState !== null) {
+          yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.skipped_known_dead": true });
+          const recordedHealth = Option.getOrNull(decodeLastHealth(row.last_health));
+          const recordedDetail =
+            reauthState.oauthReauthRequiredDetail ??
+            (recordedHealth?.status === "expired" ? recordedHealth.detail : undefined);
+          const detail =
+            recordedDetail === undefined
+              ? "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue."
+              : recordedDetail.endsWith("Reconnect to continue.")
+                ? recordedDetail
+                : `${recordedDetail} Reconnect to continue.`;
+          return yield* reauth(detail);
+        }
+
+        // Load the backing app. A `first-party:` slug resolves from host config
+        // (deployment-owned identity, in-memory secret); a stored slug loads by
+        // the owner STORED on the connection (a Personal connection may be
+        // backed by a shared Workspace app) — no derivation — with its secret
+        // resolved out of the credential provider by item id.
+        const clientSlug = String(row.oauth_client);
+        const clientRow: RefreshClient | null = yield* Effect.gen(function* () {
+          if (isFirstPartyOAuthClientSlug(clientSlug)) {
+            const firstParty = firstPartyOAuthBySlug.get(clientSlug);
+            if (!firstParty) return null;
+            return {
+              clientId: firstParty.clientId,
+              clientSecret: firstParty.clientSecret,
+              tokenUrl: firstParty.tokenUrl,
+              grant: "authorization_code",
+              resource: null,
+            } satisfies RefreshClient;
+          }
+          const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
+          const stored = yield* loadOAuthClientRow(clientOwner, clientSlug);
+          if (!stored) return null;
+          return {
+            clientId: String(stored.client_id),
+            clientSecret: stored.client_secret_item_id
+              ? ((yield* provider.get(ProviderItemId.make(String(stored.client_secret_item_id)))) ??
+                "")
+              : "",
+            tokenUrl: String(stored.token_url),
+            grant: String(stored.grant),
+            resource: stored.resource ? String(stored.resource) : null,
+          } satisfies RefreshClient;
+        });
         if (!clientRow) {
           return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`);
         }
-
-        // The secret is stored in the provider (a vault item id), not inline.
-        const clientSecret = clientRow.client_secret_item_id
-          ? ((yield* provider.get(ProviderItemId.make(String(clientRow.client_secret_item_id)))) ??
-            "")
-          : "";
+        const clientSecret = clientRow.clientSecret;
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
         // refresh must not exceed the originally-granted scope). Empty → omit
         // the param, which the AS treats as "same scopes as granted".
@@ -1539,9 +2219,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Refresh against the region the code was redeemed at when one was
         // recorded at connect time (multi-site providers like Datadog), else
         // the oauth_client's configured token endpoint.
-        const tokenUrl = row.oauth_token_url
-          ? String(row.oauth_token_url)
-          : String(clientRow.token_url);
+        const tokenUrl = row.oauth_token_url ? String(row.oauth_token_url) : clientRow.tokenUrl;
+
+        // Enterprise-managed authorization (the ID-JAG grant profile) issues NO
+        // refresh token by design — the identity assertion in `refresh_item_id`
+        // is re-exchanged for a fresh ID-JAG and redeemed again. No user
+        // interaction, so both the proactive and reactive triggers can run it.
+        if (clientRow.grant === "id_jag") {
+          const token = yield* performEnterpriseManagedRefresh({
+            row,
+            provider,
+            client: clientRow,
+            tokenUrl,
+            scopes: grantedScopes,
+            reauth,
+          });
+          yield* persistRefreshedToken(row, provider, token);
+          return token.access_token;
+        }
 
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
@@ -1549,13 +2244,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // what keeps a client_credentials connection (e.g. DealCloud) from
         // demanding a re-auth on a credential that has no human to re-auth.
         const token =
-          String(clientRow.grant) === "client_credentials"
+          clientRow.grant === "client_credentials"
             ? yield* exchangeClientCredentials({
                 tokenUrl,
-                clientId: String(clientRow.client_id),
+                clientId: clientRow.clientId,
                 clientSecret,
                 scopes: grantedScopes,
-                resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                resource: clientRow.resource ?? undefined,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
               }).pipe(
@@ -1582,66 +2277,139 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 }
                 return yield* refreshAccessToken({
                   tokenUrl,
-                  clientId: String(clientRow.client_id),
+                  clientId: clientRow.clientId,
                   clientSecret,
                   refreshToken,
                   scopes: grantedScopes,
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
-                  resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                  resource: clientRow.resource ?? undefined,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(
-                  Effect.mapError((cause) =>
-                    cause.error === "invalid_grant"
-                      ? reauth(
-                          // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
-                          `OAuth token refresh was rejected (invalid_grant): ${cause.message}`,
-                        )
-                      : new StorageError({
-                          // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
-                          message: `OAuth token refresh failed: ${cause.message}`,
-                          cause,
-                        }),
+                  Effect.mapError((cause) => {
+                    // An RFC 6749 §5.2 error code is the AS's definitive
+                    // verdict on this grant — retrying cannot change it.
+                    // invalid_grant means the refresh token itself is dead
+                    // (re-auth required); every other code must still reach
+                    // the caller as an auth failure, because a StorageError
+                    // is scrubbed to "Internal tool error [id]" at the
+                    // sandbox boundary (a prod regression: the AS rejected
+                    // refreshes with a non-invalid_grant 400 and callers saw
+                    // only the opaque defect).
+                    if (cause.error !== undefined) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected (${cause.error}): ${cause.message}`,
+                        // A verdict delivered inside a response the endpoint
+                        // called a SUCCESS is this grant's death certificate
+                        // whatever the code spells (GitHub: HTTP 200
+                        // `bad_refresh_token`). On a 4xx the code alone
+                        // decides, so a rotated app secret (invalid_client —
+                        // fleet-wide) is not mistaken for one user's dead
+                        // grant.
+                        reauthRequired:
+                          cause.error === "invalid_grant" || isUnusableSuccessTokenResponse(cause),
+                        oauthErrorCode: cause.error,
+                      });
+                    }
+                    // No §5.2 code — but most real refusals carry none. A
+                    // text/plain 400 ("your session has expired"), a 404, or a
+                    // 200 with no access token are all the endpoint answering
+                    // definitively, and re-sending the same grant cannot change
+                    // any of them. Treating that as retryable is what put a
+                    // dead grant back on the wire on every single use, forever.
+                    if (isPermanentTokenRejection(cause)) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected: ${cause.message}`,
+                        reauthRequired: true,
+                      });
+                    }
+                    // What is left is genuinely transient — a 5xx or a
+                    // transport failure — and stays a StorageError so the next
+                    // invoke retries.
+                    return new StorageError({
+                      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                      message: `OAuth token refresh failed: ${cause.message}`,
+                      cause,
+                    });
+                  }),
+                  // Persist the definitive verdict so the NEXT refresh skips
+                  // the doomed grant (see the known-dead gate above) and the
+                  // connection shows `expired` without waiting for a probe.
+                  Effect.tapError((error) =>
+                    Predicate.isTagged(error, "CredentialResolutionError") &&
+                    error.reauthRequired === true
+                      ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+                        markRefreshGrantDead(row, error.message)
+                      : Effect.void,
                   ),
                 );
               });
 
-        if (provider.set) {
-          // OAuth is always single-input: the access token lives in the `token`
-          // item. Fall back to a deterministic id if the map is somehow empty.
-          const tokenItemId =
-            connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
-            `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
-          if (token.refresh_token && row.refresh_item_id) {
-            yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
-          }
-        }
-
-        const nextExpiresAt =
-          typeof token.expires_in === "number" ? Date.now() + token.expires_in * 1000 : null;
-        const set: Record<string, unknown> = {
-          expires_at: nextExpiresAt,
-          updated_at: new Date(),
-        };
-        if (token.scope !== undefined) set.oauth_scope = token.scope;
-        yield* core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(owner)(b),
-              b("integration", "=", String(row.integration)),
-              b("name", "=", String(row.name)),
-            ),
-          set,
-        });
-
+        yield* persistRefreshedToken(row, provider, token);
         return token.access_token;
-      });
+      }).pipe(
+        // The refresh path was previously invisible to telemetry: no span, no
+        // log, no metric. When a customer reported "my OAuth just died", there
+        // was no way to answer "did a refresh even fire, and did it work?"
+        // without a repro. Stamp the outcome, the failure KIND, and the AS's
+        // own RFC 6749 §5.2 code (from the typed `oauthErrorCode` field, NOT
+        // the message — the message embeds the token endpoint's response URL
+        // and a body preview). Enumerable identifiers only, never user content
+        // or token material. The code is the dimension that separates
+        // invalid_client (a rotated app secret — fleet-wide, page someone)
+        // from server_error (transient, the next invoke retries).
+        Effect.tap(() => Effect.annotateCurrentSpan({ "executor.oauth.refresh.outcome": "ok" })),
+        Effect.tapError((error: StorageFailure | CredentialResolutionError) =>
+          Effect.annotateCurrentSpan({
+            "executor.oauth.refresh.outcome": "fail",
+            "executor.oauth.refresh.error": Predicate.isTagged(error, "CredentialResolutionError")
+              ? "CredentialResolutionError"
+              : "StorageFailure",
+            // Whether the AS's refusal was definitive (RFC 6749 invalid_grant →
+            // the refresh token itself is dead) or a transient failure the next
+            // invoke can retry. The split is the actionable half of the signal.
+            ...(Predicate.isTagged(error, "CredentialResolutionError")
+              ? {
+                  "executor.oauth.refresh.reauth_required": error.reauthRequired === true,
+                  ...(error.oauthErrorCode !== undefined
+                    ? { "executor.oauth.error_code": error.oauthErrorCode }
+                    : {}),
+                }
+              : {}),
+          }),
+        ),
+        Effect.withSpan("executor.oauth.refresh", {
+          attributes: {
+            // Tenant + subject make refresh outcomes answerable PER CUSTOMER
+            // ("is org X's Datadog refresh healthy?") — without them the only
+            // grouping dimensions were integration-wide. Opaque ids, never
+            // emails or org names.
+            "executor.tenant": tenant,
+            ...(subject != null ? { "executor.subject": subject } : {}),
+            "executor.integration": String(row.integration),
+            "executor.connection": String(row.name),
+            // Which path drove this refresh: the expiry check ahead of a call,
+            // or an upstream 401 on a token we believed was still good. The
+            // ratio is the health signal — a rising `reactive` share means
+            // tokens are dying earlier than their advertised expiry.
+            "executor.oauth.refresh.trigger": trigger,
+          },
+        }),
+      );
 
     const refreshConnectionToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
+      trigger: RefreshTrigger = "proactive",
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
       // Share a single refresh per connection so concurrent resolves of the same
       // connection all await one refresh-token grant (the AS rotates the refresh
@@ -1650,11 +2418,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // expiry can refresh again.
       Effect.gen(function* () {
         const key = connectionKey(row);
+        // Joining an in-flight grant is correct for BOTH triggers: whatever
+        // that peer mints is newer than the token this fiber just saw rejected,
+        // which is exactly what a reactive retry wants. The gate is cleared on
+        // settle, so a 401 arriving after a refresh completed starts a fresh
+        // grant rather than replaying the stale memoized one.
         const existing = refreshInFlight.get(key);
         if (existing) return yield* existing;
         // `Effect.cached` memoizes the grant onto a deferred: it runs once and
         // replays to every awaiter sharing this entry.
-        const memoized = yield* Effect.cached(performTokenRefresh(row, provider));
+        const memoized = yield* Effect.cached(performTokenRefresh(row, provider, trigger));
         const gated = memoized.pipe(
           Effect.ensuring(Effect.sync(() => refreshInFlight.delete(key))),
         );
@@ -1703,6 +2476,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
         ),
       );
+
+    /** Re-mint an OAuth connection's access token unconditionally, ignoring the
+     *  stored expiry. Drives the reactive path: the upstream just rejected the
+     *  token we sent, which is authoritative regardless of what `expires_at`
+     *  claims (revoked server-side, an idle-timeout policy shorter than the
+     *  advertised lifetime, or an expiry the AS never advertised at all).
+     *
+     *  Returns null when the connection can't be re-minted without a human —
+     *  not OAuth-backed, or holding no refresh token — so the caller keeps the
+     *  upstream's own auth failure instead of inventing one. */
+    const forceRefreshConnectionValues = (
+      row: ConnectionRow,
+    ): Effect.Effect<
+      Record<string, string | null> | null,
+      StorageFailure | CredentialResolutionError
+    > =>
+      Effect.gen(function* () {
+        if (row.oauth_client == null || row.refresh_item_id == null) return null;
+        const provider = credentialProviders.get(row.provider);
+        if (!provider) return null;
+        const access = yield* refreshConnectionToken(row, provider, "reactive");
+        return { [PRIMARY_INPUT_VARIABLE]: access };
+      });
 
     /** The primary (`token`) value — the public seam for OAuth + single-input
      *  callers that only ever need one value. */
@@ -1868,6 +2664,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         ),
       );
 
+    // Best-effort post-commit notification for `ExecutorConfig.onIntegrationChange`.
+    // Routed through `afterCommit` so the observer sees only DURABLE changes:
+    // when the write ran inside a (possibly plugin-owned outer) transaction the
+    // notification is queued on the outermost commit and discarded on rollback.
+    // Failures and defects are swallowed so a host's analytics can never fail a
+    // catalog write.
+    const notifyIntegrationChange = (event: IntegrationChangeEvent): Effect.Effect<void> =>
+      config.onIntegrationChange ? afterCommit(config.onIntegrationChange(event)) : Effect.void;
+
     const integrationsRegister = (
       pluginId: string,
       input: RegisterIntegrationInput,
@@ -1890,7 +2695,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 updated_at: now,
               },
             });
-            return;
+            return false;
           }
           yield* core.create("integration", {
             tenant,
@@ -1904,7 +2709,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             created_at: now,
             updated_at: now,
           });
+          return true;
         }),
+      ).pipe(
+        Effect.tap((created) =>
+          created
+            ? notifyIntegrationChange({ kind: "added", pluginKey: pluginId, slug: input.slug })
+            : Effect.void,
+        ),
+        Effect.asVoid,
       );
 
     const integrationsUpdate = (
@@ -1950,7 +2763,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       transaction(
         Effect.gen(function* () {
           const existing = yield* findIntegrationRow(slug);
-          if (!existing) return;
+          if (!existing) return null;
           if (!existing.can_remove) {
             return yield* new IntegrationRemovalNotAllowedError({ slug });
           }
@@ -1975,7 +2788,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.deleteMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
           });
+          return existing.plugin_id;
         }),
+      ).pipe(
+        Effect.tap((removedPluginId) =>
+          removedPluginId !== null
+            ? notifyIntegrationChange({ kind: "removed", pluginKey: removedPluginId, slug })
+            : Effect.void,
+        ),
+        Effect.asVoid,
       );
 
     const integrationsDetect = (
@@ -2053,10 +2874,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const syncHealthReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
 
-    const produceConnectionTools = (
+    const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
-      mode: "explicit" | "background" = "explicit",
+      mode: () => "explicit" | "background",
     ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
@@ -2178,7 +2999,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         if (
-          mode === "background" &&
+          mode() === "background" &&
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
@@ -2256,6 +3077,38 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tool.annotations,
           ),
         );
+      });
+
+    type ToolProductionError = IntegrationNotFoundError | StorageFailure;
+    interface ToolProductionInFlight {
+      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      mode: "explicit" | "background";
+    }
+    const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
+    const produceConnectionTools = (
+      integrationRow: IntegrationRow,
+      ref: ConnectionRef,
+      requestedMode: "explicit" | "background" = "explicit",
+    ): Effect.Effect<readonly Tool[], ToolProductionError> =>
+      Effect.suspend(() => {
+        const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
+        const existing = toolProductionInFlight.get(key);
+        if (existing) {
+          if (requestedMode === "explicit") existing.mode = "explicit";
+          return Deferred.await(existing.deferred);
+        }
+
+        const entry: ToolProductionInFlight = {
+          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          mode: requestedMode,
+        };
+        toolProductionInFlight.set(key, entry);
+        const run = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
+          Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
+        );
+        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(entry.deferred)));
       });
 
     // ------------------------------------------------------------------
@@ -2412,6 +3265,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
 
+        // Record the sighting. The request seam (`makeScopedExecutor`) already
+        // does this for every hosted call, so this is the belt for direct
+        // SDK/CLI callers that never pass through it — a connecting principal
+        // must always have a subject row. Outside
+        // the transaction above: bookkeeping must not roll back the
+        // connection, and `touchSubject` cannot fail. No-ops on a pure-org
+        // executor (no principal to record), including for `owner: "org"`
+        // connections created by a bound member.
+        yield* touchSubject(rootDbUntyped, { tenant, externalId: subject });
+
         const ref: ConnectionRef = {
           owner: input.owner,
           integration: input.integration,
@@ -2473,24 +3336,50 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           integration: input.integration,
           name,
         };
+        // Label precedence: an explicit (user-chosen) label always wins; a
+        // derived label (OIDC claims) only FILLS an empty slot. Like
+        // `description` below, a reconnect or token refresh must not erase a
+        // label the user curated. Resolved once, used by every write below.
+        let identityLabel: string | null = null;
+        // The core-owned per-connection state this mint writes WHOLESALE:
+        // whatever a previous grant recorded (a stale reauth verdict, an old
+        // missing-scope set) describes a credential that no longer exists.
+        const nextProviderState = {
+          ...(input.missingOAuthScopes === undefined || input.missingOAuthScopes.length === 0
+            ? {}
+            : { missingOAuthScopes: input.missingOAuthScopes }),
+          ...(input.enterpriseManaged === undefined
+            ? {}
+            : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }),
+        };
+        // Null, not `{}`, when this grant records nothing: an empty object would
+        // read back as "state exists and is empty" on a column whose absence is
+        // what every reader tests.
+        const providerState =
+          Object.keys(nextProviderState).length === 0 ? null : nextProviderState;
         yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow(ref);
+            const existingLabel = existing?.identity_label?.trim() ? existing.identity_label : null;
+            identityLabel =
+              input.identityLabel ?? existingLabel ?? input.derivedIdentityLabel ?? null;
             const set: Record<string, unknown> = {
               template: String(input.template),
               provider: input.provider,
               item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
-              identity_label: input.identityLabel ?? null,
+              identity_label: identityLabel,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
               refresh_item_id: input.refreshItemId,
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
-              provider_state:
-                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                  ? { missingOAuthScopes: input.missingOAuthScopes }
-                  : null,
+              provider_state: providerState,
+              // A re-mint replaces the grant, so any persisted verdict describes
+              // a credential that no longer exists. Clear it rather than let a
+              // pre-reconnect "expired" outlive the reconnect; the next health
+              // check writes the verdict for the new grant.
+              last_health: null,
               updated_at: now,
             };
             if (existing) {
@@ -2513,7 +3402,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 template: String(input.template),
                 provider: input.provider,
                 item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
-                identity_label: input.identityLabel ?? null,
+                identity_label: identityLabel,
                 // Curated description: never stamped by a mint — a reconnect
                 // or token refresh must not erase what the user wrote.
                 description: null,
@@ -2523,10 +3412,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 expires_at: input.expiresAt,
                 oauth_scope: input.oauthScope,
                 oauth_token_url: input.oauthTokenUrl ?? null,
-                provider_state:
-                  input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                    ? { missingOAuthScopes: input.missingOAuthScopes }
-                    : null,
+                provider_state: providerState,
                 created_at: now,
                 updated_at: now,
               });
@@ -2552,7 +3438,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               template: String(input.template),
               provider: input.provider,
               item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
-              identity_label: input.identityLabel ?? null,
+              identity_label: identityLabel,
               description: null,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
@@ -2560,10 +3446,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
-              provider_state:
-                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                  ? { missingOAuthScopes: input.missingOAuthScopes }
-                  : null,
+              provider_state: providerState,
               created_at: now,
               updated_at: now,
             } as ConnectionRow);
@@ -2720,24 +3603,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         })
         .pipe(Effect.ignore);
 
-    const healthFromCredentialResolutionError = (
-      err: CredentialResolutionError,
-    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      err.reauthRequired === true
-        ? Effect.succeed({
-            status: "expired",
-            checkedAt: Date.now(),
-            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-            detail: err.message,
-          })
-        : Effect.fail(
-            new StorageError({
-              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-              message: err.message,
-              cause: err,
-            }),
-          );
-
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
     ): HealthCheckResult =>
@@ -2755,19 +3620,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             detail: failure.message,
           };
 
-    // Genuine storage failures propagate: an infra blip must fail the request,
-    // not persist as a "degraded" verdict on the connection.
+    /** THE one place a credential-resolution failure becomes a health verdict.
+     *  A third party refusing to re-mint a credential is a fact about the
+     *  CONNECTION, not a fault in this service, so it must be answered — and
+     *  then persisted — as `expired`/`degraded`, never raised. The failure
+     *  channel stays reserved for genuine storage faults (an infra blip must
+     *  fail the request rather than persist as a "degraded" verdict). Both
+     *  health paths — credential-only and probing — fold through here, so
+     *  they cannot disagree about what a broken credential means. */
+    const foldCredentialResolutionIntoVerdict = (
+      probe: Effect.Effect<HealthCheckResult, StorageFailure | CredentialResolutionError>,
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
+      probe.pipe(
+        Effect.catchTag("CredentialResolutionError", (failure) =>
+          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+        ),
+      );
+
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
     ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      resolveConnectionValues(row).pipe(
-        Effect.as({
-          status: "healthy" as const,
-          checkedAt: Date.now(),
-          detail: "Credential resolved (no probe configured).",
-        }),
-        Effect.catchTag("CredentialResolutionError", (failure) =>
-          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+      foldCredentialResolutionIntoVerdict(
+        resolveConnectionValues(row).pipe(
+          Effect.as({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "Credential resolved (no probe configured).",
+          }),
         ),
       );
 
@@ -2797,6 +3676,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return out;
       });
 
+    /** Stamp the verdict + which path produced it onto the enclosing health
+     *  span. Every health outcome is HTTP 200, so WITHOUT these attributes the
+     *  request envelope cannot separate healthy from expired — the "what
+     *  fraction of connections are dead right now" question was previously
+     *  only answerable by querying the database. `status` and `httpStatus`
+     *  are enumerable; `detail`/`identity` (upstream free text / an email)
+     *  never go on a span. */
+    const annotateHealthVerdict = (
+      source: "cache" | "no_capability" | "credential_only" | "probe",
+      result: HealthCheckResult,
+    ): Effect.Effect<void> =>
+      Effect.annotateCurrentSpan({
+        "executor.health.status": result.status,
+        "executor.health.source": source,
+        ...(result.httpStatus !== undefined
+          ? { "executor.health.http_status": result.httpStatus }
+          : {}),
+      });
+
     const connectionCheckHealth = (
       ref: ConnectionRef,
       options?: {
@@ -2821,7 +3719,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         if (options?.ifStaleMs !== undefined) {
           const cached = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
-          if (cached && Date.now() - cached.checkedAt < options.ifStaleMs) return cached;
+          if (cached && Date.now() - cached.checkedAt < options.ifStaleMs) {
+            yield* annotateHealthVerdict("cache", cached);
+            return cached;
+          }
         }
         const integrationRow = yield* findIntegrationRow(ref.integration);
         if (!integrationRow) {
@@ -2829,44 +3730,69 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         const runtime = runtimes.get(integrationRow.plugin_id);
         const check = runtime?.plugin.checkHealth;
-        if (!runtime || !check) return unknownHealth();
+        if (!runtime || !check) {
+          const result = unknownHealth();
+          yield* annotateHealthVerdict("no_capability", result);
+          return result;
+        }
         const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
         if (spec === undefined && connectionRow.oauth_client != null) {
+          // No probe operation is declared, so "healthy" here means only "the
+          // credential resolved (refreshing if due)" — a refresh failure is
+          // the one real signal this path can produce, and it must not hide
+          // inside a green span.
           const result = yield* oauthCredentialHealthWithoutProbe(connectionRow);
+          yield* annotateHealthVerdict("credential_only", result);
           yield* persistHealthResult(ref, result);
           return result;
         }
 
-        const result = yield* Effect.gen(function* () {
-          const values = yield* resolveConnectionValues(connectionRow);
-          const record = rowToIntegrationRecord(
-            integrationRow,
-            describeAuthMethodsForRow(integrationRow),
-          );
-          const grantedScopes = grantedScopesFromRow(connectionRow);
-          const credential: ToolInvocationCredential = {
-            owner: connectionRow.owner as Owner,
-            integration: ref.integration,
-            connection: ConnectionName.make(connectionRow.name),
-            template: AuthTemplateSlug.make(connectionRow.template),
-            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-            values,
-            config: record.config,
-            ...(grantedScopes ? { grantedScopes } : {}),
-          };
-          // Core resolves the declared spec (its own column) and hands it to the
-          // plugin; plugins no longer read it out of their config.
-          return yield* foldPluginFailure(
-            check({ ctx: runtime.ctx, integration: record, credential, spec }),
-            `Health check for connection "${ref.name}" failed.`,
-          );
-        }).pipe(Effect.catchTag("CredentialResolutionError", healthFromCredentialResolutionError));
+        const result = yield* foldCredentialResolutionIntoVerdict(
+          Effect.gen(function* () {
+            const values = yield* resolveConnectionValues(connectionRow);
+            const record = rowToIntegrationRecord(
+              integrationRow,
+              describeAuthMethodsForRow(integrationRow),
+            );
+            const grantedScopes = grantedScopesFromRow(connectionRow);
+            const credential: ToolInvocationCredential = {
+              owner: connectionRow.owner as Owner,
+              integration: ref.integration,
+              connection: ConnectionName.make(connectionRow.name),
+              template: AuthTemplateSlug.make(connectionRow.template),
+              value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+              values,
+              config: record.config,
+              ...(grantedScopes ? { grantedScopes } : {}),
+            };
+            // Core resolves the declared spec (its own column) and hands it to
+            // the plugin; plugins no longer read it out of their config.
+            return yield* foldPluginFailure(
+              check({ ctx: runtime.ctx, integration: record, credential, spec }),
+              `Health check for connection "${ref.name}" failed.`,
+            );
+          }),
+        );
+        yield* annotateHealthVerdict("probe", result);
         // Persist the verdict on the connection row so the accounts list shows
-        // alive/expired at a glance. Best-effort: a write failure must not turn
-        // a successful probe into an error.
+        // alive/expired at a glance, AND so the freshness gate above has
+        // something to serve. A probe that could not resolve its credential
+        // persists too: it is the connection most likely to be re-probed by
+        // every surface on every mount, so leaving it unwritten is what turns
+        // one broken connection into unbounded upstream and error traffic.
+        // Best-effort: a write failure must not turn a verdict into an error.
         yield* persistHealthResult(ref, result);
         return result;
-      });
+      }).pipe(
+        Effect.withSpan("executor.connection.health.check", {
+          attributes: {
+            "executor.tenant": tenant,
+            ...(subject != null ? { "executor.subject": subject } : {}),
+            "executor.integration": String(ref.integration),
+            "executor.connection": String(ref.name),
+          },
+        }),
+      );
 
     const connectionValidate = (
       input: ValidateConnectionInput,
@@ -2901,11 +3827,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // from the integration row. Nothing persists here: validate is the
         // key-first flow's dry run.
         const spec = input.spec ?? describeHealthCheckForRow(integrationRow) ?? undefined;
-        return yield* foldPluginFailure(
+        const result = yield* foldPluginFailure(
           check({ ctx: runtime.ctx, integration: record, credential, spec }),
           `Validating credential for "${input.integration}" failed.`,
         );
-      });
+        // Nothing persists here BY DESIGN, which makes this span the only
+        // possible record of "what fraction of pasted credentials are rejected
+        // at the door" — a signal the DB can never carry.
+        yield* Effect.annotateCurrentSpan({
+          "executor.health.status": result.status,
+          ...(result.httpStatus !== undefined
+            ? { "executor.health.http_status": result.httpStatus }
+            : {}),
+        });
+        return result;
+      }).pipe(
+        Effect.withSpan("executor.connection.validate", {
+          attributes: {
+            "executor.tenant": tenant,
+            ...(subject != null ? { "executor.subject": subject } : {}),
+            "executor.integration": String(input.integration),
+          },
+        }),
+      );
 
     // Clear the sync stamp so the next tools read re-produces this connection's
     // catalog. The deferred variant of `connectionsRefresh` for signals that
@@ -3055,6 +3999,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Best-effort: a failed rebuild leaves the stale-but-working catalog in
     // place and retries on the next read.
     const syncStaleConnectionTools = Effect.gen(function* () {
+      // The platform view can never persist a rebuilt catalog (writes are
+      // denied at the storage boundary), so attempting the sync would only
+      // fire upstream `resolveTools` calls whose results are thrown away —
+      // network side effects on a read-only credential. Skip it entirely:
+      // read-only-ness of the platform read path is a stated invariant here,
+      // not an accident of the best-effort catch below.
+      if (config.platformView === true) return;
       const integrations = yield* core.findMany("integration", {});
       if (integrations.length === 0) return;
       const integrationBySlug = new Map(integrations.map((row) => [row.slug, row] as const));
@@ -3266,6 +4217,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? projected.outputSchema
             : tool.outputSchema;
 
+        // Muscle memory: when neither the catalog row nor the plugin's
+        // projection declares an output schema, serve the shape observed from
+        // live responses instead of letting the type collapse to `unknown`.
+        // The schema's description marks it as observed.
+        const observed =
+          outputSchema === undefined
+            ? yield* shapeMemory.recall(String(address), parsed.owner)
+            : null;
+        const effectiveOutputSchema =
+          outputSchema !== undefined
+            ? outputSchema
+            : observed !== null
+              ? observedShapeToJsonSchema(observed)
+              : undefined;
+
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
@@ -3277,12 +4243,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const defs = new Map<string, unknown>();
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
-        const referenced = collectReferencedDefinitions([inputSchema, outputSchema], defs);
+        const referenced = collectReferencedDefinitions([inputSchema, effectiveOutputSchema], defs);
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
               inputSchema,
-              outputSchema,
+              outputSchema: effectiveOutputSchema,
               defs,
             }),
           catch: (cause) =>
@@ -3295,7 +4261,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           name: tool.name,
           description: tool.description,
           inputSchema,
-          outputSchema,
+          outputSchema: effectiveOutputSchema,
+          ...(observed !== null
+            ? {
+                outputSchemaSource: "observed" as const,
+                outputSchemaObservations: observed.observations,
+              }
+            : {}),
           schemaDefinitions:
             Object.keys(referenced).length > 0
               ? (referenced as Record<string, unknown>)
@@ -3504,6 +4476,135 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
+    // Artifacts — saved generative-UI components, owner-scoped.
+    // ------------------------------------------------------------------
+
+    // Reads take no explicit owner: the owner policy already narrows to the
+    // rows this binding may see (org rows plus this subject's own), which is
+    // exactly "visible to the bound owner scope" and stays correct unchanged
+    // when org-tier sharing lands. Writes are always `user` tier in v1.
+    const artifactById =
+      (id: string): CoreWhere =>
+      (b: AnyCb) =>
+        b("id", "=", id);
+
+    const artifactsList = (): Effect.Effect<readonly ArtifactSummary[], StorageFailure> =>
+      core
+        .findMany("artifact", {
+          // Newest first. `id` breaks ties so two artifacts sharing an
+          // `updated_at` millisecond list in a repeatable order rather than
+          // whatever the storage engine happens to return; which of the two
+          // comes first is arbitrary, only its stability is guaranteed.
+          orderBy: [
+            ["updated_at", "desc"],
+            ["id", "desc"],
+          ],
+          select: ARTIFACT_SUMMARY_COLUMNS,
+        })
+        .pipe(Effect.map((rows) => rows.map(rowToArtifactSummary)));
+
+    const artifactsGet = (
+      id: string,
+    ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("artifact", { where: artifactById(id) });
+        if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
+        return rowToArtifact(row);
+      });
+
+    const artifactsSave = (
+      input: SaveArtifactInput,
+    ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const now = new Date();
+        const description = input.description ?? null;
+        // An explicit id overwrites in place (v1 keeps no version history). It
+        // must already resolve to a visible row: minting a caller-chosen id
+        // would let a stale client resurrect a deleted artifact silently.
+        if (input.id !== undefined) {
+          const where = artifactById(input.id);
+          const existing = yield* core.findFirst("artifact", { where });
+          if (!existing) {
+            return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+          }
+          // `bindings` is written on every overwrite, including back to null:
+          // it interprets `code`, so carrying the previous value forward under
+          // new source would bind roles the new code never declares. `preview`
+          // is written for exactly the same reason, and the case it prevents is
+          // visible: an image preview captured from the OLD render would
+          // otherwise keep advertising a version of the artifact that no longer
+          // exists.
+          const set = {
+            title: input.title,
+            description,
+            code: input.code,
+            bindings: input.bindings ?? null,
+            preview: input.preview ?? null,
+            updated_at: now,
+          };
+          yield* core.updateMany("artifact", { where, set });
+          return rowToArtifact({ ...existing, ...set });
+        }
+        yield* requireUserSubject("user");
+        const keys = yield* Effect.try({
+          try: () => ownedKeys("user"),
+          catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
+        });
+        const created = yield* core.create("artifact", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          id: `art_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+          title: input.title,
+          description,
+          code: input.code,
+          bindings: input.bindings ?? null,
+          preview: input.preview ?? null,
+          created_at: now,
+          updated_at: now,
+        });
+        return rowToArtifact(created);
+      });
+
+    /**
+     * Replace an artifact's preview with a snapshot of a settled render.
+     *
+     * Only `preview` moves. `updated_at` deliberately does not: the gallery
+     * sorts by it, and opening an artifact must not reorder the grid — being
+     * looked at is not an edit.
+     */
+    const artifactsSetPreview = (
+      input: SetArtifactPreviewInput,
+    ): Effect.Effect<void, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const where = artifactById(input.id);
+        const existing = yield* core.findFirst("artifact", { where });
+        if (!existing) {
+          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+        }
+        yield* core.updateMany("artifact", { where, set: { preview: input.preview } });
+      });
+
+    const artifactsRename = (
+      input: RenameArtifactInput,
+    ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const where = artifactById(input.id);
+        const existing = yield* core.findFirst("artifact", { where });
+        if (!existing) {
+          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+        }
+        const set = { title: input.title, updated_at: new Date() };
+        yield* core.updateMany("artifact", { where, set });
+        return rowToArtifact({ ...existing, ...set });
+      });
+
+    // Hard delete: an artifact is not a connection, so there is no disabled or
+    // archived state to fall back to.
+    const artifactsRemove = (input: RemoveArtifactInput): Effect.Effect<void, StorageFailure> =>
+      core.deleteMany("artifact", { where: artifactById(input.id) });
+
+    // ------------------------------------------------------------------
     // Elicitation
     // ------------------------------------------------------------------
 
@@ -3702,9 +4803,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const searchMatches = yield* searchToolRowsForConnection(parsed);
           const connectionTools =
             searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
+          // An empty catalog on a connection that DOES exist is usually not a
+          // wrong tool name: discovery produced nothing, most often because the
+          // upstream rejected the credential. Reporting only the address sends
+          // the reader after a tool that was never the problem, so name the
+          // connection and point at the surface that knows the cause.
+          const connectionExists =
+            connectionTools.length === 0 &&
+            (yield* findConnectionRow({
+              owner: parsed.owner,
+              integration: parsed.integration,
+              name: parsed.connection,
+            })) !== null;
           return yield* new ToolNotFoundError({
             address,
             suggestions: toolSuggestions(connectionTools),
+            reason: connectionExists
+              ? `connection "${parsed.integration}/${parsed.connection}" has no tools; ` +
+                `check its health for why discovery produced none`
+              : undefined,
           });
         }
 
@@ -3782,27 +4899,58 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const values = yield* resolveConnectionValues(connectionRow);
         const integrationRow = yield* findIntegrationRow(parsed.integration);
         const grantedScopes = grantedScopesFromRow(connectionRow);
-        const credential: ToolInvocationCredential = {
-          owner: parsed.owner,
-          integration: parsed.integration,
-          connection: parsed.connection,
-          template: AuthTemplateSlug.make(connectionRow.template),
-          value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-          values,
-          config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
-          ...(grantedScopes ? { grantedScopes } : {}),
+        const invokeTool = runtime.plugin.invokeTool;
+        const invokeWith = (
+          resolved: Record<string, string | null>,
+        ): Effect.Effect<unknown, ToolInvocationError> => {
+          const credential: ToolInvocationCredential = {
+            owner: parsed.owner,
+            integration: parsed.integration,
+            connection: parsed.connection,
+            template: AuthTemplateSlug.make(connectionRow.template),
+            value: resolved[PRIMARY_INPUT_VARIABLE] ?? null,
+            values: resolved,
+            config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
+            ...(grantedScopes ? { grantedScopes } : {}),
+          };
+          return wrapInvocationError(
+            invokeTool({
+              ctx: runtime.ctx,
+              toolRow: row,
+              credential,
+              args,
+              elicit: buildElicit(address, args, handler),
+              invokeOptions: options,
+            }),
+          );
         };
 
-        return yield* wrapInvocationError(
-          runtime.plugin.invokeTool({
-            ctx: runtime.ctx,
-            toolRow: row,
-            credential,
-            args,
-            elicit: buildElicit(address, args, handler),
-            invokeOptions: options,
-          }),
+        const first = yield* invokeWith(values);
+        // Reactive refresh. `expires_at` is only ever the AS's ADVERTISED
+        // lifetime; the upstream rejecting the token is the authoritative word
+        // on whether it is still good. The two diverge routinely: server-side
+        // revocation, an identity provider's idle-timeout policy shorter than
+        // the token lifetime, and connections whose AS omitted `expires_in`
+        // entirely (null expiry → the proactive check never fires, so this is
+        // their ONLY route back to a working token short of a reconnect).
+        //
+        // Deliberately narrow: exactly one retry, only on the 401 that means
+        // "this credential is not valid", and only for a connection holding a
+        // refresh token. A 403 is excluded — it means authenticated-but-not-
+        // permitted, and re-minting the same grant returns the same answer.
+        // If the retry also fails its result stands, so a genuinely dead grant
+        // still surfaces the upstream's own auth failure and its reconnect
+        // guidance rather than a masked one.
+        if (!isUnauthorizedToolFailure(first)) return first;
+        const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
+          // A failed re-mint is not this call's failure to report: the upstream
+          // already produced an auth failure with recovery guidance, which is
+          // strictly more actionable than a refresh-plumbing error. Keep it.
+          Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
         );
+        if (!refreshed) return first;
+        yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
+        return yield* invokeWith(refreshed);
       }).pipe(
         // Expected tool failures (`ToolResult.fail`) resolve through the
         // success channel, so the tracer alone would record them as healthy
@@ -3810,6 +4958,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // "tool ran fine" from "user hit an upstream error / auth wall"
         // without parsing response bodies.
         Effect.tap(annotateToolResultOutcome),
+        // Muscle memory: fold successful dynamic-tool payloads into the
+        // observed output shape. Static tools are hand-typed already;
+        // failures teach nothing about the success shape. Runs inline — not
+        // forked — so the write survives Workers request teardown; `observe`
+        // never fails, is size-bounded, and stops writing once the shape
+        // stabilizes, so steady-state cost is one cache lookup.
+        Effect.tap((result) => {
+          if (staticTools.has(String(address))) return Effect.void;
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) return Effect.void;
+          const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
+          if (data === undefined) return Effect.void;
+          return shapeMemory.observe(String(address), parsed.owner, data);
+        }),
         Effect.withSpan("executor.tool.execute", {
           attributes: {
             "mcp.tool.name": String(address),
@@ -3832,6 +4994,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
+      connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),
       // One integration-row read + one projector run. Resolve the method this
       // template selects exactly as the runtime's `selectAuthMethod` does —
       // exact slug match, else the sole declared method (single-method
@@ -3858,12 +5021,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+      // Connect-time only. The refresh path above (`performEnterpriseManagedRefresh`)
+      // deliberately never sees this — it follows the enterprise state persisted
+      // on the connection.
+      enterpriseManagedRollout: config.enterpriseManagedRollout,
       // EXPLICIT — no localhost default. When a caller omits `redirectUri` the
       // OAuth service receives `null` and redirect-requiring flows fail loudly
       // instead of silently using `http://127.0.0.1/callback`. Hosts that serve
       // OAuth (cloud, self-host) derive a real `${webBaseUrl}/oauth/callback`.
       redirectUri: config.redirectUri ?? null,
       callbackStateOrgSlug: config.oauthCallbackStateOrgSlug ?? null,
+      firstPartyClients: config.firstPartyOAuthClients,
     });
 
     // ------------------------------------------------------------------
@@ -3875,6 +5043,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       org: `o:${tenant}`,
       user: subject != null ? `u:${tenant}:${subject}` : null,
     };
+
+    // Pending approvals file under the narrowest partition this executor has:
+    // a subject-bound executor keeps them private to that member, and a pure-org
+    // executor (no subject) files them at the org. Either way the partition IS
+    // the ownership check — another caller's executor reads a different
+    // namespace and simply does not see the record.
+    const pendingApprovals = makePendingApprovalStore(
+      blobs,
+      blobPartitions.user ?? blobPartitions.org,
+    );
 
     for (const plugin of plugins) {
       if (runtimes.has(plugin.id)) {
@@ -4030,6 +5208,177 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     }
 
     // ------------------------------------------------------------------
+    // Platform view — read-only, tenant-wide admin reads (opt-in).
+    //
+    // A SECOND handle over the same root db, bound to the same tenant but at
+    // `reach: "tenant"`. Deriving it here rather than re-scoping `rootDb`
+    // keeps the product view untouched: the bound handle above never learns
+    // about reach, so it cannot drift into the platform view. Writes through
+    // this handle are rejected by the owner policy, so "read-only" is enforced
+    // at the storage boundary, not by this module's discipline.
+    //
+    // The base context is ALREADY `writes: "denied"` whenever the platform view
+    // is on (see `ownerContext`); this handle adds tenant reach on top. The two
+    // axes are separate on purpose — this is the only surface that gets the
+    // widened reads, while read-only covers all of them.
+    // ------------------------------------------------------------------
+
+    const makeAdmin = (): ExecutorAdmin => {
+      const platformCore = makeCoreDb(
+        makeFumaClient(
+          withQueryContext(rootDbUntyped, {
+            ...ownerContext,
+            reach: "tenant",
+          } satisfies ExecutorOwnerPolicyContext),
+        ),
+      );
+
+      const rowToAdminSubject = (row: CoreRow<"subject">): AdminSubject => ({
+        externalId: row.external_id,
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+        // bigint on drivers that return one, and a blob on SQLite — hence the
+        // ORM read rather than raw SQL (see `subject-registry.ts`).
+        lastSeenAt: row.last_seen_at == null ? null : Number(row.last_seen_at),
+        status: row.status ?? null,
+      });
+
+      const rowToAdminConnection = (row: ConnectionRow): AdminConnection => {
+        const owner = row.owner as Owner;
+        return {
+          owner,
+          // Org rows carry the empty-string sentinel, not a principal.
+          subject: owner === "org" ? null : row.subject,
+          integration: IntegrationSlug.make(row.integration),
+          name: ConnectionName.make(row.name),
+          oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
+          lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
+        };
+      };
+
+      const listSubjects = (
+        options?: AdminListSubjectsOptions,
+      ): Effect.Effect<readonly AdminSubject[], StorageFailure> => {
+        // Always both, always integers — see `normalizeAdminPaging`. Passing
+        // them through independently produced a bare OFFSET, which SQLite
+        // rejects outright.
+        const { limit, offset } = normalizeAdminPaging(options);
+        return platformCore
+          .findMany("subject", {
+            // Oldest first, ties broken on the unique key so the order is
+            // total and paging can't repeat or skip a row.
+            orderBy: [
+              ["created_at", "asc"],
+              ["external_id", "asc"],
+            ],
+            limit,
+            offset,
+          })
+          .pipe(Effect.map((rows) => rows.map(rowToAdminSubject)));
+      };
+
+      // Keyed on `(tenant, external_id)` — the table's unique index. No
+      // `tenant` clause here: the tenant policy adds it to every read, the
+      // same way `touchSubject` relies on it.
+      const getSubject = (externalId: string): Effect.Effect<AdminSubject | null, StorageFailure> =>
+        platformCore
+          .findFirst("subject", { where: (b: AnyCb) => b("external_id", "=", externalId) })
+          .pipe(Effect.map((row) => (row === null ? null : rowToAdminSubject(row))));
+
+      const listSubjectConnections = (
+        externalId: string,
+      ): Effect.Effect<readonly AdminConnection[], StorageFailure> =>
+        platformCore
+          .findMany("connection", {
+            // `owner: "user"` explicitly: an org connection's `subject` is the
+            // empty-string sentinel, and attributing those to a user would be
+            // a lie in every host that has one.
+            where: (b: AnyCb) => b.and(b("owner", "=", "user"), b("subject", "=", externalId)),
+            orderBy: [
+              ["integration", "asc"],
+              ["name", "asc"],
+            ],
+          })
+          .pipe(Effect.map((rows) => rows.map(rowToAdminConnection)));
+
+      // ONE connection query for the whole page, not one per subject. The
+      // per-subject form was an N+1: a default page issued 100 sequential
+      // `findMany`s over a per-request socket, which on cloud cost ~1.4s of a
+      // ~2.4s response. Cost is now two queries regardless of page size.
+      //
+      // The `in` predicate carries the SAME `owner: "user"` clause the keyed
+      // read does, so org rows (whose `subject` is the empty-string sentinel)
+      // stay excluded, and the tenant policy scopes both reads identically.
+      //
+      // Ordering is preserved WITHOUT a per-subject sort: the query orders by
+      // `(integration, name)` across the page, and grouping walks those rows
+      // in order, so each subject's bucket comes out in the same order the
+      // per-subject query produced. Subjects with no connections still report
+      // an empty array rather than dropping out of the page.
+      const listSubjectsWithConnections = (
+        options?: AdminListSubjectsOptions,
+      ): Effect.Effect<readonly AdminSubjectWithConnections[], StorageFailure> =>
+        Effect.gen(function* () {
+          const subjects = yield* listSubjects(options);
+          // No page, no connection query — `in ([])` is a query that cannot
+          // match, so issuing it would be pure latency.
+          if (subjects.length === 0) return [];
+
+          const rows = yield* platformCore.findMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                b("owner", "=", "user"),
+                b(
+                  "subject",
+                  "in",
+                  subjects.map((entry) => entry.externalId),
+                ),
+              ),
+            orderBy: [
+              ["integration", "asc"],
+              ["name", "asc"],
+            ],
+          });
+
+          const bySubject = new Map<string, AdminConnection[]>();
+          for (const row of rows) {
+            const connection = rowToAdminConnection(row);
+            const bucket = bySubject.get(row.subject);
+            if (bucket) bucket.push(connection);
+            else bySubject.set(row.subject, [connection]);
+          }
+
+          return subjects.map((entry) => ({
+            ...entry,
+            connections: bySubject.get(entry.externalId) ?? [],
+          }));
+        });
+
+      // Absent subject short-circuits: no connection query is issued for a
+      // principal the tenant never recorded.
+      const getSubjectWithConnections = (
+        externalId: string,
+      ): Effect.Effect<AdminSubjectWithConnections | null, StorageFailure> =>
+        Effect.gen(function* () {
+          const subject = yield* getSubject(externalId);
+          if (subject === null) return null;
+          const connections = yield* listSubjectConnections(externalId);
+          return { ...subject, connections };
+        });
+
+      return {
+        listSubjects,
+        getSubject,
+        listSubjectConnections,
+        listSubjectsWithConnections,
+        getSubjectWithConnections,
+      };
+    };
+
+    // Default OFF: without the opt-in there is no `admin` key at all, so the
+    // tenant-wide handle is never even constructed.
+    const admin = config.platformView === true ? makeAdmin() : undefined;
+
+    // ------------------------------------------------------------------
     // close
     // ------------------------------------------------------------------
 
@@ -4100,6 +5449,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         remove: policiesRemove,
         resolve: policiesResolve,
       },
+      ...(admin ? { admin } : {}),
+      artifacts: {
+        list: artifactsList,
+        get: artifactsGet,
+        save: artifactsSave,
+        rename: artifactsRename,
+        remove: artifactsRemove,
+        setPreview: artifactsSetPreview,
+      },
+      pendingApprovals,
       execute,
       close,
     };

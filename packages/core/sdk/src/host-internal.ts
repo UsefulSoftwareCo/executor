@@ -20,16 +20,31 @@
 //     endpoint SSRF guard + default fetch timeout. The SDK's own OAuth flow uses
 //     them; the host's connection-identity handler reuses the same guard/timeout
 //     when fetching OIDC userinfo, so they surface here (not the plugin barrel).
+//   - `touchSubject`: the sole writer of the `subject` table. The SDK writes a
+//     sighting at connection-create; the host layer writes one per request in
+//     `makeScopedExecutor`. Not a plugin-author concern.
+//     `resetSubjectTouchCache` comes with it: `touchSubject` keeps a
+//     process-local memory of who it already filed, so a test that seeds the
+//     same principal against a fresh database has to clear it or the second
+//     seed is skipped as a repeat sighting.
 // ---------------------------------------------------------------------------
 
 export {
   HostedOutboundRequestBlocked,
   makeHostedFetch,
   makeHostedHttpClientLayer,
+  spanRedactedHeaderNames,
   type HostedHttpClientOptions,
 } from "./hosted-http-client";
 
 export { OAUTH2_DEFAULT_TIMEOUT_MS, assertSupportedOAuthEndpointUrl } from "./oauth-helpers";
+
+export {
+  DEFAULT_SUBJECT_LAST_SEEN_THROTTLE_MS,
+  resetSubjectTouchCache,
+  touchSubject,
+  type TouchSubjectInput,
+} from "./subject-registry";
 
 export {
   createExecutorFumaDb,

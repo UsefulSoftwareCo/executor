@@ -15,6 +15,7 @@ import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/t
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "Auth methods · the add flow declares an API key alongside the detected method",
@@ -34,9 +35,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the add-MCP flow pointed at the server", async () => {
-          await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           // The URL auto-probes (debounced); the method list appears once
           // the probe lands. Generous timeout: the probe request can queue
           // behind a busy dev server under CI load, and there is no clean

@@ -163,6 +163,25 @@ describe("MCP tool-catalog sync (end-to-end)", () => {
       expect(server.sessionCount()).toBe(sessionsAfterFirstList);
     }),
   );
+
+  it.effect("preserves the MCP discovery failure in degraded connection health", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(HttpServerResponse.text("gateway unavailable", { status: 503 })),
+      );
+      const executor = yield* makeCatalogTestExecutor(server.url("/mcp"));
+      const connection = yield* executor.connections.get({
+        owner: "org",
+        integration: INTEG,
+        name: CONNECTION,
+      });
+
+      expect(connection?.lastHealth).toMatchObject({
+        status: "degraded",
+        detail: expect.stringContaining("Failed connecting to MCP server"),
+      });
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------

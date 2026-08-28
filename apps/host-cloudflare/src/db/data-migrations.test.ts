@@ -241,6 +241,7 @@ describe("runCloudflareDataMigrations", () => {
         "2026-06-20-google-openapi-ownership",
         "2026-07-08-provider-service-split",
         "2026-07-09-openapi-ndjson-output-arrays",
+        "2026-07-27-encrypted-secrets-owner-repartition",
       ]);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
 
@@ -285,6 +286,7 @@ describe("runCloudflareDataMigrations", () => {
         "2026-06-20-google-openapi-ownership",
         "2026-07-08-provider-service-split",
         "2026-07-09-openapi-ndjson-output-arrays",
+        "2026-07-27-encrypted-secrets-owner-repartition",
       ]);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
 
@@ -336,6 +338,7 @@ describe("runCloudflareDataMigrations", () => {
         "2026-06-20-google-openapi-ownership",
         "2026-07-08-provider-service-split",
         "2026-07-09-openapi-ndjson-output-arrays",
+        "2026-07-27-encrypted-secrets-owner-repartition",
       ]);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
 

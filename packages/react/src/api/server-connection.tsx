@@ -91,7 +91,21 @@ let activeConnection = resolveInitialExecutorServerConnection();
 // cloudflare) never produce one either.
 export const EXECUTOR_ORG_HEADER = EXECUTOR_ORG_SELECTOR_HEADER;
 
+// The router-authoritative org scope, set by the host (ExecutorProvider's
+// scopeKey) during render. Preferred over the window.location fallback
+// because the router's pathname can be a tick AHEAD of history during a
+// client-side navigation — a fetch fired in that window would otherwise
+// derive the OLD URL's scope (e.g. none, on the bare → slugged
+// canonicalization) while the atom registry is already keyed to the new one.
+// One value per tab (module state), so tabs stay independent.
+let activeOrgSlugOverride: string | null = null;
+
+export const setActiveOrgSlugOverride = (slug: string | null): void => {
+  activeOrgSlugOverride = slug;
+};
+
 export const getActiveOrgSlug = (): string | null => {
+  if (activeOrgSlugOverride) return activeOrgSlugOverride;
   const pathname = globalThis.window?.location?.pathname;
   if (!pathname) return null;
   const first = pathname.split("/")[1];

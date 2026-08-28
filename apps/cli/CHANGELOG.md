@@ -1,5 +1,182 @@
 # executor
 
+## 1.6.0
+
+### Patch Changes
+
+- [#1737](https://github.com/UsefulSoftwareCo/executor/pull/1737) [`9296f36`](https://github.com/UsefulSoftwareCo/executor/commit/9296f36a8adbfdeec700ce33c37987127857b2fd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Scope the `skills` tool to Executor's own documentation. Its description, argument, index, and unknown-name error now state that it serves a fixed catalog of how-to docs for this server's tools, so an agent on a host without a skill tool of its own no longer reads it as a general reader for the harness's or the user's skills.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/local@1.6.0
+  - @executor-js/api@1.4.63
+  - @executor-js/runtime-quickjs@1.6.0
+
+## 1.5.42
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/local@1.5.42
+  - @executor-js/api@1.4.62
+  - @executor-js/runtime-quickjs@1.5.42
+
+## 1.5.41
+
+### Patch Changes
+
+- [#1600](https://github.com/UsefulSoftwareCo/executor/pull/1600) [`1b5f931`](https://github.com/UsefulSoftwareCo/executor/commit/1b5f931d90b52fa9eca7b6f53359a117d757c7c1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Add `integrations.remove` to the core tools so an agent can drop a catalog integration**
+
+  `integrations.list` advertises `canRemove` per integration, but nothing on the agent surface could act on it: removal existed only on the HTTP API and the web console, so an agent that could add an integration could never take one back out. Cleaning up a catalog meant clicking through the UI once per integration.
+
+  The core-tools plugin now contributes `integrations.remove`, taking the `slug` reported by `integrations.list` and cascading to every connection under the integration and the tools those produced. It is approval-gated, being strictly more destructive than `connections.remove`. The `removed` flag is honest rather than always-true: `false` means no catalog row matched, so an already-absent slug and a built-in namespace like `executor` are distinguishable from a real removal, and an integration pinned with `canRemove: false` is refused with `IntegrationRemovalNotAllowedError` instead of silently surviving.
+
+- [#1556](https://github.com/UsefulSoftwareCo/executor/pull/1556) [`f674fb8`](https://github.com/UsefulSoftwareCo/executor/commit/f674fb80eebd597f922edd5ec21b8035ab195a78) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: native MCP elicitation now reaches clients on the local HTTP endpoint instead of timing out**
+
+  The local daemon's Streamable HTTP transport ran with `enableJsonResponse: true`, which buffers a `tools/call` into a single JSON body and leaves no open stream for the server to write on. A server-to-client `elicitation/create` raised during that call was therefore never delivered, and approval-gated tools failed with a `-32001` request timeout even though the session had negotiated `elicitation_mode=native` and the client's `elicitation.form` capability. The transport now uses the spec-default SSE streaming, so the reverse request rides the originating tool call's stream — matching the Cloudflare host's behaviour.
+
+- [#1603](https://github.com/UsefulSoftwareCo/executor/pull/1603) [`624e85f`](https://github.com/UsefulSoftwareCo/executor/commit/624e85f033632a7624c2bddf0944112166b1f481) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: `oauth.clients.remove` reported success for clients it never removed**
+
+  The tool returned `{ removed: true }` unconditionally. `oauth.removeClient` is idempotent by design at the storage layer — `deleteMany` on a missing row is a no-op, which is the right behaviour for a delete — but the tool mapped that silence to success, so a typo'd slug, an already-deleted client, and the wrong owner were all indistinguishable from a real deletion.
+
+  This bites hardest because clients are keyed by BOTH owner and slug, so the same slug can exist separately under `org` and `user`. An agent sweeping a list of slugs under one hardcoded owner would delete only half of them and report every call as a success, leaving org-owned OAuth apps registered after everything they authorized was gone.
+
+  The tool now checks the caller-visible client set first and returns `removed: false` when nothing matched that `(owner, slug)` pair. The service-level `removeClient` is unchanged and stays idempotent.
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/local@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/runtime-quickjs@1.5.41
+
+## 1.5.40
+
+### Patch Changes
+
+- [#1528](https://github.com/UsefulSoftwareCo/executor/pull/1528) [`676af1a`](https://github.com/UsefulSoftwareCo/executor/commit/676af1a78301d83cdab52b0389b4c67ed07ae872) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Prevent execute agents from attempting unsupported base64 decoding by directing file payloads through ToolFile emission and bodyBase64 forwarding.
+
+- [#1545](https://github.com/UsefulSoftwareCo/executor/pull/1545) [`df62bb3`](https://github.com/UsefulSoftwareCo/executor/commit/df62bb3c8753edf2db32cb45961cf1723114ea2d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: reconnecting an OAuth connection now refreshes its health status in place — no page reload needed**
+
+  Completing a reconnect previously left the stale "Expired" verdict on the connection row (and the integrations-list summary) until a hard refresh. Re-minting now clears the persisted verdict, and the UI re-probes as soon as the refreshed connection arrives.
+
+- [#1534](https://github.com/UsefulSoftwareCo/executor/pull/1534) [`80e5530`](https://github.com/UsefulSoftwareCo/executor/commit/80e553026278b1ecd7807f1ba99ba13b19d2c336) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Report the real product surface and version in the integrations.sh registry user-agent. The daemon previously sent `local` with a version frozen at 1.4.4; it now reports `cli` or `desktop` (matching analytics surfaces) and `@executor-js/local` is versioned with the release train.
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a), [`80e5530`](https://github.com/UsefulSoftwareCo/executor/commit/80e553026278b1ecd7807f1ba99ba13b19d2c336)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/local@1.5.40
+  - @executor-js/api@1.4.60
+  - @executor-js/runtime-quickjs@1.5.40
+
+## 1.5.39
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.59
+  - @executor-js/runtime-quickjs@1.5.39
+
+## 1.5.38
+
+### Patch Changes
+
+- [#1417](https://github.com/UsefulSoftwareCo/executor/pull/1417) [`046d67d`](https://github.com/UsefulSoftwareCo/executor/commit/046d67d75c3a8bc4cf0ab9dc4e723bc26ff130a3) Thanks [@morluto](https://github.com/morluto)! - Show policy and OAuth app removal failures in the UI, and keep success-only state unchanged when those writes fail.
+
+- [#1511](https://github.com/UsefulSoftwareCo/executor/pull/1511) [`7eb795d`](https://github.com/UsefulSoftwareCo/executor/commit/7eb795dda19c6177ad3bd590005eca1e326f760c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: `execute` scripts that both `emit()` output and `return` a value no longer lose the returned value in MCP clients that ignore `structuredContent` — the return value is now appended to the tool-result content after the emitted items**
+
+- [#1418](https://github.com/UsefulSoftwareCo/executor/pull/1418) [`d3610e3`](https://github.com/UsefulSoftwareCo/executor/commit/d3610e386324891ccfde111e1ff519ec9218d30f) Thanks [@morluto](https://github.com/morluto)! - Return an execution error when a Deno subprocess closes stdin instead of emitting an unhandled write failure.
+
+- [#1507](https://github.com/UsefulSoftwareCo/executor/pull/1507) [`541549a`](https://github.com/UsefulSoftwareCo/executor/commit/541549a5dd8806f45b1a01ea6f4fa18ac41f53b1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: OAuth refresh rejections with non-spec error bodies (e.g. Datadog) now surface as expired connections with a reconnect path, and definitively dead refresh tokens are no longer retried against the authorization server**
+
+- [#1517](https://github.com/UsefulSoftwareCo/executor/pull/1517) [`59a6640`](https://github.com/UsefulSoftwareCo/executor/commit/59a6640e575c740d22e7804cdb67cd76efe8332b) Thanks [@kitze](https://github.com/kitze)! - **Fix: OpenAPI query parameters that use form-style exploded objects now serialize each object field as a query parameter.**
+
+- [#1416](https://github.com/UsefulSoftwareCo/executor/pull/1416) [`f1b617c`](https://github.com/UsefulSoftwareCo/executor/commit/f1b617ce82475d4fe35be7a98c6bf9f468dbbd60) Thanks [@morluto](https://github.com/morluto)! - Prevent provider service migration row loss caused by generated ID conflicts.
+
+- [#1420](https://github.com/UsefulSoftwareCo/executor/pull/1420) [`8c71744`](https://github.com/UsefulSoftwareCo/executor/commit/8c7174452fe05f32815950ed06f38516883a7c8f) Thanks [@morluto](https://github.com/morluto)! - Abort GraphQL tool calls that exceed the configured invocation timeout instead of waiting indefinitely for an upstream response.
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.58
+  - @executor-js/runtime-quickjs@1.5.38
+
+## 1.5.37
+
+### Patch Changes
+
+- [#1506](https://github.com/UsefulSoftwareCo/executor/pull/1506) [`c05a1cf`](https://github.com/UsefulSoftwareCo/executor/commit/c05a1cfa629b7f28a7d870c584998cb9cbbaf303) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Artifacts are now on by default for MCP connections.** A plain endpoint URL serves the full artifact surface — the artifact tools, the app shell resource, and the artifact skills. Connections that don't want it opt out with `?artifacts=false` (or `--no-artifacts` on the stdio CLI); `?artifacts=true` remains accepted as the explicit default. Previously the surface required a `?artifacts=true` opt-in.
+
+- [#1498](https://github.com/UsefulSoftwareCo/executor/pull/1498) [`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add anonymous product analytics to the local daemon (CLI + desktop) and self-host: execution counts split by MCP/API plane, toolkit usage, integration add/remove, and artifact usage (created/viewed/updated/deleted, attributed to agent tools vs the console UI), filed under a persisted per-install anonymous id. Opt out with DO_NOT_TRACK or EXECUTOR_DISABLE_ANALYTICS.
+
+- [#1500](https://github.com/UsefulSoftwareCo/executor/pull/1500) [`5eb2ca3`](https://github.com/UsefulSoftwareCo/executor/commit/5eb2ca36f93d2dae6eb8b3506c5de04ca141bb20) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the artifact migration no longer narrows `definition.name` to varchar(255), which failed on existing long definition names**
+
+- [#1472](https://github.com/UsefulSoftwareCo/executor/pull/1472) [`1178e3b`](https://github.com/UsefulSoftwareCo/executor/commit/1178e3b31cd62cd2c05d6504d1586c2d8f018692) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add an Artifacts tab. Interactive components an agent generates with `render-ui` are saved and listed in the console, and each one has its own page that renders it live — the page an MCP client without MCP Apps support deep-links to. Artifacts can be renamed and deleted from the console, and agents find them again by title.
+
+- [#1505](https://github.com/UsefulSoftwareCo/executor/pull/1505) [`9bd4a5b`](https://github.com/UsefulSoftwareCo/executor/commit/9bd4a5b6063bd98f5ae8070baf0dd3ee3e110d68) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Artifact tool results now include the web deep link beside the inline widget payload, not just on the no-apps fallback. Clients can lose a rendered widget in ways the server never sees — a reopened transcript that skips the resource re-read shows raw JSON — and the URL in the result is the model's way to point the user back at the artifact.
+
+- [#1483](https://github.com/UsefulSoftwareCo/executor/pull/1483) [`54df2e3`](https://github.com/UsefulSoftwareCo/executor/commit/54df2e3e99509008759269b27484ee6581ce8827) Thanks [@davidwrossiter](https://github.com/davidwrossiter)! - **Fix: GraphQL connections now reject credentials when schema introspection fails and show actionable tool sync diagnostics**
+
+- [#1499](https://github.com/UsefulSoftwareCo/executor/pull/1499) [`010ea98`](https://github.com/UsefulSoftwareCo/executor/commit/010ea98e520643731b07e68e21119f12b8ef1505) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the add-connection wizard no longer wipes a pasted credential when the key check saves a health check mid-flow**
+
+- [#1503](https://github.com/UsefulSoftwareCo/executor/pull/1503) [`a7c4689`](https://github.com/UsefulSoftwareCo/executor/commit/a7c468944837cfe097f03f69d612bde31903f284) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP responses larger than Durable Object storage's 128 KiB per-value cap hung the client instead of being delivered**
+
+  The DO transport persisted every outbound message for reconnect replay before writing the live SSE frame, and `storage.put` of an oversize value throws — so a large response (the `ui://executor/shell.html` resource is ~5 MB) was neither stored nor sent, and the client waited on keepalives forever. The transport now delivers the live frame first and treats persistence as best-effort: an oversize message skips the event store with a logged warning and arrives without a replay id, which only costs replayability if the connection drops mid-delivery.
+
+- [#1502](https://github.com/UsefulSoftwareCo/executor/pull/1502) [`25270b1`](https://github.com/UsefulSoftwareCo/executor/commit/25270b1f1f091778ba6584e41b041092fc1bdd00) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: MCP clients of the cloud host got a "Shell not built" placeholder as the `ui://executor/shell.html` resource, so every artifact rendered as a widget that never finished loading**
+
+  The deployed Worker has no filesystem, and the shell loader silently fell back to an inert placeholder document when its `fs.readFile` failed. Workers hosts now fetch the built shell through the static-assets binding (the app build emits a stable-named copy alongside the hashed one), the self-host image reads the same emitted asset from its SPA dist, and a host that cannot produce the shell now fails the resource read with an actionable error instead of serving a document that hangs the client. App builds fail if the shell asset was not emitted.
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/local@1.4.4
+  - @executor-js/runtime-quickjs@1.5.37
+
+## 1.5.36
+
+### Patch Changes
+
+- [#1478](https://github.com/UsefulSoftwareCo/executor/pull/1478) [`8ecbfd6`](https://github.com/UsefulSoftwareCo/executor/commit/8ecbfd65f2c1393c75661c792723961877866cc5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Store minted OAuth tokens in the durable file secret store (`auth.json` under `EXECUTOR_DATA_DIR`) instead of the system keychain. On sandbox/headless hosts the keychain can be an in-memory keyring that a stop/recreate wipes, leaving OAuth connections expired with "Stored refresh token could not be resolved." Existing keychain-backed connections migrate with one clean reconnect.
+
+- [#1462](https://github.com/UsefulSoftwareCo/executor/pull/1462) [`5a70675`](https://github.com/UsefulSoftwareCo/executor/commit/5a706756c66e53c9a929e9a8c30e57166b8d121b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: org OAuth connections on self-host worked only for whoever ran the consent**
+
+  The encrypted-secrets credential provider (the writable provider on the self-hosted and Cloudflare hosts) filed token rows under the _acting user's_ private partition instead of the credential's own owner. An org-owned OAuth connection whose consent completed in one member's browser session therefore resolved only for that member — every other principal failed with `oauth_connection_missing`, while the UI showed the connection healthy. The provider now partitions by the owner embedded in the item id (`oauth:org:…` → org-shared), matching the WorkOS Vault provider, and a boot-time data migration re-files rows already written wrong. The encrypted value itself was never affected.
+
+- [#1459](https://github.com/UsefulSoftwareCo/executor/pull/1459) [`fc1e589`](https://github.com/UsefulSoftwareCo/executor/commit/fc1e589613a14750c2ca8c34838a71c758544c8d) Thanks [@wan0net](https://github.com/wan0net)! - Preserve `elicitation_mode=native` when creating self-hosted MCP sessions.
+
+- [#1475](https://github.com/UsefulSoftwareCo/executor/pull/1475) [`77b0821`](https://github.com/UsefulSoftwareCo/executor/commit/77b0821ff9bddd6fb419d81a18b9e1af804fdb55) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Refresh OAuth tokens when the upstream rejects them with HTTP 401, not only when the stored expiry says they are due. Connections whose authorization server omits `expires_in` can now recover without a manual reconnect, and the refresh path is traced.
+
+- [#1476](https://github.com/UsefulSoftwareCo/executor/pull/1476) [`167d899`](https://github.com/UsefulSoftwareCo/executor/commit/167d899162794064eeac0a755697c2c943f1b9ac) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Remove the custom apps plugin. Git and local-directory app sources are no
+  longer supported. The packed binary still ships the workerd and worker-bundler
+  sidecars.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/runtime-quickjs@1.5.36
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.56
+
+## 1.5.35
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df), [`99c808f`](https://github.com/UsefulSoftwareCo/executor/commit/99c808f09d3cf2263945efa4f6592cc4e78c9e08)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/runtime-quickjs@1.5.35
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.55
+
+## 1.5.34
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.54
+  - @executor-js/runtime-quickjs@1.5.34
+
 ## 1.5.33
 
 ### Patch Changes

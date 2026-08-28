@@ -14,6 +14,7 @@ import { makeMutableCatalogMcpServer, serveMcpServer } from "@executor-js/plugin
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { revisit, visit } from "../src/surfaces/browser";
 
 scenario(
   "MCP catalog · the Tools tab follows a server-side rename after a list_changed notification",
@@ -35,9 +36,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the add-MCP flow pointed at the live server", async () => {
-          await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
-            waitUntil: "networkidle",
-          });
+          await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           // The URL auto-probes (debounced); the method list appears once the
           // probe lands — an open server seeds the detected no-auth method.
           await page.getByText("How does this server authenticate?").waitFor();
@@ -95,7 +94,7 @@ scenario(
           // Re-enter the page: a fresh tools read. The list_changed the server
           // sent during the call marked the catalog stale, so THIS read
           // re-lists — the renamed tool appears with no Refresh click.
-          await page.reload({ waitUntil: "networkidle" });
+          await revisit(page);
           await page.getByRole("tab", { name: "Tools" }).click();
           await filterTools("greet");
           await toolRow(mutable.renamedToolName).waitFor({ timeout: 30_000 });

@@ -10,9 +10,10 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { AutumnProvider } from "autumn-js/react";
+import { isValidOrgSlug } from "@executor-js/api";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
-import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
+import { createSentryFrontendErrorReporter } from "@executor-js/react/api/error-reporting";
 import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
@@ -20,8 +21,8 @@ import { EXECUTOR_ORG_HEADER } from "@executor-js/react/api/server-connection";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
-import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
@@ -60,25 +61,27 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
   });
 }
 
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. A static import here would put it in this
+// SSR app's server graph and 500 every document request, so it is registered as
+// a dynamic import the artifact page resolves in the browser. Module scope keeps
+// the loader identity stable, so the lazy component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
+
 const analyticsClient: AnalyticsClient | undefined =
   typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY
     ? (name, properties) => posthog.capture(name, properties)
     : undefined;
 
-const captureFrontendError: FrontendErrorReporter = (error, context) => {
+// Shared with the desktop renderer: the factory normalizes the reported value
+// to a real Error (handed an Effect Cause, Sentry has no message to title or
+// group on) and owns the executor.ui tags. Only the transport differs.
+const captureFrontendError = createSentryFrontendErrorReporter((error, applyScope) => {
   Sentry.captureException(error, (scope) => {
-    scope.setTag("executor.ui.surface", context.surface);
-    scope.setTag("executor.ui.action", context.action);
-    scope.setTag("executor.ui.severity", context.severity ?? "error");
-    scope.setContext("executor.ui", {
-      surface: context.surface,
-      action: context.action,
-      message: context.message,
-      metadata: context.metadata,
-    });
+    applyScope(scope);
     return scope;
   });
-};
+});
 
 function NotFoundPage() {
   return (
@@ -102,27 +105,6 @@ function NotFoundPage() {
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
-  // What the SSR gate attached to this document request (ssr-gate.ts →
-  // middleware context → serverContext). Loader data is dehydrated, so the
-  // client's first render sees the SAME values the server rendered with — the
-  // two can't disagree:
-  //   - authHint: the verified identity, seeding AuthProvider's initial state.
-  //   - origin:   the request origin, seeding the server connection so the
-  //               connect-card MCP URL SSRs as the real origin instead of the
-  //               127.0.0.1 client-side default (which would flash to the real
-  //               value at hydration).
-  // Client-side re-runs have no serverContext and return null; both consumers
-  // fall back gracefully (the hint is already held, the origin to the
-  // window-derived global).
-  loader: (opts) => {
-    const serverContext = (
-      opts as { serverContext?: { authHint?: AuthHint | null; origin?: string } }
-    ).serverContext;
-    return {
-      authHint: serverContext?.authHint ?? null,
-      origin: serverContext?.origin ?? null,
-    };
-  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -162,12 +144,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
-  const { authHint, origin } = Route.useLoaderData();
+  // SPA mode: no per-request server render, so nothing is dehydrated. Auth
+  // seeds from the client-readable hint cookie one frame after mount
+  // (AuthProvider's own fallback), and origin-derived UI reads the
+  // window-derived global.
   return (
     <PostHogProvider client={posthog}>
       <AnalyticsProvider client={analyticsClient}>
-        <AuthProvider initialHint={authHint}>
-          <AuthGate ssrOrigin={origin} />
+        <AuthProvider>
+          <AuthGate />
         </AuthProvider>
       </AnalyticsProvider>
     </PostHogProvider>
@@ -204,7 +189,7 @@ function ShellErrorFallback() {
   );
 }
 
-function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
+function AuthGate() {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -214,6 +199,14 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // is scoped to it, so `auth.organization` IS this org when the caller is a
   // member — and `null` when the URL names an org they can't access.
   const urlOrgSlug = (useParams({ strict: false }) as { orgSlug?: string }).orgSlug;
+  // The same slug derived from the PATHNAME instead of the route params: the
+  // params resolve asynchronously (a fresh load renders once with no orgSlug,
+  // then again with it), and anything keyed on them remounts on that flap.
+  // The pathname is synchronously correct on the very first render, and it is
+  // exactly what the request header derives from (getActiveOrgSlug), so the
+  // registry scope below can never disagree with the header scope.
+  const firstSegment = location.pathname.split("/")[1] ?? "";
+  const pathnameOrgSlug = isValidOrgSlug(firstSegment) ? firstSegment : null;
 
   // The SSR gate already bounced fresh org-less document requests to
   // /create-org; this catches the MID-SESSION transitions (org deleted,
@@ -248,11 +241,11 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   }
 
   // Every state that isn't "authenticated with an org, on a page that wants
-  // the shell" is a moment between redirects or an edge the gates make
-  // near-impossible (a verified user whose hint hasn't seeded yet). Neutral
+  // the shell" is a moment between redirects, or the one frame between mount
+  // and the hint cookie seeding (SPA mode reads it in an effect). Neutral
   // blank — the one placeholder that's correct whatever happens next. The
   // app-shell skeleton this file used to render here is exactly the
-  // wrong-UI flash the SSR gate + hint exist to prevent.
+  // wrong-UI flash the document gate + hint exist to prevent.
   if (auth.status === "loading" || auth.status === "unauthenticated") {
     return <BlankScreen />;
   }
@@ -269,12 +262,6 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
     return urlOrgSlug ? <NotFoundPage /> : <BlankScreen />;
   }
 
-  // Seed the server connection from the SSR origin so origin-derived UI (the
-  // connect card's MCP URL) renders the real host on the first paint instead
-  // of the 127.0.0.1 default the client-side global falls back to during SSR.
-  // Null on client loader re-runs → undefined → the window-derived global,
-  // which is the same origin, so the key never changes and nothing remounts.
-  const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
   const activeSlug = auth.organization.slug;
   // The org context's slug feeds the connect card's `/<slug>/mcp` install URL.
   // Prefer the URL's slug over the session's: on first paint `auth.organization`
@@ -282,27 +269,41 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // /<orgB> while their cookie still points at orgA would briefly render orgA's
   // slug in the copyable URL before /account/me (URL-scoped) corrects it. The
   // URL slug is the actual request scope and is correct on the very first paint,
-  // so sourcing it from there removes that flash. Falls back to the session slug
-  // on a bare URL (which OrgSlugGate is about to canonicalize onto it anyway).
-  const scopeSlug = urlOrgSlug ?? activeSlug;
+  // so sourcing it from there removes that flash. VALIDATED (pathnameOrgSlug,
+  // not the raw route param): the `{-$orgSlug}` param also captures reserved
+  // console roots ("/integrations" → orgSlug "integrations"), which are not
+  // org scopes. Falls back to the auth org on a bare/reserved URL (which
+  // OrgSlugGate canonicalizes onto it below).
+  const scopeSlug = pathnameOrgSlug ?? activeSlug;
   const billingHeaders = scopeSlug ? { [EXECUTOR_ORG_HEADER]: scopeSlug } : undefined;
 
   return (
     <AutumnProvider pathPrefix="/api/billing" headers={billingHeaders}>
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
-        <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
+        {/* scopeKey ties the atom registry to the URL's org: cached query
+            results can never survive an org change, and the bare → slugged
+            canonicalization remounts the registry so anything fetched
+            header-less on first paint (rejected server-side) is refetched
+            with the org header. */}
+        <ExecutorProvider scopeKey={pathnameOrgSlug} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider
                 organizationId={auth.organization.id}
                 organizationSlug={scopeSlug}
               >
-                {/* The org header scopes every request to the URL's org, so
-                    reaching here means the caller is a member of `activeSlug`
-                    (a foreign slug already 404'd above). The gate only keeps
-                    the URL canonical — bare → /<slug>. */}
-                <OrgSlugGate activeSlug={activeSlug}>
-                  <Shell />
+                {/* Canonicalize onto the URL's org, not the auth org: on first
+                    paint `auth.organization` is the SSR hint (the COOKIE's
+                    org), and canonicalizing onto that would rewrite a
+                    multi-org user's /<orgB> URL to /<orgA> during the hint
+                    window. `scopeSlug` prefers the URL slug, so a slugged URL
+                    is already canonical (a foreign slug 404'd above) and only
+                    a bare URL gets rewritten — onto the auth org, the one
+                    thing it can mean. */}
+                <OrgSlugGate activeSlug={scopeSlug}>
+                  <ArtifactRendererProvider loader={artifactRendererLoader}>
+                    <Shell />
+                  </ArtifactRendererProvider>
                   <Toaster />
                 </OrgSlugGate>
               </OrganizationProvider>

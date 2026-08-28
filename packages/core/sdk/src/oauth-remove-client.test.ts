@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { OAuthClientSlug } from "./ids";
+import { OAuthClientSlug, ToolAddress } from "./ids";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 
 // removeClient permanently deletes an owner-scoped oauth_client row, keyed by
@@ -172,6 +172,71 @@ describe("oauth.removeClient", () => {
         // It is gone for A too — org rows are tenant-shared.
         const clientsA = yield* a.executor.oauth.listClients();
         expect(clientsA.map((client) => String(client.slug))).not.toContain("shared-org");
+      }),
+    ),
+  );
+
+  // The `oauth.clients.remove` TOOL reports `removed` honestly on top of the
+  // idempotent service call above, so an agent sweeping a list of slugs cannot
+  // read a no-op as a deletion.
+  it.effect("the remove tool distinguishes a real deletion from a no-op", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          coreTools: {},
+        });
+        const remove = ToolAddress.make("executor.coreTools.oauth.clients.remove");
+
+        // The same slug registered under BOTH owners — the shape that made a
+        // hardcoded `owner: "user"` sweep silently skip the org copy.
+        for (const owner of ["org", "user"] as const) {
+          yield* executor.oauth.createClient({
+            owner,
+            slug: ORG_CLIENT,
+            authorizationUrl: "https://acme.test/authorize",
+            tokenUrl: "https://acme.test/token",
+            grant: "authorization_code",
+            clientId: `${owner}-client-id`,
+            clientSecret: `${owner}-secret`,
+          });
+        }
+
+        // A slug that never existed is not a removal.
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "user", slug: "never-existed" },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: false });
+
+        // Removing the user copy leaves the org copy, which still reports as a
+        // real removal of its own rather than as already-gone.
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "user", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: true });
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "org", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: true });
+
+        // Both are gone, and a repeat of either is now a no-op.
+        expect(yield* executor.oauth.listClients()).toEqual([]);
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "org", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: false });
       }),
     ),
   );

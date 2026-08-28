@@ -40,7 +40,11 @@ const OrgAuthMiddleware = HttpRouter.middleware<{ provides: AuthContext }>()(
           .pipe(Effect.orElseSucceed(() => null));
         if (!result) return unauthorized();
 
-        const selector = request.headers[ORG_SELECTOR_HEADER] ?? result.organizationId;
+        // FAIL CLOSED: no header, no org — the sealed cookie's org is a
+        // browser-global pinned to whichever org WorkOS last touched, so
+        // falling back to it scopes a multi-org user's request to the WRONG
+        // org (see workos-auth-provider.resolveSessionPrincipal).
+        const selector = request.headers[ORG_SELECTOR_HEADER];
         if (!selector) return noOrganization();
 
         const org = yield* authorizeOrganizationSelector(result.userId, selector).pipe(

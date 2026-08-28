@@ -24,6 +24,7 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
+import { AccountApi, AdminUsersApi } from "@executor-js/api";
 import { requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
@@ -34,6 +35,7 @@ import {
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
 import { SessionAuthLive } from "../auth/middleware-live";
+import { makeCloudAdminUsersRoutes } from "../admin/admin-users-api";
 import { OrgApi, OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
@@ -55,6 +57,8 @@ const apiPrefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
 const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi)
   .add(CloudAuthApi)
   .add(OrgApi)
+  .add(AccountApi)
+  .add(AdminUsersApi)
   .prefix("/api");
 
 const spec = OpenApi.fromApi(CloudOpenApi);
@@ -100,5 +104,18 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
 
   const BillingRoutes = AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer));
 
-  return [SessionRoutes, OrgRoutes, DocsRoutes, BillingRoutes, ApiErrorLoggingLive] as const;
+  // The tenant-wide admin plane (`/api/admin/users*`). Mounted as an extension
+  // rather than on the protected API because the protected plane's middleware
+  // binds a product-view executor to one acting member — this one authorizes an
+  // org key (or an admin session) and builds a subject-less platform view.
+  const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, { router: apiPrefixedRouter });
+
+  return [
+    SessionRoutes,
+    OrgRoutes,
+    AdminUsersRoutes,
+    DocsRoutes,
+    BillingRoutes,
+    ApiErrorLoggingLive,
+  ] as const;
 };

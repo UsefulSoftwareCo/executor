@@ -42,6 +42,7 @@ describe("ApiKeyService.WorkOS", () => {
       });
 
       expect(principal).toEqual({
+        scope: "user",
         accountId: "user_123",
         organizationId: "org_123",
         keyId: "api_key_123",
@@ -66,15 +67,9 @@ describe("ApiKeyService.WorkOS", () => {
     }),
   );
 
-  it.effect("rejects missing, organization-owned, and org-less keys", () =>
+  it.effect("rejects missing and org-less keys", () =>
     Effect.gen(function* () {
       const missing = yield* validate({ apiKey: null });
-      const orgOwned = yield* validate({
-        apiKey: {
-          id: "api_key_org",
-          owner: { type: "organization", id: "org_123" },
-        },
-      });
       const orgLess = yield* validate({
         apiKey: {
           id: "api_key_no_org",
@@ -83,8 +78,28 @@ describe("ApiKeyService.WorkOS", () => {
       });
 
       expect(missing).toBeNull();
-      expect(orgOwned).toBeNull();
       expect(orgLess).toBeNull();
+    }),
+  );
+
+  it.effect("resolves organization-owned keys to the org scope with no account", () =>
+    Effect.gen(function* () {
+      // An org key USED to fail the decode and come back null — indistinguishable
+      // from an invalid key. It now resolves explicitly: `owner.id` IS the
+      // organization, and there is no member behind it.
+      const principal = yield* validate({
+        apiKey: {
+          id: "api_key_org",
+          owner: { type: "organization", id: "org_123" },
+        },
+      });
+
+      expect(principal).toEqual({
+        scope: "org",
+        accountId: null,
+        organizationId: "org_123",
+        keyId: "api_key_org",
+      });
     }),
   );
 

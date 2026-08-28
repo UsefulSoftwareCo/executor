@@ -36,8 +36,10 @@ scenario(
           await page.goto(url, { waitUntil: "domcontentloaded" });
           await page.getByRole("link", { name: "Secrets" }).first().waitFor({ timeout: 30_000 });
           // Integrations actually LOAD (the built-in Executor integration) — proves
-          // auth + data, not just the static shell.
-          await page.getByText("built-in").first().waitFor({ timeout: 30_000 });
+          // auth + data, not just the static shell. Matched on the row's stable
+          // testid: the list renders each integration's name + slug, never the
+          // literal "built-in" (that string is only an internal `kind`).
+          await page.getByTestId("integration-entry-executor").first().waitFor({ timeout: 30_000 });
           // The token is moved out of the URL and persisted to localStorage.
           expect(new URL(page.url()).searchParams.has("_token")).toBe(false);
           const stored = await page.evaluate(() => localStorage.getItem("executor.authToken"));
@@ -70,7 +72,7 @@ scenario(
           await page.getByRole("button", { name: "Connect" }).click();
           await page.getByRole("link", { name: "Secrets" }).first().waitFor({ timeout: 30_000 });
           // The reconnect fully restores — integrations LOAD, not a stale 401.
-          await page.getByText("built-in").first().waitFor({ timeout: 30_000 });
+          await page.getByTestId("integration-entry-executor").first().waitFor({ timeout: 30_000 });
         });
       }),
     );

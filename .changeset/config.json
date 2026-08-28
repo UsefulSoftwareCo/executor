@@ -18,7 +18,8 @@
       "@executor-js/plugin-openapi",
       "@executor-js/plugin-example",
       "@executor-js/plugin-desktop-settings",
-      "@executor-js/desktop"
+      "@executor-js/desktop",
+      "@executor-js/local"
     ]
   ],
   "linked": [],
@@ -29,7 +30,6 @@
     "onlyUpdatePeerDependentsWhenOutOfRange": true
   },
   "ignore": [
-    "@executor-js/local",
     "@executor-js/host-mcp",
     "@executor-js/ir",
     "@executor-js/runtime-deno-subprocess",

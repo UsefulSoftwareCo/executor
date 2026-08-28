@@ -13,12 +13,15 @@ import {
 
 type BillingSession = {
   readonly userId: string;
-  readonly organizationId?: string | null;
 };
 
 export const resolveBillingOrganization = (request: Request, session: BillingSession) =>
   Effect.gen(function* () {
-    const selector = request.headers.get(ORG_SELECTOR_HEADER) ?? session.organizationId;
+    // FAIL CLOSED: no header, no org. The AutumnProvider always sends the
+    // URL-scoped header (see __root.tsx billingHeaders); the sealed cookie's
+    // org is a browser-global that can name a DIFFERENT org for a multi-org
+    // user (see workos-auth-provider.resolveSessionPrincipal).
+    const selector = request.headers.get(ORG_SELECTOR_HEADER);
     if (!selector) {
       return yield* new HttpResponseError({
         status: 401,

@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 import { makeUserStore } from "../auth/user-store";
 import { DbService } from "../db/db";
-import { UserStoreError, tryPromiseService, withServiceLogging } from "./errors";
+import { tryPromiseService, userStoreErrorFromFailure, withServiceLogging } from "./errors";
 
 // ---------------------------------------------------------------------------
 // UserStoreService — wraps the Drizzle-backed user store with Effect
@@ -9,11 +9,16 @@ import { UserStoreError, tryPromiseService, withServiceLogging } from "./errors"
 
 type RawStore = ReturnType<typeof makeUserStore>;
 
+// `op` names the store call so every span reads `user_store.<operation>`
+// instead of one undifferentiated "user_store" bucket, failures log which
+// query actually failed, and — because the same `op` is threaded onto the
+// public error alongside the classified driver reason — an error report is
+// diagnosable without the trace.
 const makeService = (store: RawStore) => ({
-  use: <A>(fn: (s: RawStore) => Promise<A>) =>
+  use: <A>(op: string, fn: (s: RawStore) => Promise<A>) =>
     withServiceLogging(
-      "user_store",
-      () => new UserStoreError(),
+      `user_store.${op}`,
+      (failure) => userStoreErrorFromFailure(op, failure),
       tryPromiseService(() => fn(store)),
     ),
 });

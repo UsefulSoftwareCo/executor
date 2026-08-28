@@ -1,5 +1,109 @@
 # @executor-js/cloudflare
 
+## 0.0.42
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/api@1.4.63
+  - @executor-js/execution@1.6.0
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.41
+
+### Patch Changes
+
+- [#1621](https://github.com/UsefulSoftwareCo/executor/pull/1621) [`86c68af`](https://github.com/UsefulSoftwareCo/executor/commit/86c68afef9bf8b7c19ab58f59acfedca0b3c4ca7) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **MCP execution spans now carry the client identity (`mcp.client.*`)**
+
+  The `clientInfo` a client self-reports at `initialize` (or in a modern request's `_meta`) previously existed only on the initialize request itself, which has no session id yet, so execution telemetry could not be segmented by client. Execute, execute-action, and resume spans (and their descendants) now carry `mcp.client.name` / `mcp.client.version` / `mcp.client.title` alongside the existing session join keys. Cloudflare session Durable Objects persist the reported identity in session meta, so attribution survives cold restores; it feeds telemetry only, never behavior.
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/api@1.4.62
+  - @executor-js/execution@1.5.42
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.40
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/execution@1.5.41
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.39
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/api@1.4.60
+  - @executor-js/execution@1.5.40
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.38
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/api@1.4.59
+  - @executor-js/execution@1.5.39
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.37
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/api@1.4.58
+  - @executor-js/execution@1.5.38
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.36
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/execution@1.5.37
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/execution@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.34
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/execution@1.5.35
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.33
+
+### Patch Changes
+
+- Updated dependencies [[`e2712db`](https://github.com/UsefulSoftwareCo/executor/commit/e2712dbff98145c5c340832ffbdcb21113b9dd78), [`7207347`](https://github.com/UsefulSoftwareCo/executor/commit/720734756a70b1b4f1564bdf82dc4118e5de2b76), [`0c4e9b4`](https://github.com/UsefulSoftwareCo/executor/commit/0c4e9b49fecb35ad71c92a464c3ea01131ff9d6f)]:
+  - @executor-js/sdk@1.5.34
+  - @executor-js/execution@1.5.34
+  - @executor-js/api@1.4.54
+  - @executor-js/host-mcp@1.4.4
+
 ## 0.0.32
 
 ### Patch Changes

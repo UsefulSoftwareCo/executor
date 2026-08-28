@@ -82,8 +82,30 @@ export const OAuthAuthorizationServerMetadataSchema = Schema.Struct({
   introspection_endpoint: Schema.optional(Schema.String),
   userinfo_endpoint: Schema.optional(Schema.String),
   id_token_signing_alg_values_supported: Schema.optional(StringArray),
+  /** draft-ietf-oauth-identity-assertion-authz-grant-04 §7.2 — the
+   *  authorization grant profiles this Resource Authorization Server
+   *  implements. Advertising a profile says only that the server implements
+   *  its processing rules; it promises nothing about any particular issuer,
+   *  client, or subject being accepted. */
+  authorization_grant_profiles_supported: Schema.optional(StringArray),
 }).annotate({ identifier: "OAuthAuthorizationServerMetadata" });
 export type OAuthAuthorizationServerMetadata = typeof OAuthAuthorizationServerMetadataSchema.Type;
+
+/** draft-ietf-oauth-identity-assertion-authz-grant-04 §7.2 — the profile
+ *  identifier a Resource Authorization Server advertises when it can process
+ *  an Identity Assertion JWT Authorization Grant (ID-JAG). */
+export const ID_JAG_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:id-jag";
+
+/** Whether a Resource Authorization Server advertises the ID-JAG grant profile
+ *  (§7.2). This is the ONLY discovery signal that gates enterprise-managed
+ *  authorization: a server that stays silent gets the ordinary interactive
+ *  flow. It is deliberately not inferred from `grant_types_supported`
+ *  containing `jwt-bearer` — that grant type predates this profile and says
+ *  nothing about ID-JAG processing rules. */
+export const supportsIdJagGrantProfile = (
+  metadata: Pick<OAuthAuthorizationServerMetadata, "authorization_grant_profiles_supported">,
+): boolean =>
+  metadata.authorization_grant_profiles_supported?.includes(ID_JAG_GRANT_PROFILE) === true;
 
 export type DynamicClientMetadata = {
   readonly client_name?: string;
@@ -314,17 +336,42 @@ export const discoverProtectedResourceMetadata = (
 // HttpClient boundary and timeout behavior.
 // ---------------------------------------------------------------------------
 
-const wellKnownUrlFor = (
+interface WellKnownCandidate {
+  readonly algorithm: "oauth2" | "oidc";
+  readonly url: string;
+}
+
+const wellKnownCandidatesFor = (
   issuerOrigin: string,
-  algorithm: "oauth2" | "oidc",
   issuerPath: string,
-): string => {
+): readonly WellKnownCandidate[] => {
+  const hasPath = issuerPath !== "" && issuerPath !== "/";
   // Mirrors the library's own well-known composition so the URL we
   // surface matches what was actually fetched.
-  const suffix = algorithm === "oauth2" ? "oauth-authorization-server" : "openid-configuration";
-  return issuerPath && issuerPath !== "/"
-    ? `${issuerOrigin}/.well-known/${suffix}${issuerPath}`
-    : `${issuerOrigin}/.well-known/${suffix}`;
+  const insertPath = (suffix: string) =>
+    hasPath
+      ? `${issuerOrigin}/.well-known/${suffix}${issuerPath}`
+      : `${issuerOrigin}/.well-known/${suffix}`;
+
+  const candidates: WellKnownCandidate[] = [
+    { algorithm: "oauth2", url: insertPath("oauth-authorization-server") },
+    { algorithm: "oidc", url: insertPath("openid-configuration") },
+  ];
+
+  // OIDC Discovery 1.0 §4 appends the well-known segment to the issuer
+  // instead of inserting it after the origin, and the MCP authorization
+  // spec requires clients to try that form as well. An issuer mounted
+  // under a path may serve only this variant, in which case stopping
+  // after the two path-insertion URLs reports "no metadata" for an
+  // authorization server that is configured correctly.
+  if (hasPath) {
+    candidates.push({
+      algorithm: "oidc",
+      url: `${issuerOrigin}${issuerPath}/.well-known/openid-configuration`,
+    });
+  }
+
+  return candidates;
 };
 
 export const discoverAuthorizationServerMetadata = (
@@ -343,8 +390,10 @@ export const discoverAuthorizationServerMetadata = (
     const issuerOrigin = `${issuerUrl.protocol}//${issuerUrl.host}`;
     const issuerPath = issuerUrl.pathname.replace(/\/+$/, "");
 
-    for (const algorithm of ["oauth2", "oidc"] as const) {
-      const metadataUrl = wellKnownUrlFor(issuerOrigin, algorithm, issuerPath);
+    for (const { algorithm, url: metadataUrl } of wellKnownCandidatesFor(
+      issuerOrigin,
+      issuerPath,
+    )) {
       let request = HttpClientRequest.get(metadataUrl).pipe(
         HttpClientRequest.setHeader("accept", "application/json"),
       );

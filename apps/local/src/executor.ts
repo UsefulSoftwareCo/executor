@@ -17,8 +17,9 @@ import { loadPluginsFromJsonc } from "@executor-js/config";
 import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
 import executorConfig from "../executor.config";
+import { localAnalytics } from "./analytics";
 import { localDataMigrations } from "./db/data-migrations";
-import { openOwnedLocalDatabase } from "./db/owned-database";
+import { openOwnedLocalDatabase, type OwnedLocalDatabase } from "./db/owned-database";
 
 interface ResolvedStorage {
   readonly dataDir: string;
@@ -55,6 +56,16 @@ type LocalPlugins = readonly AnyPlugin[];
 
 export interface LocalExecutorOptions {
   readonly activeToolkitSlug?: string;
+  /**
+   * Reuse an already-open owned database instead of opening (and locking) the
+   * data dir again. A toolkit-scoped MCP session differs from the default one
+   * only in its plugin set, so it must ride the running server's DB handle:
+   * `openOwnedLocalDatabase` takes an EXCLUSIVE lock, and a second open from
+   * inside the same process contends with the lock this process already holds.
+   * The borrowed handle is NOT closed when the derived executor disposes —
+   * whoever opened it still owns its lifetime.
+   */
+  readonly borrowedDb?: OwnedLocalDatabase;
 }
 
 const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
@@ -88,30 +99,17 @@ const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
     };
   });
 
-/**
- * An executor over an ALREADY-OPEN local database, differing from the bundle's
- * own executor only in its plugin set (the `activeToolkitSlug` seam). Disposing
- * one closes just that executor's plugins: the SQLite handle and the data-dir
- * ownership lock belong to the bundle that derived it.
- */
-export interface ScopedExecutorHandle {
-  readonly executor: Executor<LocalPlugins>;
-  readonly plugins: LocalPlugins;
-  readonly dispose: () => Promise<void>;
-}
-
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
   readonly plugins: LocalPlugins;
-  /**
-   * Derive an executor with a different plugin scope over this bundle's open
-   * database. The bundle holds the data dir's ownership lock (a `BEGIN
-   * EXCLUSIVE` on `data.db.owner-lock`) for its whole lifetime, so anything
-   * needing a differently-scoped executor IN THIS PROCESS must come through
-   * here. Opening a second owned database instead deadlocks against that lock
-   * and can never succeed while the daemon runs.
-   */
-  readonly createScopedExecutor: (options: LocalExecutorOptions) => Promise<ScopedExecutorHandle>;
+  /** The owned DB this bundle opened (or borrowed). Surfaced so a
+   *  toolkit-scoped executor can ride the SAME handle instead of contending
+   *  with this process's own exclusive data-dir lock. */
+  readonly db: OwnedLocalDatabase;
+  /** Where this daemon's web UI is reachable, resolved once at boot. Surfaced
+   *  so callers building user-facing links (MCP artifact deep links) use the
+   *  same origin the executor itself was configured with. */
+  readonly webBaseUrl: string;
 }
 
 class LocalExecutorTag extends Context.Service<LocalExecutorTag, LocalExecutorBundle>()(
@@ -158,31 +156,6 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
-const closeExecutorOnly = (executor: Executor<LocalPlugins>) => (): Promise<void> =>
-  Effect.runPromise(Effect.ignore(executor.close()));
-
-/**
- * Builds a bundle's `createScopedExecutor` from the seam that makes an executor
- * over its already-open database. Lives at module scope so the deferred
- * `Effect.runPromise` is not nested inside the layer's own Effect.
- */
-const makeScopedExecutorFactory =
-  <E>(makeExecutor: (plugins: LocalPlugins) => Effect.Effect<Executor<LocalPlugins>, E>) =>
-  (scopedOptions: LocalExecutorOptions): Promise<ScopedExecutorHandle> =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const scoped = yield* loadLocalPlugins(scopedOptions);
-        const scopedExecutor = yield* makeExecutor(scoped.plugins);
-        return {
-          executor: scopedExecutor,
-          plugins: scoped.plugins,
-          // Closes this executor's plugins only. The database handle and the
-          // data-dir ownership lock belong to the bundle that derived this.
-          dispose: closeExecutorOnly(scopedExecutor),
-        };
-      }),
-    );
-
 const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
   const storage = resolveStorage();
 
@@ -192,23 +165,27 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
       const tenantId = makeTenantId(cwd);
       const tables = collectTables();
 
-      const owned = yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            openOwnedLocalDatabase({
-              dataDir: storage.dataDir,
-              tables,
-              namespace: localNamespace,
-              tenantId,
+      // A borrowed handle is owned by its opener, so it is used as-is and left
+      // open on release; only a handle opened here is closed here.
+      const owned = options.borrowedDb
+        ? options.borrowedDb
+        : yield* Effect.acquireRelease(
+            Effect.tryPromise({
+              try: () =>
+                openOwnedLocalDatabase({
+                  dataDir: storage.dataDir,
+                  tables,
+                  namespace: localNamespace,
+                  tenantId,
+                }),
+              catch: (cause) =>
+                new LocalExecutorCreateError({
+                  message: CREATE_SQLITE_ERROR_MESSAGE,
+                  cause,
+                }),
             }),
-          catch: (cause) =>
-            new LocalExecutorCreateError({
-              message: CREATE_SQLITE_ERROR_MESSAGE,
-              cause,
-            }),
-        }),
-        (database) => Effect.promise(() => database.close()).pipe(Effect.ignore),
-      );
+            (database) => Effect.promise(() => database.close()).pipe(Effect.ignore),
+          );
       const sqlite = owned.db;
       const migration = owned.migration;
 
@@ -232,36 +209,28 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
       const webBaseUrl =
         process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`;
 
-      // Only `plugins` varies between the boot executor and a scoped one: the
-      // data dir, tenant, and subject are fixed for the process. `makeExecutor`
-      // is that seam, and it closes over the open `sqlite.db` so deriving an
-      // executor never re-opens (and so never re-locks) the data dir.
-      //
-      // `db` is the FumaDB handle, NOT the owning `sqlite` wrapper: an executor
-      // built over a `{ db, close }` wrapper would close the SHARED database on
-      // its own close(). Passing the handle keeps disposal to plugins alone.
-      const makeExecutor = (executorPlugins: LocalPlugins) =>
-        createExecutor({
-          tenant: Tenant.make(tenantId),
-          subject: Subject.make(LOCAL_SUBJECT),
-          db: sqlite.db,
-          plugins: executorPlugins,
-          onElicitation: "accept-all",
-          oauthEndpointUrlPolicy: { allowHttp: true },
-          // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
-          // route on the same origin as the web UI. Derived from `webBaseUrl`
-          // (loopback localhost is correct + intended for the local CLI, but it
-          // is wired explicitly here rather than relying on a hidden default).
-          redirectUri: new URL("/api/oauth/callback", webBaseUrl).toString(),
-          // Built-in agent-facing tools (integrations / connections / policies).
-          coreTools: {
-            webBaseUrl,
-          },
-        });
-
-      const executor = yield* makeExecutor(plugins);
-
-      const createScopedExecutor = makeScopedExecutorFactory(makeExecutor);
+      const executor = yield* createExecutor({
+        tenant: Tenant.make(tenantId),
+        subject: Subject.make(LOCAL_SUBJECT),
+        db: sqlite.db,
+        plugins,
+        onIntegrationChange: (event) =>
+          localAnalytics.record(
+            event.kind === "added" ? "integration_added" : "integration_removed",
+            { plugin_key: event.pluginKey },
+          ),
+        onElicitation: "accept-all",
+        oauthEndpointUrlPolicy: { allowHttp: true },
+        // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
+        // route on the same origin as the web UI. Derived from `webBaseUrl`
+        // (loopback localhost is correct + intended for the local CLI, but it
+        // is wired explicitly here rather than relying on a hidden default).
+        redirectUri: new URL("/api/oauth/callback", webBaseUrl).toString(),
+        // Built-in agent-facing tools (integrations / connections / policies).
+        coreTools: {
+          webBaseUrl,
+        },
+      });
 
       if (migration.migrated) {
         console.warn(
@@ -292,7 +261,7 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
           );
       }
 
-      return { executor, plugins, createScopedExecutor };
+      return { executor, plugins, webBaseUrl, db: owned };
     }),
   );
 };
@@ -305,7 +274,8 @@ export const createExecutorHandle = async (options: LocalExecutorOptions = {}) =
   return {
     executor: bundle.executor,
     plugins: bundle.plugins,
-    createScopedExecutor: bundle.createScopedExecutor,
+    webBaseUrl: bundle.webBaseUrl,
+    db: bundle.db,
     dispose: async () => {
       await Effect.runPromise(Effect.ignore(bundle.executor.close()));
       await ignorePromiseFailure("disposeRuntime", () => runtime.dispose());

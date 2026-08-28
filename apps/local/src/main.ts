@@ -1,9 +1,14 @@
 import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 
+import { withExecutionAnalytics } from "@executor-js/analytics";
 import { createExecutionEngine } from "@executor-js/execution";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
-import { disposeExecutor, getExecutorBundle } from "./executor";
+import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -81,29 +86,80 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // engine instance (the browser-approval + stdio surface is local-only and not
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
-    const bundle = await getExecutorBundle();
-    const engine = createExecutionEngine({
-      executor: bundle.executor,
-      codeExecutor: makeQuickJsExecutor(),
-    });
+    const { executor, webBaseUrl } = await getExecutorBundle();
+    // Both engines below serve MCP endpoints, so the wrap binds the "mcp"
+    // plane structurally; the toolkit-scoped engine additionally marks
+    // `toolkit` (the slug itself is a user label and never recorded).
+    const engine = withExecutionAnalytics(
+      createExecutionEngine({
+        executor,
+        codeExecutor: makeQuickJsExecutor(),
+      }),
+      localAnalytics,
+      { plane: "mcp", toolkit: false },
+    );
+    // The generative-UI surface, shared by every resource this daemon serves.
+    // Each toolkit gets its own executor, so `artifacts` is bound per resource
+    // below rather than hoisted with the rest.
+    //
+    // Including the create-time smoke render, on the same terms as every other
+    // host. This daemon is a dependency of `apps/cli`, whose build does not
+    // configure `jsx`, and the renderer used to be unusable here for that
+    // reason — TypeScript resolved its dynamic `import()` of the `.tsx`
+    // component barrel eagerly and dragged the whole React graph (plus a
+    // duplicate `@types/react`) into the CLI and desktop trees. It renders
+    // inside a QuickJS sandbox now, so there is no `.tsx` in its graph and no
+    // React in this process; the cost is one lazily-loaded string constant.
+    const appsConfig = {
+      loadAppShellHtml: loadMcpAppsShellHtml,
+      smokeRenderArtifact,
+      artifactUrl: artifactUrlFor(webBaseUrl),
+      // Artifact operations on this surface come from an agent's MCP tools.
+      onArtifactUsage: (action: "created" | "viewed" | "updated") =>
+        localAnalytics.record(`artifact_${action}`, { via: "agent" }),
+    };
     mcp = createMcpRequestHandler({
-      defaultConfig: { engine },
+      defaultConfig: {
+        engine,
+        artifacts: executor.artifacts,
+        connections: executor.connections,
+        ...appsConfig,
+      },
       createConfigForResource: async (resource) => {
-        if (resource.kind === "default") return { config: { engine } };
-        // A toolkit resource differs from the default only in its plugin scope,
-        // so it derives from the boot bundle's ALREADY-OPEN database. Opening a
-        // second owned database here would deadlock against the data-dir
-        // ownership lock this very process holds, failing every request.
-        const scoped = await bundle.createScopedExecutor({
+        if (resource.kind === "default") {
+          return {
+            config: {
+              engine,
+              artifacts: executor.artifacts,
+              connections: executor.connections,
+              ...appsConfig,
+            },
+          };
+        }
+        // Borrow the running server's DB handle: this process already holds the
+        // data dir's exclusive ownership lock, so opening it a second time here
+        // fails against ourselves. The toolkit executor differs only in its
+        // plugin set, and the borrowed handle stays open when it disposes.
+        const handle = await createExecutorHandle({
           activeToolkitSlug: resource.slug,
+          borrowedDb: (await getExecutorBundle()).db,
         });
-        const toolkitEngine = createExecutionEngine({
-          executor: scoped.executor,
-          codeExecutor: makeQuickJsExecutor(),
-        });
+        const toolkitEngine = withExecutionAnalytics(
+          createExecutionEngine({
+            executor: handle.executor,
+            codeExecutor: makeQuickJsExecutor(),
+          }),
+          localAnalytics,
+          { plane: "mcp", toolkit: true },
+        );
         return {
-          config: { engine: toolkitEngine },
-          close: scoped.dispose,
+          config: {
+            engine: toolkitEngine,
+            artifacts: handle.executor.artifacts,
+            connections: handle.executor.connections,
+            ...appsConfig,
+          },
+          close: handle.dispose,
         };
       },
     });

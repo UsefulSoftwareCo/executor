@@ -15,6 +15,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 scenario(
   "MCP · the URL printed by the Connect card is actually served",
@@ -28,7 +29,7 @@ scenario(
     let cardUrl = "";
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Read the MCP URL from the Connect-an-agent card", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.waitForTimeout(2000); // let the card resolve the server origin
         // The card renders `npx add-mcp <url> --transport http --name executor`.
         // The CodeBlock tokenizes it across spans; read the concatenated text.

@@ -80,10 +80,11 @@ const startPlainViteDev = async (): Promise<ViteDev> => {
   const dataDir = mkdtempSync(join(tmpdir(), "executor-local-vite-e2e-"));
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
+  const viteEntrypoint = join(localAppDir, "node_modules", "vite", "bin", "vite.js");
   let logs = "";
   const child = spawn(
-    "bunx",
-    ["--bun", "vite", "dev", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
+    "bun",
+    [viteEntrypoint, "dev", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
     {
       cwd: localAppDir,
       env: { ...process.env, EXECUTOR_DATA_DIR: dataDir, PORT: String(port) },

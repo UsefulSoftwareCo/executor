@@ -11,6 +11,7 @@ import {
   ToolName,
 } from "./ids";
 import type { AuthMethodDescriptor } from "./integration";
+import { firstPartyOAuthClientSlug } from "./oauth-client";
 import { definePlugin, type IntegrationRecord } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveTestHttpApp } from "./testing";
@@ -107,6 +108,8 @@ const serveMetadataServer = (config: {
     | "error"
     | null;
   readonly authServerScopes?: readonly string[];
+  readonly authServerAuthorizationPath?: string;
+  readonly authServerTokenPath?: string;
 }) =>
   Effect.gen(function* () {
     const baseUrlRef = { value: "" };
@@ -133,8 +136,8 @@ const serveMetadataServer = (config: {
       ) {
         return HttpServerResponse.jsonUnsafe({
           issuer: base,
-          authorization_endpoint: `${base}/authorize`,
-          token_endpoint: `${base}/token`,
+          authorization_endpoint: `${base}${config.authServerAuthorizationPath ?? "/authorize"}`,
+          token_endpoint: `${base}${config.authServerTokenPath ?? "/token"}`,
           response_types_supported: ["code"],
           code_challenge_methods_supported: ["S256"],
           scopes_supported: config.authServerScopes,
@@ -325,6 +328,49 @@ describe("oauth.start integration-driven scopes", () => {
       ),
   );
 
+  it.effect("keeps declared scopes when same-origin metadata describes another OAuth surface", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMetadataServer({
+          authServerScopes: ["mcp:connect"],
+          authServerAuthorizationPath: "/oauth/mcp",
+        });
+        const plugins = [
+          memoryCredentialsPlugin(),
+          makeScopePlugin({ scopes: ["file_content:read", "file_comments:write"] }),
+        ] as const;
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "file_content:read",
+          "file_comments:write",
+        ]);
+      }),
+    ),
+  );
+
   it.effect(
     "(d) for MCP, the resource's own scopes_supported wins over a divergent authorization server",
     () =>
@@ -483,6 +529,51 @@ describe("oauth.start integration-driven scopes", () => {
             }),
           );
           expect(Exit.isFailure(exit)).toBe(true);
+        }),
+      ),
+  );
+
+  it.effect(
+    "(i) a scope-limited first-party MCP app caps the provider's advertised scope catalog",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveMetadataServer({
+            prm: { scopesSupported: ["read", "write", "admin"] },
+          });
+          const plugins = [
+            memoryCredentialsPlugin(),
+            makeMcpScopePlugin({ scopes: null }),
+          ] as const;
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            firstPartyOAuthClients: [
+              {
+                name: "acme",
+                authorizationUrl: server.authorizationEndpoint,
+                tokenUrl: server.tokenEndpoint,
+                resource: server.mcpResourceUrl,
+                clientId: "test-client",
+                clientSecret: "test-secret",
+                integrations: [INTEG],
+                allowedScopes: ["read", "write"],
+              },
+            ],
+          });
+          yield* executor.mcp.seed();
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: firstPartyOAuthClientSlug("acme"),
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["read", "write"]);
         }),
       ),
   );

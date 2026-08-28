@@ -9,8 +9,14 @@ import {
   IntegrationSlug,
 } from "@executor-js/sdk/shared";
 
-import { OpenApiParseError, OpenApiExtractionError, OpenApiOAuthError } from "../sdk/errors";
+import {
+  OpenApiParseError,
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  OpenApiSpecOverrideError,
+} from "../sdk/errors";
 import { SpecPreviewSummary } from "../sdk/preview";
+import { SpecOverridesSchema } from "../sdk/spec-overrides";
 
 // ---------------------------------------------------------------------------
 // Errors — the plugin-domain tagged errors flow directly to clients
@@ -25,6 +31,7 @@ const DomainErrors = [
   OpenApiParseError,
   OpenApiExtractionError,
   OpenApiOAuthError,
+  OpenApiSpecOverrideError,
   IntegrationAlreadyExistsError,
 ] as const;
 
@@ -35,6 +42,7 @@ const UpdateSpecErrors = [
   OpenApiParseError,
   OpenApiExtractionError,
   OpenApiOAuthError,
+  OpenApiSpecOverrideError,
   IntegrationNotFound,
 ] as const;
 
@@ -54,6 +62,7 @@ const OpenApiSpecInputPayload = Schema.Union([
 const OAuthTemplatePayload = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  label: Schema.optional(Schema.String),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -79,11 +88,13 @@ const AddSpecPayload = Schema.Struct({
   family: Schema.optional(Schema.String),
   healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const PreviewSpecPayload = Schema.Struct({
   spec: Schema.String,
   specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 // The `configure` payload — the new/updated auth methods to merge onto the
@@ -109,6 +120,7 @@ const AddSpecResponse = Schema.Struct({
 // "re-fetch from the stored source URL".
 const UpdateSpecPayload = Schema.Struct({
   spec: Schema.optional(OpenApiSpecInputPayload),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const UpdateSpecResponse = Schema.Struct({
@@ -138,6 +150,7 @@ const OpenApiConfigView = Schema.Struct({
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specOverrides: Schema.optional(SpecOverridesSchema),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationResponse)),
 });
 

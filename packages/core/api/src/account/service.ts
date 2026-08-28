@@ -7,6 +7,7 @@ import {
   type AccountUnauthorized,
   AccountMeResponse,
   ApiKeysResponse,
+  OrgApiKeysResponse,
   CreatedApiKeyResponse,
   OrgMembersResponse,
   OrgRolesResponse,
@@ -33,6 +34,7 @@ export type AccountHeaders = Record<string, string>;
 
 type Me = typeof AccountMeResponse.Type;
 type ApiKeys = typeof ApiKeysResponse.Type;
+type OrgApiKeys = typeof OrgApiKeysResponse.Type;
 type CreatedApiKey = typeof CreatedApiKeyResponse.Type;
 type Members = typeof OrgMembersResponse.Type;
 type Roles = typeof OrgRolesResponse.Type;
@@ -49,6 +51,16 @@ export interface AccountProviderShape {
   readonly listApiKeys: (headers: AccountHeaders) => OrgScoped<ApiKeys>;
   readonly createApiKey: (headers: AccountHeaders, name: string) => OrgScoped<CreatedApiKey>;
   readonly revokeApiKey: (headers: AccountHeaders, apiKeyId: string) => OrgScoped<Success>;
+  /** Org-owned keys: admin-gated, hence the `AccountForbidden` on both. */
+  readonly listOrgApiKeys: (headers: AccountHeaders) => OrgScoped<OrgApiKeys, AccountForbidden>;
+  readonly createOrgApiKey: (
+    headers: AccountHeaders,
+    name: string,
+  ) => OrgScoped<CreatedApiKey, AccountForbidden>;
+  readonly revokeOrgApiKey: (
+    headers: AccountHeaders,
+    apiKeyId: string,
+  ) => OrgScoped<Success, AccountForbidden>;
   readonly listMembers: (headers: AccountHeaders) => OrgScoped<Members>;
   readonly listRoles: (headers: AccountHeaders) => OrgScoped<Roles>;
   readonly inviteMember: (
