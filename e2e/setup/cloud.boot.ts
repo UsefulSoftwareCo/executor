@@ -12,7 +12,10 @@ import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForBoot, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
-import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
+import {
+  E2E_EXECUTION_RATE_LIMIT,
+  E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS,
+} from "./execution-limits";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -126,6 +129,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // scenario's per-org execute count. Reaches the worker via
     // CLOUDFLARE_INCLUDE_PROCESS_ENV, same as ALLOW_LOCAL_NETWORK.
     EXECUTION_RATE_LIMIT_PER_HOUR: String(E2E_EXECUTION_RATE_LIMIT),
+    // Set to a value that is NOT the compiled-in default, so the span the
+    // worker exports proves this override was actually read rather than
+    // silently ignored (execution-limits.ts explains why it is longer, not
+    // shorter, than the default).
+    EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS: String(E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS),
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(options.dbPort),
     DEV_DB_PATH: dbPath,

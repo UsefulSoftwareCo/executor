@@ -32,7 +32,8 @@ export const isUserActionableError = (value: unknown): value is UserActionableEr
 /* The failure set the SDK surfaces. `execute`'s invoke failures are ported from
  * v1 but re-keyed by `address` (the full `tools.<integration>.<owner>.<connection>.<tool>`
  * handle) instead of an opaque tool id. Storage failures reuse fuma-runtime's
- * `StorageError`/`UniqueViolationError` (`StorageFailure`) — not redefined here. */
+ * `StorageError`/`StorageConnectionError`/`UniqueViolationError`
+ * (`StorageFailure`) — not redefined here. */
 
 // ---------------------------------------------------------------------------
 // Tool lifecycle

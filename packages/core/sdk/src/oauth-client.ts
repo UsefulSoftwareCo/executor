@@ -187,6 +187,17 @@ export interface FirstPartyOAuthClientConfig {
    *  GitHub Apps, whose capabilities are configured on the app and whose OAuth
    *  user-token flow does not use scopes. Omit for normal OAuth clients. */
   readonly authorizationScopes?: readonly string[];
+  /** Withdraw the app from every listing surface without retiring it. It stops
+   *  appearing in `listClients` — so connect pickers and the agent-facing
+   *  client list never offer it — while remaining fully resolvable by slug.
+   *  Load, start, completion, and refresh all go through `loadClient`, which
+   *  reads config directly, so connections already minted against the app keep
+   *  renewing and reconnecting exactly as before.
+   *
+   *  This is the safe way to stop offering a shared app. Dropping its env vars
+   *  instead removes the config entry itself, which strands every existing
+   *  connection on a client the host can no longer resolve. */
+  readonly unlisted?: boolean;
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this
