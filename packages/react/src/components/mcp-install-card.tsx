@@ -30,7 +30,23 @@ const McpInstallPreferencesSchema = Schema.Struct({
 
 type McpInstallPreferences = typeof McpInstallPreferencesSchema.Type;
 
-const MCP_INSTALL_PREFERENCES_STORAGE_KEY = "executor.mcpInstallPreferences.v1";
+const MCP_INSTALL_PREFERENCES_STORAGE_PREFIX = "executor.mcpInstallPreferences.v1";
+/** Hosts that are not org-scoped (local, desktop) share this one suffix. */
+const UNSCOPED_ORGANIZATION_SUFFIX = "local";
+
+/**
+ * Storage key for one organization's install preferences.
+ *
+ * `localStorage` is per-origin, not per-account, so a single key would carry
+ * one org's transport and elicitation choices into every other org — and into
+ * every other user — signed in through the same browser. The rendered command
+ * differs per org, so a shared preference is wrong rather than merely
+ * surprising. Scoping by slug keeps each org's choices to itself; hosts with
+ * no org context are a single user by construction and share one bucket.
+ */
+export const mcpInstallPreferencesStorageKey = (organizationSlug: string | null): string =>
+  `${MCP_INSTALL_PREFERENCES_STORAGE_PREFIX}.${organizationSlug ?? UNSCOPED_ORGANIZATION_SUFFIX}`;
+
 const DEFAULT_MCP_INSTALL_PREFERENCES: McpInstallPreferences = {
   mode: "http",
   httpElicitationMode: "model",
@@ -41,10 +57,10 @@ const decodeMcpInstallPreferences = Schema.decodeUnknownOption(
   Schema.fromJsonString(McpInstallPreferencesSchema),
 );
 
-const readMcpInstallPreferences = (): McpInstallPreferences => {
+const readMcpInstallPreferences = (storageKey: string): McpInstallPreferences => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
   try {
-    const raw = globalThis.localStorage?.getItem(MCP_INSTALL_PREFERENCES_STORAGE_KEY);
+    const raw = globalThis.localStorage?.getItem(storageKey);
     return raw
       ? Option.getOrElse(decodeMcpInstallPreferences(raw), () => DEFAULT_MCP_INSTALL_PREFERENCES)
       : DEFAULT_MCP_INSTALL_PREFERENCES;
@@ -53,13 +69,13 @@ const readMcpInstallPreferences = (): McpInstallPreferences => {
   }
 };
 
-const writeMcpInstallPreferences = (preferences: McpInstallPreferences): void => {
+const writeMcpInstallPreferences = (
+  storageKey: string,
+  preferences: McpInstallPreferences,
+): void => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
   try {
-    globalThis.localStorage?.setItem(
-      MCP_INSTALL_PREFERENCES_STORAGE_KEY,
-      JSON.stringify(preferences),
-    );
+    globalThis.localStorage?.setItem(storageKey, JSON.stringify(preferences));
   } catch {
     // Best-effort persistence; the options still apply to this rendered command.
   }
@@ -195,13 +211,26 @@ export function McpInstallCard(props: { className?: string }) {
   // HTTP path there; it routes through the active sidecar connection.
   const showStdio =
     isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
-  const [preferences, setPreferences] = useState<McpInstallPreferences>(readMcpInstallPreferences);
+  const storageKey = mcpInstallPreferencesStorageKey(organizationSlug);
+  const [preferences, setPreferences] = useState<McpInstallPreferences>(() =>
+    readMcpInstallPreferences(storageKey),
+  );
+  // Switching organizations must load that org's own preferences. Reloading in
+  // an effect would let the save effect below run first and write the previous
+  // org's choices under the new org's key, which is the bleed this scoping
+  // exists to prevent. Adjusting during render re-runs this component before
+  // anything commits, so the save effect only ever sees a matched pair.
+  const [loadedStorageKey, setLoadedStorageKey] = useState(storageKey);
+  if (loadedStorageKey !== storageKey) {
+    setLoadedStorageKey(storageKey);
+    setPreferences(readMcpInstallPreferences(storageKey));
+  }
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const { mode, httpElicitationMode, artifacts, searchTools } = preferences;
 
   useEffect(() => {
-    writeMcpInstallPreferences(preferences);
-  }, [preferences]);
+    writeMcpInstallPreferences(storageKey, preferences);
+  }, [storageKey, preferences]);
 
   const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
 
