@@ -14,6 +14,7 @@ import {
   type HealthCheckResult,
   type HealthCheckSpec,
   type OAuthClientSummary,
+  type OAuthProbeResult,
   type Owner,
 } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
@@ -667,19 +668,19 @@ type CimdOutcome =
   | { readonly kind: "popup-blocked" }
   | { readonly kind: "failed"; readonly reason: "missing-endpoints" | "create-failed" };
 
-export async function runCimdConnect(
-  deps: RunCimdConnectDeps,
-  input: RunCimdConnectInput,
-): Promise<CimdOutcome> {
+type ResolveCimdClientDeps = Pick<RunCimdConnectDeps, "createClient">;
+type ResolveCimdClientInput = RunCimdConnectInput;
+type ResolveCimdClientOutcome =
+  | { readonly kind: "ready"; readonly client: OAuthClientSlug; readonly reused: boolean }
+  | { readonly kind: "failed"; readonly reason: "missing-endpoints" | "create-failed" };
+
+async function resolveCimdClient(
+  deps: ResolveCimdClientDeps,
+  input: ResolveCimdClientInput,
+): Promise<ResolveCimdClientOutcome> {
   if (input.authorizationUrl.trim().length === 0 || input.tokenUrl.trim().length === 0) {
     return { kind: "failed", reason: "missing-endpoints" };
   }
-
-  // Claim the window while the click still counts. Minting the client is a
-  // round trip, and the browser stops honouring `window.open` once the
-  // activation from the click expires.
-  const reservation = deps.reserve();
-  if (reservation.kind === "blocked") return { kind: "popup-blocked" };
 
   const resource = input.resource ?? null;
   const existing = input.existingClients.find(
@@ -692,10 +693,7 @@ export async function runCimdConnect(
       client.clientId === input.clientIdMetadataDocumentUrl,
   );
 
-  if (existing) {
-    deps.start({ client: existing.slug, owner: input.owner, reservation });
-    return { kind: "started", client: existing.slug, reused: true };
-  }
+  if (existing) return { kind: "ready", client: existing.slug, reused: true };
 
   const slug = uniqueClientSlug(
     `${input.integrationName} CIMD`,
@@ -711,38 +709,46 @@ export async function runCimdConnect(
     clientId: input.clientIdMetadataDocumentUrl,
     clientSecret: "",
   });
-  if (created === null) {
-    deps.release();
-    return { kind: "failed", reason: "create-failed" };
+  if (created === null) return { kind: "failed", reason: "create-failed" };
+  return { kind: "ready", client: created, reused: false };
+}
+
+export async function runCimdConnect(
+  deps: RunCimdConnectDeps,
+  input: RunCimdConnectInput,
+): Promise<CimdOutcome> {
+  if (input.authorizationUrl.trim().length === 0 || input.tokenUrl.trim().length === 0) {
+    return { kind: "failed", reason: "missing-endpoints" };
   }
-  deps.start({ client: created, owner: input.owner, reservation });
-  return { kind: "started", client: created, reused: false };
+
+  // Claim the window while the click still counts. Minting the client is a
+  // round trip, and the browser stops honouring `window.open` once the
+  // activation from the click expires.
+  const reservation = deps.reserve();
+  if (reservation.kind === "blocked") return { kind: "popup-blocked" };
+
+  const resolved = await resolveCimdClient(deps, input);
+  if (resolved.kind === "failed") {
+    deps.release();
+    return resolved;
+  }
+  deps.start({ client: resolved.client, owner: input.owner, reservation });
+  return { kind: "started", client: resolved.client, reused: resolved.reused };
 }
 
 // ---------------------------------------------------------------------------
-// Transparent DCR (RFC 7591) connect orchestration.
+// Automatic discovered OAuth connect orchestration.
 //
-// For DCR-capable methods (MCP OAuth) the user clicks one "Connect" button and
-// we do everything: probe the integration's discovery URL → register a client
-// against the advertised registration endpoint → start
-// the OAuth flow with the minted client. No app picker, no pasted client id.
+// MCP OAuth is discovered at connect time. Prefer Client ID Metadata Documents
+// when the authorization server advertises them; otherwise use Dynamic Client
+// Registration when available. Both paths keep the popup reserved by the
+// original click and avoid a provider-specific app picker.
 //
 // This is extracted as a pure-ish orchestrator (injected `probe`/`register`/
 // `start`) so the SEQUENCE is unit-testable without React/atoms. The caller
 // supplies thin adapters over the `probeOAuth` / `registerDynamicOAuthClient` /
 // popup-start atoms.
 // ---------------------------------------------------------------------------
-
-/** Discovery result from the probe step (subset of the `probeOAuth` response). */
-type DcrProbeResult = {
-  readonly issuer?: string | null;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly resource?: string | null;
-  readonly scopesSupported?: readonly string[];
-  readonly registrationEndpoint?: string | null;
-  readonly tokenEndpointAuthMethodsSupported?: readonly string[];
-};
 
 type DcrRegisterArgs = {
   readonly owner: Owner;
@@ -765,7 +771,7 @@ type DcrStartArgs = {
   readonly reservation: OAuthPopupReservation;
 };
 
-/** Outcome of the DCR orchestration. `"started"` means the OAuth flow handed
+/** Outcome of automatic discovered OAuth orchestration. `"started"` means the OAuth flow handed
  *  off (the popup/inline start ran); `"popup-blocked"` means the browser refused
  *  the sign-in window, which no app picker can fix, so the caller reports it
  *  rather than falling back; `"fallback"` means we could not auto-set-up (a
@@ -773,24 +779,29 @@ type DcrStartArgs = {
  *  caller should fall back to the bring-your-own-app picker. A failed probe
  *  carries no probe result; the other two reasons always carry the probe that
  *  seeds the picker. */
-type DcrOutcome =
-  | { readonly kind: "started" }
+type AutomaticOAuthOutcome =
+  | { readonly kind: "started"; readonly flow: "cimd" | "dcr" }
   | { readonly kind: "popup-blocked" }
   | { readonly kind: "fallback"; readonly reason: "probe-failed" }
   | {
       readonly kind: "fallback";
-      readonly reason: "no-registration-endpoint" | "registration-failed";
-      readonly probe: DcrProbeResult;
+      readonly reason:
+        | "no-registration-endpoint"
+        | "client-metadata-failed"
+        | "registration-failed";
+      readonly probe: OAuthProbeResult;
       /** A specific, user-facing reason to surface instead of the generic
        *  "register an app" copy (e.g. a server that rejects the DCR redirect
        *  URI). Absent when the fallback carries no actionable detail. */
       readonly message?: string;
     };
 
-type RunDcrConnectDeps = {
+type RunAutomaticOAuthConnectDeps = {
   /** Probe the discovery URL → resolved endpoints + (maybe) a registration
    *  endpoint. Resolves to null when the probe fails. */
-  readonly probe: (url: string) => Promise<DcrProbeResult | null>;
+  readonly probe: (url: string) => Promise<OAuthProbeResult | null>;
+  /** Create or reuse the local public client used by a CIMD flow. */
+  readonly createCimdClient: ResolveCimdClientDeps["createClient"];
   /** Register a DCR client → the minted client slug, `{ error }` with a
    *  user-facing message when the server rejects registration, or null on an
    *  unexplained failure. */
@@ -805,7 +816,7 @@ type RunDcrConnectDeps = {
   readonly release: () => void;
 };
 
-type RunDcrConnectInput = {
+type RunAutomaticOAuthConnectInput = {
   readonly discoveryUrl: string;
   /** The integration's genuine protected-resource URL (the MCP discovery URL),
    *  used as the RFC 8707 resource indicator when the server's PRM names no
@@ -821,6 +832,12 @@ type RunDcrConnectInput = {
   readonly redirectUri?: string;
   /** Integration that requested this DCR client. */
   readonly integration: IntegrationSlug;
+  /** Executor's public client metadata document and the local clients it may
+   *  reuse when the probe advertises CIMD. */
+  readonly cimd: Pick<
+    RunCimdConnectInput,
+    "integrationName" | "clientIdMetadataDocumentUrl" | "existingClients"
+  >;
 };
 
 /** RFC 7591 `client_name` sent for every dynamic registration. Deliberately
@@ -833,20 +850,21 @@ type RunDcrConnectInput = {
 const DCR_CLIENT_NAME = "Executor";
 
 /**
- * Run the transparent DCR connect sequence: reserve → probe → register → start.
+ * Run automatic discovered OAuth: reserve → probe → CIMD or DCR → start.
  *
  * - Popup refused → `{ kind: "popup-blocked" }` before any network call.
  * - Probe failure → `{ kind: "fallback", reason: "probe-failed" }` (caller shows BYO).
- * - No registration endpoint → `{ kind: "fallback", reason: "no-registration-endpoint", probe }`.
+ * - CIMD advertised → create/reuse the public metadata client, then start.
+ * - Otherwise no DCR endpoint → `{ kind: "fallback", reason: "no-registration-endpoint", probe }`.
  * - Register rejected with a message → `{ kind: "fallback", reason: "registration-failed", probe, message }`
  *   so the caller can show why (e.g. a redirect-URI rejection) over the generic copy.
  * - Register failed without detail (null) → `{ kind: "fallback", reason: "registration-failed", probe }`.
- * - Success → registers, calls `start`, returns `{ kind: "started" }`.
+ * - Success → calls `start` and reports which automatic flow was used.
  */
-export async function runDcrConnect(
-  deps: RunDcrConnectDeps,
-  input: RunDcrConnectInput,
-): Promise<DcrOutcome> {
+export async function runAutomaticOAuthConnect(
+  deps: RunAutomaticOAuthConnectDeps,
+  input: RunAutomaticOAuthConnectInput,
+): Promise<AutomaticOAuthOutcome> {
   // Claim the sign-in window FIRST, on the click that got us here. Probe and
   // register are two network round trips; the browser's user activation expires
   // well before they finish, so a window opened after them is refused and the
@@ -858,6 +876,26 @@ export async function runDcrConnect(
   if (probe === null) {
     deps.release();
     return { kind: "fallback", reason: "probe-failed" };
+  }
+  if (probe.clientIdMetadataDocumentSupported === true) {
+    const resolved = await resolveCimdClient(
+      { createClient: deps.createCimdClient },
+      {
+        owner: input.owner,
+        integrationName: input.cimd.integrationName,
+        authorizationUrl: probe.authorizationUrl,
+        tokenUrl: probe.tokenUrl,
+        resource: probe.resource ?? input.resourceFallback ?? null,
+        clientIdMetadataDocumentUrl: input.cimd.clientIdMetadataDocumentUrl,
+        existingClients: input.cimd.existingClients,
+      },
+    );
+    if (resolved.kind === "failed") {
+      deps.release();
+      return { kind: "fallback", reason: "client-metadata-failed", probe };
+    }
+    deps.start({ client: resolved.client, owner: input.owner, reservation });
+    return { kind: "started", flow: "cimd" };
   }
   const registrationEndpoint = probe.registrationEndpoint;
   if (!registrationEndpoint) {
@@ -892,7 +930,7 @@ export async function runDcrConnect(
     return { kind: "fallback", reason: "registration-failed", probe, message: minted.error };
   }
   deps.start({ client: minted, owner: input.owner, reservation });
-  return { kind: "started" };
+  return { kind: "started", flow: "dcr" };
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,11 +1290,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [registeringOAuthClient, setRegisteringOAuthClient] = useState(false);
   const [ccBusy, setCcBusy] = useState(false);
   const [cimdBusy, setCimdBusy] = useState(false);
-  // Transparent DCR: busy while probing/registering/starting; `dcrFailed` flips
-  // the modal to the bring-your-own-app picker if auto setup is unavailable.
+  // Automatic discovery: busy while probing/setting up/starting; `dcrFailed`
+  // retains its historical name and flips to the bring-your-own-app recovery.
   const [dcrBusy, setDcrBusy] = useState(false);
   const [dcrFailed, setDcrFailed] = useState(false);
-  const [oauthFallbackProbe, setOAuthFallbackProbe] = useState<DcrProbeResult | null>(null);
+  const [oauthFallbackProbe, setOAuthFallbackProbe] = useState<OAuthProbeResult | null>(null);
   // When transparent DCR is rejected with an actionable reason (e.g. the server
   // refuses our redirect URI), surface it as an inline error card on the
   // bring-your-own-app recovery view instead of a transient toast.
@@ -2117,6 +2155,24 @@ function AddAccountModalView(props: AddAccountModalProps) {
     });
   };
 
+  const createCimdClient = async (args: CimdCreateClientArgs): Promise<OAuthClientSlug | null> => {
+    const exit = await doCreateOAuthClient({
+      payload: {
+        owner: args.owner,
+        slug: args.slug,
+        authorizationUrl: args.authorizationUrl,
+        tokenUrl: args.tokenUrl,
+        resource: args.resource ?? null,
+        grant: args.grant,
+        clientId: args.clientId,
+        clientSecret: args.clientSecret,
+      },
+      reactivityKeys: oauthClientWriteKeys,
+    });
+    if (Exit.isFailure(exit)) return null;
+    return exit.value.client;
+  };
+
   const handleCimdConnect = async () => {
     const authorizationUrl = method?.oauth?.authorizationUrl;
     const tokenUrl = method?.oauth?.tokenUrl;
@@ -2132,23 +2188,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       {
         reserve: oauthPopup.reserve,
         release: oauthPopup.releaseReservation,
-        createClient: async (args: CimdCreateClientArgs): Promise<OAuthClientSlug | null> => {
-          const exit = await doCreateOAuthClient({
-            payload: {
-              owner: args.owner,
-              slug: args.slug,
-              authorizationUrl: args.authorizationUrl,
-              tokenUrl: args.tokenUrl,
-              resource: args.resource ?? null,
-              grant: args.grant,
-              clientId: args.clientId,
-              clientSecret: args.clientSecret,
-            },
-            reactivityKeys: oauthClientWriteKeys,
-          });
-          if (Exit.isFailure(exit)) return null;
-          return exit.value.client;
-        },
+        createClient: createCimdClient,
         start: (args: CimdStartArgs): void => {
           void oauthPopup.start({
             reservation: args.reservation,
@@ -2194,11 +2234,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     }
   };
 
-  // Transparent DCR connect: probe → register → start, no app picker. On any
-  // failure (probe error, no registration endpoint, or registration failure) we
-  // flip `dcrFailed` so the bring-your-own-app picker renders as the recovery
-  // path with name/owner kept.
-  const handleDcrConnect = async () => {
+  // Automatic discovered OAuth connect: probe once, then prefer CIMD or use DCR
+  // according to the authorization server's advertised metadata. On failure we
+  // flip `dcrFailed` so the bring-your-own-app picker remains the recovery path.
+  const handleAutomaticOAuthConnect = async () => {
     const discoveryUrl = method?.oauth?.discoveryUrl ?? method?.oauth?.tokenUrl;
     if (!method || !discoveryUrl) {
       setDcrFailed(true);
@@ -2208,15 +2247,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const connectionName = previewConnectionName(label, dcrOwner);
     const identityLabel = typedIdentityLabel(label);
     setDcrBusy(true);
-    const outcome = await runDcrConnect(
+    const outcome = await runAutomaticOAuthConnect(
       {
         reserve: oauthPopup.reserve,
         release: oauthPopup.releaseReservation,
-        probe: async (url: string): Promise<DcrProbeResult | null> => {
+        probe: async (url: string): Promise<OAuthProbeResult | null> => {
           const exit = await doProbe({ payload: { url }, reactivityKeys: [] });
           if (Exit.isFailure(exit)) return null;
           return exit.value;
         },
+        createCimdClient,
         register: async (
           args: DcrRegisterArgs,
         ): Promise<OAuthClientSlug | { readonly error: string } | null> => {
@@ -2279,13 +2319,23 @@ function AddAccountModalView(props: AddAccountModalProps) {
         declaredScopes: method.oauth?.scopes,
         redirectUri: oauthCallbackUrl(),
         integration,
+        cimd: {
+          integrationName,
+          clientIdMetadataDocumentUrl: oauthClientIdMetadataDocumentUrl(),
+          existingClients: clientSummaries,
+        },
       },
     );
     setDcrBusy(false);
     trackEvent("connection_oauth_started", {
       integration_slug: String(integration),
       owner: dcrOwner,
-      flow: "dcr",
+      flow:
+        outcome.kind === "started"
+          ? outcome.flow
+          : "probe" in outcome && outcome.probe.clientIdMetadataDocumentSupported === true
+            ? "cimd"
+            : "dcr",
       success: outcome.kind === "started",
       ...(outcome.kind === "fallback" ? { dcr_fallback: true } : {}),
     });
@@ -2307,15 +2357,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // Non-modal for the same reason as the health-check editor sheet: a modal
     // dialog's react-remove-scroll locks the wheel to the dialog subtree, so
     // the operation combobox's PORTALED popup (and the modal body while it is
-    // open) cannot scroll. The overlay still dims and outside-click still
-    // closes; the portaled-popup guard in DialogContent keeps option clicks
-    // from dismissing.
+    // open) cannot scroll. The overlay still dims, so the dialog keeps its
+    // modal look. This form holds credentials and a half-built auth method, so
+    // it takes DialogContent's default: an outside click does not dismiss it.
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
         forceOverlay
-        onInteractOutside={
-          oauthClientHandoff?.action === "reconnect" ? (event) => event.preventDefault() : undefined
-        }
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing
@@ -2989,7 +3036,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
               ) : dcrActive ? (
                 <Button
                   type="button"
-                  onClick={() => void handleDcrConnect()}
+                  onClick={() => void handleAutomaticOAuthConnect()}
                   disabled={dcrConnecting}
                 >
                   {dcrConnecting ? "Connecting…" : "Connect"}

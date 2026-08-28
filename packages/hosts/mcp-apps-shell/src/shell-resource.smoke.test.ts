@@ -28,6 +28,8 @@ const stubEngine: ExecutionEngine<never> = {
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed("smoke"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 };
 
 // oxlint-disable-next-line executor/no-double-cast -- boundary: MCP SDK ClientCapabilities predates the ext-apps `extensions` field

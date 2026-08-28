@@ -1,5 +1,26 @@
 # @executor-js/cli
 
+## 0.2.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+
+## 0.2.51
+
+### Patch Changes
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+
+## 0.2.50
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+
 ## 0.2.49
 
 ### Patch Changes

@@ -1,4 +1,5 @@
 import { Effect, Option, Schema } from "effect";
+import { EnterpriseIdentityProviderDescriptorSchema } from "@executor-js/sdk/core";
 import {
   ApiKeyAuthMethod,
   ApiKeyAuthTemplate,
@@ -31,6 +32,20 @@ export type McpRemoteTransport = typeof McpRemoteTransport.Type;
 export const McpTransport = Schema.Literals(["streamable-http", "sse", "stdio", "auto"]);
 export type McpTransport = typeof McpTransport.Type;
 
+/** Protocol-version negotiation for a stdio server, mirroring the client
+ *  SDK's `versionNegotiation` modes. `legacy` (the default when absent) opens
+ *  with the 2025 `initialize` handshake; `auto` probes `server/discover`
+ *  (spec 2026-07-28) and falls back to `initialize` on legacy servers.
+ *
+ *  Deliberately opt-in, unlike remote streamable HTTP where `auto` is
+ *  unconditional: the SDK's stdio probe runs on a short-lived sibling
+ *  process, and a legacy server that never answers the probe stalls connect
+ *  for the full probe timeout — the wrong default for spawn-per-call CLI
+ *  servers, and exactly the case the SDK's own guidance says to keep on the
+ *  legacy handshake unless the server is known-modern. */
+export const McpStdioVersionNegotiation = Schema.Literals(["legacy", "auto"]);
+export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
+
 // ---------------------------------------------------------------------------
 // Auth methods — the shared placements vocabulary (`@executor-js/sdk/http-auth`)
 // plus MCP's own oauth variant. An integration declares zero or more methods,
@@ -46,11 +61,30 @@ export type McpTransport = typeof McpTransport.Type;
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider. MCP oauth carries no
 //            stored endpoints: metadata is discovered live at connect time.
+//            A non-empty scope list may be declared when a server does not
+//            expose scopes through protected-resource metadata; otherwise they
+//            are discovered too.
 // ---------------------------------------------------------------------------
+
+/** Enterprise-Managed Authorization opt-in: which registered OAuth app plays the
+ *  enterprise identity provider for this server. Declaring one asks the connect
+ *  path to TRY the ID-JAG grant; whether it is actually used still depends on
+ *  the server advertising the profile in its RFC 8414 metadata, so a declaration
+ *  here can never take an ordinary MCP server off the interactive flow.
+ *
+ *  It is the POINTER only — no assertion, no secret. The identity assertion is
+ *  supplied per connect request by whoever holds the user's single sign-on.
+ *
+ *  The SDK owns the shape: this config, the integration catalog descriptor, and
+ *  the API's integrations response are one wire payload with one declaration. */
+export const McpEnterpriseIdentityProvider = EnterpriseIdentityProviderDescriptorSchema;
+export type McpEnterpriseIdentityProvider = typeof McpEnterpriseIdentityProvider.Type;
 
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+  enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
 
@@ -114,7 +148,12 @@ export const mcpAuthMethodFromShorthand = (auth: McpAuthShorthand): McpAuthMetho
  *  `normalizeMcpAuthMethods` backfills it. */
 export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("none") }),
-  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("oauth2"),
+    scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+    enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
+  }),
   // Credential methods are authored request-shaped — the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
   // variable("token")] }, queryParams: { … } }`. Stored configs and the
@@ -176,6 +215,8 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 
 export const McpRemoteIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("remote"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The MCP server endpoint URL */
   endpoint: Schema.String,
   /** Transport preference for this remote server */
@@ -195,6 +236,8 @@ export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
 export const McpStdioIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("stdio"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The command to run */
   command: Schema.String,
   /** Arguments to the command */
@@ -208,6 +251,9 @@ export const McpStdioIntegrationConfig = Schema.Struct({
   env: Schema.optional(StringMap),
   /** Working directory */
   cwd: Schema.optional(Schema.String),
+  /** Protocol negotiation at connect. Absent means `legacy` (see
+   *  `McpStdioVersionNegotiation` for why that stays the default). */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
   /** Declared auth methods — a single `stdio_env` method naming the secret env
    *  vars, or `none`. A connection's `template` picks one by slug, exactly as
    *  for remote servers. Optional so pre-revamp stdio configs (which had no
@@ -244,6 +290,16 @@ export const McpToolAnnotations = Schema.Struct({
   openWorldHint: Schema.optional(Schema.Boolean),
 });
 export type McpToolAnnotations = typeof McpToolAnnotations.Type;
+
+// ---------------------------------------------------------------------------
+// Tool `_meta` — the reserved, implementation-defined map the MCP spec puts on
+// `Tool`. It is opaque to the executor and to the model: servers use it for
+// host-only routing and policy hints that do not belong in the closed
+// `annotations` set. It is carried through verbatim, never interpreted.
+// ---------------------------------------------------------------------------
+
+export const McpToolMeta = Schema.Record(Schema.String, Schema.Unknown);
+export type McpToolMeta = typeof McpToolMeta.Type;
 
 // ---------------------------------------------------------------------------
 // Tool binding — maps a persisted (sanitized) tool name back to its real MCP

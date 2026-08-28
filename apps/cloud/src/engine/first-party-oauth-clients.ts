@@ -266,6 +266,12 @@ export const firstPartyOAuthClientsFor = (
     authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     allowedScopes: GOOGLE_ALLOWED_SCOPES,
+    // Withdrawn from the connect picker: no new connection is offered the
+    // Executor-owned Google app. The entry stays declared on purpose —
+    // every connection already minted against it keeps refreshing and
+    // reconnecting through it. Deleting this block, or unsetting the env
+    // vars, would strand those connections instead.
+    unlisted: true,
   }),
   ...client(env.FIRST_PARTY_HUBSPOT_CLIENT_ID, env.FIRST_PARTY_HUBSPOT_CLIENT_SECRET, {
     name: "hubspot",

@@ -103,3 +103,58 @@ describe("annotateMcpRequest — cancellation join keys", () => {
     }).pipe(Effect.withSpan("mcp.request"), Effect.withTracer(tracer));
   });
 });
+
+describe("annotateMcpRequest — executed-code capture", () => {
+  it.effect("stamps the script on execute calls", () => {
+    const { tracer, attributesOf } = makeRecordingTracer();
+    return Effect.gen(function* () {
+      yield* annotate(
+        postRequest({
+          jsonrpc: "2.0",
+          id: 8,
+          method: "tools/call",
+          params: { name: "execute", arguments: { code: "return 6 * 7;" } },
+        }),
+      );
+      const attributes = attributesOf("mcp.request");
+      expectDefined(attributes);
+      expect(attributes.get("mcp.execute.code")).toBe("return 6 * 7;");
+    }).pipe(Effect.withSpan("mcp.request"), Effect.withTracer(tracer));
+  });
+
+  it.effect("caps oversized scripts with a truncation marker", () => {
+    const { tracer, attributesOf } = makeRecordingTracer();
+    return Effect.gen(function* () {
+      const code = "x".repeat(12_000);
+      yield* annotate(
+        postRequest({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "execute", arguments: { code } },
+        }),
+      );
+      const attributes = attributesOf("mcp.request");
+      expectDefined(attributes);
+      const captured = attributes.get("mcp.execute.code");
+      expect(captured).toBe(`${"x".repeat(10_000)}\n… [truncated 2000 chars]`);
+    }).pipe(Effect.withSpan("mcp.request"), Effect.withTracer(tracer));
+  });
+
+  it.effect("does not capture arguments of other tools", () => {
+    const { tracer, attributesOf } = makeRecordingTracer();
+    return Effect.gen(function* () {
+      yield* annotate(
+        postRequest({
+          jsonrpc: "2.0",
+          id: 10,
+          method: "tools/call",
+          params: { name: "resume", arguments: { code: "not an execute call" } },
+        }),
+      );
+      const attributes = attributesOf("mcp.request");
+      expectDefined(attributes);
+      expect(attributes.get("mcp.execute.code")).toBeUndefined();
+    }).pipe(Effect.withSpan("mcp.request"), Effect.withTracer(tracer));
+  });
+});

@@ -33,23 +33,27 @@ const toServerInput = (
     const p = payload as {
       transport: "stdio";
       name: string;
+      family?: string;
       description?: string;
       command: string;
       args?: readonly string[];
       envVars?: readonly string[];
       env?: Record<string, string>;
       cwd?: string;
+      versionNegotiation?: "legacy" | "auto";
       slug?: string;
     };
     return {
       transport: "stdio",
       name: p.name,
+      family: p.family,
       description: p.description,
       command: p.command,
       args: p.args ? [...p.args] : undefined,
       envVars: p.envVars ? [...p.envVars] : undefined,
       env: p.env,
       cwd: p.cwd,
+      versionNegotiation: p.versionNegotiation,
       slug: p.slug,
     };
   }
@@ -57,6 +61,7 @@ const toServerInput = (
   const p = payload as {
     transport?: "remote";
     name: string;
+    family?: string;
     description?: string;
     endpoint: string;
     remoteTransport?: "streamable-http" | "sse" | "auto";
@@ -72,6 +77,7 @@ const toServerInput = (
   return {
     transport: "remote",
     name: p.name,
+    family: p.family,
     description: p.description,
     endpoint: p.endpoint,
     remoteTransport: p.remoteTransport,

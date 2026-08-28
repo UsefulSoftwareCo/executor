@@ -5,6 +5,7 @@ import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
+import { reportRendererHandledError } from "../crash-reporting";
 import { Shell } from "../web/shell";
 
 // The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
@@ -41,7 +42,7 @@ function NotFoundPage() {
 
 function RootComponent() {
   return (
-    <ExecutorProvider>
+    <ExecutorProvider onHandledError={reportRendererHandledError}>
       <ExecutorPluginsProvider plugins={clientPlugins}>
         <ArtifactRendererProvider loader={artifactRendererLoader}>
           <LocalAuthGate>

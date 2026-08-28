@@ -1,4 +1,15 @@
-import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  Inspectable,
+  Layer,
+  Option,
+  Predicate,
+  Schema,
+  Semaphore,
+} from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -105,6 +116,8 @@ import type {
 } from "./integration";
 import {
   makeOAuthService,
+  STORE_WRITABILITY_PROBE_VALUE,
+  storeWritabilityProbeItemIdFor,
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
@@ -164,11 +177,22 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  isPermanentTokenRejection,
+  isUnusableSuccessTokenResponse,
   shouldRefreshToken,
+  type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
+import {
+  ENTERPRISE_MANAGED_PROVIDER_STATE_KEY,
+  enterpriseManagedStateFrom,
+  mintEnterpriseManagedAccessToken,
+  type EnterpriseManagedMintError,
+  type EnterpriseManagedRollout,
+} from "./oauth-ema";
 import { connectionIdentifier } from "./connection-name-identifier";
-import { annotateToolResultOutcome } from "./tool-result";
+import { annotateToolResultOutcome, isToolResult } from "./tool-result";
+import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
@@ -627,6 +651,25 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
+   * Host-owned rollout gate for enterprise-managed authorization (the MCP EMA
+   * profile). Core declares the port and depends on no feature-flag or
+   * analytics vendor; a host that operates one supplies an implementation.
+   *
+   * ROLLOUT SEMANTIC: the gate decides only whether a NEW connect may attempt
+   * the enterprise-managed path. It is consulted once per `oauth.start` on an
+   * `id_jag` client, before discovery, and never after the identity provider
+   * has ruled. The verdict is then frozen onto the connection's
+   * `provider_state`, and the credential-refresh path
+   * (`performEnterpriseManagedRefresh`) follows that stored state rather than
+   * re-evaluating — so switching the flag off never strands or downgrades an
+   * existing enterprise-managed connection, and no third-party network
+   * dependency ever enters credential resolution.
+   *
+   * Omitted -> enterprise-managed authorization is attempted, which is exactly
+   * what every host did before this seam existed.
+   */
+  readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
+  /**
    * Host-operated OAuth apps (the deployment's own registered GitHub/Google/…
    * apps), addressed as `first-party:<name>`. Users connect through them with
    * nothing to paste. Config-resolved — never persisted; secrets stay in host
@@ -652,6 +695,23 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * config-revision re-sync still apply).
    */
   readonly toolsSyncTtlMs?: number | null;
+  /**
+   * How long a tools read WAITS for stale-catalog rebuilds before answering
+   * from the persisted rows. Rebuilds keep running past the deadline (see
+   * `waitUntil`) and land on a later read; the read itself never pays more
+   * than this for upstream listings it did not ask for. Defaults to 2
+   * seconds; pass `null` to block until every rebuild finishes (the strict
+   * mode: a read then always reflects a fully converged catalog).
+   */
+  readonly toolsSyncGraceMs?: number | null;
+  /**
+   * Host keep-alive for background work that outlives a request — the
+   * platform `waitUntil` on Cloudflare Workers, where I/O started inside a
+   * request is cancelled once the response settles unless a host holds the
+   * context open. Long-lived processes (self-host, CLI, tests) omit it;
+   * their detached fibers simply run to completion.
+   */
+  readonly waitUntil?: (promise: Promise<unknown>) => void;
   /**
    * Notified after a durable integration-catalog change commits (a row
    * created or removed). Best-effort observation only: the notification runs
@@ -684,6 +744,19 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
 /** Default freshness window for remote-catalog connections (see
  *  `ExecutorConfig.toolsSyncTtlMs`). */
 export const DEFAULT_TOOLS_SYNC_TTL_MS = 15 * 60 * 1000;
+
+/** Default wait budget a tools read spends on stale-catalog rebuilds before
+ *  answering from the persisted rows (see `ExecutorConfig.toolsSyncGraceMs`).
+ *  Sized to cover a healthy upstream re-list (one handshake + one
+ *  `tools/list`) while keeping a read gated on a slow or dead server bounded
+ *  well under any per-connection network timeout. */
+export const DEFAULT_TOOLS_SYNC_GRACE_MS = 2000;
+
+/** How many stale connection catalogs are DISCOVERED at once on a tools read.
+ *  Bounded so a host with a large stale set cannot open an unbounded number of
+ *  upstream listings from a single read. Only the discovery phase runs at this
+ *  width; each rebuild's catalog write is serialized behind a single permit. */
+export const STALE_TOOLS_SYNC_CONCURRENCY = 10;
 
 // ---------------------------------------------------------------------------
 // collectTables — return the executor-owned Fuma table set. Plugins persist
@@ -723,6 +796,23 @@ const storageFailureFromUnknown = (message: string, cause: unknown): StorageFail
 
 const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
   storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
+
+// oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: render an arbitrary failure into one readable log field
+/** One-line rendering of a failed rebuild, for the operator-facing warning.
+ *  A `StorageError` carries the actionable detail in its `cause` (the plugin's
+ *  own failure) while its own message only names the hook, and structural
+ *  stringification drops a `cause` that is an `Error` — so unwrap one level and
+ *  keep both halves. */
+const describeSyncFailure = (error: unknown): string => {
+  const base =
+    error instanceof Error && error.message.length > 0
+      ? error.message
+      : Inspectable.toStringUnknown(error, 0);
+  const cause = (error as { readonly cause?: unknown } | null | undefined)?.cause;
+  if (cause instanceof Error && cause.message.length > 0) return `${base}: ${cause.message}`;
+  return base;
+};
+// oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message
 
 const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
   const version = "1.0.0";
@@ -1637,6 +1727,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
+    // Runtime-observed output shapes ("muscle memory"): learned on the
+    // execute success path, served by tools.schema when a tool declares no
+    // output schema. Backed by plugin_storage under a reserved system id.
+    const shapeMemory = makeShapeMemory(
+      makePluginStorageFacade({ core, pluginId: SHAPE_MEMORY_PLUGIN_ID, owner: ownerBinding }),
+    );
+
     // Populated once, never mutated after startup.
     const staticTools = new Map<string, StaticTools>();
     const runtimes = new Map<string, PluginRuntime>();
@@ -1681,6 +1778,87 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       static: true,
     });
 
+    /** How long a credential provider gets to answer one call.
+     *
+     *  A provider is frequently REMOTE — an HTTP secret store, or under sealed custody
+     *  a vault that may live in another enclave — so "stopped answering" is one of its
+     *  ordinary failure modes, not an exotic one. Without a bound, a vault that goes
+     *  away does not fail a tool invocation, it hangs it, and nothing in the resulting
+     *  silence names the provider.
+     *
+     *  Generous on purpose: this is a backstop against a dead dependency, not a latency
+     *  budget. A store legitimately slower than this is better served by the operator
+     *  hearing about it than by the request waiting indefinitely.
+     *
+     *  Executor already bounds its other remote calls this way — OAuth discovery, and
+     *  the MCP plugin's probes. Credential resolution was the one that did not. */
+    const CREDENTIAL_PROVIDER_TIMEOUT_MS = 30_000;
+
+    /** Bound one provider call, failing with an error that names the provider and the
+     *  operation — so the diagnostic points at the store rather than at whatever the
+     *  caller happened to be doing. */
+    const boundedCall = <A>(
+      effect: Effect.Effect<A, StorageFailure>,
+      key: string,
+      operation: string,
+    ): Effect.Effect<A, StorageFailure> =>
+      effect.pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(CREDENTIAL_PROVIDER_TIMEOUT_MS),
+          orElse: () =>
+            Effect.fail(
+              new StorageError({
+                message:
+                  `Credential provider "${key}" did not answer ${operation} within ` +
+                  `${CREDENTIAL_PROVIDER_TIMEOUT_MS}ms. The store is unreachable or not responding; ` +
+                  `the credential was not resolved.`,
+                cause: undefined,
+              }),
+            ),
+        }),
+      );
+
+    /** Wrap a provider so every call it exposes is bounded.
+     *
+     *  Done once at the registration funnel rather than at each call site: every
+     *  provider passes through here on its way in, rather than every call site
+     *  remembering. The five methods `CredentialProvider` has today are named
+     *  explicitly, so a sixth added to the interface must be added here too.
+     *  Optional methods stay optional — a provider that cannot enumerate must not
+     *  appear to. */
+    const boundedProvider = (provider: CredentialProvider, key: string): CredentialProvider => {
+      // Wrapping must change neither how the provider's methods are CALLED nor what the
+      // object LOOKS like.
+      //
+      // Spreading would break the second: a spread copies only own ENUMERABLE properties, so
+      // everything on a class's prototype — its methods, and accessors like `writable` — is
+      // dropped silently. Nothing raises; the wrapper simply appears not to have the capability
+      // and the caller takes a path the provider meant to own. `Object.create` keeps the whole
+      // object reachable, including anything added to the interface later.
+      //
+      // Each bounded method is invoked ON the provider, which is the first half: a destructured
+      // binding called bare loses `this`, and a class-based provider throws TypeError on its
+      // first call. Every provider in this repo is an object literal and cannot notice either
+      // problem, but "wrap any provider" is the whole point of this funnel.
+      const bounded: Record<string, unknown> = {
+        get: (id: ProviderItemId) => boundedCall(provider.get(id), key, "get"),
+      };
+      if (provider.has) {
+        bounded.has = (id: ProviderItemId) => boundedCall(provider.has!(id), key, "has");
+      }
+      if (provider.set) {
+        bounded.set = (id: ProviderItemId, value: string) =>
+          boundedCall(provider.set!(id, value), key, "set");
+      }
+      if (provider.delete) {
+        bounded.delete = (id: ProviderItemId) => boundedCall(provider.delete!(id), key, "delete");
+      }
+      if (provider.list) {
+        bounded.list = () => boundedCall(provider.list!(), key, "list");
+      }
+      return Object.assign(Object.create(provider) as CredentialProvider, bounded);
+    };
+
     const registerCredentialProvider = (
       provider: CredentialProvider,
       sourceLabel: string,
@@ -1694,7 +1872,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
       }
-      credentialProviders.set(key, provider);
+      credentialProviders.set(key, boundedProvider(provider, key));
       credentialProviderOrder.push(key);
       return Effect.void;
     };
@@ -1827,6 +2005,210 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         .pipe(Effect.ignore);
     };
 
+    /** Write a re-minted token back: a ROTATED refresh token into the refresh
+     *  item, the access token into the connection's primary provider item, and
+     *  the new expiry/scope onto the row. Shared by every grant so their
+     *  persistence stays identical — the grants differ in how they mint, not in
+     *  what a mint means.
+     *
+     *  The refresh token goes FIRST because the writes are not atomic and the
+     *  two credentials are not equally replaceable. Minting rotated the refresh
+     *  token, which spends the one we sent, so the new one is the only thing
+     *  that can mint again; the access token is disposable and one more grant
+     *  re-mints it. Persisting the access token first means a failure in
+     *  between drops a single-use credential the authorization server has
+     *  already consumed, and every later refresh comes back `invalid_grant` —
+     *  a connection that silently disconnects itself.
+     *
+     *  `storedRefreshToken` is the value the store already held when the
+     *  caller read it on the way in. Many authorization servers do NOT rotate
+     *  on refresh and hand back the very same refresh token, so writing it
+     *  again is a round trip that can only re-persist what is already there —
+     *  and every write bumps the stored object's version, which is the
+     *  contention this path spends retries fighting. Skip it when the value
+     *  has not changed; a rotated token never matches, so the write that
+     *  actually matters is never skipped. */
+    const persistRefreshedToken = (
+      row: ConnectionRow,
+      provider: CredentialProvider,
+      token: OAuth2TokenResponse,
+      storedRefreshToken?: string | undefined,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.gen(function* () {
+        if (provider.set) {
+          // OAuth is always single-input: the access token lives in the `token`
+          // item. Fall back to a deterministic id if the map is somehow empty.
+          const tokenItemId =
+            connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
+            `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
+          if (
+            token.refresh_token &&
+            row.refresh_item_id &&
+            token.refresh_token !== storedRefreshToken
+          ) {
+            yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
+          }
+          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
+        }
+
+        const nextExpiresAt =
+          typeof token.expires_in === "number" ? Date.now() + token.expires_in * 1000 : null;
+        const set: Record<string, unknown> = {
+          expires_at: nextExpiresAt,
+          updated_at: new Date(),
+        };
+        if (token.scope !== undefined) set.oauth_scope = token.scope;
+        yield* core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(row.owner as Owner)(b),
+              b("integration", "=", String(row.integration)),
+              b("name", "=", String(row.name)),
+            ),
+          set,
+        });
+      });
+
+    /** The rendered message of a typed enterprise-managed failure. */
+    const enterpriseManagedMessage = (cause: EnterpriseManagedMintError): string =>
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
+      cause.message;
+
+    /** Re-mint an enterprise-managed access token: exchange the stored identity
+     *  assertion for a fresh ID-JAG at the enterprise IdP, then redeem it at the
+     *  MCP server's authorization server. Runs with no user interaction, which
+     *  is the point of the profile.
+     *
+     *  The grant profile is NOT re-discovered here. It was confirmed when the
+     *  connection was made and persisted as part of its enterprise state; a
+     *  fresh discovery round trip on every renewal could only ever restate it.
+     *
+     *  Neither is the rollout gate (`ExecutorConfig.enterpriseManagedRollout`)
+     *  re-consulted: this function does not receive it and must not. The flag
+     *  gates whether a connection MAY BE MADE this way; a connection that
+     *  already exists renews from its persisted state. Wiring the flag in here
+     *  would mean an operator dialling the rollout back, or the flag service
+     *  simply being unreachable, could strand or silently downgrade live
+     *  credentials — and would put a third-party network dependency inside
+     *  credential resolution, which is the last place one belongs. */
+    const performEnterpriseManagedRefresh = (input: {
+      readonly row: ConnectionRow;
+      readonly provider: CredentialProvider;
+      readonly client: RefreshClient;
+      readonly tokenUrl: string;
+      readonly scopes: readonly string[];
+      readonly reauth: (message: string) => CredentialResolutionError;
+    }): Effect.Effect<OAuth2TokenResponse, StorageFailure | CredentialResolutionError> =>
+      Effect.gen(function* () {
+        const { row, provider, client } = input;
+        const owner = row.owner as Owner;
+        const state = enterpriseManagedStateFrom(decodeJsonColumn(row.provider_state));
+        if (state === null) {
+          return yield* input.reauth(
+            "This connection is missing its enterprise-managed authorization settings. Reconnect to continue.",
+          );
+        }
+        const idpRow = yield* loadOAuthClientRow(state.idpClientOwner, state.idpClient);
+        if (!idpRow) {
+          return yield* input.reauth(
+            `The enterprise identity provider OAuth app "${state.idpClient}" is no longer registered.`,
+          );
+        }
+        if (!row.refresh_item_id) {
+          return yield* input.reauth(
+            "No enterprise identity assertion is stored for this connection.",
+          );
+        }
+        const subjectToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
+        if (!subjectToken) {
+          return yield* input.reauth(
+            "The stored enterprise identity assertion could not be resolved.",
+          );
+        }
+        const idpClientSecret = idpRow.client_secret_item_id
+          ? ((yield* provider.get(ProviderItemId.make(String(idpRow.client_secret_item_id)))) ?? "")
+          : "";
+
+        const grant = yield* mintEnterpriseManagedAccessToken({
+          idp: {
+            tokenUrl: String(idpRow.token_url),
+            clientId: String(idpRow.client_id),
+            clientSecret: idpClientSecret,
+          },
+          resourceAuthorizationServer: {
+            tokenUrl: input.tokenUrl,
+            issuer: state.audience,
+            clientId: client.clientId,
+            clientSecret: client.clientSecret,
+          },
+          subjectToken,
+          subjectTokenType: state.subjectTokenType,
+          resource: client.resource,
+          scopes: input.scopes,
+          endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+          fetch: config.fetch,
+        }).pipe(
+          // A policy denial and a dead identity assertion are both definitive —
+          // neither retries into success — but they are DIFFERENT products: one
+          // is "your administrator has not allowed this", the other is "sign in
+          // again". Only the transport failure stays a StorageError so the next
+          // invoke retries it.
+          Effect.catchTags({
+            EmaPolicyDenied: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: true,
+                  blockedByAdmin: true,
+                  oauthErrorCode: cause.error,
+                }),
+              ),
+            EmaSubjectTokenRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: true,
+                }),
+              ),
+            EmaRedemptionRejected: (cause) =>
+              Effect.fail(
+                new CredentialResolutionError({
+                  owner,
+                  integration: IntegrationSlug.make(row.integration),
+                  name: ConnectionName.make(row.name),
+                  message: enterpriseManagedMessage(cause),
+                  reauthRequired: cause.error === "invalid_grant",
+                  ...(cause.error === undefined ? {} : { oauthErrorCode: cause.error }),
+                }),
+              ),
+            EmaUpstreamUnavailable: (cause) =>
+              Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
+          }),
+          Effect.tapError((error) =>
+            Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
+              ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+                markRefreshGrantDead(row, error.message)
+              : Effect.void,
+          ),
+        );
+
+        // Draft §4.4.3: the Resource Authorization Server SHOULD NOT issue a
+        // refresh token here. Drop one that arrives anyway — persisting it
+        // would overwrite the identity assertion that shares that slot, and the
+        // ID-JAG chain is already the renewal path.
+        const { refresh_token: _unused, ...token } = grant.token;
+        return {
+          ...token,
+          ...(grant.scope === null ? {} : { scope: grant.scope }),
+        } satisfies OAuth2TokenResponse;
+      });
+
     // Perform the actual refresh-token grant and persist the rotated material.
     const performTokenRefresh = (
       row: ConnectionRow,
@@ -1921,11 +2303,34 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // the oauth_client's configured token endpoint.
         const tokenUrl = row.oauth_token_url ? String(row.oauth_token_url) : clientRow.tokenUrl;
 
+        // Enterprise-managed authorization (the ID-JAG grant profile) issues NO
+        // refresh token by design — the identity assertion in `refresh_item_id`
+        // is re-exchanged for a fresh ID-JAG and redeemed again. No user
+        // interaction, so both the proactive and reactive triggers can run it.
+        if (clientRow.grant === "id_jag") {
+          const token = yield* performEnterpriseManagedRefresh({
+            row,
+            provider,
+            client: clientRow,
+            tokenUrl,
+            scopes: grantedScopes,
+            reauth,
+          });
+          yield* persistRefreshedToken(row, provider, token);
+          return token.access_token;
+        }
+
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
         // path below needs a stored refresh token. Branching on grant here is
         // what keeps a client_credentials connection (e.g. DealCloud) from
         // demanding a re-auth on a credential that has no human to re-auth.
+        // What the credential store held for this connection when the grant
+        // below was prepared, so the persist can tell a ROTATED refresh token
+        // from one the authorization server simply handed back unchanged.
+        // Only the authorization_code path has one; client_credentials and
+        // id_jag carry no refresh token at all.
+        let storedRefreshToken: string | undefined;
         const token =
           clientRow.grant === "client_credentials"
             ? yield* exchangeClientCredentials({
@@ -1958,6 +2363,36 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (!refreshToken) {
                   return yield* reauth("Stored refresh token could not be resolved.");
                 }
+                // Prove the credential store is WRITABLE before consuming the
+                // single-use refresh token. Ordering the persist correctly
+                // (refresh token first) bounds the damage once a grant has
+                // run, but it cannot help when the store is refusing writes
+                // outright: the grant spends the stored token at the
+                // authorization server, so a store that cannot accept the
+                // rotated successor leaves the connection holding a token the
+                // server has already revoked. Every later refresh then replays
+                // it, gets invalid_grant, and a storage outage that healed in
+                // minutes has cost the user a re-auth. Failing here instead
+                // leaves the stored token valid, so the connection recovers on
+                // its own when the store does.
+                //
+                // The probe writes its OWN item and never the refresh token's.
+                // Rewriting the value just read would be one round trip
+                // cheaper and is the trap: it is a read-then-write with no
+                // compare-and-set, so a peer refresher on another instance
+                // that spent this same token and stored its rotated successor
+                // in between would have that successor overwritten by the
+                // stale value — the exact dead connection this gate exists to
+                // prevent, now caused by the gate. The probe item sits in the
+                // same partition and holds a constant, so it proves what the
+                // store will accept while no credential is ever at risk.
+                if (provider.set) {
+                  yield* provider.set(
+                    ProviderItemId.make(storeWritabilityProbeItemIdFor(row.refresh_item_id)),
+                    STORE_WRITABILITY_PROBE_VALUE,
+                  );
+                }
+                storedRefreshToken = refreshToken;
                 return yield* refreshAccessToken({
                   tokenUrl,
                   clientId: clientRow.clientId,
@@ -1979,11 +2414,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     // (re-auth required); every other code must still reach
                     // the caller as an auth failure, because a StorageError
                     // is scrubbed to "Internal tool error [id]" at the
-                    // sandbox boundary (the Pylon prod regression: the AS
-                    // rejected refreshes with a non-invalid_grant 400 and
-                    // callers saw only the opaque defect). Code-less
-                    // failures (transport blips, non-OAuth-shaped responses)
-                    // stay StorageError so the next invoke retries.
+                    // sandbox boundary (a prod regression: the AS rejected
+                    // refreshes with a non-invalid_grant 400 and callers saw
+                    // only the opaque defect).
                     if (cause.error !== undefined) {
                       return new CredentialResolutionError({
                         owner,
@@ -1991,10 +2424,37 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                         name: ConnectionName.make(row.name),
                         // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                         message: `OAuth token refresh was rejected (${cause.error}): ${cause.message}`,
-                        reauthRequired: cause.error === "invalid_grant",
+                        // A verdict delivered inside a response the endpoint
+                        // called a SUCCESS is this grant's death certificate
+                        // whatever the code spells (GitHub: HTTP 200
+                        // `bad_refresh_token`). On a 4xx the code alone
+                        // decides, so a rotated app secret (invalid_client —
+                        // fleet-wide) is not mistaken for one user's dead
+                        // grant.
+                        reauthRequired:
+                          cause.error === "invalid_grant" || isUnusableSuccessTokenResponse(cause),
                         oauthErrorCode: cause.error,
                       });
                     }
+                    // No §5.2 code — but most real refusals carry none. A
+                    // text/plain 400 ("your session has expired"), a 404, or a
+                    // 200 with no access token are all the endpoint answering
+                    // definitively, and re-sending the same grant cannot change
+                    // any of them. Treating that as retryable is what put a
+                    // dead grant back on the wire on every single use, forever.
+                    if (isPermanentTokenRejection(cause)) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected: ${cause.message}`,
+                        reauthRequired: true,
+                      });
+                    }
+                    // What is left is genuinely transient — a 5xx or a
+                    // transport failure — and stays a StorageError so the next
+                    // invoke retries.
                     return new StorageError({
                       // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                       message: `OAuth token refresh failed: ${cause.message}`,
@@ -2014,35 +2474,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 );
               });
 
-        if (provider.set) {
-          // OAuth is always single-input: the access token lives in the `token`
-          // item. Fall back to a deterministic id if the map is somehow empty.
-          const tokenItemId =
-            connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
-            `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
-          if (token.refresh_token && row.refresh_item_id) {
-            yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
-          }
-        }
-
-        const nextExpiresAt =
-          typeof token.expires_in === "number" ? Date.now() + token.expires_in * 1000 : null;
-        const set: Record<string, unknown> = {
-          expires_at: nextExpiresAt,
-          updated_at: new Date(),
-        };
-        if (token.scope !== undefined) set.oauth_scope = token.scope;
-        yield* core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(owner)(b),
-              b("integration", "=", String(row.integration)),
-              b("name", "=", String(row.name)),
-            ),
-          set,
-        });
-
+        yield* persistRefreshedToken(row, provider, token, storedRefreshToken);
         return token.access_token;
       }).pipe(
         // The refresh path was previously invisible to telemetry: no span, no
@@ -2562,10 +2994,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const syncHealthReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
 
-    const produceConnectionTools = (
+    // Tool production has two phases with very different shapes: DISCOVERY (the
+    // plugin's `resolveTools` — network, slow, independent per connection) and
+    // PERSISTENCE (a short catalog-replacement transaction). Only discovery may
+    // overlap. Self-host runs a single libSQL connection issuing raw
+    // BEGIN/COMMIT, where a second transaction opened while one is live fails
+    // outright with "cannot start a transaction within a transaction" — the
+    // failure #1563 fixed for concurrent refreshes of the SAME connection via
+    // the single-flight map below. Rebuilding several DIFFERENT connections
+    // together (the stale-catalog fan-out) reopens the same hazard from the
+    // other side, so the write phase takes a single permit: the fan-out's
+    // discoveries still run together and their commits form a queue.
+    //
+    // Never take this permit while a transaction is already open on this fiber
+    // — every caller of `persistCatalog` must be outside one, as all of the
+    // `produceConnectionTools` call sites are.
+    const catalogPersistLock = Semaphore.makeUnsafe(1);
+    const persistCatalog = <A, E>(effect: Effect.Effect<A, E>) =>
+      catalogPersistLock.withPermits(1)(transaction(effect));
+
+    const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
-      mode: "explicit" | "background" = "explicit",
+      mode: () => "explicit" | "background",
     ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
@@ -2629,7 +3080,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
-          yield* transaction(
+          yield* persistCatalog(
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
@@ -2641,7 +3092,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
-          yield* transaction(
+          yield* persistCatalog(
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
@@ -2687,7 +3138,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         if (
-          mode === "background" &&
+          mode() === "background" &&
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
@@ -2735,7 +3186,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* transaction(
+        yield* persistCatalog(
           Effect.gen(function* () {
             yield* core.deleteMany("tool", { where });
             yield* core.deleteMany("definition", { where });
@@ -2765,6 +3216,38 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tool.annotations,
           ),
         );
+      });
+
+    type ToolProductionError = IntegrationNotFoundError | StorageFailure;
+    interface ToolProductionInFlight {
+      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      mode: "explicit" | "background";
+    }
+    const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
+    const produceConnectionTools = (
+      integrationRow: IntegrationRow,
+      ref: ConnectionRef,
+      requestedMode: "explicit" | "background" = "explicit",
+    ): Effect.Effect<readonly Tool[], ToolProductionError> =>
+      Effect.suspend(() => {
+        const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
+        const existing = toolProductionInFlight.get(key);
+        if (existing) {
+          if (requestedMode === "explicit") existing.mode = "explicit";
+          return Deferred.await(existing.deferred);
+        }
+
+        const entry: ToolProductionInFlight = {
+          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          mode: requestedMode,
+        };
+        toolProductionInFlight.set(key, entry);
+        const run = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
+          Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
+        );
+        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(entry.deferred)));
       });
 
     // ------------------------------------------------------------------
@@ -2997,6 +3480,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // `description` below, a reconnect or token refresh must not erase a
         // label the user curated. Resolved once, used by every write below.
         let identityLabel: string | null = null;
+        // The core-owned per-connection state this mint writes WHOLESALE:
+        // whatever a previous grant recorded (a stale reauth verdict, an old
+        // missing-scope set) describes a credential that no longer exists.
+        const nextProviderState = {
+          ...(input.missingOAuthScopes === undefined || input.missingOAuthScopes.length === 0
+            ? {}
+            : { missingOAuthScopes: input.missingOAuthScopes }),
+          ...(input.enterpriseManaged === undefined
+            ? {}
+            : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }),
+        };
+        // Null, not `{}`, when this grant records nothing: an empty object would
+        // read back as "state exists and is empty" on a column whose absence is
+        // what every reader tests.
+        const providerState =
+          Object.keys(nextProviderState).length === 0 ? null : nextProviderState;
         yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow(ref);
@@ -3014,10 +3513,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
-              provider_state:
-                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                  ? { missingOAuthScopes: input.missingOAuthScopes }
-                  : null,
+              provider_state: providerState,
               // A re-mint replaces the grant, so any persisted verdict describes
               // a credential that no longer exists. Clear it rather than let a
               // pre-reconnect "expired" outlive the reconnect; the next health
@@ -3055,10 +3551,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 expires_at: input.expiresAt,
                 oauth_scope: input.oauthScope,
                 oauth_token_url: input.oauthTokenUrl ?? null,
-                provider_state:
-                  input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                    ? { missingOAuthScopes: input.missingOAuthScopes }
-                    : null,
+                provider_state: providerState,
                 created_at: now,
                 updated_at: now,
               });
@@ -3092,10 +3585,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
-              provider_state:
-                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
-                  ? { missingOAuthScopes: input.missingOAuthScopes }
-                  : null,
+              provider_state: providerState,
               created_at: now,
               updated_at: now,
             } as ConnectionRow);
@@ -3252,24 +3742,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         })
         .pipe(Effect.ignore);
 
-    const healthFromCredentialResolutionError = (
-      err: CredentialResolutionError,
-    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      err.reauthRequired === true
-        ? Effect.succeed({
-            status: "expired",
-            checkedAt: Date.now(),
-            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-            detail: err.message,
-          })
-        : Effect.fail(
-            new StorageError({
-              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-              message: err.message,
-              cause: err,
-            }),
-          );
-
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
     ): HealthCheckResult =>
@@ -3287,19 +3759,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             detail: failure.message,
           };
 
-    // Genuine storage failures propagate: an infra blip must fail the request,
-    // not persist as a "degraded" verdict on the connection.
+    /** THE one place a credential-resolution failure becomes a health verdict.
+     *  A third party refusing to re-mint a credential is a fact about the
+     *  CONNECTION, not a fault in this service, so it must be answered — and
+     *  then persisted — as `expired`/`degraded`, never raised. The failure
+     *  channel stays reserved for genuine storage faults (an infra blip must
+     *  fail the request rather than persist as a "degraded" verdict). Both
+     *  health paths — credential-only and probing — fold through here, so
+     *  they cannot disagree about what a broken credential means. */
+    const foldCredentialResolutionIntoVerdict = (
+      probe: Effect.Effect<HealthCheckResult, StorageFailure | CredentialResolutionError>,
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
+      probe.pipe(
+        Effect.catchTag("CredentialResolutionError", (failure) =>
+          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+        ),
+      );
+
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
     ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      resolveConnectionValues(row).pipe(
-        Effect.as({
-          status: "healthy" as const,
-          checkedAt: Date.now(),
-          detail: "Credential resolved (no probe configured).",
-        }),
-        Effect.catchTag("CredentialResolutionError", (failure) =>
-          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+      foldCredentialResolutionIntoVerdict(
+        resolveConnectionValues(row).pipe(
+          Effect.as({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "Credential resolved (no probe configured).",
+          }),
         ),
       );
 
@@ -3400,34 +3886,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return result;
         }
 
-        const result = yield* Effect.gen(function* () {
-          const values = yield* resolveConnectionValues(connectionRow);
-          const record = rowToIntegrationRecord(
-            integrationRow,
-            describeAuthMethodsForRow(integrationRow),
-          );
-          const grantedScopes = grantedScopesFromRow(connectionRow);
-          const credential: ToolInvocationCredential = {
-            owner: connectionRow.owner as Owner,
-            integration: ref.integration,
-            connection: ConnectionName.make(connectionRow.name),
-            template: AuthTemplateSlug.make(connectionRow.template),
-            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-            values,
-            config: record.config,
-            ...(grantedScopes ? { grantedScopes } : {}),
-          };
-          // Core resolves the declared spec (its own column) and hands it to the
-          // plugin; plugins no longer read it out of their config.
-          return yield* foldPluginFailure(
-            check({ ctx: runtime.ctx, integration: record, credential, spec }),
-            `Health check for connection "${ref.name}" failed.`,
-          );
-        }).pipe(Effect.catchTag("CredentialResolutionError", healthFromCredentialResolutionError));
+        const result = yield* foldCredentialResolutionIntoVerdict(
+          Effect.gen(function* () {
+            const values = yield* resolveConnectionValues(connectionRow);
+            const record = rowToIntegrationRecord(
+              integrationRow,
+              describeAuthMethodsForRow(integrationRow),
+            );
+            const grantedScopes = grantedScopesFromRow(connectionRow);
+            const credential: ToolInvocationCredential = {
+              owner: connectionRow.owner as Owner,
+              integration: ref.integration,
+              connection: ConnectionName.make(connectionRow.name),
+              template: AuthTemplateSlug.make(connectionRow.template),
+              value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+              values,
+              config: record.config,
+              ...(grantedScopes ? { grantedScopes } : {}),
+            };
+            // Core resolves the declared spec (its own column) and hands it to
+            // the plugin; plugins no longer read it out of their config.
+            return yield* foldPluginFailure(
+              check({ ctx: runtime.ctx, integration: record, credential, spec }),
+              `Health check for connection "${ref.name}" failed.`,
+            );
+          }),
+        );
         yield* annotateHealthVerdict("probe", result);
         // Persist the verdict on the connection row so the accounts list shows
-        // alive/expired at a glance. Best-effort: a write failure must not turn
-        // a successful probe into an error.
+        // alive/expired at a glance, AND so the freshness gate above has
+        // something to serve. A probe that could not resolve its credential
+        // persists too: it is the connection most likely to be re-probed by
+        // every surface on every mount, so leaving it unwritten is what turns
+        // one broken connection into unbounded upstream and error traffic.
+        // Best-effort: a write failure must not turn a verdict into an error.
         yield* persistHealthResult(ref, result);
         return result;
       }).pipe(
@@ -3687,6 +4179,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? b.isNull("tools_synced_at")
             : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
       });
+      // Each rebuild is an independent upstream listing, so they run together
+      // rather than one after another: a host with many stale remote-catalog
+      // connections otherwise pays the sum of every server's latency on the
+      // read that trips the TTL. Only the listings overlap — `persistCatalog`
+      // keeps the catalog writes in a single-file queue, so this fan-out never
+      // opens two transactions on a one-connection database.
+      const rebuilds: Effect.Effect<readonly Tool[]>[] = [];
       for (const connection of connections) {
         const integrationRow = integrationBySlug.get(connection.integration);
         if (!integrationRow) continue;
@@ -3713,29 +4212,83 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           syncedAt < cutoff;
         if (!staleMarked && !configRevised && !expired) continue;
 
-        yield* produceConnectionTools(
-          integrationRow,
-          {
-            owner: connection.owner as Owner,
-            integration: IntegrationSlug.make(connection.integration),
-            name: ConnectionName.make(connection.name),
-          },
-          "background",
-        ).pipe(
-          Effect.catch(() => Effect.succeed([] as readonly Tool[])),
-          Effect.withSpan("executor.tools.sync_stale", {
-            attributes: {
-              "executor.integration": connection.integration,
-              "executor.connection": connection.name,
+        rebuilds.push(
+          produceConnectionTools(
+            integrationRow,
+            {
+              owner: connection.owner as Owner,
+              integration: IntegrationSlug.make(connection.integration),
+              name: ConnectionName.make(connection.name),
             },
-          }),
+            "background",
+          ).pipe(
+            // Best-effort, but never silent: the read still succeeds on the
+            // stale-but-working catalog and the peer rebuilds still finish,
+            // while the operator gets the connection that failed and why.
+            // Without this a connection whose upstream is permanently broken
+            // re-fails on every read and leaves no trace anywhere.
+            Effect.catch((error) =>
+              Effect.logWarning("executor stale tool sync failed", {
+                integration: connection.integration,
+                connection: connection.name,
+                error: describeSyncFailure(error),
+              }).pipe(Effect.as([] as readonly Tool[])),
+            ),
+            Effect.withSpan("executor.tools.sync_stale", {
+              attributes: {
+                "executor.integration": connection.integration,
+                "executor.connection": connection.name,
+              },
+            }),
+          ),
         );
       }
+      yield* Effect.all(rebuilds, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY });
     });
+
+    // How long a tools read waits for the stale sync before answering from
+    // the persisted rows (`ExecutorConfig.toolsSyncGraceMs`; `null` blocks
+    // until convergence).
+    const toolsSyncGraceMs =
+      config.toolsSyncGraceMs === undefined ? DEFAULT_TOOLS_SYNC_GRACE_MS : config.toolsSyncGraceMs;
+
+    // Run the stale sync with a bounded wait: a read pays at most the grace
+    // budget for upstream listings it did not ask for, then serves the
+    // persisted catalog while the rebuilds finish on their detached fibers
+    // (deduplicated per connection by `produceConnectionTools`, so overlapping
+    // reads share one rebuild instead of stacking new ones). One slow or dead
+    // MCP server must never gate every catalog read behind its network
+    // timeout. Past the deadline the sync is best-effort by construction —
+    // failures log and the stale-but-working catalog stays — so the fork
+    // swallows its scan errors the same way each rebuild already swallows its
+    // own.
+    const awaitStaleSyncWithinGrace = (graceMs: number) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkDetach(
+          syncStaleConnectionTools.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("executor stale tool sync scan failed", {
+                error: describeSyncFailure(error),
+              }),
+            ),
+          ),
+        );
+        // On hosts that cancel request-scoped I/O once the response settles
+        // (Cloudflare Workers), hand the host the rebuilds' completion so the
+        // catalog still converges after the read stops waiting.
+        config.waitUntil?.(
+          new Promise<void>((resolve) => fiber.addObserver(() => resolve(undefined))),
+        );
+        yield* Fiber.await(fiber).pipe(Effect.timeoutOption(graceMs), Effect.asVoid);
+      });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
-        yield* syncStaleConnectionTools;
+        if (toolsSyncGraceMs === null) {
+          yield* syncStaleConnectionTools;
+        } else {
+          yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
+        }
         // Projected: the list surface is metadata (address, description,
         // annotations) — loading every tool's input/output schema JSON made
         // an unbounded list scale with schema bytes, not tool count.
@@ -3864,6 +4417,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? projected.outputSchema
             : tool.outputSchema;
 
+        // Muscle memory: when neither the catalog row nor the plugin's
+        // projection declares an output schema, serve the shape observed from
+        // live responses instead of letting the type collapse to `unknown`.
+        // The schema's description marks it as observed.
+        const observed =
+          outputSchema === undefined
+            ? yield* shapeMemory.recall(String(address), parsed.owner)
+            : null;
+        const effectiveOutputSchema =
+          outputSchema !== undefined
+            ? outputSchema
+            : observed !== null
+              ? observedShapeToJsonSchema(observed)
+              : undefined;
+
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
@@ -3875,12 +4443,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const defs = new Map<string, unknown>();
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
-        const referenced = collectReferencedDefinitions([inputSchema, outputSchema], defs);
+        const referenced = collectReferencedDefinitions([inputSchema, effectiveOutputSchema], defs);
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
               inputSchema,
-              outputSchema,
+              outputSchema: effectiveOutputSchema,
               defs,
             }),
           catch: (cause) =>
@@ -3893,7 +4461,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           name: tool.name,
           description: tool.description,
           inputSchema,
-          outputSchema,
+          outputSchema: effectiveOutputSchema,
+          ...(observed !== null
+            ? {
+                outputSchemaSource: "observed" as const,
+                outputSchemaObservations: observed.observations,
+              }
+            : {}),
           schemaDefinitions:
             Object.keys(referenced).length > 0
               ? (referenced as Record<string, unknown>)
@@ -4429,9 +5003,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const searchMatches = yield* searchToolRowsForConnection(parsed);
           const connectionTools =
             searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
+          // An empty catalog on a connection that DOES exist is usually not a
+          // wrong tool name: discovery produced nothing, most often because the
+          // upstream rejected the credential. Reporting only the address sends
+          // the reader after a tool that was never the problem, so name the
+          // connection and point at the surface that knows the cause.
+          const connectionExists =
+            connectionTools.length === 0 &&
+            (yield* findConnectionRow({
+              owner: parsed.owner,
+              integration: parsed.integration,
+              name: parsed.connection,
+            })) !== null;
           return yield* new ToolNotFoundError({
             address,
             suggestions: toolSuggestions(connectionTools),
+            reason: connectionExists
+              ? `connection "${parsed.integration}/${parsed.connection}" has no tools; ` +
+                `check its health for why discovery produced none`
+              : undefined,
           });
         }
 
@@ -4568,6 +5158,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // "tool ran fine" from "user hit an upstream error / auth wall"
         // without parsing response bodies.
         Effect.tap(annotateToolResultOutcome),
+        // Muscle memory: fold successful dynamic-tool payloads into the
+        // observed output shape. Static tools are hand-typed already;
+        // failures teach nothing about the success shape. Runs inline — not
+        // forked — so the write survives Workers request teardown; `observe`
+        // never fails, is size-bounded, and stops writing once the shape
+        // stabilizes, so steady-state cost is one cache lookup.
+        Effect.tap((result) => {
+          if (staticTools.has(String(address))) return Effect.void;
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) return Effect.void;
+          const data = isToolResult(result) ? (result.ok ? result.data : undefined) : result;
+          if (data === undefined) return Effect.void;
+          return shapeMemory.observe(String(address), parsed.owner, data);
+        }),
         Effect.withSpan("executor.tool.execute", {
           attributes: {
             "mcp.tool.name": String(address),
@@ -4617,6 +5221,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+      // Connect-time only. The refresh path above (`performEnterpriseManagedRefresh`)
+      // deliberately never sees this — it follows the enterprise state persisted
+      // on the connection.
+      enterpriseManagedRollout: config.enterpriseManagedRollout,
       // EXPLICIT — no localhost default. When a caller omits `redirectUri` the
       // OAuth service receives `null` and redirect-requiring flows fail loudly
       // instead of silently using `http://127.0.0.1/callback`. Hosts that serve
@@ -4733,6 +5341,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         oauth,
         execute: (address, args, options) => execute(address, args, options),
         transaction: <A, E>(effect: Effect.Effect<A, E>) => transaction(effect),
+        afterCommit: (effect: Effect.Effect<void>) => afterCommit(effect),
       };
 
       if (plugin.toolPolicyProvider) {

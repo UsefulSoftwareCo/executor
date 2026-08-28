@@ -11,6 +11,7 @@ export class GraphqlIntrospectionError extends Schema.TaggedErrorClass<GraphqlIn
       Schema.Literals([
         "network",
         "http",
+        "invalid-endpoint",
         "invalid-json",
         "invalid-shape",
         "missing-schema",

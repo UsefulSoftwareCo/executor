@@ -47,7 +47,17 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
   const [finalizingPlan, setFinalizingPlan] = useState<string | null>(null);
   const plansRef = useRef(plans);
   plansRef.current = plans;
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+  const armedAtRef = useRef(0);
 
+  // One-shot: move the URL marker into state. Only this step is single-shot —
+  // the poll below keys off the STATE, because effects do not live as long as
+  // state: the shell re-runs effects shortly after mount (auth seeds a frame
+  // after first paint and the suspense boundary re-reveals), and when the poll
+  // lived inside this effect its re-run saw the already-stripped URL, so the
+  // cleanup killed the interval and nothing ever refetched — the page sat on
+  // "Activating" forever while the webhook had long landed.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const attachedPlanId = params.get(CHECKOUT_RETURN_PARAM);
@@ -56,25 +66,34 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
     params.delete(CHECKOUT_RETURN_PARAM);
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    armedAtRef.current = Date.now();
     setFinalizingPlan(attachedPlanId);
+  }, []);
+
+  // Poll while a plan is finalizing. Re-armable: if the effect is recycled the
+  // state still says which plan is settling, so the interval comes right back.
+  // The timeout is measured from when the marker was consumed, not from the
+  // current effect run, so recycles cannot extend it. refetch goes through a
+  // ref so the interval always calls the CURRENT client's refetch, even after
+  // the billing provider rebuilds.
+  useEffect(() => {
+    if (!finalizingPlan) return;
 
     const reflected = () =>
-      plansRef.current?.find((p) => p.id === attachedPlanId)?.customerEligibility?.status ===
+      plansRef.current?.find((p) => p.id === finalizingPlan)?.customerEligibility?.status ===
       "active";
 
-    let elapsed = 0;
-    refetch();
+    refetchRef.current();
     const interval = setInterval(() => {
-      elapsed += 1500;
-      if (reflected() || elapsed >= 20_000) {
+      if (reflected() || Date.now() - armedAtRef.current >= 20_000) {
         clearInterval(interval);
         setFinalizingPlan(null);
         return;
       }
-      refetch();
+      refetchRef.current();
     }, 1500);
     return () => clearInterval(interval);
-  }, [refetch]);
+  }, [finalizingPlan]);
 
   // Drop the optimistic state the moment the refetched data reflects the plan,
   // so it does not linger until the next poll tick after the webhook lands.
@@ -98,29 +117,32 @@ const ENTERPRISE_FEATURES = [
   "Security reviews, DPA & SOC 2 on request",
 ];
 
-const PLAN_META: Record<string, { tagline: string; inherits?: string; features: string[] }> = {
+// Price display is hardcoded alongside the feature copy: Team's price lives
+// on its per-seat `members` item in Autumn, not the plan-level `price` the
+// SDK surfaces, so there is no live field to render it from.
+const PLAN_META: Record<
+  string,
+  {
+    tagline: string;
+    inherits?: string;
+    features: string[];
+    price: { label: string; suffix?: string };
+  }
+> = {
   free: {
     tagline: "For small teams getting started",
-    features: [
-      "Up to 3 members",
-      "10,000 included executions per month",
-      "$0.20 per 1,000 additional executions",
-      "Unlimited sources",
-    ],
+    price: { label: "$0", suffix: "USD / month" },
+    features: ["Up to 3 members", "100,000 executions per month", "Unlimited sources"],
   },
   team: {
     tagline: "For growing organizations",
-    features: [
-      "Unlimited members",
-      "250,000 included executions per month",
-      "5 minute execution timeout",
-      "Join by team domain",
-      "$0.20 per 1,000 additional executions",
-    ],
+    price: { label: "$15", suffix: "USD / member / month" },
+    features: ["Unlimited executions", "Verified domains & join by team domain"],
   },
   enterprise: {
     tagline: "For orgs with custom needs",
     inherits: "Team",
+    price: { label: "Custom" },
     features: ENTERPRISE_FEATURES,
   },
 };
@@ -259,15 +281,10 @@ function PlansPage() {
 
                   <div className="mt-4 flex items-baseline gap-1.5">
                     <span className="text-2xl font-semibold text-foreground tabular-nums">
-                      {plan.id === "enterprise" ? "Custom" : `$${plan.price?.amount ?? 0}`}
+                      {meta.price.label}
                     </span>
-                    {plan.id !== "enterprise" && plan.price?.interval && (
-                      <span className="text-sm text-muted-foreground">
-                        USD / org / {plan.price.interval}
-                      </span>
-                    )}
-                    {plan.id !== "enterprise" && !plan.price?.interval && (
-                      <span className="text-sm text-muted-foreground">USD</span>
+                    {meta.price.suffix && (
+                      <span className="text-sm text-muted-foreground">{meta.price.suffix}</span>
                     )}
                   </div>
 
@@ -384,7 +401,8 @@ function EnterpriseContactDialog() {
           Contact us
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      {/* Static contact details only: clicking away dismisses it. */}
+      <DialogContent dismissOnOutsideClick>
         <DialogHeader>
           <DialogTitle>Talk to us about Enterprise</DialogTitle>
           <DialogDescription>
@@ -432,7 +450,8 @@ function SlackContactCta() {
               <span aria-hidden>→</span>
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          {/* Static contact details only: clicking away dismisses it. */}
+          <DialogContent dismissOnOutsideClick>
             <DialogHeader>
               <DialogTitle>Get in touch on Slack</DialogTitle>
               <DialogDescription>

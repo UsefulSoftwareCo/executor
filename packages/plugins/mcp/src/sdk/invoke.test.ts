@@ -1,14 +1,23 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeAll, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ProtocolError,
+  SdkErrorCode,
+  SdkHttpError,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/client";
 import { ElicitationResponse } from "@executor-js/sdk";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
+import { loadMcpClientSdk } from "./client-module";
 import { createMcpConnector, type McpConnection, type McpConnector } from "./connection";
+
+// Classification consults the lazily-loaded client module (client-module.ts);
+// in prod every SDK error is preceded by a connect, which loads it. Mirror
+// that precondition here — these tests construct SDK errors directly.
+beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import { invokeMcpTool } from "./invoke";
 
@@ -108,14 +117,16 @@ const invocationRejectionCases = [
     name: "wraps callTool rejection with a stable message and status",
     toolId: "blocked",
     transport: "streamable-http",
-    cause: new StreamableHTTPError(401, "token=do-not-leak"),
+    cause: new SdkHttpError(SdkErrorCode.ClientHttpAuthentication, "token=do-not-leak", {
+      status: 401,
+    }),
     expectedStatus: 401 as number | undefined,
   },
   {
     name: "does not treat MCP protocol error codes as HTTP statuses",
     toolId: "protocol_error",
     transport: "streamable-http",
-    cause: new McpError(401, "application-level do-not-leak"),
+    cause: new ProtocolError(401, "application-level do-not-leak"),
     expectedStatus: undefined,
   },
   {

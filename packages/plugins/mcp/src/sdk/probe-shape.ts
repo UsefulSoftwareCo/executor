@@ -13,25 +13,33 @@
 //   and (b) plenty of real MCP servers authenticate with static API
 //   keys and publish no OAuth metadata at all (e.g. cubic.dev).
 //
-// The probe issues an unauth JSON-RPC `initialize` POST and accepts
+// The primary probe issues an unauth JSON-RPC `initialize` POST and accepts
 // only the wire shapes a real MCP server can return:
 //
 //   - 2xx with `Content-Type: text/event-stream` — streamable HTTP
 //     transport, body is an SSE stream we don't consume.
 //   - 2xx with `Content-Type: application/json` whose body parses as a
 //     JSON-RPC 2.0 envelope (`{jsonrpc:"2.0", result|error|method,...}`).
-//   - 401 with `WWW-Authenticate: Bearer` AND a JSON-RPC error envelope
-//     in the body. The body shape is what separates a real MCP server
-//     from an unrelated OAuth-protected API: GraphQL/REST/HTML 401s
-//     don't shape themselves as JSON-RPC.
+//   - 401 (or 403) with `WWW-Authenticate: Bearer` AND a JSON-RPC error
+//     envelope in the body. The body shape is what separates a real MCP
+//     server from an unrelated OAuth-protected API: GraphQL/REST/HTML
+//     401s don't shape themselves as JSON-RPC. 403 travels the same path
+//     because an edge authenticator (Cloudflare Access) answers with 403
+//     and the endpoint is not therefore unreachable.
 //
 // When POST returns 404/405/406/415 we retry with GET + `Accept:
 // text/event-stream` to support legacy SSE-only servers; that path
 // only accepts 2xx with `text/event-stream` or the same 401+Bearer
 // shape.
 //
-// One `fetch` (occasionally two), no MCP-SDK session state, no OAuth
-// round-trip, no DCR — every non-MCP endpoint exits here.
+// If initialize ultimately has the wrong shape, a second JSON-RPC POST probes
+// `server/discover` using the 2026-07-28 envelope and protocol header. This
+// catches modern-only servers that reject initialize with a non-JSON-RPC
+// response. Authentication outcomes remain terminal because they do not vary
+// by transport era.
+//
+// One primary request (occasionally plus legacy GET and modern discover), no
+// MCP-SDK session state, no OAuth round-trip, no DCR.
 // ---------------------------------------------------------------------------
 
 import { Data, Duration, Effect, Layer, Option, Schema } from "effect";
@@ -48,9 +56,18 @@ const INITIALIZE_BODY = JSON.stringify({
   id: 1,
   method: "initialize",
   params: {
-    protocolVersion: "2025-06-18",
+    protocolVersion: "2025-11-25",
     capabilities: {},
     clientInfo: { name: "executor-probe", version: "0" },
+  },
+});
+
+const DISCOVER_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 2,
+  method: "server/discover",
+  params: {
+    _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
   },
 });
 
@@ -66,6 +83,16 @@ const readHeader = (headers: Readonly<Record<string, string>>, name: string): st
   }
   return null;
 };
+
+/** Statuses that mean "you are not authenticated for this resource".
+ *
+ *  401 is what the MCP authorization spec mandates. 403 is what an edge
+ *  authenticator in front of the server returns instead — Cloudflare
+ *  Access, for example, answers an unauthenticated request with 403 and
+ *  never reaches the MCP server at all. Both say the same thing to the
+ *  user: supply credentials and retry. Treating 403 as a wrong shape
+ *  told them the URL was wrong, which it was not. */
+const isAuthStatus = (status: number): boolean => status === 401 || status === 403;
 
 class ProbeTransportError extends Data.TaggedError("ProbeTransportError")<{
   readonly reason: string;
@@ -198,9 +225,9 @@ const reasonFromBoundaryCause = (cause: unknown): string => {
 
 /** Why the probe rejected an endpoint as not-MCP.
  *
- *  - `auth-required` — server returned 401. We don't know for sure it's
- *    an MCP server (no spec-compliant Bearer challenge or the body
- *    isn't JSON-RPC), but the right next step for the user is the same
+ *  - `auth-required` — server returned 401 or 403. We don't know for
+ *    sure it's an MCP server (no spec-compliant Bearer challenge or the
+ *    body isn't JSON-RPC), but the right next step for the user is the same
  *    either way: provide credentials and retry. This is what
  *    misclassifies real MCP servers like cubic.dev (no
  *    resource_metadata) or ref.tools (no WWW-Authenticate at all)
@@ -212,7 +239,7 @@ export type McpProbeRejectCategory = "auth-required" | "wrong-shape";
 
 export type McpShapeProbeResult =
   /** Server answered initialize successfully — either a 2xx with a
-   *  JSON-RPC payload, or a 401 + WWW-Authenticate: Bearer (RFC 6750
+   *  JSON-RPC payload, or a 401/403 + WWW-Authenticate: Bearer (RFC 6750
    *  challenge) that the MCP auth spec requires. */
   | { readonly kind: "mcp"; readonly requiresAuth: boolean }
   /** Endpoint is reachable but the response does not look like MCP. */
@@ -238,7 +265,7 @@ export interface ProbeOptions {
  *
  * Returns `{kind: "mcp"}` only when the endpoint either:
  *   - answers with 2xx (unauth-OK MCP server), or
- *   - responds 401 with a `Bearer` WWW-Authenticate challenge.
+ *   - responds 401 or 403 with a `Bearer` WWW-Authenticate challenge.
  *
  * Anything else (400, 404, 200-with-HTML, 200-with-GraphQL-errors, ...)
  * is classified `not-mcp`. Transport errors surface as `unreachable`.
@@ -272,20 +299,20 @@ export const probeMcpEndpointShape = (
           const contentType = readHeader(response.headers, "content-type") ?? "";
           const isSse = /^\s*text\/event-stream\b/i.test(contentType);
 
-          if (response.status === 401) {
+          if (isAuthStatus(response.status)) {
             const wwwAuth = readHeader(response.headers, "www-authenticate");
             if (!wwwAuth || !/^\s*bearer\b/i.test(wwwAuth)) {
-              // Spec-non-compliant 401 (no `Bearer` challenge). Before
-              // giving up, check whether the server still publishes
-              // RFC 9728 protected-resource metadata for this path —
-              // some real MCP servers (Datadog) do exactly this.
+              // Spec-non-compliant challenge (no `Bearer`). Before giving
+              // up, check whether the server still publishes RFC 9728
+              // protected-resource metadata for this path — some real MCP
+              // servers (Datadog) do exactly this.
               if (yield* probeProtectedResourceMetadata(client, url, timeoutMs)) {
                 return { kind: "mcp", requiresAuth: true } as const;
               }
               return {
                 kind: "not-mcp",
                 category: "auth-required",
-                reason: "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
+                reason: `${response.status} without Bearer WWW-Authenticate — not an MCP auth challenge`,
               } as const;
             }
             // Spec-compliant MCP signal: the auth spec mandates a
@@ -332,8 +359,7 @@ export const probeMcpEndpointShape = (
               return {
                 kind: "not-mcp",
                 category: "auth-required",
-                reason:
-                  "401 + Bearer without resource_metadata, JSON-RPC body, or OAuth error body",
+                reason: `${response.status} + Bearer without resource_metadata, JSON-RPC body, or OAuth error body`,
               } as const;
             }
             return { kind: "mcp", requiresAuth: true } as const;
@@ -385,10 +411,9 @@ export const probeMcpEndpointShape = (
         .execute(postRequest)
         .pipe(Effect.timeout(Duration.millis(timeoutMs)));
 
-      const postResult = yield* classify(postResponse, "POST");
-      if (postResult) return postResult;
+      let initializeResult = yield* classify(postResponse, "POST");
 
-      if ([404, 405, 406, 415].includes(postResponse.status)) {
+      if (initializeResult === null && [404, 405, 406, 415].includes(postResponse.status)) {
         let getRequest = HttpClientRequest.get(url.toString()).pipe(
           HttpClientRequest.setHeader("accept", "text/event-stream"),
         );
@@ -398,15 +423,42 @@ export const probeMcpEndpointShape = (
         const getResponse = yield* client
           .execute(getRequest)
           .pipe(Effect.timeout(Duration.millis(timeoutMs)));
-        const getResult = yield* classify(getResponse, "GET");
-        if (getResult) return getResult;
+        initializeResult = yield* classify(getResponse, "GET");
       }
 
-      return {
+      initializeResult ??= {
         kind: "not-mcp",
         category: "wrong-shape",
         reason: `unexpected status ${postResponse.status} for initialize`,
       } as const;
+
+      if (initializeResult.kind !== "not-mcp" || initializeResult.category !== "wrong-shape") {
+        return initializeResult;
+      }
+
+      let discoverRequest = HttpClientRequest.post(url.toString()).pipe(
+        HttpClientRequest.setHeader("content-type", "application/json"),
+        HttpClientRequest.setHeader("accept", "application/json, text/event-stream"),
+        HttpClientRequest.bodyText(DISCOVER_BODY, "application/json"),
+      );
+      for (const [name, value] of Object.entries(options.headers ?? {})) {
+        discoverRequest = HttpClientRequest.setHeader(discoverRequest, name, value);
+      }
+      discoverRequest = HttpClientRequest.setHeader(
+        discoverRequest,
+        "MCP-Protocol-Version",
+        "2026-07-28",
+      );
+
+      // The endpoint already answered the primary probe, so a transport
+      // failure on this secondary request must not overwrite that verdict
+      // with "unreachable" — keep the initialize classification instead.
+      const discoverResult = yield* client.execute(discoverRequest).pipe(
+        Effect.timeout(Duration.millis(timeoutMs)),
+        Effect.flatMap((discoverResponse) => classify(discoverResponse, "POST")),
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      return discoverResult ?? initializeResult;
     }).pipe(
       Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
       Effect.mapError(

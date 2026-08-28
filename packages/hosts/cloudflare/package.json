@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cloudflare",
-  "version": "0.0.41",
+  "version": "0.0.44",
   "private": true,
   "type": "module",
   "exports": {
@@ -15,6 +15,10 @@
     "./mcp/agent-durable-object": {
       "types": "./src/mcp/agent-session-durable-object.ts",
       "default": "./src/mcp/agent-session-durable-object.ts"
+    },
+    "./mcp/durable-object-errors": {
+      "types": "./src/mcp/durable-object-errors.ts",
+      "default": "./src/mcp/durable-object-errors.ts"
     },
     "./mcp/execution-owner-directory": {
       "types": "./src/mcp/execution-owner-directory.ts",

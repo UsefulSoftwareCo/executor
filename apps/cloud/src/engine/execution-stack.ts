@@ -32,7 +32,7 @@
 //                            seams module; the decorator is composed on top.
 // ---------------------------------------------------------------------------
 
-import { env } from "cloudflare:workers";
+import { env, waitUntil } from "cloudflare:workers";
 import { Layer } from "effect";
 
 import {
@@ -46,6 +46,7 @@ import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 import { type AnyPlugin } from "@executor-js/sdk";
 
 import executorConfig from "../../executor.config";
+import { cloudEnterpriseManagedRollout } from "../analytics/ema-rollout";
 import { DbService } from "../db/db";
 import { cloudDbProviderLayer } from "../db/fuma";
 import { firstPartyOAuthClientsFor } from "./first-party-oauth-clients";
@@ -101,6 +102,15 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // user-selectable provider surface.
   exposeCredentialProviders: false,
   firstPartyOAuthClients: firstPartyOAuthClientsFor(env),
+  // Workers cancel request-scoped I/O once the response settles; the ambient
+  // `waitUntil` binds to the in-flight invocation (HTTP request or DO call),
+  // so stale tool-catalog rebuilds that outlive a read still converge.
+  waitUntil,
+  // Enterprise-managed authorization ships behind a PostHog flag. Cloud is the
+  // one host with a flag service, so cloud is the one host that installs a
+  // gate; everywhere else the seam stays empty and the profile is attempted as
+  // before. Gating happens at connect only — see the SDK contract.
+  enterpriseManagedRollout: cloudEnterpriseManagedRollout(),
 }));
 
 export const CloudCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
