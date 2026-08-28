@@ -28,6 +28,10 @@ const EXECUTOR_DIST_TAGS_PATH = "/v1/app/npm/dist-tags";
 const DOCS_BASE_URL = "https://executor.sh/docs";
 const CHANGELOG_URL = "https://executor.sh/changelog";
 const CHANGELOG_JSON_URL = "https://executor.sh/changelog.json";
+// The changelog lives on executor.sh, which an air-gapped self-hosted install
+// cannot reach. A blocked (rather than refused) connection would otherwise leave
+// the request open for as long as the tab lives, so the fetch is always bounded.
+const CHANGELOG_TIMEOUT_MS = 5_000;
 
 type UpgradeHint = "npm" | "selfhost" | "cloudflare" | "managed";
 
@@ -150,6 +154,31 @@ function useLatestVersion(currentVersion: string | undefined) {
   return { latestVersion, updateAvailable, channel };
 }
 
+/**
+ * The changelog highlights for `currentVersion`, or `[]`.
+ *
+ * The card is a nicety, so every failure — offline, non-200, malformed payload,
+ * timeout, unmount — resolves to no highlights rather than rejecting. The
+ * request is bounded by `timeoutMs` on top of the caller's own signal, so it
+ * cannot stay open indefinitely on a host that cannot reach executor.sh.
+ */
+export async function fetchChangelogHighlights(
+  currentVersion: string | undefined,
+  options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
+): Promise<string[]> {
+  const timeout = AbortSignal.timeout(options?.timeoutMs ?? CHANGELOG_TIMEOUT_MS);
+  const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  try {
+    const res = await fetch(CHANGELOG_JSON_URL, { signal });
+    if (!res.ok) return [];
+    const payload = (await res.json()) as unknown;
+    if (!isChangelogPayload(payload)) return [];
+    return updateHighlights(payload.releases, currentVersion);
+  } catch {
+    return [];
+  }
+}
+
 function useChangelogHighlights(fetchWhenVersionKnown: string | null) {
   const [highlights, setHighlights] = useState<string[]>([]);
 
@@ -161,21 +190,8 @@ function useChangelogHighlights(fetchWhenVersionKnown: string | null) {
 
     let cancelled = false;
     const controller = new AbortController();
-    void Effect.runPromiseExit(
-      Effect.tryPromise({
-        try: async () => {
-          const res = await fetch(CHANGELOG_JSON_URL, { signal: controller.signal });
-          if (!res.ok) return null;
-          const payload = (await res.json()) as unknown;
-          if (!isChangelogPayload(payload)) return null;
-          return updateHighlights(payload.releases, APP_VERSION);
-        },
-        catch: (cause) => cause,
-      }),
-    ).then((exit) => {
-      if (!cancelled && Exit.isSuccess(exit)) {
-        setHighlights(exit.value ?? []);
-      }
+    void fetchChangelogHighlights(APP_VERSION, { signal: controller.signal }).then((next) => {
+      if (!cancelled) setHighlights(next);
     });
     return () => {
       cancelled = true;

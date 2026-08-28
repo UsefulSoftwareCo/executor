@@ -27,6 +27,7 @@
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-tweet": "^3.3.0",
+    "sanitize-html": "^2.17.7",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.2"
   },
@@ -34,6 +35,7 @@
     "@rhyssul/portless": "^0.13.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/sanitize-html": "^2.16.1",
     "executor": "workspace:*",
     "wrangler": "^4.0.0"
   },

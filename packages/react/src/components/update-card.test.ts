@@ -1,6 +1,10 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 
-import { changelogEntryToHighlight, updateHighlights } from "./update-card";
+import {
+  changelogEntryToHighlight,
+  fetchChangelogHighlights,
+  updateHighlights,
+} from "./update-card";
 
 describe("update-card changelog highlights", () => {
   it("keeps the first three entries newer than the running version", () => {
@@ -47,5 +51,72 @@ describe("update-card changelog highlights", () => {
         "**OAuth fixes** for [`login`](https://executor.sh/docs).\n- Nested detail is ignored.",
       ),
     ).toBe("OAuth fixes for login.");
+  });
+});
+
+describe("fetchChangelogHighlights", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stubFetch = (impl: typeof fetch) => vi.stubGlobal("fetch", vi.fn(impl));
+
+  /** A connection that never answers, the way a blackholed request behaves. */
+  const hangUntilAborted =
+    (onAbort?: () => void): typeof fetch =>
+    async (_input, init) => {
+      await new Promise<void>((resolve) => {
+        init?.signal?.addEventListener("abort", () => resolve());
+      });
+      onAbort?.();
+      throw init?.signal?.reason ?? new Error("aborted");
+    };
+
+  it("reads highlights from a well-formed payload", async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        Response.json({
+          releases: [{ version: "1.5.31", entries: [{ body: "A newer thing." }] }],
+        }),
+      ),
+    );
+
+    expect(await fetchChangelogHighlights("1.5.30")).toEqual(["A newer thing."]);
+  });
+
+  it("falls back to no highlights when the request fails", async () => {
+    stubFetch(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    expect(await fetchChangelogHighlights("1.5.30")).toEqual([]);
+  });
+
+  it("falls back to no highlights on a non-200 or malformed payload", async () => {
+    stubFetch(() => Promise.resolve(new Response("nope", { status: 503 })));
+    expect(await fetchChangelogHighlights("1.5.30")).toEqual([]);
+
+    stubFetch(() => Promise.resolve(Response.json({ releases: "not an array" })));
+    expect(await fetchChangelogHighlights("1.5.30")).toEqual([]);
+  });
+
+  // An air-gapped self-hosted install cannot reach executor.sh, and a blackholed
+  // connection never rejects on its own: the timeout is what ends the request.
+  it("gives up on a request that never settles", async () => {
+    let aborted = false;
+    stubFetch(hangUntilAborted(() => (aborted = true)));
+
+    expect(await fetchChangelogHighlights("1.5.30", { timeoutMs: 10 })).toEqual([]);
+    expect(aborted, "the hanging request is aborted, not left open").toBe(true);
+  });
+
+  it("gives up when the caller's signal aborts first", async () => {
+    const controller = new AbortController();
+    stubFetch(hangUntilAborted());
+
+    const pending = fetchChangelogHighlights("1.5.30", { signal: controller.signal });
+    controller.abort();
+
+    expect(await pending).toEqual([]);
   });
 });

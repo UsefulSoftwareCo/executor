@@ -1,9 +1,8 @@
 ---
 export const prerender = true;
 
-import { marked } from "marked";
-
 import Layout from "../layouts/Layout.astro";
+import { renderChangelogHtml } from "../lib/changelog-html";
 import { parseChangelog, type ChangelogRelease } from "../lib/changelog";
 import markdown from "executor/CHANGELOG.md?raw";
 
@@ -40,14 +39,14 @@ const fmt = (date: Date) =>
     timeZone: "UTC",
   });
 
-const htmlFor = (body: string) => marked.parse(body, { async: false });
-
+// The page is prerendered, so the markdown is parsed and sanitized at build
+// time and only the allowlisted HTML is ever served.
 const viewModel = releases.map((release: ChangelogRelease) => ({
   ...release,
   date: releaseDates.get(release.version),
   entries: release.entries.map((entry) => ({
     ...entry,
-    html: htmlFor(entry.body),
+    html: renderChangelogHtml(entry.body),
   })),
 }));
 ---
@@ -148,16 +147,21 @@ const viewModel = releases.map((release: ChangelogRelease) => ({
                   {release.entries.map((entry) => (
                     <article class="blog-prose text-[15.5px] leading-[1.7]">
                       <div set:html={entry.html} />
-                      {entry.prNumber && entry.prUrl && (
-                        <a
-                          href={entry.prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="mt-3 inline-flex font-mono text-[12px] uppercase tracking-[0.12em] text-ink-3 no-underline transition-colors hover:text-ink"
-                        >
-                          PR #{entry.prNumber}
-                        </a>
-                      )}
+                      {entry.prNumber &&
+                        (entry.prUrl ? (
+                          <a
+                            href={entry.prUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="mt-3 inline-flex font-mono text-[12px] uppercase tracking-[0.12em] text-ink-3 no-underline transition-colors hover:text-ink"
+                          >
+                            PR #{entry.prNumber}
+                          </a>
+                        ) : (
+                          <span class="mt-3 inline-flex font-mono text-[12px] uppercase tracking-[0.12em] text-ink-3">
+                            PR #{entry.prNumber}
+                          </span>
+                        ))}
                     </article>
                   ))}
                 </div>

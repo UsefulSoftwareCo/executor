@@ -80,6 +80,43 @@ describe("parseChangelog", () => {
     ]);
   });
 
+  it("keeps the PR number but drops a link that is not a pull-request permalink", () => {
+    const hostile = [
+      "javascript:alert",
+      "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+      "https://other.example@github.com/UsefulSoftwareCo/executor/pull/1",
+      "https://evil.example/UsefulSoftwareCo/executor/pull/1",
+      "https://github.com/other/executor/pull/1",
+      "https://github.com.evil.example/UsefulSoftwareCo/executor/pull/1",
+      "http://github.com/UsefulSoftwareCo/executor/pull/1",
+      "https://github.com/UsefulSoftwareCo/executor/issues/1",
+      "https://github.com/UsefulSoftwareCo/executor/pull/1/../../attacker",
+    ];
+
+    for (const url of hostile) {
+      const releases = parseChangelog(
+        `# executor\n\n## 1.5.30\n\n### Patch Changes\n\n- [#1](${url}) Fix a thing.\n`,
+      );
+
+      expect(releases, url).toEqual([
+        { version: "1.5.30", entries: [{ prNumber: 1, body: "Fix a thing." }] },
+      ]);
+    }
+  });
+
+  it("keeps pull-request permalinks on this repository", () => {
+    for (const owner of ["UsefulSoftwareCo", "RhysSullivan"]) {
+      const url = `https://github.com/${owner}/executor/pull/42`;
+      const releases = parseChangelog(
+        `# executor\n\n## 1.5.30\n\n### Patch Changes\n\n- [#42](${url}) Fix a thing.\n`,
+      );
+
+      expect(releases, owner).toEqual([
+        { version: "1.5.30", entries: [{ prNumber: 42, prUrl: url, body: "Fix a thing." }] },
+      ]);
+    }
+  });
+
   it("passes plain entries through and dedents continuation lines", () => {
     const releases = parseChangelog(`# executor
 

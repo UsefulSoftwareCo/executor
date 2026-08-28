@@ -14,6 +14,16 @@ const changesHeading = /^###\s+(Major|Minor|Patch) Changes\s*$/;
 const anyHeading = /^#{1,6}\s+/;
 const listItem = /^-\s+(.*)$/;
 
+// The PR link comes from a changeset, so it is contributor-controlled text. Only
+// a pull-request permalink on this repository becomes a link; anything else is
+// kept as plain text. `RhysSullivan` is the repository's former owner and still
+// appears in the published history.
+const prPermalink =
+  /^https:\/\/github\.com\/(?:UsefulSoftwareCo|RhysSullivan)\/executor\/pull\/\d+$/;
+
+/** True when `url` is a pull-request permalink safe to render as a link. */
+export const isPullRequestUrl = (url: string): boolean => prPermalink.test(url);
+
 export function parseChangelog(markdown: string): ChangelogRelease[] {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const releases: ChangelogRelease[] = [];
@@ -90,7 +100,9 @@ function parseItem(lines: string[]): ChangelogEntry | null {
 
   if (prMatch?.[1] && prMatch[2]) {
     entry.prNumber = Number.parseInt(prMatch[1], 10);
-    entry.prUrl = prMatch[2];
+    // A non-conforming URL loses the link, not the reference: the number still
+    // renders, as plain text.
+    if (isPullRequestUrl(prMatch[2])) entry.prUrl = prMatch[2];
     body = body.slice(prMatch[0].length).trimStart();
   }
 
