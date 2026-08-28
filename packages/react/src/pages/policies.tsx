@@ -31,6 +31,16 @@ import {
 import { Button } from "../components/button";
 import { PageContainer, PageHeader } from "../components/page";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/alert-dialog";
+import {
   CardStack,
   CardStackContent,
   CardStackEntry,
@@ -291,6 +301,11 @@ export function PoliciesPage() {
   const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
   const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
   const [busy, setBusy] = useState(false);
+  const [removingPolicy, setRemovingPolicy] = useState<{
+    id: string;
+    owner: Owner;
+    pattern: string;
+  } | null>(null);
   const ownerDisplay = useOwnerDisplay();
   // Policies default to org/workspace. On local this is the hidden Local owner
   // that v1 local data migrates into.
@@ -336,6 +351,7 @@ export function PoliciesPage() {
   };
 
   const handleRemove = async (policy: { id: string; owner: Owner }) => {
+    setRemovingPolicy(null);
     const exit = await doRemove({
       params: { policyId: PolicyId.make(policy.id) },
       payload: { owner: policy.owner },
@@ -462,7 +478,9 @@ export function PoliciesPage() {
                           isFirst={!reorderable || j === 0}
                           isLast={!reorderable || j === committed.length - 1}
                           showOwnerLabel={ownerDisplay.showOwnerLabels}
-                          onRemove={() => handleRemove({ id: p.id, owner: p.owner })}
+                          onRemove={() =>
+                            setRemovingPolicy({ id: p.id, owner: p.owner, pattern: p.pattern })
+                          }
                           onChangeAction={(action) =>
                             handleUpdate({ id: p.id, owner: p.owner }, action)
                           }
@@ -490,6 +508,37 @@ export function PoliciesPage() {
           },
         })
       )}
+
+      <AlertDialog
+        open={removingPolicy !== null}
+        onOpenChange={(open: boolean) => {
+          if (!open) setRemovingPolicy(null);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove policy?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {removingPolicy
+                ? `The rule for "${removingPolicy.pattern}" will be deleted. Tools it governs fall back to the default policy. This cannot be undone.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (removingPolicy !== null) {
+                  void handleRemove({ id: removingPolicy.id, owner: removingPolicy.owner });
+                }
+              }}
+            >
+              Remove policy
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageContainer>
   );
 }

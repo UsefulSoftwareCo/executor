@@ -2382,15 +2382,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // Non-modal for the same reason as the health-check editor sheet: a modal
     // dialog's react-remove-scroll locks the wheel to the dialog subtree, so
     // the operation combobox's PORTALED popup (and the modal body while it is
-    // open) cannot scroll. The overlay still dims and outside-click still
-    // closes; the portaled-popup guard in DialogContent keeps option clicks
-    // from dismissing.
+    // open) cannot scroll. The overlay still dims, so the dialog keeps its
+    // modal look. This form holds credentials and a half-built auth method, so
+    // it takes DialogContent's default: an outside click does not dismiss it.
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
         forceOverlay
-        onInteractOutside={
-          oauthClientHandoff?.action === "reconnect" ? (event) => event.preventDefault() : undefined
-        }
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing
