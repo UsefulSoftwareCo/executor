@@ -65,13 +65,25 @@ let warnedInsecureTrustedOrigin = false;
 
 const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?: SignupGate) => {
   const config = loadConfig();
-  const hasInsecureTrustedOrigin = config.trustedOrigins.some(
-    (origin) => new URL(origin).protocol === "http:",
+  // A `Secure` session cookie is never sent back over plain HTTP, so an HTTP
+  // alias can sign in and then look signed out on every later request. Drop the
+  // attribute when ANY trusted origin is HTTP. This is not a new relaxation for
+  // the common cases: Better Auth already infers `useSecureCookies` from the
+  // baseURL scheme, so an all-HTTPS instance still gets `true` and the plain
+  // `http://localhost` default still gets `false`. It only changes the mixed
+  // case an operator opts into with EXECUTOR_TRUSTED_ORIGINS.
+  const hasInsecureTrustedOrigin = config.trustedOrigins.some((origin) =>
+    origin.startsWith("http://"),
   );
-  if (hasInsecureTrustedOrigin && !warnedInsecureTrustedOrigin) {
+  // Warn only for that mixed case. An HTTP-only instance (local dev, a LAN
+  // deploy) never had Secure cookies to lose, and warning there would fire on
+  // every default boot.
+  const downgradesCanonicalCookies =
+    hasInsecureTrustedOrigin && config.webBaseUrl.startsWith("https://");
+  if (downgradesCanonicalCookies && !warnedInsecureTrustedOrigin) {
     warnedInsecureTrustedOrigin = true;
     console.warn(
-      "[executor] HTTP trusted origins require session cookies without the Secure attribute. Use HTTPS-only origins to keep session cookies transport-secure.",
+      "[executor] EXECUTOR_TRUSTED_ORIGINS contains an http:// origin, so session cookies drop the Secure attribute for every origin — including the https:// canonical URL. Use https:// aliases to keep session cookies transport-secure.",
     );
   }
   // Always resolved (generated + persisted when no env is set); this guards only

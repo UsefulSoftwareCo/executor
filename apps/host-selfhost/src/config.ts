@@ -154,40 +154,6 @@ const resolveWebBaseUrl = (port: number): string => {
   return fallback;
 };
 
-const normalizeTrustedOrigin = (value: string): string => {
-  if (!URL.canParse(value)) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: invalid operator configuration must fail at boot instead of silently weakening or breaking origin checks
-    throw new Error(
-      `EXECUTOR_TRUSTED_ORIGINS contains ${JSON.stringify(value)}, which is not a valid URL origin`,
-    );
-  }
-  const url = new URL(value);
-  if (
-    (url.protocol !== "http:" && url.protocol !== "https:") ||
-    url.username.length > 0 ||
-    url.password.length > 0 ||
-    url.hostname.includes("*") ||
-    (url.pathname !== "" && url.pathname !== "/") ||
-    url.search.length > 0 ||
-    url.hash.length > 0
-  ) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: invalid operator configuration must fail at boot instead of silently weakening or breaking origin checks
-    throw new Error(
-      `EXECUTOR_TRUSTED_ORIGINS entry ${JSON.stringify(value)} must be an exact http(s) origin (scheme, host, and optional port only)`,
-    );
-  }
-  return url.origin;
-};
-
-const resolveTrustedOrigins = (webBaseUrl: string): readonly string[] => {
-  const additional = (process.env.EXECUTOR_TRUSTED_ORIGINS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0)
-    .map(normalizeTrustedOrigin);
-  return [...new Set([webBaseUrl, ...additional])];
-};
-
 export const loadConfig = (): SelfHostConfig => {
   const port = Number.parseInt(process.env.PORT ?? "4788", 10);
   const dataDir = resolveDataDir();
@@ -242,6 +208,57 @@ const resolveMcpSessionIdleTtlMs = (): number | undefined => {
     );
   }
   return Math.floor(parsed);
+};
+
+// EXECUTOR_TRUSTED_ORIGINS — extra browser origins allowed to send
+// cookie-authenticated requests when one instance is deliberately reachable
+// under more than one address (a LAN IP as well as a domain, say).
+//
+// This list widens ONLY Better Auth's origin/CSRF check. `webBaseUrl` stays the
+// single canonical origin for OAuth callbacks, MCP metadata, and every other
+// generated link, so an alias can never redirect a callback somewhere else.
+//
+// Entries must be exact origins. A path, query, fragment, credential, wildcard
+// host, or non-http(s) scheme is refused rather than trimmed off: an operator
+// who writes `https://*.example.com` means a pattern, and silently accepting it
+// as the literal host would leave them believing a wildcard is in force. Like
+// the other knobs here, a malformed value refuses to boot instead of quietly
+// leaving the browser locked out with an "Invalid origin" page.
+const normalizeTrustedOrigin = (value: string): string => {
+  if (!URL.canParse(value)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_TRUSTED_ORIGINS contains ${JSON.stringify(value)}, which is not a valid URL origin`,
+    );
+  }
+  const url = new URL(value);
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.hostname.includes("*") ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_TRUSTED_ORIGINS entry ${JSON.stringify(value)} must be an exact http(s) origin (scheme, host, and optional port only)`,
+    );
+  }
+  return url.origin;
+};
+
+// The canonical origin always leads the list, so the unset case reproduces the
+// previous `[webBaseUrl]` exactly and an operator who repeats it in the env var
+// does not get a duplicate.
+const resolveTrustedOrigins = (webBaseUrl: string): readonly string[] => {
+  const additional = (process.env.EXECUTOR_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map(normalizeTrustedOrigin);
+  return [...new Set([webBaseUrl, ...additional])];
 };
 
 // The org slug doubles as a URL segment (`/<slug>/policies`), so an

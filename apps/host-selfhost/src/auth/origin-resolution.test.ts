@@ -76,14 +76,39 @@ test("additional trusted origins are trimmed, normalized, and deduplicated", () 
   ]);
 });
 
-test("additional trusted origins must be exact http(s) origins", () => {
+test("an empty or blank trusted-origins list leaves the canonical origin alone", () => {
   resetOriginEnv();
-  process.env.EXECUTOR_TRUSTED_ORIGINS = "https://executor.example.com/login";
-  expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
+  process.env.EXECUTOR_WEB_BASE_URL = "https://executor.example.com";
+  process.env.EXECUTOR_TRUSTED_ORIGINS = "  , ,  ";
+  expect(loadConfig().trustedOrigins).toEqual(["https://executor.example.com"]);
+});
 
-  process.env.EXECUTOR_TRUSTED_ORIGINS = "file:///tmp/executor";
-  expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
-
-  process.env.EXECUTOR_TRUSTED_ORIGINS = "https://*.example.com";
+// Every rejected shape is one an operator could plausibly type and then believe
+// was in force. A wildcard host is the dangerous one: accepting it as a literal
+// hostname would silently allow nothing while reading like it allows a whole
+// domain. A path/query/fragment reads like a scoped grant that origins cannot
+// express, and credentials in the URL are almost always a copy-paste mistake.
+test.each([
+  "https://executor.example.com/login",
+  "https://executor.example.com/?next=/",
+  "https://executor.example.com/#top",
+  "https://user:pass@executor.example.com",
+  "https://*.example.com",
+  "file:///tmp/executor",
+  "ftp://executor.example.com",
+])("a trusted origin that is not an exact http(s) origin (%s) refuses to boot", (raw) => {
+  resetOriginEnv();
+  process.env.EXECUTOR_TRUSTED_ORIGINS = raw;
   expect(() => loadConfig()).toThrow(/exact http\(s\) origin/);
 });
+
+// A bare hostname is the most common typo, and it never parses as a URL at all,
+// so it gets the other message. Both name the variable.
+test.each(["executor.example.com", "//executor.example.com", "not a url"])(
+  "a trusted origin that is not a URL (%s) refuses to boot",
+  (raw) => {
+    resetOriginEnv();
+    process.env.EXECUTOR_TRUSTED_ORIGINS = raw;
+    expect(() => loadConfig()).toThrow(/EXECUTOR_TRUSTED_ORIGINS/);
+  },
+);
