@@ -16,6 +16,18 @@ step through them. The right-hand panel names the route and source component
 each screen was reproduced from, and quotes the first-run reactions recorded
 against it.
 
+## Reworked flow
+
+`#reworked` — the picker, `#reworked/installed`, `#reworked/custom`,
+`#reworked/<domain>`, `#reworked/<domain>/auth`. No sidebar; Browse/Installed
+carries navigation. A deep link to a domain you have not added in this session
+says so rather than rendering an empty screen — the prototype keeps no state
+across reloads.
+
+Registry picks and custom URLs converge: both become an added integration with
+one `default` account reading Needs auth. Only the detail header differs, naming
+where the definition came from.
+
 ## Fidelity
 
 - The curated preset list is imported from the real plugin modules

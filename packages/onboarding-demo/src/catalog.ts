@@ -128,3 +128,36 @@ export const searchItems = (
     `${item.domain} ${item.name} ${item.description}`.toLowerCase().includes(q),
   );
 };
+
+// ---------------------------------------------------------------------------
+// Added integrations
+//
+// A registry pick and a hand-pasted URL become the SAME kind of thing the
+// moment they're added. Only `source` differs, and it only affects what the
+// detail screen can say about where the definition came from — never how you
+// authenticate it or where it lives.
+// ---------------------------------------------------------------------------
+
+export interface AddedIntegration {
+  readonly domain: string;
+  readonly name: string;
+  readonly description: string;
+  readonly icon: string;
+  readonly formats: readonly string[];
+  readonly source: "registry" | "custom";
+  /** Custom only: the endpoint or spec URL the user pasted. */
+  readonly url?: string;
+}
+
+export const fromCatalogItem = (item: CatalogItem): AddedIntegration => ({
+  domain: item.domain,
+  name: item.name,
+  description: item.description,
+  icon: item.icon,
+  formats: item.formats,
+  source: "registry",
+});
+
+/** integrations.sh serves a favicon for any domain, registry entry or not, so
+ *  a custom integration still gets a real logo. */
+export const logoFor = (domain: string): string => `https://integrations.sh/logo/${domain}`;

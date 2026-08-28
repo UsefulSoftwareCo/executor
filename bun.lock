@@ -872,6 +872,7 @@
         "react": "catalog:",
         "react-dom": "catalog:",
         "sonner": "^2.0.7",
+        "tldts": "^7.0.28",
       },
       "devDependencies": {
         "@tailwindcss/vite": "catalog:",

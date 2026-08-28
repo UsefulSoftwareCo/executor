@@ -259,8 +259,10 @@ function ModeSwitch(props: { readonly mode: Mode; readonly onChange: (mode: Mode
   );
 }
 
-const modeFromHash = (): Mode =>
-  (globalThis.location?.hash ?? "").startsWith("#next") ? "next" : "current";
+const modeFromHash = (): Mode => {
+  const hash = globalThis.location?.hash ?? "";
+  return hash.startsWith("#reworked") || hash.startsWith("#next") ? "next" : "current";
+};
 
 export function App() {
   const [mode, setMode] = useState<Mode>(modeFromHash);
@@ -274,7 +276,7 @@ export function App() {
   const changeMode = (next: Mode) => {
     setMode(next);
     if (globalThis.location) {
-      globalThis.location.hash = next === "next" ? "next" : "integrations-empty";
+      globalThis.location.hash = next === "next" ? "reworked" : "integrations-empty";
     }
   };
 
