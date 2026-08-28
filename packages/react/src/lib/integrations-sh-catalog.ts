@@ -352,3 +352,90 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
 
   return state;
 }
+
+// ---------------------------------------------------------------------------
+// Credential guidance
+//
+// The per-domain surface document records, for each way of authenticating,
+// what the credential is called at the provider, the page that mints it, and
+// the provider's own setup steps. The console fetched this document for its
+// connect URL and discarded the rest — which is why the add-connection modal
+// could not answer "what kind of key do I need?" or "where do I get one?"
+// while asking for exactly that.
+// ---------------------------------------------------------------------------
+
+export interface CredentialGuidance {
+  readonly id: string;
+  readonly type: string;
+  /** What the provider calls this credential ("Personal API key"). */
+  readonly label: string;
+  /** The page that mints it. */
+  readonly generateUrl?: string;
+  /** The provider's own instructions, as markdown. */
+  readonly setup?: string;
+}
+
+const CredentialsDocument = Schema.Struct({
+  credentials: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        type: Schema.optional(Schema.String),
+        label: Schema.optional(Schema.String),
+        generateUrl: Schema.optional(Schema.String),
+        setup: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+const decodeCredentials = Schema.decodeUnknownOption(CredentialsDocument);
+
+export const fetchCredentialGuidance = (
+  domain: string,
+): Effect.Effect<readonly CredentialGuidance[], CatalogRequestError> => {
+  const url = new URL(`/api/${encodeURIComponent(domain)}/surface`, INTEGRATIONS_SH_ORIGIN);
+  return Effect.map(fetchCatalogJson(url), (payload) =>
+    Option.match(decodeCredentials(payload), {
+      onNone: () => [],
+      onSome: ({ credentials }) =>
+        Object.entries(credentials ?? {}).map(([id, value]) => ({
+          id,
+          type: value.type ?? "unknown",
+          label: value.label ?? id,
+          ...(value.generateUrl ? { generateUrl: value.generateUrl } : {}),
+          ...(value.setup ? { setup: value.setup } : {}),
+        })),
+    }),
+  );
+};
+
+const guidanceCache = new Map<string, readonly CredentialGuidance[]>();
+
+/** Guidance for a domain, or an empty list when the registry has none. Never
+ *  fails loudly: this is help text, and a connection form must work without it. */
+export function useCredentialGuidance(domain: string | null): readonly CredentialGuidance[] {
+  const [state, setState] = useState<readonly CredentialGuidance[]>([]);
+
+  useEffect(() => {
+    if (!domain) {
+      setState([]);
+      return;
+    }
+    const cached = guidanceCache.get(domain);
+    if (cached) {
+      setState(cached);
+      return;
+    }
+    let live = true;
+    void Effect.runPromiseExit(fetchCredentialGuidance(domain)).then((exit) => {
+      const value = Exit.isSuccess(exit) ? exit.value : [];
+      guidanceCache.set(domain, value);
+      if (live) setState(value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [domain]);
+
+  return state;
+}

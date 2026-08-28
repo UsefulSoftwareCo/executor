@@ -597,7 +597,7 @@ export default function AddOpenApiIntegration(props: {
         <AuthMethodListEditor
           list={authMethodList}
           emptyHint="No authentication detected. Add a method, or add the integration without auth and connect an account from the integration page later."
-          footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
+          footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
         />
       )}
 

@@ -456,7 +456,7 @@ export default function AddMcpIntegration(props: {
               title="How does this server authenticate?"
               oauthMetadata="discovered"
               emptyHint="No methods declared. Add a method, or add the server without auth and connect from the integration page later."
-              footerHint="Every method here is registered with the server. Connect an account from the integration page after adding."
+              footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
             />
           )}
 

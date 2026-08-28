@@ -24,6 +24,7 @@ import {
   checkConnectionHealth,
   connectionsAllAtom,
   createOAuthClientOptimistic,
+  integrationAtom,
   integrationHealthCheckAtom,
   integrationHealthCheckCandidatesAtom,
   oauthClientsOptimisticAtom,
@@ -82,6 +83,7 @@ import {
 } from "./oauth-client-form";
 import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
+import { CredentialGuidancePanel } from "./credential-guidance";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
@@ -1293,6 +1295,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // The integration's declared health check + its candidate operations. When a
   // check is configured we probe against it; when not, the user picks one of the
   // candidates inline to test the key (and we save it).
+  // The integration's display URL is how the registry's credential guidance is
+  // located — it names the provider this key belongs to.
+  const integrationRecord = useAtomValue(integrationAtom(integration));
+  const integrationDisplayUrl = AsyncResult.isSuccess(integrationRecord)
+    ? integrationRecord.value?.displayUrl
+    : undefined;
   const healthCheckResult = useAtomValue(integrationHealthCheckAtom(integration));
   const configuredHealthCheck = AsyncResult.isSuccess(healthCheckResult)
     ? healthCheckResult.value
@@ -2543,6 +2551,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       {!isNoAuth && (
                         <div className="space-y-2">
                           <StepHeader index={1} label={authStepLabel} />
+
+                          {/* What this key is called at the provider, the page
+                              that mints it, and their own setup steps. The
+                              question this dialog used to ask without
+                              answering. */}
+                          <CredentialGuidancePanel
+                            displayUrl={integrationDisplayUrl}
+                            methodKind={method?.kind}
+                          />
 
                           {isOAuth && method ? (
                             cimdActive ? (
