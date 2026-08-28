@@ -793,6 +793,93 @@ describe("tool catalog sync safety", () => {
     ),
   );
 
+  it.effect("a failing sync does not bury a dead grant's expired verdict", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let incomplete = false;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.sync(() =>
+              incomplete
+                ? {
+                    tools: [],
+                    incomplete: true,
+                    incompleteReason: "upstream rejected the credential",
+                  }
+                : {
+                    tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+                  },
+            ),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        // The refresh recorder's authoritative write: the sync's own
+        // credential resolution discovered invalid_grant, so by the time the
+        // sync fails, the row records the dead grant WITH its expired verdict.
+        const expired = {
+          status: "expired" as const,
+          checkedAt: Date.now(),
+          detail: "invalid_grant: Grant not found",
+        };
+        incomplete = true;
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: {
+              tools_synced_at: null,
+              last_health: expired,
+              provider_state: {
+                oauthReauthRequiredAt: Date.now(),
+                oauthReauthRequiredDetail: "invalid_grant: Grant not found",
+              },
+            },
+          }),
+        );
+        yield* executor.tools.list({ integration: INTEG });
+
+        // "expired, reconnect" outranks "tool sync failing": nothing would
+        // re-assert the dead grant's verdict (it is never probed), while the
+        // reconnect that clears it re-syncs tools anyway.
+        const connection = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(connection?.lastHealth).toMatchObject(expired);
+
+        // The sync time still stamps, so the failing catalog is not
+        // re-attempted on every read.
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+          }),
+        );
+        expect(row?.tools_synced_at).not.toBeNull();
+      }),
+    ),
+  );
+
   it.effect("successful sync preserves genuine health-check records", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1363,6 +1450,40 @@ describe("agent read revalidation (coreTools connections.list)", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("check now repairs a dead-grant verdict buried by a racing writer", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      const detail = "invalid_grant: Grant not found";
+      // A racing writer's verdict landed after the recorder's: the row reads
+      // "degraded" while provider_state still records the dead grant.
+      yield* stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now(), oauthReauthRequiredDetail: detail },
+        last_health: {
+          status: "degraded",
+          checkedAt: Date.now(),
+          detail: "Tool sync failing: upstream rejected the credential",
+        },
+      });
+
+      // Still no probe — the dead grant refuses those — but the served
+      // verdict is the authoritative expired one, not the buried degraded.
+      const manual = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(manual.status).toBe("expired");
+      expect(manual.detail).toBe(detail);
+      expect(counters.probes).toBe(0);
+
+      // And it re-persisted, so plain row reads agree with what every health
+      // read serves.
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+      expect(row?.lastHealth?.detail).toBe(detail);
     }),
   );
 

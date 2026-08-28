@@ -3091,15 +3091,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             where: connectionWhere,
             set: syncedSet(row),
           });
+        // A failing sync must not bury a recorded dead grant's `expired`
+        // verdict: this sync's own credential resolution is what discovers
+        // invalid_grant (refresh → recorder), so by failure time the row
+        // already carries the authoritative "reconnect required" verdict —
+        // strictly more actionable than "tool sync failing", and nothing
+        // would re-assert it (a dead grant is never probed; only reconnect
+        // clears it, and reconnect re-syncs tools anyway). Read fresh, since
+        // the recorder wrote AFTER this sync's row was loaded. Keep stamping
+        // the sync time so the stale-catalog check does not re-attempt this
+        // connection on every read.
         const stampSyncedWithHealth = (reason: string) =>
-          core.updateMany("connection", {
-            where: connectionWhere,
-            set: {
-              tools_synced_at: Date.now(),
-              last_health: toolSyncHealth(reason),
-              updated_at: new Date(),
-            },
-          });
+          findConnectionRow(ref).pipe(
+            Effect.flatMap((fresh) =>
+              core.updateMany("connection", {
+                where: connectionWhere,
+                set:
+                  fresh !== null &&
+                  oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
+                    ? { tools_synced_at: Date.now() }
+                    : {
+                        tools_synced_at: Date.now(),
+                        last_health: toolSyncHealth(reason),
+                        updated_at: new Date(),
+                      },
+              }),
+            ),
+          );
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -4043,12 +4061,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // pass on the access token's remaining lifetime, and persisting that
         // "healthy" would hide the required reconnect until the token finally
         // lapses — with read-time revalidation then trusting the lie forever.
-        // Serve the persisted verdict, probe nothing, write nothing; this
-        // covers the manual "Check now" too. Only the reconnect mint, which
-        // rewrites `provider_state` wholesale, re-opens probing.
+        // Serve the dead-grant verdict and probe nothing; this covers the
+        // manual "Check now" too. Only the reconnect mint, which rewrites
+        // `provider_state` wholesale, re-opens probing. The one write here is
+        // a repair: if some racing writer buried the recorder's `expired`
+        // verdict (the recorder itself cannot lose — it writes provider_state
+        // and last_health in one statement — but e.g. a failing tool sync can
+        // land after it), re-assert it so plain row reads agree with what
+        // every health read serves. CAS'd on the observed stamps like every
+        // guarded verdict write, so anything newer than this read still wins,
+        // and a re-check then repairs against THAT row.
         const reauthState = oauthReauthRequiredFromProviderState(connectionRow.provider_state);
         if (reauthState !== null) {
           const result = deadGrantVerdict(reauthState, connectionRow);
+          const persisted = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
+          if (persisted === null || persisted.status !== "expired") {
+            yield* persistHealthResult(ref, connectionRow, result);
+          }
           yield* annotateHealthVerdict("dead_grant", result);
           return result;
         }
