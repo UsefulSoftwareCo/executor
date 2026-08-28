@@ -4,7 +4,6 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { getDomain } from "tldts";
 import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
 import {
@@ -14,6 +13,7 @@ import {
 } from "@executor-js/sdk/client";
 
 import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
+import { slugifyNamespace } from "../plugins/namespace";
 import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { Input } from "../components/input";
@@ -25,12 +25,12 @@ import {
   availableCatalogKinds,
   catalogLogoUrl,
   filterCatalogEntries,
-  presetDomain,
   presetDomains,
   resolveConnectTarget,
   useCatalogBrowse,
   type CatalogKind,
   type CatalogSearchEntry,
+  type CatalogSurface,
 } from "../lib/integrations-sh-catalog";
 
 // ---------------------------------------------------------------------------
@@ -305,26 +305,39 @@ export function IntegrationBrowsePage() {
     [catalog.entries, excludeDomains, availableKinds],
   );
 
-  /** What is already connected, keyed `<domain>:<kind>`.
+  /** What is already connected, as `<slug>:<kind>`.
    *
-   *  Domain ALONE is not the identity of a row. Rows are per surface now, so
-   *  "Stripe API" and "Stripe MCP" share a domain while being two different
-   *  integrations — matching on domain marked both Added the moment either one
-   *  was. The kind is what separates them.
+   *  The slug is the closest thing to an identity available today — it is the
+   *  namespace the add flow seeds from a registry surface's `slug` or a
+   *  preset's name. Kind is carried alongside it because slugs are NOT unique
+   *  per surface: the OpenAPI and MCP presets for Stripe, Neon, Sentry and
+   *  Axiom share a name and an id, so both seed the same namespace. Without the
+   *  kind, adding one marks the other added — the same false positive the
+   *  earlier domain match produced.
    *
-   *  A saved integration's `kind` is the wire kind, which the shared map turns
-   *  back into the plugin key a row carries. */
+   *  This still under-reports: a connection the user renamed on the way in no
+   *  longer matches, and reads as not-added. That is deliberate — offering to
+   *  add something twice is recoverable, claiming something is connected when
+   *  it is not is not. The real fix is recording at add time which row an
+   *  integration came from; nothing here can infer it after the fact. */
   const installedKeys = useMemo(() => {
     const rows: readonly Integration[] = AsyncResult.isSuccess(installed) ? installed.value : [];
-    const keys = new Set<string>();
-    for (const row of rows) {
-      if (!row.displayUrl) continue;
-      const domain = getDomain(row.displayUrl);
-      if (!domain) continue;
-      keys.add(`${domain}:${KIND_TO_PLUGIN_KEY[row.kind] ?? row.kind}`);
-    }
-    return keys;
+    return new Set(
+      rows.map((row) => `${String(row.slug)}:${KIND_TO_PLUGIN_KEY[row.kind] ?? row.kind}`),
+    );
   }, [installed]);
+
+  const isAdded = useCallback(
+    (kind: string, ...candidates: readonly (string | undefined)[]): boolean =>
+      candidates.some((candidate) => {
+        if (!candidate) return false;
+        return (
+          installedKeys.has(`${candidate}:${kind}`) ||
+          installedKeys.has(`${slugifyNamespace(candidate)}:${kind}`)
+        );
+      }),
+    [installedKeys],
+  );
 
   const allPresets = useMemo(() => {
     const entries: PresetEntry[] = [];
@@ -376,30 +389,59 @@ export function IntegrationBrowsePage() {
     });
   }, [query, doDetect, navigate, integrationPlugins]);
 
+  const goToAdd = useCallback(
+    (input: {
+      readonly kind: string;
+      readonly url: string;
+      readonly slug?: string;
+      readonly domain: string;
+    }) => {
+      trackEvent("integration_add_started", {
+        plugin_key: input.kind,
+        via: "catalog",
+        catalog_domain: input.domain,
+      });
+      void navigate({
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
+        params: { pluginKey: input.kind },
+        search: { url: input.url, ...(input.slug ? { namespace: input.slug } : {}) },
+      });
+    },
+    [navigate],
+  );
+
   const pickCatalogEntry = useCallback(
-    async (entry: CatalogSearchEntry, kinds: readonly CatalogKind[]) => {
+    async (entry: CatalogSearchEntry, kind: CatalogKind, knownUrl?: string) => {
+      // The registry already told us where this surface lives — go, rather than
+      // spending a round trip re-asking for something we were handed.
+      const surface = entry.surfaces?.find((candidate) => candidate.kind === kind);
+      if (knownUrl) {
+        goToAdd({
+          kind,
+          url: knownUrl,
+          domain: entry.domain,
+          ...(surface ? { slug: surface.slug } : {}),
+        });
+        return;
+      }
       if (resolvingDomain !== null) return;
       setResolvingDomain(entry.domain);
       setError(null);
-      const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, kinds));
+      const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, [kind]));
       setResolvingDomain(null);
       if (Exit.isFailure(exit) || !exit.value) {
         setError(`Couldn't load connect details for ${entry.domain}. Paste its URL above instead.`);
         return;
       }
       const target = exit.value;
-      trackEvent("integration_add_started", {
-        plugin_key: target.kind,
-        via: "catalog",
-        catalog_domain: entry.domain,
-      });
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey: target.kind },
-        search: { url: target.url, ...(target.slug ? { namespace: target.slug } : {}) },
+      goToAdd({
+        kind: target.kind,
+        url: target.url,
+        domain: entry.domain,
+        ...(target.slug ? { slug: target.slug } : {}),
       });
     },
-    [navigate, resolvingDomain],
+    [goToAdd, resolvingDomain],
   );
 
   const pickPreset = useCallback(
@@ -430,7 +472,6 @@ export function IntegrationBrowsePage() {
           `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
         if (!corpus.includes(text)) continue;
       }
-      const domain = presetDomain(entry.preset);
       const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
       rows.push({
         key: `preset-${entry.pluginKey}-${entry.preset.id}`,
@@ -439,29 +480,39 @@ export function IntegrationBrowsePage() {
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
         onSelect: () => pickPreset(entry),
-        added: domain !== null && installedKeys.has(`${domain}:${entry.pluginKey}`),
+        // The namespaces the add form would seed for this preset.
+        added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
         busy: false,
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, installedKeys]);
+  }, [allPresets, kind, text, pickPreset, isAdded]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
     const rows = catalogEntries.flatMap((entry): readonly Row[] => {
       const pretty = domainDisplayName(entry.domain);
       const description = entry.description ? tidyDescription(entry.description) : undefined;
-      return entry.kinds.map((entryKind): Row => {
-        const surface = SURFACE_WORD[entryKind] ?? CATALOG_KIND_LABEL[entryKind];
+      // Prefer the registry's own per-surface records. Without them all we know
+      // is which kinds exist, so the connect target has to be resolved on click
+      // and there is no identifier to recognise an existing integration by —
+      // in which case the row offers Add rather than claiming anything.
+      const surfaces: readonly (CatalogSurface | { readonly kind: CatalogKind })[] =
+        entry.surfaces && entry.surfaces.length > 0
+          ? entry.surfaces
+          : entry.kinds.map((kind) => ({ kind }));
+      return surfaces.map((surface): Row => {
+        const known = "slug" in surface ? surface : null;
+        const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
         return {
-          key: `catalog-${entry.domain}-${entryKind}`,
-          testId: `catalog-${entry.domain}-${entryKind}`,
-          title: withSurface(pretty, surface),
+          key: `catalog-${entry.domain}-${surface.kind}`,
+          testId: `catalog-${entry.domain}-${surface.kind}`,
+          title: withSurface(pretty, word),
           domain: entry.domain,
           ...(description ? { description } : {}),
           iconUrl: catalogLogoUrl(entry.domain, 10),
-          onSelect: () => void pickCatalogEntry(entry, [entryKind]),
-          added: installedKeys.has(`${entry.domain}:${entryKind}`),
+          onSelect: () => void pickCatalogEntry(entry, surface.kind, known?.url),
+          added: isAdded(surface.kind, known?.slug),
           busy: resolvingDomain === entry.domain,
         };
       });
@@ -472,7 +523,7 @@ export function IntegrationBrowsePage() {
     // Gmail. Stable within each group, so the registry's own order survives.
     const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
-  }, [catalogEntries, installedKeys, resolvingDomain, pickCatalogEntry, text]);
+  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text]);
 
   const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
 

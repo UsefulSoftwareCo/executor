@@ -28,10 +28,30 @@ export type CatalogKind = (typeof CONNECTABLE_KINDS)[number];
 const isConnectableKind = (kind: string): kind is CatalogKind =>
   (CONNECTABLE_KINDS as readonly string[]).includes(kind);
 
+/** One connectable surface of a domain, as the registry reports it.
+ *
+ *  `slug` is the registry's stable identifier for THIS surface, and it is the
+ *  namespace the add flow seeds — which makes it the honest answer to "have I
+ *  added this already?". The domain is not: a vendor's surfaces can live on
+ *  other hosts entirely (GitHub's MCP server is on api.githubcopilot.com), and
+ *  one domain routinely offers several surfaces that are separate
+ *  integrations. */
+export interface CatalogSurface {
+  readonly kind: CatalogKind;
+  readonly slug: string;
+  /** What to point the add flow at. Absent when the registry has no
+   *  machine-readable locator, in which case the surface document still has to
+   *  be fetched on click. */
+  readonly url?: string;
+}
+
 export interface CatalogSearchEntry {
   readonly domain: string;
   readonly description: string;
   readonly kinds: readonly CatalogKind[];
+  /** Present on registries new enough to report it; absent responses fall back
+   *  to resolving the surface document per click. */
+  readonly surfaces?: readonly CatalogSurface[];
 }
 
 export const catalogLogoUrl = (domain: string, size: number): string =>
@@ -68,6 +88,15 @@ const SearchResponse = Schema.Struct({
       domain: Schema.String,
       description: Schema.String,
       kinds: Schema.Array(Schema.String),
+      surfaces: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            kind: Schema.String,
+            slug: Schema.String,
+            url: Schema.optional(Schema.String),
+          }),
+        ),
+      ),
     }),
   ),
 });
@@ -78,11 +107,25 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
     onNone: () => [],
     onSome: ({ results }) =>
       results
-        .map((entry) => ({
-          domain: entry.domain,
-          description: entry.description,
-          kinds: entry.kinds.filter(isConnectableKind),
-        }))
+        .map((entry) => {
+          const surfaces = (entry.surfaces ?? []).flatMap((surface): readonly CatalogSurface[] =>
+            isConnectableKind(surface.kind)
+              ? [
+                  {
+                    kind: surface.kind,
+                    slug: surface.slug,
+                    ...(surface.url ? { url: surface.url } : {}),
+                  },
+                ]
+              : [],
+          );
+          return {
+            domain: entry.domain,
+            description: entry.description,
+            kinds: entry.kinds.filter(isConnectableKind),
+            ...(surfaces.length > 0 ? { surfaces } : {}),
+          };
+        })
         .filter((entry) => entry.kinds.length > 0),
   });
 
@@ -227,6 +270,9 @@ export const filterCatalogEntries = (
     .map((entry) => ({
       ...entry,
       kinds: entry.kinds.filter((kind) => opts.availableKinds.includes(kind)),
+      ...(entry.surfaces
+        ? { surfaces: entry.surfaces.filter((s) => opts.availableKinds.includes(s.kind)) }
+        : {}),
     }))
     .filter((entry) => entry.kinds.length > 0);
 
