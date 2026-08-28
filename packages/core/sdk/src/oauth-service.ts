@@ -270,6 +270,34 @@ const accessItemId = (owner: Owner, integration: IntegrationSlug, name: Connecti
   `oauth:${owner}:${integration}:${name}`;
 const refreshItemIdFor = (accessId: string): string => `${accessId}:refresh`;
 
+/** The item a refresh writes to prove the credential store will ACCEPT a write,
+ *  before the grant spends the single-use refresh token. It holds no credential
+ *  and never has.
+ *
+ *  It has to be its own item. The cheaper-looking probe — rewriting the refresh
+ *  token with the value just read — is a read-then-write with no
+ *  compare-and-set, and two refreshers of one connection on different instances
+ *  lose the newer token to it: A reads R0, B consumes R0 and stores the rotated
+ *  R1, then A's probe puts R0 back over R1 and the connection is dead the next
+ *  time anything needs it. The in-memory single-flight gate spans one instance
+ *  only, and a backing store whose own write path is read-latest-then-write
+ *  cannot catch it either.
+ *
+ *  The id is the refresh item's id plus a fixed suffix, rather than one
+ *  rebuilt from the connection's parts, so it carries the same prefix and
+ *  therefore the same embedded owner — the same store partition, the same
+ *  encryption context, the same object-name head. A store that would refuse
+ *  the refresh token's write refuses this one. Per connection rather than one
+ *  per partition, so the only writers that can contend on it are the
+ *  concurrent refreshers of a single connection, and they all write the same
+ *  constant. */
+export const storeWritabilityProbeItemIdFor = (refreshItemId: string): string =>
+  `${refreshItemId}:store-probe`;
+
+/** What the writability probe stores. A constant, because the item exists to
+ *  prove a write lands and carries no information of its own. */
+export const STORE_WRITABILITY_PROBE_VALUE = "writable";
+
 /** Order-preserving de-duplication of a scope list. */
 const dedupeScopes = (scopes: readonly string[]): readonly string[] => [...new Set(scopes)];
 

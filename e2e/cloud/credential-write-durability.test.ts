@@ -18,7 +18,10 @@
 //     store refuses writes outright, a grant that has already run has spent the
 //     stored refresh token and there is nowhere to put its successor. The
 //     refresh must therefore be gated on a store that is proven writable BEFORE
-//     the grant, so a storage outage costs the user nothing but the wait.
+//     the grant, so a storage outage costs the user nothing but the wait. The
+//     gate writes an object of its own that holds no credential — proving the
+//     store on the refresh token's own object would mean writing a value read
+//     moments earlier, which is how a peer's rotated token gets overwritten.
 //
 // Both are pinned here at the product surface, black box. Failures are armed on
 // the WorkOS emulator that the product's own WorkOS client talks to; no product
@@ -583,20 +586,33 @@ scenario(
 
       yield* call("baseline");
 
-      // Break the REFRESH TOKEN's object, and only that one, with a status the
-      // write policy cannot treat as contention — 503 is the store being down,
-      // not a peer holding the row, so no amount of retrying can land it. This
-      // is a store that will not accept a write at all.
+      // One healthy refresh first, so the object the writability gate uses
+      // exists and can be named. That object is the point of this scenario:
+      // the gate proves the store on an item of its OWN, never by rewriting
+      // the refresh token it is about to spend.
+      upstream.revokeSeenBearers();
+      yield* call("pre-outage-refresh");
+
       const objects = yield* vaultObjectsFor(workos, slug);
       const refreshObject = objects.find((object) => object.name.endsWith("refresh"));
       expect(refreshObject, "the connection stored a refresh token in the vault").toBeDefined();
+      const probeObject = objects.find((object) => object.name.endsWith("store-probe"));
+      expect(
+        probeObject,
+        "the writability gate wrote an object of its own, not the refresh token's",
+      ).toBeDefined();
+      expect(probeObject!.id, "and it is a distinct object").not.toBe(refreshObject!.id);
 
       const grantsBeforeOutage = (yield* oauth.requests).filter(isRefreshGrant).length;
 
+      // Break that object, and only that one, with a status the write policy
+      // cannot treat as contention — 503 is the store being down, not a peer
+      // holding the row, so no amount of retrying can land it. This is a store
+      // that will not accept a write at all.
       const duringOutage = yield* Effect.scoped(
         Effect.gen(function* () {
           const armed = yield* armFault(workos, {
-            match: { method: "PUT", pathPattern: `/vault/v1/kv/${refreshObject!.id}` },
+            match: { method: "PUT", pathPattern: `/vault/v1/kv/${probeObject!.id}` },
             response: { status: 503, body: { code: "unavailable", message: "vault unavailable" } },
             times: 3,
           });
@@ -605,7 +621,7 @@ scenario(
           const result = yield* attempt();
           expect(
             yield* faultsServed(workos, armed),
-            "the refresh token's write is the one that broke",
+            "the write the gate makes is the one that broke",
           ).toBeGreaterThanOrEqual(1);
           return result;
         }),

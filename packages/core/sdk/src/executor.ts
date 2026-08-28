@@ -105,6 +105,8 @@ import type {
 } from "./integration";
 import {
   makeOAuthService,
+  STORE_WRITABILITY_PROBE_VALUE,
+  storeWritabilityProbeItemIdFor,
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
@@ -1958,14 +1960,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  already consumed, and every later refresh comes back `invalid_grant` —
      *  a connection that silently disconnects itself.
      *
-     *  `storedRefreshToken` is the value the store already holds, when the
-     *  caller has just read (or rewritten) it. Many authorization servers do
-     *  NOT rotate on refresh and hand back the very same refresh token, so
-     *  writing it again is a round trip that can only re-persist what is
-     *  already there — and every write bumps the stored object's version,
-     *  which is the contention this path spends retries fighting. Skip it when
-     *  the value has not changed; a rotated token never matches, so the write
-     *  that actually matters is never skipped. */
+     *  `storedRefreshToken` is the value the store already held when the
+     *  caller read it on the way in. Many authorization servers do NOT rotate
+     *  on refresh and hand back the very same refresh token, so writing it
+     *  again is a round trip that can only re-persist what is already there —
+     *  and every write bumps the stored object's version, which is the
+     *  contention this path spends retries fighting. Skip it when the value
+     *  has not changed; a rotated token never matches, so the write that
+     *  actually matters is never skipped. */
     const persistRefreshedToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
@@ -2304,17 +2306,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 // rotated successor leaves the connection holding a token the
                 // server has already revoked. Every later refresh then replays
                 // it, gets invalid_grant, and a storage outage that healed in
-                // minutes has cost the user a re-auth.
+                // minutes has cost the user a re-auth. Failing here instead
+                // leaves the stored token valid, so the connection recovers on
+                // its own when the store does.
                 //
-                // Rewriting the value just read is the cheapest proof the
-                // store will take a write. It fails the resolve BEFORE the
-                // grant, so the stored token stays valid and the connection
-                // recovers on its own when the store does. On the way through
-                // it also refreshes nothing: the value is identical, so the
-                // persist below skips its own write unless the token really
-                // rotated.
+                // The probe writes its OWN item and never the refresh token's.
+                // Rewriting the value just read would be one round trip
+                // cheaper and is the trap: it is a read-then-write with no
+                // compare-and-set, so a peer refresher on another instance
+                // that spent this same token and stored its rotated successor
+                // in between would have that successor overwritten by the
+                // stale value — the exact dead connection this gate exists to
+                // prevent, now caused by the gate. The probe item sits in the
+                // same partition and holds a constant, so it proves what the
+                // store will accept while no credential is ever at risk.
                 if (provider.set) {
-                  yield* provider.set(ProviderItemId.make(row.refresh_item_id), refreshToken);
+                  yield* provider.set(
+                    ProviderItemId.make(storeWritabilityProbeItemIdFor(row.refresh_item_id)),
+                    STORE_WRITABILITY_PROBE_VALUE,
+                  );
                 }
                 storedRefreshToken = refreshToken;
                 return yield* refreshAccessToken({
