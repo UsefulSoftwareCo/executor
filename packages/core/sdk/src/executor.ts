@@ -941,6 +941,42 @@ const healthProbeGateFor = (rootDb: object): HealthProbeGate => {
 const healthProbeGateKey = (tenant: string, row: ConnectionRow): string =>
   JSON.stringify([tenant, row.owner, row.subject, row.integration, row.name]);
 
+/** The verdict a recorded dead grant answers every health read with. The
+ *  persisted `expired` verdict (written together with the dead-grant
+ *  state) is served as-is; a row whose verdict a racing writer buried (or
+ *  that somehow lacks one) gets an expired verdict synthesized from the
+ *  recorded rejection, unpersisted. */
+const deadGrantVerdict = (
+  reauthState: OAuthReauthRequiredState,
+  row: ConnectionRow,
+): HealthCheckResult => {
+  const cached = Option.getOrNull(decodeLastHealth(row.last_health));
+  if (cached !== null && cached.status === "expired") return cached;
+  return {
+    status: "expired",
+    checkedAt: reauthState.oauthReauthRequiredAt,
+    detail:
+      reauthState.oauthReauthRequiredDetail ??
+      "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
+  };
+};
+
+/** The health a connection row presents on every API read. Derived, never
+ *  written back: while `provider_state` records a dead grant, the row
+ *  presents the dead grant's expired verdict regardless of what a racing
+ *  writer left in `last_health`, so a buried verdict cannot mislead any
+ *  reader. A repair WRITE here instead would race the reconnect mint — a
+ *  stale repair that observed the pre-reconnect dead grant can pass the
+ *  verdict CAS inside one SQLite `updated_at` second and stamp the OLD
+ *  grant's expired verdict onto the fresh connection. The reconnect mint
+ *  rewrites `provider_state` wholesale, which ends this derivation with no
+ *  write to race. */
+const presentedLastHealth = (row: ConnectionRow): HealthCheckResult | null => {
+  const reauthState = oauthReauthRequiredFromProviderState(row.provider_state);
+  if (reauthState !== null) return deadGrantVerdict(reauthState, row);
+  return Option.getOrNull(decodeLastHealth(row.last_health));
+};
+
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
   const integration = IntegrationSlug.make(row.integration);
@@ -960,7 +996,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
       row.oauth_client_owner == null ? null : (String(row.oauth_client_owner) as Owner),
     oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
     missingOAuthScopes: missingOAuthScopesFromProviderState(row.provider_state),
-    lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
+    lastHealth: presentedLastHealth(row),
   };
 };
 
@@ -3993,25 +4029,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           : {}),
       });
 
-    /** The verdict a recorded dead grant answers every health read with. The
-     *  persisted `expired` verdict (written together with the dead-grant
-     *  state) is served as-is; a row that somehow lacks one gets an expired
-     *  verdict synthesized from the recorded rejection, unpersisted. */
-    const deadGrantVerdict = (
-      reauthState: OAuthReauthRequiredState,
-      row: ConnectionRow,
-    ): HealthCheckResult => {
-      const cached = Option.getOrNull(decodeLastHealth(row.last_health));
-      if (cached !== null && cached.status === "expired") return cached;
-      return {
-        status: "expired",
-        checkedAt: reauthState.oauthReauthRequiredAt,
-        detail:
-          reauthState.oauthReauthRequiredDetail ??
-          "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
-      };
-    };
-
     /** Persist a probe verdict unless the grant died while the probe was in
      *  flight: a concurrent refresh discovering invalid_grant writes the
      *  authoritative dead-grant state (with its own `expired` verdict), and a
@@ -4063,21 +4080,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // lapses — with read-time revalidation then trusting the lie forever.
         // Serve the dead-grant verdict and probe nothing; this covers the
         // manual "Check now" too. Only the reconnect mint, which rewrites
-        // `provider_state` wholesale, re-opens probing. The one write here is
-        // a repair: if some racing writer buried the recorder's `expired`
-        // verdict (the recorder itself cannot lose — it writes provider_state
-        // and last_health in one statement — but e.g. a failing tool sync can
-        // land after it), re-assert it so plain row reads agree with what
-        // every health read serves. CAS'd on the observed stamps like every
-        // guarded verdict write, so anything newer than this read still wins,
-        // and a re-check then repairs against THAT row.
+        // `provider_state` wholesale, re-opens probing. Nothing is written:
+        // a buried `expired` verdict (e.g. a failing tool sync landing after
+        // the recorder) is already re-derived on every read through
+        // `presentedLastHealth`, so plain row reads agree with what this
+        // serves — and a repair write here could observe a pre-reconnect
+        // dead grant, pass the verdict CAS inside one SQLite `updated_at`
+        // second, and stamp the OLD grant's expired verdict onto the freshly
+        // reconnected row.
         const reauthState = oauthReauthRequiredFromProviderState(connectionRow.provider_state);
         if (reauthState !== null) {
           const result = deadGrantVerdict(reauthState, connectionRow);
-          const persisted = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
-          if (persisted === null || persisted.status !== "expired") {
-            yield* persistHealthResult(ref, connectionRow, result);
-          }
           yield* annotateHealthVerdict("dead_grant", result);
           return result;
         }
@@ -5710,7 +5723,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           integration: IntegrationSlug.make(row.integration),
           name: ConnectionName.make(row.name),
           oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
-          lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
+          lastHealth: presentedLastHealth(row),
         };
       };
 

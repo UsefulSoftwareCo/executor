@@ -1453,9 +1453,9 @@ describe("agent read revalidation (coreTools connections.list)", () => {
     }),
   );
 
-  it.effect("check now repairs a dead-grant verdict buried by a racing writer", () =>
+  it.effect("a buried dead-grant verdict presents expired on every read, without a write", () =>
     Effect.gen(function* () {
-      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      const { executor, counters, stamp, persisted, rawRow } = yield* makeHealthHarness();
       const detail = "invalid_grant: Grant not found";
       // A racing writer's verdict landed after the recorder's: the row reads
       // "degraded" while provider_state still records the dead grant.
@@ -1467,9 +1467,11 @@ describe("agent read revalidation (coreTools connections.list)", () => {
           detail: "Tool sync failing: upstream rejected the credential",
         },
       });
+      const before = yield* rawRow();
 
-      // Still no probe — the dead grant refuses those — but the served
-      // verdict is the authoritative expired one, not the buried degraded.
+      // Check now: still no probe — the dead grant refuses those — and the
+      // served verdict is the authoritative expired one, not the buried
+      // degraded.
       const manual = yield* executor.connections.checkHealth({
         owner: "org",
         integration: INTEG,
@@ -1479,11 +1481,58 @@ describe("agent read revalidation (coreTools connections.list)", () => {
       expect(manual.detail).toBe(detail);
       expect(counters.probes).toBe(0);
 
-      // And it re-persisted, so plain row reads agree with what every health
-      // read serves.
+      // connections.get and the agent list present the same derivation.
       const row = yield* persisted();
-      expect(row?.lastHealth?.status).toBe("expired");
-      expect(row?.lastHealth?.detail).toBe(detail);
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail });
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      // Derivation, not repair: no read wrote anything back. A repair write
+      // could race a concurrent reconnect and stamp the old grant's expired
+      // verdict onto the fresh connection; presenting from `provider_state`
+      // needs no write, so there is nothing to race.
+      const after = yield* rawRow();
+      expect(after?.updated_at).toEqual(before?.updated_at);
+      expect(after?.last_health).toEqual(before?.last_health);
+    }),
+  );
+
+  it.effect("reconnect clearing the dead grant ends the derivation on reads", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: {
+          status: "degraded",
+          checkedAt: Date.now(),
+          detail: "Tool sync failing: upstream rejected the credential",
+        },
+      });
+      const buried = yield* persisted();
+      expect(buried?.lastHealth?.status).toBe("expired");
+
+      // The reconnect mint rewrites `provider_state` wholesale and clears the
+      // old grant's verdict. That alone must end the expired presentation —
+      // no repair write exists to resurrect the old grant's verdict onto the
+      // fresh connection.
+      yield* stamp({ provider_state: null, last_health: null, updated_at: new Date() });
+
+      const fresh = yield* persisted();
+      expect(fresh?.lastHealth).toBeNull();
+
+      // And probing is re-opened for the new grant.
+      const check = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(check.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
     }),
   );
 
