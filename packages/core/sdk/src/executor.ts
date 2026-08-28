@@ -196,7 +196,6 @@ import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } fr
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
-const PLUGIN_STORAGE_CREATE_ROW_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1074,14 @@ type LooseStorageDb = {
     tableName: string,
     rows: readonly Record<string, unknown>[],
   ) => Promise<readonly unknown[]>;
+  readonly upsertMany: (
+    tableName: string,
+    options: {
+      readonly target: readonly string[];
+      readonly update: readonly string[];
+      readonly values: readonly Record<string, unknown>[];
+    },
+  ) => Promise<void>;
   readonly deleteMany: (tableName: string, options?: unknown) => Promise<void>;
   readonly findFirst: (
     tableName: string,
@@ -1090,6 +1097,8 @@ type LooseStorageDb = {
 const asLooseStorageDb = (db: unknown): LooseStorageDb => db as LooseStorageDb;
 
 const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
+  transaction: <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | StorageFailure> =>
+    fuma.transaction(effect),
   count: <TName extends CoreTableName>(
     tableName: TName,
     options?: { readonly where?: CoreWhere },
@@ -1111,6 +1120,19 @@ const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
       : fuma
           .use(`${tableName}.createMany`, (db) => asLooseStorageDb(db).createMany(tableName, rows))
           .pipe(Effect.asVoid),
+  upsertMany: <TName extends CoreTableName>(
+    tableName: TName,
+    options: {
+      readonly target: readonly string[];
+      readonly update: readonly string[];
+      readonly values: readonly Record<string, unknown>[];
+    },
+  ): Effect.Effect<void, StorageFailure> =>
+    options.values.length === 0
+      ? Effect.void
+      : fuma.use(`${tableName}.upsertMany`, (db) =>
+          asLooseStorageDb(db).upsertMany(tableName, options),
+        ),
   deleteMany: <TName extends CoreTableName>(
     tableName: TName,
     options: { readonly where?: CoreWhere } = {},
@@ -1439,42 +1461,33 @@ const makePluginStorageFacade = (input: {
       readonly data: unknown;
     }[],
   ) =>
-    Effect.gen(function* () {
-      const os = ownerSubject(owner);
-      if (!os) {
-        return yield* new StorageError({
-          message: `Cannot write plugin storage for owner "user": executor has no subject.`,
-          cause: undefined,
-        });
-      }
-      const entriesById = new Map(
-        entries.map((entry) => [
-          pluginStorageId({
-            pluginId: input.pluginId,
-            collection: entry.collection,
-            key: entry.key,
-          }),
-          entry,
-        ]),
-      );
-      const uniqueEntries = [...entriesById.values()];
-      if (uniqueEntries.length === 0) return;
-
-      yield* deleteManyImpl(owner, os.subject, uniqueEntries);
-
-      const now = new Date();
-      for (
-        let offset = 0;
-        offset < uniqueEntries.length;
-        offset += PLUGIN_STORAGE_CREATE_ROW_BATCH_SIZE
-      ) {
-        const batchEntries = uniqueEntries.slice(
-          offset,
-          offset + PLUGIN_STORAGE_CREATE_ROW_BATCH_SIZE,
+    input.core.transaction(
+      Effect.gen(function* () {
+        const os = ownerSubject(owner);
+        if (!os) {
+          return yield* new StorageError({
+            message: `Cannot write plugin storage for owner "user": executor has no subject.`,
+            cause: undefined,
+          });
+        }
+        const entriesById = new Map(
+          entries.map((entry) => [
+            pluginStorageId({
+              pluginId: input.pluginId,
+              collection: entry.collection,
+              key: entry.key,
+            }),
+            entry,
+          ]),
         );
-        yield* input.core.createMany(
-          "plugin_storage",
-          batchEntries.map((entry) => ({
+        const uniqueEntries = [...entriesById.values()];
+        if (uniqueEntries.length === 0) return;
+
+        const now = new Date();
+        yield* input.core.upsertMany("plugin_storage", {
+          target: ["tenant", "owner", "subject", "plugin_id", "collection", "key"],
+          update: ["data", "updated_at"],
+          values: uniqueEntries.map((entry) => ({
             tenant,
             owner: os.owner,
             subject: os.subject,
@@ -1485,9 +1498,9 @@ const makePluginStorageFacade = (input: {
             created_at: now,
             updated_at: now,
           })),
-        );
-      }
-    });
+        });
+      }),
+    );
 
   const removeManyImpl = (
     owner: Owner,
@@ -2309,6 +2322,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               clientSecret: firstParty.clientSecret,
               tokenUrl: firstParty.tokenUrl,
               grant: "authorization_code",
+              // RFC 8707: the SAME resource the authorize/exchange path sent
+              // (`loadedFirstPartyClient`), so the refreshed token keeps the
+              // audience the original grant was bound to. Dropping it here
+              // made refresh asymmetric with authorize for first-party apps.
               resource: firstParty.resource ?? null,
               ...(firstParty.tokenEndpointAuthMethod === undefined
                 ? {}
@@ -5273,8 +5290,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             const oauth = selected?.kind === "oauth" ? selected.oauth : undefined;
             // Declared scopes win. Discover only when the selected method
             // declares none but names a source to discover them from (MCP).
+            // The discovery URL rides along so `oauth.start` can discover
+            // scopes even for a client whose RFC 8707 resource was cleared.
             if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
-              return { kind: "discover" };
+              return { kind: "discover", discoveryUrl: oauth.discoveryUrl };
             }
             return { kind: "scopes", scopes: oauth?.scopes ?? [] };
           }),
