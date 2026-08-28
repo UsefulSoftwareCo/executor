@@ -296,7 +296,16 @@ export interface CatalogSearchState {
 
 const cacheKey = (input: CatalogQuery): string =>
   `${input.kind ?? "all"}:${input.limit ?? 0}:${input.query}`;
-const searchCache = new Map<string, readonly CatalogSearchEntry[]>();
+/** Responses are cached for as long as the registry says they are fresh, and
+ *  no longer. The first version of this cache had no expiry at all, so a
+ *  session that searched once kept that answer for its whole life — a registry
+ *  correction could ship and the console would keep showing the old catalog
+ *  until the tab was closed. */
+const SEARCH_TTL_MS = 60_000;
+const searchCache = new Map<
+  string,
+  { readonly at: number; readonly entries: readonly CatalogSearchEntry[] }
+>();
 
 /**
  * Browse or search the public registry.
@@ -327,15 +336,17 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
     }
     const request: CatalogQuery = { query, limit, ...(kind ? { kind } : {}) };
     const cached = searchCache.get(cacheKey(request));
-    if (cached) {
-      setState({ entries: cached, loading: false, failed: false });
+    if (cached && Date.now() - cached.at < SEARCH_TTL_MS) {
+      setState({ entries: cached.entries, loading: false, failed: false });
       return;
     }
     setState((previous) => ({ ...previous, loading: true }));
     const timer = setTimeout(
       () => {
         void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
-          if (Exit.isSuccess(exit)) searchCache.set(cacheKey(request), exit.value);
+          if (Exit.isSuccess(exit)) {
+            searchCache.set(cacheKey(request), { at: Date.now(), entries: exit.value });
+          }
           if (generation.current !== requestId) return;
           setState({
             entries: Exit.isSuccess(exit) ? exit.value : [],
