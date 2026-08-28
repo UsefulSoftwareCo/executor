@@ -142,6 +142,13 @@ const wideRows = table("policy_wide_rows", {
   c9: column("c9", "string"),
 });
 
+// The physical column name needs identifier quoting; the bulk upsert conflict
+// SET clause references it as `excluded.<name>` and must quote it.
+const quotedNames = table("policy_quoted_names", {
+  id: idColumn("id", "varchar(255)"),
+  displayName: column("display-name", "string"),
+});
+
 const v1 = schema({
   version: "1.0.0",
   tables: {
@@ -151,6 +158,7 @@ const v1 = schema({
     quotas,
     shards,
     wideRows,
+    quotedNames,
   },
   relations: {
     authors: ({ many }) => ({
@@ -651,6 +659,77 @@ describe("FumaDB table policies", () => {
         expect(statement.paramCount).toBeLessThanOrEqual(999);
       }
       await expect(orm.count("wideRows")).resolves.toBe(250);
+    }),
+  );
+
+  it.effect("bulk upserts a column whose physical name needs identifier quoting", () =>
+    useHarness(async (orm) => {
+      await orm.createMany("quotedNames", [{ id: "row-1", displayName: "before" }]);
+
+      // The conflict SET clause references the update column through the
+      // `excluded` pseudo-table; an unquoted physical name like
+      // `display-name` is a syntax error there.
+      await orm.upsertMany("quotedNames", {
+        target: ["id"],
+        update: ["displayName"],
+        values: [
+          { id: "row-1", displayName: "after" },
+          { id: "row-2", displayName: "created" },
+        ],
+      });
+
+      await expect(
+        orm.findMany("quotedNames", {
+          select: ["id", "displayName"],
+          orderBy: ["id", "asc"],
+        }),
+      ).resolves.toEqual([
+        { id: "row-1", displayName: "after" },
+        { id: "row-2", displayName: "created" },
+      ]);
+    }),
+  );
+
+  it.effect("keeps a successful sibling nested transaction when the other rolls back", () =>
+    useHarness(async (orm) => {
+      const writer = withQueryContext(orm, makeContext(["tenant-a"], "siblings"));
+
+      await writer.transaction(async (tx) => {
+        // Two sibling savepoint scopes started concurrently on the one shared
+        // SQLite connection: the failing sibling's ROLLBACK TO must not undo
+        // work the successful sibling already released.
+        const failing = tx.transaction(async (inner) => {
+          await inner.create("authors", {
+            id: "author-rolled-back",
+            tenantId: "tenant-a",
+            name: "Rolled Back",
+          });
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test forces one sibling to roll back
+          throw new Error("sibling failure");
+        });
+        const succeeding = tx.transaction(async (inner) => {
+          await inner.create("authors", {
+            id: "author-committed",
+            tenantId: "tenant-a",
+            name: "Committed",
+          });
+        });
+
+        const [failed, succeeded] = await Promise.allSettled([failing, succeeding]);
+        expect(failed.status).toBe("rejected");
+        expect(succeeded.status).toBe("fulfilled");
+      });
+
+      await expect(
+        writer.findMany("authors", {
+          select: ["id"],
+          where: (builder) =>
+            builder.or(
+              builder("id", "=", "author-rolled-back"),
+              builder("id", "=", "author-committed"),
+            ),
+        }),
+      ).resolves.toEqual([{ id: "author-committed" }]);
     }),
   );
 

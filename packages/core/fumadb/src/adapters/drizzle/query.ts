@@ -51,6 +51,48 @@ function parameterBoundedBatchSize(
   return Math.min(CREATE_MANY_BATCH_SIZE, rowsPerStatement);
 }
 
+// SQLite transaction scopes run as raw BEGIN/SAVEPOINT statements on one
+// shared connection, so two scopes started concurrently would interleave
+// their control statements: two top-level BEGINs collide, and sibling
+// savepoints at one nesting depth reuse each other's names — one sibling's
+// ROLLBACK TO can undo work the other already released. Serialize scope
+// execution per connection handle and nesting depth: same-depth scopes run
+// one after another, while a parent scope at depth N can still open its
+// child scope at depth N + 1 without deadlocking. SQLite is single-writer,
+// so this serialization costs no real concurrency.
+const transactionScopeQueues = new WeakMap<object, Map<number, Promise<void>>>();
+
+async function runSerializedScope<T>(
+  handle: object,
+  depth: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let queues = transactionScopeQueues.get(handle);
+  if (!queues) {
+    queues = new Map();
+    transactionScopeQueues.set(handle, queues);
+  }
+  const previous = queues.get(depth) ?? Promise.resolve();
+  let release!: () => void;
+  queues.set(
+    depth,
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  await previous;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- scope release must survive the wrapped failure
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+// Savepoint names are invocation-unique as defense in depth: even if two
+// scopes ever interleave, a ROLLBACK TO can only target its own savepoint.
+let savepointSequence = 0;
+
 function buildWhere(
   toDrizzle: (col: AnyColumn) => ColumnType,
   condition: Condition
@@ -248,21 +290,24 @@ export function fromDrizzle(
       return fn(db);
     }
     if (provider === "sqlite") {
-      const savepoint = transactionDepth > 0 ? `fumadb_tx_${transactionDepth}` : undefined;
-      await executeRaw(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN");
-      try {
-        const result = await fn(db);
-        await executeRaw(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
-        return result;
-      } catch (e) {
-        if (savepoint) {
-          await executeRaw(`ROLLBACK TO SAVEPOINT ${savepoint}`);
-          await executeRaw(`RELEASE SAVEPOINT ${savepoint}`);
-        } else {
-          await executeRaw("ROLLBACK");
+      return runSerializedScope(db, transactionDepth, async () => {
+        savepointSequence += 1;
+        const savepoint = transactionDepth > 0 ? `fumadb_tx_${savepointSequence}` : undefined;
+        await executeRaw(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN");
+        try {
+          const result = await fn(db);
+          await executeRaw(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
+          return result;
+        } catch (e) {
+          if (savepoint) {
+            await executeRaw(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+            await executeRaw(`RELEASE SAVEPOINT ${savepoint}`);
+          } else {
+            await executeRaw("ROLLBACK");
+          }
+          throw e;
         }
-        throw e;
-      }
+      });
     }
     return db.transaction((tx) => fn(tx as unknown as typeof db));
   }
@@ -386,26 +431,32 @@ export function fromDrizzle(
         throw new Error("[FumaDB] upsertMany requires at least one update column.");
       }
       if (provider !== "sqlite" && provider !== "postgresql") {
-        for (const value of v.values) {
-          const targetCondition: Condition = {
-            type: ConditionType.And,
-            items: v.target.map((column) => ({
-              type: ConditionType.Compare,
-              a: column,
-              operator: "=",
-              b: value[column.ormName],
-            })),
-          };
-          await this.upsert(table, {
-            where: v.where
-              ? { type: ConditionType.And, items: [targetCondition, v.where] }
-              : targetCondition,
-            update: Object.fromEntries(
-              v.update.map((column) => [column.ormName, value[column.ormName]]),
-            ),
-            create: value,
-          });
-        }
+        // This path issues several statements per row, so a failure halfway
+        // through must not leave a prefix of the rows committed. These
+        // providers have native driver transactions; `transaction` routes
+        // every per-row statement through one of them.
+        await this.transaction(async (scoped) => {
+          for (const value of v.values) {
+            const targetCondition: Condition = {
+              type: ConditionType.And,
+              items: v.target.map((column) => ({
+                type: ConditionType.Compare,
+                a: column,
+                operator: "=",
+                b: value[column.ormName],
+              })),
+            };
+            await scoped.internal.upsert(table, {
+              where: v.where
+                ? { type: ConditionType.And, items: [targetCondition, v.where] }
+                : targetCondition,
+              update: Object.fromEntries(
+                v.update.map((column) => [column.ormName, value[column.ormName]]),
+              ),
+              create: value,
+            });
+          }
+        });
         return;
       }
 
@@ -424,7 +475,10 @@ export function fromDrizzle(
       const set = Object.fromEntries(
         v.update.map((column) => [
           column.names.drizzle,
-          Drizzle.sql.raw(`excluded.${column.names.sql}`),
+          // `sql.identifier` quotes the physical column name; a raw
+          // interpolation would emit e.g. `excluded.display-name` unquoted,
+          // which the engine parses as an expression.
+          Drizzle.sql`excluded.${Drizzle.sql.identifier(column.names.sql)}`,
         ]),
       );
 
