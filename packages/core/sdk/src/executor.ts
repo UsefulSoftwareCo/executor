@@ -1,4 +1,5 @@
 import {
+  Cause,
   Deferred,
   Duration,
   Effect,
@@ -8,6 +9,7 @@ import {
   Layer,
   Option,
   Predicate,
+  Ref,
   Schema,
   Semaphore,
 } from "effect";
@@ -3454,7 +3456,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
         const now = new Date();
-        yield* transaction(
+        // The storage surrogate id of the row THIS create inserted. The
+        // composite key (owner, integration, name) can change hands while a
+        // failed create is still compensating, and `created_at` round-trips
+        // at second precision, so neither identifies OUR row — only `row_id`
+        // does. `FumaRow` deliberately hides `row_id` from domain rows, so it
+        // is read through a narrow cast. Every adapter generates it ORM-side
+        // on insert; a create result without it is a broken storage contract
+        // and fails here, inside the transaction, before any provider write.
+        const rowIdOf = (row: unknown): string | null => {
+          const value = row == null ? null : (row as Record<string, unknown>)["row_id"];
+          return typeof value === "string" ? value : null;
+        };
+        const insertedRowId = yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow({
               owner: input.owner,
@@ -3468,7 +3482,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 name,
               });
             }
-            yield* core.create("connection", {
+            const inserted = yield* core.create("connection", {
               tenant: keys.tenant,
               owner: keys.owner,
               subject: keys.subject,
@@ -3487,6 +3501,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               created_at: now,
               updated_at: now,
             });
+            const rowId = rowIdOf(inserted);
+            if (rowId === null) {
+              return yield* new StorageError({
+                message:
+                  "Storage adapter did not return the inserted connection row's row_id; the create cannot be compensated safely.",
+                cause: undefined,
+              });
+            }
+            return rowId;
           }),
         ).pipe(
           // Both racers can observe absence and reach the insert; the primary
@@ -3535,19 +3558,82 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // While the committed row exists no concurrent create can win, so
           // on an incomplete write it is ours to tear down — a surviving row
           // whose item_ids were never stored would 409 every retry while
-          // failing every invocation with `connection_value_missing`.
-          // Compensation covers BOTH halves: best-effort deletes of the items
-          // already written (the earlier secrets of a partial multi-variable
-          // write), then the row itself. Nothing here is silent: every failed
-          // or impossible undo is logged, and `rowRemoved` converts a
-          // stranded row into an error that names it.
-          let rowRemoved = true;
+          // failing every invocation with `connection_value_missing`. But
+          // "ours" needs proof before anything is deleted: the composite key
+          // (owner, integration, name) can change hands while compensation is
+          // still pending (provider calls can be slow) — a concurrent remove
+          // frees the name, a new create takes it and writes fresh secrets at
+          // the SAME deterministic item ids. The one column that tells our
+          // row apart from such a successor is `insertedRowId`, so the row
+          // delete carries it in its WHERE (guarded delete), and the identity
+          // check runs in the same transaction as the delete so both see one
+          // consistent row.
+          //
+          // Order matters: the ROW is deleted first, and the credential items
+          // are undone only when the guarded delete actually removed OUR row.
+          // If the row is already gone or replaced, losing compensation is
+          // correct — the remover already cleaned up, and the deterministic
+          // item ids may by now carry the successor's secrets, so deleting
+          // them here would clobber a healthy connection. Nothing here is
+          // silent: every failed or impossible undo is logged, and
+          // `rowOutcome` converts a stranded row into an error that names it.
+          const rowOutcomeRef = yield* Ref.make<"removed" | "superseded" | "failed">("removed");
           const logContext = {
             owner: input.owner,
             integration: String(input.integration),
             connection: String(name),
           };
           const compensate = Effect.gen(function* () {
+            const rowOutcome = yield* transaction(
+              Effect.gen(function* () {
+                const current = yield* findConnectionRow({
+                  owner: input.owner,
+                  integration: input.integration,
+                  name,
+                });
+                if (rowIdOf(current) !== insertedRowId) {
+                  return "superseded" as const;
+                }
+                yield* core.deleteMany("connection", {
+                  where: (b: AnyCb) =>
+                    b.and(
+                      byOwner(input.owner)(b),
+                      b("integration", "=", String(input.integration)),
+                      b("name", "=", String(name)),
+                      // Even if the row changed hands between the read above
+                      // and this statement, only OUR row can match.
+                      b("row_id", "=", insertedRowId),
+                    ),
+                });
+                return "removed" as const;
+              }),
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError(
+                  "executor connection create stranded a connection row it could not delete",
+                  { ...logContext, cause },
+                ).pipe(Effect.as("failed" as const)),
+              ),
+            );
+            yield* Ref.set(rowOutcomeRef, rowOutcome);
+            if (rowOutcome === "superseded") {
+              // A concurrent remove took our row, and a successor may already
+              // own the name and the item ids. The remover cleaned up;
+              // nothing left here is ours to touch.
+              yield* Effect.logInfo(
+                "executor connection create skipped compensation: the connection row was already removed or replaced",
+                logContext,
+              );
+              return;
+            }
+            if (rowOutcome === "failed") {
+              // The row delete failed, so the row — still ours — keeps
+              // holding the name together with the items that already
+              // landed. Leave the items in place (they belong to the
+              // stranded row the caller is told to remove) and let the exit
+              // handling below surface the error.
+              return;
+            }
             for (const entry of pastedWrites) {
               if (!written.includes(entry.itemId)) continue;
               if (entry.remove === null) {
@@ -3569,46 +3655,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 ),
               );
             }
-            yield* core
-              .deleteMany("connection", {
-                where: (b: AnyCb) =>
-                  b.and(
-                    byOwner(input.owner)(b),
-                    b("integration", "=", String(input.integration)),
-                    b("name", "=", String(name)),
-                  ),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Effect.sync(() => {
-                    rowRemoved = false;
-                  }).pipe(
-                    Effect.andThen(
-                      Effect.logError(
-                        "executor connection create stranded a credential-less connection row",
-                        { ...logContext, cause },
-                      ),
-                    ),
-                  ),
-                ),
-              );
           });
 
           // `onExit`, not `tapError`: compensation must also run when the
-          // write is interrupted or dies with a defect.
-          yield* writeAll.pipe(
+          // write is interrupted or dies with a defect. The stranded-row
+          // promise must hold on every one of those exit shapes, so the exit
+          // is captured and re-raised by hand: a typed failure or a defect
+          // that left the row behind becomes the StorageError below, while an
+          // interruption cannot carry a typed error at all (interrupting wins
+          // over failing) — for it the loud log inside `compensate` is the
+          // only signal, and the interruption is re-raised untouched.
+          const writeExit = yield* writeAll.pipe(
             Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : compensate)),
-            Effect.catch((error) =>
-              rowRemoved
-                ? Effect.fail(error)
-                : Effect.fail(
-                    new StorageError({
-                      message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded without stored credentials and must be removed manually.`,
-                      cause: error,
-                    }),
-                  ),
-            ),
+            Effect.exit,
           );
+          if (Exit.isFailure(writeExit)) {
+            const rowOutcome = yield* Ref.get(rowOutcomeRef);
+            if (rowOutcome === "failed" && !Cause.hasInterruptsOnly(writeExit.cause)) {
+              return yield* new StorageError({
+                message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded with incomplete credentials and must be removed manually.`,
+                cause: Cause.squash(writeExit.cause),
+              });
+            }
+            return yield* Effect.failCause(writeExit.cause);
+          }
         }
 
         // Record the sighting. The request seam (`makeScopedExecutor`) already

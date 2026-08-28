@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  Cause,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Inspectable,
   Logger,
@@ -610,6 +612,37 @@ const durabilityPlugin = (provider: CredentialProvider) =>
     }),
   }))();
 
+/** Wrap a test `FumaDb` so deletes on the `connection` table can be made to
+ *  fail on demand — the raw driver-level failure the compensating delete must
+ *  survive loudly. Transactions hand out wrapped handles too, so the guarded
+ *  delete inside the compensation transaction is covered. */
+const failableConnectionDeletes = (db: FumaDb, shouldFail: () => boolean): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "transaction") {
+          return (run: (tx: FumaDb) => Promise<unknown>) =>
+            (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+              (tx) => run(wrap(tx)),
+            );
+        }
+        if (prop === "deleteMany") {
+          return (table: unknown, query: unknown) =>
+            shouldFail() && table === "connection"
+              ? // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
+                Promise.reject(new StorageError({ message: "delete refused", cause: undefined }))
+              : (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(table, query);
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
 describe("connections.create credential-write compensation", () => {
   // Interruption is not an error: error-channel compensation never sees it. A
   // create interrupted mid-write must still tear down what it already did —
@@ -739,38 +772,6 @@ describe("connections.create credential-write compensation", () => {
   it.effect("names the stranded connection when the compensating delete fails", () =>
     Effect.gen(function* () {
       let failRowDelete = false;
-      const failConnectionDeletes = (db: FumaDb): FumaDb => {
-        const wrap = (inner: FumaDb): FumaDb =>
-          new Proxy(inner, {
-            get(target, prop) {
-              if (prop === "withContext") {
-                return (context: unknown) =>
-                  wrap((target.withContext as (c: unknown) => FumaDb)(context));
-              }
-              if (prop === "transaction") {
-                return (run: (tx: FumaDb) => Promise<unknown>) =>
-                  (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
-                    (tx) => run(wrap(tx)),
-                  );
-              }
-              if (prop === "deleteMany") {
-                return (table: unknown, query: unknown) =>
-                  failRowDelete && table === "connection"
-                    ? // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
-                      Promise.reject(
-                        new StorageError({ message: "delete refused", cause: undefined }),
-                      )
-                    : (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(
-                        table,
-                        query,
-                      );
-              }
-              return Reflect.get(target, prop);
-            },
-          });
-        return wrap(db);
-      };
-
       const store = new Map<string, string>();
       const provider = trackingProvider(store, {
         set: (id, value) =>
@@ -779,7 +780,10 @@ describe("connections.create credential-write compensation", () => {
             : Effect.sync(() => void store.set(String(id), value)),
       });
       const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
-      const executor = yield* createExecutor({ ...config, db: failConnectionDeletes(config.db) });
+      const executor = yield* createExecutor({
+        ...config,
+        db: failableConnectionDeletes(config.db, () => failRowDelete),
+      });
       yield* executor.durable.seed();
       failRowDelete = true;
 
@@ -808,12 +812,207 @@ describe("connections.create credential-write compensation", () => {
       expect(failure.cause.message).toBe("provider write refused");
 
       // Non-vacuous: the compensating delete really did fail, so the
-      // credential-less row the error names is still there.
+      // row the error names is still there.
       failRowDelete = false;
       const rows = yield* executor.connections.list();
       expect(rows.length).toBe(1);
       expect(String(rows[0]?.name)).toBe("main");
     }),
+  );
+
+  // Compensation can be slow (provider calls). In that window a concurrent
+  // remove can free the name and a new create can take it, writing fresh
+  // secrets at the SAME deterministic item ids. Late compensation must then
+  // recognize that the row is no longer the one it inserted — identified by
+  // the storage surrogate row id — and touch neither the replacement row nor
+  // its credentials. Losing compensation to a concurrent remove is correct:
+  // the remover already cleaned up.
+  it.effect("late compensation leaves a concurrent replacement untouched", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const secondWriteEntered = yield* Deferred.make<void>();
+        const releaseSecondWrite = yield* Deferred.make<void>();
+        const store = new Map<string, string>();
+        let parkNextSecondWrite = true;
+        const provider = trackingProvider(store, {
+          set: (id, value) => {
+            if (String(id).endsWith(":second") && parkNextSecondWrite) {
+              parkNextSecondWrite = false;
+              return Deferred.succeed(secondWriteEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseSecondWrite)),
+                Effect.andThen(
+                  Effect.fail(
+                    new StorageError({ message: "provider write refused", cause: undefined }),
+                  ),
+                ),
+              );
+            }
+            return Effect.sync(() => void store.set(String(id), value));
+          },
+        });
+        const executor = yield* makeTestExecutor({
+          plugins: [durabilityPlugin(provider)] as const,
+        });
+        yield* executor.durable.seed();
+
+        const fiber = yield* Effect.forkChild(
+          executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: { first: "a-1", second: "a-2" },
+          }),
+        );
+        yield* Deferred.await(secondWriteEntered);
+
+        // While the first create is parked in its provider write, the user
+        // removes the connection and recreates it with different secrets.
+        yield* executor.connections.remove({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: { first: "c-1", second: "c-2" },
+        });
+
+        // Release the parked write: the first create fails and compensates
+        // late, against a name it no longer owns.
+        yield* Deferred.succeed(releaseSecondWrite, undefined);
+        const exit = yield* Fiber.await(fiber);
+        expect(Exit.isFailure(exit)).toBe(true);
+
+        // The replacement row AND its credentials survive.
+        const rows = yield* executor.connections.list();
+        expect(rows.length).toBe(1);
+        expect(String(rows[0]?.name)).toBe("main");
+        expect(store.get("connection:org:vercel:main:first")).toBe("c-1");
+        expect(store.get("connection:org:vercel:main:second")).toBe("c-2");
+      }),
+    ),
+  );
+
+  // A provider write can die with a defect instead of failing. The stranded-
+  // row promise must hold there too: a defect followed by a failed
+  // compensating delete surfaces the same typed StorageError naming the
+  // stranded connection, not an anonymous crash.
+  it.effect("a defect followed by a failed row delete still names the stranded connection", () =>
+    Effect.gen(function* () {
+      let failRowDelete = false;
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.die("provider crashed")
+            : Effect.sync(() => void store.set(String(id), value)),
+      });
+      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: failableConnectionDeletes(config.db, () => failRowDelete),
+      });
+      yield* executor.durable.seed();
+      failRowDelete = true;
+
+      const exit = yield* Effect.exit(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: { first: "1", second: "2" },
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) return;
+      // Not an anonymous defect: the typed error is on the failure channel.
+      expect(Cause.hasFails(exit.cause)).toBe(true);
+      const failure = Cause.squash(exit.cause);
+      const isStorageError = (u: unknown): u is StorageError =>
+        Predicate.isTagged("StorageError")(u);
+      expect(isStorageError(failure)).toBe(true);
+      if (!isStorageError(failure)) return;
+      expect(failure.message).toContain("main");
+      expect(failure.message).toContain("vercel");
+      expect(failure.message).toContain("stranded");
+      // The original defect is retained as the cause, not replaced.
+      expect(failure.cause).toBe("provider crashed");
+
+      // Non-vacuous: the row the error names is still there.
+      failRowDelete = false;
+      const rows = yield* executor.connections.list();
+      expect(rows.length).toBe(1);
+      expect(String(rows[0]?.name)).toBe("main");
+    }),
+  );
+
+  // Interruption cannot carry a typed error — interrupting wins over failing
+  // — so when an interrupted create cannot delete its row, the stranded row
+  // is reported through a loud error log and the create stays an
+  // interruption. The items that landed before the interrupt stay with the
+  // stranded row: credential teardown is gated on the row delete succeeding.
+  it.effect("an interrupted create with a failed row delete logs the stranded row", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let failRowDelete = false;
+        const secondWriteEntered = yield* Deferred.make<void>();
+        const store = new Map<string, string>();
+        const provider = trackingProvider(store, {
+          set: (id, value) =>
+            String(id).endsWith(":second")
+              ? Deferred.succeed(secondWriteEntered, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.sync(() => void store.set(String(id), value)),
+        });
+        const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: failableConnectionDeletes(config.db, () => failRowDelete),
+        });
+        yield* executor.durable.seed();
+
+        const errors: string[] = [];
+        const capture = Logger.make<unknown, void>((options) => {
+          if (options.logLevel === "Error") {
+            errors.push(Inspectable.toStringUnknown(options.message, 0));
+          }
+        });
+        const fiber = yield* Effect.forkChild(
+          executor.connections
+            .create({
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: INTEG,
+              template: TEMPLATE,
+              values: { first: "1", second: "2" },
+            })
+            .pipe(Effect.provide(Logger.layer([capture]))),
+        );
+        yield* Deferred.await(secondWriteEntered);
+        failRowDelete = true;
+        yield* Fiber.interrupt(fiber);
+        const exit = yield* Fiber.await(fiber);
+
+        // Still an interruption — and the stranded row was reported loudly.
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (!Exit.isFailure(exit)) return;
+        expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+        expect(errors.some((line) => line.includes("stranded"))).toBe(true);
+
+        // Non-vacuous: the row survived the failed delete, and the item that
+        // landed before the interrupt stayed with it.
+        failRowDelete = false;
+        const rows = yield* executor.connections.list();
+        expect(rows.length).toBe(1);
+        expect(String(rows[0]?.name)).toBe("main");
+        expect(store.size).toBe(1);
+      }),
+    ),
   );
 });
 
