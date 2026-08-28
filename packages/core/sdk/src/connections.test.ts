@@ -17,6 +17,8 @@ import {
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  Subject,
+  Tenant,
   ToolAddress,
   ToolName,
 } from "./ids";
@@ -1428,6 +1430,88 @@ describe("heal-on-use", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+});
+
+describe("health probe gate key integrity", () => {
+  // The in-flight probe gate is shared across every executor holding the same
+  // root db handle, so the key must be collision-free across tenants. A
+  // colon-join is not: tenant and subject are opaque strings that may contain
+  // colons, so (tenant "a", subject "user:b") and (tenant "a:user", subject
+  // "b") both read "a:user:user:b:<integration>:<name>" — and colliding keys
+  // share one Deferred, serving one tenant's probe outcome (run with ITS
+  // credentials) as the other tenant's health verdict.
+  it.effect("colliding colon-join identities run two distinct probes, not one shared gate", () =>
+    Effect.gen(function* () {
+      const counters = { probes: 0 };
+      const gate = yield* Deferred.make<void>();
+      // Every probe increments the shared counter and then parks on the gate,
+      // so both checks are provably in flight at once: nothing is persisted,
+      // and a collided gate would let the second check join the first probe's
+      // Deferred instead of starting its own.
+      const probingPlugin = definePlugin(() => ({
+        id: "healthgate" as const,
+        credentialProviders: [memoryProvider()],
+        storage: () => ({}),
+        resolveTools: () =>
+          Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+        invokeTool: ({ toolRow, credential }) =>
+          Effect.succeed({ ran: toolRow.name, value: credential.value }),
+        checkHealth: () =>
+          Effect.suspend(() => {
+            counters.probes += 1;
+            return Deferred.await(gate).pipe(
+              Effect.map(() => ({
+                status: "healthy" as const,
+                checkedAt: Date.now(),
+                detail: "probe ok",
+              })),
+            );
+          }),
+        extension: (ctx) => ({
+          seed: () =>
+            ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+        }),
+      }));
+
+      // Both executors share ONE root db handle — and therefore one gate map;
+      // only the key separates their probes.
+      const configA = makeTestConfig({
+        plugins: [probingPlugin()] as const,
+        tenant: "a",
+        subject: "user:b",
+      });
+      const executorA = yield* createExecutor(configA);
+      const executorB = yield* createExecutor({
+        ...configA,
+        tenant: Tenant.make("a:user"),
+        subject: Subject.make("b"),
+        plugins: [probingPlugin()] as const,
+      });
+      yield* executorA.healthgate.seed();
+      yield* executorB.healthgate.seed();
+      const ref = {
+        owner: "user",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+      } as const;
+      yield* executorA.connections.create({ ...ref, template: TEMPLATE, value: "token-a" });
+      yield* executorB.connections.create({ ...ref, template: TEMPLATE, value: "token-b" });
+
+      const checkA = yield* Effect.forkChild(executorA.connections.checkHealth(ref));
+      const checkB = yield* Effect.forkChild(executorB.connections.checkHealth(ref));
+      // Give both fibers real time to reach the probe path while the gate
+      // holds every probe open; the counter then says how many started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.probes).toBe(2);
+
+      yield* Deferred.succeed(gate, void 0);
+      const resultA = yield* Fiber.join(checkA);
+      const resultB = yield* Fiber.join(checkB);
+      expect(resultA.status).toBe("healthy");
+      expect(resultB.status).toBe("healthy");
+      expect(counters.probes).toBe(2);
     }),
   );
 });

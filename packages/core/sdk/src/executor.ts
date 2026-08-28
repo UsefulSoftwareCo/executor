@@ -931,6 +931,16 @@ const healthProbeGateFor = (rootDb: object): HealthProbeGate => {
   return created;
 };
 
+/** Gate key for one connection's in-flight probe. Structured (a JSON array),
+ *  never delimiter-joined: `tenant` and `subject` are opaque strings that may
+ *  themselves contain any delimiter, so a colon-join lets distinct identities
+ *  collide — tenant "a" + subject "user:b" reads exactly like tenant "a:user"
+ *  + subject "b" — and colliding identities would share one Deferred, serving
+ *  one tenant's probe outcome (run with ITS credentials) as another tenant's
+ *  health verdict. Same structured-key idiom as #1537's refresh gate. */
+const healthProbeGateKey = (tenant: string, row: ConnectionRow): string =>
+  JSON.stringify([tenant, row.owner, row.subject, row.integration, row.name]);
+
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
   const integration = IntegrationSlug.make(row.integration);
@@ -1759,7 +1769,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     };
     const rootDb = withQueryContext(rootDbUntyped, ownerContext);
     // Shared across executors over one database, so the gate key must carry the
-    // full partition (`tenant` + `connectionKey`), not just this closure's view.
+    // full partition (`healthProbeGateKey`: tenant + connection identity), not
+    // just this closure's view.
     const healthProbeInFlight = healthProbeGateFor(rootDbUntyped);
     const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
@@ -4031,7 +4042,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // entry; each caller awaits the shared deferred and stamps its own
         // span with the outcome.
         const outcome = yield* Effect.suspend(() => {
-          const key = `${tenant}:${connectionKey(connectionRow)}`;
+          const key = healthProbeGateKey(tenant, connectionRow);
           const existing = healthProbeInFlight.get(key);
           if (existing) return Deferred.await(existing);
           const deferred = Deferred.makeUnsafe<HealthProbeOutcome, StorageFailure>();
