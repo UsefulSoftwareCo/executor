@@ -82,6 +82,14 @@ export const OAuthAuthorizationServerMetadataSchema = Schema.Struct({
   introspection_endpoint: Schema.optional(Schema.String),
   userinfo_endpoint: Schema.optional(Schema.String),
   id_token_signing_alg_values_supported: Schema.optional(StringArray),
+  /** Whether this server implements RFC 8707 resource indicators. RFC 8707
+   *  registered no metadata parameter, so this is a de-facto field rather than
+   *  an IANA-registered one — but it is the only machine-readable signal a
+   *  server gives, and `shouldSendResourceIndicator` reads it to decide whether
+   *  `resource` goes on authorization and token requests. An absent field means
+   *  "not advertised" (RFC 8414 §2), NOT "unknown": a server that publishes
+   *  metadata and stays silent here gets no `resource`. */
+  resource_indicators_supported: Schema.optional(Schema.Boolean),
   /** draft-ietf-oauth-identity-assertion-authz-grant-04 §7.2 — the
    *  authorization grant profiles this Resource Authorization Server
    *  implements. Advertising a profile says only that the server implements
@@ -898,6 +906,10 @@ export const beginDynamicAuthorization = (
       state: input.state,
       codeChallenge,
       resource: resourceValue,
+      // The AS metadata was just discovered, so its RFC 8707 capability is
+      // known: send `resource` only if it advertises support. Entra v2 rejects
+      // `resource` alongside a v2 `scope` (AADSTS9010010).
+      authorizationServerMetadata: authServer.metadata,
       endpointUrlPolicy: options.endpointUrlPolicy,
     });
 

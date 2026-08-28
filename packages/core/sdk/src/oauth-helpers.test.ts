@@ -26,7 +26,10 @@ import {
   isUnusableSuccessTokenResponse,
   refreshAccessToken,
   shouldRefreshToken,
+  shouldSendResourceIndicator,
+  type ResourceIndicatorSupport,
 } from "./oauth-helpers";
+import type { OAuthAuthorizationServerMetadata } from "./oauth-discovery";
 import { serveTestHttpApp } from "./testing";
 
 interface TokenCall {
@@ -1420,6 +1423,233 @@ describe("refreshAccessToken", () => {
       expect(error.status).toBeUndefined();
       expect(isPermanentTokenRejection(error)).toBe(false);
     }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// RFC 8707 resource indicators — the AS capability gate (#1789)
+//
+// THE RULE under test, on every grant that can carry `resource`:
+//   no metadata            → send    (unchanged; MCP's default expectation)
+//   metadata + flag true   → send
+//   metadata + flag absent → omit    (RFC 8414 §2: not advertised)
+//   metadata + flag false  → omit
+//
+// The "metadata + flag absent" row is the bug: Microsoft Entra v2 publishes
+// metadata, does not advertise resource indicators, and rejects `resource`
+// alongside a v2 `scope` with AADSTS9010010.
+// ---------------------------------------------------------------------------
+
+const RESOURCE = "https://api.example.com/v1/mcp";
+const AS_SUPPORTED: ResourceIndicatorSupport = { resource_indicators_supported: true };
+const AS_UNSUPPORTED: ResourceIndicatorSupport = { resource_indicators_supported: false };
+/** Metadata that exists but never mentions resource indicators — the Entra
+ *  shape. Typed as the whole discovered document, not just the one flag, so
+ *  this fixture stays honest about what a real caller threads through. */
+const AS_SILENT: OAuthAuthorizationServerMetadata = {
+  issuer: "https://login.microsoftonline.com/tenant/v2.0",
+  authorization_endpoint: "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+  token_endpoint: "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+};
+
+describe("shouldSendResourceIndicator", () => {
+  it("sends when no metadata was discovered", () => {
+    expect(shouldSendResourceIndicator()).toBe(true);
+    expect(shouldSendResourceIndicator(undefined)).toBe(true);
+    expect(shouldSendResourceIndicator(null)).toBe(true);
+  });
+
+  it("sends only when the server advertises support", () => {
+    expect(shouldSendResourceIndicator(AS_SUPPORTED)).toBe(true);
+    expect(shouldSendResourceIndicator(AS_UNSUPPORTED)).toBe(false);
+    expect(shouldSendResourceIndicator(AS_SILENT)).toBe(false);
+    expect(shouldSendResourceIndicator({})).toBe(false);
+  });
+});
+
+describe("buildAuthorizationUrl resource-indicator gating", () => {
+  const baseInput = {
+    authorizationUrl: "https://example.com/authorize",
+    clientId: "client-123",
+    redirectUrl: "https://app.example.com/callback",
+    scopes: ["https://api.fabric.microsoft.com/.default"] as const,
+    state: "state-abc",
+    codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    resource: RESOURCE,
+  };
+
+  it("sends resource when no authorization-server metadata is known", () => {
+    const url = new URL(buildAuthorizationUrl(baseInput));
+    expect(url.searchParams.get("resource")).toBe(RESOURCE);
+  });
+
+  it("sends resource when the server advertises resource_indicators_supported", () => {
+    const url = new URL(
+      buildAuthorizationUrl({ ...baseInput, authorizationServerMetadata: AS_SUPPORTED }),
+    );
+    expect(url.searchParams.get("resource")).toBe(RESOURCE);
+  });
+
+  it("omits resource when the server publishes metadata without the capability", () => {
+    for (const metadata of [AS_UNSUPPORTED, AS_SILENT]) {
+      const url = new URL(
+        buildAuthorizationUrl({ ...baseInput, authorizationServerMetadata: metadata }),
+      );
+      expect(url.searchParams.has("resource")).toBe(false);
+      // The scope the AS DOES accept must survive the veto untouched.
+      expect(url.searchParams.get("scope")).toBe("https://api.fabric.microsoft.com/.default");
+    }
+  });
+});
+
+describe("exchangeAuthorizationCode resource-indicator gating", () => {
+  const exchange = (
+    tokenUrl: string,
+    authorizationServerMetadata?: ResourceIndicatorSupport | null,
+  ) =>
+    exchangeAuthorizationCode({
+      tokenUrl,
+      clientId: "cid",
+      redirectUrl: "https://app.example.com/cb",
+      codeVerifier: "verifier",
+      code: "abc",
+      resource: RESOURCE,
+      authorizationServerMetadata,
+    });
+
+  it.effect("sends resource when no authorization-server metadata is known", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  it.effect("sends resource when the server advertises support", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl, AS_SUPPORTED);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  it.effect("omits resource when the server publishes metadata without the capability", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl, AS_SILENT);
+        yield* exchange(tokenUrl, AS_UNSUPPORTED);
+        const bodies = (yield* calls).map((call) => call.body);
+        expect(bodies).toHaveLength(2);
+        for (const body of bodies) {
+          expect(body.has("resource")).toBe(false);
+          // The grant itself is untouched — only `resource` is withheld.
+          expect(body.get("grant_type")).toBe("authorization_code");
+          expect(body.get("code_verifier")).toBe("verifier");
+        }
+      }),
+    ),
+  );
+});
+
+describe("exchangeClientCredentials resource-indicator gating", () => {
+  const exchange = (
+    tokenUrl: string,
+    authorizationServerMetadata?: ResourceIndicatorSupport | null,
+  ) =>
+    exchangeClientCredentials({
+      tokenUrl,
+      clientId: "cid",
+      clientSecret: "secret",
+      scopes: ["https://api.fabric.microsoft.com/.default"],
+      resource: RESOURCE,
+      authorizationServerMetadata,
+    });
+
+  it.effect("sends resource when no authorization-server metadata is known", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  it.effect("sends resource when the server advertises support", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl, AS_SUPPORTED);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  it.effect("omits resource when the server publishes metadata without the capability", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchange(tokenUrl, AS_SILENT);
+        yield* exchange(tokenUrl, AS_UNSUPPORTED);
+        const bodies = (yield* calls).map((call) => call.body);
+        expect(bodies).toHaveLength(2);
+        for (const body of bodies) {
+          expect(body.has("resource")).toBe(false);
+          expect(body.get("grant_type")).toBe("client_credentials");
+          expect(body.get("scope")).toBe("https://api.fabric.microsoft.com/.default");
+        }
+      }),
+    ),
+  );
+});
+
+describe("refreshAccessToken resource-indicator gating", () => {
+  const refresh = (
+    tokenUrl: string,
+    authorizationServerMetadata?: ResourceIndicatorSupport | null,
+  ) =>
+    refreshAccessToken({
+      tokenUrl,
+      clientId: "cid",
+      refreshToken: "old",
+      resource: RESOURCE,
+      authorizationServerMetadata,
+    });
+
+  it.effect("sends resource when no authorization-server metadata is known", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refresh(tokenUrl);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  it.effect("sends resource when the server advertises support", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refresh(tokenUrl, AS_SUPPORTED);
+        expect((yield* calls)[0]!.body.get("resource")).toBe(RESOURCE);
+      }),
+    ),
+  );
+
+  // Refresh builds its extra params conditionally and passes `undefined` when
+  // the set is empty, so the veto must leave a well-formed refresh request
+  // rather than an empty `additionalParameters` bag.
+  it.effect("omits resource when the server publishes metadata without the capability", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refresh(tokenUrl, AS_SILENT);
+        yield* refresh(tokenUrl, AS_UNSUPPORTED);
+        const bodies = (yield* calls).map((call) => call.body);
+        expect(bodies).toHaveLength(2);
+        for (const body of bodies) {
+          expect(body.has("resource")).toBe(false);
+          expect(body.get("grant_type")).toBe("refresh_token");
+          expect(body.get("refresh_token")).toBe("old");
+        }
+      }),
+    ),
   );
 });
 
