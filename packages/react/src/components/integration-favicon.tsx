@@ -178,7 +178,6 @@ export function IntegrationFavicon({
       alt=""
       width={size}
       height={size}
-      loading="lazy"
       onError={() =>
         setFailedSrcs((current) => (current.includes(src) ? current : [...current, src]))
       }

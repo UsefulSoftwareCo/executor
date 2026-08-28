@@ -194,12 +194,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
                 onSelect={() => goToPreset(e.pluginKey, e.presetId, e.presetUrl)}
               >
                 {e.presetIcon ? (
-                  <img
-                    src={e.presetIcon}
-                    alt=""
-                    className="size-4 shrink-0 object-contain"
-                    loading="lazy"
-                  />
+                  <img src={e.presetIcon} alt="" className="size-4 shrink-0 object-contain" />
                 ) : (
                   <span aria-hidden className="size-4 shrink-0 rounded-sm bg-muted-foreground/20" />
                 )}

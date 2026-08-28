@@ -167,7 +167,12 @@ function RowIcon(props: { readonly src?: string; readonly alt: string }) {
     <img
       src={props.src}
       alt=""
-      loading="lazy"
+      width={20}
+      height={20}
+      // NOT lazy. The console scrolls inside a nested container, and Chrome's
+      // lazy loading never brings these into view there — every icon sits
+      // pending forever while an eager load of the same URL succeeds instantly.
+      // A 20px favicon is not worth deferring anyway.
       onError={() => setFailed(true)}
       className="size-5 object-contain"
     />
