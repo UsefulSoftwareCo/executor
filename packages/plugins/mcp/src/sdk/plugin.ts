@@ -90,6 +90,7 @@ const mcpLivenessFailureStatus = (failure: {
   }
   const lower = failure.message.toLowerCase();
   const authWalled =
+    lower.includes("mcp oauth re-authorization") ||
     lower.includes("oauth re-authorization") ||
     lower.includes("unauthorized") ||
     lower.includes("forbidden");
