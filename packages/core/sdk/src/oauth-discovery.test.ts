@@ -369,9 +369,6 @@ describe("beginDynamicAuthorization", () => {
             scopes_supported: ["openid", "profile", "email", "offline_access", "workspace:member"],
             response_types_supported: ["code"],
             code_challenge_methods_supported: ["S256"],
-            // An MCP-profile server implements RFC 8707, so it advertises it —
-            // that is what earns the `resource` parameter asserted below.
-            resource_indicators_supported: true,
           });
         }
         if (request.url === "/oauth/register") {
@@ -627,7 +624,6 @@ describe("beginDynamicAuthorization", () => {
               registration_endpoint: `${baseUrl}/register`,
               response_types_supported: ["code"],
               code_challenge_methods_supported: ["S256"],
-              resource_indicators_supported: true,
             });
           }
           if (request.url === "/register") {
@@ -654,61 +650,6 @@ describe("beginDynamicAuthorization", () => {
             expect(authUrl.searchParams.get("resource")).toBe(`${baseUrl}/v1/mcp`);
           }),
       ),
-  );
-
-  // #1789 — Microsoft Entra v2 publishes authorization-server metadata, does
-  // NOT advertise RFC 8707, and rejects `resource` alongside a v2 `scope` with
-  // AADSTS9010010. Metadata that stays silent on the capability means "not
-  // advertised" (RFC 8414 §2), so the resource indicator is withheld — while
-  // the protected resource itself is still discovered and kept in the state
-  // for MCP binding.
-  it.effect("omits the resource parameter when the AS metadata does not advertise RFC 8707", () =>
-    withOAuthFixture(
-      (request, baseUrl) => {
-        if (request.url === "/.well-known/oauth-protected-resource/v1/mcp/core") {
-          return sendJson({
-            resource: baseUrl,
-            authorization_servers: [baseUrl],
-            scopes_supported: [`${baseUrl}/.default`],
-          });
-        }
-        if (request.url === "/.well-known/oauth-authorization-server") {
-          return sendJson({
-            issuer: baseUrl,
-            authorization_endpoint: `${baseUrl}/oauth2/v2.0/authorize`,
-            token_endpoint: `${baseUrl}/oauth2/v2.0/token`,
-            registration_endpoint: `${baseUrl}/register`,
-            response_types_supported: ["code"],
-            code_challenge_methods_supported: ["S256"],
-          });
-        }
-        if (request.url === "/register") {
-          return sendJson(
-            {
-              client_id: "entra-client",
-              redirect_uris: ["https://app/cb"],
-              token_endpoint_auth_method: "none",
-            },
-            201,
-          );
-        }
-        return notFound();
-      },
-      ({ baseUrl }) =>
-        Effect.gen(function* () {
-          const result = yield* beginDynamicAuthorization({
-            endpoint: `${baseUrl}/v1/mcp/core`,
-            redirectUrl: "https://app/cb",
-            state: "s",
-          });
-
-          const authUrl = new URL(result.authorizationUrl);
-          expect(authUrl.searchParams.has("resource")).toBe(false);
-          expect(authUrl.searchParams.get("scope")).toBe(`${baseUrl}/.default`);
-          // Withheld from the wire, still retained for MCP discovery/binding.
-          expect(result.state.resource).toBe(baseUrl);
-        }),
-    ),
   );
 
   it.effect("includes client_uri in the DCR body", () =>

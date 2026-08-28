@@ -167,10 +167,15 @@ const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAu
  *  integration declares the scopes to request (`scopes`, possibly empty — an
  *  empty set requests no scopes), or it declares none and the request scopes
  *  are discovered from the server's metadata at connect (`discover`, used by
- *  MCP). The two are mutually exclusive by construction. */
+ *  MCP). The two are mutually exclusive by construction.
+ *
+ *  `discover` carries the integration's own discovery URL (the MCP endpoint)
+ *  so scope discovery does not depend on the CLIENT having a persisted RFC
+ *  8707 resource: a user may clear the client's resource (Entra v2 rejects
+ *  the parameter, #1789) without losing scope discovery. */
 export type OAuthScopePolicy =
   | { readonly kind: "scopes"; readonly scopes: readonly string[] }
-  | { readonly kind: "discover" };
+  | { readonly kind: "discover"; readonly discoveryUrl: string };
 
 /** Everything the OAuth service needs from the executor: fuma access for the
  *  owned `oauth_client` / `oauth_session` tables, the default credential
@@ -205,10 +210,12 @@ export interface OAuthServiceDeps {
    *    DECLARES (e.g. an OpenAPI bundle's authentication-template scope union),
    *    NOT the scopes frozen on a specific `oauth_client` row. These are
    *    requested verbatim at connect (`start`); an empty set requests none.
-   *  - `{ kind: "discover" }`: the integration declares no scopes, so `start`
-   *    discovers the request scopes from the server's RFC 9728 / RFC 8414
-   *    metadata. Used by server-targeting integrations (MCP) whose scopes live
-   *    on the server rather than in a template.
+   *  - `{ kind: "discover", discoveryUrl }`: the integration declares no
+   *    scopes, so `start` discovers the request scopes from the server's RFC
+   *    9728 / RFC 8414 metadata. Used by server-targeting integrations (MCP)
+   *    whose scopes live on the server rather than in a template.
+   *    `discoveryUrl` is the integration's protected-resource URL (the MCP
+   *    endpoint), used when the client persists no resource.
    */
   readonly resolveOAuthScopePolicy: (
     integration: IntegrationSlug,
@@ -1453,7 +1460,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const requestedScopes =
         scopePolicy.kind === "discover"
           ? yield* (() => {
-              const discovered = discoverScopesForResource(client.resource).pipe(
+              // Scope discovery reads protected-resource metadata. The client's
+              // persisted resource is the historical source and stays primary,
+              // but it is a WIRE parameter the user may clear (Entra v2 rejects
+              // `resource`, #1789) — the integration's own discovery URL then
+              // keeps scope discovery working for a resource-less client.
+              const discovered = discoverScopesForResource(
+                client.resource ?? scopePolicy.discoveryUrl,
+              ).pipe(
                 Effect.mapError(
                   (cause) =>
                     new OAuthStartError({

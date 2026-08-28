@@ -182,57 +182,6 @@ export const createPkceCodeChallenge = (verifier: string): Promise<string> =>
 export const createOAuthState = (): string => oauth.generateRandomState();
 
 // ---------------------------------------------------------------------------
-// RFC 8707 resource indicators — when `resource` may be sent
-// ---------------------------------------------------------------------------
-
-/** The authorization server's discovered RFC 8414 metadata, narrowed to the one
- *  field the resource-indicator decision reads.
- *
- *  `resource_indicators_supported` is NOT in the IANA "OAuth Authorization
- *  Server Metadata" registry — RFC 8707 registered no discovery parameter at
- *  all. It is the de-facto flag servers that do implement resource indicators
- *  advertise, so it is the only machine-readable signal available. */
-export type ResourceIndicatorSupport = {
-  readonly resource_indicators_supported?: boolean;
-};
-
-/** Whether the RFC 8707 `resource` parameter may be sent to this authorization
- *  server. THE RULE, in full:
- *
- *  - No metadata was discovered (`undefined` / `null`) → SEND. Nothing is known
- *    about the server, and MCP Authorization 2025-06-18 tells clients to send
- *    resource indicators. This is the unchanged, pre-existing behavior and it
- *    covers every manually configured provider.
- *  - Metadata was discovered and `resource_indicators_supported` is `true`
- *    → SEND. The server says it implements RFC 8707.
- *  - Metadata was discovered and the flag is absent or `false` → OMIT. Per
- *    RFC 8414 §2 an omitted metadata field means the capability is not
- *    advertised, and RFC 8707 §2 makes `resource` OPTIONAL for clients, so
- *    omitting it is conformant. Sending it anyway is what breaks Microsoft
- *    Entra v2, which rejects `resource` alongside a v2 `scope` with
- *    AADSTS9010010.
- *
- *  Deliberately NOT a per-provider special case: the decision reads only what
- *  the server advertises about itself. */
-export const shouldSendResourceIndicator = (
-  authorizationServerMetadata?: ResourceIndicatorSupport | null,
-): boolean =>
-  authorizationServerMetadata == null
-    ? true
-    : authorizationServerMetadata.resource_indicators_supported === true;
-
-/** The `resource` value to actually put on the wire — `undefined` when the
- *  caller has none, or when the authorization server does not advertise
- *  RFC 8707 support. */
-const resourceParamFor = (input: {
-  readonly resource?: string | null;
-  readonly authorizationServerMetadata?: ResourceIndicatorSupport | null;
-}): string | undefined =>
-  input.resource && shouldSendResourceIndicator(input.authorizationServerMetadata)
-    ? input.resource
-    : undefined;
-
-// ---------------------------------------------------------------------------
 // Authorization URL builder
 // ---------------------------------------------------------------------------
 
@@ -247,12 +196,9 @@ export type BuildAuthorizationUrlInput = {
   /** Separator between scopes. RFC 6749 says space; some providers use comma. */
   readonly scopeSeparator?: string;
   /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 §"Resource
-   *  Parameter Implementation" asks clients to send this on every authorization
-   *  request; `authorizationServerMetadata` can veto it. */
+   *  Parameter Implementation" requires clients to send this on every
+   *  authorization request, regardless of AS support. */
   readonly resource?: string;
-  /** The authorization server's discovered metadata. Gates `resource` — see
-   *  `shouldSendResourceIndicator`. Omit when nothing was discovered. */
-  readonly authorizationServerMetadata?: ResourceIndicatorSupport | null;
   /** Provider-specific extras (e.g. Google's `access_type=offline`). */
   readonly extraParams?: Readonly<Record<string, string>>;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
@@ -281,9 +227,8 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
   url.searchParams.set("state", input.state);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("code_challenge", input.codeChallenge);
-  const resource = resourceParamFor(input);
-  if (resource) {
-    url.searchParams.set("resource", resource);
+  if (input.resource) {
+    url.searchParams.set("resource", input.resource);
   }
   if (input.extraParams) {
     for (const [k, v] of Object.entries(input.extraParams)) {
@@ -1125,13 +1070,10 @@ export type ExchangeAuthorizationCodeInput = {
   readonly code: string;
   readonly clientAuth?: ClientAuthMethod;
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
-  /** RFC 8707 Resource Indicator. The MCP Auth spec asks for this on the token
-   *  request when the client knows the resource it intends to call;
-   *  `authorizationServerMetadata` can veto it. */
+  /** RFC 8707 Resource Indicator. MCP Auth spec MUST-requires this on
+   *  the token request when the client knows the resource it intends
+   *  to call. */
   readonly resource?: string;
-  /** The authorization server's discovered metadata. Gates `resource` — see
-   *  `shouldSendResourceIndicator`. Omit when nothing was discovered. */
-  readonly authorizationServerMetadata?: ResourceIndicatorSupport | null;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1161,9 +1103,8 @@ export const exchangeAuthorizationCode = (
         redirect_uri: input.redirectUrl,
         code_verifier: input.codeVerifier,
       });
-      const resource = resourceParamFor(input);
-      if (resource) {
-        params.set("resource", resource);
+      if (input.resource) {
+        params.set("resource", input.resource);
       }
       const response = await oauth.genericTokenEndpointRequest(
         as,
@@ -1187,7 +1128,7 @@ export const exchangeAuthorizationCode = (
       grantType: "authorization_code",
       tokenUrl: input.tokenUrl,
       clientAuth: input.clientAuth,
-      hasResource: resourceParamFor(input) !== undefined,
+      hasResource: input.resource !== undefined,
     }),
   );
 
@@ -1202,13 +1143,9 @@ export type ExchangeClientCredentialsInput = {
   readonly scopes?: readonly string[];
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
-  /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 asks for this on
-   *  token requests when the client knows the protected resource;
-   *  `authorizationServerMetadata` can veto it. */
+  /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 requires this
+   *  on token requests when the client knows the protected resource. */
   readonly resource?: string;
-  /** The authorization server's discovered metadata. Gates `resource` — see
-   *  `shouldSendResourceIndicator`. Omit when nothing was discovered. */
-  readonly authorizationServerMetadata?: ResourceIndicatorSupport | null;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1229,9 +1166,8 @@ export const exchangeClientCredentials = (
       if (input.scopes && input.scopes.length > 0) {
         params.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
       }
-      const resource = resourceParamFor(input);
-      if (resource) {
-        params.set("resource", resource);
+      if (input.resource) {
+        params.set("resource", input.resource);
       }
       const response = await oauth.clientCredentialsGrantRequest(
         as,
@@ -1255,7 +1191,7 @@ export const exchangeClientCredentials = (
       grantType: "client_credentials",
       tokenUrl: input.tokenUrl,
       clientAuth: input.clientAuth,
-      hasResource: resourceParamFor(input) !== undefined,
+      hasResource: input.resource !== undefined,
     }),
   );
 
@@ -1273,13 +1209,10 @@ export type RefreshAccessTokenInput = {
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
-  /** RFC 8707 Resource Indicator — the MCP spec asks for this on refresh
-   *  requests so the new access token's audience stays bound to the same
-   *  resource; `authorizationServerMetadata` can veto it. */
+  /** RFC 8707 Resource Indicator — MCP spec MUST-requires this on
+   *  refresh requests so the new access token's audience is bound to
+   *  the same resource. */
   readonly resource?: string;
-  /** The authorization server's discovered metadata. Gates `resource` — see
-   *  `shouldSendResourceIndicator`. Omit when nothing was discovered. */
-  readonly authorizationServerMetadata?: ResourceIndicatorSupport | null;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1303,9 +1236,8 @@ export const refreshAccessToken = (
       if (input.scopes && input.scopes.length > 0) {
         extraParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
       }
-      const resource = resourceParamFor(input);
-      if (resource) {
-        extraParams.set("resource", resource);
+      if (input.resource) {
+        extraParams.set("resource", input.resource);
       }
       const additionalParameters =
         Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
@@ -1338,7 +1270,7 @@ export const refreshAccessToken = (
       grantType: "refresh_token",
       tokenUrl: input.tokenUrl,
       clientAuth: input.clientAuth,
-      hasResource: resourceParamFor(input) !== undefined,
+      hasResource: input.resource !== undefined,
     }),
   );
 

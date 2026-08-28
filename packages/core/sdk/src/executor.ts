@@ -2262,7 +2262,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               clientSecret: firstParty.clientSecret,
               tokenUrl: firstParty.tokenUrl,
               grant: "authorization_code",
-              resource: null,
+              // RFC 8707: the SAME resource the authorize/exchange path sent
+              // (`loadedFirstPartyClient`), so the refreshed token keeps the
+              // audience the original grant was bound to. Dropping it here
+              // made refresh asymmetric with authorize for first-party apps.
+              resource: firstParty.resource ?? null,
             } satisfies RefreshClient;
           }
           const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
@@ -5202,8 +5206,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             const oauth = selected?.kind === "oauth" ? selected.oauth : undefined;
             // Declared scopes win. Discover only when the selected method
             // declares none but names a source to discover them from (MCP).
+            // The discovery URL rides along so `oauth.start` can discover
+            // scopes even for a client whose RFC 8707 resource was cleared.
             if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
-              return { kind: "discover" };
+              return { kind: "discover", discoveryUrl: oauth.discoveryUrl };
             }
             return { kind: "scopes", scopes: oauth?.scopes ?? [] };
           }),
