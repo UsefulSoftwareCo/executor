@@ -388,19 +388,111 @@ export const projectResponseFields = (
   return fields;
 };
 
+/** Placeholder shown instead of a leaf whose key names it as secret-bearing. */
+export const REDACTED_SAMPLE_VALUE = "[redacted]";
+
+/**
+ * Leaf keys whose value is a credential rather than something worth previewing.
+ *
+ * The sample exists so a user can pick their identity field, and the keys that
+ * serve that (`email`, `login`, `username`, `name`, `id`) do not collide with
+ * any of these — so this can afford to be blunt.
+ *
+ * This catches the secrets we do NOT already know. Scrubbing the connection's
+ * own credential value out of the sample only helps when the body echoes the
+ * key we authenticated with; a health check pointed at a key-listing endpoint
+ * returns different secrets entirely, and no scrub of a known value can see
+ * those.
+ */
+/* The optional trailing `s` matters because of the array case below: a key that
+ * holds a COLLECTION of secrets is named in the plural (`tokens`, `api_keys`,
+ * `credentials`), and those are exactly the key-listing responses this guards.
+ * It stays inside the same letter boundary, so `author` is still not `auth`. */
+const SECRET_KEY_PATTERN =
+  /(^|[^a-z])(secret|token|password|passwd|apikey|api_key|credential|authorization|auth|session|cookie|private|signature|bearer|refresh)s?([^a-z]|$)/i;
+
+/** camelCase hides the separator the pattern looks for: `accessToken` has no
+ *  non-letter before `Token`, so `accessToken`, `refreshToken`, `clientSecret`,
+ *  `privateKey` and `sessionId` all read as innocent. Splitting on a
+ *  lowercase→uppercase transition exposes that boundary. */
+const splitCamelCase = (key: string): string => key.replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2");
+
+/** True when a single key names a credential.
+ *
+ *  BOTH spellings are tested, not just the split one: `apiKey` matches only as
+ *  the contiguous word `apikey`, which splitting would destroy. Testing both
+ *  only widens the net where a case boundary exists, so `author` and
+ *  `authorName` — which have no boundary in the wrong place — stay visible. */
+const keyNamesASecret = (key: string): boolean =>
+  SECRET_KEY_PATTERN.test(key) || SECRET_KEY_PATTERN.test(splitCamelCase(key));
+
+const isIndexSegment = (segment: string): boolean => /^\d+$/.test(segment);
+
+/** True when a dotted path names a credential, under either of two readings.
+ *
+ *  THE NEAREST NAMED SEGMENT. The walker names array elements by index, so a
+ *  bare array of secrets — `{"tokens": ["sk-live-…"]}` — produces the path
+ *  `tokens.0`, whose literal last segment is `"0"` and matches nothing. Numeric
+ *  segments are skipped so the check lands on the key that named the
+ *  collection, which is the only place the secret is described. `keys.0.token`
+ *  is unaffected: its last segment already names the leaf.
+ *
+ *  AN ENCLOSING ARRAY CONTAINER. A key-listing endpoint returns
+ *  `{"api_keys": [{"value": "sk-live-…"}]}`, whose path is `api_keys.0.value`.
+ *  The nearest named segment is the innocent `value`, so the first reading
+ *  alone hands the secret to the database. A segment that DIRECTLY contains an
+ *  array — one immediately followed by an index — and names a credential
+ *  therefore covers everything under it.
+ *
+ *  That second reading also blanks a sibling like `api_keys.0.name`. This is
+ *  the right trade: a name inside a key list is never the connection's own
+ *  identity (`candidateIdentityTier` already refuses indexed paths), and the
+ *  alternative is a persisted secret. `names.0` is untouched, because its
+ *  container names nothing. */
+export const pathNamesASecret = (path: string): boolean => {
+  const segments = path.split(".");
+  const named = segments.filter((segment) => !isIndexSegment(segment));
+  const leaf = named[named.length - 1] ?? "";
+  if (keyNamesASecret(leaf)) return true;
+  return segments.some(
+    (segment, index) =>
+      !isIndexSegment(segment) &&
+      isIndexSegment(segments[index + 1] ?? "") &&
+      keyNamesASecret(segment),
+  );
+};
+
 /**
  * Walk an actual JSON response body and return its scalar leaves as
  * `{ path, value }` rows (value stringified + truncated). Drives the live
  * preview's "show me what this returns" list. Bounded to depth 4, 25 fields,
  * and ~120-char values.
+ *
+ * Leaves whose key names a credential are kept but their value is replaced,
+ * so the preview still shows the field exists without persisting its value —
+ * this result is written to `connection.last_health`.
+ *
+ * `scrub` removes credential values the caller already knows (the secret the
+ * connection authenticated with, which a body can echo back under an
+ * innocent-looking key). It runs INSIDE the walk, before truncation, because
+ * the two orders are not equivalent: a credential longer than the value cap
+ * would otherwise be cut to a 120-char prefix that an exact-substring scrub can
+ * no longer recognise, and that prefix is what gets persisted.
  */
-export const extractResponseFields = (data: unknown): HealthCheckResponseSample[] => {
+export const extractResponseFields = (
+  data: unknown,
+  options?: { readonly scrub?: (value: string) => string },
+): HealthCheckResponseSample[] => {
   const out: HealthCheckResponseSample[] = [];
   const MAX_DEPTH = 4;
   const MAX_FIELDS = 25;
   const MAX_VALUE = 120;
+  const scrub = options?.scrub;
 
-  const render = (v: string): string => (v.length > MAX_VALUE ? `${v.slice(0, MAX_VALUE)}...` : v);
+  const render = (raw: string): string => {
+    const v = scrub === undefined ? raw : scrub(raw);
+    return v.length > MAX_VALUE ? `${v.slice(0, MAX_VALUE)}...` : v;
+  };
 
   const visit = (node: unknown, path: string, depth: number) => {
     if (out.length >= MAX_FIELDS || node == null) return;
@@ -427,7 +519,10 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
       path !== "" &&
       (typeof node === "string" || typeof node === "number" || typeof node === "boolean")
     ) {
-      out.push({ path, value: render(String(node)) });
+      out.push({
+        path,
+        value: pathNamesASecret(path) ? REDACTED_SAMPLE_VALUE : render(String(node)),
+      });
     }
   };
 

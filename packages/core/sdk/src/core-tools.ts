@@ -88,10 +88,10 @@ const ConnectionsListInput = Schema.Struct({
   verbose: Schema.optional(Schema.Boolean),
 });
 
-/** Lean per-connection shape for list scans. Omits the full `oauthScope`
- *  grant string (a single connection's scope list can run to thousands of
- *  characters and dominates the payload) in favor of `oauthScopeCount`. The
- *  full scope is included only when the caller passes `verbose: true`. */
+/** Lean per-connection shape for list scans. The default projection summarizes
+ *  the full `oauthScope` grant string as `oauthScopeCount` and trims health
+ *  probe diagnostics. Those optional fields are populated only for `verbose:
+ *  true`. */
 const ConnectionListItem = Schema.Struct({
   owner: OwnerSchema,
   name: Schema.String,
@@ -389,8 +389,8 @@ const connectionToOutput = (connection: Connection) => ({
 const oauthScopeCount = (scope: string | null | undefined): number | null =>
   scope == null ? null : scope.split(/\s+/).filter(Boolean).length;
 
-/** Lean projection for `connections.list`. Summarizes `oauthScope` to a count
- *  unless `verbose`, where the full grant string is included too. */
+/** Lean projection for `connections.list`. Summarizes `oauthScope` and health
+ * diagnostics unless `verbose`, where the full grant string is included too. */
 const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   owner: connection.owner,
   name: String(connection.name),
@@ -404,7 +404,17 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
-  lastHealth: connection.lastHealth ?? null,
+  // Keep full probe diagnostics behind the explicit verbose opt-in.
+  lastHealth:
+    connection.lastHealth == null || verbose
+      ? (connection.lastHealth ?? null)
+      : {
+          status: connection.lastHealth.status,
+          ...(connection.lastHealth.identity !== undefined
+            ? { identity: connection.lastHealth.identity }
+            : {}),
+          checkedAt: connection.lastHealth.checkedAt,
+        },
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 

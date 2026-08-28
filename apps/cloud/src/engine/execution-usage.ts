@@ -25,4 +25,7 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
   pausedExecutionCount: () => engine.pausedExecutionCount(),
   hasPausedExecutions: () => engine.hasPausedExecutions(),
   getDescription: engine.getDescription,
+  // Forwarded, not re-implemented: the wrapped engine owns the sandbox fibers,
+  // so the host's request-scope teardown has to reach through this decorator.
+  shutdown: engine.shutdown,
 });

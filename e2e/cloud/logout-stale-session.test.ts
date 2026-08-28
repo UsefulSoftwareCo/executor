@@ -19,6 +19,7 @@ import type { Page } from "playwright";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { settle } from "../src/surfaces/browser";
 
 /** The display-only identity cookie the SSR gate mints (non-HttpOnly). */
 const HINT_COOKIE = "executor-auth-hint";
@@ -145,7 +146,7 @@ scenario(
         await page.waitForURL((url) => url.toString() !== before, {
           timeout: 15_000,
         });
-        await page.waitForLoadState("networkidle");
+        await settle(page);
       });
 
       const shown = (await page.locator("body").innerText()).trim();

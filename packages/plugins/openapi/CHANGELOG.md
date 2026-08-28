@@ -1,5 +1,47 @@
 # @executor-js/plugin-openapi
 
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/config@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/react@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1755](https://github.com/UsefulSoftwareCo/executor/pull/1755) [`7c12aee`](https://github.com/UsefulSoftwareCo/executor/commit/7c12aeea390225291ce4c97865b392237ee7934d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Make Microsoft Graph slice URLs first-class spec sources instead of a hidden substitution. Catalog tiles now point directly at the slice release assets, the stored specUrl is exactly what gets fetched, and selection narrowing travels visibly in the URL fragment; requesting the upstream monolith URL fetches the monolith, never a silently swapped slice.
+
+- [#1753](https://github.com/UsefulSoftwareCo/executor/pull/1753) [`ddbf0fe`](https://github.com/UsefulSoftwareCo/executor/commit/ddbf0feba38c8502d78fa20c3081391b8ba3d112) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Serve Microsoft Graph preset selections from precomputed slice release assets instead of the 43MB upstream monolith. The monolith fetch almost never survives a 128MB Workers isolate (production traces show one completion in 30 days), so covered selections — every catalog preset, plus any combination within the default bundle — now read a 4–19MB filtered document built offline by the graph-slices workflow, with the monolith path kept only as a fallback and for full-graph/custom-scope selections.
+
+- [#1751](https://github.com/UsefulSoftwareCo/executor/pull/1751) [`0007474`](https://github.com/UsefulSoftwareCo/executor/commit/0007474602d8da3642648f216bfdb0f09eb0914f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Preview OpenAPI spec-format selections (Microsoft Graph) through the streaming structural-split path instead of a whole-document parse, and guard generic whole-document parses by parsed-tree size (line count for block YAML, text size for JSON). Previewing a Graph preset URL previously parsed the 43MB source whole and killed the 128MB Workers isolate mid-request, surfacing as an empty 503; it now streams within budget, and oversized generic specs fail with an actionable error instead of taking down the isolate.
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/config@1.6.1
+
+## 1.6.0
+
+### Patch Changes
+
+- [#1660](https://github.com/UsefulSoftwareCo/executor/pull/1660) [`c11bef2`](https://github.com/UsefulSoftwareCo/executor/commit/c11bef2cd049db7bbf51b15e18761b14acccb534) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Cloudflare ships as MCP-only, with code mode opted out**
+
+  The Cloudflare OpenAPI preset is gone from the default catalog; the MCP preset is the one Cloudflare entry. Its endpoint now pins `?codemode=false` because Cloudflare's MCP server otherwise hides the tool catalog behind a single code-execution tool, and executor already provides the code-execution surface. Hand-entered `mcp.cloudflare.com` URLs missing the opt-out get an inline warning in the add flow telling the user to append `?codemode=false`.
+
+- [#1669](https://github.com/UsefulSoftwareCo/executor/pull/1669) [`46cea2c`](https://github.com/UsefulSoftwareCo/executor/commit/46cea2cbb1f414ae58ac876819a51b11967909a6) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Request Gmail's basic-settings scope alongside full mailbox access so Google integrations can create and manage Gmail filters without including domain-admin-only sharing settings.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+  - @executor-js/config@1.6.0
+
 ## 1.5.42
 
 ### Patch Changes

@@ -12,7 +12,10 @@
 //             cold isolate before any request is served.
 //   start   - the TanStack Start server graph, reached through the lazy
 //             `loadEntries` dynamic imports. Evaluated on the first request
-//             that enters the app.
+//             that enters the app - i.e. a page request.
+//   app     - the Effect app plane. `/api/*` dispatches at the Worker entry and
+//             skips Start entirely, so an API request evaluates this instead of
+//             `start`; reported separately because the two planes now diverge.
 //
 // Anything reachable only through a dynamic import is not counted: making a
 // heavy dependency lazy is exactly the outcome this rewards.
@@ -81,6 +84,9 @@ const startRoots = [...graph.get(ENTRY).dynamic].filter((f) =>
   /(start|router|tanstack)/.test(name(f)),
 );
 const start = closure(startRoots);
+const appRoots = [...graph.get(ENTRY).dynamic].filter((f) => /\/app-[A-Za-z0-9_-]+\.js$/.test(f));
+const app = closure([ENTRY, ...appRoots]);
+// The budget tracks the worst plane: whichever costs a cold isolate more.
 const evaluated = new Set([...startup, ...start]);
 
 const report = (label, files) => {
@@ -93,7 +99,10 @@ const report = (label, files) => {
 
 report("startup", startup);
 report("start", start);
-console.log(`\ntotal evaluated on a warm-path request: ${mb(bytes(evaluated))}`);
+console.log(`\npage request  (startup + start): ${mb(bytes(evaluated))}`);
+console.log(
+  `API request   (startup + app):   ${mb(bytes(app))}${appRoots.length ? "" : "  [no app chunk - /api still routes through Start]"}`,
+);
 const lazyOnly = [...graph.keys()].filter((f) => !evaluated.has(f));
 console.log(
   `deferred behind dynamic import:        ${mb(bytes(lazyOnly))}  (${lazyOnly.length} chunks)`,

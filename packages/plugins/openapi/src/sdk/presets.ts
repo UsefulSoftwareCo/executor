@@ -81,7 +81,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "GitHub REST",
     summary: "Repos, issues, pull requests, actions, and users.",
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-    icon: "https://svgl.app/library/github_dark.svg",
+    icon: "https://integrations.sh/logo/github.com",
     featured: true,
     authTemplate: [GITHUB_OAUTH_TEMPLATE],
   },
@@ -91,14 +91,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     summary: "Deployments, domains, projects, and edge config.",
     url: "https://openapi.vercel.sh",
     icon: "https://integrations.sh/logo/vercel.com",
-    featured: true,
-  },
-  {
-    id: "cloudflare",
-    name: "Cloudflare",
-    summary: "DNS, workers, pages, R2, and security rules.",
-    url: "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
-    icon: "https://integrations.sh/logo/cloudflare.com",
     featured: true,
   },
   {
@@ -114,7 +106,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     name: "OpenAI",
     summary: "Models, files, responses, and fine-tuning.",
     url: "https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml",
-    icon: "https://svgl.app/library/openai_dark.svg",
+    icon: "https://integrations.sh/logo/openai.com",
     featured: true,
   },
   {

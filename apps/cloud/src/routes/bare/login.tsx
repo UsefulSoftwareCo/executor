@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { safeReturnTo } from "../../auth/return-to";
 import { LoginPage } from "../../web/pages/login";
 
-// The signed-out landing page. The SSR auth gate (auth/ssr-gate.ts) sends
+// The signed-out landing page. The document auth gate (auth/doc-gate.ts) sends
 // signed-out document requests here with ?returnTo=<the path they wanted>,
 // and bounces already-signed-in visitors straight back to it.
 export const Route = createFileRoute("/login")({

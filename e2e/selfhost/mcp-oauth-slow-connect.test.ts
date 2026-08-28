@@ -35,6 +35,7 @@ import { OAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
@@ -68,7 +69,7 @@ scenario(
           await step("Add an OAuth-protected MCP integration", async () => {
             const addUrl = new URL("/integrations/add/mcp", target.baseUrl);
             addUrl.searchParams.set("url", server.endpoint);
-            await page.goto(addUrl.toString(), { waitUntil: "networkidle" });
+            await visit(page, addUrl.toString());
             await page.getByText("How does this server authenticate?").waitFor({ timeout: 30_000 });
             await page.getByPlaceholder("e.g. Linear").fill(displayName);
             await page.getByRole("button", { name: "Add integration" }).click();

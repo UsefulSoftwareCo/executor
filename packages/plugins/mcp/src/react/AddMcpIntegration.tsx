@@ -16,6 +16,7 @@ import {
   CardStackEntryField,
 } from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
+import { Info, InfoDescription, InfoTitle } from "@executor-js/react/components/info";
 import { Input } from "@executor-js/react/components/input";
 import { TagInput } from "@executor-js/react/components/tag-input";
 import {
@@ -38,6 +39,7 @@ import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
 import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
+import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
 // The remote add flow REGISTERS the server's declared auth methods through the
@@ -429,6 +431,20 @@ export default function AddMcpIntegration(props: {
             error={probeError}
             onRetry={handleProbe}
           />
+
+          {/* Cloudflare's MCP server defaults to code mode, which collapses the
+              catalog into one code-execution tool; executor already provides
+              code execution, so nudge the user toward the opt-out. */}
+          {cloudflareNeedsCodemodeOptOut(state.url) && (
+            <Info variant="warning">
+              <InfoTitle>Cloudflare code mode is on</InfoTitle>
+              <InfoDescription>
+                By default Cloudflare&apos;s MCP server hides its tools behind a single
+                code-execution tool. Add <code className="font-mono">?codemode=false</code> to the
+                URL to get the full tool catalog.
+              </InfoDescription>
+            </Info>
+          )}
 
           {/* Authentication — declares the auth methods to register through the
               shared list editor. The credentials themselves (API key value /

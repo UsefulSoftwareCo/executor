@@ -18,6 +18,7 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -63,7 +64,7 @@ scenario(
 
           yield* browser.session(identity, async ({ page, step }) => {
             await step("Open the connect modal", async () => {
-              await page.goto(`/integrations/${slug}?addAccount=1`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}?addAccount=1`);
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
 

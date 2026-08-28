@@ -259,6 +259,57 @@ describe("dev-db PGlite socket under concurrent connections", () => {
     },
   );
 
+  // Regression for the reap SLOT LEAK: detach(true) removes the socket's
+  // listeners before destroying it, so a server-initiated teardown (the idle
+  // backstop) never fired the server's 'close' bookkeeping — the reaped
+  // handler stayed in the server's handlers set forever, burning one
+  // maxConnections slot per reap. Enough reaps over a long run and the server
+  // answers every NEW connection with "Too many connections" while the
+  // process, the port, and PGlite are all healthy — postgres.js surfaces that
+  // as the same CONNECT_TIMEOUT cascade as the queue wedges. The server now
+  // drops the handler when it dispatches its terminal error.
+  it("reaped handlers release their connection slots", { timeout: 30_000 }, async () => {
+    const port = 45993;
+    const db = await PGlite.create();
+    const server = new PGLiteSocketServer({
+      db,
+      port,
+      host: "127.0.0.1",
+      maxConnections: 2,
+      idleTimeout: 250,
+    });
+    await server.start();
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
+    try {
+      // Burn through more reaps than there are slots: each staller opens a
+      // pipeline and goes silent, so the idle backstop reaps it (the server
+      // destroys the socket — its 'close' marks that reap complete).
+      for (let i = 0; i < 3; i++) {
+        const staller = await openWireClient(port);
+        staller.write(parseFrame(`select ${i + 1}`));
+        await new Promise<void>((res) => staller.once("close", res));
+      }
+
+      expect(
+        server.getStats().activeConnections,
+        "reaped handlers stay counted against maxConnections",
+      ).toBe(0);
+
+      const sql = makeClient(port);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
+      try {
+        expect((await sql.unsafe(`select 6 as six`))[0]).toEqual({ six: 6 });
+      } finally {
+        // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
+        await sql.end({ timeout: 5 }).catch(() => {});
+      }
+    } finally {
+      await server.stop();
+      await db.close();
+    }
+  });
+
   // Regression for the second wedge mode behind the same CI cascade: a client
   // whose socket dies WHILE its pipeline-opening entry is executing. detach()
   // clears pipeline affinity before the entry finishes, so the queue then

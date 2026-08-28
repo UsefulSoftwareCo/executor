@@ -27,6 +27,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { clickToReveal, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -161,10 +162,16 @@ scenario(
         const internalError = JSON.stringify({ _tag: "InternalError", traceId: "policy-write" });
 
         await step("Open the integration's Tools tab", async () => {
-          await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
-          await page.getByRole("tab", { name: "Tools" }).click();
-          await sectionFor(alpha).waitFor();
-          await sectionFor(beta).waitFor();
+          await visit(page, `/integrations/${integration}`);
+          // The org-scoped redirect can replace the document between the tab
+          // becoming visible and React receiving the click. Reveal a node that
+          // exists only in the Tools panel so the Accounts panel's connection
+          // sections cannot satisfy the readiness check.
+          await clickToReveal(
+            page.getByRole("tab", { name: "Tools" }),
+            closedGroup(alpha, integration),
+          );
+          await closedGroup(beta, integration).waitFor();
         });
 
         await step("Expand the records category in the first account", async () => {
@@ -288,7 +295,7 @@ scenario(
         });
 
         await step("Both rules are manageable rows on the Policies page", async () => {
-          await page.goto("/policies", { waitUntil: "networkidle" });
+          await visit(page, "/policies");
           await page.getByText(leafPattern, { exact: true }).waitFor();
           await page.getByText(categoryPattern, { exact: true }).waitFor();
         });

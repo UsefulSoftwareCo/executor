@@ -24,6 +24,10 @@ export interface SelfhostBootOptions {
   /** Shrink the sandbox execution budget (EXECUTOR_SANDBOX_TIMEOUT_MS) so
    *  deadline scenarios prove their race in seconds. Omit for production. */
   readonly sandboxTimeoutMs?: number;
+  /** Shrink the MCP session idle window (EXECUTOR_MCP_SESSION_IDLE_TTL_MS) so
+   *  the eviction scenario proves in seconds what otherwise takes 30 minutes.
+   *  Omit for production; the app then uses the store's own default. */
+  readonly mcpSessionIdleTtlMs?: number;
 }
 
 export const bootSelfhost = async (options: SelfhostBootOptions): Promise<BootedProcesses> => {
@@ -56,6 +60,9 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
           EXECUTOR_ALLOW_LOCAL_NETWORK: "true",
           ...(options.sandboxTimeoutMs !== undefined
             ? { EXECUTOR_SANDBOX_TIMEOUT_MS: String(options.sandboxTimeoutMs) }
+            : {}),
+          ...(options.mcpSessionIdleTtlMs !== undefined
+            ? { EXECUTOR_MCP_SESSION_IDLE_TTL_MS: String(options.mcpSessionIdleTtlMs) }
             : {}),
         },
         logFile: options.logFile,

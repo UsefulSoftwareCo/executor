@@ -15,7 +15,7 @@ export const graphqlPresets: readonly GraphqlPreset[] = [
     summary: "Repos, issues, PRs, and users via GitHub's GraphQL API.",
     url: "https://api.github.com/graphql",
     endpoint: "https://api.github.com/graphql",
-    icon: "https://svgl.app/library/github_dark.svg",
+    icon: "https://integrations.sh/logo/github.com",
     featured: true,
   },
   {

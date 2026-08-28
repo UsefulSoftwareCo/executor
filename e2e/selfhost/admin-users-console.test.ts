@@ -20,6 +20,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { scenario } from "../src/scenario";
 import { createInvitedIdentity } from "../targets/selfhost";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -107,7 +108,7 @@ scenario(
 
         yield* browser.session(owner, async ({ page, step }) => {
           await step("Open Users from the sidebar as the instance owner", async () => {
-            await page.goto("/", { waitUntil: "networkidle" });
+            await visit(page, "/");
             await page
               .locator("nav")
               .getByRole("link", { name: "Users" })
@@ -289,7 +290,7 @@ scenario(
 
         yield* browser.session(member, async ({ page, step }) => {
           await step("A plain member is not offered the section", async () => {
-            await page.goto("/", { waitUntil: "networkidle" });
+            await visit(page, "/");
             await page
               .locator("nav")
               .getByRole("link", { name: "Integrations" })
@@ -302,7 +303,7 @@ scenario(
           });
 
           await step("And reaching the URL directly is refused, not silently empty", async () => {
-            await page.goto("/users", { waitUntil: "networkidle" });
+            await visit(page, "/users");
             await page
               .getByText("You don't have access to this workspace's users")
               .waitFor({ state: "visible", timeout: 30_000 });

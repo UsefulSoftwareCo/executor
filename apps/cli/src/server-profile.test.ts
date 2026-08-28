@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { BunServices } from "@effect/platform-bun";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe("CLI server connection profiles", () => {
-  it("round-trips named server connections and default selection", () =>
+  it.effect("round-trips named server connections and default selection", () =>
     Effect.gen(function* () {
       const dataDir = mkdtempSync(join(tmpdir(), "executor-server-profiles-"));
       process.env.EXECUTOR_DATA_DIR = dataDir;
@@ -60,9 +60,10 @@ describe("CLI server connection profiles", () => {
       } finally {
         rmSync(dataDir, { recursive: true, force: true });
       }
-    }).pipe(Effect.provide(BunServices.layer)));
+    }).pipe(Effect.provide(BunServices.layer)),
+  );
 
-  it("switches and removes the default profile", () =>
+  it.effect("switches and removes the default profile", () =>
     Effect.gen(function* () {
       const dataDir = mkdtempSync(join(tmpdir(), "executor-server-profiles-"));
       process.env.EXECUTOR_DATA_DIR = dataDir;
@@ -88,7 +89,8 @@ describe("CLI server connection profiles", () => {
       } finally {
         rmSync(dataDir, { recursive: true, force: true });
       }
-    }).pipe(Effect.provide(BunServices.layer)));
+    }).pipe(Effect.provide(BunServices.layer)),
+  );
 
   it("drops malformed profiles when parsing", () => {
     const store = parseCliServerConnectionStore(
@@ -143,4 +145,68 @@ describe("CLI server connection profiles", () => {
       "CF-Access-Client-Id": { kind: "env", name: "EXECUTOR_CF_ACCESS_CLIENT_ID" },
     });
   });
+
+  // -------------------------------------------------------------------------
+  // File permissions.
+  //
+  // This store holds live credentials for a hosted server — a bearer token, or
+  // an OAuth access token and its long-lived refresh token. Nothing pinned its
+  // mode before, so it was created with the process umask (0644 by default) and
+  // readable by every other account on the machine.
+  //
+  // Both cases are covered because they need different mechanisms: `mode` on
+  // create, and a `chmod` for the overwrite. The overwrite is the common path
+  // here, since the store is rewritten on every silent token refresh.
+  // -------------------------------------------------------------------------
+
+  it.effect("creates the credential store owner-only", () =>
+    Effect.gen(function* () {
+      const dataDir = mkdtempSync(join(tmpdir(), "executor-server-profiles-mode-"));
+      process.env.EXECUTOR_DATA_DIR = dataDir;
+
+      try {
+        yield* upsertCliServerConnectionProfile({
+          name: "remote",
+          connection: {
+            origin: "https://executor.example",
+            auth: { kind: "bearer", token: "key_should_not_be_world_readable" },
+          },
+          makeDefault: true,
+        });
+
+        const mode = statSync(join(dataDir, "server-connections.json")).mode & 0o777;
+        expect(mode).toBe(0o600);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(BunServices.layer)),
+  );
+
+  it.effect("tightens a pre-existing world-readable credential store on rewrite", () =>
+    Effect.gen(function* () {
+      const dataDir = mkdtempSync(join(tmpdir(), "executor-server-profiles-chmod-"));
+      process.env.EXECUTOR_DATA_DIR = dataDir;
+      const storePath = join(dataDir, "server-connections.json");
+
+      try {
+        // A store left behind by an older version, world-readable. `mode` on
+        // write is ignored for an existing file, so only the chmod fixes this.
+        writeFileSync(storePath, JSON.stringify({ version: 1, profiles: [] }));
+        chmodSync(storePath, 0o644);
+
+        yield* upsertCliServerConnectionProfile({
+          name: "remote",
+          connection: {
+            origin: "https://executor.example",
+            auth: { kind: "bearer", token: "key_should_not_be_world_readable" },
+          },
+          makeDefault: true,
+        });
+
+        expect(statSync(storePath).mode & 0o777).toBe(0o600);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(BunServices.layer)),
+  );
 });
