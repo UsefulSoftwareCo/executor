@@ -25,6 +25,9 @@ import {
   createExecutorMcpServer,
 } from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
+import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
@@ -55,7 +58,7 @@ import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execu
 // `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
-import { resolveOrganization } from "../auth/organization";
+import { resolveSessionMetaForToken } from "./session-meta";
 import {
   DbService,
   combinedSchema,
@@ -63,13 +66,12 @@ import {
   type DrizzleDb,
   type DbServiceShape,
 } from "../db/db";
-import { makeExecutionStack } from "../engine/execution-stack";
-import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import {
   captureCause as reportCause,
   captureCauseEffect as reportCauseEffect,
+  claimCauseHandledByDurableObject,
   tagCurrentSentryScopeWithCurrentOtelSpan,
 } from "../observability";
 import { parseTraceparent } from "./traceparent";
@@ -104,10 +106,6 @@ type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
   readonly end: () => Promise<void>;
 };
-
-class OrganizationNotFoundError extends Data.TaggedError("OrganizationNotFoundError")<{
-  readonly organizationId: string;
-}> {}
 
 class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
   readonly cause: unknown;
@@ -152,6 +150,18 @@ const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
   return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices);
 };
 
+// The `ui://executor/shell.html` resource, over the ASSETS binding: the
+// deployed Worker has no filesystem, so the document is the stable-named
+// asset the client build emitted (`mcpAppsShellAsset`), fetched at first
+// artifact resource read. Module scope so the fetch-and-verify happens once
+// per isolate, not once per session. The dev thunk carries the built shell
+// inline under `vite dev`, where no assets exist yet for the binding to find.
+const loadAppShellHtml = makeAssetsShellHtmlLoader({
+  assets: env.ASSETS,
+  devShellHtml: () =>
+    import("virtual:executor-mcp-apps-shell-dev-html").then((mod) => mod.devShellHtml),
+});
+
 // ---------------------------------------------------------------------------
 // Durable Object
 // ---------------------------------------------------------------------------
@@ -195,26 +205,27 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     });
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
+    // The database handle is opened LAZILY: on the props and stored paths — the
+    // overwhelming majority of inits — nothing here touches Postgres at all,
+    // which is the whole point. postgres.js only dials on first query, so
+    // building the handle costs nothing; `ensuring` still closes it.
     const dbHandle = makeEphemeralDb();
-    return Effect.gen(function* () {
-      const org = yield* resolveOrganization(token.organizationId);
-      if (!org) {
-        return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
-      }
-      return {
-        organizationId: org.id,
-        organizationName: org.name,
-        organizationSlug: org.slug,
-        userId: token.userId,
-        resource: token.resource,
-        elicitationMode: token.elicitationMode,
-      } satisfies SessionMeta;
-    }).pipe(
+    return resolveSessionMetaForToken(token, storedMeta).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
       Effect.provide(makeSessionServices(dbHandle)),
       Effect.ensuring(Effect.promise(() => dbHandle.end())),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a vanished org is a defect; the worker already verified the bearer
+      // The base's `resolveSessionMeta` seam has no error channel, and a
+      // Durable Object's `init` can only reject its Promise — so a failure has
+      // to leave as a defect. What changed is WHAT leaves: an unreachable
+      // organization directory is now a bounded, classified
+      // `McpSessionMetaUnavailableError` whose message the worker recognises
+      // and renders as a retryable 503 (see `agent-handler.ts`), instead of an
+      // unclassified Postgres cause that produced a 500 and a client hang.
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the DO init seam is Promise-only; the failure is classified before it dies
       Effect.orDie,
     );
   }
@@ -225,6 +236,38 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
     return Effect.gen(function* () {
+      // Imported here rather than at module scope. Cloudflare requires a
+      // Durable Object class to be exported from the Worker entry, so every
+      // static import this module makes is evaluated by *every* cold isolate —
+      // including the ones that only render a page or forward a passthrough
+      // proxy and never open an MCP session. These three roots pull the whole
+      // code-execution stack (sucrase, ajv, QuickJS-WASM): measured at 1.9 MB
+      // of the Worker's startup closure, for code only a real session runs.
+      // `apps/cloud/scripts/start-closure.mjs` reports that number and will
+      // show it moving back if these become static again.
+      const [{ preloadQuickJs }, { makeExecutionStack }, { CloudMeteredExecutionStackLayer }] =
+        yield* Effect.promise(
+          () =>
+            Promise.all([
+              import("../quickjs"),
+              import("../engine/execution-stack"),
+              import("../engine/execution-stack-metered"),
+            ]) as Promise<
+              [
+                typeof import("../quickjs"),
+                typeof import("../engine/execution-stack"),
+                typeof import("../engine/execution-stack-metered"),
+              ]
+            >,
+        );
+
+      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
+      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
+      // user `execute` code on the dynamic-worker runtime, but the artifact
+      // smoke render is a QuickJS sandbox on every host — without this it fails
+      // open on each create and the check silently does nothing.
+      // Idempotent per isolate.
+      yield* Effect.promise(() => preloadQuickJs());
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
@@ -250,6 +293,25 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
+        artifacts: executor.artifacts,
+        connections: executor.connections,
+        // Artifacts are on by default, opt-out per connection. A session
+        // persisted without a value restores to the default, same as a fresh
+        // connection whose URL says nothing about `?artifacts=`.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Per-integration search tools are off by default, opt-in per
+        // connection (`?search_tools=true`). Same restore rule as artifacts.
+        searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
+        // Cold restores rebuild this server with no `initialize` to replay, so
+        // the negotiated apps support comes back from storage instead.
+        restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
+        onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        loadAppShellHtml,
+        smokeRenderArtifact,
+        artifactUrl: artifactUrlFor(
+          env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+          sessionMeta.organizationSlug,
+        ),
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,
@@ -300,6 +362,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override prepareErrorCaptureScope(): Effect.Effect<void> {
     return Effect.asVoid(tagCurrentSentryScopeWithCurrentOtelSpan);
+  }
+
+  // The DO owns this cause; `instrumentDurableObjectWithSentry` (server.ts) must
+  // not report it a second time when the rejection escapes the method.
+  protected override claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
+    return claimCauseHandledByDurableObject;
   }
 
   // Best-effort export the DO isolate's buffered spans after the RPC settles,

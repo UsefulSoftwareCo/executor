@@ -21,6 +21,10 @@ export const ToolSchemaView = Schema.Struct({
   description: Schema.optional(Schema.String),
   inputSchema: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
+  // "observed" = runtime-inferred from live responses (muscle memory), served
+  // because the plugin declared no output schema. Absent = declared as-is.
+  outputSchemaSource: Schema.optional(Schema.Literals(["observed"])),
+  outputSchemaObservations: Schema.optional(Schema.Number),
   schemaDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   inputTypeScript: Schema.optional(Schema.String),
   outputTypeScript: Schema.optional(Schema.String),

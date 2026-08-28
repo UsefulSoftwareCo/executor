@@ -153,4 +153,45 @@ describe("MCP connection pool", () => {
       }),
     ),
   );
+
+  it.effect("drops a pooled session whose bearer the server has stopped accepting", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMcpServer(() => makeEchoMcpServer());
+        const pool = createMcpConnectionPool();
+
+        yield* invoke({
+          endpoint: server.endpoint,
+          pool,
+          toolName: "echo",
+          args: { value: "before" },
+        });
+
+        // A 401 means the bearer this session was dialled with is no longer
+        // accepted. The session is bound to that token for its lifetime, so
+        // retaining it would serve the same dead credential for the full idle
+        // window — and would defeat core's post-401 refresh, whose new token can
+        // only reach the server over a NEW session.
+        yield* server.rejectNextSessionRequest(401);
+        yield* invoke({
+          endpoint: server.endpoint,
+          pool,
+          toolName: "echo",
+          args: { value: "unauthorized" },
+        }).pipe(Effect.flip);
+
+        const after = yield* invoke({
+          endpoint: server.endpoint,
+          pool,
+          toolName: "echo",
+          args: { value: "after" },
+        });
+
+        expect(after).toMatchObject({ content: [{ type: "text", text: "after" }] });
+        // A second session was dialled rather than the dead one being reused.
+        expect(server.sessionCount()).toBe(2);
+        yield* pool.close();
+      }),
+    ),
+  );
 });

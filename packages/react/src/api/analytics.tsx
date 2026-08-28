@@ -39,8 +39,9 @@ export interface AnalyticsEvents {
   };
   integration_add_started: {
     plugin_key: string;
-    via: "detect" | "manual" | "preset" | "command_palette";
+    via: "detect" | "manual" | "preset" | "command_palette" | "catalog";
     preset_id?: string;
+    catalog_domain?: string;
   };
   integration_added: { plugin_key: string; integration_slug?: string };
   integration_add_cancelled: { plugin_key: string };
@@ -120,10 +121,18 @@ export interface AnalyticsEvents {
     success: boolean;
   };
 
+  // ── Artifacts page ───────────────────────────────────────────────────────
+  artifact_opened: { surface: "list" | "deep_link" };
+  artifact_renamed: { success: boolean };
+  artifact_removed: { success: boolean };
+
   // ── API keys ─────────────────────────────────────────────────────────────
   api_key_created: { success: boolean };
   api_key_revoked: { success: boolean };
   api_key_copied: { kind: "value" | "bearer_header" };
+  org_api_key_created: { success: boolean };
+  org_api_key_revoked: { success: boolean };
+  org_api_key_copied: { kind: "value" | "bearer_header" };
 
   // ── Organization ─────────────────────────────────────────────────────────
   org_renamed: { success: boolean };
@@ -148,6 +157,8 @@ export interface AnalyticsEvents {
   };
   mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
+  mcp_install_artifacts_toggled: { artifacts: boolean };
+  mcp_install_search_tools_toggled: { search_tools: boolean };
 
   // ── Command palette ──────────────────────────────────────────────────────
   command_palette_navigated: {

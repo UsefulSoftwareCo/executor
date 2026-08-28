@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/codemode-core",
-  "version": "1.5.35",
+  "version": "1.6.2",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/kernel/core",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"
@@ -15,6 +15,7 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts"
   },

@@ -12,14 +12,20 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
     engine
       .execute(code, options)
       .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
-  executeWithPause: (code) =>
+  // `options` MUST be forwarded: it carries `autoApprove`, and dropping it
+  // silently turned every auto-approved execution back into a paused one.
+  executeWithPause: (code, options) =>
     engine
-      .executeWithPause(code)
+      .executeWithPause(code, options)
       .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
   // resume doesn't count as usage
   resume: (executionId, response) => engine.resume(executionId, response),
+  isExecutionSettled: engine.isExecutionSettled,
   getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
   pausedExecutionCount: () => engine.pausedExecutionCount(),
   hasPausedExecutions: () => engine.hasPausedExecutions(),
   getDescription: engine.getDescription,
+  // Forwarded, not re-implemented: the wrapped engine owns the sandbox fibers,
+  // so the host's request-scope teardown has to reach through this decorator.
+  shutdown: engine.shutdown,
 });

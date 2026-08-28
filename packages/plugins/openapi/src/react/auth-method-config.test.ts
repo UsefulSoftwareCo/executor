@@ -91,6 +91,22 @@ describe("editor round-trip", () => {
     });
   });
 
+  it("oauth stored → editor → stored preserves the display label", () => {
+    const stored: Authentication = {
+      slug: AuthTemplateSlug.make("azureAdDelegated"),
+      kind: "oauth2",
+      label: "OAuth2 (user)",
+      authorizationUrl: "https://x.example/auth",
+      tokenUrl: "https://x.example/token",
+      resource: null,
+      scopes: ["a"],
+    };
+    const editor = editorValueFromAuthentication(stored);
+    const back = authenticationFromEditorValue(editor, "azureAdDelegated");
+    expect(back).toEqual(stored);
+    expect(authMethodsFromConfig([stored])[0]?.label).toBe("OAuth2 (user)");
+  });
+
   it("none editor value yields no method", () => {
     expect(authenticationFromEditorValue({ kind: "none" })).toBeNull();
   });

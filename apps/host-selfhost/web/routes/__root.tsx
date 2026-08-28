@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
+import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
@@ -16,6 +17,7 @@ import {
 } from "@executor-js/react/components/card";
 import { AuthProvider, useAuth } from "@executor-js/react/multiplayer/auth-context";
 import { Shell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
+import { useAdminNavItems } from "@executor-js/react/multiplayer/use-admin-nav";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 
 import { authClient } from "../auth-client";
@@ -32,6 +34,13 @@ import { fetchNeedsSetup } from "../setup-status";
 // Auth), injected here. No billing, Sentry, or PostHog.
 // ---------------------------------------------------------------------------
 
+// The MCP-Apps shell is browser-only — it imports `@tailwindcss/browser`, which
+// touches `document` at import scope. It is registered as a dynamic import the
+// artifact page resolves in the browser, never a static one, so it stays out of
+// any server graph. Module scope keeps the loader identity stable, so the lazy
+// component behind it never remounts.
+const artifactRendererLoader = () => import("@executor-js/mcp-apps-shell/shell/artifact-renderer");
+
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
   component: RootComponent,
@@ -45,6 +54,13 @@ const selfHostNavItems = [
   { to: "/api-keys", label: "API keys" },
   { to: "/admin", label: "Admin" },
 ];
+
+// Sections only an owner/admin of the instance may open. Users reads the
+// tenant-wide admin plane, gated on a Better Auth owner/admin member, so a
+// plain member is not shown a link that would only refuse them. (The existing
+// /admin entry predates this and stays unconditional — it is this instance's
+// member/invite page, and its own notice covers a non-admin who opens it.)
+const selfHostAdminNavItems = [{ to: "/users", label: "Users" }];
 
 const signOut = async () => {
   await authClient.signOut();
@@ -150,12 +166,13 @@ function AuthGate({ children }: { children: ReactNode }) {
 function AuthenticatedApp() {
   const auth = useAuth();
   const organization = auth.status === "authenticated" ? (auth.organization ?? null) : null;
+  const navItems = useAdminNavItems(selfHostNavItems, selfHostAdminNavItems);
 
   // Single-org instance: a bare URL canonicalizes onto the instance org's
   // slug. There's only ever one org, so no other slug is reachable.
   const gated = (
     <>
-      <Shell onSignOut={signOut} navItems={selfHostNavItems} />
+      <Shell onSignOut={signOut} navItems={navItems} />
       <Toaster />
     </>
   );
@@ -167,7 +184,13 @@ function AuthenticatedApp() {
             a slug-pinned URL would 404, and a single-org instance has nothing
             to select anyway. */}
         <OrganizationProvider organizationId={organization?.id ?? null}>
-          {organization ? <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate> : gated}
+          <ArtifactRendererProvider loader={artifactRendererLoader}>
+            {organization ? (
+              <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate>
+            ) : (
+              gated
+            )}
+          </ArtifactRendererProvider>
         </OrganizationProvider>
       </ExecutorPluginsProvider>
     </ExecutorProvider>

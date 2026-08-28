@@ -20,6 +20,7 @@ import { scenario } from "../src/scenario";
 import { Browser, Cli, Mcp, RunDir, Target } from "../src/services";
 import { withChatTheater } from "../src/clients/chat-theater";
 import type { McpSession } from "../src/surfaces/mcp";
+import { visit } from "../src/surfaces/browser";
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -148,7 +149,7 @@ scenario(
             yield* chat.status("you, in the browser: opening the link and pasting the API key…");
             yield* browser.session(identity, async ({ page, step }) => {
               await step("Open the connect link from the chat", async () => {
-                await page.goto(handoffUrl, { waitUntil: "networkidle" });
+                await visit(page, handoffUrl);
                 await page
                   .getByRole("heading", { name: /Add connection/ })
                   .waitFor({ timeout: 15_000 });

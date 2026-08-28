@@ -67,6 +67,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // default to the seeded org rather than rejecting with NoOrganization.
             const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
             return {
+              kind: "member" as const,
               accountId: resolved.user.id,
               organizationId: resolvedOrganizationId,
               organizationName,

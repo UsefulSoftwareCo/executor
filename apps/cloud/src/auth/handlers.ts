@@ -22,11 +22,14 @@ import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
 import { AutumnService } from "../extensions/billing/service";
+import { forkReportMemberSeats } from "../extensions/billing/member-seats";
+import { captureCauseEffect } from "../observability";
 import {
   hasPaidOrganizationSubscription,
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
+import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import {
   ORG_SELECTOR_HEADER,
   authorizeOrganization,
@@ -143,8 +146,8 @@ const deleteResponseCookie = (response: HttpServerResponse.HttpServerResponse, n
   HttpServerResponse.setCookieUnsafe(response, name, "", DELETE_COOKIE_OPTIONS);
 
 // ---------------------------------------------------------------------------
-// Single non-protected API surface — public (login/callback) + session
-// (me/logout/organizations/switch-organization). The session group has SessionAuth on it.
+// Single non-protected API surface — public (login/callback/logout) + session
+// (me/organizations/switch-organization). The session group has SessionAuth on it.
 // ---------------------------------------------------------------------------
 
 export const NonProtectedApi = HttpApi.make("cloudWeb").add(CloudAuthPublicApi).add(CloudAuthApi);
@@ -201,7 +204,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           const result = yield* workos.authenticateWithCode(query.code);
 
           // Mirror the account locally
-          yield* users.use((s) => s.ensureAccount(result.user.id));
+          yield* users.use("ensureAccount", (s) => s.ensureAccount(result.user.id));
 
           let sealedSession = result.sealedSession;
 
@@ -218,15 +221,38 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             : null;
 
           // Prefer the org in the URL that sent the user to login. If the URL
-          // is bare, or not an org route, fall back to WorkOS's org and then to
-          // the first active membership for org-less sessions. Pending
-          // memberships are skipped because refreshing into one 400s and would
-          // bypass invite consent.
-          let targetOrganizationId = requestedOrg?.id ?? result.organizationId ?? null;
+          // is bare, or not an org route, prefer the org this browser last
+          // worked in (the last-org cookie — it outlives the session precisely
+          // so a fresh login lands where the user left off), then WorkOS's
+          // org, then the first active membership for org-less sessions.
+          // Pending memberships are skipped because refreshing into one 400s
+          // and would bypass invite consent. The cookie is membership-checked
+          // like any selector, so a stale one just falls through.
+          let targetOrganizationId = requestedOrg?.id ?? null;
+          if (!targetOrganizationId && !requestedOrgSelector) {
+            const lastOrgSlug = request.cookies[LAST_ORG_COOKIE];
+            const lastOrg =
+              lastOrgSlug && isValidOrgSlug(lastOrgSlug)
+                ? yield* authorizeOrganizationSelector(result.user.id, lastOrgSlug).pipe(
+                    Effect.orElseSucceed(() => null),
+                  )
+                : null;
+            targetOrganizationId = lastOrg?.id ?? null;
+          }
+          targetOrganizationId ??= result.organizationId ?? null;
           if (!targetOrganizationId && !requestedOrgSelector) {
             const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");
             targetOrganizationId = existingActive?.organizationId ?? null;
+          }
+
+          // Seat changes the app never sees a mutation for (invitation
+          // acceptance in AuthKit, SSO JIT provisioning, join by domain,
+          // WorkOS dashboard edits) all end in a sign-in, so every login
+          // reconciles the landed org's billed seat count. Forked: billing
+          // must not delay the login.
+          if (targetOrganizationId) {
+            yield* forkReportMemberSeats(targetOrganizationId);
           }
 
           if (
@@ -256,6 +282,42 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
               RESPONSE_COOKIE_OPTIONS,
             ),
             STATE_COOKIE,
+          );
+        }),
+      )
+      .handleRaw("logout", ({ request }) =>
+        Effect.gen(function* () {
+          const workos = yield* WorkOSClient;
+          // The session this browser presents, NOT one the middleware vouched
+          // for — signing out of a session that has already ended must still
+          // sign the browser out (see the group declaration in ./api.ts).
+          const sealedSession = request.cookies["wos-session"] ?? "";
+
+          // WorkOS's documented sign-out: send the browser through the WorkOS
+          // logout endpoint, which ends the AuthKit session upstream and then
+          // redirects to the registered sign-out URL. Without this hop, the
+          // hosted session survives and the next "Sign in" silently
+          // re-authenticates (issue #1445). Fail-open when the cookie won't
+          // unseal — there is then nothing to end upstream, and local sign-out
+          // must still complete, so fall back to "/".
+          const origin = env.VITE_PUBLIC_SITE_URL ?? "";
+          const logoutUrl = sealedSession
+            ? yield* workos.logoutUrl(sealedSession, origin ? `${origin}/` : undefined)
+            : null;
+
+          const response = HttpServerResponse.redirect(logoutUrl ?? "/", { status: 302 });
+
+          // Drop only what this browser actually presented. Both cookies are
+          // SameSite=Lax, so a cross-site form POST carries neither — it gets
+          // the bare redirect and cannot be used to sign anyone out.
+          if (!sealedSession && request.cookies[AUTH_HINT_COOKIE] === undefined) return response;
+
+          // The auth-hint travels with the session: leaving it behind would
+          // make the next page load optimistically paint the app shell for a
+          // signed-out browser.
+          return deleteResponseCookie(
+            deleteResponseCookie(response, "wos-session"),
+            AUTH_HINT_COOKIE,
           );
         }),
       )
@@ -302,35 +364,6 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             },
             organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
           };
-        }),
-      )
-      .handleRaw("logout", () =>
-        Effect.gen(function* () {
-          const workos = yield* WorkOSClient;
-          const session = yield* SessionContext;
-
-          // WorkOS's documented sign-out: send the browser through the WorkOS
-          // logout endpoint, which ends the AuthKit session upstream and then
-          // redirects to the registered sign-out URL. Without this hop, the
-          // hosted session survives and the next "Sign in" silently
-          // re-authenticates (issue #1445). Fail-open when the cookie won't
-          // unseal: local sign-out must still complete, so fall back to "/".
-          const origin = env.VITE_PUBLIC_SITE_URL ?? "";
-          const logoutUrl = yield* workos.logoutUrl(
-            session.sealedSession,
-            origin ? `${origin}/` : undefined,
-          );
-
-          // The auth-hint travels with the session: leaving it behind would
-          // make the next page load optimistically paint the app shell for a
-          // signed-out browser.
-          return deleteResponseCookie(
-            deleteResponseCookie(
-              HttpServerResponse.redirect(logoutUrl ?? "/", { status: 302 }),
-              "wos-session",
-            ),
-            AUTH_HINT_COOKIE,
-          );
         }),
       )
       .handle("organizations", () =>
@@ -393,7 +426,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               ),
               { concurrency: 3 },
             ).pipe(
-              Effect.catchTag("AutumnError", () => Effect.fail(new WorkOSError())),
+              // Any Autumn failure here (outage or missing customer) leaves the
+              // paid/free split unknown, and the limit must fail closed.
+              Effect.mapError(() => new WorkOSError()),
               Effect.map((ids) => new Set(ids.filter(Predicate.isNotNull))),
             );
 
@@ -405,9 +440,29 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const org = yield* workos.createOrganization(name);
           yield* workos.createMembership(org.id, session.accountId, "admin");
           // `upsertOrganization` mints the slug at insert — no separate heal step.
-          const mirrored = yield* users.use((s) =>
+          const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
           );
+
+          // Provision the org's billing customer while we're the ones creating
+          // the org. Without this the first billing call an org ever makes is a
+          // non-creating one (balance check / usage track), which 404s and keeps
+          // 404ing — unlimited unbilled executions. Non-fatal: a billing blip
+          // must not block signup, and the billing seam heals a customer that
+          // is still missing later.
+          yield* autumn.ensureCustomer(org.id).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning(
+                  "createOrganization: could not provision the Autumn customer",
+                  { organizationId: org.id, error },
+                );
+                yield* captureCauseEffect(error);
+              }),
+            ),
+          );
+          // Seed the new org's billed seat count (the creator's seat).
+          yield* forkReportMemberSeats(org.id);
 
           // Try to attach the new org to the current session. This can fail
           // (or silently return a session still scoped to the old org) when
@@ -459,7 +514,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           // The typed confirmation must match the org's current name — the same
           // label the settings page shows. Trimmed on both sides.
-          const org = yield* users.use((s) => s.getOrganization(organizationId));
+          const org = yield* users.use("getOrganization", (s) => s.getOrganization(organizationId));
           if (!org || payload.confirmName.trim() !== org.name.trim()) {
             return yield* new OrganizationDeletionForbidden();
           }
@@ -477,7 +532,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // everyone (unreachable) but its secrets/tenant rows linger orphaned —
           // alert loudly so that window gets swept, then surface the failure.
           yield* users
-            .use((s) => s.deleteOrganizationCascade(organizationId))
+            .use("deleteOrganizationCascade", (s) => s.deleteOrganizationCascade(organizationId))
             .pipe(
               Effect.tapError((error) =>
                 Effect.logError(
@@ -493,7 +548,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           yield* autumn
             .use((client) => client.customers.delete({ customerId: organizationId }))
             .pipe(
-              Effect.catchTag("AutumnError", (error) =>
+              // Includes the "customer never existed" answer: nothing to cancel
+              // is a fine outcome for a deleted org, and it is still worth a line.
+              Effect.catch((error) =>
                 Effect.logWarning("deleteOrganization: failed to delete Autumn customer", {
                   organizationId,
                   error,
@@ -578,9 +635,14 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // Mirror the org locally so domain tables can FK against it; the
           // upsert mints the slug at insert — no separate heal step.
           const org = yield* workos.getOrganization(invitation.organizationId);
-          const mirrored = yield* users.use((s) =>
+          const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
           );
+
+          // The membership is active in WorkOS from this point even if
+          // attaching the session below fails, so reconcile the org's billed
+          // seat count now.
+          yield* forkReportMemberSeats(org.id);
 
           // Attach the just-accepted org to the current session. Same shape
           // as createOrganization: refresh + verify; if we can't pin the

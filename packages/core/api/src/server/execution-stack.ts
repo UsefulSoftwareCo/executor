@@ -35,7 +35,12 @@ import {
 } from "@executor-js/execution";
 
 import { DbProvider } from "./executor-fuma-db";
-import { HostConfig, PluginsProvider, makeScopedExecutor } from "./scoped-executor";
+import {
+  HostConfig,
+  PluginsProvider,
+  makePlatformExecutor,
+  makeScopedExecutor,
+} from "./scoped-executor";
 
 // ---------------------------------------------------------------------------
 // CodeExecutorProvider seam — the host's code-execution substrate. Typed to the
@@ -69,7 +74,18 @@ export interface EngineDecoratorShape {
   readonly decorate: <E extends Cause.YieldableError>(
     engine: ExecutionEngine<E>,
     identity: EngineStackIdentity,
+    context: EngineStackContext,
   ) => ExecutionEngine<E>;
+}
+
+/**
+ * What the stack was built to serve, beyond the identity: the MCP resource
+ * when the caller is an MCP session (absent on the HTTP plane). Lets a
+ * decorator distinguish a toolkit-scoped engine without the host threading a
+ * side channel.
+ */
+export interface EngineStackContext {
+  readonly mcpResource?: McpResource;
 }
 
 export class EngineDecorator extends Context.Service<EngineDecorator, EngineDecoratorShape>()(
@@ -108,19 +124,46 @@ export const makeExecutionStack = <
       organizationId,
       organizationName,
       { plugins: { mcpResource: options?.mcpResource } },
-    ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
-    const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(
-      Effect.withSpan("executor.stack.code_executor"),
     );
-    const { decorate } = yield* EngineDecorator.asEffect().pipe(
-      Effect.withSpan("executor.stack.decorator"),
-    );
+    const codeExecutor = yield* CodeExecutorProvider.asEffect();
+    const { decorate } = yield* EngineDecorator.asEffect();
     const engine = yield* Effect.sync(() =>
-      decorate(createExecutionEngine({ executor, codeExecutor }), {
-        accountId,
-        organizationId,
-        organizationName,
-      }),
-    ).pipe(Effect.withSpan("executor.stack.engine.init"));
+      decorate(
+        createExecutionEngine({ executor, codeExecutor }),
+        {
+          accountId,
+          organizationId,
+          organizationName,
+        },
+        { mcpResource: options?.mcpResource },
+      ),
+    );
     return { executor, engine };
   }).pipe(Effect.withSpan("executor.stack.build"));
+
+// ---------------------------------------------------------------------------
+// makePlatformExecutionStack — the org-credential sibling: a subject-less,
+// write-refusing executor (`makePlatformExecutor`) and no REAL engine. An org
+// key is an observer; the execution engine exists to run code as an acting
+// member, so no engine is built here. The middleware still provides
+// `ExecutionEngineService` (handlers' service requirements demand one) — as a
+// stub whose reachable reads answer "nothing here" and whose execute/resume
+// members sit behind the middleware's safe-request gate (see
+// `readOnlyExecutionEngine` in ./execution-stack-middleware.ts).
+// ---------------------------------------------------------------------------
+
+export const makePlatformExecutionStack = <
+  const TPlugins extends readonly AnyPlugin[] = readonly AnyPlugin[],
+>(
+  organizationId: string,
+): Effect.Effect<
+  { readonly executor: Executor<TPlugins> },
+  StorageFailure,
+  DbProvider | PluginsProvider | HostConfig
+> =>
+  makePlatformExecutor(organizationId).pipe(
+    // The platform executor is built against the erased plugin set; re-narrow
+    // via the same phantom cast `makeScopedExecutor` performs for the scoped one.
+    Effect.map((executor) => ({ executor: executor as Executor<TPlugins> })),
+    Effect.withSpan("executor.stack.platform.build"),
+  );

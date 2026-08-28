@@ -1,16 +1,14 @@
 import { createMiddleware, createStart } from "@tanstack/react-start";
 import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
-import { cloudApiHandler } from "./app";
 import { isAppOwnedPath } from "./app-paths";
-import { authGateMiddleware } from "./auth/ssr-gate";
+import { authGateMiddleware } from "./auth/doc-gate";
 import { parseCookie } from "./auth/cookies";
 import { ORG_SELECTOR_HEADER } from "./auth/organization";
 import { loginPath } from "./auth/return-to";
 import { prepareMcpOrgScope } from "./mcp/mount";
 import {
   docsProxyMiddleware,
-  marketingMiddleware,
   openAiAppsChallengeMiddleware,
   posthogProxyMiddleware,
   sentryTunnelMiddleware,
@@ -36,8 +34,18 @@ import {
 // (a workerd-only virtual module) into the browser build, breaking it. Keeping
 // the call inside the server callback mirrors how every other server concern
 // here stays server-only.
-let app: ReturnType<typeof cloudApiHandler> | undefined;
-const getApp = () => (app ??= cloudApiHandler());
+//
+// The IMPORT is dynamic for a second, server-side reason: `server.ts` now
+// dispatches `/api/*` at the Worker entry, so the only paths that still reach
+// this middleware are the two Start's own chain claims first (the Sentry tunnel
+// and the OAuth callback's signed-out redirect) plus `/mcp`. A static import
+// would still put the entire Effect app in the graph every SSR page load
+// evaluates — 3.06 MB of the 12.94 MB page closure, for code a page never runs.
+// Deferring it takes the page closure to 9.88 MB; `scripts/start-closure.mjs`
+// reports both planes and will show it coming back if this becomes static.
+let app: ReturnType<typeof import("./app").cloudApiHandler> | undefined;
+const getApp = async (): Promise<NonNullable<typeof app>> =>
+  (app ??= (await import("./app")).cloudApiHandler());
 
 const SESSION_COOKIE = "wos-session";
 const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
@@ -79,30 +87,29 @@ const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).serv
 // envelope routes, pinning the org in an internal header (a no-op for everything
 // else, including `/api/*`).
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
-  ({ pathname, request, next }) => {
+  async ({ pathname, request, next }) => {
     if (isAppOwnedPath(pathname)) {
       const scopedRequest =
         pathname === OAUTH_CALLBACK_PATH ? oauthCallbackOrgScopedRequest(request) : request;
-      return getApp().handler(prepareMcpOrgScope(scopedRequest));
+      return (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
     }
     return next();
   },
 );
 
-// The edge concerns (marketing proxy, docs proxy, sentry tunnel, posthog proxy)
-// live in `./edge`; they run before the app's own dispatch. Ordering is
-// load-bearing: marketing first (production landing/page proxy), then the docs
-// proxy and analytics tunnels, then the unified app plane (api + mcp), and last
-// the SSR auth gate — it only sees document requests nothing above claimed, so
-// signed-out visitors are redirected to /login before the SPA (and its
-// app-shell skeleton) is served. The docs proxy sits among the edges (not after
-// the auth gate) because `/docs` is public and must skip the sign-in redirect;
-// its path is disjoint from every other matcher, so its slot is not otherwise
-// load-bearing.
+// The remaining edge concerns (docs proxy, sentry tunnel, posthog proxy) live
+// in `./edge`; they run before the app's own dispatch. Marketing is handled in
+// server.ts before this module is loaded. Ordering here is load-bearing: public
+// challenges and docs, then analytics tunnels, then the unified app plane (api
+// + mcp), and last the SSR auth gate — it only sees document requests nothing
+// above claimed, so signed-out visitors are redirected to /login before the SPA
+// (and its app-shell skeleton) is served. The docs proxy sits among the edges
+// (not after the auth gate) because `/docs` is public and must skip the sign-in
+// redirect; its path is disjoint from every other matcher, so its slot is not
+// otherwise load-bearing.
 export const startInstance = createStart(() => ({
   requestMiddleware: [
     openAiAppsChallengeMiddleware,
-    marketingMiddleware,
     docsProxyMiddleware,
     sentryTunnelMiddleware,
     posthogProxyMiddleware,

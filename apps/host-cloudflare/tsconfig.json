@@ -3,6 +3,10 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // This host opts into the create-time artifact smoke render, whose entry
+    // dynamically imports a `.tsx` component graph. Nothing here renders
+    // anything; the compiler still resolves that graph.
+    "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

@@ -1,0 +1,554 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const googleServices = [
+  {
+    index: "01",
+    name: "Google Calendar",
+    purpose:
+      "Executor can read, create, update, or remove calendars and events, and manage calendar sharing rules, when you ask an agent to manage your schedule.",
+    scope: "googleapis.com/auth/calendar",
+  },
+  {
+    index: "02",
+    name: "Gmail",
+    purpose:
+      "Executor can read, search, compose, send, organize, trash, and permanently delete messages, and manage filters and other basic Gmail settings, only when you explicitly instruct an agent to work with your email.",
+    scope: "mail.google.com · gmail.settings.basic",
+  },
+  {
+    index: "03",
+    name: "Google Sheets",
+    purpose:
+      "Executor can read spreadsheet data, update cells, ranges, and worksheets, and write Drive-file smart chips when you ask an agent to work with a spreadsheet.",
+    scope: "googleapis.com/auth/spreadsheets · drive.file",
+  },
+  {
+    index: "04",
+    name: "Google Drive",
+    purpose:
+      "Executor can find, create, download, organize, share, or delete files and folders when you ask an agent to manage your Drive.",
+    scope: "googleapis.com/auth/drive",
+  },
+  {
+    index: "05",
+    name: "Google Docs, Slides, and Forms",
+    purpose:
+      "Executor can read and edit documents and presentations, and create or read forms and responses, when you ask an agent to work with that content.",
+    scope: "documents · presentations · forms.body · forms.responses.readonly",
+  },
+  {
+    index: "06",
+    name: "Google Contacts and Tasks",
+    purpose:
+      "Executor can read or update contacts and contact groups, read available profile fields, other contacts, or a Workspace directory, and manage task lists and tasks when you ask an agent to organize people or work.",
+    scope: "contacts · user profile fields · directory.readonly · tasks",
+  },
+  {
+    index: "07",
+    name: "Google Meet",
+    purpose:
+      "Executor can create and configure meeting spaces or read meeting records, participants, recordings, and transcripts when you request meeting-related work.",
+    scope: "meetings.space.created · readonly · settings",
+  },
+  {
+    index: "08",
+    name: "Google Photos",
+    purpose:
+      "Executor can upload and manage app-created media or read media that you explicitly select through Google Photos Picker.",
+    scope: "photoslibrary.app-created read/write · photospicker.readonly",
+  },
+  {
+    index: "09",
+    name: "Google Search Console",
+    purpose:
+      "Executor can inspect verified sites, sitemaps, indexed URLs, and search-performance data when you request website analysis.",
+    scope: "googleapis.com/auth/webmasters",
+  },
+] as const;
+---
+
+<Layout
+  title="Executor"
+  description="How Executor connects AI agents to Google Workspace and related Google services with your permission."
+>
+  <main class="google-page">
+    <div class="grid-field" aria-hidden="true"></div>
+
+    <nav class="site-nav" aria-label="Primary navigation">
+      <div class="shell nav-inner">
+        <a href="/" class="brand" aria-label="Executor home">
+          <img src="/favicon-192.png" alt="" width="20" height="20" />
+          <span>executor</span>
+        </a>
+        <div class="nav-links">
+          <a href="https://executor.sh/privacy">Privacy</a>
+          <a href="https://executor.sh/terms">Terms</a>
+          <a href="/api/auth/login" class="nav-cta">Open Executor <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+    </nav>
+
+    <header class="shell hero">
+      <div class="eyebrow">
+        <span class="google-mark" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        Google Workspace connections
+      </div>
+      <h1>Executor</h1>
+      <p class="hero-copy">
+        Executor is an integration platform and MCP gateway for AI agents. It lets you
+        securely connect Google Workspace and related Google services so an agent can read
+        data and take the actions <em>you request</em>.
+      </p>
+      <div class="hero-rule">
+        <span>One connection</span>
+        <span>Explicit permission</span>
+        <span>User-directed actions</span>
+      </div>
+    </header>
+
+    <section class="shell ledger" aria-labelledby="google-data-heading">
+      <div class="section-intro">
+        <p class="section-number">01 / Google data</p>
+        <div>
+          <h2 id="google-data-heading">What Executor accesses—and why</h2>
+          <p>
+            You choose which Google service to connect. Executor requests only the
+            permissions needed for that connection and uses them to carry out your
+            instructions.
+          </p>
+        </div>
+      </div>
+
+      <div class="service-list">
+        {
+          googleServices.map((service) => (
+            <article class="service-row">
+              <div class="service-index">{service.index}</div>
+              <div class="service-body">
+                <h3>{service.name}</h3>
+                <p>{service.purpose}</p>
+              </div>
+              <code>{service.scope}</code>
+            </article>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="shell control" aria-labelledby="control-heading">
+      <div class="section-intro">
+        <p class="section-number">02 / Your control</p>
+        <div>
+          <h2 id="control-heading">Your Google account stays yours</h2>
+          <p>
+            Connecting Google does not give Executor permission to act on its own. An
+            agent can use a Google tool only when you direct it to, subject to the
+            policies and approvals you configure in Executor.
+          </p>
+        </div>
+      </div>
+
+      <div class="control-grid">
+        <article>
+          <span class="control-glyph" aria-hidden="true">↗</span>
+          <h3>See the action</h3>
+          <p>Executor exposes concrete Google actions with their inputs, not an open-ended account session.</p>
+        </article>
+        <article>
+          <span class="control-glyph" aria-hidden="true">◇</span>
+          <h3>Set the policy</h3>
+          <p>Allow an action, require approval, or block it before an agent can run it.</p>
+        </article>
+        <article>
+          <span class="control-glyph" aria-hidden="true">×</span>
+          <h3>Revoke access</h3>
+          <p>
+            Remove the connection in Executor or revoke it from your
+            <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="shell disclosure" aria-labelledby="privacy-heading">
+      <p class="section-number">03 / Privacy</p>
+      <div class="disclosure-card">
+        <div>
+          <h2 id="privacy-heading">Clear limits on Google data</h2>
+          <p>
+            Executor does not sell Google user data. We use Google data only to provide
+            and improve the user-facing integration features you request, in accordance
+            with our Privacy Policy. Executor's use and transfer of information received
+            from Google APIs adheres to the
+            <a href="https://developers.google.com/terms/api-services-user-data-policy"
+              >Google API Services User Data Policy</a
+            >, including the Limited Use requirements.
+          </p>
+        </div>
+        <div class="policy-links">
+          <a href="https://executor.sh/privacy">Read the Privacy Policy <span aria-hidden="true">↗</span></a>
+          <a href="https://executor.sh/terms">Read the Terms of Service <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <span>Executor · Useful Software Company</span>
+        <span>Google access, explained plainly.</span>
+      </div>
+    </footer>
+  </main>
+</Layout>
+
+<style>
+  .google-page {
+    --google-blue: #4285f4;
+    --google-red: #ea4335;
+    --google-yellow: #fbbc04;
+    --google-green: #34a853;
+    position: relative;
+    min-height: 100dvh;
+    overflow: hidden;
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  .grid-field {
+    position: absolute;
+    inset: 0 0 auto;
+    height: 48rem;
+    pointer-events: none;
+    opacity: 0.38;
+    background-image:
+      linear-gradient(to right, var(--color-rule) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-rule) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: linear-gradient(to bottom, #000 0%, transparent 88%);
+  }
+
+  .shell {
+    position: relative;
+    z-index: 1;
+    width: min(1120px, calc(100% - 3rem));
+    margin-inline: auto;
+  }
+
+  .site-nav {
+    position: relative;
+    z-index: 2;
+    border-bottom: 1px solid var(--color-rule);
+    background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+    backdrop-filter: blur(16px);
+  }
+
+  .nav-inner,
+  .footer-inner {
+    display: flex;
+    min-height: 3.5rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--color-ink);
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+  }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 1.4rem;
+    font-size: 0.82rem;
+  }
+
+  .nav-links a {
+    color: var(--color-ink-2);
+    text-decoration: none;
+  }
+
+  .nav-links a:hover {
+    color: var(--color-ink);
+  }
+
+  .nav-links .nav-cta {
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--color-ink);
+    border-radius: 0.2rem;
+    color: var(--color-surface);
+    background: var(--color-ink);
+  }
+
+  .hero {
+    padding-block: clamp(6rem, 14vw, 10rem) clamp(5rem, 10vw, 8rem);
+  }
+
+  .eyebrow,
+  .section-number {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0;
+    color: var(--color-ink-2);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+
+  .google-mark {
+    display: grid;
+    grid-template-columns: repeat(4, 0.45rem);
+    gap: 0.16rem;
+  }
+
+  .google-mark i {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: var(--google-blue);
+  }
+
+  .google-mark i:nth-child(2) { background: var(--google-red); }
+  .google-mark i:nth-child(3) { background: var(--google-yellow); }
+  .google-mark i:nth-child(4) { background: var(--google-green); }
+
+  .hero h1 {
+    margin: 1.8rem 0 1.5rem;
+    font-family: var(--font-display);
+    font-size: clamp(5rem, 17vw, 11rem);
+    font-weight: 600;
+    letter-spacing: -0.065em;
+    line-height: 0.78;
+  }
+
+  .hero-copy {
+    max-width: 48rem;
+    margin: 0;
+    color: var(--color-ink-2);
+    font-size: clamp(1.15rem, 2.5vw, 1.65rem);
+    line-height: 1.55;
+  }
+
+  .hero-copy em {
+    color: var(--color-ink);
+    font-family: var(--font-serif);
+    font-weight: 500;
+  }
+
+  .hero-rule {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin-top: 4rem;
+    border-block: 1px solid var(--color-rule);
+    color: var(--color-ink-2);
+    font-family: var(--font-mono);
+    font-size: 0.69rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .hero-rule span {
+    padding: 1rem 1.1rem;
+    border-right: 1px solid var(--color-rule);
+  }
+
+  .hero-rule span:first-child { padding-left: 0; }
+  .hero-rule span:last-child { border-right: 0; }
+
+  .ledger,
+  .control,
+  .disclosure {
+    padding-block: clamp(4.5rem, 9vw, 7rem);
+    border-top: 1px solid var(--color-rule);
+  }
+
+  .section-intro {
+    display: grid;
+    grid-template-columns: minmax(9rem, 0.45fr) minmax(0, 1fr);
+    gap: 3rem;
+  }
+
+  .section-intro h2,
+  .disclosure-card h2 {
+    max-width: 14ch;
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: clamp(2.2rem, 5vw, 4.2rem);
+    font-weight: 550;
+    letter-spacing: -0.04em;
+    line-height: 0.98;
+  }
+
+  .section-intro > div > p,
+  .disclosure-card > div > p {
+    max-width: 42rem;
+    margin: 1.5rem 0 0;
+    color: var(--color-ink-2);
+    font-size: 1rem;
+    line-height: 1.75;
+  }
+
+  .service-list {
+    margin-top: 4rem;
+    border-top: 1px solid var(--color-ink);
+  }
+
+  .service-row {
+    display: grid;
+    grid-template-columns: 5rem minmax(0, 1fr) minmax(14rem, 0.5fr);
+    gap: 2rem;
+    align-items: start;
+    padding-block: 2.2rem;
+    border-bottom: 1px solid var(--color-rule);
+  }
+
+  .service-index,
+  .service-row code {
+    color: var(--color-ink-3);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+  }
+
+  .service-body h3 {
+    margin: 0 0 0.65rem;
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .service-body p {
+    max-width: 39rem;
+    margin: 0;
+    color: var(--color-ink-2);
+    font-size: 0.92rem;
+    line-height: 1.7;
+  }
+
+  .service-row code {
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+  }
+
+  .control-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin-top: 4rem;
+    border: 1px solid var(--color-rule);
+  }
+
+  .control-grid article {
+    min-height: 18rem;
+    padding: 2rem;
+    border-right: 1px solid var(--color-rule);
+  }
+
+  .control-grid article:last-child { border-right: 0; }
+
+  .control-glyph {
+    display: block;
+    margin-bottom: 4rem;
+    font-family: var(--font-serif);
+    font-size: 1.6rem;
+  }
+
+  .control-grid h3 {
+    margin: 0 0 0.7rem;
+    font-size: 1rem;
+  }
+
+  .control-grid p {
+    margin: 0;
+    color: var(--color-ink-2);
+    font-size: 0.88rem;
+    line-height: 1.7;
+  }
+
+  .control-grid a {
+    color: var(--color-ink);
+    text-underline-offset: 0.2em;
+  }
+
+  .disclosure-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.48fr);
+    gap: 4rem;
+    margin-top: 2.2rem;
+    padding: clamp(2rem, 5vw, 4rem);
+    background: var(--color-ink);
+    color: var(--color-surface);
+  }
+
+  .disclosure-card h2 { max-width: 12ch; }
+  .disclosure-card > div > p { color: color-mix(in srgb, var(--color-surface) 70%, transparent); }
+  .disclosure-card > div > p a {
+    color: var(--color-surface);
+    text-underline-offset: 0.2em;
+  }
+
+  .policy-links {
+    display: flex;
+    flex-direction: column;
+    align-self: end;
+    border-top: 1px solid color-mix(in srgb, var(--color-surface) 24%, transparent);
+  }
+
+  .policy-links a {
+    display: flex;
+    justify-content: space-between;
+    padding-block: 1rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-surface) 24%, transparent);
+    color: var(--color-surface);
+    font-size: 0.82rem;
+    text-decoration: none;
+  }
+
+  .site-footer {
+    border-top: 1px solid var(--color-rule);
+  }
+
+  .footer-inner {
+    min-height: 6rem;
+    color: var(--color-ink-3);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+  }
+
+  @media (max-width: 760px) {
+    .shell { width: min(100% - 2rem, 1120px); }
+    .nav-links > a:not(.nav-cta) { display: none; }
+    .hero { padding-top: 5rem; }
+    .hero h1 { font-size: clamp(4.2rem, 23vw, 7rem); }
+    .hero-rule { grid-template-columns: 1fr; }
+    .hero-rule span,
+    .hero-rule span:first-child {
+      padding: 0.75rem 0;
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .hero-rule span:last-child { border-bottom: 0; }
+    .section-intro,
+    .disclosure-card { grid-template-columns: 1fr; gap: 2rem; }
+    .service-row { grid-template-columns: 2.5rem 1fr; gap: 1rem; }
+    .service-row code { grid-column: 2; }
+    .control-grid { grid-template-columns: 1fr; }
+    .control-grid article {
+      min-height: auto;
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .control-grid article:last-child { border-bottom: 0; }
+    .control-glyph { margin-bottom: 2.5rem; }
+    .footer-inner { align-items: flex-start; flex-direction: column; justify-content: center; gap: 0.45rem; }
+  }
+</style>

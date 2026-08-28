@@ -4,8 +4,8 @@
 // AuthGate used to SSR the AUTHENTICATED app-shell skeleton (sidebar + card
 // grid) for every visitor and only swap to a login page after a client-side
 // `/account/me` 401 — signed-out users were shown an app they'd never reach.
-// Now the SSR auth gate (apps/cloud/src/auth/ssr-gate.ts) verifies the sealed
-// session cookie in the worker and 302s signed-out document requests to
+// Now the document auth gate (apps/cloud/src/auth/doc-gate.ts) verifies the
+// sealed session cookie in the worker and 302s signed-out document requests to
 // /login (carrying ?returnTo=), so the app shell never exists for them.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
@@ -136,7 +136,14 @@ scenario(
         await page.goto("/", { waitUntil: "commit" });
         await page.locator("aside").first().waitFor({ state: "visible" });
       });
-      expect(new URL(page.url()).pathname, "no login detour for a valid session").toBe("/");
+      // The contract is "no login detour": under SPA serving the shell becomes
+      // visible only after auth resolves, by which point OrgSlugGate may have
+      // already canonicalized the bare root onto the org's slug (that landing
+      // is pinned by auth-routing-flow). Either resting place is signed-in
+      // routing working; /login is the only wrong answer.
+      expect(new URL(page.url()).pathname, "no login detour for a valid session").not.toBe(
+        "/login",
+      );
     });
 
     // A signed-in visitor landing on /login is bounced back into the app.

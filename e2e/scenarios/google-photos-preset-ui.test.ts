@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { clickToReveal, visit } from "../src/surfaces/browser";
 
 scenario(
   "Google Photos: separated catalog presets open a Photos service add flow",
@@ -16,10 +17,9 @@ scenario(
       await step(
         "Find the separated Google Photos presets from the integrations picker",
         async () => {
-          await page.goto("/integrations", { waitUntil: "networkidle" });
-          await page.getByRole("button", { name: "Connect" }).click();
+          await visit(page, "/integrations");
           const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-          await dialog.waitFor();
+          await clickToReveal(page.getByRole("button", { name: "Connect" }), dialog);
           await dialog.getByPlaceholder(/Search or paste a URL/).fill("google photos");
           await dialog.getByRole("link", { name: /^Google Photos Library\b/ }).waitFor();
           await dialog.getByRole("link", { name: /^Google Photos Picker\b/ }).waitFor();

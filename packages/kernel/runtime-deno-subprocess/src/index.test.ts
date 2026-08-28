@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -37,6 +39,27 @@ it.effect("returns an actionable error when Deno is missing", () =>
     expect(output.result).toBeNull();
     expect(output.error).toContain("Install Deno or set DENO_BIN");
   }),
+);
+
+it.effect.skipIf(process.platform === "win32")(
+  "returns an execution error when the subprocess closes stdin",
+  () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor({
+        denoExecutable: fileURLToPath(
+          new URL("./fixtures/close-stdin-worker.mjs", import.meta.url),
+        ),
+        timeoutMs: 5_000,
+      });
+      const toolInvoker = makeTestInvoker({
+        "test.call": () => "done",
+      });
+
+      const output = yield* executor.execute("return tools.test.call({});", toolInvoker);
+
+      expect(output.result).toBeNull();
+      expect(output.error).toContain("Failed to write to Deno subprocess stdin");
+    }),
 );
 
 describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {

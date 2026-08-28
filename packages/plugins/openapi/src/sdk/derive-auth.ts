@@ -126,9 +126,11 @@ const oauthTemplateFromPreset = (
   baseUrl: string,
   slug: AuthTemplateSlug,
   scopes: readonly string[],
+  label?: string,
 ): OAuthAuthentication => ({
   slug,
   kind: "oauth2",
+  ...(label !== undefined ? { label } : {}),
   authorizationUrl: resolveOAuthUrl(
     Option.getOrElse(preset.authorizationUrl, () => ""),
     baseUrl,
@@ -161,6 +163,10 @@ export const detectedAuthenticationTemplates = (
       apiKeyTemplateFromHeaderPreset(preset, AuthTemplateSlug.make(`apikey-${index}`)),
     );
   });
+  // A lone oauth2 method needs no disambiguating label (it renders as plain
+  // "OAuth2"); with several, each carries its preset label so the stored
+  // methods stay tellable apart in the UI.
+  const labelled = oauth2Presets.length > 1;
   for (const preset of oauth2Presets) {
     const scopes = resolvedOAuthScopes(Object.keys(preset.scopes), preset.identityScopes);
     templates.push(
@@ -169,6 +175,7 @@ export const detectedAuthenticationTemplates = (
         baseUrl,
         AuthTemplateSlug.make(`oauth-${preset.securitySchemeName}`),
         scopes,
+        labelled ? preset.label : undefined,
       ),
     );
   }

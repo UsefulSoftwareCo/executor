@@ -22,6 +22,7 @@ import {
   McpServingRoutes,
   McpDiscoveryRoutes,
   McpSessionStore,
+  preInitializeMethodNotFound,
   type McpResource,
   type McpDispatchResult,
   type Principal,
@@ -79,6 +80,13 @@ const buildHandler = (
 };
 
 describe("McpServingRoutes envelope", () => {
+  it("rejects HEAD with a JSON-RPC 405 before dispatch", async () => {
+    const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
+    const response = await handler(new Request("https://host.test/mcp", { method: "HEAD" }));
+    expect(response.status).toBe(405);
+    expect(response.headers.get("content-type")).toContain("application/json");
+  });
+
   it("rejects a non-GET/POST/DELETE/OPTIONS method with 405 -32001 before dispatch", async () => {
     const handler = buildHandler(OkStoreLive, McpErrorReporterNoop);
     for (const method of ["PUT", "PATCH"] as const) {
@@ -194,6 +202,145 @@ it("dispatches toolkit MCP routes with the parsed toolkit resource", async () =>
   expect(await Effect.runPromise(Ref.get(seen))).toEqual({
     kind: "toolkit",
     slug: "deploy",
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The pre-initialize dispatch guard. Session-less, only `initialize` is servable,
+// and the transport's answer for everything else is a connection-killing HTTP
+// 400. These lock in the -32601-on-200 replacement and, just as importantly,
+// everything it must NOT intercept.
+// ---------------------------------------------------------------------------
+
+/** The headers a streamable-HTTP client must send on a POST; less is a 406/415. */
+const MCP_POST_HEADERS = {
+  "content-type": "application/json",
+  accept: "application/json, text/event-stream",
+} as const;
+
+const postBody = (body: unknown, headers: Record<string, string> = MCP_POST_HEADERS): Request =>
+  new Request("https://host.test/mcp", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+const guard = (request: Request): Promise<Response | null> =>
+  Effect.runPromise(preInitializeMethodNotFound(request));
+
+describe("preInitializeMethodNotFound", () => {
+  it("answers an unknown pre-init method with -32601 on a 200, echoing the id", async () => {
+    const response = await guard(
+      postBody({ jsonrpc: "2.0", id: 7, method: "server/discover", params: {} }),
+    );
+    expect(response).not.toBeNull();
+    // 200, not 400: a per-request error the client can survive, which is the
+    // entire point — a 400 makes clients tear the transport down.
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("content-type")).toContain("application/json");
+    expect(await response!.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: -32601, message: "Method not found" },
+    });
+  });
+
+  it("generalizes past server/discover to any unknown method, including a string id", async () => {
+    const response = await guard(
+      postBody({ jsonrpc: "2.0", id: "abc", method: "some/futureProbe" }),
+    );
+    expect(await response!.json()).toEqual({
+      jsonrpc: "2.0",
+      id: "abc",
+      error: { code: -32601, message: "Method not found" },
+    });
+  });
+
+  it("lets initialize through to the transport", async () => {
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })),
+    ).toBeNull();
+  });
+
+  it("lets a notification through — there is no id to answer", async () => {
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", method: "notifications/initialized" })),
+    ).toBeNull();
+  });
+
+  it("lets non-POST, non-JSON, and non-JSON-RPC bodies through", async () => {
+    expect(await guard(new Request("https://host.test/mcp"))).toBeNull();
+    expect(
+      await guard(
+        new Request("https://host.test/mcp", {
+          method: "POST",
+          headers: MCP_POST_HEADERS,
+          body: "not json",
+        }),
+      ),
+    ).toBeNull();
+    expect(await guard(postBody({ id: 1, method: "tools/list" }))).toBeNull();
+    expect(await guard(postBody([]))).toBeNull();
+  });
+
+  // The guard replaces ONE transport answer (-32000 on a 400) and must not
+  // shadow the others. A structurally invalid JSON-RPC request is the
+  // transport's 400 parse error to give, not ours to call "method not found".
+  it("lets a structurally invalid JSON-RPC request through to the transport", async () => {
+    // A fractional id is not a request id (the SDK's RequestIdSchema is
+    // string | integer), so the transport rejects the whole message.
+    expect(await guard(postBody({ jsonrpc: "2.0", id: 1.5, method: "tools/list" }))).toBeNull();
+    // `params` must be an object when present.
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", id: 1, method: "tools/list", params: 5 })),
+    ).toBeNull();
+    // The request schema is strict: an unknown top-level field is invalid.
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", id: 1, method: "tools/list", extra: true })),
+    ).toBeNull();
+    // A wrong protocol version, and a batch, which the transport unpacks itself.
+    expect(await guard(postBody({ jsonrpc: "1.0", id: 1, method: "tools/list" }))).toBeNull();
+    expect(await guard(postBody([{ jsonrpc: "2.0", id: 1, method: "tools/list" }]))).toBeNull();
+  });
+
+  // Answering 200 here would bypass the transport's content negotiation, which
+  // runs before it ever looks at the body.
+  it("lets a request that fails the transport's content negotiation through", async () => {
+    const valid = { jsonrpc: "2.0", id: 1, method: "server/discover" };
+    // Content-Type is not application/json, or is absent -> the 415.
+    expect(
+      await guard(
+        postBody(valid, { "content-type": "text/plain", accept: MCP_POST_HEADERS.accept }),
+      ),
+    ).toBeNull();
+    expect(await guard(postBody(valid, { accept: MCP_POST_HEADERS.accept }))).toBeNull();
+    // Accept misses one of the two required types, or is absent -> the 406.
+    expect(
+      await guard(postBody(valid, { ...MCP_POST_HEADERS, accept: "application/json" })),
+    ).toBeNull();
+    expect(
+      await guard(postBody(valid, { ...MCP_POST_HEADERS, accept: "text/event-stream" })),
+    ).toBeNull();
+    expect(await guard(postBody(valid, { "content-type": "application/json" }))).toBeNull();
+  });
+
+  it("still fires when the negotiated headers carry parameters", async () => {
+    const response = await guard(
+      postBody(
+        { jsonrpc: "2.0", id: 3, method: "server/discover" },
+        {
+          "content-type": "application/json; charset=utf-8",
+          accept: "application/json;q=0.9, text/event-stream;q=1.0",
+        },
+      ),
+    );
+    expect(response?.status).toBe(200);
+  });
+
+  it("leaves the caller's body readable for the transport", async () => {
+    const request = postBody({ jsonrpc: "2.0", id: 1, method: "server/discover" });
+    await guard(request);
+    expect(await request.json()).toEqual({ jsonrpc: "2.0", id: 1, method: "server/discover" });
   });
 });
 

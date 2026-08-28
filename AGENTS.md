@@ -10,6 +10,9 @@ Stable contracts live here. Current setup and server mechanics are in
   package script. Never use `bun test`.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
+- e2e is slow. Avoid running it often during development: optimize for
+  iteration speed first, then test. Save e2e for when the change is settled,
+  and run the narrowest scenario rather than the full suite.
 - Run `bun run format` before a PR and include only files owned by the branch.
 - User-visible work requires a specific e2e run, a browsable dev instance, and
   the recording or trace showing what to inspect. Add a scenario when none

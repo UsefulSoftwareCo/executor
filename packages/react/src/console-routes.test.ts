@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { RESERVED_ORG_SLUGS } from "@executor-js/api";
 
 import { CONSOLE_ROUTE_PATHS, ORG_SLUG_SEGMENT, consoleRoutes } from "./console-routes";
 import { routeTree } from "./routes/routeTree.gen";
@@ -50,6 +51,29 @@ describe("console route contract", () => {
     const remaining = (withoutSecrets as { children?: ReadonlyArray<unknown> }).children ?? [];
     expect(remaining).toHaveLength(CONSOLE_ROUTE_PATHS.length - 1);
     expect(JSON.stringify(withoutSecrets)).not.toContain("secrets.tsx");
+  });
+
+  it("every console root segment is a reserved org slug", () => {
+    // Both lists live in this repo but in different packages, and only their
+    // COMBINATION is a bug: an org may claim any slug the reserved set does not
+    // hold, and the org scope is the FIRST path segment, so an org slugged
+    // `toolkits` shadows `/toolkits` for its own members — silently, since both
+    // URLs resolve to a real route. `toolkits` shipped unreserved for exactly
+    // this reason: the route was added and the reservation was not.
+    //
+    // Derived from CONSOLE_ROUTE_PATHS rather than hardcoded, so a console
+    // route added tomorrow fails here until it is reserved.
+    const rootSegments = CONSOLE_ROUTE_PATHS.map((path) => path.split("/")[1] ?? "")
+      // "/" (the index) has no segment, and `$param` roots are not literal
+      // segments an org slug could collide with.
+      .filter((segment) => segment !== "" && !segment.startsWith("$"));
+    expect(rootSegments.length, "the contract has literal root segments to check").toBeGreaterThan(
+      0,
+    );
+    const unreserved = [...new Set(rootSegments)].filter(
+      (segment) => !RESERVED_ORG_SLUGS.has(segment),
+    );
+    expect(unreserved, "console root segments an org could claim and shadow").toEqual([]);
   });
 
   it("orgScoped extras mount inside the org scope", () => {

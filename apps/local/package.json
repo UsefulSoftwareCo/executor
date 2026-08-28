@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/local",
-  "version": "1.4.4",
+  "version": "1.6.2",
   "private": true,
   "type": "module",
   "exports": {
@@ -22,6 +22,7 @@
   "dependencies": {
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@executor-js/analytics": "workspace:*",
     "@executor-js/api": "workspace:*",
     "@executor-js/app": "workspace:*",
     "@executor-js/config": "workspace:*",
@@ -29,7 +30,7 @@
     "@executor-js/fumadb": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/integrations-registry": "workspace:*",
-    "@executor-js/plugin-apps": "workspace:*",
+    "@executor-js/mcp-apps-shell": "workspace:*",
     "@executor-js/plugin-desktop-settings": "workspace:*",
     "@executor-js/plugin-example": "workspace:*",
     "@executor-js/plugin-file-secrets": "workspace:*",
@@ -45,7 +46,7 @@
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
     "@libsql/client": "catalog:",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tanstack/react-router": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",

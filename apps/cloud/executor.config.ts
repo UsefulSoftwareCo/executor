@@ -10,11 +10,6 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
-import {
-  makeDynamicWorkerAppToolExecutor,
-  makeDynamicWorkerBundlerBackend,
-} from "@executor-js/plugin-apps/cloud";
-import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-workos-vault";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
@@ -53,61 +48,10 @@ interface CloudPluginDeps {
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
-  /** Mirrors `HostConfig.allowLocalNetwork` (`ALLOW_LOCAL_NETWORK`). Off by
-   *  default; production leaves it unset. */
-  readonly allowLocalNetwork?: boolean;
-  readonly workerLoader?: {
-    readonly get: (
-      name: string | null,
-      factory: () => {
-        readonly compatibilityDate: string;
-        readonly compatibilityFlags?: readonly string[];
-        readonly mainModule: string;
-        readonly modules: Readonly<Record<string, string | { readonly wasm: ArrayBuffer }>>;
-        readonly globalOutbound?: null;
-      },
-    ) => { readonly getEntrypoint: () => unknown };
-    readonly load?: (code: {
-      readonly compatibilityDate: string;
-      readonly compatibilityFlags?: readonly string[];
-      readonly mainModule: string;
-      readonly modules: Readonly<Record<string, string | { readonly wasm: ArrayBuffer }>>;
-      readonly globalOutbound?: null;
-    }) => { readonly getEntrypoint: () => unknown };
-  };
-  readonly workerAssets?: {
-    readonly fetch: (request: Request) => Promise<Response>;
-  };
 }
 
-const base64ToArrayBuffer = (value: string): ArrayBuffer => {
-  const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-};
-
-const assetRequest = (path: string): Request => new Request(new URL(path, "https://assets.local"));
-
-const fetchAsset = async (
-  assets: { readonly fetch: (request: Request) => Promise<Response> },
-  path: string,
-): Promise<Response> => {
-  const response = await assets.fetch(assetRequest(path));
-  if (!response.ok) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: worker artifact asset fetch must reject the dynamic bundler setup
-    throw new Error(`failed to fetch worker-bundler asset ${path}: ${response.status}`);
-  }
-  return response;
-};
-
 export default defineExecutorConfig({
-  plugins: ({
-    workosCredentials,
-    workosVaultClient,
-    activeToolkitSlug,
-    allowLocalNetwork,
-    workerLoader,
-    workerAssets,
-  }: CloudPluginDeps = {}) =>
+  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -117,43 +61,6 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: false,
       }),
       graphqlHttpPlugin(),
-      appsHttpPlugin({
-        ...(workerLoader
-          ? {
-              executor: makeDynamicWorkerAppToolExecutor({ loader: workerLoader }),
-              bundler: makeDynamicWorkerBundlerBackend({
-                loader: workerLoader,
-                artifact: async () => {
-                  const artifact = await import("virtual:executor/worker-bundler-artifact");
-                  if (artifact.source !== undefined && artifact.wasmBase64 !== undefined) {
-                    return {
-                      source: artifact.source,
-                      wasm: base64ToArrayBuffer(artifact.wasmBase64),
-                    };
-                  }
-                  if (workerAssets === undefined) {
-                    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: worker artifact asset binding is required for production bundler setup
-                    throw new Error("worker-bundler artifact assets binding is unavailable");
-                  }
-                  const [source, wasm] = await Promise.all([
-                    fetchAsset(workerAssets, artifact.sourcePath).then((response) =>
-                      response.text(),
-                    ),
-                    fetchAsset(workerAssets, artifact.wasmPath).then((response) =>
-                      response.arrayBuffer(),
-                    ),
-                  ]);
-                  return {
-                    source,
-                    wasm,
-                  };
-                },
-              }),
-            }
-          : {}),
-        sourceKinds: ["git"],
-        allowPrivateGitHosts: allowLocalNetwork === true,
-      }),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({
         credentials: workosCredentials ?? { apiKey: "", clientId: "" },

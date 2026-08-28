@@ -40,6 +40,8 @@ import { observabilityMiddleware, type ErrorCapture } from "../observability";
 import { AccountHttpApi } from "../account/api";
 import { AccountHandlers } from "../account/handlers";
 import type { AccountProvider } from "../account/service";
+import { AdminUsersHttpApi } from "../admin/api";
+import { AdminUsersHandlers } from "../admin/handlers";
 import { composePluginApi, composePluginHandlerLayer } from "../plugin-routes";
 import { CoreHandlers } from "../handlers";
 import { requestScopedMiddleware } from "./request-scoped";
@@ -178,6 +180,46 @@ export const makeAccountApiLayer = <MOut, ME, MR>(
 export const accountProviderMiddlewareLayer = (
   accountProviderLayer: Layer.Layer<AccountProvider>,
 ) => requestScopedMiddleware(accountProviderLayer).layer;
+
+// ---------------------------------------------------------------------------
+// Admin Users API
+// ---------------------------------------------------------------------------
+
+export interface MakeAdminUsersApiLayerOptions {
+  /**
+   * Optional prefixed `HttpRouter` view, matching the protected API's prefix so
+   * the admin routes register on the same `/api`-prefixed router.
+   */
+  readonly router?: RouterLayer;
+}
+
+/**
+ * Mount the shared, provider-neutral `AdminUsersHandlers` (the tenant-wide
+ * users + connections reads) behind a per-request `AdminUsersProvider`.
+ *
+ * Structurally identical to `makeAccountApiLayer`, and for the same reason: an
+ * HttpApi handler's service requirement is NOT erased by a plain
+ * `Layer.provide` on the builder layer (it leaks into the app layer's
+ * requirements and breaks the host build), so the provider arrives through a
+ * per-request router middleware.
+ *
+ * This is mounted as an app EXTENSION route rather than added to
+ * `CoreExecutorApi`, because the core API is served behind the execution-stack
+ * middleware — which authenticates a member `Principal` and binds a
+ * product-view executor to them. The admin plane's callers (an org API key with
+ * no member behind it) and its executor (subject-less, tenant reach) are both
+ * the opposite of that, so it gets its own mount and its own auth.
+ */
+export const makeAdminUsersApiLayer = <MOut, ME, MR>(
+  adminUsersProviderMiddleware: Layer.Layer<MOut, ME, MR>,
+  options: MakeAdminUsersApiLayerOptions = {},
+) => {
+  const base = HttpApiBuilder.layer(AdminUsersHttpApi).pipe(
+    Layer.provide(AdminUsersHandlers),
+    Layer.provide(adminUsersProviderMiddleware),
+  );
+  return options.router ? base.pipe(Layer.provide(options.router)) : base;
+};
 
 // ---------------------------------------------------------------------------
 // App-layer web-handler binding

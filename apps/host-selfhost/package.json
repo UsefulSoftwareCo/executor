@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/host-selfhost",
-  "version": "0.0.34",
+  "version": "0.0.44",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "bunx --bun vite dev",
-    "build": "turbo run build --filter @executor-js/vite-plugin && vite build",
+    "build": "turbo run build --filter @executor-js/vite-plugin && vite build && node scripts/assert-shell-asset.mjs",
     "start": "bun run src/serve.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
@@ -19,14 +19,16 @@
   },
   "dependencies": {
     "@better-auth/api-key": "^1.6.11",
+    "@cloudflare/worker-bundler": "0.2.1",
     "@effect/atom-react": "catalog:",
     "@effect/platform-bun": "catalog:",
+    "@executor-js/analytics": "workspace:*",
     "@executor-js/api": "workspace:*",
     "@executor-js/app": "workspace:*",
     "@executor-js/execution": "workspace:*",
     "@executor-js/fumadb": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
-    "@executor-js/plugin-apps": "workspace:*",
+    "@executor-js/mcp-apps-shell": "workspace:*",
     "@executor-js/plugin-encrypted-secrets": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
@@ -43,8 +45,10 @@
     "better-auth": "^1.6.11",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
+    "esbuild": "^0.27.3",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "workerd": "1.20260708.1"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -40,9 +40,15 @@ import {
   Tenant,
   type AnyPlugin,
   type Executor,
+  type ExecutorConfig,
+  type FirstPartyOAuthClientConfig,
   type StorageFailure,
 } from "@executor-js/sdk";
-import { makeHostedFetch, makeHostedHttpClientLayer } from "@executor-js/sdk/host-internal";
+import {
+  makeHostedFetch,
+  makeHostedHttpClientLayer,
+  touchSubject,
+} from "@executor-js/sdk/host-internal";
 
 import { DbProvider } from "./executor-fuma-db";
 
@@ -86,6 +92,37 @@ export interface HostConfigShape {
    * detail of credential storage.
    */
   readonly exposeCredentialProviders?: boolean;
+  /**
+   * Forwarded to `ExecutorConfig.onIntegrationChange`: best-effort post-commit
+   * observation of durable integration-catalog changes (see the sdk contract).
+   * Hosts that record product analytics supply it; omitted -> no observation.
+   */
+  readonly onIntegrationChange?: ExecutorConfig["onIntegrationChange"];
+  /**
+   * Host-operated OAuth apps (`first-party:<name>`), threaded verbatim into
+   * `createExecutor`. Declared here — not per-request — because the registered
+   * redirect URI on the provider side is fixed per deployment, and both request
+   * planes (HTTP API, MCP session DO) must resolve the same apps. Hosts that
+   * ship none simply omit it.
+   */
+  readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
+  /**
+   * Forwarded to `ExecutorConfig.enterpriseManagedRollout`: the host's rollout
+   * gate for enterprise-managed authorization (the MCP EMA profile). Declared
+   * here — not per-request — because it is a deployment-wide capability; the
+   * per-connect identity it needs is supplied by the SDK at the call site.
+   * Hosts that operate no feature-flag service omit it, and the profile is
+   * attempted as it was before the gate existed.
+   */
+  readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
+  /**
+   * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
+   * connection's persisted remote tool catalog stays fresh. Omit to take the
+   * SDK default (15 minutes); `null` disables time-based re-sync. Declared
+   * here — not per-request — because catalog freshness is a deployment-wide
+   * operator knob.
+   */
+  readonly toolsSyncTtlMs?: number | null;
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -210,13 +247,9 @@ export const makeScopedExecutor = <
   options?: { readonly plugins?: PluginsProviderContext },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
-    const { db, blobs } = yield* DbProvider.asEffect().pipe(
-      Effect.withSpan("executor.stack.db_provider"),
-    );
-    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect().pipe(
-      Effect.withSpan("executor.stack.plugins_provider"),
-    );
-    const config = yield* HostConfig.asEffect().pipe(Effect.withSpan("executor.stack.host_config"));
+    const { db, blobs } = yield* DbProvider.asEffect();
+    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect();
+    const config = yield* HostConfig.asEffect();
     // Explicit config wins; otherwise fall back to the request origin if a host
     // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
     // non-request callers — `coreTools.webBaseUrl` is optional and only the
@@ -252,9 +285,7 @@ export const makeScopedExecutor = <
       oauthCallbackPath: config.oauthCallbackPath,
     });
 
-    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins)).pipe(
-      Effect.withSpan("executor.plugins.init"),
-    );
+    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins));
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
     };
@@ -272,17 +303,98 @@ export const makeScopedExecutor = <
       plugins,
       httpClientLayer,
       fetch: hostedFetch,
+      onIntegrationChange: config.onIntegrationChange,
+      ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
+      firstPartyOAuthClients: config.firstPartyOAuthClients,
+      enterpriseManagedRollout: config.enterpriseManagedRollout,
       coreTools: {
         webBaseUrl,
         orgSlug,
         includeProviders: config.exposeCredentialProviders ?? true,
       },
-    }).pipe(Effect.withSpan("executor.stack.create_executor"));
+    });
+    // Record the sighting. THIS is the seam every HTTP request and MCP session
+    // on every host passes through, so it is where the `subject` table gets
+    // populated: a principal earns a row the first time it authenticates,
+    // whether or not it ever connects anything. Throttled (`touchSubject` only
+    // rewrites `last_seen_at` past a coarse interval) and non-fatal by
+    // construction — it returns `Effect<void>`, so a lost sighting logs and the
+    // request proceeds. `accountId` is passed verbatim, sentinels ("local")
+    // included.
+    yield* touchSubject(db, { tenant: organizationId, externalId: accountId });
+
     // The seam erases the plugin tuple type; the caller re-narrows via the
     // `TPlugins` phantom. Runtime shape is identical to a typed
     // `createExecutor({ plugins })` call.
     return executor as Executor<TPlugins>;
+  });
+
+// ---------------------------------------------------------------------------
+// makePlatformExecutor — the subject-less, read-only sibling of
+// `makeScopedExecutor`, for the `/admin/*` plane.
+//
+// An org-level caller (a WorkOS org-scoped API key, or an owner/admin acting on
+// the whole workspace) has NO acting member, so there is no honest subject to
+// bind. This builds the executor that shape implies: `{ tenant, subject:
+// undefined, platformView: true }`.
+//
+// WHAT "READ-ONLY" MEANS HERE, PRECISELY. `platformView: true` puts
+// `writes: "denied"` on the executor's base owner-policy context and
+// `reach: "tenant"` on the `admin` handle's. So:
+//   - EVERY surface on this executor — `admin`, and the ordinary `connections`
+//     / `policies` / `integrations` / `oauth` alike — is refused every create,
+//     update and delete by the owner policy. That is enforced at the storage
+//     boundary, not by this factory remembering to be careful.
+//   - Only the `admin` handle READS tenant-wide. The ordinary surfaces keep
+//     bound reach, so they see the tenant's org rows and nothing of any
+//     member's — widening them would expose every subject's `connection` row,
+//     credential item ids included, to surfaces that never needed them.
+// Read-only is therefore total; tenant-wide visibility is not, and deliberately
+// so.
+//
+// Three deliberate differences from `makeScopedExecutor`:
+//   - no `subject`, so no `owner: "user"` rows resolve implicitly and the
+//     product view is untouched;
+//   - no `touchSubject`, because there is no principal to record a sighting
+//     for. An org key must never mint a `subject` row — that row would show up
+//     in the very list this plane serves, as a user that does not exist;
+//   - no OAuth redirect / core-tools wiring. Those exist to drive interactive
+//     connect flows on behalf of a member; an admin read has neither.
+// ---------------------------------------------------------------------------
+
+export const makePlatformExecutor = (
+  organizationId: string,
+): Effect.Effect<Executor, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
+  Effect.gen(function* () {
+    const { db, blobs } = yield* DbProvider.asEffect().pipe(
+      Effect.withSpan("executor.platform.db_provider"),
+    );
+    const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect().pipe(
+      Effect.withSpan("executor.platform.plugins_provider"),
+    );
+    const config = yield* HostConfig.asEffect().pipe(
+      Effect.withSpan("executor.platform.host_config"),
+    );
+
+    // The plugin set still has to be built: the platform view reads the
+    // `connection` table, whose rows name integrations a plugin owns, and the
+    // executor's construction validates against the registered plugin set.
+    const plugins = yield* Effect.sync(() => pluginsFactory()).pipe(
+      Effect.withSpan("executor.platform.plugins.init"),
+    );
+    const hostedHttpOptions = { allowLocalNetwork: config.allowLocalNetwork };
+
+    return yield* createExecutor({
+      tenant: Tenant.make(organizationId),
+      db,
+      blobs,
+      plugins,
+      httpClientLayer: makeHostedHttpClientLayer(hostedHttpOptions),
+      fetch: makeHostedFetch(hostedHttpOptions),
+      onElicitation: "accept-all",
+      platformView: true,
+    }).pipe(Effect.withSpan("executor.platform.create_executor"));
   });
