@@ -162,7 +162,7 @@ describe("browserEnvironment", () => {
     expect(env.readReloadFlag()).toBe(true);
   });
 
-  it("reloads the page and routes reports to the shared reporter", () => {
+  it("reloads the page and reports through the shared handled-error reporter", () => {
     const { env, reloads, reported } = environment({});
     // oxlint-disable-next-line executor/no-error-constructor -- test boundary: stands in for the chunk TypeError
     const failure = new TypeError("Failed to fetch dynamically imported module");
@@ -171,6 +171,14 @@ describe("browserEnvironment", () => {
     env.report(failure);
 
     expect(reloads.count).toBe(1);
-    expect(reported).toEqual([failure]);
+    // Reporting the raw TypeError would file this as an unhandled crash with no
+    // surface attached; it must arrive as the normalized handled-error envelope.
+    expect(reported).toHaveLength(1);
+    const report = reported[0] as { readonly context?: unknown; readonly cause?: unknown };
+    expect(report.context).toMatchObject({
+      surface: "renderer",
+      action: "load-route-chunk",
+    });
+    expect(report.cause).toBe(failure);
   });
 });

@@ -9,6 +9,7 @@
  */
 
 import { installPreloadErrorHandler, type PreloadErrorEnvironment } from "./preload-error";
+import { reportRendererHandledError } from "./crash-reporting";
 
 const OVERLAY_ID = "executor-server-disconnected";
 const RELOAD_FLAG_KEY = "executor:preload-reloaded";
@@ -85,8 +86,15 @@ export const browserEnvironment = (): PreloadErrorEnvironment => {
     showDisconnected: showDisconnectedOverlay,
     reload: () => window.location.reload(),
     // Routed through the same reporter the rest of the UI uses, so a chunk that
-    // stays missing with a healthy server is still visible upstream.
-    report: (error) => globalThis.reportError?.(error),
+    // stays missing with a healthy server arrives as a HANDLED error carrying
+    // its surface and action — not as a bare global `reportError`, which the
+    // crash reporter files as an unhandled crash with that context dropped.
+    report: (error) =>
+      reportRendererHandledError(error, {
+        surface: "renderer",
+        action: "load-route-chunk",
+        message: "A route chunk stayed unreachable with the server answering",
+      }),
     // Without storage the guard degrades to "never auto-reload", which is the
     // safe direction: a missing chunk gets reported instead of looping.
     readReloadFlag: () => (storage ? storage.getItem(RELOAD_FLAG_KEY) !== null : true),
