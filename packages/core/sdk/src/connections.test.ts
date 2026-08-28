@@ -1206,7 +1206,7 @@ describe("agent read revalidation (coreTools connections.list)", () => {
 
   it.effect("leaves tool-sync failure verdicts for sync to clear", () =>
     Effect.gen(function* () {
-      const { executor, counters, stamp } = yield* makeHealthHarness();
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
       const detail = "Tool sync failing: plugin returned an incomplete tool catalog";
       yield* stamp({
         last_health: { status: "degraded", checkedAt: Date.now() - STALE_MS, detail },
@@ -1214,8 +1214,14 @@ describe("agent read revalidation (coreTools connections.list)", () => {
 
       const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
       const listed = out.connections.find((c) => c.name === "main");
-      expect(listed?.lastHealth?.detail).toBe(detail);
+      expect(listed?.lastHealth?.status).toBe("degraded");
       expect(counters.probes).toBe(0);
+
+      // The compact list shape omits `detail`, so read the untouched verdict
+      // off the row: a tool-sync failure is cleared by a successful sync, not
+      // by a credential probe.
+      const row = yield* persisted();
+      expect(row?.lastHealth?.detail).toBe(detail);
     }),
   );
 });
@@ -1262,6 +1268,25 @@ describe("heal-on-use", () => {
           checkedAt: Date.now() - STALE_MS,
           detail: "invalid_grant",
         },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("a call whose credential no longer resolves is not healed", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      // The stored credential is gone from the provider. Rendering skips a
+      // missing placement, so an upstream that answers unauthenticated still
+      // succeeds — that success says nothing about a credential that no longer
+      // exists, and healing from it would tell the user to stop reconnecting.
+      yield* stamp({
+        item_ids: { token: "vanished-item" },
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
       });
 
       yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
