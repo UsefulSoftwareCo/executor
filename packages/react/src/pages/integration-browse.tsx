@@ -502,7 +502,7 @@ export function IntegrationBrowsePage() {
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
     let rows = catalogEntries.flatMap((entry): readonly Row[] => {
-      const pretty = domainDisplayName(entry.domain);
+      const pretty = entry.name ?? domainDisplayName(entry.domain);
       const description = entry.description ? tidyDescription(entry.description) : undefined;
       // Prefer the registry's own per-surface records. Without them all we know
       // is which kinds exist, so the connect target has to be resolved on click
@@ -515,9 +515,11 @@ export function IntegrationBrowsePage() {
       return surfaces.map((surface): Row => {
         const known = "slug" in surface ? surface : null;
         const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
+        // Slug in the key: one domain can carry many product surfaces of the
+        // same kind (Microsoft Graph's workloads all live on one domain).
         return {
-          key: `catalog-${entry.domain}-${surface.kind}`,
-          testId: `catalog-${entry.domain}-${surface.kind}`,
+          key: `catalog-${entry.domain}-${surface.kind}-${known?.slug ?? pretty}`,
+          testId: `catalog-${known?.slug ?? `${entry.domain}-${surface.kind}`}`,
           title: withSurface(pretty, word),
           domain: entry.domain,
           ...(description ? { description } : {}),

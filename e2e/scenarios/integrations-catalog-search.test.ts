@@ -56,11 +56,14 @@ scenario(
         await visit(page, "/integrations/browse");
         await page.getByPlaceholder(/Search integrations, or paste a URL/).fill("todoist");
         // The CLI-only surface is not offered; the connectable kind is.
-        await page.getByTestId("catalog-todoist.com").getByText("MCP").waitFor();
+        await page.getByTestId("catalog-todoist.com-mcp").getByText("MCP").waitFor();
       });
 
-      await step("Picking the row lands on the MCP add flow, prefilled", async () => {
-        await page.getByTestId("catalog-todoist.com").click();
+      await step("Adding from the row lands on the MCP add flow, prefilled", async () => {
+        await page
+          .getByTestId("catalog-todoist.com-mcp")
+          .getByRole("button", { name: "Add Todoist MCP" })
+          .click();
         await page.waitForURL(/\/integrations\/add\/mcp/);
         const url = new URL(page.url());
         expect(url.searchParams.get("url")).toBe("https://ai.todoist.net/mcp");

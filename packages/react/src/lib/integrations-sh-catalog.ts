@@ -18,7 +18,9 @@ import * as Schema from "effect/Schema";
 import { getDomain } from "tldts";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 
-export const INTEGRATIONS_SH_ORIGIN = "https://integrations.sh";
+export const INTEGRATIONS_SH_ORIGIN =
+  (import.meta.env.VITE_PUBLIC_INTEGRATIONS_SH_ORIGIN as string | undefined) ??
+  "https://integrations.sh";
 
 /** Registry kinds executor can connect (the registry also lists CLIs). Kind
  *  strings deliberately match the plugin keys. */
@@ -47,6 +49,9 @@ export interface CatalogSurface {
 
 export interface CatalogSearchEntry {
   readonly domain: string;
+  /** The product's display name, when the row is a named product rather than
+   *  a bare domain — "Outlook Mail" on graph.microsoft.com. */
+  readonly name?: string;
   readonly description: string;
   readonly kinds: readonly CatalogKind[];
   /** Present on registries new enough to report it; absent responses fall back
@@ -93,6 +98,7 @@ const SearchResponse = Schema.Struct({
   results: Schema.Array(
     Schema.Struct({
       domain: Schema.String,
+      name: Schema.optional(Schema.String),
       description: Schema.String,
       kinds: Schema.Array(Schema.String),
       surfaces: Schema.optional(
@@ -128,6 +134,7 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
           );
           return {
             domain: entry.domain,
+            ...(entry.name && entry.name !== entry.domain ? { name: entry.name } : {}),
             description: entry.description,
             kinds: entry.kinds.filter(isConnectableKind),
             ...(surfaces.length > 0 ? { surfaces } : {}),
