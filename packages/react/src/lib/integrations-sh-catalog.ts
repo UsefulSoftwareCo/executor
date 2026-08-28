@@ -86,13 +86,23 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
         .filter((entry) => entry.kinds.length > 0),
   });
 
+export interface CatalogQuery {
+  /** Free text. EMPTY IS MEANINGFUL: the registry answers an empty query with
+   *  its popularity-ordered head, which is what a browse view wants. */
+  readonly query: string;
+  /** Restrict to one surface kind. Omitted means every connectable kind. */
+  readonly kind?: CatalogKind;
+  /** The registry caps this at 100. */
+  readonly limit?: number;
+}
+
 export const searchCatalog = (
-  query: string,
-  limit = 10,
+  input: CatalogQuery,
 ): Effect.Effect<readonly CatalogSearchEntry[], CatalogRequestError> => {
   const url = new URL("/api/search", INTEGRATIONS_SH_ORIGIN);
-  url.searchParams.set("q", query);
-  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("q", input.query);
+  url.searchParams.set("limit", String(input.limit ?? 10));
+  if (input.kind) url.searchParams.set("kind", input.kind);
   return Effect.map(fetchCatalogJson(url), parseCatalogSearch);
 };
 
@@ -172,16 +182,27 @@ export const resolveConnectTarget = (
 
 /** Domains already represented by a loaded plugin's presets, so the catalog
  *  section doesn't repeat what the preset list above it already shows. */
+/** The domain a preset represents, read from its integrations.sh logo URL
+ *  first (which names the domain outright) and its spec/endpoint URL second. */
+export const presetDomain = (preset: {
+  readonly icon?: string;
+  readonly url?: string;
+}): string | null => {
+  for (const candidate of [preset.icon, preset.url]) {
+    if (!candidate) continue;
+    const logoMatch = /^https:\/\/integrations\.sh\/logo\/([^/?]+)/.exec(candidate);
+    const domain = logoMatch?.[1] ?? getDomain(candidate);
+    if (domain) return domain;
+  }
+  return null;
+};
+
 export const presetDomains = (plugins: readonly IntegrationPlugin[]): ReadonlySet<string> => {
   const domains = new Set<string>();
   for (const plugin of plugins) {
     for (const preset of plugin.presets ?? []) {
-      for (const candidate of [preset.icon, preset.url]) {
-        if (!candidate) continue;
-        const logoMatch = /^https:\/\/integrations\.sh\/logo\/([^/?]+)/.exec(candidate);
-        const domain = logoMatch?.[1] ?? getDomain(candidate);
-        if (domain) domains.add(domain);
-      }
+      const domain = presetDomain(preset);
+      if (domain) domains.add(domain);
     }
   }
   return domains;
@@ -214,42 +235,74 @@ export const filterCatalogEntries = (
 // ---------------------------------------------------------------------------
 
 const SEARCH_DEBOUNCE_MS = 250;
+/** Free-text queries wait for a second character; a browse (empty query) does
+ *  not, because there is nothing to narrow. */
 const MIN_QUERY_LENGTH = 2;
-const searchCache = new Map<string, readonly CatalogSearchEntry[]>();
+const BROWSE_LIMIT = 60;
 
 export interface CatalogSearchState {
   readonly entries: readonly CatalogSearchEntry[];
   readonly loading: boolean;
+  /** The registry could not be reached. The rest of the page still works, so
+   *  this is a section-level notice rather than a page error. */
+  readonly failed: boolean;
 }
 
-export function useCatalogSearch(rawQuery: string): CatalogSearchState {
-  const query = rawQuery.trim().toLowerCase();
-  const [state, setState] = useState<CatalogSearchState>({ entries: [], loading: false });
+const cacheKey = (input: CatalogQuery): string =>
+  `${input.kind ?? "all"}:${input.limit ?? 0}:${input.query}`;
+const searchCache = new Map<string, readonly CatalogSearchEntry[]>();
+
+/**
+ * Browse or search the public registry.
+ *
+ * One hook for both because they are the same request with a different `q`:
+ * an empty query returns the popularity-ordered head, a non-empty one filters
+ * it. Search stays server-side and edge-cached, so no view ever downloads the
+ * multi-thousand-entry catalog.
+ */
+export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
+  const query = input.query.trim().toLowerCase();
+  const kind = input.kind;
+  const limit = input.limit ?? BROWSE_LIMIT;
+  const [state, setState] = useState<CatalogSearchState>({
+    entries: [],
+    loading: true,
+    failed: false,
+  });
   const generation = useRef(0);
 
   useEffect(() => {
     const requestId = ++generation.current;
-    if (query.length < MIN_QUERY_LENGTH) {
-      setState({ entries: [], loading: false });
+    // A partial word is not yet a query; leave the previous results in place
+    // rather than flashing an empty list between keystrokes.
+    if (query.length > 0 && query.length < MIN_QUERY_LENGTH) {
+      setState((previous) => ({ ...previous, loading: false }));
       return;
     }
-    const cached = searchCache.get(query);
+    const request: CatalogQuery = { query, limit, ...(kind ? { kind } : {}) };
+    const cached = searchCache.get(cacheKey(request));
     if (cached) {
-      setState({ entries: cached, loading: false });
+      setState({ entries: cached, loading: false, failed: false });
       return;
     }
     setState((previous) => ({ ...previous, loading: true }));
-    const timer = setTimeout(() => {
-      void Effect.runPromiseExit(searchCatalog(query)).then((exit) => {
-        if (Exit.isSuccess(exit)) searchCache.set(query, exit.value);
-        if (generation.current !== requestId) return;
-        // Reachability is best-effort — the presets and URL detection above
-        // the catalog section keep working without it.
-        setState({ entries: Exit.isSuccess(exit) ? exit.value : [], loading: false });
-      });
-    }, SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(
+      () => {
+        void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
+          if (Exit.isSuccess(exit)) searchCache.set(cacheKey(request), exit.value);
+          if (generation.current !== requestId) return;
+          setState({
+            entries: Exit.isSuccess(exit) ? exit.value : [],
+            loading: false,
+            failed: Exit.isFailure(exit),
+          });
+        });
+      },
+      // The first browse should not sit behind a debounce meant for typing.
+      query.length === 0 ? 0 : SEARCH_DEBOUNCE_MS,
+    );
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, kind, limit]);
 
   return state;
 }

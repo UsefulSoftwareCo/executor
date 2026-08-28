@@ -31,7 +31,10 @@ type Owner = "org" | "user";
 
 export interface AnalyticsEvents {
   // ── Integrations ─────────────────────────────────────────────────────────
-  integration_connect_dialog_opened: {};
+  /** The full-page picker was opened. Replaces the connect dialog, whose
+   *  `integration_connect_dialog_opened` this supersedes — keep both readable
+   *  in dashboards spanning the change. */
+  integration_browse_opened: { via: "header" | "empty-state" };
   integration_detect_submitted: {
     success: boolean;
     detected_kind?: string;
