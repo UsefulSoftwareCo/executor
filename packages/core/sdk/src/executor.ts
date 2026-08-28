@@ -3273,11 +3273,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Create is never a replace. Checked BEFORE the provider writes below:
-        // a pasted value's item id is derived from (owner, integration, name),
-        // so proceeding past this point would overwrite the existing
-        // connection's stored secret even if the row write were rejected.
-        // Re-checked inside the transaction to close the create/create race.
+        // Create is never a replace. This early check answers the common case
+        // with a typed 409 before any other work, but it is NOT the guard
+        // against concurrent creates — the row insert below is: the
+        // transaction re-checks, the primary key breaks the tie, and the
+        // provider write happens only after the insert wins.
         const duplicate = yield* findConnectionRow({
           owner: input.owner,
           integration: input.integration,
@@ -3317,6 +3317,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         let providerKey: string;
         const itemIds: Record<string, string> = {};
+        // Pasted-value provider writes, built here but run only AFTER this
+        // create wins the row insert below.
+        const pastedWrites: Effect.Effect<void, StorageFailure>[] = [];
         if (external.length > 0 && pasted.length > 0) {
           return yield* new InvalidConnectionInputError({
             message: "A connection cannot mix pasted and external-provider inputs.",
@@ -3352,8 +3355,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           providerKey = String(provider.key);
           for (const i of pasted) {
             const itemId = `connection:${input.owner}:${input.integration}:${name}:${i.variable}`;
+            // Deferred until the row insert wins: the item id is deterministic,
+            // so writing here would overwrite the credential of an existing (or
+            // concurrently created) connection with the same name even when
+            // this create loses the row conflict.
             if ("value" in i.origin && provider.set) {
-              yield* provider.set(ProviderItemId.make(itemId), i.origin.value);
+              pastedWrites.push(provider.set(ProviderItemId.make(itemId), i.origin.value));
             }
             itemIds[i.variable] = itemId;
           }
@@ -3398,7 +3405,43 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               updated_at: now,
             });
           }),
+        ).pipe(
+          // Both racers can observe absence and reach the insert; the primary
+          // key then picks the winner. Map the loser's constraint violation to
+          // the same typed 409 the pre-checks produce.
+          Effect.catchTag("UniqueViolationError", () =>
+            Effect.fail(
+              new ConnectionAlreadyExistsError({
+                owner: input.owner,
+                integration: input.integration,
+                name,
+              }),
+            ),
+          ),
         );
+
+        // Winner-only credential write: only the create whose row insert
+        // committed may touch the provider, so a losing create can never
+        // clobber the winner's (or a pre-existing connection's) secret. While
+        // this row exists no concurrent create can win, so on failure the row
+        // is ours to remove — a surviving row whose item_ids were never stored
+        // would fail every invocation with `connection_value_missing`.
+        if (pastedWrites.length > 0) {
+          yield* Effect.all(pastedWrites).pipe(
+            Effect.tapError(() =>
+              core
+                .deleteMany("connection", {
+                  where: (b: AnyCb) =>
+                    b.and(
+                      byOwner(input.owner)(b),
+                      b("integration", "=", String(input.integration)),
+                      b("name", "=", String(name)),
+                    ),
+                })
+                .pipe(Effect.ignore),
+            ),
+          );
+        }
 
         // Record the sighting. The request seam (`makeScopedExecutor`) already
         // does this for every hosted call, so this is the belt for direct

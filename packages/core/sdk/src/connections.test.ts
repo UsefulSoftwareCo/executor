@@ -20,6 +20,7 @@ import {
   ToolAddress,
   ToolName,
 } from "./ids";
+import { ConnectionAlreadyExistsError } from "./errors";
 import { createExecutor } from "./executor";
 import { StorageError, type FumaDb } from "./fuma-runtime";
 import { HealthCheckResult } from "./health-check";
@@ -241,6 +242,177 @@ describe("connections.create", () => {
       expect(Predicate.isTagged("ConnectionAlreadyExistsError")(result.failure)).toBe(true);
       const value = yield* executor.demo.resolveValue("org", "myApiKey");
       expect(value).toBe("v1");
+    }),
+  );
+
+  // The race the early duplicate check cannot answer: two creates for the same
+  // (owner, integration, name) in flight at once. The row insert picks the
+  // winner and the loser gets the typed 409 — and, the load-bearing part, the
+  // provider write is winner-only. A pasted value's item id is deterministic,
+  // so a pre-insert write from the LOSING create would silently replace the
+  // winner's stored secret while the winner's row keeps resolving through it.
+  // The gate parks the first create inside its provider write, so the second
+  // create runs its full duplicate handling while the first is mid-flight.
+  it.effect("concurrent creates: one winner, a typed 409, and the winner's secret intact", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstWriteEntered = yield* Deferred.make<void>();
+        const releaseFirstWrite = yield* Deferred.make<void>();
+        const store = new Map<string, string>();
+        let writes = 0;
+        const gatedProvider: CredentialProvider = {
+          key: ProviderKey.make("memory"),
+          writable: true,
+          get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+          set: (id, value) =>
+            Effect.gen(function* () {
+              writes += 1;
+              if (writes === 1) {
+                yield* Deferred.succeed(firstWriteEntered, undefined);
+                yield* Deferred.await(releaseFirstWrite);
+              }
+              store.set(String(id), value);
+            }),
+        };
+        const gatedPlugin = definePlugin(() => ({
+          id: "gated" as const,
+          credentialProviders: [gatedProvider],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.succeed({
+              tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+            resolveValue: (name: string) =>
+              ctx.connections.resolveValue({
+                owner: "org",
+                integration: INTEG,
+                name: ConnectionName.make(name),
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [gatedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.gated.seed();
+
+        const createWith = (value: string) =>
+          Effect.result(
+            executor.connections.create({
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: INTEG,
+              template: TEMPLATE,
+              value,
+            }),
+          );
+
+        const firstFiber = yield* Effect.forkChild(createWith("first-value"));
+        yield* Deferred.await(firstWriteEntered);
+        const second = yield* createWith("second-value");
+        yield* Deferred.succeed(releaseFirstWrite, undefined);
+        const first = yield* Fiber.join(firstFiber);
+
+        const attempts = [
+          { result: first, value: "first-value" },
+          { result: second, value: "second-value" },
+        ];
+        const winners = attempts.filter((attempt) => Result.isSuccess(attempt.result));
+        const losers = attempts.filter((attempt) => Result.isFailure(attempt.result));
+        expect(winners).toHaveLength(1);
+        expect(losers).toHaveLength(1);
+        const loser = losers[0];
+        if (!loser || !Result.isFailure(loser.result)) return;
+        expect(loser.result.failure).toBeInstanceOf(ConnectionAlreadyExistsError);
+
+        // Exactly one connection survived, and it resolves to the WINNER's
+        // value — the losing create never reached the provider.
+        const connections = yield* executor.connections.list();
+        expect(connections).toHaveLength(1);
+        const value = yield* executor.gated.resolveValue("main");
+        expect(value).toBe(winners[0]?.value);
+      }),
+    ),
+  );
+
+  // When both creates observe absence, both reach the insert and the primary
+  // key breaks the tie — the loser must still get the typed 409, not a raw
+  // unique-constraint storage failure. The proxy blinds every connection-table
+  // read for the second create, so its early and transactional checks both
+  // miss the existing row and its insert genuinely collides in the database.
+  it.effect("maps a lost insert race to the typed 409, not a storage failure", () =>
+    Effect.gen(function* () {
+      let blind = false;
+      const blindfoldConnectionReads = (db: FumaDb): FumaDb => {
+        const wrap = (inner: FumaDb): FumaDb =>
+          new Proxy(inner, {
+            get(target, prop) {
+              if (prop === "withContext") {
+                return (context: unknown) =>
+                  wrap((target.withContext as (c: unknown) => FumaDb)(context));
+              }
+              if (prop === "transaction") {
+                return (run: (tx: FumaDb) => Promise<unknown>) =>
+                  (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                    (tx) => run(wrap(tx)),
+                  );
+              }
+              if (prop === "findFirst") {
+                return (table: unknown, query: unknown) =>
+                  blind && table === "connection"
+                    ? Promise.resolve(null)
+                    : (target.findFirst as (t: unknown, q: unknown) => Promise<unknown>)(
+                        table,
+                        query,
+                      );
+              }
+              return Reflect.get(target, prop);
+            },
+          });
+        return wrap(db);
+      };
+
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: blindfoldConnectionReads(config.db),
+      });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "first-value",
+      });
+
+      blind = true;
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "second-value",
+        }),
+      );
+      blind = false;
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(result.failure).toBeInstanceOf(ConnectionAlreadyExistsError);
+
+      // The losing insert wrote nothing: the original secret is untouched.
+      const connections = yield* executor.connections.list();
+      expect(connections).toHaveLength(1);
+      const value = yield* executor.demo.resolveValue("org", "main");
+      expect(value).toBe("first-value");
     }),
   );
 
