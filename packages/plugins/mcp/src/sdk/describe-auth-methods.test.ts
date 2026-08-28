@@ -47,6 +47,30 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("projects declared oauth2 scopes alongside the discovery URL", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/oauth/mcp",
+        authenticationTemplate: [{ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] }],
+      }),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "oauth2",
+        label: "OAuth",
+        kind: "oauth",
+        template: "oauth2",
+        oauth: {
+          discoveryUrl: "https://x.example/oauth/mcp",
+          scopes: ["mcp"],
+          supportsDynamicRegistration: true,
+        },
+      },
+    ]);
+  });
+
   it("names the enterprise identity provider when the server declares one", () => {
     const methods = describeMcpAuthMethods(
       recordWith({

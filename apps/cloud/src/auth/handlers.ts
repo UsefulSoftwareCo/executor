@@ -22,6 +22,7 @@ import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
 import { AutumnService } from "../extensions/billing/service";
+import { forkReportMemberSeats } from "../extensions/billing/member-seats";
 import { captureCauseEffect } from "../observability";
 import {
   hasPaidOrganizationSubscription,
@@ -245,6 +246,15 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             targetOrganizationId = existingActive?.organizationId ?? null;
           }
 
+          // Seat changes the app never sees a mutation for (invitation
+          // acceptance in AuthKit, SSO JIT provisioning, join by domain,
+          // WorkOS dashboard edits) all end in a sign-in, so every login
+          // reconciles the landed org's billed seat count. Forked: billing
+          // must not delay the login.
+          if (targetOrganizationId) {
+            yield* forkReportMemberSeats(targetOrganizationId);
+          }
+
           if (
             targetOrganizationId &&
             targetOrganizationId !== result.organizationId &&
@@ -451,6 +461,8 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               }),
             ),
           );
+          // Seed the new org's billed seat count (the creator's seat).
+          yield* forkReportMemberSeats(org.id);
 
           // Try to attach the new org to the current session. This can fail
           // (or silently return a session still scoped to the old org) when
@@ -626,6 +638,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
           );
+
+          // The membership is active in WorkOS from this point even if
+          // attaching the session below fails, so reconcile the org's billed
+          // seat count now.
+          yield* forkReportMemberSeats(org.id);
 
           // Attach the just-accepted org to the current session. Same shape
           // as createOrganization: refresh + verify; if we can't pin the

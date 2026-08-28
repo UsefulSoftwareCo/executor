@@ -115,6 +115,14 @@ export interface HostConfigShape {
    * attempted as it was before the gate existed.
    */
   readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
+  /**
+   * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
+   * connection's persisted remote tool catalog stays fresh. Omit to take the
+   * SDK default (15 minutes); `null` disables time-based re-sync. Declared
+   * here — not per-request — because catalog freshness is a deployment-wide
+   * operator knob.
+   */
+  readonly toolsSyncTtlMs?: number | null;
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -296,6 +304,7 @@ export const makeScopedExecutor = <
       httpClientLayer,
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
+      ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,

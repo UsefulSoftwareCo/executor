@@ -79,6 +79,16 @@ export type IAutumnService = Readonly<{
    * user-facing request.
    */
   trackExecution: (organizationId: string) => Effect.Effect<void, never, never>;
+  /**
+   * Set the organization's billed seat count to an absolute value. Seats are
+   * a continuous-use feature, so callers recount from the membership source
+   * of truth and this SETS the usage rather than incrementing it — deltas
+   * would drift against seat changes the app never sees. Orgs whose plan
+   * version carries no `members` item (every plan predating seat pricing)
+   * are skipped. Fire-and-forget-safe: errors are caught and logged; the
+   * returned Effect never fails.
+   */
+  setMemberSeats: (organizationId: string, seats: number) => Effect.Effect<void, never, never>;
 }>;
 
 // ---------------------------------------------------------------------------
@@ -97,6 +107,7 @@ const make = Effect.sync(() => {
       ensureCustomer: () => notConfigured,
       checkExecutionBalance: () => notConfigured,
       trackExecution: () => Effect.void,
+      setMemberSeats: () => Effect.void,
     } satisfies IAutumnService;
   }
 
@@ -169,6 +180,41 @@ const make = Effect.sync(() => {
       );
     }).pipe(Effect.withSpan("autumn.trackExecution"));
 
+  const setMemberSeats = (organizationId: string, seats: number) =>
+    Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan({
+        "autumn.customer.id": organizationId,
+        "autumn.members.seats": seats,
+      });
+      // getOrCreate rather than get: reuses the provisioning repair, so an
+      // org Autumn has never seen gets its customer minted here instead of
+      // 404ing forever.
+      const customer = yield* use((c) => c.customers.getOrCreate({ customerId: organizationId }));
+      // Plans that predate seat pricing have no members balance to set.
+      // Existing subscribers stay on those versions deliberately, so this is
+      // a steady state, not an error.
+      if (customer.balances["members"] == null) {
+        yield* Effect.annotateCurrentSpan({ "autumn.members.skipped": true });
+        return;
+      }
+      yield* use((c) =>
+        c.balances.update({ customerId: organizationId, featureId: "members", usage: seats }),
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          // Silent seat drift means wrong invoices, so failures page just
+          // like a lost execution track.
+          yield* Effect.sync(() => {
+            console.error("[billing] seat sync failed:", error);
+          });
+          yield* captureCauseEffect(error);
+          yield* Effect.annotateCurrentSpan({ "autumn.members.failed": true });
+        }),
+      ),
+      Effect.withSpan("autumn.setMemberSeats"),
+    );
+
   const checkExecutionBalance = (organizationId: string) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ "autumn.customer.id": organizationId });
@@ -179,7 +225,13 @@ const make = Effect.sync(() => {
       return { allowed: check.allowed };
     }).pipe(Effect.withSpan("autumn.checkExecutionBalance"));
 
-  return { use, ensureCustomer, checkExecutionBalance, trackExecution } satisfies IAutumnService;
+  return {
+    use,
+    ensureCustomer,
+    checkExecutionBalance,
+    trackExecution,
+    setMemberSeats,
+  } satisfies IAutumnService;
 });
 
 export class AutumnService extends Context.Service<AutumnService, IAutumnService>()(

@@ -1,5 +1,33 @@
 # @executor-js/example-all-plugins
 
+## 0.0.63
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/plugin-file-secrets@1.6.2
+  - @executor-js/plugin-graphql@1.6.2
+  - @executor-js/plugin-keychain@1.6.2
+  - @executor-js/plugin-mcp@1.6.2
+  - @executor-js/plugin-onepassword@1.6.2
+  - @executor-js/plugin-openapi@1.6.2
+  - @executor-js/plugin-workos-vault@0.0.2
+
+## 0.0.62
+
+### Patch Changes
+
+- Updated dependencies [[`7c12aee`](https://github.com/UsefulSoftwareCo/executor/commit/7c12aeea390225291ce4c97865b392237ee7934d), [`ddbf0fe`](https://github.com/UsefulSoftwareCo/executor/commit/ddbf0feba38c8502d78fa20c3081391b8ba3d112), [`91062c2`](https://github.com/UsefulSoftwareCo/executor/commit/91062c2b1d7b8edbc8470ca5eaa544045652afaa), [`9c35f26`](https://github.com/UsefulSoftwareCo/executor/commit/9c35f269dd5de3548111fe5c83cf1e877f23c80d), [`0007474`](https://github.com/UsefulSoftwareCo/executor/commit/0007474602d8da3642648f216bfdb0f09eb0914f), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/plugin-openapi@1.6.1
+  - @executor-js/plugin-mcp@1.6.1
+  - @executor-js/sdk@1.6.1
+  - @executor-js/plugin-graphql@1.6.1
+  - @executor-js/plugin-onepassword@1.6.1
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/plugin-file-secrets@1.6.1
+  - @executor-js/plugin-keychain@1.6.1
+
 ## 0.0.61
 
 ### Patch Changes

@@ -156,6 +156,12 @@ export interface BrowserApprovalStore {
 const SESSION_META_KEY = "session-meta";
 const LAST_ACTIVITY_KEY = "last-activity-ms";
 const PARTYSERVER_NAME_KEY = "__ps_name";
+/**
+ * Stand-in session id for a log line written when the DO's name could not be
+ * resolved. A named placeholder keeps the field present and the log shape
+ * stable, and is countable when it happens.
+ */
+const UNRESOLVED_SESSION_ID = "unresolved";
 /** The agents SDK's durable "condemned" marker (`_cf_scheduleDestroy`). */
 const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
@@ -257,6 +263,7 @@ export abstract class McpAgentSessionDOBase<
   private countedAsResident = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
+  private resolvedSessionName: string | undefined = undefined;
   private approvalResponses = new Map<string, ResumeResponse>();
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
   private pendingApprovalLeases = new Map<string, PendingApprovalLease>();
@@ -324,8 +331,96 @@ export abstract class McpAgentSessionDOBase<
     return Promise.resolve();
   }
 
+  /**
+   * The session id as it appears in logs and span attributes.
+   *
+   * Purely observational, and therefore total: a log line or a span attribute
+   * must never be able to abort the work it is describing. The alarm path is
+   * the one that used to prove this the hard way — it logged its decision
+   * before doing it, and on an invocation where the name could not be resolved
+   * the LOG threw and took the whole alarm with it.
+   */
+  protected sessionIdForTelemetry(): string {
+    return this.sessionIdOrUndefined() ?? UNRESOLVED_SESSION_ID;
+  }
+
+  /**
+   * The session id, or `undefined` when this DO's name cannot be resolved from
+   * any source. Derived from {@link sessionNameOrUndefined} so it agrees with
+   * the guard that decided the DO was addressable in the first place.
+   */
+  protected sessionIdOrUndefined(): string | undefined {
+    const name = this.sessionNameOrUndefined();
+    if (name === undefined) return undefined;
+    const [, sessionId] = name.split(":");
+    return sessionId ? sessionId : undefined;
+  }
+
+  /**
+   * The session id for callers that cannot proceed without one — routing an
+   * execution back to its owner, addressing an approval URL. Those callers want
+   * the throw, because a wrong id is worse than a failure.
+   */
   protected get sessionId(): string {
+    const resolved = this.sessionIdOrUndefined();
+    if (resolved !== undefined) return resolved;
     return this.getSessionId();
+  }
+
+  /**
+   * The single place that answers "what is this Durable Object's name".
+   *
+   * PartyServer has three sources and does not consult them all in the same
+   * place: `this.name` reads `ctx.id.name` and an in-memory field that is only
+   * hydrated during initialization, while the durable `__ps_name` record is
+   * read *only* by that initialization. An entry point that skips
+   * initialization — the alarm override below, which handles most of its
+   * decisions itself and only delegates to `super.alarm()` on one branch — can
+   * therefore find the durable record present, conclude the session is
+   * addressable, and still have `this.name` throw on the very next read.
+   *
+   * Everything in this class goes through this accessor instead, so the guard
+   * and the reads that follow it can never disagree.
+   */
+  private sessionNameOrUndefined(): string | undefined {
+    return this.ctx.id.name ?? this.resolvedSessionName ?? this.partyServerNameOrUndefined();
+  }
+
+  /**
+   * Ask every source, including durable storage, and remember the answer.
+   *
+   * The remembered value is what makes the synchronous accessor above agree
+   * with this one for the rest of the invocation: a name recovered from the
+   * `__ps_name` record stays available to callers that cannot await.
+   */
+  private async resolveSessionName(): Promise<string | undefined> {
+    const inMemory = this.sessionNameOrUndefined();
+    if (inMemory !== undefined) {
+      this.resolvedSessionName = inMemory;
+      return inMemory;
+    }
+    const stored = await this.ctx.storage.get<string>(PARTYSERVER_NAME_KEY);
+    if (!stored) return undefined;
+    this.resolvedSessionName = stored;
+    return stored;
+  }
+
+  /**
+   * Read PartyServer's own name resolution without inheriting its throw.
+   *
+   * PartyServer exposes no non-throwing probe for "do you have a name yet", so
+   * "it throws" IS the signal for "not resolvable from memory" — the same shape
+   * as {@link connectionsOrNone}. In a unit harness the getter also
+   * throws on its uninitialized private field, which reads identically here and
+   * is equally correct.
+   */
+  private partyServerNameOrUndefined(): string | undefined {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: see doc comment; partyserver's `name` getter throws instead of reporting absence.
+    try {
+      return (this as { readonly name?: string }).name;
+    } catch {
+      return undefined;
+    }
   }
 
   protected currentParentSpan(): Tracer.AnySpan | undefined {
@@ -486,12 +581,6 @@ export abstract class McpAgentSessionDOBase<
     return this.lastActivityMs;
   }
 
-  private async hasPartyServerName(): Promise<boolean> {
-    if (this.ctx.id.name) return true;
-    const stored = await this.ctx.storage.get<string>(PARTYSERVER_NAME_KEY);
-    return !!stored;
-  }
-
   private activeStreamCount(): number {
     return this.connectionsOrNone().length;
   }
@@ -548,6 +637,16 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private async cleanupUnaddressableSessionAlarm(): Promise<void> {
+    // No name from any source means no session to act on: there is nothing to
+    // route, nothing to identify, and no id to put in this line. Say so, tear
+    // the runtime down, drop the alarm, and return normally — a session that
+    // cannot be addressed must not leave an alarm retrying forever.
+    console.warn(
+      JSON.stringify({
+        event: "mcp_session_unaddressable_alarm_cleanup",
+        sessionId: this.sessionIdForTelemetry(),
+      }),
+    );
     await Effect.runPromise(this.closeRuntime());
     await Effect.runPromise(
       Effect.all([
@@ -575,7 +674,7 @@ export abstract class McpAgentSessionDOBase<
     console.info(
       JSON.stringify({
         event: "mcp_session_idle_runtime_dispose",
-        sessionId: this.sessionId,
+        sessionId: this.sessionIdForTelemetry(),
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
         activeStreamCount: input.activeStreamCount,
@@ -655,7 +754,7 @@ export abstract class McpAgentSessionDOBase<
         JSON.stringify({
           event: "mcp_session_durable_object_reset",
           operation: input.operation,
-          sessionId: self.sessionId,
+          sessionId: self.sessionIdForTelemetry(),
           resetKind: input.failure.kind,
           disposition: input.failure.disposition,
           cause: Cause.pretty(input.cause),
@@ -717,7 +816,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_execution_owner_directory_error",
           operation: input.operation,
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.sessionIdForTelemetry(),
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
           cause: Cause.pretty(input.cause),
@@ -742,7 +841,7 @@ export abstract class McpAgentSessionDOBase<
         JSON.stringify({
           event: "mcp_model_resume_forward_error",
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.sessionIdForTelemetry(),
           ownerSessionId: input.owner.sessionId,
           exceptionType: first?.name ?? "Error",
           exceptionMessage: first?.message ?? "unknown",
@@ -768,7 +867,7 @@ export abstract class McpAgentSessionDOBase<
           event: "mcp_model_resume_forward_error",
           reason: "timeout",
           executionId: input.executionId,
-          sessionId: self.sessionId,
+          sessionId: self.sessionIdForTelemetry(),
           ownerSessionId: input.owner.sessionId,
           timeoutMs: input.timeoutMs,
         }),
@@ -1138,7 +1237,11 @@ export abstract class McpAgentSessionDOBase<
   }
 
   override async alarm(): Promise<void> {
-    if (!(await this.hasPartyServerName())) {
+    // Resolve the name FIRST, from every source, and hold onto it. Everything
+    // below — the lease logs, the dispose log, `super.alarm()` — reads the
+    // session id off that same answer, so an alarm this guard lets through can
+    // no longer die on the next read of an id it just decided exists.
+    if ((await this.resolveSessionName()) === undefined) {
       await this.cleanupUnaddressableSessionAlarm();
       return;
     }
@@ -1165,7 +1268,7 @@ export abstract class McpAgentSessionDOBase<
       console.info(
         JSON.stringify(
           pausedLeaseExtensionLog({
-            sessionId: this.sessionId,
+            sessionId: this.sessionIdForTelemetry(),
             pausedExecutionCount,
             idleMs,
             leaseMs: decision.leaseMs,
@@ -1180,7 +1283,7 @@ export abstract class McpAgentSessionDOBase<
       console.info(
         JSON.stringify(
           runningLeaseExtensionLog({
-            sessionId: this.sessionId,
+            sessionId: this.sessionIdForTelemetry(),
             runningExecutionCount,
             activeStreamCount,
             idleMs,

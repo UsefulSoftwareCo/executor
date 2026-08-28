@@ -128,6 +128,8 @@ export {
   sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  pathNamesASecret,
+  REDACTED_SAMPLE_VALUE,
   identityPathTier,
   rankResponseSample,
 } from "./health-check";
@@ -422,6 +424,7 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,
   collectTables,
   parseToolAddress,

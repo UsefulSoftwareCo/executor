@@ -1,4 +1,14 @@
-import { Deferred, Duration, Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Inspectable,
+  Layer,
+  Option,
+  Predicate,
+  Schema,
+  Semaphore,
+} from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -105,6 +115,8 @@ import type {
 } from "./integration";
 import {
   makeOAuthService,
+  STORE_WRITABILITY_PROBE_VALUE,
+  storeWritabilityProbeItemIdFor,
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
@@ -715,6 +727,12 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
  *  `ExecutorConfig.toolsSyncTtlMs`). */
 export const DEFAULT_TOOLS_SYNC_TTL_MS = 15 * 60 * 1000;
 
+/** How many stale connection catalogs are DISCOVERED at once on a tools read.
+ *  Bounded so a host with a large stale set cannot open an unbounded number of
+ *  upstream listings from a single read. Only the discovery phase runs at this
+ *  width; each rebuild's catalog write is serialized behind a single permit. */
+export const STALE_TOOLS_SYNC_CONCURRENCY = 10;
+
 // ---------------------------------------------------------------------------
 // collectTables — return the executor-owned Fuma table set. Plugins persist
 // through host-owned facades (`pluginStorage`, `blobs`) instead of contributing
@@ -753,6 +771,23 @@ const storageFailureFromUnknown = (message: string, cause: unknown): StorageFail
 
 const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
   storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
+
+// oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: render an arbitrary failure into one readable log field
+/** One-line rendering of a failed rebuild, for the operator-facing warning.
+ *  A `StorageError` carries the actionable detail in its `cause` (the plugin's
+ *  own failure) while its own message only names the hook, and structural
+ *  stringification drops a `cause` that is an `Error` — so unwrap one level and
+ *  keep both halves. */
+const describeSyncFailure = (error: unknown): string => {
+  const base =
+    error instanceof Error && error.message.length > 0
+      ? error.message
+      : Inspectable.toStringUnknown(error, 0);
+  const cause = (error as { readonly cause?: unknown } | null | undefined)?.cause;
+  if (cause instanceof Error && cause.message.length > 0) return `${base}: ${cause.message}`;
+  return base;
+};
+// oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message
 
 const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
   const version = "1.0.0";
@@ -1956,11 +1991,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  re-mints it. Persisting the access token first means a failure in
      *  between drops a single-use credential the authorization server has
      *  already consumed, and every later refresh comes back `invalid_grant` —
-     *  a connection that silently disconnects itself. */
+     *  a connection that silently disconnects itself.
+     *
+     *  `storedRefreshToken` is the value the store already held when the
+     *  caller read it on the way in. Many authorization servers do NOT rotate
+     *  on refresh and hand back the very same refresh token, so writing it
+     *  again is a round trip that can only re-persist what is already there —
+     *  and every write bumps the stored object's version, which is the
+     *  contention this path spends retries fighting. Skip it when the value
+     *  has not changed; a rotated token never matches, so the write that
+     *  actually matters is never skipped. */
     const persistRefreshedToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
       token: OAuth2TokenResponse,
+      storedRefreshToken?: string | undefined,
     ): Effect.Effect<void, StorageFailure> =>
       Effect.gen(function* () {
         if (provider.set) {
@@ -1969,7 +2014,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tokenItemId =
             connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
             `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          if (token.refresh_token && row.refresh_item_id) {
+          if (
+            token.refresh_token &&
+            row.refresh_item_id &&
+            token.refresh_token !== storedRefreshToken
+          ) {
             yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
           }
           yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
@@ -2243,6 +2292,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // path below needs a stored refresh token. Branching on grant here is
         // what keeps a client_credentials connection (e.g. DealCloud) from
         // demanding a re-auth on a credential that has no human to re-auth.
+        // What the credential store held for this connection when the grant
+        // below was prepared, so the persist can tell a ROTATED refresh token
+        // from one the authorization server simply handed back unchanged.
+        // Only the authorization_code path has one; client_credentials and
+        // id_jag carry no refresh token at all.
+        let storedRefreshToken: string | undefined;
         const token =
           clientRow.grant === "client_credentials"
             ? yield* exchangeClientCredentials({
@@ -2275,6 +2330,36 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (!refreshToken) {
                   return yield* reauth("Stored refresh token could not be resolved.");
                 }
+                // Prove the credential store is WRITABLE before consuming the
+                // single-use refresh token. Ordering the persist correctly
+                // (refresh token first) bounds the damage once a grant has
+                // run, but it cannot help when the store is refusing writes
+                // outright: the grant spends the stored token at the
+                // authorization server, so a store that cannot accept the
+                // rotated successor leaves the connection holding a token the
+                // server has already revoked. Every later refresh then replays
+                // it, gets invalid_grant, and a storage outage that healed in
+                // minutes has cost the user a re-auth. Failing here instead
+                // leaves the stored token valid, so the connection recovers on
+                // its own when the store does.
+                //
+                // The probe writes its OWN item and never the refresh token's.
+                // Rewriting the value just read would be one round trip
+                // cheaper and is the trap: it is a read-then-write with no
+                // compare-and-set, so a peer refresher on another instance
+                // that spent this same token and stored its rotated successor
+                // in between would have that successor overwritten by the
+                // stale value — the exact dead connection this gate exists to
+                // prevent, now caused by the gate. The probe item sits in the
+                // same partition and holds a constant, so it proves what the
+                // store will accept while no credential is ever at risk.
+                if (provider.set) {
+                  yield* provider.set(
+                    ProviderItemId.make(storeWritabilityProbeItemIdFor(row.refresh_item_id)),
+                    STORE_WRITABILITY_PROBE_VALUE,
+                  );
+                }
+                storedRefreshToken = refreshToken;
                 return yield* refreshAccessToken({
                   tokenUrl,
                   clientId: clientRow.clientId,
@@ -2354,7 +2439,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 );
               });
 
-        yield* persistRefreshedToken(row, provider, token);
+        yield* persistRefreshedToken(row, provider, token, storedRefreshToken);
         return token.access_token;
       }).pipe(
         // The refresh path was previously invisible to telemetry: no span, no
@@ -2874,6 +2959,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const syncHealthReason = (result: ResolveToolsResult): string =>
       result.incompleteReason ?? "plugin returned an incomplete tool catalog";
 
+    // Tool production has two phases with very different shapes: DISCOVERY (the
+    // plugin's `resolveTools` — network, slow, independent per connection) and
+    // PERSISTENCE (a short catalog-replacement transaction). Only discovery may
+    // overlap. Self-host runs a single libSQL connection issuing raw
+    // BEGIN/COMMIT, where a second transaction opened while one is live fails
+    // outright with "cannot start a transaction within a transaction" — the
+    // failure #1563 fixed for concurrent refreshes of the SAME connection via
+    // the single-flight map below. Rebuilding several DIFFERENT connections
+    // together (the stale-catalog fan-out) reopens the same hazard from the
+    // other side, so the write phase takes a single permit: the fan-out's
+    // discoveries still run together and their commits form a queue.
+    //
+    // Never take this permit while a transaction is already open on this fiber
+    // — every caller of `persistCatalog` must be outside one, as all of the
+    // `produceConnectionTools` call sites are.
+    const catalogPersistLock = Semaphore.makeUnsafe(1);
+    const persistCatalog = <A, E>(effect: Effect.Effect<A, E>) =>
+      catalogPersistLock.withPermits(1)(transaction(effect));
+
     const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
@@ -2941,7 +3045,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
-          yield* transaction(
+          yield* persistCatalog(
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
@@ -2953,7 +3057,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
-          yield* transaction(
+          yield* persistCatalog(
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
@@ -3047,7 +3151,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* transaction(
+        yield* persistCatalog(
           Effect.gen(function* () {
             yield* core.deleteMany("tool", { where });
             yield* core.deleteMany("definition", { where });
@@ -4040,6 +4144,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? b.isNull("tools_synced_at")
             : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
       });
+      // Each rebuild is an independent upstream listing, so they run together
+      // rather than one after another: a host with many stale remote-catalog
+      // connections otherwise pays the sum of every server's latency on the
+      // read that trips the TTL. Only the listings overlap — `persistCatalog`
+      // keeps the catalog writes in a single-file queue, so this fan-out never
+      // opens two transactions on a one-connection database.
+      const rebuilds: Effect.Effect<readonly Tool[]>[] = [];
       for (const connection of connections) {
         const integrationRow = integrationBySlug.get(connection.integration);
         if (!integrationRow) continue;
@@ -4066,24 +4177,38 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           syncedAt < cutoff;
         if (!staleMarked && !configRevised && !expired) continue;
 
-        yield* produceConnectionTools(
-          integrationRow,
-          {
-            owner: connection.owner as Owner,
-            integration: IntegrationSlug.make(connection.integration),
-            name: ConnectionName.make(connection.name),
-          },
-          "background",
-        ).pipe(
-          Effect.catch(() => Effect.succeed([] as readonly Tool[])),
-          Effect.withSpan("executor.tools.sync_stale", {
-            attributes: {
-              "executor.integration": connection.integration,
-              "executor.connection": connection.name,
+        rebuilds.push(
+          produceConnectionTools(
+            integrationRow,
+            {
+              owner: connection.owner as Owner,
+              integration: IntegrationSlug.make(connection.integration),
+              name: ConnectionName.make(connection.name),
             },
-          }),
+            "background",
+          ).pipe(
+            // Best-effort, but never silent: the read still succeeds on the
+            // stale-but-working catalog and the peer rebuilds still finish,
+            // while the operator gets the connection that failed and why.
+            // Without this a connection whose upstream is permanently broken
+            // re-fails on every read and leaves no trace anywhere.
+            Effect.catch((error) =>
+              Effect.logWarning("executor stale tool sync failed", {
+                integration: connection.integration,
+                connection: connection.name,
+                error: describeSyncFailure(error),
+              }).pipe(Effect.as([] as readonly Tool[])),
+            ),
+            Effect.withSpan("executor.tools.sync_stale", {
+              attributes: {
+                "executor.integration": connection.integration,
+                "executor.connection": connection.name,
+              },
+            }),
+          ),
         );
       }
+      yield* Effect.all(rebuilds, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY });
     });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
@@ -5141,6 +5266,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         oauth,
         execute: (address, args, options) => execute(address, args, options),
         transaction: <A, E>(effect: Effect.Effect<A, E>) => transaction(effect),
+        afterCommit: (effect: Effect.Effect<void>) => afterCommit(effect),
       };
 
       if (plugin.toolPolicyProvider) {

@@ -6,13 +6,15 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Ref } from "effect";
+import { Cause, Effect, Exit, Ref } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
   OAUTH2_DEFAULT_TIMEOUT_MS,
   OAUTH2_REFRESH_SKEW_MS,
   OAuth2Error,
+  PREVIEWABLE_BODY_FIELDS,
+  PREVIEWABLE_WITHIN_ERROR_FIELDS,
   buildAuthorizationUrl,
   providerAuthorizeExtras,
   createPkceCodeChallenge,
@@ -21,6 +23,7 @@ import {
   exchangeClientCredentials,
   idTokenIdentityLabel,
   isPermanentTokenRejection,
+  isUnusableSuccessTokenResponse,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -806,6 +809,290 @@ describe("exchangeAuthorizationCode", () => {
           const failure = JSON.stringify(exit.cause);
           expect(failure).toContain("HTTP 404");
           expect(failure).toContain("route not found");
+        }),
+    ),
+  );
+
+  // A malformed HTTP 200 is the worst case in this module. The OAuth library
+  // rejects it by handing back the PARSED BODY — the whole token response — and
+  // these are ordinary provider quirks, not exotic inputs. That body is the one
+  // the failure MESSAGE is built from, and the message is what is persisted onto
+  // connection health, returned to the caller, and carried into telemetry. The
+  // allowlist is what keeps the tokens out of it.
+  //
+  // Asserting on the message alone would not be enough. What a log line, a
+  // Sentry event, or a crashing host actually prints is the WHOLE failure —
+  // `Cause.pretty`, or a `JSON.stringify` of the cause — so a retained
+  // rejection would carry the raw tokens straight past a clean message. These
+  // assert the full rendering for that reason.
+  //
+  // The classifier has to keep working on exactly these inputs: a 2xx that
+  // carried no usable token is a DEAD GRANT, and mis-reading it as transient is
+  // what makes a connection retry forever instead of asking for re-auth. It
+  // reads `status`, which this module lifts out of the rejection itself — so
+  // redacting the rendering costs the classifier nothing.
+  for (const [label, quirk] of [
+    ["expires_in is null", { expires_in: null }],
+    ["scope is an array", { scope: ["read"] }],
+    ["token_type is not a string", { token_type: 7 }],
+  ] as const) {
+    it.effect(`keeps tokens out of the whole rendered failure when ${label}`, () =>
+      withTokenEndpoint(
+        () =>
+          json(200, {
+            access_token: "AT-CANARY-must-not-escape",
+            refresh_token: "RT-CANARY-must-not-escape",
+            token_type: "Bearer",
+            ...quirk,
+          }),
+        ({ tokenUrl }) =>
+          Effect.gen(function* () {
+            const exit = yield* Effect.exit(
+              exchangeAuthorizationCode({
+                tokenUrl,
+                clientId: "cid",
+                redirectUrl: "https://cb",
+                codeVerifier: "v",
+                code: "c",
+              }),
+            );
+            expect(Exit.isFailure(exit)).toBe(true);
+            if (!Exit.isFailure(exit)) return;
+            const pretty = Cause.pretty(exit.cause);
+            const serialized = JSON.stringify(exit.cause);
+            for (const rendered of [pretty, serialized]) {
+              expect(rendered).not.toContain("AT-CANARY-must-not-escape");
+              expect(rendered).not.toContain("RT-CANARY-must-not-escape");
+            }
+            // Redacted, not dropped: the operator still sees which fields the
+            // server sent, which is the whole point of previewing at all.
+            expect(pretty).toContain("access_token");
+            expect(pretty).toContain("[redacted]");
+            // ...and the dead-grant verdict survives the redaction untouched.
+            const failure = Cause.squash(exit.cause) as OAuth2Error;
+            expect(failure).toBeInstanceOf(OAuth2Error);
+            expect(failure.status).toBe(200);
+            expect(isUnusableSuccessTokenResponse(failure)).toBe(true);
+            expect(isPermanentTokenRejection(failure)).toBe(true);
+          }),
+      ),
+    );
+  }
+
+  it.effect("redacts a credential echoed back under a field name nobody predicted", () =>
+    withTokenEndpoint(
+      // The failure the old name-based scrub could not see. It hid four known
+      // field names, so a server that echoes a submitted secret — or returns its
+      // token — under ANY other key walked straight through into the message,
+      // and that message is persisted into connection health and shown to the
+      // caller. An unknown field is exactly the case that has to fail closed.
+      // No `error` field: a NON-conform body, which is the shape that actually
+      // reaches the body preview. A conform error response is summarised from
+      // its typed fields instead and never renders the body at all.
+      () => json(400, { oops: "AT-CANARY-must-not-escape" }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          expect(failure).not.toContain("AT-CANARY-must-not-escape");
+          // Structure survives, so an operator still sees WHAT the server sent.
+          expect(failure).toContain("oops");
+          expect(failure).toContain("[redacted]");
+        }),
+    ),
+  );
+
+  it.effect("keeps an error array readable — the shape real providers answer with", () =>
+    withTokenEndpoint(
+      // Datadog answers a refused refresh this way. The preview has to stay
+      // readable through the array, or the one body that most needs explaining
+      // previews as nothing.
+      () => json(400, { errors: ["invalid_grant - Invalid or expired refresh token"] }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          expect(JSON.stringify(exit.cause)).toContain("Invalid or expired refresh token");
+        }),
+    ),
+  );
+
+  it.effect(
+    "redacts an authorization code at the top level, but not an error envelope's code",
+    () =>
+      withTokenEndpoint(
+        // `code` means two different things depending on where it sits: inside an
+        // error envelope it names the failure, at the top level it is the RFC 6749
+        // authorization code — credential material. Name alone cannot tell them
+        // apart, so nesting has to.
+        () =>
+          json(400, {
+            code: "AUTHZ-CODE-CANARY",
+            error: { code: "invalid_client_id", message: "Invalid client_id" },
+          }),
+        ({ tokenUrl }) =>
+          Effect.gen(function* () {
+            const exit = yield* Effect.exit(
+              exchangeAuthorizationCode({
+                tokenUrl,
+                clientId: "cid",
+                redirectUrl: "https://cb",
+                codeVerifier: "v",
+                code: "c",
+              }),
+            );
+            expect(Exit.isFailure(exit)).toBe(true);
+            if (!Exit.isFailure(exit)) return;
+            const failure = JSON.stringify(exit.cause);
+            expect(failure).not.toContain("AUTHZ-CODE-CANARY");
+            expect(failure).toContain("invalid_client_id");
+            expect(failure).toContain("Invalid client_id");
+          }),
+      ),
+  );
+
+  it.effect("applies the allowlist to a form-encoded body too", () =>
+    withTokenEndpoint(
+      // The other shape a token endpoint answers in. It used to take a
+      // name-based scrub that could not match a field nobody had enumerated.
+      () =>
+        HttpServerResponse.text("session_token=FORM-CANARY-must-not-escape&error=invalid_request", {
+          status: 400,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          expect(failure).not.toContain("FORM-CANARY-must-not-escape");
+          expect(failure).toContain("session_token");
+          expect(failure).toContain("invalid_request");
+        }),
+    ),
+  );
+
+  it.effect("survives a pathologically nested body instead of dying", () =>
+    withTokenEndpoint(
+      () => {
+        let nested: unknown = "AT-CANARY-must-not-escape";
+        for (let i = 0; i < 10_000; i++) nested = { nest: nested };
+        return json(400, nested);
+      },
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          // A DEFECT here would bypass the caller's error mapping entirely, so
+          // the connection would never be marked as needing re-auth. The walk
+          // must stop, not blow the stack.
+          const rendered = JSON.stringify(exit.cause);
+          expect(rendered).not.toContain("AT-CANARY-must-not-escape");
+          expect(rendered).toContain("OAuth2Error");
+          expect(rendered).not.toContain("Maximum call stack");
+        }),
+    ),
+  );
+
+  it("previews only the RFC 6749 error fields — widening this list is a security change", () => {
+    // Nothing else pins the allowlist's CONTENTS, so adding a field to it would
+    // otherwise be invisible: `token_type` and `scope` sit right beside the
+    // tokens in a real response, and a future `access_token` entry would defeat
+    // the whole redactor while every existing test stayed green.
+    for (const field of ["token_type", "scope", "access_token", "refresh_token", "id_token"]) {
+      expect(PREVIEWABLE_BODY_FIELDS.has(field)).toBe(false);
+      expect(PREVIEWABLE_WITHIN_ERROR_FIELDS.has(field)).toBe(false);
+    }
+    expect([...PREVIEWABLE_BODY_FIELDS].sort()).toEqual([
+      "error",
+      "error_description",
+      "error_uri",
+      "errors",
+    ]);
+    expect([...PREVIEWABLE_WITHIN_ERROR_FIELDS].sort()).toEqual(["code", "detail", "message"]);
+  });
+
+  it.effect("matches allowlisted field names case-insensitively", () =>
+    withTokenEndpoint(
+      () => json(400, { Error_Description: "Code expired upstream", Oops: "MIXED-CANARY" }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          expect(failure).toContain("Code expired upstream");
+          expect(failure).not.toContain("MIXED-CANARY");
+        }),
+    ),
+  );
+
+  it.effect("reports the token endpoint by hostname, never by path", () =>
+    withTokenEndpoint(
+      () => HttpServerResponse.text("nope", { status: 404 }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          // Persisted into connection health, so a tenant id in the path would
+          // outlive the request. The host is enough to identify the server.
+          expect(failure).toContain(new URL(tokenUrl).hostname);
+          expect(failure).not.toContain(`${new URL(tokenUrl).origin}/token`);
         }),
     ),
   );
