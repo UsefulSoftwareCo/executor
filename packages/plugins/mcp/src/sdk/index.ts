@@ -22,6 +22,7 @@ export {
   McpTransport,
   McpToolAnnotations,
   McpToolBinding,
+  McpToolMeta,
   parseMcpIntegrationConfig,
 } from "./types";
 

@@ -729,8 +729,12 @@ describe("graphqlPlugin real protocol server", () => {
       expect(result).toMatchObject({
         status: "healthy",
         httpStatus: 200,
-        identity: "GraphQL schema: Query",
+        responseSample: [{ path: "__schema.queryType.name", value: "Query" }],
       });
+      // The schema's root type name is not an account identity; reporting it
+      // as one made the accounts UI label every GraphQL connection
+      // "GraphQL schema: Query".
+      expect(result).not.toHaveProperty("identity");
     }),
   );
 

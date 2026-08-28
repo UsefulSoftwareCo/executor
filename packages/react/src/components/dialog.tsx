@@ -2,6 +2,7 @@ import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 
+import { applyOutsideDismissPolicy } from "../lib/outside-dismiss";
 import { cn } from "../lib/utils";
 import { Button } from "./button";
 
@@ -37,25 +38,26 @@ function DialogOverlay({
   );
 }
 
-// base-ui popups (combobox/select) portal their list OUTSIDE the dialog content,
-// so clicking an option reads as an interaction outside the dialog and would
-// dismiss it before the selection lands. Keep the dialog open for interactions
-// that originate inside such a popup.
-const PORTALED_POPUP_SELECTOR = "[data-slot='combobox-content'],[data-slot='select-content']";
-
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  dismissOnOutsideClick = false,
   onInteractOutside,
+  onPointerDownOutside,
   forceOverlay = false,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
+  /** Let a click outside the dialog close it. Off by default: a stray click on
+   *  the page behind a form must not discard what the user typed. Turn it on
+   *  for a dialog with nothing to lose — a confirmation, a picker, a read-only
+   *  panel. Escape and the close button close either way. */
+  dismissOnOutsideClick?: boolean;
   /** Pair with `<Dialog modal={false}>`: Radix renders no overlay in non-modal
    *  mode, so this renders a plain dim layer instead. It still eats outside
-   *  clicks (which dismiss via onInteractOutside), so the dialog keeps its
-   *  modal look while the wheel stays free for portaled popups. */
+   *  clicks, so the dialog keeps its modal look while the wheel stays free for
+   *  portaled popups. */
   forceOverlay?: boolean;
 }) {
   return (
@@ -66,12 +68,13 @@ function DialogContent({
       ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        onPointerDownOutside={(event) => {
+          onPointerDownOutside?.(event);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+        }}
         onInteractOutside={(event) => {
-          const target = event.detail.originalEvent.target;
-          if (target instanceof Element && target.closest(PORTALED_POPUP_SELECTOR)) {
-            event.preventDefault();
-          }
           onInteractOutside?.(event);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
         }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",

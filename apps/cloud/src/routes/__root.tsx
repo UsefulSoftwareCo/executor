@@ -262,15 +262,33 @@ function AuthGate() {
     return urlOrgSlug ? <NotFoundPage /> : <BlankScreen />;
   }
 
+  // The authenticated answer must NAME the org the URL names before any shell
+  // is built from it. `auth.organization` is the auth-hint cookie until
+  // `/account/me` lands, and the hint always names the session's OWN org — so
+  // on a foreign slug it is an answer about a different organization, and
+  // rendering the shell from it puts the user in a workspace the URL never
+  // named. `/account/me` is scoped by the URL's slug (getActiveOrgSlug), so
+  // once it resolves this can only agree or be null; a disagreement is
+  // therefore always an unresolved answer, never a verdict. Blank, not
+  // not-found: the 404 above is the only thing entitled to declare a wrong
+  // address, and it waits for the server.
+  //
+  // The legitimate cold load is untouched: the hint names the slug in the URL,
+  // so this matches on the very first paint and the shell renders with no
+  // round trip. Only a slug the hint does not name pays the wait — a foreign
+  // slug (which then 404s) and the frame after an org switch (which then
+  // renders the org the URL asked for, instead of flashing the previous one).
+  if (pathnameOrgSlug != null && auth.organization.slug !== pathnameOrgSlug) {
+    return <BlankScreen />;
+  }
+
   const activeSlug = auth.organization.slug;
   // The org context's slug feeds the connect card's `/<slug>/mcp` install URL.
-  // Prefer the URL's slug over the session's: on first paint `auth.organization`
-  // comes from the SSR auth-hint (the COOKIE's org), so a multi-org user viewing
-  // /<orgB> while their cookie still points at orgA would briefly render orgA's
-  // slug in the copyable URL before /account/me (URL-scoped) corrects it. The
-  // URL slug is the actual request scope and is correct on the very first paint,
-  // so sourcing it from there removes that flash. VALIDATED (pathnameOrgSlug,
-  // not the raw route param): the `{-$orgSlug}` param also captures reserved
+  // Source it from the URL, which is the actual request scope and is correct on
+  // the very first paint. The gate above has already made the two agree
+  // whenever the URL names a slug at all, so this is the same value stated in
+  // the terms the rest of the tree is keyed on. VALIDATED (pathnameOrgSlug, not
+  // the raw route param): the `{-$orgSlug}` param also captures reserved
   // console roots ("/integrations" → orgSlug "integrations"), which are not
   // org scopes. Falls back to the auth org on a bare/reserved URL (which
   // OrgSlugGate canonicalizes onto it below).

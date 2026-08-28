@@ -14,10 +14,12 @@ scenario(
     const identity = yield* target.newIdentity();
 
     yield* browser.session(identity, async ({ page, step }) => {
-      await step("Open the integrations picker", async () => {
-        await visit(page, "/integrations");
+      await step("Open the integrations picker from the sidebar", async () => {
+        await visit(page, "/policies");
         await clickToReveal(
-          page.getByRole("button", { name: "Connect" }),
+          page
+            .getByRole("navigation")
+            .getByRole("button", { name: "Browse integrations", exact: true }),
           page.getByRole("dialog", { name: "Connect an integration" }),
         );
       });

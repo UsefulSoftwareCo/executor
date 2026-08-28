@@ -2,6 +2,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Fiber,
   Inspectable,
   Layer,
   Option,
@@ -695,6 +696,23 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly toolsSyncTtlMs?: number | null;
   /**
+   * How long a tools read WAITS for stale-catalog rebuilds before answering
+   * from the persisted rows. Rebuilds keep running past the deadline (see
+   * `waitUntil`) and land on a later read; the read itself never pays more
+   * than this for upstream listings it did not ask for. Defaults to 2
+   * seconds; pass `null` to block until every rebuild finishes (the strict
+   * mode: a read then always reflects a fully converged catalog).
+   */
+  readonly toolsSyncGraceMs?: number | null;
+  /**
+   * Host keep-alive for background work that outlives a request — the
+   * platform `waitUntil` on Cloudflare Workers, where I/O started inside a
+   * request is cancelled once the response settles unless a host holds the
+   * context open. Long-lived processes (self-host, CLI, tests) omit it;
+   * their detached fibers simply run to completion.
+   */
+  readonly waitUntil?: (promise: Promise<unknown>) => void;
+  /**
    * Notified after a durable integration-catalog change commits (a row
    * created or removed). Best-effort observation only: the notification runs
    * AFTER the transaction, its failures are swallowed, and it cannot affect
@@ -726,6 +744,13 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
 /** Default freshness window for remote-catalog connections (see
  *  `ExecutorConfig.toolsSyncTtlMs`). */
 export const DEFAULT_TOOLS_SYNC_TTL_MS = 15 * 60 * 1000;
+
+/** Default wait budget a tools read spends on stale-catalog rebuilds before
+ *  answering from the persisted rows (see `ExecutorConfig.toolsSyncGraceMs`).
+ *  Sized to cover a healthy upstream re-list (one handshake + one
+ *  `tools/list`) while keeping a read gated on a slow or dead server bounded
+ *  well under any per-connection network timeout. */
+export const DEFAULT_TOOLS_SYNC_GRACE_MS = 2000;
 
 /** How many stale connection catalogs are DISCOVERED at once on a tools read.
  *  Bounded so a host with a large stale set cannot open an unbounded number of
@@ -4211,9 +4236,49 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       yield* Effect.all(rebuilds, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY });
     });
 
+    // How long a tools read waits for the stale sync before answering from
+    // the persisted rows (`ExecutorConfig.toolsSyncGraceMs`; `null` blocks
+    // until convergence).
+    const toolsSyncGraceMs =
+      config.toolsSyncGraceMs === undefined ? DEFAULT_TOOLS_SYNC_GRACE_MS : config.toolsSyncGraceMs;
+
+    // Run the stale sync with a bounded wait: a read pays at most the grace
+    // budget for upstream listings it did not ask for, then serves the
+    // persisted catalog while the rebuilds finish on their detached fibers
+    // (deduplicated per connection by `produceConnectionTools`, so overlapping
+    // reads share one rebuild instead of stacking new ones). One slow or dead
+    // MCP server must never gate every catalog read behind its network
+    // timeout. Past the deadline the sync is best-effort by construction —
+    // failures log and the stale-but-working catalog stays — so the fork
+    // swallows its scan errors the same way each rebuild already swallows its
+    // own.
+    const awaitStaleSyncWithinGrace = (graceMs: number) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkDetach(
+          syncStaleConnectionTools.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("executor stale tool sync scan failed", {
+                error: describeSyncFailure(error),
+              }),
+            ),
+          ),
+        );
+        // On hosts that cancel request-scoped I/O once the response settles
+        // (Cloudflare Workers), hand the host the rebuilds' completion so the
+        // catalog still converges after the read stops waiting.
+        config.waitUntil?.(
+          new Promise<void>((resolve) => fiber.addObserver(() => resolve(undefined))),
+        );
+        yield* Fiber.await(fiber).pipe(Effect.timeoutOption(graceMs), Effect.asVoid);
+      });
+
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
-        yield* syncStaleConnectionTools;
+        if (toolsSyncGraceMs === null) {
+          yield* syncStaleConnectionTools;
+        } else {
+          yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
+        }
         // Projected: the list surface is metadata (address, description,
         // annotations) — loading every tool's input/output schema JSON made
         // an unbounded list scale with schema bytes, not tool count.

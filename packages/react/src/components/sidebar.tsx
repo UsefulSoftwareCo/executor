@@ -168,6 +168,9 @@ function Sidebar({
     return (
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
         <SheetContent
+          // Navigation only. Tapping the page behind it is the normal way to
+          // put the mobile nav away, and nothing is lost.
+          dismissOnOutsideClick
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"

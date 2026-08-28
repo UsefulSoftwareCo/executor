@@ -61,6 +61,7 @@ import {
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
+  McpToolMeta,
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
@@ -140,14 +141,17 @@ const legacyMcpClientMatches = (
 // ---------------------------------------------------------------------------
 // Tool annotations carry an `mcp` envelope alongside the executor's policy
 // hints. The executor persists `ToolDef.annotations` verbatim into the tool
-// row's JSON column, so the real MCP tool name + upstream annotations survive
-// to `invokeTool` / `resolveAnnotations` with no plugin-side store (resolveTools
-// has no ctx to write one anyway). The envelope is opaque to core.
+// row's JSON column, so the real MCP tool name, the upstream annotations, and
+// the tool's reserved `_meta` map survive to `invokeTool` /
+// `resolveAnnotations` with no plugin-side store (resolveTools has no ctx to
+// write one anyway). The envelope is opaque to core.
 // ---------------------------------------------------------------------------
 
 interface McpToolStamp {
   readonly toolName: string;
   readonly upstream?: McpToolAnnotations;
+  /** The tool's reserved MCP `_meta` map, opaque to core and to the model. */
+  readonly _meta?: McpToolMeta;
 }
 
 type StampedAnnotations = ToolAnnotations & { readonly mcp: McpToolStamp };
@@ -163,6 +167,7 @@ const McpStampSchema = Schema.Struct({
       openWorldHint: Schema.optional(Schema.Boolean),
     }),
   ),
+  _meta: Schema.optional(McpToolMeta),
 });
 const AnnotationsWithStamp = Schema.Struct({ mcp: McpStampSchema });
 const decodeStamp = Schema.decodeUnknownOption(AnnotationsWithStamp);
@@ -182,6 +187,8 @@ const readStamp = (annotations: unknown): McpToolStamp | null =>
 const McpRemoteServerInputSchema = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
@@ -199,6 +206,8 @@ const McpRemoteServerInputSchema = Schema.Struct({
 const McpStdioServerInputSchema = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
@@ -376,6 +385,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     const vars = stdioEnvVarNames(input);
     return {
       transport: "stdio",
+      family: input.family?.trim() || undefined,
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
@@ -388,6 +398,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
   }
   return {
     transport: "remote",
+    family: input.family?.trim() || undefined,
     endpoint: input.endpoint,
     remoteTransport: input.remoteTransport ?? "auto",
     queryParams: input.queryParams,
@@ -428,13 +439,16 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
 };
 
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
- *  real MCP tool name + upstream annotations into the persisted annotations so
- *  they survive to invokeTool with no plugin-side store. */
+ *  real MCP tool name, the upstream annotations, and the tool's `_meta` map
+ *  into the persisted annotations so they survive to invokeTool with no
+ *  plugin-side store. Executor's `ToolDef` has no `_meta` field of its own, so
+ *  the stamp is where a host reads it back. */
 const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   const destructive = entry.annotations?.destructiveHint === true;
   const stamp: McpToolStamp = {
     toolName: entry.toolName,
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
+    ...(entry._meta ? { _meta: entry._meta } : {}),
   };
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,
@@ -754,10 +768,14 @@ export const describeMcpAuthMethods = (
 
 export const describeMcpIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = parseMcpIntegrationConfig(record.config);
-  if (!config || config.transport === "stdio") return {};
-  return { url: config.endpoint };
+  if (!config) return {};
+  const family = config.family?.trim();
+  return {
+    ...(config.transport === "remote" ? { url: config.endpoint } : {}),
+    ...(family ? { family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------

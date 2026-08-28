@@ -102,6 +102,53 @@ export const compareVersions = (left: string, right: string): number | null => {
   return comparePrereleaseIdentifiers(lv.prerelease, rv.prerelease);
 };
 
+/**
+ * True when `version` parses as `0.0.0`, with or without a prerelease suffix
+ * (e.g. `0.0.0-dev`). `0.0.0` is never a published release — it is the
+ * build-time fallback baked in when the real version was unavailable at
+ * build time — so a build carrying it must never claim an update.
+ */
+export const isUnstampedVersion = (version: string): boolean => {
+  const parsed = parseVersion(version);
+  return parsed !== null && parsed.major === 0 && parsed.minor === 0 && parsed.patch === 0;
+};
+
+/**
+ * The dist-tag channel `version` can legitimately be compared against, or
+ * `null` when there is none (the check should be suppressed, not run):
+ *   - an unstamped build (0.0.0*) never shipped, so there is nothing to
+ *     compare it against
+ *   - unparseable input has no meaningful channel
+ *   - no prerelease -> the `latest` tag
+ *   - a prerelease whose first identifier is `beta` -> the `beta` tag
+ *   - any other prerelease (rc, alpha, next, dev, ...) has no matching
+ *     dist-tag, so suppress rather than nag forever against a channel it can
+ *     never catch up to
+ */
+export const resolveComparisonChannel = (version: string): UpdateChannel | null => {
+  if (isUnstampedVersion(version)) return null;
+  const parsed = parseVersion(version);
+  if (!parsed) return null;
+  if (parsed.prerelease === null) return "latest";
+  return parsed.prerelease[0] === "beta" ? "beta" : null;
+};
+
+/**
+ * The single "should we nag?" verdict both the CLI and the web UpdateCard
+ * read. False whenever there is nothing to compare: no current version, no
+ * dist-tag channel this version could match (see `resolveComparisonChannel`),
+ * or no published tag for that channel.
+ */
+export const isUpdateAvailable = (
+  currentVersion: string | undefined,
+  latestVersion: string | null,
+): boolean => {
+  if (currentVersion === undefined) return false;
+  if (resolveComparisonChannel(currentVersion) === null) return false;
+  if (latestVersion === null) return false;
+  return compareVersions(currentVersion, latestVersion) === -1;
+};
+
 // ── dist-tags resolution ──────────────────────────────────────────────────
 
 export type DistTags = Partial<Record<UpdateChannel, string>>;
@@ -223,9 +270,17 @@ export const checkForUpdate = async (
 ): Promise<UpdateStatus> => {
   const channel = resolveUpdateChannel(currentVersion);
   const command = `npm i -g ${EXECUTOR_PACKAGE_NAME}@${channel}`;
+
+  // No dist-tag can legitimately be compared against this version (unstamped
+  // dev build, or a prerelease channel that never gets published) — do not
+  // even hit the registry, since the answer is already known.
+  const comparisonChannel = resolveComparisonChannel(currentVersion);
+  if (comparisonChannel === null) {
+    return { updateAvailable: false, currentVersion, latestVersion: null, channel, command };
+  }
+
   const tags = await resolveDistTags(options);
-  const latestVersion = tags[channel] ?? null;
-  const updateAvailable =
-    latestVersion !== null && compareVersions(currentVersion, latestVersion) === -1;
+  const latestVersion = tags[comparisonChannel] ?? null;
+  const updateAvailable = isUpdateAvailable(currentVersion, latestVersion);
   return { updateAvailable, currentVersion, latestVersion, channel, command };
 };

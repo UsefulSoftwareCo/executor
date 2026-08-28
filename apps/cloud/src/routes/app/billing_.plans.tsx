@@ -401,7 +401,8 @@ function EnterpriseContactDialog() {
           Contact us
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      {/* Static contact details only: clicking away dismisses it. */}
+      <DialogContent dismissOnOutsideClick>
         <DialogHeader>
           <DialogTitle>Talk to us about Enterprise</DialogTitle>
           <DialogDescription>
@@ -449,7 +450,8 @@ function SlackContactCta() {
               <span aria-hidden>→</span>
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          {/* Static contact details only: clicking away dismisses it. */}
+          <DialogContent dismissOnOutsideClick>
             <DialogHeader>
               <DialogTitle>Get in touch on Slack</DialogTitle>
               <DialogDescription>
