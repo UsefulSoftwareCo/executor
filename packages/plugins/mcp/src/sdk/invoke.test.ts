@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeAll, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
@@ -11,7 +11,13 @@ import {
 import { ElicitationResponse } from "@executor-js/sdk";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
+import { loadMcpClientSdk } from "./client-module";
 import { createMcpConnector, type McpConnection, type McpConnector } from "./connection";
+
+// Classification consults the lazily-loaded client module (client-module.ts);
+// in prod every SDK error is preceded by a connect, which loads it. Mirror
+// that precondition here — these tests construct SDK errors directly.
+beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import { invokeMcpTool } from "./invoke";
 

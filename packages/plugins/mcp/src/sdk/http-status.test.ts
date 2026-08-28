@@ -1,5 +1,12 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeAll, describe, expect, it } from "@effect/vitest";
 import { InsufficientScopeError, SdkErrorCode, SdkHttpError } from "@modelcontextprotocol/client";
+
+import { loadMcpClientSdk } from "./client-module";
+
+// Classification consults the lazily-loaded client module (client-module.ts);
+// in prod every SDK error is preceded by a connect, which loads it. Mirror
+// that precondition here — these tests construct SDK errors directly.
+beforeAll(() => loadMcpClientSdk());
 
 // oxlint-disable executor/no-error-constructor -- boundary: these tests reproduce the MCP SDK's own transport rejections, which are built-in Errors
 import { insufficientScopeFromCause } from "./http-status";

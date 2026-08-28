@@ -39,3 +39,11 @@ export {
   type MicrosoftGraphSpecBuild,
 } from "./graph";
 export { microsoftGraphAdapter } from "./spec-format-adapter";
+export {
+  MICROSOFT_GRAPH_DEFAULT_SLICE_ASSET,
+  MICROSOFT_GRAPH_SLICE_BASE_URL,
+  MICROSOFT_GRAPH_SLICE_RELEASE_TAG,
+  microsoftGraphPresetIdsForSliceAsset,
+  microsoftGraphSliceAssetFromUrl,
+  microsoftGraphSliceUrl,
+} from "./slices";

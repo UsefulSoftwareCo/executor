@@ -58,6 +58,7 @@ const EXECUTE_SKILL_BODY = [
   "- The `tools` object is a lazy proxy — enumerating it (`Object.keys(tools)`, spread, `for...in`) throws. Use `tools.search()` or `tools.executor.coreTools.connections.list({})` instead.",
   '- Pass an object to system tools, e.g. `tools.search({ query: "..." })`, `tools.executor.coreTools.connections.list({})`, and `tools.describe.tool({ path })`.',
   '- `tools.describe.tool()` returns compact TypeScript shapes. Use `inputTypeScript`, `outputTypeScript`, and `typeScriptDefinitions`. If the path doesn\'t resolve, the result carries `error: { code: "tool_not_found", suggestions }` — use a suggestion instead of retrying the same path.',
+  "- When `outputTypeScriptNote` is present, the `data` type was observed from live responses rather than declared by the provider: the listed fields are reliable, but the shape may be incomplete — prefer optional access for anything not listed.",
   "- For tools that return large collections (e.g. `getStates`, `getAll`), filter results in code rather than calling per-item tools.",
   "- Do not use `fetch` — all API calls go through `tools.*`.",
   "- If execution pauses for interaction, resume it with the returned `resumePayload`.",

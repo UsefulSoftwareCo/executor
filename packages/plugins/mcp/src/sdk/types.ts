@@ -1,4 +1,5 @@
 import { Effect, Option, Schema } from "effect";
+import { EnterpriseIdentityProviderDescriptorSchema } from "@executor-js/sdk/core";
 import {
   ApiKeyAuthMethod,
   ApiKeyAuthTemplate,
@@ -60,11 +61,30 @@ export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider. MCP oauth carries no
 //            stored endpoints: metadata is discovered live at connect time.
+//            A non-empty scope list may be declared when a server does not
+//            expose scopes through protected-resource metadata; otherwise they
+//            are discovered too.
 // ---------------------------------------------------------------------------
+
+/** Enterprise-Managed Authorization opt-in: which registered OAuth app plays the
+ *  enterprise identity provider for this server. Declaring one asks the connect
+ *  path to TRY the ID-JAG grant; whether it is actually used still depends on
+ *  the server advertising the profile in its RFC 8414 metadata, so a declaration
+ *  here can never take an ordinary MCP server off the interactive flow.
+ *
+ *  It is the POINTER only — no assertion, no secret. The identity assertion is
+ *  supplied per connect request by whoever holds the user's single sign-on.
+ *
+ *  The SDK owns the shape: this config, the integration catalog descriptor, and
+ *  the API's integrations response are one wire payload with one declaration. */
+export const McpEnterpriseIdentityProvider = EnterpriseIdentityProviderDescriptorSchema;
+export type McpEnterpriseIdentityProvider = typeof McpEnterpriseIdentityProvider.Type;
 
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+  enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
 
@@ -128,7 +148,12 @@ export const mcpAuthMethodFromShorthand = (auth: McpAuthShorthand): McpAuthMetho
  *  `normalizeMcpAuthMethods` backfills it. */
 export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("none") }),
-  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("oauth2"),
+    scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
+    enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
+  }),
   // Credential methods are authored request-shaped — the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
   // variable("token")] }, queryParams: { … } }`. Stored configs and the

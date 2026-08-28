@@ -27,6 +27,7 @@ import {
   typeCheckOutputTypeScript,
 } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 import { createExecutionEngine } from "./engine";
 import { ExecutionToolError } from "./errors";
 import {
@@ -874,6 +875,33 @@ describe("tool discovery", () => {
           '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }',
         ToolHttpMeta: "{ status: number; headers: { [k: string]: string; } }",
       });
+    }),
+  );
+
+  it.effect("serves an observed shape with a provenance note once a schemaless tool runs", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      // Cold: no declared output schema — data renders as unknown, no note.
+      const cold = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
+      expect(cold.outputTypeScript).toContain("data: unknown;");
+      expect(cold.outputTypeScriptNote).toBeUndefined();
+
+      yield* invoker.invoke({
+        path: "github.org.main.listRepositoryIssues",
+        args: { owner: "executor", repo: "executor" },
+      });
+
+      // Warm: the live `[]` payload becomes the served type, marked observed
+      // both inline and via the note.
+      const warm = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
+      expect(warm.outputTypeScript).toBe(
+        "{ ok: true; data: unknown[] /* observed; may be incomplete */; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+      );
+      expect(warm.outputTypeScriptNote).toContain("observed from 1 live response");
     }),
   );
 
@@ -1848,4 +1876,104 @@ describe("pause/resume with multiple elicitations", () => {
     expect(resumed.result.error).toBeUndefined();
     expect(resumed.result.result).toMatchObject({ ok: true });
   }, 10000);
+
+  // -------------------------------------------------------------------------
+  // Regression: a paused execution's sandbox fiber must not outlive the
+  // database handle it is holding.
+  //
+  // `executeWithPause` forks the sandbox with `Effect.forkDetach` so a pause can
+  // outlive the caller that observed it. What that fiber closes over is the
+  // problem: its invoker is built from the engine's `executor`, and the FumaDB
+  // client captures its handle at CONSTRUCTION rather than resolving it per
+  // operation. So the parked fiber keeps a live reference to whichever
+  // connection the host opened for the scope that built this engine.
+  //
+  // On the cloud `/api/*` plane that scope is the HTTP request, and its
+  // finalizer closes the postgres pool as soon as the response is written. A
+  // sandbox fiber still parked at that moment issues its next query against a
+  // pool that has already had `end()` called on it — which postgres.js answers
+  // with CONNECTION_ENDED, and which workerd answers with "Cannot perform I/O on
+  // behalf of a different request" once the socket is reached from a later
+  // request. Those are the storage faults seen in production on reads like
+  // `tool.findMany` and `plugin_storage.findMany`.
+  //
+  // `engine.shutdown` is the seam the host uses to end the fiber BEFORE closing
+  // the connection. Nothing is lost by ending it here: on a per-request engine
+  // the pause is already unreachable once the response is written (a resume
+  // lands on a different engine and replays the call instead).
+  // -------------------------------------------------------------------------
+  it.effect(
+    "shutdown ends a paused execution's sandbox fiber so it cannot outlive the request",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+
+        // Instrumented in place of the QuickJS runtime so the test can observe
+        // the one thing that actually matters: whether the forked sandbox fiber
+        // is still alive. It pauses through the real approval-gated tool, so
+        // `executeWithPause` returns on the caller's own fiber exactly as it
+        // does in the HTTP handler.
+        let sandboxEnded = false;
+        const probeCodeExecutor: CodeExecutor<ExecutionToolError> = {
+          execute: (_code, toolInvoker) =>
+            Effect.gen(function* () {
+              yield* Effect.orDie(
+                toolInvoker.invoke({ path: "api.org.main.singleApproval", args: {} }),
+              );
+              return { result: "unreachable", logs: [] } satisfies ExecuteResult;
+            }).pipe(
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  sandboxEnded = true;
+                }),
+              ),
+            ),
+        };
+
+        const engine = createExecutionEngine({ executor, codeExecutor: probeCodeExecutor });
+
+        const outcome = yield* engine.executeWithPause("ignored by the probe executor");
+        expect(outcome.status).toBe("paused");
+        const paused = outcome as Extract<typeof outcome, { status: "paused" }>;
+        expect(yield* engine.pausedExecutionCount()).toBe(1);
+
+        // This is the leak: the response is ready, but the sandbox is still
+        // parked on the approval, still holding the executor and its handle.
+        expect(sandboxEnded, "the sandbox is still alive while the request is served").toBe(false);
+
+        // Called from the same fiber that forked the sandbox — the shape the
+        // HTTP middleware runs `Effect.ensuring(engine.shutdown)` in. Bounded,
+        // because a shutdown that blocked would hold the request open for as
+        // long as the sandbox sat parked, which is worse than the leak.
+        const ended = yield* Effect.race(
+          engine.shutdown.pipe(Effect.as("ended" as const)),
+          Effect.sleep("5 seconds").pipe(Effect.as("hung" as const)),
+        );
+        expect(ended, "shutdown must not block the request it runs in").toBe("ended");
+
+        // The assertion the fix exists for: the fiber is actually gone by the
+        // time shutdown returns, so it can no longer reach the executor — and
+        // therefore can no longer query the connection the host closes next.
+        expect(sandboxEnded, "shutdown interrupted the parked sandbox fiber").toBe(true);
+
+        // The pause goes with it: one whose fiber is dead can never consume a
+        // response, so leaving it behind would only mislead a later resume.
+        expect(yield* engine.pausedExecutionCount()).toBe(0);
+        expect(yield* engine.getPausedExecution(paused.execution.id)).toBeNull();
+      }),
+    { timeout: 15000 },
+  );
+
+  it.effect("shutdown is a no-op when nothing is in flight", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeElicitingExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      // Runs on every request, including the overwhelming majority that never
+      // pause, so it has to be inert rather than an error path.
+      yield* engine.shutdown;
+      yield* engine.shutdown;
+      expect(yield* engine.pausedExecutionCount()).toBe(0);
+    }),
+  );
 });

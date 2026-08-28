@@ -574,6 +574,46 @@ describe("mcpPlugin", () => {
     ),
   );
 
+  it.effect("oauth.start uses declared MCP scopes when the client has no resource", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["mcp"] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "GitLab MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "gitlab_mcp",
+          authenticationTemplate: [{ kind: "oauth2", scopes: ["mcp"] }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("gitlab-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("gitlab-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("gitlab_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["mcp"]);
+      }),
+    ),
+  );
+
   // When discovery fails (auth, network, etc.) the connection still lands with
   // an empty tool set so the user can retry via `connections.refresh` once they
   // fix the underlying problem.

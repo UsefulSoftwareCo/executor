@@ -203,7 +203,22 @@ export const makeCliService = (
                 operation,
                 message: messageWithCause(`1Password CLI ${operation} failed`, cause),
               }),
-          }),
+          }).pipe(
+            // `op-js` keeps the service-account token in a PROCESS-GLOBAL
+            // (`cli.serviceAccountToken`, a field on the module's single CLI
+            // instance) and reads it when spawning `op`. Nothing in the library
+            // clears it, so a token set to serve one resolve stayed readable for
+            // the rest of the executor's life — long after the call that needed
+            // it, and with no reader. The account-name branch above happens to
+            // blank it, but only if a differently-authenticated call comes next,
+            // which in a service-account-only deployment never happens.
+            //
+            // So clear it as soon as the call is done: on success, on failure and
+            // on interruption alike. Safe because every write and every read of
+            // that global happens inside this same semaphore, so the next
+            // operation re-sets the token before it spawns anything.
+            Effect.ensuring(Effect.sync(() => op.setServiceAccount(""))),
+          ),
         )
         .pipe(Effect.withSpan(`onepassword.cli.${operation}`));
 

@@ -7,6 +7,7 @@ import {
   defaultMcpResource,
   jsonRpcErrorBody,
   mcpResourceKey,
+  preInitializeMethodNotFound,
   type McpResource,
 } from "@executor-js/host-mcp";
 import {
@@ -19,6 +20,7 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -180,6 +182,13 @@ export const createMcpRequestHandler = (
         return transport.handleRequest(request);
       }
 
+      // Pre-initialize dispatch: only `initialize` opens a session here, so a
+      // probe for anything else is answered -32601 instead of the transport's
+      // fatal 400. `executor mcp` bridges this endpoint to stdio, so that 400
+      // would close the client's pipe before it could fall back to initialize.
+      const unsupported = await Effect.runPromise(preInitializeMethodNotFound(request));
+      if (unsupported) return unsupported;
+
       let created: McpServer | undefined;
       let createdSessionId: string | null = null;
       let resourceConfig: LocalMcpServerConfig | null = null;
@@ -220,6 +229,7 @@ export const createMcpRequestHandler = (
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
+            searchToolsEnabled: readSearchToolsEnabled(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {

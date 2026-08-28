@@ -56,6 +56,8 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed(overrides.description ?? "test executor"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 });
 
 type TestServerConfig<E extends Cause.YieldableError> = Pick<

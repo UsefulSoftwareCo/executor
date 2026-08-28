@@ -39,6 +39,7 @@ import {
   formatPausedExecution,
   formatTtlDuration,
   findSkill,
+  parseIntegrationInventory,
   renderSkillsIndex,
   skillCatalogFor,
   EXECUTE_SKILL,
@@ -165,6 +166,16 @@ type SharedMcpServerConfig = {
    * serves. `execute`, `skills` and `resume` are untouched.
    */
   readonly artifactsEnabled?: boolean;
+  /**
+   * Per-connection opt-IN for the per-integration search tools. Defaults to
+   * false. A client that connects with `?search_tools=true` gets one
+   * `search_<integration>` tool per connected integration (the same inventory
+   * the `execute` description lists). The tools exist to carry the namespaces
+   * into the model's context as tool names; each call routes through the same
+   * execution flow as `tools.search({ namespace })` inside `execute`, so the
+   * results match what code-side search returns.
+   */
+  readonly searchToolsEnabled?: boolean;
   /**
    * Renders an artifact once, server-side, before it is saved — so a component
    * that throws on its first render is refused at create time with the real
@@ -1094,6 +1105,9 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // the skills catalog below.
     const artifactsEnabled = config.artifactsEnabled ?? true;
     const skillCatalog: readonly Skill[] = skillCatalogFor({ artifacts: artifactsEnabled });
+    // Per-integration search tools are off unless this connection opted in
+    // (`?search_tools=true`).
+    const searchToolsEnabled = config.searchToolsEnabled ?? false;
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -1250,6 +1264,15 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
         Effect.annotateSpans(joinKeyAttributes(extra)),
       );
+
+    // `search_<integration>` is `execute` running `tools.search` with the
+    // namespace pinned. The code is built HERE, from the slug the tool was
+    // registered under and a JSON-encoded query — never concatenated from
+    // raw model input — and then takes the exact `executeCode` path, so the
+    // results, formatting, and telemetry match a hand-written
+    // `tools.search({ namespace })` call.
+    const searchNamespaceCode = (integration: string, query: string | undefined): string =>
+      `return tools.search(${JSON.stringify({ query: query ?? "", namespace: integration })})`;
 
     /** What the caller could bind an unresolved role to. Best effort: the
      *  connections port is optional, and a failure to enumerate must not
@@ -1586,6 +1609,62 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         attributes: { "mcp.tool.name": "resume" },
       }),
     );
+
+    // --- per-integration search tools (opt-in, `?search_tools=true`) ---
+    //
+    // One minimally-described tool per connected integration, named
+    // `search_<integration>`. Their job is to put the integration namespaces
+    // into the model's context as tool names it can see without calling
+    // anything; a call routes through the same flow as
+    // `tools.search({ namespace })` inside `execute` (see searchNamespaceCode).
+    // The inventory comes from the same built description the model reads, so
+    // the two surfaces cannot list different integrations.
+    //
+    // A session serves up to 50 of these, so every definition byte is paid ~50
+    // times in the client's context. The NAME is the payload; everything else
+    // stays as small as it can: one shared description sentence (the slug
+    // would only repeat the name) and a single bare `query` parameter — no
+    // paging knobs, because anything past the first page belongs in `execute`.
+    // `namespace-search-tools.test.ts` pins the serialized size.
+    if (searchToolsEnabled) {
+      // The MCP tool-name grammar ([A-Za-z0-9_-]). Integration slugs already
+      // conform (they are `tools.<slug>` property names in sandbox code); one
+      // that somehow doesn't is skipped rather than failing the whole session.
+      const TOOL_NAME_SAFE_SLUG = /^[A-Za-z0-9_-]+$/;
+      const namespaces = parseIntegrationInventory(description).filter((slug) =>
+        TOOL_NAME_SAFE_SLUG.test(slug),
+      );
+      yield* Effect.sync(() => {
+        for (const integration of namespaces) {
+          server.registerTool(
+            `search_${integration}`,
+            {
+              description:
+                "Search this integration's tools; empty query lists all. Run results with execute.",
+              inputSchema: { query: z.string().optional() },
+            },
+            ({ query }, extra) =>
+              runToolEffect(
+                executeCode(searchNamespaceCode(integration, query), extra).pipe(
+                  Effect.withSpan("mcp.host.tool.namespace_search", {
+                    attributes: {
+                      "mcp.tool.name": `search_${integration}`,
+                      "executor.integration": integration,
+                    },
+                  }),
+                ),
+              ),
+          );
+        }
+      }).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: {
+            "mcp.tool.name": "search_<integration>",
+            "mcp.namespace_search.count": namespaces.length,
+          },
+        }),
+      );
+    }
 
     // --- artifacts / MCP Apps ---
     //

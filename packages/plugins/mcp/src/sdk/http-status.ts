@@ -10,10 +10,15 @@
 import { Option, Schema } from "effect";
 
 import { insufficientScopeFromEmbeddedJson } from "@executor-js/sdk/core";
-import { InsufficientScopeError, SdkHttpError, SseError } from "@modelcontextprotocol/client";
+// The SDK error classes are reached through the lazy loader: any error of
+// those classes was constructed by the loaded client module, so "not loaded"
+// soundly classifies the cause as not-an-SDK-error (see client-module.ts).
+import { mcpClientSdkIfLoaded } from "./client-module";
 
 const SsePostErrorCause = Schema.Struct({ message: Schema.String });
 const decodeSsePostErrorCause = Schema.decodeUnknownOption(SsePostErrorCause);
+const NumericHttpCodeCause = Schema.Struct({ code: Schema.Number });
+const decodeNumericHttpCodeCause = Schema.decodeUnknownOption(NumericHttpCodeCause);
 
 // V2 still constructs this exact message in SSEClientTransport._send. A format
 // drift just yields undefined (generic error, no crash).
@@ -28,16 +33,42 @@ const statusFromSsePostError = (cause: unknown): number | undefined =>
   });
 
 const statusFromTypedTransportError = (cause: unknown): number | undefined => {
-  if (SdkHttpError.isInstance(cause)) return cause.status;
-  if (SseError.isInstance(cause)) {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined) return undefined;
+  if (sdk.client.SdkHttpError.isInstance(cause)) return cause.status;
+  if (sdk.client.SseError.isInstance(cause)) {
     const code = cause.code;
     return code !== undefined && code >= 100 && code <= 599 ? code : undefined;
   }
   return undefined;
 };
 
+const statusFromNumericHttpCode = (cause: unknown): number | undefined =>
+  Option.match(decodeNumericHttpCodeCause(cause), {
+    onNone: () => undefined,
+    onSome: ({ code }) => (code >= 100 && code <= 599 ? code : undefined),
+  });
+
 export const httpStatusFromCause = (cause: unknown): number | undefined =>
   statusFromTypedTransportError(cause) ?? statusFromSsePostError(cause);
+
+/** Connection handshakes may receive the SDK's SSE error, whose numeric code
+ * is an HTTP status. Keep this connection-only: JSON-RPC invocation errors
+ * also have numeric `code` fields which are not HTTP statuses. */
+export const connectionHttpStatusFromCause = (cause: unknown): number | undefined =>
+  httpStatusFromCause(cause) ?? statusFromNumericHttpCode(cause);
+
+/** The SDK uses code -1 when Streamable HTTP reached the endpoint but its
+ * response did not implement the protocol (for example an unexpected content
+ * type). This is transport incompatibility, not a network outage. */
+export const isStreamableHttpProtocolError = (cause: unknown): boolean => {
+  const sdk = mcpClientSdkIfLoaded();
+  return (
+    sdk !== undefined &&
+    sdk.client.SdkError.isInstance(cause) &&
+    cause.code === sdk.client.SdkErrorCode.ClientHttpUnexpectedContent
+  );
+};
 
 // The SDK embeds the upstream response text in the transport error message
 // ("Error POSTing to endpoint: <body>"), which is the only place a 403's body
@@ -54,7 +85,7 @@ const SDK_STEP_UP_EXHAUSTED_RE =
   /^Server returned 403 insufficient_scope after step-up re-authorization \(retry limit \d+ reached\)$/;
 
 export const insufficientScopeFromCause = (cause: unknown): boolean =>
-  InsufficientScopeError.isInstance(cause) ||
+  (mcpClientSdkIfLoaded()?.client.InsufficientScopeError.isInstance(cause) ?? false) ||
   Option.match(decodeSsePostErrorCause(cause), {
     onNone: () => false,
     onSome: ({ message }) =>
