@@ -51,7 +51,7 @@ process.env.EXECUTOR_SSO_CLIENT_SECRET = registration.client_secret;
 process.env.EXECUTOR_SSO_ALLOWED_DOMAINS = "Example.com, @second.example ,";
 
 const { loadConfig } = await import("../config");
-const { emailDomain } = await import("./better-auth");
+const { emailDomain } = await import("./sso");
 const { makeSelfHostApiHandler } = await import("../app");
 
 const { handler, dispose } = await makeSelfHostApiHandler();

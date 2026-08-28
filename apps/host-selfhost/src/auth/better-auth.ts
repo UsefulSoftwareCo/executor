@@ -13,9 +13,10 @@ import { type Client } from "@libsql/client";
 import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
-import { loadConfig, type SsoConfig } from "../config";
+import { loadConfig } from "../config";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
+import { isAdmitted, isOAuthCallback, ssoProviderConfig } from "./sso";
 
 // The self-service signup gate: present only on the live (phase-2) auth
 // instance, so the bootstrap seed's `createUser` — which
@@ -31,51 +32,6 @@ interface SignupGate {
 // Only self-service email signups are code-gated. Server/admin-initiated user
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
-
-// Better Auth serves OAuth sign-in callbacks at `/oauth2/callback/:providerId`
-// (the genericOAuth plugin, which carries the configured SSO provider) and
-// `/callback/:providerId` (built-in social providers) — the only paths an
-// IdP-initiated user creation arrives on. Server-side creation (the seed,
-// admin add-user) never carries either, so this cleanly splits "a stranger
-// signed in at the IdP" from every trusted path.
-const isOAuthCallback = (path: string | undefined): boolean =>
-  path?.startsWith("/oauth2/callback/") === true || path?.startsWith("/callback/") === true;
-
-// The domain of a well-formed address, or null — so a malformed email can never
-// match an allowlist entry (`emailDomain("@example.com")` is null, not "example.com").
-export const emailDomain = (email: string): string | null => {
-  const at = email.lastIndexOf("@");
-  if (at <= 0 || at === email.length - 1) return null;
-  return email.slice(at + 1).toLowerCase();
-};
-
-// Admission = the IdP vouches for the address (`email_verified`, mapped to
-// `emailVerified` by the genericOAuth callback) AND its domain is allowlisted.
-// The verified check is load-bearing: an unverified claim is whatever the
-// account holder typed, so without it anyone could register an IdP account
-// with a made-up allowlisted address and walk in.
-const isAdmitted = (sso: SsoConfig, user: { email: string; emailVerified: boolean }): boolean => {
-  if (!user.emailVerified) return false;
-  const domain = emailDomain(user.email);
-  return domain !== null && sso.allowedDomains.includes(domain);
-};
-
-// The genericOAuth registration for the configured provider. Everything is
-// derived from the IdP's discovery document; PKCE is on unconditionally (any
-// OIDC-compliant IdP supports it). For Google with a single allowed domain,
-// `hd` pre-filters the account chooser to that Workspace domain — a UX hint
-// only (Google treats it as advisory); the create-hook gate is the enforcement.
-const ssoProviderConfig = (sso: SsoConfig) => ({
-  providerId: sso.providerId,
-  clientId: sso.clientId,
-  clientSecret: sso.clientSecret,
-  discoveryUrl: sso.discoveryUrl,
-  scopes: ["openid", "email", "profile"],
-  pkce: true,
-  ...(sso.providerId === "google" && sso.allowedDomains.length === 1
-    ? { authorizationUrlParams: { hd: sso.allowedDomains[0]! } }
-    : {}),
-});
 
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
