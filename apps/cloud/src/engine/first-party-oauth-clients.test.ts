@@ -105,7 +105,7 @@ describe("cloud first-party OAuth clients", () => {
 // scopes an `oauth.start` requests, and that admin scopes are refused).
 const GOOGLE_SCOPE = (suffix: string) => `https://www.googleapis.com/auth/${suffix}`;
 
-describe("cloud first-party Google app boundary", () => {
+describe("cloud first-party Google app", () => {
   const google = () =>
     firstPartyOAuthClientsFor(completeEnv).find((client) => client.name === "google");
 

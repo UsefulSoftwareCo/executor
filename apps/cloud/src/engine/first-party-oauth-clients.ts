@@ -170,6 +170,12 @@ const MICROSOFT_SCOPES = [
   "offline_access",
 ] as const;
 
+// Consumer Google launch boundary. Keep this list aligned with the scopes
+// submitted for the Executor-owned production app: ordinary Workspace services
+// plus Photos, Meet, and Search Console. Admin, Classroom, YouTube, Apps Script,
+// BigQuery, and Cloud Resource Manager have materially different audiences or
+// provider requirements and remain BYO OAuth. The same scope source builds each
+// catalog auth template, preventing picker/start drift.
 const GOOGLE_FIRST_PARTY_PRESET_IDS = [
   "google-calendar",
   "google-meet",
@@ -189,6 +195,8 @@ const GOOGLE_FIRST_PARTY_PRESET_IDS = [
 const GOOGLE_ALLOWED_SCOPES: readonly string[] = [
   ...new Set([
     ...GOOGLE_FIRST_PARTY_PRESET_IDS.flatMap(googleCatalogOAuthScopesForPreset),
+    // Connections created before the full-Gmail review retain this declared
+    // scope on reconnect. New Gmail presets request `mail.google.com`.
     "https://www.googleapis.com/auth/gmail.modify",
   ]),
 ];
@@ -202,7 +210,17 @@ const client = (
 
 /** Build the enabled first-party registry from secret bindings. Provider
  *  protocol details and scope ceilings live here so the cloud composition root
- *  cannot drift from the registered production clients. */
+ *  cannot drift from the registered production clients.
+ *
+ *  Each provider-side registration must list
+ *  `${VITE_PUBLIC_SITE_URL}/api/oauth/callback` as its callback; the org slug
+ *  travels inside OAuth `state`, so the single static callback serves every
+ *  org.
+ *
+ *  The endpoint URLs default to the real provider; the `_AUTHORIZE_URL` /
+ *  `_TOKEN_URL` overrides exist so tests and dev instances can point the app at
+ *  an emulated provider (`@executor-js/emulate`) and run the complete flow.
+ *  Production leaves them unset. */
 export const firstPartyOAuthClientsFor = (
   env: FirstPartyOAuthClientEnv,
 ): readonly FirstPartyOAuthClientConfig[] => [
@@ -252,6 +270,8 @@ export const firstPartyOAuthClientsFor = (
       env.FIRST_PARTY_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize",
     tokenUrl: env.FIRST_PARTY_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
     integrations: [IntegrationSlug.make("github_rest")],
+    // GitHub App user access tokens do not use classic OAuth scopes; their
+    // capabilities come from the app's registered permissions.
     authorizationScopes: [],
   }),
   ...client(env.FIRST_PARTY_GITLAB_CLIENT_ID, env.FIRST_PARTY_GITLAB_CLIENT_SECRET, {
@@ -267,10 +287,10 @@ export const firstPartyOAuthClientsFor = (
     tokenUrl: "https://oauth2.googleapis.com/token",
     allowedScopes: GOOGLE_ALLOWED_SCOPES,
     // Withdrawn from the connect picker: no new connection is offered the
-    // Executor-owned Google app. The entry stays declared on purpose —
-    // every connection already minted against it keeps refreshing and
-    // reconnecting through it. Deleting this block, or unsetting the env
-    // vars, would strand those connections instead.
+    // Executor-owned Google app. The entry stays declared on purpose — every
+    // connection already minted against it keeps refreshing and reconnecting
+    // through it. Deleting this block, or unsetting the env vars, would strand
+    // those connections instead.
     unlisted: true,
   }),
   ...client(env.FIRST_PARTY_HUBSPOT_CLIENT_ID, env.FIRST_PARTY_HUBSPOT_CLIENT_SECRET, {
