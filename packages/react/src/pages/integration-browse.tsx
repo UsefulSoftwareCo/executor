@@ -98,6 +98,16 @@ const withSurface = (name: string, surface: string): string => {
   return already ? name : `${name} ${surface}`;
 };
 
+/** The key on which a preset and a catalog row count as the same product:
+ *  the name with surface words and punctuation stripped, plus the kind.
+ *  "GitHub REST" and "GitHub API" are one product; "Stripe API" and
+ *  "Stripe MCP" are not. */
+const productKey = (name: string, kind: string): string =>
+  `${name
+    .toLowerCase()
+    .replace(/\b(api|rest|graphql|mcp)\b/g, "")
+    .replace(/[^a-z0-9]/g, "")}|${kind}`;
+
 const detectionRank: Record<IntegrationDetectionResult["confidence"], number> = {
   high: 3,
   medium: 2,
@@ -151,6 +161,8 @@ interface Row {
   readonly key: string;
   readonly testId: string;
   readonly title: string;
+  /** Surface kind for product matching (productKey); not rendered. */
+  readonly kindKey: string;
   /** The domain, shown beside a prettified title so near-namesakes stay
    *  distinguishable. Omitted when the title is already the domain. */
   readonly domain?: string;
@@ -492,8 +504,8 @@ export function IntegrationBrowsePage() {
   // catalog row for the same product must not read as two different kinds of
   // thing — the row shows the registry's identity (the domain) like every
   // other result, and the preset only supplies the better add flow. Keyed by
-  // the rendered title, the same match the dedupe below uses.
-  const catalogIdentityByTitle = useMemo(() => {
+  // productKey, the same match the dedupe below uses.
+  const catalogIdentityByKey = useMemo(() => {
     const map = new Map<
       string,
       { readonly domain: string; readonly auth?: CatalogSurface["auth"] }
@@ -505,10 +517,9 @@ export function IntegrationBrowsePage() {
           ? entry.surfaces
           : entry.kinds.map((kind) => ({ kind }));
       for (const surface of surfaces) {
-        const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
-        const title = withSurface(pretty, word).toLowerCase();
-        if (!map.has(title)) {
-          map.set(title, {
+        const key = productKey(pretty, surface.kind);
+        if (!map.has(key)) {
+          map.set(key, {
             domain: entry.domain,
             ...("auth" in surface && surface.auth ? { auth: surface.auth } : {}),
           });
@@ -529,11 +540,13 @@ export function IntegrationBrowsePage() {
       }
       const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
       const title = withSurface(entry.preset.name, surface);
-      const identity = catalogIdentityByTitle.get(title.toLowerCase());
+      const kindKey = entry.pluginKey === "google" ? "openapi" : entry.pluginKey;
+      const identity = catalogIdentityByKey.get(productKey(entry.preset.name, kindKey));
       rows.push({
         key: `preset-${entry.pluginKey}-${entry.preset.id}`,
         testId: `preset-${entry.preset.id}`,
         title,
+        kindKey,
         ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
@@ -543,7 +556,7 @@ export function IntegrationBrowsePage() {
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, isAdded, catalogIdentityByTitle]);
+  }, [allPresets, kind, text, pickPreset, isAdded, catalogIdentityByKey]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
@@ -567,6 +580,7 @@ export function IntegrationBrowsePage() {
           key: `catalog-${entry.domain}-${surface.kind}-${known?.slug ?? pretty}`,
           testId: `catalog-${known?.slug ?? `${entry.domain}-${surface.kind}`}`,
           title: withSurface(pretty, word),
+          kindKey: surface.kind,
           domain: entry.domain,
           ...(description ? { description } : {}),
           iconUrl: catalogLogoUrl(entry.domain, 10),
@@ -577,12 +591,13 @@ export function IntegrationBrowsePage() {
       });
     });
     // A registry row for something a preset already offers is a worse copy of
-    // it: same service, no auth template, no health check. Matched on the
-    // rendered title because a preset's domain is inferred from its icon and
-    // often does not match the registry's (the Gmail preset's icon is Google's,
-    // so a domain comparison let a second "Gmail API" through).
-    const presetTitles = new Set(presetRows.map((row) => row.title.toLowerCase()));
-    rows = rows.filter((row) => !presetTitles.has(row.title.toLowerCase()));
+    // it: same service, no auth template, no health check. Matched on
+    // productKey — normalized name plus kind — because neither titles nor
+    // domains line up reliably: the Gmail preset's icon is Google's (so a
+    // domain comparison let a second "Gmail API" through), and the GitHub
+    // preset says "GitHub REST" where the registry row says "GitHub API".
+    const presetKeys = new Set(presetRows.map((row) => productKey(row.title, row.kindKey)));
+    rows = rows.filter((row) => !presetKeys.has(productKey(row.title, row.kindKey)));
     if (text.length === 0) return rows;
     // A name match beats a mention in the blurb: searching "gmail" should not
     // rank a CRM that merely describes itself as living inside Gmail above

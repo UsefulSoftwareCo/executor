@@ -25,6 +25,7 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
+import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
 import { CardStack, CardStackContent } from "@executor-js/react/components/card-stack";
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
@@ -170,6 +171,8 @@ export default function AddOpenApiIntegration(props: {
   initialUrl?: string;
   initialPreset?: string;
   initialNamespace?: string;
+  initialAuthHeader?: string;
+  initialAuthNote?: string;
 }) {
   const integrationPlugins = useIntegrationPlugins();
   const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
@@ -297,14 +300,26 @@ export default function AddOpenApiIntegration(props: {
       ...(preview?.headerPresets ?? []).map((preset) => preset.label),
       ...(preview?.oauth2Presets ?? []).map((preset) => preset.label),
     ];
-    return authenticationTemplate.map(
+    const detected = authenticationTemplate.map(
       (template: Authentication, index: number): AuthMethodSeed => ({
         value: editorValueFromAuthentication(template),
         slug: String(template.slug),
         ...(labels[index] !== undefined ? { label: labels[index] } : {}),
       }),
     );
-  }, [preview, authenticationTemplate]);
+    if (preview === null) return detected;
+    // The registry's declared credential placement fills what the document
+    // leaves out. GitHub's official description famously declares no
+    // securitySchemes at all, and even with the OAuth preset template a PAT
+    // bearer header is how most calls actually authenticate — so the key
+    // method is offered alongside OAuth. A spec-declared key method wins over
+    // the registry's version of the same fact.
+    const placement = props.initialAuthHeader
+      ? placementFromHeaderPattern(props.initialAuthHeader)
+      : null;
+    if (!placement || detected.some((seed) => seed.value.kind === "apikey")) return detected;
+    return [...detected, { value: { kind: "apikey", placements: [placement] } }];
+  }, [preview, authenticationTemplate, props.initialAuthHeader]);
   const authMethodList = useAuthMethodList(authMethodSeeds);
 
   // The methods to register, mapped back to stored `Authentication[]`. Drops
@@ -600,6 +615,10 @@ export default function AddOpenApiIntegration(props: {
           footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
         />
       )}
+
+      {preview && props.initialAuthNote ? (
+        <p className="text-xs leading-relaxed text-muted-foreground">{props.initialAuthNote}</p>
+      ) : null}
 
       {preview ? (
         <AddOpenApiHealthCheckSection
