@@ -15,11 +15,12 @@ const resolveChannel = (version: string): InstallationChannel => {
   return "stable";
 };
 
-// The desktop main process sets `EXECUTOR_CLIENT=desktop` when it spawns the
-// sidecar so PostHog can slice desktop installs from headless apps/local
-// (CLI `executor web`, `daemon run --foreground`, etc.).
+// The surface is cli|desktop — never a "local" catch-all: the desktop main
+// process marks its sidecar via EXECUTOR_CLIENT=desktop; everything else
+// hosting apps/local (`executor web`, `daemon run --foreground`, stdio MCP)
+// is the CLI. Mirrors resolveSurface in ./analytics.ts.
 const resolveClient = (): SurfaceClient =>
-  process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "local";
+  process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "cli";
 
 export const CHANNEL: InstallationChannel = resolveChannel(LOCAL_VERSION);
 export const VERSION: string = LOCAL_VERSION;

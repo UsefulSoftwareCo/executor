@@ -1,11 +1,10 @@
 // ---------------------------------------------------------------------------
-// Edge concerns — the analytics/marketing/docs request middlewares that run at
-// the worker edge BEFORE the app's own mcp + api dispatch. None of these touch
-// the Effect app layer; they proxy or tunnel to external services (the
-// marketing worker, Sentry, PostHog, Mintlify docs).
+// Edge concerns — request middleware that runs before the app's own mcp + api
+// dispatch. These proxy or tunnel to external services without touching the
+// Effect app layer. Marketing is dispatched even earlier, from server.ts, so a
+// public page never loads the TanStack Start graph.
 // ---------------------------------------------------------------------------
 
-export { marketingMiddleware } from "./marketing";
 export { sentryTunnelMiddleware } from "./sentry-tunnel";
 export { posthogProxyMiddleware } from "./posthog";
 export { docsProxyMiddleware } from "./docs";

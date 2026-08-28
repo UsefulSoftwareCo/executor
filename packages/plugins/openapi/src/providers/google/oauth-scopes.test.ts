@@ -6,6 +6,7 @@ it("filters Google scopes that cannot be shown on a user OAuth consent screen", 
   expect(
     filterGoogleUserConsentOAuthScopes([
       "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/calendar.addons.execute",
       "https://www.googleapis.com/auth/chat.app.messages.readonly",
       "https://www.googleapis.com/auth/chat.bot",
       "https://www.googleapis.com/auth/chat.import",
@@ -19,16 +20,50 @@ it("filters Google scopes that cannot be shown on a user OAuth consent screen", 
   ]);
 });
 
+it("only compacts scopes that a broad Google scope actually covers", () => {
+  expect(
+    compactGoogleOAuthScopes([
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.apps.readonly",
+      "https://www.googleapis.com/auth/drive.activity.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/tasks",
+      "https://www.googleapis.com/auth/tasks.readonly",
+      "https://www.googleapis.com/auth/webmasters",
+      "https://www.googleapis.com/auth/webmasters.readonly",
+    ]),
+  ).toEqual([
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.apps.readonly",
+    "https://www.googleapis.com/auth/drive.activity.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/webmasters",
+  ]);
+});
+
 it("compacts Google OAuth scopes after filtering user-consent-incompatible scopes", () => {
   expect(
     compactGoogleOAuthScopes([
       "https://mail.google.com/",
       "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.settings.basic",
+      "https://www.googleapis.com/auth/gmail.settings.sharing",
+      "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
       "https://www.googleapis.com/auth/userinfo.email",
       "https://www.googleapis.com/auth/userinfo.profile",
       "openid",
       "https://www.googleapis.com/auth/chat.app.spaces",
       "https://www.googleapis.com/auth/keep.readonly",
     ]),
-  ).toEqual(["https://mail.google.com/", "email", "profile", "openid"]);
+  ).toEqual([
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "email",
+    "profile",
+    "openid",
+  ]);
 });

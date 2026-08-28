@@ -5,6 +5,7 @@ import { resolve, join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { $ } from "bun";
+import { WORKER_BUNDLER_DIRNAME, missingWorkerBundlerFiles } from "./worker-bundler-artifact";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cliRoot = resolve(repoRoot, "apps/cli");
@@ -12,7 +13,6 @@ const webRoot = resolve(repoRoot, "apps/local");
 const distDir = resolve(cliRoot, "dist");
 const ONEPASSWORD_CORE_WASM_FILENAME = "onepassword-core_bg.wasm";
 const WORKERD_VERSION = "1.20260708.1";
-const WORKER_BUNDLER_DIRNAME = "worker-bundler";
 
 const resolveQuickJsWasmPath = (): string => {
   const req = createRequire(join(repoRoot, "packages/kernel/runtime-quickjs/package.json"));
@@ -87,6 +87,54 @@ const createPackedWorkerBundlerSource = async (distPath: string): Promise<string
   const source = result.outputFiles[0]?.text;
   if (source === undefined) throw new Error("failed to bundle @cloudflare/worker-bundler");
   return source;
+};
+
+/**
+ * Verify the staged worker-bundler beside a freshly compiled binary.
+ *
+ * The compiled binary cannot resolve `@cloudflare/worker-bundler` by name —
+ * bunfs has no node_modules, so a bare specifier throws ResolveMessage at
+ * runtime. The colocated copy IS the delivery mechanism, and until now nothing
+ * checked it after the copy: a partial staging shipped a binary that only fails
+ * on the user's machine, at startup. Assert it here, where a failure costs a
+ * red build instead of a crash loop.
+ *
+ * Checks match the depth of the asset assertions elsewhere in the repo:
+ * presence of every file the runtime contract names, a size floor on the packed
+ * entry, and the `\0asm` magic on the wasm so a truncated or LFS-pointer copy
+ * cannot pass as real.
+ */
+const assertPackedWorkerBundler = async (binDir: string, targetName: string): Promise<void> => {
+  const stagedDir = join(binDir, WORKER_BUNDLER_DIRNAME);
+
+  const missing = missingWorkerBundlerFiles(stagedDir, existsSync);
+  if (missing.length > 0) {
+    throw new Error(
+      `Packed @cloudflare/worker-bundler is incomplete for ${targetName}: missing ${missing.join(", ")} under ${stagedDir}. ` +
+        `The compiled binary resolves this package from disk, not from bunfs, so shipping it partial means a runtime failure on the user's machine.`,
+    );
+  }
+
+  const bundledEntry = join(stagedDir, "dist", "index.bundled.js");
+  const bundledSize = (await Bun.file(bundledEntry).arrayBuffer()).byteLength;
+  if (bundledSize < 100_000) {
+    throw new Error(
+      `Packed worker-bundler entry for ${targetName} is implausibly small (${bundledSize} bytes at ${bundledEntry}). Expected the esbuild-packed bundle.`,
+    );
+  }
+
+  const wasmPath = join(stagedDir, "dist", "esbuild.wasm");
+  const wasmHead = new Uint8Array((await Bun.file(wasmPath).arrayBuffer()).slice(0, 4));
+  if (
+    wasmHead[0] !== 0x00 ||
+    wasmHead[1] !== 0x61 ||
+    wasmHead[2] !== 0x73 ||
+    wasmHead[3] !== 0x6d
+  ) {
+    throw new Error(
+      `Staged esbuild.wasm for ${targetName} is not a WebAssembly module (bad magic at ${wasmPath}).`,
+    );
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -487,6 +535,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
         join(binDir, WORKER_BUNDLER_DIRNAME, "dist", "index.bundled.js"),
         packedWorkerBundlerSource,
       );
+      await assertPackedWorkerBundler(binDir, name);
 
       // Smoke test on current platform
       if (isCurrentPlatform(target)) {

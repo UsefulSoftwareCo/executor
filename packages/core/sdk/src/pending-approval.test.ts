@@ -87,6 +87,23 @@ describe("makePendingApprovalStore", () => {
     }),
   );
 
+  it.effect("keeps the full human-scale approval window without waiting on wall clock", () =>
+    Effect.gen(function* () {
+      const recordedAt = 1_000_000;
+      let now = recordedAt + PENDING_APPROVAL_TTL_MS - 1;
+      const blobs = makeInMemoryBlobStore();
+      const store = makePendingApprovalStore(blobs, "u:t:s", () => now);
+      const expiresAt = recordedAt + PENDING_APPROVAL_TTL_MS;
+      yield* store.put(approval({ expiresAt }));
+
+      expect(yield* store.consume("exec_1")).not.toBeNull();
+
+      yield* store.put(approval({ expiresAt }));
+      now += 1;
+      expect(yield* store.consume("exec_1")).toBeNull();
+    }),
+  );
+
   // A record we reject is a record nobody should be able to retry against.
   it.effect("drops an expired record rather than leaving it to be retried", () =>
     Effect.gen(function* () {

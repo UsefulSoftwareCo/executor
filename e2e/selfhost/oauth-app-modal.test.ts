@@ -16,6 +16,7 @@ import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -81,7 +82,7 @@ scenario(
           const actions = page.getByRole("button", { name: `Actions for ${appName}` });
 
           await step("Open the integration and start a new connection", async () => {
-            await page.goto(`/integrations/${integration}`, { waitUntil: "networkidle" });
+            await visit(page, `/integrations/${integration}`);
             await page.getByRole("button", { name: "Add connection" }).click();
             // OAuth2 is the integration's only method, so the modal opens on
             // the OAuth app step with nothing registered yet. (`exact` avoids

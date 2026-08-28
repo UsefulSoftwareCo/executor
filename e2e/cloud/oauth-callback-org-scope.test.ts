@@ -17,6 +17,7 @@ import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity } from "../src/target";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -212,13 +213,13 @@ scenario(
       await installSameWindowOAuthPopup(page);
 
       await step("Land in the original organization", async () => {
-        await page.goto(`/${orgA.slug}`, { waitUntil: "networkidle" });
+        await visit(page, `/${orgA.slug}`);
         await expectOrgShell(page, orgA);
       });
 
       await step("The browser session is switched to another organization", async () => {
         await setWorkosSessionCookie(page, target.baseUrl, sessionB);
-        await page.goto(`/${orgB.slug}`, { waitUntil: "networkidle" });
+        await visit(page, `/${orgB.slug}`);
         await expectOrgShell(page, orgB);
       });
 
@@ -232,9 +233,7 @@ scenario(
         // refetch, and leave "Connect with OAuth" disabled forever (the flake
         // this step used to have). Waiting for org A's shell before opening
         // the modal makes every modal fetch run under the settled org A scope.
-        await page.goto(`/${orgA.slug}/integrations/${String(integration)}`, {
-          waitUntil: "networkidle",
-        });
+        await visit(page, `/${orgA.slug}/integrations/${String(integration)}`);
         await page.getByRole("button", { name: new RegExp(escapeRegExp(orgA.name)) }).waitFor({
           timeout: 30_000,
         });
@@ -286,7 +285,7 @@ scenario(
       await step("The provider returns to the OAuth callback", async () => {
         const callbackUrl = await submitProviderLoginFromPage(page);
         callback = new URL(callbackUrl);
-        const response = await page.goto(callbackUrl, { waitUntil: "networkidle" });
+        const response = await visit(page, callbackUrl);
         expect(response?.status(), "the callback renders its popup result page").toBe(200);
       });
 

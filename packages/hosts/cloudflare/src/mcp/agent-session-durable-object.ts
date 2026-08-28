@@ -21,6 +21,7 @@ import {
 import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
+import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
 import type {
   McpExecutionOwnerDirectory,
   McpExecutionOwnerRecord,
@@ -33,16 +34,32 @@ import {
   pausedLeaseExtensionLog,
   runningLeaseExtensionLog,
 } from "./session-alarm-policy";
+import {
+  acquireResidentRuntime,
+  releaseResidentRuntime,
+  residencyAttributes,
+} from "./session-runtime-residency";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
 export interface McpSessionInit {
   readonly organizationId: string;
+  /** The organization's display name, as the worker resolved it while
+   *  authorizing this very request. Carried so the session DO never has to
+   *  re-read a row the request already loaded. Absent when the auth plane could
+   *  not name the org, in which case the host resolves it itself. */
+  readonly organizationName?: string;
+  /** The organization's URL slug, from the same resolved record. */
+  readonly organizationSlug?: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
   /** Whether this session serves artifacts, read off `?artifacts=` at connect
    *  time. Absent means the default (enabled). */
   readonly artifactsEnabled?: boolean;
+  /** Whether this session serves the per-integration `search_<integration>`
+   *  tools, read off `?search_tools=` at connect time. Absent means the
+   *  default (disabled). */
+  readonly searchToolsEnabled?: boolean;
   /** The MCP resource the session was minted against (`/mcp` default vs a
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
@@ -105,6 +122,10 @@ export interface SessionMeta {
    *  Absent — including for sessions persisted before the flag existed — means
    *  the default (enabled). */
   readonly artifactsEnabled?: boolean;
+  /** Whether the session serves the per-integration search tools (carried from
+   *  {@link McpSessionInit}). Absent — including for sessions persisted before
+   *  the flag existed — means the default (disabled). */
+  readonly searchToolsEnabled?: boolean;
   /** The MCP resource the session serves (carried from {@link McpSessionInit});
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;
@@ -230,6 +251,10 @@ export abstract class McpAgentSessionDOBase<
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
   private initialized = false;
+  /** Whether this instance is currently counted in the isolate's residency
+   *  gauge. Tracked separately from `engine` because `closeRuntime` runs on
+   *  paths where nothing was ever built, and it must not decrement then. */
+  private countedAsResident = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private approvalResponses = new Map<string, ResumeResponse>();
@@ -238,7 +263,20 @@ export abstract class McpAgentSessionDOBase<
 
   protected abstract openSessionDb(): TDbHandle | Promise<TDbHandle>;
 
-  protected abstract resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta>;
+  /**
+   * Build the session's {@link SessionMeta} for this init.
+   *
+   * `storedMeta` is what this DO already persisted for the SAME organization on
+   * an earlier init, or `null`. It is offered first so a host never has to
+   * re-resolve an org identity it is already holding — on cloud that resolution
+   * is a fresh Postgres connection, and a cold restore used to die on it. Every
+   * field the CONNECT carries (resource, elicitation mode, capability flags)
+   * still comes from `token`; only the org identity may be reused.
+   */
+  protected abstract resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta>;
 
   protected abstract buildMcpServer(
     sessionMeta: SessionMeta,
@@ -262,6 +300,23 @@ export abstract class McpAgentSessionDOBase<
   }
 
   protected prepareErrorCaptureScope(): Effect.Effect<void> {
+    return Effect.void;
+  }
+
+  /**
+   * Declare that the Durable Object has finished deciding what to do about this
+   * cause — either it reported it through `captureCauseEffect`, or it
+   * recognized it as expected platform behaviour and deliberately did not.
+   *
+   * Either way the cause is *owned here*. The host's outer error
+   * instrumentation wraps the DO's entry points and would otherwise report the
+   * same rejection a second time as it escapes, producing two issues per
+   * failure; this is the hook that lets the host drop its own echo. Anything the
+   * DO never claims (an alarm crash, a transport fault) is untouched and keeps
+   * being reported by that instrumentation, which is the whole point of
+   * claiming explicitly instead of disabling it.
+   */
+  protected claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
     return Effect.void;
   }
 
@@ -396,6 +451,34 @@ export abstract class McpAgentSessionDOBase<
     ]);
   }
 
+  /**
+   * Keep this session's idle deadline armed across the SDK's own alarm
+   * bookkeeping.
+   *
+   * The agents SDK recomputes the Durable Object alarm from its schedule table
+   * and keep-alive refcount, and when it finds neither it does not leave the
+   * alarm alone — it DELETES it. It releases the last keep-alive ref at the end
+   * of every ordinary request, from a `waitUntil`, so the idle alarm that
+   * `markActivity` had just armed was being erased moments after the response
+   * went out. A session that had just served a tool call was therefore left
+   * with no alarm at all: the idle policy never ran again, and its runtime
+   * stayed resident until the platform evicted the whole object.
+   *
+   * The idle deadline belongs to this class, not to the SDK's scheduler, so it
+   * is re-asserted after the SDK has arranged whatever it needs. Only while a
+   * runtime is actually resident — once there is nothing left to reclaim the
+   * SDK's answer is right and re-arming would spin the alarm forever.
+   */
+  protected async ensureIdleAlarmArmed(): Promise<void> {
+    if (!this.hasResidentRuntime()) return;
+    const lastActivityMs = await this.loadLastActivity();
+    if (lastActivityMs <= 0) return;
+    const idleDeadlineMs = lastActivityMs + this.sessionTimeoutMs();
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed !== null && armed <= idleDeadlineMs) return;
+    await this.ctx.storage.setAlarm(Math.max(idleDeadlineMs, Date.now() + 1));
+  }
+
   private async loadLastActivity(): Promise<number> {
     if (this.lastActivityMs > 0) return this.lastActivityMs;
     const stored = await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY);
@@ -474,9 +557,20 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
+  /** Whether anything is currently holding isolate memory for this session. */
+  private hasResidentRuntime(): boolean {
+    return this.initialized || this.engine !== null || this.dbHandle !== null;
+  }
+
+  /**
+   * Drop this session's execution runtime because it has gone idle, returning
+   * its memory to the isolate. Nothing durable is discarded, so the next
+   * request restores the session and the client sees only restore latency.
+   */
   private async disposeIdleRuntime(input: {
     readonly idleMs: number;
     readonly pausedExecutionCount: number;
+    readonly activeStreamCount: number;
   }): Promise<void> {
     console.info(
       JSON.stringify({
@@ -484,26 +578,54 @@ export abstract class McpAgentSessionDOBase<
         sessionId: this.sessionId,
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
+        activeStreamCount: input.activeStreamCount,
       }),
     );
-    await Effect.runPromise(this.closeRuntime());
-    await Effect.runPromise(
-      Effect.all([
-        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
-        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.delete(LAST_ACTIVITY_KEY))),
-      ]),
+    const self = this;
+    const program = Effect.gen(function* () {
+      yield* self.closeRuntime();
+      yield* Effect.all([
+        Effect.ignore(Effect.tryPromise(() => self.ctx.storage.deleteAlarm())),
+        Effect.ignore(Effect.tryPromise(() => self.ctx.storage.delete(LAST_ACTIVITY_KEY))),
+      ]);
+      // Read the gauge AFTER the release, so the attribute reports what the
+      // isolate is actually holding now rather than what it held a moment ago.
+      yield* Effect.annotateCurrentSpan(residencyAttributes());
+    }).pipe(
+      Effect.withSpan("mcp.session.idle_runtime_dispose", {
+        attributes: {
+          "mcp.session.id": self.sessionId,
+          "mcp.session.idle_ms": input.idleMs,
+          "mcp.session.paused_execution_count": input.pausedExecutionCount,
+          "mcp.session.active_stream_count": input.activeStreamCount,
+        },
+      }),
     );
+    // The alarm has no incoming trace context of its own, so this starts a new
+    // trace. It still has to be flushed explicitly — the alarm is not on any
+    // request's response path, and without the flush the span dies with the
+    // isolate and the mechanism stays unobservable in production.
+    await Effect.runPromise(this.withSpanFlush(this.withTelemetry(program)));
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
     const self = this;
     return Effect.gen(function* () {
-      const resolved = yield* self.resolveSessionMeta(token);
-      // `init` runs again on every cold restore, and `resolveSessionMeta`
-      // rebuilds meta from the bearer token — which carries no negotiated
-      // capabilities. Carry the stored value forward, or restoring the session
-      // would erase the very bit that survives the restore.
+      // Read what this DO already knows BEFORE asking the host to resolve
+      // anything. `init` runs again on every cold restore, and the stored meta
+      // is this session's own durable record of the organization it was minted
+      // for — re-deriving that identity from the host's backing store is the
+      // single most failure-prone step of a restore (on cloud, a brand-new
+      // Postgres connection) and it is redundant for a session that already
+      // exists. It is offered only for the SAME organization; a token naming a
+      // different org resolves from scratch.
       const stored = yield* self.loadSessionMeta();
+      const reusable = stored && stored.organizationId === token.organizationId ? stored : null;
+      // The stored meta also carries the capabilities negotiated at
+      // `initialize`, which the bearer token knows nothing about. Carry them
+      // forward, or restoring the session would erase the very bit that
+      // survives the restore.
+      const resolved = yield* self.resolveSessionMeta(token, reusable);
       const sessionMeta: SessionMeta = {
         ...resolved,
         ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
@@ -514,6 +636,61 @@ export abstract class McpAgentSessionDOBase<
       );
       return sessionMeta;
     }).pipe(Effect.withSpan("mcp.session.resolve_and_store_meta"));
+  }
+
+  /**
+   * A Cloudflare platform reset happened. Record what KIND it was, on the span
+   * and in a structured log, so the volume stays countable per cause (deploy
+   * reset vs storage timeout vs backend blip) instead of collapsing into one
+   * opaque bucket the moment it stops being an error report.
+   */
+  private recordDurableObjectReset(input: {
+    readonly operation: string;
+    readonly failure: DurableObjectFailure;
+    readonly cause: Cause.Cause<unknown>;
+  }): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      console.warn(
+        JSON.stringify({
+          event: "mcp_session_durable_object_reset",
+          operation: input.operation,
+          sessionId: self.sessionId,
+          resetKind: input.failure.kind,
+          disposition: input.failure.disposition,
+          cause: Cause.pretty(input.cause),
+        }),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "mcp.do.reset_kind": input.failure.kind,
+        "mcp.do.reset_disposition": input.failure.disposition,
+        "mcp.do.reset_operation": input.operation,
+      });
+    });
+  }
+
+  /**
+   * Run a storage write whose only job is bookkeeping, and let the Cloudflare
+   * platform take it away without taking the session with it.
+   *
+   * A platform reset (a deploy, a storage timeout, a backend blip) cancels
+   * whatever write is in flight. For a write nothing depends on, the right
+   * answer is to note it and carry on — the alternative, which is what used to
+   * happen, is that a fully built and perfectly healthy session is torn down and
+   * the user's request fails because a timestamp did not land.
+   *
+   * Scoped deliberately: only failures the classifier RECOGNIZES as platform
+   * resets are absorbed. Anything else is still a defect and still fails.
+   */
+  private bestEffortBookkeeping(operation: string, run: () => Promise<void>): Effect.Effect<void> {
+    const self = this;
+    return Effect.promise(run).pipe(
+      Effect.catchCause((cause) => {
+        const failure = classifyDurableObjectError(cause);
+        if (!failure) return Effect.failCause(cause);
+        return self.recordDurableObjectReset({ operation, failure, cause });
+      }),
+    );
   }
 
   private recordCauseOnSpan(cause: Cause.Cause<unknown>): Effect.Effect<void> {
@@ -619,11 +796,13 @@ export abstract class McpAgentSessionDOBase<
       : built;
   }
 
-  private closeRuntime(): Effect.Effect<void> {
+  private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       yield* self.releaseAllPendingApprovalLeases();
-      yield* Effect.sync(() => self.closeActiveStreams());
+      if (options.closeStreams ?? true) {
+        yield* Effect.sync(() => self.closeActiveStreams());
+      }
       if (self.server) {
         const server = self.server;
         delete (self as { server?: McpServer }).server;
@@ -637,6 +816,10 @@ export abstract class McpAgentSessionDOBase<
         yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
       }
       self.initialized = false;
+      if (self.countedAsResident) {
+        self.countedAsResident = false;
+        releaseResidentRuntime();
+      }
     });
   }
 
@@ -658,7 +841,15 @@ export abstract class McpAgentSessionDOBase<
   private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      yield* self.closeRuntime();
+      // PartyServer can rehydrate WebSockets before onStart runs in a
+      // cold-restored isolate. With no in-memory runtime to replace, those
+      // sockets are the live MCP response streams that triggered the restore.
+      const hasInMemoryRuntime =
+        self.initialized ||
+        self.engine !== null ||
+        self.dbHandle !== null ||
+        self.server !== undefined;
+      yield* self.closeRuntime({ closeStreams: hasInMemoryRuntime });
       const started = yield* Effect.exit(Effect.promise(() => self.runMcpAgentOnStart(props)));
       if (Exit.isFailure(started)) {
         yield* self.closeRuntime();
@@ -704,15 +895,44 @@ export abstract class McpAgentSessionDOBase<
       self.server = mcpServer;
       self.engine = engine;
       self.initialized = true;
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
-      );
+      if (!self.countedAsResident) {
+        self.countedAsResident = true;
+        acquireResidentRuntime();
+      }
+      // The gauge on the way up. Paired with the same attributes on
+      // `mcp.session.idle_runtime_dispose`, this is what shows whether idle
+      // sessions are actually giving their runtimes back in production.
+      yield* Effect.annotateCurrentSpan(residencyAttributes());
+      // Last statement, and pure bookkeeping: the runtime above is already
+      // installed and serving. Losing the timestamp/alarm write to a platform
+      // reset must not undo any of it — the in-memory clock is already set and
+      // the next request re-arms the alarm.
+      yield* self
+        .bestEffortBookkeeping("init.mark_activity", () => self.markActivity())
+        .pipe(Effect.withSpan("McpSessionDO.markActivity"));
     }).pipe(
+      // ONE capture owner for an init defect. `init` can only reject its
+      // Promise, and the host's DO-level error instrumentation captures that
+      // rejection too — so the DO claims the cause below and the host drops its
+      // own echo, rather than both filing the same failure as two issues with
+      // the same trace id and span id.
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
-          console.error("[mcp-session] init failed:", Cause.pretty(cause));
-          yield* self.captureCauseEffect(cause);
+          // A Cloudflare platform reset of an in-flight init is not a defect —
+          // every deploy causes one, by design. Record the kind so the volume
+          // stays measurable, let the caller render it as a retry, and do not
+          // page for it. Everything else is reported exactly as before.
+          const failure = classifyDurableObjectError(cause);
+          if (failure) {
+            yield* self.recordDurableObjectReset({ operation: "init", failure, cause });
+          } else {
+            console.error("[mcp-session] init failed:", Cause.pretty(cause));
+            yield* self.captureCauseEffect(cause);
+          }
           yield* self.recordCauseOnSpan(cause);
+          // Claimed AFTER any capture above, so the DO's own event is not
+          // mistaken for the host instrumentation's duplicate of it.
+          yield* self.claimCauseHandled(cause);
         }),
       ),
       Effect.catchCause((cause) =>
@@ -759,9 +979,9 @@ export abstract class McpAgentSessionDOBase<
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
         if (self.initialized) {
-          yield* Effect.promise(() => self.markActivity()).pipe(
-            Effect.withSpan("McpSessionDO.markActivity"),
-          );
+          yield* self
+            .bestEffortBookkeeping("validate_owner.mark_activity", () => self.markActivity())
+            .pipe(Effect.withSpan("McpSessionDO.markActivity"));
         } else {
           yield* Effect.promise(() => self.onStart()).pipe(
             Effect.withSpan("McpSessionDO.restore_transport_runtime"),
@@ -976,7 +1196,7 @@ export abstract class McpAgentSessionDOBase<
       return;
     }
 
-    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount });
+    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount, activeStreamCount });
   }
 
   private validateApprovalIdentity(
@@ -1160,9 +1380,9 @@ export abstract class McpAgentSessionDOBase<
       // which used to hold a ref across the pause and mask this by keeping
       // the ref transition away from 0->1.)
       const disposeKeepAlive = yield* Effect.promise(() => self.keepAlive());
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
-      );
+      yield* self
+        .bestEffortBookkeeping("approval_lease.mark_activity", () => self.markActivity())
+        .pipe(Effect.withSpan("McpSessionDO.markActivity"));
       const timeout = setTimeout(() => {
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);
@@ -1351,5 +1571,38 @@ export abstract class McpAgentSessionDOBase<
 
   private async cleanup(): Promise<void> {
     await Effect.runPromise(this.closeRuntime());
+  }
+}
+
+/**
+ * Install the idle-deadline repair described on
+ * {@link McpAgentSessionDOBase.ensureIdleAlarmArmed}.
+ *
+ * At runtime this is an ordinary method override — the agents SDK calls
+ * `this._scheduleNextAlarm()` and gets this one. It cannot be written in the
+ * class body because the SDK declares that member `private`, and TypeScript
+ * refuses to let a subclass redeclare a private base member at all. So it is
+ * installed on the prototype, which is the same thing to the runtime and the
+ * only form the compiler accepts.
+ */
+type BoundAsyncMethod = (this: object) => Promise<void>;
+
+{
+  // Read off the INHERITED prototype, so this captures the SDK's own
+  // implementation rather than the wrapper being installed just below.
+  const inherited: object = Object.getPrototypeOf(McpAgentSessionDOBase.prototype);
+  const scheduleNextAlarm = Reflect.get(inherited, "_scheduleNextAlarm") as
+    | BoundAsyncMethod
+    | undefined;
+  if (scheduleNextAlarm) {
+    Reflect.set(
+      McpAgentSessionDOBase.prototype,
+      "_scheduleNextAlarm",
+      async function (this: object): Promise<void> {
+        await scheduleNextAlarm.call(this);
+        const ensureIdleAlarmArmed = Reflect.get(this, "ensureIdleAlarmArmed") as BoundAsyncMethod;
+        await ensureIdleAlarmArmed.call(this);
+      },
+    );
   }
 }

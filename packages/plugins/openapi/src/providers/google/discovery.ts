@@ -7,7 +7,12 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { OpenApiParseError } from "../../sdk/errors";
 import type { Authentication } from "../../sdk/types";
-import { compactGoogleOAuthScopes } from "./oauth-scopes";
+import { compactGoogleOAuthScopes, isGoogleUserConsentOAuthScope } from "./oauth-scopes";
+import {
+  googleDiscoveryPolicyFor,
+  isGoogleDiscoveryMethodAllowed,
+  type GoogleDiscoveryServicePolicy,
+} from "./service-policy";
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 
 interface SpecFetchCredentials {
@@ -19,10 +24,8 @@ const DISCOVERY_SERVICE_HOST = "https://www.googleapis.com/discovery/v1/apis";
 const GOOGLE_BUNDLE_BASE_URL = "https://www.googleapis.com/";
 const GOOGLE_OAUTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_IDENTITY_SCOPES: readonly string[] = ["openid", "email", "profile"];
 const GOOGLE_PHOTOS_PICKER_SERVICE = "photospicker";
-const GOOGLE_PHOTOS_PICKER_SCOPE =
-  "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
-const GOOGLE_PHOTOS_PICKER_SCOPE_DESCRIPTION = "Read selected Google Photos media";
 const OPENAPI_SCHEMA_TYPES = new Set([
   "array",
   "boolean",
@@ -35,8 +38,6 @@ const OPENAPI_SCHEMA_TYPES = new Set([
 
 type GoogleDiscoveryServiceOverride = {
   readonly preserveServiceHostedUrl?: true;
-  readonly scopes?: Record<string, string>;
-  readonly fallbackMethodScopes?: readonly string[];
 };
 
 const GOOGLE_DISCOVERY_SERVICE_OVERRIDES: Record<string, GoogleDiscoveryServiceOverride> = {
@@ -44,10 +45,6 @@ const GOOGLE_DISCOVERY_SERVICE_OVERRIDES: Record<string, GoogleDiscoveryServiceO
   keep: { preserveServiceHostedUrl: true },
   [GOOGLE_PHOTOS_PICKER_SERVICE]: {
     preserveServiceHostedUrl: true,
-    scopes: {
-      [GOOGLE_PHOTOS_PICKER_SCOPE]: GOOGLE_PHOTOS_PICKER_SCOPE_DESCRIPTION,
-    },
-    fallbackMethodScopes: [GOOGLE_PHOTOS_PICKER_SCOPE],
   },
 };
 
@@ -467,6 +464,8 @@ const schemaType = (value: unknown): OpenApiSchemaObject["type"] | undefined =>
 const discoverySchemaToOpenApiSchema = (
   raw: unknown,
   schemaNameForRef: (name: string) => string = identitySchemaName,
+  hiddenProperties?: ReadonlySet<string>,
+  requiredProperties?: ReadonlySet<string>,
 ): OpenApiSchemaObject => {
   if (!isRecord(raw)) return {};
   const schema = raw;
@@ -507,13 +506,21 @@ const discoverySchemaToOpenApiSchema = (
   ) {
     const convertedProperties = isRecord(properties)
       ? Object.fromEntries(
-          Object.entries(properties).map(([name, value]) => [
-            name,
-            discoverySchemaToOpenApiSchema(value, schemaNameForRef),
-          ]),
+          Object.entries(properties)
+            .filter(([name]) => !hiddenProperties?.has(name))
+            .map(([name, value]) => [
+              name,
+              discoverySchemaToOpenApiSchema(value, schemaNameForRef),
+            ]),
         )
       : undefined;
-    const required = stringArray(schema.required);
+    const required = [
+      ...(stringArray(schema.required) ?? []),
+      ...(requiredProperties ?? []),
+    ].filter(
+      (name, index, values) =>
+        values.indexOf(name) === index && convertedProperties?.[name] !== undefined,
+    );
     const additionalProperties =
       schema.additionalProperties === undefined
         ? undefined
@@ -569,11 +576,12 @@ const discoveryScopes = (document: DiscoveryDocument): Record<string, string> =>
 // requests at connect) must match the consent the picker previews. Both run the
 // raw Discovery union through `compactGoogleOAuthScopes`, which drops scopes a
 // user OAuth consent screen can't show (`chat.bot`/`chat.app.*`/`keep`) and
-// collapses sub-scopes under their broad parent (`gmail.*` → `mail.google.com`,
-// `userinfo.email` → `email`). Descriptions are preserved where the raw map had
-// them; compaction-introduced identity scopes (`email`/`profile`) fall back to
-// the broad parent's description. Per-operation `x-google-scopes`/`security`
-// stay RAW - they describe which scope each method needs, not consent.
+// collapses content sub-scopes under their broad parent (Gmail message scopes →
+// `mail.google.com`, `userinfo.email` → `email`) while preserving independent
+// settings scopes. Descriptions are preserved where the raw map had them;
+// compaction-introduced identity scopes (`email`/`profile`) fall back to the
+// broad parent's description. Per-operation `x-google-scopes`/`security` stay
+// RAW - they describe which scope each method needs, not consent.
 const compactDiscoveryScopeMap = (raw: Record<string, string>): Record<string, string> => {
   const descriptionFor = (scope: string): string => {
     if (raw[scope] !== undefined) return raw[scope];
@@ -662,20 +670,26 @@ const buildDiscoveryOperation = (input: {
   readonly schemaNameForRef?: (name: string) => string;
   readonly serverUrl?: string;
   readonly tags?: readonly string[];
+  readonly policy?: GoogleDiscoveryServicePolicy;
 }): OpenApiOperationObject => {
   const mergedParameters = new Map<string, DiscoveryParameter>();
   for (const [name, raw] of Object.entries(input.document.parameters ?? {})) {
     const parameter = decodeDiscoveryParameter(raw);
-    if (parameter.location) mergedParameters.set(name, parameter);
+    if (parameter.location && !input.policy?.hiddenParameters?.has(name)) {
+      mergedParameters.set(name, parameter);
+    }
   }
   for (const [name, raw] of Object.entries(input.method.parameters ?? {})) {
     const parameter = decodeDiscoveryParameter(raw);
-    if (parameter.location) mergedParameters.set(name, parameter);
+    if (parameter.location && !input.policy?.hiddenParameters?.has(name)) {
+      mergedParameters.set(name, parameter);
+    }
   }
 
   const methodScopes = input.oauthScopes ?? input.method.scopes ?? [];
   const methodDescription = Option.getOrUndefined(input.method.description);
   const schemaNameForRef = input.schemaNameForRef ?? identitySchemaName;
+  const policyMethodId = Option.getOrUndefined(input.method.id) ?? input.toolPath;
 
   return {
     operationId: input.toolPath,
@@ -694,7 +708,10 @@ const buildDiscoveryOperation = (input: {
         {
           name,
           in: location,
-          required: location === "path" ? true : parameter.required === true,
+          required:
+            location === "path" ||
+            parameter.required === true ||
+            input.policy?.requiredParameters?.[policyMethodId]?.has(name) === true,
           ...(description !== undefined ? { description } : {}),
           schema: parameterSchema(parameter, schemaNameForRef),
           ...(location === "query"
@@ -707,10 +724,12 @@ const buildDiscoveryOperation = (input: {
     ...(input.method.request?.$ref
       ? {
           requestBody: {
-            required: false,
+            required: input.policy?.requiredRequestBodies?.has(policyMethodId) === true,
             content: {
               "application/json": {
-                schema: { $ref: schemaRef(schemaNameForRef(input.method.request.$ref)) },
+                schema: {
+                  $ref: schemaRef(schemaNameForRef(input.method.request.$ref)),
+                },
               },
             },
           },
@@ -722,7 +741,9 @@ const buildDiscoveryOperation = (input: {
         content: googleDiscoveryResponseContent(input.method, schemaNameForRef),
       },
     },
-    ...(methodScopes.length > 0 ? { security: [{ googleOAuth2: methodScopes }] } : {}),
+    ...(methodScopes.length > 0
+      ? { security: methodScopes.map((scope) => ({ googleOAuth2: [scope] })) }
+      : {}),
     "x-google-scopes": methodScopes,
   };
 };
@@ -735,6 +756,7 @@ const buildDiscoveryMediaUploadOperation = (input: {
   readonly schemaNameForRef?: (name: string) => string;
   readonly serverUrl?: string;
   readonly tags?: readonly string[];
+  readonly policy?: GoogleDiscoveryServicePolicy;
 }): OpenApiOperationObject | undefined => {
   if (input.method.supportsMediaUpload !== true) return undefined;
   const mediaUpload = input.method.mediaUpload;
@@ -746,11 +768,15 @@ const buildDiscoveryMediaUploadOperation = (input: {
   const mergedParameters = new Map<string, DiscoveryParameter>();
   for (const [name, raw] of Object.entries(input.document.parameters ?? {})) {
     const parameter = decodeDiscoveryParameter(raw);
-    if (parameter.location) mergedParameters.set(name, parameter);
+    if (parameter.location && !input.policy?.hiddenParameters?.has(name)) {
+      mergedParameters.set(name, parameter);
+    }
   }
   for (const [name, raw] of Object.entries(input.method.parameters ?? {})) {
     const parameter = decodeDiscoveryParameter(raw);
-    if (parameter.location) mergedParameters.set(name, parameter);
+    if (parameter.location && !input.policy?.hiddenParameters?.has(name)) {
+      mergedParameters.set(name, parameter);
+    }
   }
   mergedParameters.set("uploadType", {
     type: "string",
@@ -771,6 +797,7 @@ const buildDiscoveryMediaUploadOperation = (input: {
   const methodScopes = input.oauthScopes ?? input.method.scopes ?? [];
   const schemaNameForRef = input.schemaNameForRef ?? identitySchemaName;
   const methodDescription = Option.getOrUndefined(input.method.description);
+  const policyMethodId = Option.getOrUndefined(input.method.id) ?? input.toolPath;
 
   return {
     operationId: `${input.toolPath}Media`,
@@ -790,7 +817,10 @@ const buildDiscoveryMediaUploadOperation = (input: {
         {
           name,
           in: location,
-          required: location === "path" ? true : parameter.required === true,
+          required:
+            location === "path" ||
+            parameter.required === true ||
+            input.policy?.requiredParameters?.[policyMethodId]?.has(name) === true,
           ...(description !== undefined ? { description } : {}),
           schema: parameterSchema(parameter, schemaNameForRef),
           ...(location === "query"
@@ -814,13 +844,17 @@ const buildDiscoveryMediaUploadOperation = (input: {
         content: {
           "application/json": {
             schema: input.method.response?.$ref
-              ? { $ref: schemaRef(schemaNameForRef(input.method.response.$ref)) }
+              ? {
+                  $ref: schemaRef(schemaNameForRef(input.method.response.$ref)),
+                }
               : {},
           },
         },
       },
     },
-    ...(methodScopes.length > 0 ? { security: [{ googleOAuth2: methodScopes }] } : {}),
+    ...(methodScopes.length > 0
+      ? { security: methodScopes.map((scope) => ({ googleOAuth2: [scope] })) }
+      : {}),
     "x-google-scopes": methodScopes,
   };
 };
@@ -831,33 +865,48 @@ const GOOGLE_PHOTOS_APPENDONLY_SCOPE = "https://www.googleapis.com/auth/photosli
 const GOOGLE_PHOTOS_UPLOAD_TOOL_PATH = "photoslibrary.mediaItems.upload";
 const GOOGLE_PHOTOS_UPLOAD_PATH = "/v1/uploads";
 
-const isGooglePhotosService = (service: string): boolean =>
-  service === GOOGLE_PHOTOS_LIBRARY_SERVICE || service === GOOGLE_PHOTOS_PICKER_SERVICE;
-
 const discoveryScopesForService = (
   service: string,
+  version: string,
   document: DiscoveryDocument,
 ): Record<string, string> => {
   const scopes = discoveryScopes(document);
-  const overrideScopes = GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service]?.scopes;
+  const overrideScopes = googleDiscoveryPolicyFor(service, version)?.authoritativeScopes;
   if (!overrideScopes) {
     return scopes;
   }
-  const missingScopes = Object.fromEntries(
-    Object.entries(overrideScopes).filter(([scope]) => scopes[scope] === undefined),
-  );
-  return Object.keys(missingScopes).length === 0 ? scopes : { ...scopes, ...missingScopes };
+  return { ...overrideScopes };
 };
 
 const discoveryMethodScopesForService = (
   service: string,
+  version: string,
   method: DiscoveryMethod,
 ): readonly string[] => {
   const scopes = method.scopes ?? [];
-  return scopes.length === 0
-    ? (GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service]?.fallbackMethodScopes ?? scopes)
+  const policy = googleDiscoveryPolicyFor(service, version);
+  if (scopes.length === 0) return policy?.fallbackMethodScopes ?? scopes;
+  const authoritativeScopes = policy?.authoritativeScopes;
+  return authoritativeScopes
+    ? scopes.filter((scope) => authoritativeScopes[scope] !== undefined)
     : scopes;
 };
+
+const googleScopeCovers = (consentScope: string, methodScope: string): boolean => {
+  if (consentScope === methodScope) return true;
+  if (!isGoogleUserConsentOAuthScope(methodScope)) return false;
+  return !compactGoogleOAuthScopes([consentScope, methodScope]).includes(methodScope);
+};
+
+const oauthScopesForMethod = (
+  methodScopes: readonly string[],
+  consentScopeSet: ReadonlySet<string> | null,
+): readonly string[] =>
+  consentScopeSet === null
+    ? methodScopes
+    : [...consentScopeSet].filter((consentScope) =>
+        methodScopes.some((methodScope) => googleScopeCovers(consentScope, methodScope)),
+      );
 
 /** The v2 oauth auth template for a Google-discovery integration. The spec
  *  itself carries the matching `securitySchemes.googleOAuth2` entry; this is the
@@ -933,7 +982,11 @@ const googlePhotosUploadOperation = (input: {
       },
     },
   },
-  ...(input.oauthScopes.length > 0 ? { security: [{ googleOAuth2: input.oauthScopes }] } : {}),
+  ...(input.oauthScopes.length > 0
+    ? {
+        security: input.oauthScopes.map((scope) => ({ googleOAuth2: [scope] })),
+      }
+    : {}),
   "x-google-scopes": input.oauthScopes,
 });
 
@@ -966,11 +1019,14 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
     const info = yield* discoveryDocumentInfo(document, input.discoveryUrl);
     const { service, version, rootUrl, baseUrl, title } = info;
     const paths: Record<string, Record<string, OpenApiOperationObject>> = {};
+    const policy = googleDiscoveryPolicyFor(service, version);
 
     for (const method of allDiscoveryMethods(document)) {
       const methodId = Option.getOrUndefined(method.id);
       const pathTemplate = Option.getOrUndefined(method.path);
       if (!methodId || !pathTemplate || !method.httpMethod) continue;
+      if (!isGoogleDiscoveryMethodAllowed(policy, methodId)) continue;
+      const methodScopes = discoveryMethodScopesForService(service, version, method);
 
       const toolPath = methodToolPath(service, methodId);
       const path = normalizeDiscoveryPathTemplate(
@@ -985,15 +1041,17 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
         method,
         toolPath,
         pathTemplate: pathTemplate.startsWith("/") ? pathTemplate : `/${pathTemplate}`,
-        oauthScopes: discoveryMethodScopesForService(service, method),
+        oauthScopes: methodScopes,
+        policy,
       });
 
       const mediaUploadOperation = buildDiscoveryMediaUploadOperation({
         document,
         method,
         toolPath,
-        oauthScopes: discoveryMethodScopesForService(service, method),
+        oauthScopes: methodScopes,
         serverUrl: rootUrl,
+        policy,
       });
       if (mediaUploadOperation) {
         const mediaUploadPathTemplate = mediaUploadOperation["x-executor-pathTemplate"] ?? "";
@@ -1026,7 +1084,7 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
       });
     }
 
-    const scopes = compactDiscoveryScopeMap(discoveryScopesForService(service, document));
+    const scopes = compactDiscoveryScopeMap(discoveryScopesForService(service, version, document));
     const authenticationTemplate = googleOauthTemplate(scopes);
 
     const spec: OpenApiDocument = {
@@ -1041,7 +1099,12 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
         schemas: Object.fromEntries(
           Object.entries(document.schemas ?? {}).map(([name, schema]) => [
             name,
-            discoverySchemaToOpenApiSchema(schema),
+            discoverySchemaToOpenApiSchema(
+              schema,
+              identitySchemaName,
+              policy?.hiddenSchemaProperties?.[name],
+              policy?.requiredSchemaProperties?.[name],
+            ),
           ]),
         ),
         ...(authenticationTemplate
@@ -1085,7 +1148,10 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
 export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
   "OpenApi.convertGoogleDiscoveryBundle",
 )(function* (input: {
-  readonly documents: readonly { readonly discoveryUrl: string; readonly documentText: string }[];
+  readonly documents: readonly {
+    readonly discoveryUrl: string;
+    readonly documentText: string;
+  }[];
   readonly consentScopes?: readonly string[];
 }) {
   if (input.documents.length === 0) {
@@ -1118,32 +1184,53 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
   const paths: Record<string, Record<string, OpenApiOperationObject>> = {};
   const schemas: Record<string, OpenApiSchemaObject> = {};
   const rawScopes: Record<string, string> = {};
-  const consentScopeSet = input.consentScopes ? new Set(input.consentScopes) : null;
+  const inferredConsentScopes = infos.every(
+    (info) => googleDiscoveryPolicyFor(info.service, info.version) !== undefined,
+  )
+    ? [
+        ...GOOGLE_IDENTITY_SCOPES,
+        ...infos.flatMap(
+          (info) => googleDiscoveryPolicyFor(info.service, info.version)?.consentScopes ?? [],
+        ),
+      ]
+    : undefined;
+  const effectiveConsentScopes = input.consentScopes ?? inferredConsentScopes;
+  const consentScopeSet =
+    effectiveConsentScopes === undefined ? null : new Set(effectiveConsentScopes);
+
+  for (const scope of effectiveConsentScopes ?? []) {
+    rawScopes[scope] ??= "";
+  }
 
   for (const info of infos) {
+    const policy = googleDiscoveryPolicyFor(info.service, info.version);
     const schemaPrefix = schemaComponentPart(`${info.service}_${info.version}`);
     const schemaNameForRef = (name: string) => `${schemaPrefix}_${schemaComponentPart(name)}`;
-    const scopeDescriptions = discoveryScopesForService(info.service, info.document);
-    const filterPhotosScopes = consentScopeSet !== null && isGooglePhotosService(info.service);
+    const scopeDescriptions = discoveryScopesForService(info.service, info.version, info.document);
+    const filterConsentScopes = consentScopeSet !== null;
 
     for (const [scope, description] of Object.entries(scopeDescriptions)) {
-      if (filterPhotosScopes && !consentScopeSet.has(scope)) continue;
+      if (filterConsentScopes && !consentScopeSet.has(scope)) continue;
       rawScopes[scope] ??= description;
     }
 
     for (const [name, schema] of Object.entries(info.document.schemas ?? {})) {
-      schemas[schemaNameForRef(name)] = discoverySchemaToOpenApiSchema(schema, schemaNameForRef);
+      schemas[schemaNameForRef(name)] = discoverySchemaToOpenApiSchema(
+        schema,
+        schemaNameForRef,
+        policy?.hiddenSchemaProperties?.[name],
+        policy?.requiredSchemaProperties?.[name],
+      );
     }
 
     for (const method of allDiscoveryMethods(info.document)) {
       const methodId = Option.getOrUndefined(method.id);
       const rawPathTemplate = Option.getOrUndefined(method.path);
       if (!methodId || !rawPathTemplate || !method.httpMethod) continue;
-      const methodScopes = discoveryMethodScopesForService(info.service, method);
-      const oauthScopes = filterPhotosScopes
-        ? methodScopes.filter((scope) => consentScopeSet.has(scope))
-        : methodScopes;
-      if (filterPhotosScopes && methodScopes.length > 0 && oauthScopes.length === 0) continue;
+      if (!isGoogleDiscoveryMethodAllowed(policy, methodId)) continue;
+      const methodScopes = discoveryMethodScopesForService(info.service, info.version, method);
+      const oauthScopes = oauthScopesForMethod(methodScopes, consentScopeSet);
+      if (filterConsentScopes && methodScopes.length > 0 && oauthScopes.length === 0) continue;
 
       const toolPath = methodId;
       const wirePath = rawPathTemplate.startsWith("/") ? rawPathTemplate : `/${rawPathTemplate}`;
@@ -1161,6 +1248,7 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
         schemaNameForRef,
         serverUrl: info.baseUrl,
         tags: [info.title],
+        policy,
       });
 
       const mediaUploadOperation = buildDiscoveryMediaUploadOperation({
@@ -1171,6 +1259,7 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
         schemaNameForRef,
         serverUrl: info.rootUrl,
         tags: [info.title],
+        policy,
       });
       if (mediaUploadOperation) {
         const mediaUploadPathTemplate = mediaUploadOperation["x-executor-pathTemplate"] ?? "";

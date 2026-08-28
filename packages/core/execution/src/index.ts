@@ -11,7 +11,11 @@ export {
   type ResumeResponse,
 } from "./engine";
 
-export { buildExecuteDescription, INTEGRATION_INVENTORY_HEADER } from "./description";
+export {
+  buildExecuteDescription,
+  parseIntegrationInventory,
+  INTEGRATION_INVENTORY_HEADER,
+} from "./description";
 export {
   EXECUTE_SKILL,
   CREATE_ARTIFACT_SKILL,

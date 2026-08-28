@@ -3,7 +3,15 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { describe, expect, it } from "@effect/vitest";
 import { Context, Data, Effect, Layer, type Scope } from "effect";
 
-import { Subject, Tenant, collectTables, createExecutor, type Executor } from "@executor-js/sdk";
+import {
+  Subject,
+  Tenant,
+  collectTables,
+  createExecutor,
+  type AdminSubject,
+  type Executor,
+  type ExecutorAdmin,
+} from "@executor-js/sdk";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "@executor-js/sdk/testing";
 import { resetSubjectTouchCache, touchSubject } from "@executor-js/sdk/host-internal";
 
@@ -1066,5 +1074,121 @@ describe("admin users API", () => {
         expect(body.users.map((user) => user.externalId)).toEqual([USER_A1, USER_A2]);
       }),
     ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// `?email=` is a KEYED read, not a filtered scan.
+//
+// These drive the reads directly over a recording `ExecutorAdmin`, because the
+// property under test is WHICH storage call the filter makes — invisible from
+// the HTTP edge, where a page-then-filter and a keyed read return the same
+// body. That equivalence is exactly what let the joined view read 100 subjects
+// (and their connections) to answer with one row.
+// ---------------------------------------------------------------------------
+
+const A_SUBJECT: AdminSubject = {
+  externalId: USER_A1,
+  createdAt: new Date(0),
+  lastSeenAt: null,
+  status: null,
+};
+
+/** An `ExecutorAdmin` that answers everything and records the reads it was
+ *  asked for, so a test can assert the call the filter chose. */
+const recordingAdmin = (calls: string[]): ExecutorAdmin => ({
+  listSubjects: () => {
+    calls.push("listSubjects");
+    return Effect.succeed([A_SUBJECT]);
+  },
+  getSubject: () => {
+    calls.push("getSubject");
+    return Effect.succeed(A_SUBJECT);
+  },
+  listSubjectConnections: () => {
+    calls.push("listSubjectConnections");
+    return Effect.succeed([]);
+  },
+  listSubjectsWithConnections: () => {
+    calls.push("listSubjectsWithConnections");
+    return Effect.succeed([{ ...A_SUBJECT, connections: [] }]);
+  },
+  getSubjectWithConnections: () => {
+    calls.push("getSubjectWithConnections");
+    return Effect.succeed({ ...A_SUBJECT, connections: [] });
+  },
+});
+
+describe("admin users reads — the ?email= filter is applied before the read", () => {
+  it.effect("resolves the joined view through the keyed read, never a page scan", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const body = yield* listUsersWithConnections(
+        recordingAdmin(calls),
+        { email: A1_EMAIL },
+        stubUserDirectory({}),
+      );
+
+      expect(calls).toEqual(["getSubjectWithConnections"]);
+      expect(body.users.map((user) => user.externalId)).toEqual([USER_A1]);
+    }),
+  );
+
+  it.effect("resolves the plain list through the keyed read too", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const body = yield* listUsers(
+        recordingAdmin(calls),
+        { email: A1_EMAIL },
+        stubUserDirectory({}),
+      );
+
+      expect(calls).toEqual(["getSubject"]);
+      expect(body.users.map((user) => user.externalId)).toEqual([USER_A1]);
+    }),
+  );
+
+  it.effect("issues NO storage read at all for an email the directory cannot name", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const body = yield* listUsersWithConnections(
+        recordingAdmin(calls),
+        { email: "nobody@users.test" },
+        stubUserDirectory({}),
+      );
+
+      expect(calls).toEqual([]);
+      expect(body.users).toEqual([]);
+    }),
+  );
+
+  it.effect("still pages the filtered result: offset past the only row is empty", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const admin = recordingAdmin(calls);
+
+      const first = yield* listUsersWithConnections(
+        admin,
+        { email: A1_EMAIL, offset: 0, limit: 10 },
+        stubUserDirectory({}),
+      );
+      const past = yield* listUsersWithConnections(
+        admin,
+        { email: A1_EMAIL, offset: 1, limit: 10 },
+        stubUserDirectory({}),
+      );
+
+      expect(first.users.map((user) => user.externalId)).toEqual([USER_A1]);
+      expect(past.users).toEqual([]);
+    }),
+  );
+
+  it.effect("leaves the unfiltered list on the paged read", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      yield* listUsersWithConnections(recordingAdmin(calls), { limit: 50 }, stubUserDirectory({}));
+
+      expect(calls).toEqual(["listSubjectsWithConnections"]);
+    }),
   );
 });

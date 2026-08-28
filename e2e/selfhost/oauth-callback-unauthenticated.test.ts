@@ -14,6 +14,7 @@ import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -111,7 +112,7 @@ scenario(
 
     yield* browser.session({ label: "anonymous" }, async ({ page, step }) => {
       await step("Provider sends a signed-out browser to the OAuth callback", async () => {
-        const response = await page.goto(callbackPath, { waitUntil: "networkidle" });
+        const response = await visit(page, callbackPath);
         expect(response?.status(), "the callback redirects into the login flow").toBe(200);
         await page.getByRole("heading", { name: "Sign in" }).waitFor();
       });

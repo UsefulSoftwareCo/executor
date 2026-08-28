@@ -267,6 +267,120 @@ describe("selectClientsForEndpoints", () => {
       "spotify-app-2",
     ]);
   });
+
+  it("ranks a first-party app above BYO apps when both match", () => {
+    const integration = IntegrationSlug.make("github_rest");
+    const byo = app("my-github-app", {
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+    });
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [integration] },
+    });
+    const result = selectClientsForEndpoints([byo, firstParty], {
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      integration,
+    });
+    expect(result.endpointMatched).toBe(true);
+    // First-party leads despite being org-owned (user-owned normally sorts first).
+    expect(result.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:github",
+      "my-github-app",
+    ]);
+  });
+
+  it("hides a scope-limited first-party app from another API on the same provider", () => {
+    const firstParty = app("first-party:google", {
+      owner: "org",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      origin: {
+        kind: "first_party",
+        allowedScopes: ["openid", "email", "https://www.googleapis.com/auth/calendar"],
+      },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      integration: IntegrationSlug.make("renamed_gmail"),
+      scopes: ["openid", "email", "https://mail.google.com/"],
+    });
+
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+    expect(result.nearMatches).toEqual([]);
+    expect(result.unmatched).toEqual([]);
+  });
+
+  it("only allows unknown first-party scopes on the provider-discovery path", () => {
+    const integration = IntegrationSlug.make("slack_mcp");
+    const firstParty = app("first-party:slack", {
+      owner: "org",
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+      origin: {
+        kind: "first_party",
+        allowedScopes: ["search:read.public", "chat:write"],
+      },
+    });
+    const endpoints = {
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+      integration,
+      requireEndpointMatch: true,
+    } as const;
+
+    const staticUnknown = selectClientsForEndpoints([firstParty], endpoints);
+    expect(staticUnknown.endpointMatched).toBe(false);
+    expect(staticUnknown.matched).toEqual([]);
+
+    const discovered = selectClientsForEndpoints([firstParty], {
+      ...endpoints,
+      discoversScopes: true,
+    });
+    expect(discovered.endpointMatched).toBe(true);
+    expect(discovered.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:slack",
+    ]);
+  });
+
+  it("intent-matches a first-party app to its declared integrations even without endpoints", () => {
+    const integration = IntegrationSlug.make("github_rest");
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [integration] },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      requireEndpointMatch: true,
+      integration,
+    });
+    expect(result.endpointMatched).toBe(true);
+    expect(result.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "first-party:github",
+    ]);
+  });
+
+  it("does not surface a first-party app for an unrelated integration", () => {
+    const firstParty = app("first-party:github", {
+      owner: "org",
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      origin: { kind: "first_party", integrations: [IntegrationSlug.make("github_rest")] },
+    });
+    const result = selectClientsForEndpoints([firstParty], {
+      authorizationUrl: "https://accounts.spotify.com/authorize",
+      tokenUrl: "https://accounts.spotify.com/api/token",
+      integration: IntegrationSlug.make("spotify"),
+    });
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+  });
 });
 
 describe("selectDcrClientsForIntegration", () => {

@@ -386,7 +386,9 @@ export const workosAccountProvider: Layer.Layer<
             .updateOrganization(org.id, name)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
           yield* users
-            .use((s) => s.upsertOrganization({ id: updated.id, name: updated.name }))
+            .use("upsertOrganization", (s) =>
+              s.upsertOrganization({ id: updated.id, name: updated.name }),
+            )
             .pipe(Effect.catchTag("UserStoreError", toAccountError));
           return { name: updated.name };
         }),

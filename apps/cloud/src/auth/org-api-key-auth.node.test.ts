@@ -62,7 +62,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -124,19 +124,25 @@ describe("org-level API keys", () => {
     }),
   );
 
-  it.effect("are REJECTED on the product surface rather than bound to a subject", () =>
+  it.effect("resolve on the product surface as a platform principal, never a subject", () =>
     Effect.gen(function* () {
-      // THE security property of the api-key half: a product request carrying
-      // an org key must fail, not silently act as some user.
-      const error = yield* Effect.flip(
-        resolveApiKeyPrincipal(bearer("valid_org_key")).pipe(Effect.provide(layers)),
+      // THE security property of the api-key half, updated for platform reads:
+      // a product request carrying an org key resolves to the NEUTRAL platform
+      // shape — which the shared middleware routes to the subject-less,
+      // GET-only platform executor — and must never carry an accountId a
+      // handler could bind as an acting member.
+      const principal = yield* resolveApiKeyPrincipal(bearer("valid_org_key")).pipe(
+        Effect.provide(layers),
       );
 
-      expect(error).toMatchObject({
-        _tag: "Unauthorized",
-        code: "invalid_api_key",
-        message: "Organization API keys cannot be used on this endpoint",
+      expect(principal).toEqual({
+        kind: "platform",
+        organizationId: "org_123",
+        organizationName: "Org org_123",
+        organizationSlug: "org-slug-org_123",
+        keyId: "api_key_org",
       });
+      expect(principal).not.toHaveProperty("accountId");
     }),
   );
 

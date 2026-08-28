@@ -441,6 +441,69 @@ describe("oauth.start / oauth.complete", () => {
     ),
   );
 
+  it.effect("newConnection suffixes a name that only normalizes on the server", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Regression: a human label like "Work Gmail" reaches `start` as the
+        // client-derived "workGmail". The mint stores the `connectionIdentifier`
+        // form; before the fix the free-name guard compared the un-re-normalized
+        // name case-sensitively, missed the existing row, and the second connect
+        // OVERWROTE the first account instead of minting a suffixed name.
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "read"],
+          idTokenClaims: { email: "alice@example.com", sub: "user-1" },
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["openid", "email", "profile", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const runFlow = Effect.gen(function* () {
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            // A raw label the client would type, not an already-normalized name.
+            name: ConnectionName.make("Work Gmail"),
+            integration: INTEG,
+            template: TEMPLATE,
+            newConnection: true,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return null;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          return yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+        });
+
+        const first = yield* runFlow;
+        const second = yield* runFlow;
+        // The stored name is the normalized form, and the second connect resolves
+        // to a distinct suffixed name rather than re-minting the first row.
+        expect(String(first?.name)).toBe("workGmail");
+        expect(String(second?.name)).toBe("workGmail2");
+
+        const connections = yield* executor.connections.list({ integration: INTEG });
+        expect(connections.map((connection) => String(connection.name)).sort()).toEqual([
+          "workGmail",
+          "workGmail2",
+        ]);
+      }),
+    ),
+  );
+
   it.effect("preserves a curated label when reconnecting without an explicit label", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -958,6 +1021,16 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           (r) => r.path === "/token" && r.method === "POST" && r.body.includes("refresh_token"),
         );
         expect(refreshRequest).toBeDefined();
+
+        yield* server.clearRequests;
+        const repeated = yield* executor.connections.checkHealth({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(repeated.status).toBe("expired");
+        expect(repeated.detail).toContain("Grant not found");
+        expect(yield* server.requests).toHaveLength(0);
       }),
     ),
   );

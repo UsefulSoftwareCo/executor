@@ -31,7 +31,7 @@ const oauthAuthMethod = (template: Extract<Authentication, { kind: "oauth2" }>):
   const slug = String(template.slug);
   return {
     id: slug,
-    label: "OAuth2",
+    label: template.label ?? "OAuth2",
     kind: "oauth",
     source: slug.startsWith("custom_") ? "custom" : "spec",
     template: AuthTemplateSlug.make(slug),
@@ -78,6 +78,7 @@ export function editorValueFromAuthentication(template: Authentication): AuthTem
   if (template.kind === "oauth2") {
     return {
       kind: "oauth",
+      ...(template.label !== undefined ? { label: template.label } : {}),
       authorizationUrl: template.authorizationUrl ?? "",
       tokenUrl: template.tokenUrl ?? "",
       resource: template.resource ?? null,
@@ -95,6 +96,7 @@ const oauthTemplateFromEditorValue = (
 ): Authentication => ({
   slug: AuthTemplateSlug.make(slug ?? ""),
   kind: "oauth2",
+  ...(value.label !== undefined ? { label: value.label } : {}),
   authorizationUrl: value.authorizationUrl,
   tokenUrl: value.tokenUrl,
   resource: value.resource ?? null,

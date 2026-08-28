@@ -37,6 +37,9 @@ export const ReactivityKey = {
   orgDomains: "org:domains",
   orgInfo: "org:info",
   apiKeys: "api-keys",
+  /** Org-owned keys (the platform credential) — separate from `apiKeys` so
+   *  minting one does not refetch every member's personal-key list. */
+  orgApiKeys: "org:api-keys",
   auth: "auth",
   /** The tenant-wide admin users view. Read-only today (the admin plane has no
    *  writes), so nothing invalidates it — it exists so the pages refresh
@@ -88,6 +91,9 @@ export const orgInfoWriteKeys = [ReactivityKey.orgInfo, ReactivityKey.auth] as c
 
 /** Cloud-only: user API key mutations. */
 export const apiKeyWriteKeys = [ReactivityKey.apiKeys] as const;
+
+/** Cloud-only: org API key mutations. */
+export const orgApiKeyWriteKeys = [ReactivityKey.orgApiKeys] as const;
 
 /** Cloud-only: auth mutations (org switch/create) — invalidate everything user-visible. */
 export const authWriteKeys = [
