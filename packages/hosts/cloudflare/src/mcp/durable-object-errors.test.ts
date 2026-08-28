@@ -43,6 +43,36 @@ describe("classifyDurableObjectError", () => {
     ).toEqual({ kind: "storage_internal", disposition: "transient" });
   });
 
+  it("reads a storage fault raised while the object starts up as transient", () => {
+    expect(
+      classifyDurableObjectError(
+        new Error(
+          "Internal error while starting up Durable Object storage caused object to be reset; reference = 0000aaaa1111bbbb",
+        ),
+      ),
+    ).toEqual({ kind: "startup_internal_error", disposition: "transient" });
+  });
+
+  // This variant escaped as an unhandled 500 even with the bare-blip fragment
+  // in place, because the runtime interposes its own description between
+  // "internal error" and the reference id. Pinning the distinction keeps a
+  // future "just widen the blip fragment" from silently re-merging the two.
+  it("keeps the startup fault distinct from the bare platform blip", () => {
+    const startup = classifyDurableObjectError(
+      new Error(
+        "Internal error while starting up Durable Object storage caused object to be reset; reference = ffff9999eeee8888",
+      ),
+    );
+    const blip = classifyDurableObjectError(
+      new Error("internal error; reference = ffff9999eeee8888"),
+    );
+
+    expect(startup?.kind).toBe("startup_internal_error");
+    expect(blip?.kind, "the described fault must not be read as the bare blip").toBe(
+      "internal_error",
+    );
+  });
+
   it("reads a blockConcurrencyWhile cancellation as transient", () => {
     expect(
       classifyDurableObjectError(
@@ -206,6 +236,25 @@ describe("durableObjectFailureResponse", () => {
       expect(result.status, message).toBe(503);
       expect(result.retryAfter, message).not.toBeNull();
     }
+  });
+
+  // A storage fault while the object is coming up reaches the handler as the
+  // same untyped Error as every other reset, and used to fall out of the worker
+  // as an unhandled 500. Nothing about the request caused it, so the client is
+  // told to retry the same id rather than to reconnect.
+  it("tells the client to retry the same session after a startup storage fault", async () => {
+    const result = await envelope(
+      new Error(
+        "Internal error while starting up Durable Object storage caused object to be reset; reference = 0000aaaa1111bbbb",
+      ),
+    );
+
+    expect(result.status, "HTTP status is the discriminator clients act on").toBe(503);
+    expect(result.body.jsonrpc).toBe("2.0");
+    expect(result.body.error?.code).toBe(-32001);
+    expect(result.retryAfter, "the client is told how long to back off").toBe(
+      String(UNAVAILABLE_RETRY_AFTER_SECONDS),
+    );
   });
 
   // An invocation cut off at the CPU ceiling reaches the handler as the same
