@@ -135,7 +135,7 @@ const GOOGLE_FIRST_PARTY_ALLOWED_SCOPES: readonly string[] = [
 // `_TOKEN_URL` overrides exist so tests and dev instances can point the app at
 // an emulated provider (`@executor-js/emulate`) and run the complete flow.
 // Production leaves them unset.
-const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] => [
+export const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] => [
   ...(env.FIRST_PARTY_GITHUB_CLIENT_ID && env.FIRST_PARTY_GITHUB_CLIENT_SECRET
     ? [
         {
@@ -162,6 +162,12 @@ const cloudFirstPartyOAuthClients = (): readonly FirstPartyOAuthClientConfig[] =
           clientId: env.FIRST_PARTY_GOOGLE_CLIENT_ID,
           clientSecret: env.FIRST_PARTY_GOOGLE_CLIENT_SECRET,
           allowedScopes: GOOGLE_FIRST_PARTY_ALLOWED_SCOPES,
+          // Withdrawn from the connect picker: no new connection is offered the
+          // Executor-owned Google app. The entry stays declared on purpose —
+          // every connection already minted against it keeps refreshing and
+          // reconnecting through it. Deleting this block, or unsetting the env
+          // vars, would strand those connections instead.
+          unlisted: true,
         },
       ]
     : []),

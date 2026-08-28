@@ -164,6 +164,8 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  isPermanentTokenRejection,
+  isUnusableSuccessTokenResponse,
   shouldRefreshToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -1860,11 +1862,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         .pipe(Effect.ignore);
     };
 
-    /** Write a re-minted token back: the access token into the connection's
-     *  primary provider item, a ROTATED refresh token into the refresh item,
-     *  and the new expiry/scope onto the row. Shared by every grant so their
+    /** Write a re-minted token back: a ROTATED refresh token into the refresh
+     *  item, the access token into the connection's primary provider item, and
+     *  the new expiry/scope onto the row. Shared by every grant so their
      *  persistence stays identical — the grants differ in how they mint, not in
-     *  what a mint means. */
+     *  what a mint means.
+     *
+     *  The refresh token goes FIRST because the writes are not atomic and the
+     *  two credentials are not equally replaceable. Minting rotated the refresh
+     *  token, which spends the one we sent, so the new one is the only thing
+     *  that can mint again; the access token is disposable and one more grant
+     *  re-mints it. Persisting the access token first means a failure in
+     *  between drops a single-use credential the authorization server has
+     *  already consumed, and every later refresh comes back `invalid_grant` —
+     *  a connection that silently disconnects itself. */
     const persistRefreshedToken = (
       row: ConnectionRow,
       provider: CredentialProvider,
@@ -1877,10 +1888,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tokenItemId =
             connectionItemIds(row)[PRIMARY_INPUT_VARIABLE] ??
             `connection:${row.owner}:${row.integration}:${row.name}:${PRIMARY_INPUT_VARIABLE}`;
-          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
           if (token.refresh_token && row.refresh_item_id) {
             yield* provider.set(ProviderItemId.make(row.refresh_item_id), token.refresh_token);
           }
+          yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
         }
 
         const nextExpiresAt =
@@ -2202,11 +2213,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     // (re-auth required); every other code must still reach
                     // the caller as an auth failure, because a StorageError
                     // is scrubbed to "Internal tool error [id]" at the
-                    // sandbox boundary (the Pylon prod regression: the AS
-                    // rejected refreshes with a non-invalid_grant 400 and
-                    // callers saw only the opaque defect). Code-less
-                    // failures (transport blips, non-OAuth-shaped responses)
-                    // stay StorageError so the next invoke retries.
+                    // sandbox boundary (a prod regression: the AS rejected
+                    // refreshes with a non-invalid_grant 400 and callers saw
+                    // only the opaque defect).
                     if (cause.error !== undefined) {
                       return new CredentialResolutionError({
                         owner,
@@ -2214,10 +2223,37 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                         name: ConnectionName.make(row.name),
                         // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                         message: `OAuth token refresh was rejected (${cause.error}): ${cause.message}`,
-                        reauthRequired: cause.error === "invalid_grant",
+                        // A verdict delivered inside a response the endpoint
+                        // called a SUCCESS is this grant's death certificate
+                        // whatever the code spells (GitHub: HTTP 200
+                        // `bad_refresh_token`). On a 4xx the code alone
+                        // decides, so a rotated app secret (invalid_client —
+                        // fleet-wide) is not mistaken for one user's dead
+                        // grant.
+                        reauthRequired:
+                          cause.error === "invalid_grant" || isUnusableSuccessTokenResponse(cause),
                         oauthErrorCode: cause.error,
                       });
                     }
+                    // No §5.2 code — but most real refusals carry none. A
+                    // text/plain 400 ("your session has expired"), a 404, or a
+                    // 200 with no access token are all the endpoint answering
+                    // definitively, and re-sending the same grant cannot change
+                    // any of them. Treating that as retryable is what put a
+                    // dead grant back on the wire on every single use, forever.
+                    if (isPermanentTokenRejection(cause)) {
+                      return new CredentialResolutionError({
+                        owner,
+                        integration: IntegrationSlug.make(row.integration),
+                        name: ConnectionName.make(row.name),
+                        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                        message: `OAuth token refresh was rejected: ${cause.message}`,
+                        reauthRequired: true,
+                      });
+                    }
+                    // What is left is genuinely transient — a 5xx or a
+                    // transport failure — and stays a StorageError so the next
+                    // invoke retries.
                     return new StorageError({
                       // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
                       message: `OAuth token refresh failed: ${cause.message}`,
@@ -3454,24 +3490,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         })
         .pipe(Effect.ignore);
 
-    const healthFromCredentialResolutionError = (
-      err: CredentialResolutionError,
-    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      err.reauthRequired === true
-        ? Effect.succeed({
-            status: "expired",
-            checkedAt: Date.now(),
-            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-            detail: err.message,
-          })
-        : Effect.fail(
-            new StorageError({
-              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-              message: err.message,
-              cause: err,
-            }),
-          );
-
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
     ): HealthCheckResult =>
@@ -3489,19 +3507,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             detail: failure.message,
           };
 
-    // Genuine storage failures propagate: an infra blip must fail the request,
-    // not persist as a "degraded" verdict on the connection.
+    /** THE one place a credential-resolution failure becomes a health verdict.
+     *  A third party refusing to re-mint a credential is a fact about the
+     *  CONNECTION, not a fault in this service, so it must be answered — and
+     *  then persisted — as `expired`/`degraded`, never raised. The failure
+     *  channel stays reserved for genuine storage faults (an infra blip must
+     *  fail the request rather than persist as a "degraded" verdict). Both
+     *  health paths — credential-only and probing — fold through here, so
+     *  they cannot disagree about what a broken credential means. */
+    const foldCredentialResolutionIntoVerdict = (
+      probe: Effect.Effect<HealthCheckResult, StorageFailure | CredentialResolutionError>,
+    ): Effect.Effect<HealthCheckResult, StorageFailure> =>
+      probe.pipe(
+        Effect.catchTag("CredentialResolutionError", (failure) =>
+          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+        ),
+      );
+
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
     ): Effect.Effect<HealthCheckResult, StorageFailure> =>
-      resolveConnectionValues(row).pipe(
-        Effect.as({
-          status: "healthy" as const,
-          checkedAt: Date.now(),
-          detail: "Credential resolved (no probe configured).",
-        }),
-        Effect.catchTag("CredentialResolutionError", (failure) =>
-          Effect.succeed(healthFromCredentialResolutionFailure(failure)),
+      foldCredentialResolutionIntoVerdict(
+        resolveConnectionValues(row).pipe(
+          Effect.as({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "Credential resolved (no probe configured).",
+          }),
         ),
       );
 
@@ -3602,34 +3634,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return result;
         }
 
-        const result = yield* Effect.gen(function* () {
-          const values = yield* resolveConnectionValues(connectionRow);
-          const record = rowToIntegrationRecord(
-            integrationRow,
-            describeAuthMethodsForRow(integrationRow),
-          );
-          const grantedScopes = grantedScopesFromRow(connectionRow);
-          const credential: ToolInvocationCredential = {
-            owner: connectionRow.owner as Owner,
-            integration: ref.integration,
-            connection: ConnectionName.make(connectionRow.name),
-            template: AuthTemplateSlug.make(connectionRow.template),
-            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-            values,
-            config: record.config,
-            ...(grantedScopes ? { grantedScopes } : {}),
-          };
-          // Core resolves the declared spec (its own column) and hands it to the
-          // plugin; plugins no longer read it out of their config.
-          return yield* foldPluginFailure(
-            check({ ctx: runtime.ctx, integration: record, credential, spec }),
-            `Health check for connection "${ref.name}" failed.`,
-          );
-        }).pipe(Effect.catchTag("CredentialResolutionError", healthFromCredentialResolutionError));
+        const result = yield* foldCredentialResolutionIntoVerdict(
+          Effect.gen(function* () {
+            const values = yield* resolveConnectionValues(connectionRow);
+            const record = rowToIntegrationRecord(
+              integrationRow,
+              describeAuthMethodsForRow(integrationRow),
+            );
+            const grantedScopes = grantedScopesFromRow(connectionRow);
+            const credential: ToolInvocationCredential = {
+              owner: connectionRow.owner as Owner,
+              integration: ref.integration,
+              connection: ConnectionName.make(connectionRow.name),
+              template: AuthTemplateSlug.make(connectionRow.template),
+              value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+              values,
+              config: record.config,
+              ...(grantedScopes ? { grantedScopes } : {}),
+            };
+            // Core resolves the declared spec (its own column) and hands it to
+            // the plugin; plugins no longer read it out of their config.
+            return yield* foldPluginFailure(
+              check({ ctx: runtime.ctx, integration: record, credential, spec }),
+              `Health check for connection "${ref.name}" failed.`,
+            );
+          }),
+        );
         yield* annotateHealthVerdict("probe", result);
         // Persist the verdict on the connection row so the accounts list shows
-        // alive/expired at a glance. Best-effort: a write failure must not turn
-        // a successful probe into an error.
+        // alive/expired at a glance, AND so the freshness gate above has
+        // something to serve. A probe that could not resolve its credential
+        // persists too: it is the connection most likely to be re-probed by
+        // every surface on every mount, so leaving it unwritten is what turns
+        // one broken connection into unbounded upstream and error traffic.
+        // Best-effort: a write failure must not turn a verdict into an error.
         yield* persistHealthResult(ref, result);
         return result;
       }).pipe(

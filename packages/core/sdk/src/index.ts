@@ -36,7 +36,12 @@ export type {
   IFumaClient,
   StorageFailure,
 } from "./fuma-runtime";
-export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
+export {
+  StorageError,
+  StorageConnectionError,
+  UniqueViolationError,
+  isStorageFailure,
+} from "./fuma-runtime";
 
 // IDs (branded) — the v2 set.
 export {

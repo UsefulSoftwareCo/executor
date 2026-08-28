@@ -22,7 +22,14 @@ import {
 export const WORKOS_VAULT_PROVIDER_KEY = ProviderKey.make("workos-vault");
 
 const DEFAULT_OBJECT_PREFIX = "executor";
-const MAX_WRITE_ATTEMPTS = 3;
+// Version-checked write attempts before the last-resort un-versioned write.
+// Contention here is a peer writer persisting the SAME credential (two
+// concurrent refreshes of one connection), so retries must be spaced: a tight
+// loop re-reads and re-writes inside the peer's own round trip and collides
+// again deterministically.
+const MAX_WRITE_ATTEMPTS = 5;
+const WRITE_CONFLICT_BACKOFF_BASE_MS = 50;
+const WRITE_CONFLICT_BACKOFF_CAP_MS = 800;
 // WorkOS creates a per-context KEK just-in-time on first write; a create
 // call immediately after that provisioning step can race with the KEK
 // becoming usable and return a transient error whose message ends in
@@ -243,34 +250,98 @@ const loadSecretObject = (
     }),
   );
 
+/** Half-jittered exponential backoff for attempt `n` (1-based): a wait drawn
+ *  from [d/2, d) where d = base * 2^(n-1), capped. The jitter matters more than
+ *  the delay — two writers that back off by the same amount simply collide
+ *  again one beat later. */
+const writeConflictBackoffMillis = (attempt: number): number => {
+  const ceiling = Math.min(
+    WRITE_CONFLICT_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+    WRITE_CONFLICT_BACKOFF_CAP_MS,
+  );
+  return ceiling / 2 + Math.random() * (ceiling / 2);
+};
+
+/** A version-checked write either landed or lost the race to a peer writer. */
+type WriteOutcome = "written" | "contended";
+
+/** Did this update failure mean "someone else wrote first"? 409 is the
+ *  documented answer. WorkOS also answers 400 when the version we checked
+ *  against is several generations behind, and an update carries no name and no
+ *  context — the only inputs are the id, the value, and the version — so a 400
+ *  here is contention too, not a malformed request. If it really were
+ *  malformed, the un-versioned last-resort write fails the same way and the
+ *  error still surfaces. */
+const isWriteContention = (error: WorkOSVaultClientError): boolean =>
+  isStatusError(error, 409) || isStatusError(error, 400);
+
 const upsertSecretValue = (
   client: WorkOSVaultClient,
   name: string,
   value: string,
   context: Record<string, string>,
 ): Effect.Effect<void, WorkOSVaultClientError, never> => {
-  const attemptWrite = (
-    remainingConflictAttempts: number,
-    remainingKekAttempts: number,
-  ): Effect.Effect<void, WorkOSVaultClientError, never> =>
+  const attemptOnce = (): Effect.Effect<WriteOutcome, WorkOSVaultClientError, never> =>
     Effect.gen(function* () {
       const existing = yield* loadSecretObject(client, name);
 
       if (existing) {
-        yield* client.updateObject({
-          id: existing.id,
-          value,
-          versionCheck: existing.metadata.versionId,
-        });
-        return;
+        return yield* client
+          .updateObject({ id: existing.id, value, versionCheck: existing.metadata.versionId })
+          .pipe(
+            Effect.as<WriteOutcome>("written"),
+            Effect.catch((error: WorkOSVaultClientError) =>
+              isWriteContention(error)
+                ? Effect.succeed<WriteOutcome>("contended")
+                : Effect.fail(error),
+            ),
+          );
       }
 
-      yield* client.createObject({ name, value, context });
-    }).pipe(
+      return yield* client.createObject({ name, value, context }).pipe(
+        Effect.as<WriteOutcome>("written"),
+        // A peer created the object between our read and our create; the next
+        // attempt re-reads it and takes the update path.
+        Effect.catch((error: WorkOSVaultClientError) =>
+          isStatusError(error, 409)
+            ? Effect.succeed<WriteOutcome>("contended")
+            : Effect.fail(error),
+        ),
+      );
+    });
+
+  /** Last resort once every version-checked attempt lost: write without a
+   *  version check. Both racers are persisting a credential they just minted,
+   *  so last-writer-wins keeps a usable value; failing instead discards a
+   *  freshly minted, often single-use credential, which is the one outcome
+   *  that leaves a connection with nothing it can use. */
+  const blindWrite = (): Effect.Effect<void, WorkOSVaultClientError, never> =>
+    Effect.gen(function* () {
+      const existing = yield* loadSecretObject(client, name);
+      if (!existing) {
+        yield* client.createObject({ name, value, context });
+        return;
+      }
+      console.warn(
+        `[workos-vault] version-checked write for object=${name} lost ` +
+          `${MAX_WRITE_ATTEMPTS} races; writing without a version check`,
+      );
+      yield* client.updateObject({ id: existing.id, value });
+    });
+
+  const attemptWrite = (
+    attempt: number,
+    remainingKekAttempts: number,
+  ): Effect.Effect<void, WorkOSVaultClientError, never> =>
+    attemptOnce().pipe(
+      Effect.flatMap((outcome: WriteOutcome) => {
+        if (outcome === "written") return Effect.void;
+        if (attempt >= MAX_WRITE_ATTEMPTS) return blindWrite();
+        return Effect.sleep(writeConflictBackoffMillis(attempt)).pipe(
+          Effect.flatMap(() => attemptWrite(attempt + 1, remainingKekAttempts)),
+        );
+      }),
       Effect.catch((error: WorkOSVaultClientError) => {
-        if (remainingConflictAttempts > 1 && isStatusError(error, 409)) {
-          return attemptWrite(remainingConflictAttempts - 1, remainingKekAttempts);
-        }
         if (remainingKekAttempts > 1 && isKekNotReadyError(error)) {
           console.warn(
             `[workos-vault] KEK not ready for object=${name} — ` +
@@ -278,7 +349,7 @@ const upsertSecretValue = (
               `(${MAX_KEK_NOT_READY_ATTEMPTS - remainingKekAttempts + 1}/${MAX_KEK_NOT_READY_ATTEMPTS})`,
           );
           return Effect.sleep(KEK_NOT_READY_BACKOFF_MS).pipe(
-            Effect.flatMap(() => attemptWrite(remainingConflictAttempts, remainingKekAttempts - 1)),
+            Effect.flatMap(() => attemptWrite(attempt, remainingKekAttempts - 1)),
           );
         }
         if (isKekNotReadyError(error)) {
@@ -291,7 +362,7 @@ const upsertSecretValue = (
       }),
     );
 
-  return attemptWrite(MAX_WRITE_ATTEMPTS, MAX_KEK_NOT_READY_ATTEMPTS);
+  return attemptWrite(1, MAX_KEK_NOT_READY_ATTEMPTS);
 };
 
 const deleteSecretValue = (

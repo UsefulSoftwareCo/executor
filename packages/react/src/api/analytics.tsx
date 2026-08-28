@@ -39,8 +39,9 @@ export interface AnalyticsEvents {
   };
   integration_add_started: {
     plugin_key: string;
-    via: "detect" | "manual" | "preset" | "command_palette";
+    via: "detect" | "manual" | "preset" | "command_palette" | "catalog";
     preset_id?: string;
+    catalog_domain?: string;
   };
   integration_added: { plugin_key: string; integration_slug?: string };
   integration_add_cancelled: { plugin_key: string };

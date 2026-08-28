@@ -10,6 +10,7 @@ export default defineConfig({
     "migration-spec": "src/migration-spec.ts",
     "http-auth": "src/http-auth/index.ts",
     testing: "src/testing.ts",
+    "sentry-grouping": "src/sentry-grouping.ts",
   },
   format: ["esm"],
   dts: false,
