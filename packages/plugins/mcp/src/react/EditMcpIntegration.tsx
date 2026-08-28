@@ -267,7 +267,8 @@ function StdioEdit(props: {
       <div className="space-y-1">
         <p className="text-sm font-medium text-foreground">Server command</p>
         <p className="text-xs text-muted-foreground">
-          Changes apply when you save. The server is dialed again and its tools are rediscovered.
+          Changes apply when you save. The server's tools are then rediscovered with the new
+          command.
         </p>
       </div>
 
@@ -279,6 +280,7 @@ function StdioEdit(props: {
           >
             <Input
               value={command}
+              aria-label="Command"
               onChange={(e) => setCommand((e.target as HTMLInputElement).value)}
               placeholder="npx"
               className="font-mono text-sm"
@@ -291,6 +293,7 @@ function StdioEdit(props: {
           >
             <Input
               value={args}
+              aria-label="Arguments"
               onChange={(e) => setArgs((e.target as HTMLInputElement).value)}
               placeholder="-y chrome-devtools-mcp@latest"
               className="font-mono text-sm"
@@ -303,6 +306,7 @@ function StdioEdit(props: {
           >
             <Input
               value={cwd}
+              aria-label="Working directory"
               onChange={(e) => setCwd((e.target as HTMLInputElement).value)}
               placeholder="/path/to/server"
               className="font-mono text-sm"
@@ -315,6 +319,7 @@ function StdioEdit(props: {
           >
             <Textarea
               value={env}
+              aria-label="Environment variables"
               onChange={(e) => setEnv((e.target as HTMLTextAreaElement).value)}
               placeholder={"LOG_LEVEL=debug\nREGION=eu-west-1"}
               className="font-mono text-sm"
