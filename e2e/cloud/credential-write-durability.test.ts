@@ -1,6 +1,6 @@
 // Cloud: a refreshed OAuth credential has to be PERSISTED, and persisting it is
 // a pair of version-checked writes into WorkOS Vault — the rotated refresh
-// token and the new access token, one after the other, not atomically. Two
+// token and the new access token, one after the other, not atomically. Three
 // production failures live in that gap.
 //
 //  1. Contention. Two concurrent probes of one connection each run a refresh and
@@ -14,6 +14,11 @@
 //     token we sent, so nothing can mint again and every later use of the
 //     connection comes back `invalid_grant`. The access token, by contrast, is
 //     disposable — one more grant re-mints it.
+//  3. Writability. Ordering bounds the damage but cannot remove it: when the
+//     store refuses writes outright, a grant that has already run has spent the
+//     stored refresh token and there is nowhere to put its successor. The
+//     refresh must therefore be gated on a store that is proven writable BEFORE
+//     the grant, so a storage outage costs the user nothing but the wait.
 //
 // Both are pinned here at the product surface, black box. Failures are armed on
 // the WorkOS emulator that the product's own WorkOS client talks to; no product
@@ -565,6 +570,75 @@ scenario(
         (yield* oauth.requests).filter(isRefreshGrant).length,
         "the interrupted refresh and the recovery were both real refresh grants",
       ).toBeGreaterThanOrEqual(2);
+    }),
+  ),
+);
+
+scenario(
+  "Credential persistence · a store that cannot accept writes fails the refresh before the grant is spent",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { attempt, call, oauth, slug, upstream, workos } = yield* connectIntegration;
+
+      yield* call("baseline");
+
+      // Break the REFRESH TOKEN's object, and only that one, with a status the
+      // write policy cannot treat as contention — 503 is the store being down,
+      // not a peer holding the row, so no amount of retrying can land it. This
+      // is a store that will not accept a write at all.
+      const objects = yield* vaultObjectsFor(workos, slug);
+      const refreshObject = objects.find((object) => object.name.endsWith("refresh"));
+      expect(refreshObject, "the connection stored a refresh token in the vault").toBeDefined();
+
+      const grantsBeforeOutage = (yield* oauth.requests).filter(isRefreshGrant).length;
+
+      const duringOutage = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const armed = yield* armFault(workos, {
+            match: { method: "PUT", pathPattern: `/vault/v1/kv/${refreshObject!.id}` },
+            response: { status: 503, body: { code: "unavailable", message: "vault unavailable" } },
+            times: 3,
+          });
+
+          upstream.revokeSeenBearers();
+          const result = yield* attempt();
+          expect(
+            yield* faultsServed(workos, armed),
+            "the refresh token's write is the one that broke",
+          ).toBeGreaterThanOrEqual(1);
+          return result;
+        }),
+      );
+      expect(
+        duringOutage.ok,
+        `the call reports the failure while the store is down (got: ${duringOutage.text.slice(0, 200)})`,
+      ).toBe(false);
+
+      // The whole point: the failure landed on the writability check, not on
+      // the persist that follows a grant. No grant ran, so the stored refresh
+      // token was never spent and is still the one the authorization server
+      // will honour.
+      expect(
+        (yield* oauth.requests).filter(isRefreshGrant).length,
+        "no refresh grant is spent while the store cannot persist its rotated successor",
+      ).toBe(grantsBeforeOutage);
+
+      // The store is back. A transient outage must cost nothing but the wait:
+      // the connection still holds a live grant and refreshes itself, with no
+      // human reconnecting anything.
+      const recovered = yield* attempt();
+      expect(
+        recovered.ok,
+        `the connection refreshes itself once the store recovers (got: ${recovered.text.slice(0, 400)})`,
+      ).toBe(true);
+      expect((JSON.parse(recovered.text) as ToolEnvelope).ok, "the recovered call succeeded").toBe(
+        true,
+      );
+      expect(
+        (yield* oauth.requests).filter(isRefreshGrant).length,
+        "the recovery was a real refresh grant on the token the outage preserved",
+      ).toBe(grantsBeforeOutage + 1);
     }),
   ),
 );
