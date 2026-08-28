@@ -447,7 +447,8 @@ function UpgradeDialog(props: {
 }) {
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="sm:max-w-[400px]">
+      {/* Informational only: nothing to lose, so clicking away dismisses it. */}
+      <DialogContent dismissOnOutsideClick className="sm:max-w-[400px]">
         <DialogHeader>
           <DialogTitle className="font-display text-xl">You are at your member limit</DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">
