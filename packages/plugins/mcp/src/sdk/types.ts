@@ -215,6 +215,8 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 
 export const McpRemoteIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("remote"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The MCP server endpoint URL */
   endpoint: Schema.String,
   /** Transport preference for this remote server */
@@ -234,6 +236,8 @@ export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
 export const McpStdioIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("stdio"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The command to run */
   command: Schema.String,
   /** Arguments to the command */
@@ -286,6 +290,16 @@ export const McpToolAnnotations = Schema.Struct({
   openWorldHint: Schema.optional(Schema.Boolean),
 });
 export type McpToolAnnotations = typeof McpToolAnnotations.Type;
+
+// ---------------------------------------------------------------------------
+// Tool `_meta` — the reserved, implementation-defined map the MCP spec puts on
+// `Tool`. It is opaque to the executor and to the model: servers use it for
+// host-only routing and policy hints that do not belong in the closed
+// `annotations` set. It is carried through verbatim, never interpreted.
+// ---------------------------------------------------------------------------
+
+export const McpToolMeta = Schema.Record(Schema.String, Schema.Unknown);
+export type McpToolMeta = typeof McpToolMeta.Type;
 
 // ---------------------------------------------------------------------------
 // Tool binding — maps a persisted (sanitized) tool name back to its real MCP

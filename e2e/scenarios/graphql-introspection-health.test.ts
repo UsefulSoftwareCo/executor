@@ -8,6 +8,11 @@ import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 import { variable } from "@executor-js/sdk/http-auth";
 
+import {
+  makeGreetingGraphqlSchema,
+  serveGraphqlTestServer,
+} from "@executor-js/plugin-graphql/testing";
+
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import { visit } from "../src/surfaces/browser";
@@ -132,6 +137,63 @@ scenario(
                 exact: false,
               })
               .waitFor();
+          });
+        });
+      }).pipe(
+        Effect.ensuring(
+          client.integrations
+            .remove({ params: { slug: IntegrationSlug.make(slug) } })
+            .pipe(Effect.ignore),
+        ),
+      );
+    }),
+  ),
+);
+
+scenario(
+  "GraphQL · a healthy account row keeps the connection's name",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+      const slug = unique("graphql_label");
+      const upstream = yield* serveGraphqlTestServer({ schema: makeGreetingGraphqlSchema() });
+
+      yield* client.graphql.addIntegration({
+        payload: {
+          endpoint: upstream.endpoint,
+          slug,
+          name: "Greeting API",
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        yield* client.connections.create({
+          payload: {
+            owner: "org",
+            name: ConnectionName.make("workspace"),
+            integration: IntegrationSlug.make(slug),
+            template: AuthTemplateSlug.make("none"),
+            value: "unused",
+          },
+        });
+
+        yield* browser.session(identity, async ({ page, step }) => {
+          await step("The healthy account row is labeled with the connection name", async () => {
+            await visit(page, `/integrations/${slug}`);
+            await page.getByRole("tab", { name: "Accounts" }).click();
+            // Wait for the automatic health probe to land so a probe identity
+            // would have replaced the label if the plugin still reported one.
+            await page.getByLabel("Status: Healthy").waitFor();
+            await page.getByText("workspace", { exact: true }).waitFor();
+            expect(
+              await page.getByText("GraphQL schema", { exact: false }).count(),
+              "the schema root type never masquerades as the account label",
+            ).toBe(0);
           });
         });
       }).pipe(

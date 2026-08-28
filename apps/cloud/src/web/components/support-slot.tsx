@@ -44,7 +44,8 @@ export function SupportSlot() {
         <HelpIcon className="size-3.5 text-muted-foreground" />
         Get support
       </Button>
-      <DialogContent className="sm:max-w-[440px]">
+      {/* Static links only: clicking away dismisses it. */}
+      <DialogContent dismissOnOutsideClick className="sm:max-w-[440px]">
         <DialogHeader>
           <DialogTitle className="font-display text-xl">Get support</DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">
