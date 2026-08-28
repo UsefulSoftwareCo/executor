@@ -30,18 +30,25 @@ const CREATE_MANY_BATCH_SIZE = 500;
 const DEFAULT_MAX_BOUND_PARAMETERS = 999;
 
 function parameterBoundedBatchSize(
+  table: AnyTable,
   columnsPerRow: number,
   reservedParameters: number,
   maxBoundParameters: number | undefined
 ): number {
   const budget = maxBoundParameters ?? DEFAULT_MAX_BOUND_PARAMETERS;
-  return Math.max(
-    1,
-    Math.min(
-      CREATE_MANY_BATCH_SIZE,
-      Math.floor(Math.max(1, budget - reservedParameters) / columnsPerRow)
-    )
-  );
+  const rowsPerStatement = Math.floor((budget - reservedParameters) / columnsPerRow);
+  if (rowsPerStatement < 1) {
+    // Even a single row cannot fit the advertised budget. Clamping to one row
+    // anyway would silently emit a statement the engine may reject, so fail
+    // fast and name the numbers instead.
+    const reservedNote =
+      reservedParameters > 0 ? ` and the predicate reserves ${reservedParameters} more` : "";
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: adapter rejects writes that cannot fit the engine's bound-parameter budget
+    throw new Error(
+      `[FumaDB Drizzle] Cannot write table "${table.ormName}": one row binds ${columnsPerRow} bound parameters${reservedNote}, which exceeds the ${budget}-parameter budget per statement.`
+    );
+  }
+  return Math.min(CREATE_MANY_BATCH_SIZE, rowsPerStatement);
 }
 
 function buildWhere(
@@ -203,7 +210,8 @@ export function fromDrizzle(
   _db: unknown,
   provider: SQLProvider,
   interactiveTransactions: boolean = true,
-  maxBoundParameters?: number
+  maxBoundParameters?: number,
+  transactionDepth: number = 0
 ): AbstractQuery<AnySchema> {
   const [db, drizzleTables] = parseDrizzle(_db);
 
@@ -225,6 +233,38 @@ export function fromDrizzle(
     }
 
     throw new Error("[FumaDB Drizzle] Database cannot execute raw transaction statements.");
+  }
+
+  // Runs `fn` atomically when the engine allows it. SQLite drivers get raw
+  // BEGIN/COMMIT on the shared connection — or a SAVEPOINT when this adapter
+  // instance already lives inside a transaction, so nested use (e.g. a bulk
+  // upsert splitting into predicate groups inside a caller's transaction)
+  // does not issue a second BEGIN. Other providers get a driver transaction
+  // whose handle must be used for every statement inside `fn`. When the
+  // engine rejects interactive transactions (Cloudflare D1), statements
+  // auto-commit — that engine constraint is documented on `transaction`.
+  async function runAtomically<T>(fn: (handle: typeof db) => Promise<T>): Promise<T> {
+    if (!interactiveTransactions) {
+      return fn(db);
+    }
+    if (provider === "sqlite") {
+      const savepoint = transactionDepth > 0 ? `fumadb_tx_${transactionDepth}` : undefined;
+      await executeRaw(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN");
+      try {
+        const result = await fn(db);
+        await executeRaw(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
+        return result;
+      } catch (e) {
+        if (savepoint) {
+          await executeRaw(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          await executeRaw(`RELEASE SAVEPOINT ${savepoint}`);
+        } else {
+          await executeRaw("ROLLBACK");
+        }
+        throw e;
+      }
+    }
+    return db.transaction((tx) => fn(tx as unknown as typeof db));
   }
 
   function toDrizzle(v: AnyTable): TableType {
@@ -375,6 +415,7 @@ export function fromDrizzle(
       const whereParameters = v.where ? countConditionParameters(v.where) : 0;
       const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
       const batchSize = parameterBoundedBatchSize(
+        table,
         columnsPerRow,
         whereParameters,
         maxBoundParameters,
@@ -387,24 +428,33 @@ export function fromDrizzle(
         ]),
       );
 
-      const statements: unknown[] = [];
-      for (let i = 0; i < values.length; i += batchSize) {
-        const batch = values.slice(i, i + batchSize);
-        const insert = db.insert(drizzleTable).values(batch) as unknown as {
-          onConflictDoUpdate: (input: {
-            readonly target: typeof target;
-            readonly set: typeof set;
-            readonly where?: typeof where;
-          }) => unknown;
-        };
-        statements.push(
-          insert.onConflictDoUpdate({
-            target,
-            set,
-            ...(where === undefined ? {} : { where }),
-          }),
-        );
-      }
+      const buildStatements = (handle: typeof db): unknown[] => {
+        const statements: unknown[] = [];
+        for (let i = 0; i < values.length; i += batchSize) {
+          const batch = values.slice(i, i + batchSize);
+          const insert = handle.insert(drizzleTable).values(batch) as unknown as {
+            onConflictDoUpdate: (input: {
+              readonly target: typeof target;
+              readonly set: typeof set;
+              readonly where?: typeof where;
+            }) => unknown;
+          };
+          statements.push(
+            insert.onConflictDoUpdate({
+              target,
+              set,
+              ...(where === undefined ? {} : { where }),
+            }),
+          );
+        }
+        return statements;
+      };
+      const executeStatements = async (handle: typeof db) => {
+        for (const statement of buildStatements(handle)) {
+          await statement;
+        }
+      };
+      const statementCount = Math.ceil(values.length / batchSize);
 
       // D1 rejects interactive transactions but its native batch API executes
       // prepared statements as one transaction. Drizzle exposes that API on
@@ -413,14 +463,19 @@ export function fromDrizzle(
       const nativeBatch = db as unknown as {
         readonly batch?: (statements: readonly unknown[]) => Promise<unknown>;
       };
-      if (!interactiveTransactions && statements.length > 1 && nativeBatch.batch) {
-        await nativeBatch.batch(statements);
+      if (!interactiveTransactions && statementCount > 1 && nativeBatch.batch) {
+        await nativeBatch.batch(buildStatements(db));
         return;
       }
 
-      for (const statement of statements) {
-        await statement;
+      if (statementCount === 1) {
+        await executeStatements(db);
+        return;
       }
+
+      // One logical upsert split into several parameter-bounded statements
+      // stays atomic: run them inside one transaction.
+      await runAtomically(executeStatements);
     },
     async findMany(table, v) {
       return (
@@ -472,36 +527,48 @@ export function fromDrizzle(
     },
 
     async createMany(table, values) {
+      if (values.length === 0) return [];
       const idField = table.getIdColumn().names.drizzle;
       const drizzleTable = toDrizzle(table);
       values = values.map((v) => mapValues(v, table));
-      const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
-      const batchSize = parameterBoundedBatchSize(columnsPerRow, 0, maxBoundParameters);
+      const columnsPerRow = Math.max(1, Object.keys(values[0]!).length);
+      const batchSize = parameterBoundedBatchSize(table, columnsPerRow, 0, maxBoundParameters);
       const batches: (typeof values)[] = [];
       for (let i = 0; i < values.length; i += batchSize) {
         batches.push(values.slice(i, i + batchSize));
       }
 
-      if (provider === "sqlite" || provider === "postgresql") {
-        const out: { _id: unknown }[] = [];
-        for (const batch of batches) {
-          out.push(
-            ...(await (db as unknown as P_DBType)
-              .insert(drizzleTable as unknown as P_TableType)
-              .values(batch)
-              .returning({
-                _id: (drizzleTable as unknown as P_TableType)[idField],
-              })),
-          );
+      const insertBatches = async (handle: typeof db): Promise<{ _id: unknown }[]> => {
+        if (provider === "sqlite" || provider === "postgresql") {
+          const out: { _id: unknown }[] = [];
+          for (const batch of batches) {
+            out.push(
+              ...(await (handle as unknown as P_DBType)
+                .insert(drizzleTable as unknown as P_TableType)
+                .values(batch)
+                .returning({
+                  _id: (drizzleTable as unknown as P_TableType)[idField],
+                })),
+            );
+          }
+          return out;
         }
-        return out;
-      }
 
-      const results: Record<string, unknown>[] = [];
-      for (const batch of batches) {
-        results.push(...(await db.insert(drizzleTable).values(batch).$returningId()));
-      }
-      return results.map((result) => ({ _id: result[idField] }));
+        const results: Record<string, unknown>[] = [];
+        for (const batch of batches) {
+          results.push(...(await handle.insert(drizzleTable).values(batch).$returningId()));
+        }
+        return results.map((result) => ({ _id: result[idField] }));
+      };
+
+      if (batches.length === 1) return insertBatches(db);
+      // One logical insert split into parameter-bounded statements must stay
+      // atomic: a later batch's constraint failure rolls back the earlier
+      // batches. (Engines without interactive transactions auto-commit each
+      // statement; `createMany` needs the inserted ids back, which the native
+      // batch API's result shape does not guarantee across drivers, so those
+      // engines keep sequential statements — their documented constraint.)
+      return runAtomically(insertBatches);
     },
 
     async deleteMany(table, v) {
@@ -521,23 +588,44 @@ export function fromDrizzle(
       // each statement auto-commits, so there is no atomic rollback (the
       // engine's constraint, not ours). libSQL/Postgres keep real transactions.
       if (!interactiveTransactions) {
-        return run(fromDrizzle(schema, _db, provider, interactiveTransactions, maxBoundParameters));
+        return run(
+          fromDrizzle(
+            schema,
+            _db,
+            provider,
+            interactiveTransactions,
+            maxBoundParameters,
+            transactionDepth
+          )
+        );
       }
 
       if (provider === "sqlite") {
-        await executeRaw("BEGIN");
-        try {
-          const result = await run(fromDrizzle(schema, _db, provider, interactiveTransactions, maxBoundParameters));
-          await executeRaw("COMMIT");
-          return result;
-        } catch (e) {
-          await executeRaw("ROLLBACK");
-          throw e;
-        }
+        return runAtomically(() =>
+          run(
+            fromDrizzle(
+              schema,
+              _db,
+              provider,
+              interactiveTransactions,
+              maxBoundParameters,
+              transactionDepth + 1
+            )
+          )
+        );
       }
 
       return db.transaction((tx) =>
-        run(fromDrizzle(schema, tx, provider, interactiveTransactions, maxBoundParameters))
+        run(
+          fromDrizzle(
+            schema,
+            tx,
+            provider,
+            interactiveTransactions,
+            maxBoundParameters,
+            transactionDepth + 1
+          )
+        )
       );
     },
   });

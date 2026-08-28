@@ -244,7 +244,7 @@ const applyUpdatePolicies = async (
 // same serialized form). Comparing structurally is unambiguous; a false
 // negative only splits a group and never merges rows under the wrong
 // predicate.
-const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
+export const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
   if (Object.is(a, b)) return true;
   if (a instanceof Date || b instanceof Date) {
     return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
@@ -258,12 +258,16 @@ const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
     );
   }
   if (Array.isArray(a) || Array.isArray(b)) {
-    return (
-      Array.isArray(a) &&
-      Array.isArray(b) &&
-      a.length === b.length &&
-      a.every((item, index) => predicateValuesEqual(item, b[index]))
-    );
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    // Compare by index instead of `.every`, which skips holes in sparse
+    // arrays — `Array(1)` would otherwise equal `[123]` and merge rows under
+    // the wrong predicate group. A hole and a present element are unequal.
+    for (let index = 0; index < a.length; index += 1) {
+      const aHas = index in a;
+      if (aHas !== index in b) return false;
+      if (aHas && !predicateValuesEqual(a[index], b[index])) return false;
+    }
+    return true;
   }
   if (isRecord(a) && isRecord(b)) {
     const aKeys = Object.keys(a);
@@ -500,14 +504,32 @@ export function toORM<S extends AnySchema>(
             groups.push({ where: row.where, values: [row.value] });
           }
         }
-        for (const group of groups) {
-          await internal.upsertMany(table, {
-            target: targetColumns,
-            update: updateColumns,
-            values: group.values,
-            where: group.where,
-          });
+        const runGroups = async (adapter: ORMAdapter<S>): Promise<void> => {
+          if (!adapter.upsertMany) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a transaction adapter must mirror the base adapter's upsertMany support
+            throw new Error("[FumaDB] Transaction adapter does not support upsertMany.");
+          }
+          for (const group of groups) {
+            await adapter.upsertMany(table, {
+              target: targetColumns,
+              update: updateColumns,
+              values: group.values,
+              where: group.where,
+            });
+          }
+        };
+
+        // A single group is one adapter call, which is as atomic as the
+        // engine allows. Multiple predicate groups are separate adapter
+        // calls, so run them inside one transaction: a later group's failure
+        // must not leave earlier groups committed.
+        if (groups.length === 1) {
+          await runGroups(internal);
+          return;
         }
+        await internal.transaction(async (transactionInstance) => {
+          await runGroups(transactionInstance.internal);
+        });
         return;
       }
 
