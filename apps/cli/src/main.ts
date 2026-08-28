@@ -77,12 +77,7 @@ import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ErrorCode,
-  isJSONRPCRequest,
-  type JSONRPCErrorResponse,
-  type JSONRPCMessage,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { ExecutorApi, checkForUpdate } from "@executor-js/api";
 import {
@@ -1386,18 +1381,6 @@ const mcpUrlForActiveLocalServer = (input: {
   return url;
 };
 
-const preInitializeMcpFallback = (message: JSONRPCMessage): JSONRPCErrorResponse | null =>
-  isJSONRPCRequest(message) && message.method === "server/discover"
-    ? {
-        jsonrpc: "2.0",
-        id: message.id,
-        error: {
-          code: ErrorCode.MethodNotFound,
-          message: "Method not found",
-        },
-      }
-    : null;
-
 /**
  * Bridge a stdio MCP client to a local server's HTTP `/mcp` endpoint. `executor
  * mcp` owns NO database: it forwards JSON-RPC between the client's stdin/stdout
@@ -1482,17 +1465,8 @@ const runMcpHttpBridge = async (input: {
   http.onclose = shutdown;
   stdio.onerror = (error) => reportError("stdio transport error", error);
   http.onerror = (error) => reportError("daemon transport error", error);
-  const sendToDaemon = forwardMessage((message) => http.send(message), "failed to send to daemon");
-  const sendToStdio = forwardMessage((message) => stdio.send(message), "failed to send to stdio");
-  stdio.onmessage = (message) => {
-    const fallback = http.sessionId ? null : preInitializeMcpFallback(message);
-    if (fallback) {
-      sendToStdio(fallback);
-      return;
-    }
-    sendToDaemon(message);
-  };
-  http.onmessage = sendToStdio;
+  stdio.onmessage = forwardMessage((message) => http.send(message), "failed to send to daemon");
+  http.onmessage = forwardMessage((message) => stdio.send(message), "failed to send to stdio");
 
   try {
     await http.start();

@@ -16,7 +16,7 @@ import {
   makeInProcessBrowserApprovalStore,
   type InProcessBrowserApprovalStore,
 } from "./browser-approval-store";
-import { jsonRpcErrorBody } from "./envelope";
+import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
 import {
   McpSessionStore,
   defaultMcpResource,
@@ -252,7 +252,7 @@ export const makeInMemoryMcpSessionStore = (
   };
 
   /** Open a new session: build the server, connect a transport, drive the request. */
-  const create = (
+  const openSession = (
     principal: Principal,
     resource: McpResource,
     request: Request,
@@ -295,6 +295,25 @@ export const makeInMemoryMcpSessionStore = (
       ),
     );
   };
+
+  /**
+   * The session-less POST path: answer a probe for anything but `initialize`
+   * with -32601 (see `preInitializeMethodNotFound`) rather than let the
+   * transport reject it with a connection-killing 400, and only then build a
+   * server and open a session.
+   */
+  const create = (
+    principal: Principal,
+    resource: McpResource,
+    request: Request,
+  ): Effect.Effect<McpDispatchResult> =>
+    preInitializeMethodNotFound(request).pipe(
+      Effect.flatMap((unsupported) =>
+        unsupported
+          ? Effect.succeed<McpDispatchResult>(unsupported)
+          : openSession(principal, resource, request),
+      ),
+    );
 
   const store: McpSessionStore["Service"] = {
     dispatch: ({ request, principal, resource, sessionId }: McpDispatchInput) =>

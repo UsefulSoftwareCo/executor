@@ -22,6 +22,7 @@ import {
   McpServingRoutes,
   McpDiscoveryRoutes,
   McpSessionStore,
+  preInitializeMethodNotFound,
   type McpResource,
   type McpDispatchResult,
   type Principal,
@@ -204,6 +205,78 @@ it("dispatches toolkit MCP routes with the parsed toolkit resource", async () =>
   });
 });
 
+// ---------------------------------------------------------------------------
+// The pre-initialize dispatch guard. Session-less, only `initialize` is servable,
+// and the transport's answer for everything else is a connection-killing HTTP
+// 400. These lock in the -32601-on-200 replacement and, just as importantly,
+// everything it must NOT intercept.
+// ---------------------------------------------------------------------------
+
+const postBody = (body: unknown): Request =>
+  new Request("https://host.test/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const guard = (request: Request): Promise<Response | null> =>
+  Effect.runPromise(preInitializeMethodNotFound(request));
+
+describe("preInitializeMethodNotFound", () => {
+  it("answers an unknown pre-init method with -32601 on a 200, echoing the id", async () => {
+    const response = await guard(
+      postBody({ jsonrpc: "2.0", id: 7, method: "server/discover", params: {} }),
+    );
+    expect(response).not.toBeNull();
+    // 200, not 400: a per-request error the client can survive, which is the
+    // entire point — a 400 makes clients tear the transport down.
+    expect(response!.status).toBe(200);
+    expect(response!.headers.get("content-type")).toContain("application/json");
+    expect(await response!.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: -32601, message: "Method not found" },
+    });
+  });
+
+  it("generalizes past server/discover to any unknown method, including a string id", async () => {
+    const response = await guard(
+      postBody({ jsonrpc: "2.0", id: "abc", method: "some/futureProbe" }),
+    );
+    expect(await response!.json()).toEqual({
+      jsonrpc: "2.0",
+      id: "abc",
+      error: { code: -32601, message: "Method not found" },
+    });
+  });
+
+  it("lets initialize through to the transport", async () => {
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })),
+    ).toBeNull();
+  });
+
+  it("lets a notification through — there is no id to answer", async () => {
+    expect(
+      await guard(postBody({ jsonrpc: "2.0", method: "notifications/initialized" })),
+    ).toBeNull();
+  });
+
+  it("lets non-POST, non-JSON, and non-JSON-RPC bodies through", async () => {
+    expect(await guard(new Request("https://host.test/mcp"))).toBeNull();
+    expect(
+      await guard(new Request("https://host.test/mcp", { method: "POST", body: "not json" })),
+    ).toBeNull();
+    expect(await guard(postBody({ id: 1, method: "tools/list" }))).toBeNull();
+    expect(await guard(postBody([]))).toBeNull();
+  });
+
+  it("leaves the caller's body readable for the transport", async () => {
+    const request = postBody({ jsonrpc: "2.0", id: 1, method: "server/discover" });
+    await guard(request);
+    expect(await request.json()).toEqual({ jsonrpc: "2.0", id: 1, method: "server/discover" });
+  });
+});
 describe("McpDiscoveryRoutes (discovery-only, no session store)", () => {
   // Builds with the auth seam ALONE — no McpSessionStore. This is the cloud
   // shape: the Agent bridge serves /mcp transport, the envelope only publishes

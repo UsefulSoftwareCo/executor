@@ -6,6 +6,7 @@ import {
   type JSONRPCMessage,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Option, Schema } from "effect";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,28 +19,61 @@ const decodeServerManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ pid: Schema.optional(Schema.Number) })),
 );
 
-const stopAutoSpawnedDaemon = (dataDir: string): Effect.Effect<void> =>
-  Effect.try({
-    try: () => readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
-    catch: () => undefined,
-  }).pipe(
-    Effect.flatMap((text) => {
-      const manifest = decodeServerManifest(text);
-      const pid = Option.isSome(manifest) ? manifest.value.pid : undefined;
-      return pid
-        ? Effect.try({
-            try: () => process.kill(pid, "SIGTERM"),
-            catch: () => undefined,
-          }).pipe(Effect.ignore)
-        : Effect.void;
-    }),
+const manifestPid = (dataDir: string): number | undefined =>
+  Effect.runSync(
+    Effect.try({
+      try: () => readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
+      catch: () => undefined,
+    }).pipe(
+      Effect.map((text) => {
+        const manifest = decodeServerManifest(text);
+        return Option.isSome(manifest) ? manifest.value.pid : undefined;
+      }),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+
+/**
+ * Own the daemon this test bridges to, on its own port.
+ *
+ * `executor mcp` otherwise elects a daemon on the shared default port, and will
+ * adopt one that is already listening there — including a daemon belonging to a
+ * different `EXECUTOR_DATA_DIR`, whose bearer token this test does not have. A
+ * dedicated port keeps the test hermetic and parallel-safe. `daemon run` falls
+ * back to a free port if this one is taken, and writes the port it chose into
+ * the manifest that `executor mcp` reads, so the exact number is not load-bearing.
+ */
+const startDaemon = (dataDir: string): void => {
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const result = spawnSync(
+    "bun",
+    ["run", cliEntry, "daemon", "run", "--port", String(port), "--hostname", "127.0.0.1"],
+    { env: { ...process.env, EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: testScope } },
+  );
+  expect(result.status, `daemon run failed: ${result.stderr?.toString() ?? ""}`).toBe(0);
+};
+
+/** Stop the daemon started above; the manifest carries its pid. */
+const stopDaemon = (dataDir: string): Effect.Effect<void> =>
+  Effect.sync(() => manifestPid(dataDir)).pipe(
+    Effect.flatMap((pid) =>
+      pid
+        ? Effect.try({ try: () => process.kill(pid, "SIGTERM"), catch: () => undefined }).pipe(
+            Effect.ignore,
+          )
+        : Effect.void,
+    ),
     Effect.ignore,
   );
 
-const withTempData = Effect.acquireRelease(
-  Effect.sync(() => mkdtempSync(join(tmpdir(), "executor-mcp-discover-test-"))),
+const withDaemon = Effect.acquireRelease(
+  Effect.sync(() => {
+    const dataDir = mkdtempSync(join(tmpdir(), "executor-mcp-discover-test-"));
+    startDaemon(dataDir);
+    return dataDir;
+  }),
   (dataDir) =>
-    stopAutoSpawnedDaemon(dataDir).pipe(
+    stopDaemon(dataDir).pipe(
       Effect.ensuring(Effect.sync(() => rmSync(dataDir, { recursive: true, force: true }))),
     ),
 );
@@ -66,11 +100,15 @@ const messageQueue = (transport: StdioClientTransport) => {
 };
 
 describe("MCP stdio integration", () => {
+  // The regression: a client that opens with an unsupported probe used to get
+  // the transport's fatal `-32000 Server not initialized` on an HTTP 400, which
+  // tore the bridge down before it could fall back to `initialize`. The whole
+  // handshake must survive the probe on ONE connection, through to a tool call.
   it.effect(
     "unsupported discovery keeps the connection open for initialization and tool calls",
     () =>
       Effect.gen(function* () {
-        const dataDir = yield* withTempData;
+        const dataDir = yield* withDaemon;
         const transport = new StdioClientTransport({
           command: "bun",
           args: ["run", cliEntry, "mcp", "--scope", testScope],
@@ -168,6 +206,6 @@ describe("MCP stdio integration", () => {
           expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("4") })]),
         );
       }).pipe(Effect.scoped),
-    { timeout: 30_000 },
+    { timeout: 120_000 },
   );
 });

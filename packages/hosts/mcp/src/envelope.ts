@@ -107,25 +107,35 @@ export const jsonRpcErrorBody = (
     readonly cors?: boolean;
     readonly challenge?: string;
     readonly retryAfterSeconds?: number;
+    /**
+     * The id to echo. Envelope-level errors have no request to answer and stay
+     * at the default `null`; only an error that answers ONE identified JSON-RPC
+     * request (the pre-initialize guard below) sets it, since a client matches
+     * the response to its pending request by id.
+     */
+    readonly id?: string | number | null;
   },
 ): Response => {
   const cors = opts?.cors ?? true;
   const challenge = opts?.challenge;
   const retryAfterSeconds = opts?.retryAfterSeconds;
-  return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      ...(cors ? { "access-control-allow-origin": "*" } : {}),
-      ...(challenge
-        ? {
-            "www-authenticate": challenge,
-            "access-control-expose-headers": "WWW-Authenticate",
-          }
-        : {}),
-      ...(retryAfterSeconds === undefined ? {} : { "retry-after": String(retryAfterSeconds) }),
+  return new Response(
+    JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: opts?.id ?? null }),
+    {
+      status,
+      headers: {
+        "content-type": "application/json",
+        ...(cors ? { "access-control-allow-origin": "*" } : {}),
+        ...(challenge
+          ? {
+              "www-authenticate": challenge,
+              "access-control-expose-headers": "WWW-Authenticate",
+            }
+          : {}),
+        ...(retryAfterSeconds === undefined ? {} : { "retry-after": String(retryAfterSeconds) }),
+      },
     },
-  });
+  );
 };
 
 /**
@@ -134,6 +144,62 @@ export const jsonRpcErrorBody = (
  * membership lookups) are typically sub-second.
  */
 export const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
+
+/** JSON-RPC's own code for "this server does not implement that method". */
+const METHOD_NOT_FOUND = -32601;
+
+/**
+ * The pre-initialize dispatch guard, for the session-less POST every host
+ * handles before it hands the request to a fresh streamable-HTTP transport.
+ *
+ * Only `initialize` can open a session, so the transport answers every OTHER
+ * method with HTTP **400** + `-32000 Server not initialized`. A 400 is a
+ * transport-level failure: clients tear the connection down rather than treat
+ * it as one request failing. So a client that opens with an optional probe —
+ * MCP 2026-07-28 clients lead with `server/discover` — is disconnected before
+ * it can fall back to `initialize`, and the handshake never happens.
+ *
+ * JSON-RPC already has the right answer for a method the dispatcher doesn't
+ * know: `-32601 Method not found`, carried on a normal HTTP 200. It is a
+ * per-request error, so the connection survives and the client falls back.
+ *
+ * This deliberately covers ANY method other than `initialize` rather than
+ * naming `server/discover`: pre-session, `initialize` is the only method this
+ * dispatcher implements, so -32601 is the literal truth for the rest. It also
+ * can't silently mask a future real `server/discover` — implementing it means
+ * it stops being unknown here, instead of a special case going stale.
+ *
+ * Succeeds with `null` for anything that must reach the transport untouched: a
+ * non-POST, an unparseable or non-JSON-RPC body, `initialize` itself, and
+ * notifications (no id, so no response may be sent). Reads a clone, leaving the
+ * caller's request body intact for the transport.
+ */
+export const preInitializeMethodNotFound = (request: Request): Effect.Effect<Response | null> =>
+  request.method !== "POST"
+    ? Effect.succeed(null)
+    : Effect.tryPromise({
+        try: (): Promise<unknown> => request.clone().json(),
+        catch: () => null,
+      }).pipe(
+        // A body we cannot read is simply not ours to answer; hand it on.
+        Effect.orElseSucceed(() => null),
+        Effect.map(renderPreInitializeMethodNotFound),
+      );
+
+/** The pure decision behind {@link preInitializeMethodNotFound}. */
+const renderPreInitializeMethodNotFound = (body: unknown): Response | null => {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const message = body as { readonly jsonrpc?: unknown; readonly method?: unknown; id?: unknown };
+  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") return null;
+  if (message.method === "initialize") return null;
+  if (typeof message.id !== "string" && typeof message.id !== "number") return null;
+  // An INNER response like every other store/handler error body: the host's
+  // outer envelope owns the CORS headers on the way out.
+  return jsonRpcErrorBody(200, METHOD_NOT_FOUND, "Method not found", {
+    cors: false,
+    id: message.id,
+  });
+};
 
 /** The envelope's own CORS-on JSON-RPC error `Response`, optionally carrying a challenge. */
 const jsonRpcResponse = (
