@@ -6,11 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
-import {
-  useIntegrationPlugins,
-  type IntegrationPlugin,
-  type IntegrationPreset,
-} from "@executor-js/sdk/client";
+import { useIntegrationPlugins, type IntegrationPlugin } from "@executor-js/sdk/client";
 
 import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
 import { slugifyNamespace } from "../plugins/namespace";
@@ -25,7 +21,6 @@ import {
   availableCatalogKinds,
   catalogLogoUrl,
   filterCatalogEntries,
-  presetDomains,
   resolveConnectTarget,
   useCatalogBrowse,
   type CatalogKind,
@@ -48,11 +43,12 @@ import {
 // a duplicate; two rows reading "Stripe API" and "Stripe MCP" look like a
 // choice, which is what they are.
 //
-// Rows come from two places the reader never learns about: the curated presets
-// this deployment ships (which carry auth templates and health checks a bare
-// catalog entry does not) sort first, then the rest of the catalog in its own
-// popularity order. The catalog is simply where results come from, so it is
-// never named, badged, or given a section.
+// ONE SOURCE. Every row comes from the integrations.sh registry. The bundled
+// presets used to be merged in ahead of it, which put a service in the list
+// twice (a preset "Gmail API" with no domain, above the registry's own Gmail)
+// and gave rows two incompatible identity schemes. A catalog that disagrees
+// with itself is worse than one with gaps: improvements belong in the registry,
+// where every deployment gets them, not in a list bundled with the console.
 //
 // FACETS ARE SURFACE KIND, NOT CATEGORY. There is no taxonomy to facet on, so a
 // category rail would have to invent one. Kind is real, filtered server-side.
@@ -133,12 +129,6 @@ const tidyDescription = (text: string): string => {
   if (/[.!?]$/.test(trimmed)) return trimmed;
   const lastSpace = trimmed.lastIndexOf(" ");
   return `${(lastSpace > 40 ? trimmed.slice(0, lastSpace) : trimmed).replace(/[,;:]$/, "")}…`;
-};
-
-type PresetEntry = {
-  readonly preset: IntegrationPreset;
-  readonly pluginKey: string;
-  readonly pluginLabel: string;
 };
 
 interface Row {
@@ -297,7 +287,8 @@ export function IntegrationBrowsePage() {
     () => availableCatalogKinds(integrationPlugins),
     [integrationPlugins],
   );
-  const excludeDomains = useMemo(() => presetDomains(integrationPlugins), [integrationPlugins]);
+  // Nothing to exclude now that the registry is the only source.
+  const excludeDomains = useMemo(() => new Set<string>(), []);
 
   const catalog = useCatalogBrowse({ query: listQuery, ...(kind ? { kind } : {}) });
   const catalogEntries = useMemo(
@@ -338,16 +329,6 @@ export function IntegrationBrowsePage() {
       }),
     [installedKeys],
   );
-
-  const allPresets = useMemo(() => {
-    const entries: PresetEntry[] = [];
-    for (const plugin of integrationPlugins) {
-      for (const preset of plugin.presets ?? []) {
-        entries.push({ preset, pluginKey: plugin.key, pluginLabel: plugin.label });
-      }
-    }
-    return entries;
-  }, [integrationPlugins]);
 
   const handleDetect = useCallback(async () => {
     const trimmed = query.trim();
@@ -444,50 +425,6 @@ export function IntegrationBrowsePage() {
     [goToAdd, resolvingDomain],
   );
 
-  const pickPreset = useCallback(
-    (entry: PresetEntry) => {
-      trackEvent("integration_add_started", {
-        plugin_key: entry.pluginKey,
-        via: "preset",
-        preset_id: entry.preset.id,
-      });
-      const search: Record<string, string> = { preset: entry.preset.id };
-      if (entry.preset.url) search.url = entry.preset.url;
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey: entry.pluginKey },
-        search,
-      });
-    },
-    [navigate],
-  );
-
-  // --- Preset rows ---------------------------------------------------------
-  const presetRows = useMemo<readonly Row[]>(() => {
-    const rows: Row[] = [];
-    for (const entry of allPresets) {
-      if (kind !== null && entry.pluginKey !== kind) continue;
-      if (text.length > 0) {
-        const corpus =
-          `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
-        if (!corpus.includes(text)) continue;
-      }
-      const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
-      rows.push({
-        key: `preset-${entry.pluginKey}-${entry.preset.id}`,
-        testId: `preset-${entry.preset.id}`,
-        title: withSurface(entry.preset.name, surface),
-        ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
-        ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
-        onSelect: () => pickPreset(entry),
-        // The namespaces the add form would seed for this preset.
-        added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
-        busy: false,
-      });
-    }
-    return rows;
-  }, [allPresets, kind, text, pickPreset, isAdded]);
-
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
     const rows = catalogEntries.flatMap((entry): readonly Row[] => {
@@ -525,7 +462,7 @@ export function IntegrationBrowsePage() {
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
   }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text]);
 
-  const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
+  const results = catalogRows;
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
