@@ -64,7 +64,14 @@ class CatalogRequestError extends Data.TaggedError("CatalogRequestError")<{
 const fetchCatalogJson = (url: URL): Effect.Effect<unknown, CatalogRequestError> =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
-      try: () => fetch(url),
+      // ALWAYS REVALIDATE. The catalog is a live service and its corrections
+      // must reach the console immediately, but the browser will honour
+      // whatever max-age the response carried when it was stored — a stale
+      // entry with a long TTL kept showing a domain that had been merged away
+      // and an MCP endpoint that does not exist, hours after the fix shipped.
+      // `no-cache` still sends the conditional request, so a 304 costs nothing
+      // when nothing has changed.
+      try: () => fetch(url, { cache: "no-cache" }),
       catch: () => new CatalogRequestError({ message: `Failed to reach ${url.host}.` }),
     });
     if (!response.ok) {
