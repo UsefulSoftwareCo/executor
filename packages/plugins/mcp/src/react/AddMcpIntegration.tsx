@@ -38,6 +38,8 @@ import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
 import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
+import { McpRequestHeadersEditor } from "./McpRequestHeadersEditor";
+import { mcpHeadersFromRows, type McpHeaderRow } from "./request-headers";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
@@ -208,6 +210,12 @@ export default function AddMcpIntegration(props: {
     remoteUrl ? { step: "url" as const, url: remoteUrl } : init,
   );
 
+  // Static request headers for the endpoint (e.g. a Cloudflare Access service
+  // token). They gate the probe as much as the live traffic, so the same
+  // values feed both.
+  const [headerRows, setHeaderRows] = useState<readonly McpHeaderRow[]>([]);
+  const headers = useMemo(() => mcpHeadersFromRows(headerRows), [headerRows]);
+
   const doProbe = useAtomSet(probeMcpEndpoint, { mode: "promiseExit" });
   const doAddServer = useAtomSet(addMcpServer, { mode: "promiseExit" });
 
@@ -273,7 +281,7 @@ export default function AddMcpIntegration(props: {
   const handleProbe = useCallback(async () => {
     dispatch({ type: "probe-start" });
     const exit = await doProbe({
-      payload: { endpoint: state.url.trim() },
+      payload: { endpoint: state.url.trim(), ...(headers ? { headers } : {}) },
     });
     if (Exit.isFailure(exit)) {
       dispatch({
@@ -283,7 +291,7 @@ export default function AddMcpIntegration(props: {
       return;
     }
     dispatch({ type: "probe-ok", probe: exit.value });
-  }, [state.url, doProbe]);
+  }, [state.url, headers, doProbe]);
 
   // Keep the latest handleProbe in a ref so the debounced effect can call it
   // without depending on its identity (which changes every render).
@@ -318,6 +326,7 @@ export default function AddMcpIntegration(props: {
             : {}),
           endpoint: state.url.trim(),
           ...(slug ? { slug } : {}),
+          ...(headers ? { headers } : {}),
           authenticationTemplate,
         },
         reactivityKeys: integrationWriteKeys,
@@ -331,7 +340,7 @@ export default function AddMcpIntegration(props: {
       }
       return exit.value.slug;
     },
-    [doAddServer, probe, remoteIdentity, resolvedDescription, state.url],
+    [doAddServer, headers, probe, remoteIdentity, resolvedDescription, state.url],
   );
 
   const handleAddRemote = useCallback(async () => {
@@ -445,6 +454,16 @@ export default function AddMcpIntegration(props: {
               </InfoDescription>
             </Info>
           )}
+
+          {/* Static request headers. Shown in every remote state, because an
+              endpoint behind an edge authenticator (Cloudflare Access) fails
+              the very first probe until its service-token headers are set. */}
+          <McpRequestHeadersEditor
+            rows={headerRows}
+            onChange={setHeaderRows}
+            onTest={handleProbe}
+            testing={isProbing}
+          />
 
           {/* Authentication — declares the auth methods to register through the
               shared list editor. The credentials themselves (API key value /
