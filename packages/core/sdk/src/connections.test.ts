@@ -696,6 +696,54 @@ const staleCompensationRead = (db: FumaDb, state: { armed: boolean }): FumaDb =>
   return wrap(db);
 };
 
+/** Wrap a test `FumaDb` so the confirmation read AFTER the guarded delete
+ *  fails at the driver. While armed, the first `connection` read that follows
+ *  a `connection` delete rejects; every other statement passes through.
+ *  Transactions hand out wrapped handles too, so the read inside the
+ *  compensation transaction is covered. */
+const failableConfirmationRead = (db: FumaDb, state: { armed: boolean }): FumaDb => {
+  let deleteSeen = false;
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "transaction") {
+          return (run: (tx: FumaDb) => Promise<unknown>) =>
+            (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+              (tx) => run(wrap(tx)),
+            );
+        }
+        if (prop === "deleteMany") {
+          return (table: unknown, query: unknown) => {
+            if (state.armed && table === "connection") deleteSeen = true;
+            return (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(
+              table,
+              query,
+            );
+          };
+        }
+        if (prop === "findFirst") {
+          return (table: unknown, query: unknown) => {
+            if (state.armed && deleteSeen && table === "connection") {
+              state.armed = false;
+              deleteSeen = false;
+              // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
+              return Promise.reject(
+                new StorageError({ message: "confirmation read refused", cause: undefined }),
+              );
+            }
+            return (target.findFirst as (t: unknown, q: unknown) => Promise<unknown>)(table, query);
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
 describe("connections.create credential-write compensation", () => {
   // Interruption is not an error: error-channel compensation never sees it. A
   // create interrupted mid-write must still tear down what it already did —
@@ -1042,6 +1090,83 @@ describe("connections.create credential-write compensation", () => {
         expect(infos.some((line) => line.includes("removed nothing"))).toBe(true);
       }),
     ),
+  );
+
+  // The confirmation read after the guarded delete can itself fail. On an
+  // interactive adapter that failure rolls the delete back with the
+  // transaction, so "stranded" would be truthful — but on an auto-commit
+  // adapter (Cloudflare D1 runs `interactiveTransactions: false`) every
+  // statement commits immediately: the delete has already removed the row
+  // when the read fails, and a stranded-row claim would be false. The row
+  // state is genuinely unknown at this layer, so the create must say exactly
+  // that — skip ALL credential-item deletion and report the row as
+  // unconfirmed, never as stranded.
+  it.effect("a failed confirmation read skips item cleanup and reports the row unconfirmed", () =>
+    Effect.gen(function* () {
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
+            : Effect.sync(() => void store.set(String(id), value)),
+      });
+      const readState = { armed: false };
+      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: failableConfirmationRead(config.db, readState),
+      });
+      yield* executor.durable.seed();
+      readState.armed = true;
+
+      const errors: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Error") {
+          errors.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const result = yield* Effect.result(
+        executor.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: { first: "1", second: "2" },
+          })
+          .pipe(Effect.provide(Logger.layer([capture]))),
+      );
+
+      // Non-vacuous: the armed rejection fired, so the statement that failed
+      // really was the confirmation read, after the guarded delete ran.
+      expect(readState.armed).toBe(false);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      const failure = result.failure;
+      expect(Predicate.isTagged("StorageError")(failure)).toBe(true);
+      if (!Predicate.isTagged("StorageError")(failure)) return;
+      // The error names the connection and reports the unconfirmed state; it
+      // must NOT claim the row is stranded — on an auto-commit adapter the
+      // delete already committed and the row is gone.
+      expect(failure.message).toContain("main");
+      expect(failure.message).toContain("vercel");
+      expect(failure.message).toContain("could not be confirmed");
+      expect(failure.message).not.toContain("stranded");
+      // The original write failure is retained as the cause, not replaced.
+      const isStorageError = (u: unknown): u is StorageError =>
+        Predicate.isTagged("StorageError")(u);
+      expect(isStorageError(failure.cause)).toBe(true);
+      if (!isStorageError(failure.cause)) return;
+      expect(failure.cause.message).toBe("provider write refused");
+
+      // The unknown outcome skips ALL credential-item deletion: the item that
+      // landed before the failed write is untouched.
+      expect(store.get("connection:org:vercel:main:first")).toBe("1");
+      // The log reports the unconfirmed state, not a stranded-row claim.
+      expect(errors.some((line) => line.includes("could not confirm"))).toBe(true);
+      expect(errors.every((line) => !line.includes("stranded a connection row"))).toBe(true);
+    }),
   );
 
   // A provider write can die with a defect instead of failing. The stranded-

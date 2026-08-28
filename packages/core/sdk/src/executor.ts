@@ -3710,15 +3710,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           //   predecessor value. Closing this needs provider-side conditional
           //   deletes, which do not exist; the stranded state is surfaced
           //   loudly as the typed StorageError below, naming the connection.
-          const rowOutcomeRef = yield* Ref.make<"removed" | "superseded" | "overtaken" | "failed">(
-            "removed",
-          );
+          // - On a non-transactional adapter (statements auto-commit, no
+          //   rollback — Cloudflare D1) the guarded delete may already have
+          //   committed when the confirmation read fails; the items are left
+          //   in place as inert orphans.
+          const rowOutcomeRef = yield* Ref.make<
+            "removed" | "superseded" | "overtaken" | "failed" | "unknown"
+          >("removed");
           const logContext = {
             owner: input.owner,
             integration: String(input.integration),
             connection: String(name),
           };
           const compensate = Effect.gen(function* () {
+            // Progress marker for the transaction below. It distinguishes
+            // "the guarded delete itself failed" (nothing was deleted; a
+            // surviving row is truthfully stranded) from "the delete ran and
+            // the confirmation read failed". Deliberately a plain mutable
+            // outside the transaction: a rollback cannot un-set it, which is
+            // the point — it records statement execution, not committed
+            // state. On an interactive adapter a post-delete failure rolls
+            // the delete back; on an auto-commit adapter (D1) the delete has
+            // already committed. This layer cannot tell which world it is
+            // in, so a post-delete failure is reported as "unknown", never
+            // as a stranded row.
+            let rowDeleteRan = false;
             const rowOutcome = yield* transaction(
               Effect.gen(function* () {
                 const current = yield* findConnectionRow({
@@ -3740,6 +3756,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                       b("row_id", "=", insertedRowId),
                     ),
                 });
+                rowDeleteRan = true;
                 // `deleteMany` returns void, so whether the guarded delete
                 // removed OUR row cannot be read off its result — and the
                 // identity read above and the delete can straddle a
@@ -3766,10 +3783,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               }),
             ).pipe(
               Effect.catchCause((cause) =>
-                Effect.logError(
-                  "executor connection create stranded a connection row it could not delete",
-                  { ...logContext, cause },
-                ).pipe(Effect.as("failed" as const)),
+                rowDeleteRan
+                  ? Effect.logError(
+                      "executor connection create could not confirm its compensating row delete: the connection row may be deleted or stranded",
+                      { ...logContext, cause },
+                    ).pipe(Effect.as("unknown" as const))
+                  : Effect.logError(
+                      "executor connection create stranded a connection row it could not delete",
+                      { ...logContext, cause },
+                    ).pipe(Effect.as("failed" as const)),
               ),
             );
             yield* Ref.set(rowOutcomeRef, rowOutcome);
@@ -3801,6 +3823,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // landed. Leave the items in place (they belong to the
               // stranded row the caller is told to remove) and let the exit
               // handling below surface the error.
+              return;
+            }
+            if (rowOutcome === "unknown") {
+              // The guarded delete ran but its confirmation read failed, so
+              // whether OUR row survived cannot be known: an interactive
+              // adapter rolled the delete back with the transaction (row
+              // stranded), a non-transactional adapter had already committed
+              // it (row gone). Deleting the items under a surviving row
+              // would strand it valueless, so ALL item deletion is skipped;
+              // the exit handling below reports the unconfirmed state.
               return;
             }
             for (const entry of pastedWrites) {
@@ -3843,6 +3875,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             if (rowOutcome === "failed" && !Cause.hasInterruptsOnly(writeExit.cause)) {
               return yield* new StorageError({
                 message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded with incomplete credentials and must be removed manually.`,
+                cause: Cause.squash(writeExit.cause),
+              });
+            }
+            if (rowOutcome === "unknown" && !Cause.hasInterruptsOnly(writeExit.cause)) {
+              return yield* new StorageError({
+                message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and its compensating delete could not be confirmed: the connection row may be deleted or may remain with incomplete credentials; its credential items were left in place.`,
                 cause: Cause.squash(writeExit.cause),
               });
             }
