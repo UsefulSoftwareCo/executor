@@ -6,7 +6,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
-import { useIntegrationPlugins, type IntegrationPlugin } from "@executor-js/sdk/client";
+import {
+  useIntegrationPlugins,
+  type IntegrationPlugin,
+  type IntegrationPreset,
+} from "@executor-js/sdk/client";
 
 import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
 import { slugifyNamespace } from "../plugins/namespace";
@@ -43,12 +47,18 @@ import {
 // a duplicate; two rows reading "Stripe API" and "Stripe MCP" look like a
 // choice, which is what they are.
 //
-// ONE SOURCE. Every row comes from the integrations.sh registry. The bundled
-// presets used to be merged in ahead of it, which put a service in the list
-// twice (a preset "Gmail API" with no domain, above the registry's own Gmail)
-// and gave rows two incompatible identity schemes. A catalog that disagrees
-// with itself is worse than one with gaps: improvements belong in the registry,
-// where every deployment gets them, not in a list bundled with the console.
+// TWO SOURCES, ONE LIST. The registry is the bulk of it, but this deployment's
+// own presets come first and cannot be dropped for it: production usage says
+// the most-added integrations are Gmail, Google Calendar, Drive, Sheets and
+// Docs, and the whole Microsoft Graph family (Outlook mail and calendar,
+// Teams, OneDrive, SharePoint, OneNote, Excel) — all of them presets. The
+// registry has no Outlook, no OneDrive and no OneNote at all, and answers
+// "google drive" with file.googleapis.com, which is Filestore. Sourcing from
+// it alone silently removed the top of the catalog.
+//
+// A preset wins over a registry row for the same service: it carries the auth
+// template, scopes and health check the bare catalog entry lacks. Neither
+// source is named or badged — where a row came from is executor's business.
 //
 // FACETS ARE SURFACE KIND, NOT CATEGORY. There is no taxonomy to facet on, so a
 // category rail would have to invent one. Kind is real, filtered server-side.
@@ -129,6 +139,12 @@ const tidyDescription = (text: string): string => {
   if (/[.!?]$/.test(trimmed)) return trimmed;
   const lastSpace = trimmed.lastIndexOf(" ");
   return `${(lastSpace > 40 ? trimmed.slice(0, lastSpace) : trimmed).replace(/[,;:]$/, "")}…`;
+};
+
+type PresetEntry = {
+  readonly preset: IntegrationPreset;
+  readonly pluginKey: string;
+  readonly pluginLabel: string;
 };
 
 interface Row {
@@ -335,6 +351,16 @@ export function IntegrationBrowsePage() {
     [installedKeys],
   );
 
+  const allPresets = useMemo(() => {
+    const entries: PresetEntry[] = [];
+    for (const plugin of integrationPlugins) {
+      for (const preset of plugin.presets ?? []) {
+        entries.push({ preset, pluginKey: plugin.key, pluginLabel: plugin.label });
+      }
+    }
+    return entries;
+  }, [integrationPlugins]);
+
   const handleDetect = useCallback(async () => {
     const trimmed = query.trim();
     if (trimmed.length === 0) return;
@@ -430,9 +456,52 @@ export function IntegrationBrowsePage() {
     [goToAdd, resolvingDomain],
   );
 
+  const pickPreset = useCallback(
+    (entry: PresetEntry) => {
+      trackEvent("integration_add_started", {
+        plugin_key: entry.pluginKey,
+        via: "preset",
+        preset_id: entry.preset.id,
+      });
+      const search: Record<string, string> = { preset: entry.preset.id };
+      if (entry.preset.url) search.url = entry.preset.url;
+      void navigate({
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
+        params: { pluginKey: entry.pluginKey },
+        search,
+      });
+    },
+    [navigate],
+  );
+
+  // --- Preset rows ---------------------------------------------------------
+  const presetRows = useMemo<readonly Row[]>(() => {
+    const rows: Row[] = [];
+    for (const entry of allPresets) {
+      if (kind !== null && entry.pluginKey !== kind) continue;
+      if (text.length > 0) {
+        const corpus =
+          `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
+        if (!corpus.includes(text)) continue;
+      }
+      const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
+      rows.push({
+        key: `preset-${entry.pluginKey}-${entry.preset.id}`,
+        testId: `preset-${entry.preset.id}`,
+        title: withSurface(entry.preset.name, surface),
+        ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
+        ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
+        onSelect: () => pickPreset(entry),
+        added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
+        busy: false,
+      });
+    }
+    return rows;
+  }, [allPresets, kind, text, pickPreset, isAdded]);
+
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
-    const rows = catalogEntries.flatMap((entry): readonly Row[] => {
+    let rows = catalogEntries.flatMap((entry): readonly Row[] => {
       const pretty = domainDisplayName(entry.domain);
       const description = entry.description ? tidyDescription(entry.description) : undefined;
       // Prefer the registry's own per-surface records. Without them all we know
@@ -459,15 +528,22 @@ export function IntegrationBrowsePage() {
         };
       });
     });
+    // A registry row for something a preset already offers is a worse copy of
+    // it: same service, no auth template, no health check. Matched on the
+    // rendered title because a preset's domain is inferred from its icon and
+    // often does not match the registry's (the Gmail preset's icon is Google's,
+    // so a domain comparison let a second "Gmail API" through).
+    const presetTitles = new Set(presetRows.map((row) => row.title.toLowerCase()));
+    rows = rows.filter((row) => !presetTitles.has(row.title.toLowerCase()));
     if (text.length === 0) return rows;
     // A name match beats a mention in the blurb: searching "gmail" should not
     // rank a CRM that merely describes itself as living inside Gmail above
     // Gmail. Stable within each group, so the registry's own order survives.
     const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
-  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text]);
+  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text, presetRows]);
 
-  const results = catalogRows;
+  const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
