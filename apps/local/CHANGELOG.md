@@ -1,5 +1,39 @@
 # @executor-js/local
 
+## 1.6.3
+
+### Patch Changes
+
+- [#1458](https://github.com/UsefulSoftwareCo/executor/pull/1458) [`1908dd6`](https://github.com/UsefulSoftwareCo/executor/commit/1908dd6d7611489362d451f7594adca542c13ba1) Thanks [@tylergibbs1](https://github.com/tylergibbs1)! - **An unsupported method probed before `initialize` no longer kills the MCP connection**
+
+  Only `initialize` can open a session, so the streamable-HTTP transport answered every other pre-session method with HTTP 400 + `-32000 Server not initialized`. A 400 is a transport-level failure, so clients dropped the connection instead of treating it as one request failing — a client that opens with an optional probe (MCP 2026-07-28 clients lead with `server/discover`) was disconnected before it could fall back to `initialize`. Over `executor mcp`, which bridges this endpoint to stdio, that closed the client's pipe outright.
+
+  Pre-session dispatch now answers any method other than `initialize` with `-32601 Method not found` on a normal 200, which is a per-request error, so the connection survives and the handshake proceeds. This replaces only that one answer: a POST with a bad `Accept` or `Content-Type` still gets the transport's 406 or 415, and a message that is not a valid JSON-RPC request still gets its parse error.
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`4b0fbf6`](https://github.com/UsefulSoftwareCo/executor/commit/4b0fbf68550516af9235c9267f91a962da993946), [`ba62f1a`](https://github.com/UsefulSoftwareCo/executor/commit/ba62f1a5d14b7002ba0a4686a9e1ae43bd77f54f), [`8324e1e`](https://github.com/UsefulSoftwareCo/executor/commit/8324e1eb8b03965050147309f049bdb52be6fcad), [`6305b6d`](https://github.com/UsefulSoftwareCo/executor/commit/6305b6d11505358fa73ec2b3e768ec4256c36435), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`85b1955`](https://github.com/UsefulSoftwareCo/executor/commit/85b1955b4d24c332e637e15a025d64455e28a626), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/plugin-mcp@1.6.3
+  - @executor-js/sdk@1.6.3
+  - @executor-js/plugin-openapi@1.6.3
+  - @executor-js/fumadb@1.5.8
+  - @executor-js/app@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.14
+  - @executor-js/plugin-graphql@1.6.3
+  - @executor-js/plugin-onepassword@1.6.3
+  - @executor-js/plugin-toolkits@1.5.38
+  - @executor-js/analytics@0.1.10
+  - @executor-js/api@1.4.66
+  - @executor-js/config@1.6.3
+  - @executor-js/execution@1.6.3
+  - @executor-js/vite-plugin@0.0.63
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-desktop-settings@1.6.3
+  - @executor-js/plugin-example@1.6.3
+  - @executor-js/plugin-file-secrets@1.6.3
+  - @executor-js/plugin-keychain@1.6.3
+  - @executor-js/plugin-provider-service-split@0.0.17
+  - @executor-js/runtime-quickjs@1.6.3
+
 ## 1.6.2
 
 ### Patch Changes

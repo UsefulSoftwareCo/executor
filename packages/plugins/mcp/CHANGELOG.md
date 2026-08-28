@@ -1,5 +1,41 @@
 # @executor-js/plugin-mcp
 
+## 1.6.3
+
+### Patch Changes
+
+- [#1815](https://github.com/UsefulSoftwareCo/executor/pull/1815) [`4b0fbf6`](https://github.com/UsefulSoftwareCo/executor/commit/4b0fbf68550516af9235c9267f91a962da993946) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **The add-MCP form stops dialling the server URL while it is still being typed**
+
+  The Server URL field auto-probes the endpoint after a 400ms pause. The only condition on that probe was that the trimmed value was non-empty, so every pause in typing dialled whatever was in the field: "h", "http://", the "a" in "http://a". Each of those probes failed, and the field dropped into a loading state and then an error with a retry button, for a value the user never meant to submit.
+
+  The probe now runs only when the value looks like a finished endpoint: it parses as a URL, its scheme is http or https, and its hostname is either a local development host or has a dot with a label on each side. The debounce is unchanged, so a completed URL is still probed without the user having to submit.
+
+  A probe that is superseded is also no longer allowed to answer. The field could previously report the outcome of a request for a URL that had since been edited, because each probe dispatched its result unconditionally. Editing the URL now invalidates any probe already in flight, and its reply is discarded rather than applied to the current value.
+
+- [#1702](https://github.com/UsefulSoftwareCo/executor/pull/1702) [`ba62f1a`](https://github.com/UsefulSoftwareCo/executor/commit/ba62f1a5d14b7002ba0a4686a9e1ae43bd77f54f) Thanks [@altaywtf](https://github.com/altaywtf)! - Allow MCP integrations to declare a catalog family and group any family with multiple services in the integrations UI.
+
+- [#1595](https://github.com/UsefulSoftwareCo/executor/pull/1595) [`8324e1e`](https://github.com/UsefulSoftwareCo/executor/commit/8324e1eb8b03965050147309f049bdb52be6fcad) Thanks [@GeiserX](https://github.com/GeiserX)! - **Stdio MCP servers no longer inherit executor's full environment**
+
+  A stdio MCP server that declared any `env` at all was spawned with every environment variable this process holds. The MCP SDK already guards against that: it spawns with `{ ...getDefaultEnvironment(), ...serverParams.env }`, where `getDefaultEnvironment()` is a sudo-style safe-list of `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`. Passing `{ ...process.env, ...config.env }` did not add to that safe-list, it overwrote it. In practice, adding one third-party `npx` server went from "this server can see the API key I gave it" to "this server also holds `EXECUTOR_SECRET_KEY`, the key that decrypts every other stored credential, plus `EXECUTOR_AUTH_TOKEN` and `DATABASE_URL`". The leak sat on the `config.env` branch — the branch a credential-bearing integration takes.
+
+  A stdio server now receives the SDK's safe-list, the variables declared on the source config, and one short allowlist of infrastructure variables read from the host: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (both spellings), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. Those carry no credential, no source config declares them, and a server behind a corporate proxy or an intercepting CA cannot reach anything without them — the same reasoning and the same list `service install` already uses when it bakes a supervised unit's minimal environment. The declared `env` wins on a key collision. On Windows that collision is resolved case-insensitively, because the OS treats `Path` and `PATH` as one variable while a JavaScript spread does not: a declared `http_proxy` now replaces an inherited `HTTP_PROXY` instead of travelling beside it, which would have left the child reading whichever spelling Windows resolved first.
+
+  If a stdio server relied on some other variable arriving from the host, set it explicitly on the source's `env`. That is now the only way anything beyond the lists above reaches a server, and it is the mechanism that already existed for it.
+
+- [#1813](https://github.com/UsefulSoftwareCo/executor/pull/1813) [`6305b6d`](https://github.com/UsefulSoftwareCo/executor/commit/6305b6d11505358fa73ec2b3e768ec4256c36435) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **An MCP tool's reserved `_meta` map survives `tools/list` decoding and reaches the persisted catalog**
+
+  The MCP spec reserves `_meta` on `Tool` for implementation-defined data, and servers use it for host-only routing and policy hints that do not belong in the closed `annotations` set. The plugin decoded each listed tool with a closed struct that did not declare the field, so `_meta` was discarded before the manifest entry was built. A host that embeds the plugin as its MCP client had no way to recover it: no hook exposes the raw `tools/list` result, and `connections.refresh()` answers with already-built tools.
+
+  The listed-tool decode now declares `_meta`, and the manifest entry carries it through. Executor's own `Tool` has no `_meta` field, so `toToolDef` stamps the map into the `mcp` envelope the plugin already persists in each tool row's annotations, next to the real MCP tool name. The stamp schema declares it too, so it is not stripped a second time when a row is read back at invoke time. A host reads it from `annotations.mcp._meta`.
+
+  The map stays opaque. Nothing in the plugin interprets its contents, and it is never merged into anything the model sees. Because it is entirely server-controlled, it is decoded permissively: a `_meta` that is not the spec's map shape is ignored for that tool rather than failing the whole-list decode, which would otherwise drop every tool the server advertises.
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+  - @executor-js/config@1.6.3
+
 ## 1.6.2
 
 ### Patch Changes
