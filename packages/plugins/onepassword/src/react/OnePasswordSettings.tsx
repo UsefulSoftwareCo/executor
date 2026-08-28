@@ -292,11 +292,6 @@ function ConfigDialog(props: {
               selected={selectedVaults}
               onSelectedChange={setSelectedVaults}
             />
-            {selectedVaults.length > 1 && (
-              <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
-                Items are looked up in the checked vaults in order; the first match wins.
-              </p>
-            )}
           </div>
 
           {/* Display name */}

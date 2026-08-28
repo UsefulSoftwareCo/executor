@@ -40,8 +40,9 @@ export type Vault = typeof Vault.Type;
 
 export const OnePasswordConfig = Schema.Struct({
   auth: OnePasswordAuth,
-  /** Vaults to scope operations to, in resolution-precedence order: bare item
-   *  ids are looked up vault by vault and the first hit wins. */
+  /** Vaults to scope operations to. Order is presentational only: refs are
+   *  vault-qualified, and a bare ref that matches in more than one vault is an
+   *  explicit ambiguity failure, never a precedence pick. */
   vaults: Schema.NonEmptyArray(Vault),
   /** Human label for the whole connection */
   name: Schema.String,

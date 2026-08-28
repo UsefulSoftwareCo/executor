@@ -5,7 +5,9 @@ import { ProviderKey, ToolAddress, createExecutor } from "@executor-js/sdk";
 import { makeInMemoryBlobStore, pluginBlobStore } from "@executor-js/sdk/core";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
-import { candidateSecretUris, makeOnePasswordStore, onepasswordPlugin } from "./plugin";
+import { makeOnePasswordStore, onepasswordPlugin, resolveConfiguredRef } from "./plugin";
+import type { OnePasswordService } from "./service";
+import { OnePasswordError } from "./errors";
 import { OnePasswordConfig, DesktopAppAuth } from "./types";
 
 // removed: v1 routed configure/removeConfig through an explicit `ScopeId`
@@ -193,30 +195,130 @@ describe("onepassword store", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Candidate URI fan-out — the order here is the provider's resolution order.
+// Explicit ref resolution — vault-qualified refs resolve directly; bare refs
+// must locate exactly one item, and a multi-vault match is an explicit
+// ambiguity, never a precedence pick.
 // ---------------------------------------------------------------------------
 
-describe("candidateSecretUris", () => {
-  it("fans a bare item id out across the configured vaults in order", () => {
-    expect(candidateSecretUris(twoVaultConfig, "item-abc")).toEqual([
-      "op://vault-123/item-abc/credential",
-      "op://vault-456/item-abc/credential",
-    ]);
-  });
+const fakeService = (
+  itemsByVault: Readonly<Record<string, readonly { id: string; title: string }[]>>,
+  onResolve?: (uri: string) => void,
+): OnePasswordService => ({
+  resolveSecret: (uri) => {
+    onResolve?.(uri);
+    return Effect.succeed(`secret:${uri}`);
+  },
+  listVaults: () => Effect.succeed(Object.keys(itemsByVault).map((id) => ({ id, title: id }))),
+  listItems: (vaultId) => {
+    const items = itemsByVault[vaultId];
+    return items === undefined
+      ? Effect.fail(new OnePasswordError({ operation: "item listing", message: "no such vault" }))
+      : Effect.succeed(items);
+  },
+});
 
-  it("passes through an op:// URI inside a configured vault", () => {
-    expect(candidateSecretUris(twoVaultConfig, "op://vault-456/item-abc/password")).toEqual([
-      "op://vault-456/item-abc/password",
-    ]);
-  });
+describe("resolveConfiguredRef", () => {
+  it.effect("resolves a fully-qualified op:// URI in a configured vault as-is", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({});
+      const result = yield* resolveConfiguredRef(
+        svc,
+        twoVaultConfig,
+        "op://vault-456/item-abc/password",
+      );
+      expect(result).toEqual({
+        kind: "resolved",
+        value: "secret:op://vault-456/item-abc/password",
+      });
+    }),
+  );
 
-  it("accepts an op:// URI addressed by vault name", () => {
-    expect(candidateSecretUris(twoVaultConfig, "op://Work/item-abc/password")).toEqual([
-      "op://Work/item-abc/password",
-    ]);
-  });
+  it.effect("appends the credential field to a picker-shaped op://vault/item ref", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({});
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "op://vault-123/item-abc");
+      expect(result).toEqual({
+        kind: "resolved",
+        value: "secret:op://vault-123/item-abc/credential",
+      });
+    }),
+  );
 
-  it("rejects an op:// URI outside the configured vaults", () => {
-    expect(candidateSecretUris(twoVaultConfig, "op://vault-999/item-abc/password")).toEqual([]);
-  });
+  it.effect("accepts an op:// URI addressed by vault name", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({});
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "op://Work/item/password");
+      expect(result).toEqual({ kind: "resolved", value: "secret:op://Work/item/password" });
+    }),
+  );
+
+  it.effect("reports an op:// URI outside the configured vaults", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({});
+      const result = yield* resolveConfiguredRef(
+        svc,
+        twoVaultConfig,
+        "op://vault-999/item/password",
+      );
+      expect(result).toEqual({ kind: "outside-vaults" });
+    }),
+  );
+
+  it.effect("resolves a bare ref that matches exactly one item across vaults", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({
+        "vault-123": [{ id: "item-1", title: "GitHub Token" }],
+        "vault-456": [{ id: "item-2", title: "Stripe Key" }],
+      });
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "GitHub Token");
+      expect(result).toEqual({
+        kind: "resolved",
+        value: "secret:op://vault-123/item-1/credential",
+      });
+    }),
+  );
+
+  it.effect("fails a bare ref that matches in two vaults with the vaults named", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({
+        "vault-123": [{ id: "item-1", title: "GitHub Token" }],
+        "vault-456": [{ id: "item-2", title: "GitHub Token" }],
+      });
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "GitHub Token");
+      expect(result).toEqual({
+        kind: "ambiguous",
+        matches: [
+          {
+            vaultId: "vault-123",
+            vaultName: "Personal",
+            itemId: "item-1",
+            itemTitle: "GitHub Token",
+          },
+          { vaultId: "vault-456", vaultName: "Work", itemId: "item-2", itemTitle: "GitHub Token" },
+        ],
+      });
+    }),
+  );
+
+  it.effect("treats duplicate titles inside one vault as ambiguous too", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({
+        "vault-123": [
+          { id: "item-1", title: "GitHub Token" },
+          { id: "item-9", title: "GitHub Token" },
+        ],
+        "vault-456": [],
+      });
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "GitHub Token");
+      expect(result.kind).toBe("ambiguous");
+    }),
+  );
+
+  it.effect("reports not-found for a bare ref matching nothing", () =>
+    Effect.gen(function* () {
+      const svc = fakeService({ "vault-123": [], "vault-456": [] });
+      const result = yield* resolveConfiguredRef(svc, twoVaultConfig, "missing");
+      expect(result).toEqual({ kind: "not-found" });
+    }),
+  );
 });

@@ -106,7 +106,14 @@ import {
 import { Input } from "./input";
 import { Label } from "./label";
 import { RadioGroup, RadioGroupItem } from "./radio-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "./combobox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 
 // ---------------------------------------------------------------------------
@@ -335,43 +342,64 @@ function PasteCredentialInputs(props: {
   );
 }
 
+type OnePasswordItem = {
+  readonly id: ProviderItemId;
+  readonly name: string;
+  readonly group?: string;
+};
+
 function OnePasswordItemSelect(props: {
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
   const itemsResult = useAtomValue(providerItemsAtom(ONEPASSWORD_PROVIDER));
   const state = AsyncResult.matchWithError(
-    itemsResult as AsyncResult.AsyncResult<
-      readonly { readonly id: ProviderItemId; readonly name: string }[],
-      Error
-    >,
+    itemsResult as AsyncResult.AsyncResult<readonly OnePasswordItem[], Error>,
     {
       onInitial: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: true,
         error: null as string | null,
       }),
       onError: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: false,
         error: "Failed to load 1Password items",
       }),
       onDefect: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: false,
         error: "Failed to load 1Password items",
       }),
       onSuccess: ({ value }) => ({ items: value, loading: false, error: null }),
     },
+  );
+
+  const stateItems = state.items;
+  const sorted = useMemo(
+    () =>
+      [...stateItems].sort(
+        (a, b) => a.name.localeCompare(b.name) || (a.group ?? "").localeCompare(b.group ?? ""),
+      ),
+    [stateItems],
+  );
+  const byId = useMemo(() => {
+    const map = new Map<string, OnePasswordItem>();
+    for (const item of sorted) map.set(String(item.id), item);
+    return map;
+  }, [sorted]);
+  const ids = useMemo(() => sorted.map((item) => String(item.id)), [sorted]);
+
+  const filter = useCallback(
+    (id: string, query: string) => {
+      const needle = query.trim().toLowerCase();
+      if (needle === "") return true;
+      const item = byId.get(id);
+      return [item?.name ?? "", item?.group ?? ""].some((part) =>
+        part.toLowerCase().includes(needle),
+      );
+    },
+    [byId],
   );
 
   if (state.loading) {
@@ -386,18 +414,36 @@ function OnePasswordItemSelect(props: {
 
   return (
     <div className="space-y-1" data-ph-block>
-      <Select value={props.value} onValueChange={props.onChange}>
-        <SelectTrigger>
-          <SelectValue placeholder="Select secret" />
-        </SelectTrigger>
-        <SelectContent>
-          {state.items.map((item) => (
-            <SelectItem key={String(item.id)} value={String(item.id)}>
-              {item.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Combobox
+        items={ids}
+        value={props.value.length > 0 ? props.value : null}
+        filter={filter}
+        limit={100}
+        itemToStringLabel={(id: string) => byId.get(id)?.name ?? id}
+        onValueChange={(id) => {
+          if (id !== null) props.onChange(id);
+        }}
+      >
+        <ComboboxInput placeholder="Search 1Password items…" className="w-full" />
+        <ComboboxContent>
+          <ComboboxEmpty>No items match.</ComboboxEmpty>
+          <ComboboxList>
+            {(id: string) => {
+              const item = byId.get(id);
+              return (
+                <ComboboxItem key={id} value={id}>
+                  <span className="min-w-0 flex-1 truncate">{item?.name ?? id}</span>
+                  {item?.group && (
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {item.group}
+                    </span>
+                  )}
+                </ComboboxItem>
+              );
+            }}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
     </div>
   );
 }

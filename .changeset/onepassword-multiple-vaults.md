@@ -2,8 +2,8 @@
 "executor": minor
 ---
 
-**The 1Password provider can now be scoped to several vaults at once**
+**The 1Password provider can now be scoped to several vaults, with explicit per-vault addressing**
 
-The provider previously bound exactly one vault. The configuration now holds an ordered list of vaults: the settings dialog offers a checkbox per vault, item listings aggregate across every selected vault (suffixing the vault name when more than one is selected), and a bare item id is resolved by trying each vault in order with the first match winning. A fully-qualified `op://` URI resolves when its vault segment names any configured vault, by id or by name.
+The provider previously bound exactly one vault. The configuration now holds a set of vaults selected with checkboxes, and every reference is explicit about which vault it means: the item picker is a searchable list that shows each item's vault and stores a vault-qualified `op://` reference, so identically-titled items in different vaults can never collide. A bare item name is accepted only when it matches exactly one item across the selected vaults — a name that exists in more than one place fails with an error naming the matching vaults instead of silently picking one.
 
-Configurations saved before this change keep working: the stored single-vault shape is read as a one-vault list and upgrades to the new shape the next time it is saved. The `status` tool now reports `vaultNames` for all configured vaults and flags any configured vault the account can no longer see.
+Configurations saved before this change keep working: the stored single-vault shape is read as a one-vault list and upgrades to the new shape the next time it is saved. The `status` tool reports `vaultNames` for all configured vaults and flags any configured vault the account can no longer see. Provider entries also gained an optional `group` label, which pickers use to show where an item lives.

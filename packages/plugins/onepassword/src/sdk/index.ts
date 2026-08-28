@@ -1,7 +1,9 @@
 export {
   onepasswordPlugin,
   makeOnePasswordStore,
-  candidateSecretUris,
+  resolveConfiguredRef,
+  ambiguityMessage,
+  type RefResolution,
   type OnePasswordExtension,
   type OnePasswordPluginOptions,
   type OnePasswordStore,

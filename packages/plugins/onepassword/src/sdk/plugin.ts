@@ -178,48 +178,105 @@ const getServiceFromConfig = (
 ): Effect.Effect<OnePasswordService, OnePasswordError> =>
   makeOnePasswordService(resolveAuth(config.auth), { timeoutMs, preferSdk });
 
-/** Candidate `op://` URIs for an item id, in resolution order.
- *
- * A bare item id fans out to one candidate per configured vault (item ids are
- * unique across an account, so at most one resolves). A fully-qualified
- * `op://` URI is a single candidate when its vault segment names a configured
- * vault (by id or by name — 1Password accepts either), and no candidate at
- * all when it points outside the configured set. */
-export const candidateSecretUris = (
-  config: OnePasswordConfig,
-  itemId: string,
-): readonly string[] => {
-  if (!itemId.startsWith("op://")) {
-    return config.vaults.map((vault) => `op://${vault.id}/${itemId}/${CREDENTIAL_FIELD}`);
-  }
-  const match = itemId.match(/^op:\/\/([^/]+)\/.+/);
-  if (!match) return [];
-  const segment = match[1];
-  return config.vaults.some((vault) => vault.id === segment || vault.name === segment)
-    ? [itemId]
-    : [];
-};
+// ---------------------------------------------------------------------------
+// Explicit ref resolution.
+//
+// A ref is one of:
+//   - `op://vault/item/field...` — fully qualified, resolved as-is.
+//   - `op://vault/item`         — picker-shaped; the default credential field
+//                                 is appended. This is the id shape `list()`
+//                                 hands out, so every picked item permanently
+//                                 records which vault it came from.
+//   - a bare item id or title   — located by listing the configured vaults.
+//                                 Exactly one match resolves; several matches
+//                                 are an explicit ambiguity failure naming the
+//                                 vaults — never a silent precedence pick.
+// ---------------------------------------------------------------------------
 
-/** Try candidates in order; the first successful resolution wins. Fails with
- *  the last backend error when every candidate fails. */
-const resolveFirstCandidate = (
+export type RefResolution =
+  | { readonly kind: "resolved"; readonly value: string }
+  | { readonly kind: "not-found" }
+  | { readonly kind: "outside-vaults" }
+  | {
+      readonly kind: "ambiguous";
+      readonly matches: readonly {
+        readonly vaultId: string;
+        readonly vaultName: string;
+        readonly itemId: string;
+        readonly itemTitle: string;
+      }[];
+    };
+
+export const ambiguityMessage = (
+  ref: string,
+  matches: Extract<RefResolution, { kind: "ambiguous" }>["matches"],
+): string =>
+  [
+    `1Password ref "${ref}" is ambiguous: it matches`,
+    matches.map((m) => `"${m.itemTitle}" in vault "${m.vaultName}"`).join(", "),
+    `. Use op://<vaultId>/<itemId> to pick one.`,
+  ].join(" ");
+
+const isConfiguredVaultSegment = (config: OnePasswordConfig, segment: string): boolean =>
+  config.vaults.some((vault) => vault.id === segment || vault.name === segment);
+
+/** Resolve a ref against the configured vaults. Backend failures stay on the
+ *  error channel; every addressing outcome is an explicit `RefResolution`. */
+export const resolveConfiguredRef = (
   svc: OnePasswordService,
-  first: string,
-  rest: readonly string[],
-): Effect.Effect<string, OnePasswordError> =>
-  rest.reduce(
-    (acc, uri) => acc.pipe(Effect.catch(() => svc.resolveSecret(uri))),
-    svc.resolveSecret(first),
-  );
+  config: OnePasswordConfig,
+  ref: string,
+): Effect.Effect<RefResolution, OnePasswordError> => {
+  if (ref.startsWith("op://")) {
+    const segments = ref.slice("op://".length).split("/");
+    const vaultSegment = segments[0];
+    if (segments.length < 2 || vaultSegment === undefined || segments.includes("")) {
+      return Effect.succeed({ kind: "not-found" });
+    }
+    if (!isConfiguredVaultSegment(config, vaultSegment)) {
+      return Effect.succeed({ kind: "outside-vaults" });
+    }
+    const uri = segments.length === 2 ? `${ref}/${CREDENTIAL_FIELD}` : ref;
+    return svc
+      .resolveSecret(uri)
+      .pipe(Effect.map((value): RefResolution => ({ kind: "resolved", value })));
+  }
+
+  return Effect.gen(function* () {
+    const matches = (yield* Effect.forEach(config.vaults, (vault) =>
+      svc.listItems(vault.id).pipe(
+        Effect.map((items) =>
+          items
+            .filter((item) => item.id === ref || item.title === ref)
+            .map((item) => ({
+              vaultId: vault.id,
+              vaultName: vault.name,
+              itemId: item.id,
+              itemTitle: item.title,
+            })),
+        ),
+      ),
+    )).flat();
+
+    const [only, ...extra] = matches;
+    if (only === undefined) return { kind: "not-found" } as const;
+    if (extra.length > 0) return { kind: "ambiguous", matches } as const;
+
+    const value = yield* svc.resolveSecret(
+      `op://${only.vaultId}/${only.itemId}/${CREDENTIAL_FIELD}`,
+    );
+    return { kind: "resolved", value } as const;
+  });
+};
 
 // ---------------------------------------------------------------------------
 // CredentialProvider — read-only, resolves op:// URIs or vault-scoped lookups.
 //
 // v2: `get(id)` receives only an opaque `ProviderItemId` — no scope. The id is
-// either a fully-qualified `op://vault/item/field` URI or a bare item id that
-// is looked up across the configured vaults in order. The plugin's stored
-// config supplies the auth + vault bindings; the provider never writes
-// (writable: false).
+// a vault-qualified `op://` ref (what `list()` hands out) or a bare item
+// id/title that must locate exactly one item across the configured vaults.
+// The plugin's stored config supplies the auth + vault bindings; the provider
+// never writes (writable: false).
 // ---------------------------------------------------------------------------
 
 const makeProvider = (
@@ -232,19 +289,32 @@ const makeProvider = (
 
   get: (id: ProviderItemId): Effect.Effect<string | null, StorageFailure> =>
     ctx.storage.getConfig().pipe(
+      // An undecodable stored config reads as "not configured" here; the
+      // settings surface reports the decode problem.
+      Effect.catchTag("OnePasswordError", () => Effect.succeed(null)),
       Effect.flatMap((config) => {
         if (!config) return Effect.succeed(null as string | null);
 
-        const [first, ...rest] = candidateSecretUris(config, id);
-        if (first === undefined) return Effect.succeed(null as string | null);
-
         return getServiceFromConfig(config, timeoutMs, preferSdk).pipe(
-          Effect.flatMap((svc) => resolveFirstCandidate(svc, first, rest)),
-          Effect.map((v): string | null => v),
-          Effect.orElseSucceed(() => null),
+          Effect.flatMap((svc) => resolveConfiguredRef(svc, config, id)),
+          // Backend unreachability degrades to "no value", matching the other
+          // providers. Ambiguity does NOT: silently picking a vault (or
+          // silently failing) hides a real conflict, so it surfaces as a
+          // typed failure with the full explanation.
+          Effect.catch(() => Effect.succeed({ kind: "not-found" } as RefResolution)),
+          Effect.flatMap(
+            (resolution): Effect.Effect<string | null, StorageError> =>
+              resolution.kind === "ambiguous"
+                ? Effect.fail(
+                    new StorageError({
+                      message: ambiguityMessage(id, resolution.matches),
+                      cause: undefined,
+                    }),
+                  )
+                : Effect.succeed(resolution.kind === "resolved" ? resolution.value : null),
+          ),
         );
       }),
-      Effect.catch(() => Effect.succeed(null as string | null)),
     ),
 
   list: (): Effect.Effect<readonly ProviderEntry[], StorageFailure> =>
@@ -257,11 +327,13 @@ const makeProvider = (
               svc.listItems(vault.id).pipe(
                 Effect.map((items) =>
                   items.map(
+                    // Vault-qualified ids: picking an entry permanently
+                    // records which vault it came from, so identically-titled
+                    // items in different vaults can never collide.
                     (item): ProviderEntry => ({
-                      id: ProviderItemId.make(item.id),
-                      // With several vaults the vault name disambiguates
-                      // identically-titled items in pickers.
-                      name: config.vaults.length > 1 ? `${item.title} (${vault.name})` : item.title,
+                      id: ProviderItemId.make(`op://${vault.id}/${item.id}`),
+                      name: item.title,
+                      group: vault.name,
                     }),
                   ),
                 ),
@@ -347,15 +419,25 @@ const makeOnePasswordExtension = (
             message: "1Password is not configured",
           });
         }
-        const [first, ...rest] = candidateSecretUris(config, uri);
-        if (first === undefined) {
+        const svc = yield* getServiceFromConfig(config, timeoutMs, preferSdk);
+        const resolution = yield* resolveConfiguredRef(svc, config, uri);
+        if (resolution.kind === "resolved") return resolution.value;
+        if (resolution.kind === "outside-vaults") {
           return yield* new OnePasswordError({
             operation: "resolve",
             message: "1Password secret URI is outside the configured vaults",
           });
         }
-        const svc = yield* getServiceFromConfig(config, timeoutMs, preferSdk);
-        return yield* resolveFirstCandidate(svc, first, rest);
+        if (resolution.kind === "ambiguous") {
+          return yield* new OnePasswordError({
+            operation: "resolve",
+            message: ambiguityMessage(uri, resolution.matches),
+          });
+        }
+        return yield* new OnePasswordError({
+          operation: "resolve",
+          message: `1Password item "${uri}" was not found in the configured vaults`,
+        });
       }),
   };
 };
