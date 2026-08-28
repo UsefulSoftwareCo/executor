@@ -36,7 +36,7 @@ const EXECUTE_SKILL_BODY = [
   '2. `const path = matches[0]?.path; if (!path) return "No matching tools found.";`',
   "3. `const details = await tools.describe.tool({ path });`",
   "4. Use `details.inputTypeScript` / `details.outputTypeScript` and `details.typeScriptDefinitions` for compact shapes.",
-  "5. Use `tools.executor.coreTools.connections.list({})` when you need live saved-connection inventory.",
+  "5. For live saved-connection inventory, call `tools.executor.coreTools.connections.list({})`; after checking `result.ok`, read `result.data.connections`.",
   "6. Call the tool: `const result = await tools.<path>(input);`",
   "",
   "## Rules",
