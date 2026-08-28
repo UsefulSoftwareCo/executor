@@ -1,7 +1,10 @@
 import { notFound } from "@tanstack/react-router";
 import { useClientPlugins } from "@executor-js/sdk/client";
 
-export function ToolkitsPluginRoute(props: { toolkitSlug?: string }) {
+export function ToolkitsPluginRoute(props: {
+  toolkitSlug?: string;
+  search?: Readonly<Record<string, unknown>>;
+}) {
   const plugins = useClientPlugins();
   const plugin = plugins.find((candidate) => candidate.id === "toolkits");
   const path = props.toolkitSlug ? `/${props.toolkitSlug}` : "/";
@@ -18,6 +21,7 @@ export function ToolkitsPluginRoute(props: { toolkitSlug?: string }) {
       params={props.toolkitSlug ? { toolkitSlug: props.toolkitSlug } : {}}
       path={path}
       pluginId={plugin.id}
+      search={props.search}
     />
   );
 }

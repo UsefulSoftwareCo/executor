@@ -18,6 +18,7 @@ import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { SidebarUpdateCard } from "@executor-js/react/components/update-card";
 import { Wordmark } from "@executor-js/react/components/wordmark";
+import { NavigationProgress } from "@executor-js/react/components/navigation-progress";
 import { ServerConnectionMenu } from "./server-connection-menu";
 
 // ── Env ─────────────────────────────────────────────────────────────────
@@ -322,6 +323,7 @@ export function Shell() {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <NavigationProgress />
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       {/* Desktop sidebar */}
       <aside className="desktop-macos-sidebar hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">

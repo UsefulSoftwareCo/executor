@@ -22,6 +22,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
+import { NavigationProgress } from "../components/navigation-progress";
 import { Wordmark } from "../components/wordmark";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
@@ -431,6 +432,7 @@ export function Shell(props: ShellProps) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <NavigationProgress />
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       {/* Desktop sidebar */}
       <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">

@@ -59,6 +59,7 @@ import { Label } from "../components/label";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { Skeleton } from "../components/skeleton";
 
 // Owner guardrail ordering: org rules are the outer guardrail (rank 0), user
 // rules are inner (rank 1). Mirrors server-side resolution where the most
@@ -378,18 +379,10 @@ export function PoliciesPage() {
       </div>
 
       {isAsyncResultLoading(policies) ? (
-        <div className="flex items-center gap-2 py-8">
-          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">Loading policies…</p>
-        </div>
+        <PoliciesSkeleton />
       ) : (
         AsyncResult.match(policies, {
-          onInitial: () => (
-            <div className="flex items-center gap-2 py-8">
-              <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">Loading policies…</p>
-            </div>
-          ),
+          onInitial: () => <PoliciesSkeleton />,
           onFailure: () => (
             <ErrorState message="Failed to load policies" onRetry={refreshPolicies} />
           ),
@@ -437,9 +430,10 @@ export function PoliciesPage() {
                   {sorted.length === 0 ? (
                     <CardStackEntry>
                       <CardStackEntryContent>
+                        <CardStackEntryTitle>No active policies</CardStackEntryTitle>
                         <CardStackEntryDescription>
-                          No policies yet. Tools fall back to their plugin's default approval
-                          behavior.
+                          Add a policy above to control whether matching tools are allowed, blocked,
+                          or require approval.
                         </CardStackEntryDescription>
                       </CardStackEntryContent>
                     </CardStackEntry>
@@ -491,6 +485,29 @@ export function PoliciesPage() {
         })
       )}
     </PageContainer>
+  );
+}
+
+function PoliciesSkeleton() {
+  return (
+    <CardStack>
+      <CardStackHeader>
+        <Skeleton className="h-4 w-32" />
+      </CardStackHeader>
+      <CardStackContent>
+        {Array.from({ length: 4 }).map((_, index) => (
+          <CardStackEntry key={index}>
+            <CardStackEntryContent>
+              <Skeleton className="h-4 w-4/5" />
+            </CardStackEntryContent>
+            <CardStackEntryActions>
+              <Skeleton className="h-5 w-20 rounded-full" />
+              <Skeleton className="size-7 rounded-md" />
+            </CardStackEntryActions>
+          </CardStackEntry>
+        ))}
+      </CardStackContent>
+    </CardStack>
   );
 }
 

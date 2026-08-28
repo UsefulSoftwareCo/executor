@@ -6,6 +6,7 @@ import { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { integrationAtom, integrationsOptimisticAtom } from "../api/atoms";
 import { ErrorState } from "../components/error-state";
+import { PageContainer } from "../components/page";
 import { Skeleton } from "../components/skeleton";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
@@ -101,9 +102,5 @@ export function ConnectIntegrationPage(props: { readonly integrationSlug: string
 }
 
 function ConnectStateFrame(props: { readonly children: React.ReactNode }) {
-  return (
-    <div className="relative min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-6 py-10 lg:px-10 lg:py-14">{props.children}</div>
-    </div>
-  );
+  return <PageContainer>{props.children}</PageContainer>;
 }

@@ -20,6 +20,7 @@ import { PageContainer, PageHeader } from "../components/page";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { Skeleton } from "../components/skeleton";
 
 // ---------------------------------------------------------------------------
 // Providers page (v2) — repurposed from the v1 Secrets page.
@@ -88,18 +89,10 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
 
       {/* Registered providers */}
       {isAsyncResultLoading(providers) ? (
-        <div className="flex items-center gap-2 py-8">
-          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">Loading providers…</p>
-        </div>
+        <ProvidersSkeleton />
       ) : (
         AsyncResult.match(providers, {
-          onInitial: () => (
-            <div className="flex items-center gap-2 py-8">
-              <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">Loading providers…</p>
-            </div>
-          ),
+          onInitial: () => <ProvidersSkeleton />,
           onFailure: () => (
             <ErrorState message="Failed to load providers" onRetry={refreshProviders} />
           ),
@@ -110,8 +103,9 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
                 {value.length === 0 ? (
                   <CardStackEntry>
                     <CardStackEntryContent>
+                      <CardStackEntryTitle>No providers configured</CardStackEntryTitle>
                       <CardStackEntryDescription>
-                        No credential providers are registered.
+                        Providers appear here when a connection needs a place to store credentials.
                       </CardStackEntryDescription>
                     </CardStackEntryContent>
                   </CardStackEntry>
@@ -144,5 +138,28 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
         })
       )}
     </PageContainer>
+  );
+}
+
+function ProvidersSkeleton() {
+  return (
+    <CardStack>
+      <CardStackHeader>
+        <Skeleton className="h-4 w-40" />
+      </CardStackHeader>
+      <CardStackContent>
+        {Array.from({ length: 2 }).map((_, index) => (
+          <CardStackEntry key={index}>
+            <CardStackEntryContent>
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="mt-2 h-3 w-3/5" />
+            </CardStackEntryContent>
+            <CardStackEntryActions>
+              <Skeleton className="h-5 w-16 rounded-full" />
+            </CardStackEntryActions>
+          </CardStackEntry>
+        ))}
+      </CardStackContent>
+    </CardStack>
   );
 }

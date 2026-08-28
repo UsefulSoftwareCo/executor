@@ -55,6 +55,7 @@ import {
 } from "../lib/health-display";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { EmptyState } from "../components/empty-state";
 
 // ---------------------------------------------------------------------------
 // Admin · Users — the tenant-wide operator view.
@@ -574,26 +575,25 @@ export function AdminUsersPage() {
 
               if (rows.length === 0) {
                 return (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8">
-                    <h2 className="text-base font-semibold text-foreground">
-                      {offset === 0 ? "No users yet" : "No users on this page"}
-                    </h2>
-                    <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                      {offset === 0
+                  <EmptyState
+                    title={offset === 0 ? "No users yet" : "No users on this page"}
+                    description={
+                      offset === 0
                         ? "A user appears here the first time they reach this workspace or connect an account."
-                        : "Go back a page to see this workspace's users."}
-                    </p>
-                    {offset > 0 && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-4"
-                        onClick={() => setOffset(Math.max(0, offset - ADMIN_USERS_PAGE_SIZE))}
-                      >
-                        Previous
-                      </Button>
-                    )}
-                  </div>
+                        : "Go back a page to see this workspace's users."
+                    }
+                    action={
+                      offset > 0 ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setOffset(Math.max(0, offset - ADMIN_USERS_PAGE_SIZE))}
+                        >
+                          Previous
+                        </Button>
+                      ) : undefined
+                    }
+                  />
                 );
               }
 

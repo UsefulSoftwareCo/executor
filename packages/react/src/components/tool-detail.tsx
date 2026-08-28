@@ -26,6 +26,7 @@ import { ExpandableCodeBlock } from "./expandable-code-block";
 import { ToolRunPanel } from "./tool-run-panel";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 import { CopyButton } from "./copy-button";
+import { Skeleton } from "./skeleton";
 import { ChevronRight, ChevronDownIcon } from "lucide-react";
 import { cn } from "../lib/utils";
 import { toPolicyPattern } from "../lib/policy-pattern";
@@ -250,6 +251,9 @@ export function ToolDetail(props: {
             />
           </div>
           {data?.description && <ToolDescription description={data.description} />}
+          {!AsyncResult.isSuccess(toolContract) && (
+            <Skeleton className="mt-1.5 h-5 w-2/3 max-w-2xl" />
+          )}
 
           {/* Tabs */}
           <div className="mt-3 flex gap-4" role="tablist">
@@ -312,7 +316,7 @@ export function ToolDetail(props: {
           </div>
         ) : (
           AsyncResult.match(toolContract, {
-            onInitial: () => <div className="p-5 text-sm text-muted-foreground">Loading…</div>,
+            onInitial: () => <ToolDetailSkeleton />,
             onFailure: () => (
               <div className="p-5 text-sm text-destructive">Something went wrong</div>
             ),
@@ -357,6 +361,25 @@ export function ToolDetail(props: {
           })
         )}
       </div>
+    </div>
+  );
+}
+
+function ToolDetailSkeleton() {
+  return (
+    <div className="space-y-5 p-5">
+      {["Parameters", "Response"].map((title) => (
+        <div key={title} className="overflow-hidden rounded-lg border border-border/50 bg-card">
+          <div className="border-b border-border/50 px-4 py-3">
+            <Skeleton className="h-4 w-24" />
+          </div>
+          <div className="space-y-3 p-4">
+            <Skeleton className="h-3 w-4/5" />
+            <Skeleton className="h-3 w-3/5" />
+            <Skeleton className="h-16 w-full rounded-md" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

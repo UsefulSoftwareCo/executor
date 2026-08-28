@@ -59,6 +59,10 @@ import { Skeleton } from "@executor-js/react/components/skeleton";
 import { ToolDetail, ToolDetailEmpty } from "@executor-js/react/components/tool-detail";
 import { ToolTree, type ToolSummary } from "@executor-js/react/components/tool-tree";
 import { cn } from "@executor-js/react/lib/utils";
+import {
+  toolSelectionFromSearch,
+  toolSelectionSearch,
+} from "@executor-js/react/lib/integration-detail-tabs";
 
 import {
   ToolkitsApi,
@@ -600,17 +604,23 @@ function AddToolkitCard(props: { owner: Owner; showOwnerLabels: boolean; onClick
       variant="ghost"
       onClick={props.onClick}
       aria-label={scopeLabel ? `Add ${scopeLabel} toolkit` : "Add toolkit"}
-      className="group flex h-auto min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-0 text-muted-foreground transition-[border-color,background-color,box-shadow,color] hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
+      className="group flex h-auto min-h-36 min-w-0 flex-col self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-4 text-muted-foreground transition-[border-color,background-color,box-shadow,color] hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
       style={toolkitCardStyle}
     >
       <span
         className={cn(
-          "flex size-12 items-center justify-center rounded-md border transition-[border-color,background-color,color,transform]",
+          "flex size-10 items-center justify-center rounded-md border transition-[border-color,background-color,color,transform]",
           neutralToolkitIconClass,
           "group-hover:scale-105",
         )}
       >
         <PlusIcon className="size-6" />
+      </span>
+      <span className="mt-3 text-sm font-semibold text-foreground">
+        Create {scopeLabel ? `${scopeLabel.toLowerCase()} ` : ""}toolkit
+      </span>
+      <span className="mt-1 max-w-48 px-4 text-center text-xs leading-5 text-muted-foreground">
+        Group connections and tools for a focused workspace.
       </span>
     </Button>
   );
@@ -1037,6 +1047,8 @@ function ToolkitWorkspace(props: {
   policies: readonly ToolkitPolicyResponse[];
   connections: readonly ToolkitConnectionResponse[];
   tools: readonly ToolRow[];
+  selectedToolId: string | null;
+  onSelectTool: (toolId: string) => void;
   integrations: readonly Integration[];
   integrationPlugins: readonly IntegrationPlugin[];
   mcpUrl: string;
@@ -1048,7 +1060,6 @@ function ToolkitWorkspace(props: {
   onClearPolicy: (pattern: string) => Promise<void> | void;
 }) {
   const [addOpen, setAddOpen] = useState(false);
-  const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const visibleTools = useMemo(
     () => props.tools.filter((tool) => toolCanAppearInToolkit(props.toolkit, tool)),
     [props.toolkit, props.tools],
@@ -1116,11 +1127,11 @@ function ToolkitWorkspace(props: {
       }),
     [accessPolicies, configuredTools],
   );
-  const selectedTool = selectedToolId
-    ? (configuredTools.find((tool) => toolMatchId(tool) === selectedToolId) ?? null)
+  const selectedTool = props.selectedToolId
+    ? (configuredTools.find((tool) => toolMatchId(tool) === props.selectedToolId) ?? null)
     : null;
   const selectedToolPolicy = selectedTool
-    ? (toolkitTools.find((tool) => tool.id === selectedToolId)?.policy ?? null)
+    ? (toolkitTools.find((tool) => tool.id === props.selectedToolId)?.policy ?? null)
     : null;
 
   return (
@@ -1137,10 +1148,10 @@ function ToolkitWorkspace(props: {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ToolkitToolsPanel
           tools={toolkitTools}
-          selectedToolId={selectedToolId}
+          selectedToolId={props.selectedToolId}
           policies={accessPolicies}
           onManageConnections={() => setAddOpen(true)}
-          onSelectTool={setSelectedToolId}
+          onSelectTool={props.onSelectTool}
           onSetPolicy={(pattern, action) => void props.onSetPolicy(pattern, action)}
           onClearPolicy={(pattern) => void props.onClearPolicy(pattern)}
         />
@@ -1291,6 +1302,8 @@ function ToolkitDetailView(props: {
   toolkit: ToolkitResponse;
   showOwnerLabels: boolean;
   tools: readonly ToolRow[];
+  selectedToolId: string | null;
+  onSelectTool: (toolId: string) => void;
   integrations: readonly Integration[];
   integrationPlugins: readonly IntegrationPlugin[];
   orgSlug?: string;
@@ -1359,6 +1372,8 @@ function ToolkitDetailView(props: {
     <ToolkitWorkspace
       toolkit={props.toolkit}
       showOwnerLabels={props.showOwnerLabels}
+      selectedToolId={props.selectedToolId}
+      onSelectTool={props.onSelectTool}
       policies={policyRows}
       connections={connectionRows}
       tools={props.tools}
@@ -1386,6 +1401,7 @@ export function ToolkitsPage(props: PluginPageProps) {
   const doCreateToolkit = useAtomSet(createToolkit, { mode: "promiseExit" });
   const doRemoveToolkit = useAtomSet(removeToolkit, { mode: "promiseExit" });
   const selectedToolkitSlug = props.params.toolkitSlug ?? null;
+  const selectedToolId = toolSelectionFromSearch(props.search);
 
   const toolkitRows = AsyncResult.isSuccess(toolkits) ? toolkits.value.toolkits : [];
   const selectedToolkit =
@@ -1403,6 +1419,14 @@ export function ToolkitsPage(props: PluginPageProps) {
     navigate({
       to: "/{-$orgSlug}/toolkits",
     });
+  const navigateToSelectedTool = (toolId: string | null) => {
+    if (selectedToolkitSlug === null) return;
+    void navigate({
+      to: "/{-$orgSlug}/toolkits/$toolkitSlug",
+      params: { toolkitSlug: selectedToolkitSlug },
+      search: toolSelectionSearch(toolId),
+    });
+  };
 
   const createToolkitHandler = async (input: { owner: Owner; name: string }) => {
     await doCreateToolkit({
@@ -1456,6 +1480,8 @@ export function ToolkitsPage(props: PluginPageProps) {
             toolkit={selectedToolkit}
             showOwnerLabels={ownerDisplay.showOwnerLabels}
             tools={toolRows}
+            selectedToolId={selectedToolId}
+            onSelectTool={navigateToSelectedTool}
             integrations={integrationRows}
             integrationPlugins={integrationPlugins}
             orgSlug={organizationSlug ?? undefined}

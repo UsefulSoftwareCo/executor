@@ -10,6 +10,8 @@ import { CopyButton } from "@executor-js/react/components/copy-button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
+import { PageContainer, PageHeader } from "@executor-js/react/components/page";
+import { Skeleton } from "@executor-js/react/components/skeleton";
 import { useExecutorDocumentTitle } from "@executor-js/react/lib/document-title";
 import {
   orgMembersAtom,
@@ -32,18 +34,13 @@ const ROLES = ["member", "admin"] as const;
 function AdminPage() {
   useExecutorDocumentTitle("Admin");
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-3xl flex-col gap-10 px-6 py-10 lg:px-8 lg:py-14">
-        <header className="space-y-1">
-          <h1 className="font-display text-3xl tracking-tight text-foreground">Admin</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage members and invite links for this instance.
-          </p>
-        </header>
+    <PageContainer>
+      <PageHeader title="Admin" description="Manage members and invite links for this instance." />
+      <div className="space-y-10">
         <MembersSection />
         <InvitesSection />
       </div>
-    </div>
+    </PageContainer>
   );
 }
 
@@ -76,7 +73,7 @@ function MembersSection() {
     <section className="space-y-3">
       <h2 className="text-sm font-medium text-foreground">Members</h2>
       {AsyncResult.match(result, {
-        onInitial: () => <Notice>Loading members…</Notice>,
+        onInitial: () => <MembersSkeleton />,
         onFailure: () => <Notice tone="destructive">Admin access required.</Notice>,
         onSuccess: ({ value }) => (
           <div className="divide-y divide-border rounded-lg border border-border">
@@ -187,7 +184,7 @@ function InvitesSection() {
       </div>
 
       {AsyncResult.match(result, {
-        onInitial: () => <Notice>Loading invites…</Notice>,
+        onInitial: () => <InvitesSkeleton />,
         onFailure: () => <Notice tone="destructive">Admin access required.</Notice>,
         onSuccess: ({ value }) => {
           const pending = value.invites.filter((i) => !i.usedAt);
@@ -237,6 +234,37 @@ function InvitesSection() {
         },
       })}
     </section>
+  );
+}
+
+function MembersSkeleton() {
+  return (
+    <div className="divide-y divide-border rounded-lg border border-border">
+      {[0, 1, 2].map((row) => (
+        <div key={row} className="flex items-center gap-3 p-3">
+          <Skeleton className="size-8 rounded-full" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3.5 w-40" />
+            <Skeleton className="h-3 w-56 max-w-full" />
+          </div>
+          <Skeleton className="h-8 w-20 rounded-md" />
+          <Skeleton className="h-8 w-14 rounded-md" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InvitesSkeleton() {
+  return (
+    <div className="divide-y divide-border rounded-lg border border-border">
+      <div className="flex items-center gap-3 p-3">
+        <Skeleton className="h-3.5 w-28" />
+        <Skeleton className="h-3.5 w-32 flex-1" />
+        <Skeleton className="size-8 rounded-md" />
+        <Skeleton className="h-8 w-14 rounded-md" />
+      </div>
+    </div>
   );
 }
 

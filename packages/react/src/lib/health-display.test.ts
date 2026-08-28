@@ -1,6 +1,32 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { worstHealthStatus } from "./health-display";
+import {
+  HEALTH_INDICATOR_COLOR,
+  HEALTH_STATUS_LABEL,
+  healthStatusForDisplay,
+  worstHealthStatus,
+} from "./health-display";
+
+describe("healthStatusForDisplay", () => {
+  it("keeps a stale healthy verdict neutral while probing", () => {
+    const status = healthStatusForDisplay("healthy", true);
+
+    expect(status).toBe("unknown");
+    expect(HEALTH_STATUS_LABEL[status]).toBe("Unchecked");
+    expect(HEALTH_INDICATOR_COLOR[status].dot).not.toBe(HEALTH_INDICATOR_COLOR.healthy.dot);
+  });
+
+  it("keeps a persisted expired verdict visible while probing", () => {
+    const status = healthStatusForDisplay("expired", false);
+
+    expect(status).toBe("expired");
+    expect(HEALTH_STATUS_LABEL[status]).toBe("Expired");
+  });
+
+  it("preserves a concrete healthy verdict after loading completes", () => {
+    expect(healthStatusForDisplay("healthy", false)).toBe("healthy");
+  });
+});
 
 describe("worstHealthStatus", () => {
   it("orders expired above degraded above healthy", () => {

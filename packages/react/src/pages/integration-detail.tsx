@@ -32,7 +32,7 @@ import {
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
-import { AccountsSection } from "../components/accounts-section";
+import { AccountsSection, AccountsSkeleton } from "../components/accounts-section";
 import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
@@ -46,6 +46,7 @@ import { isAsyncResultLoading } from "../lib/async-result";
 import { useConnectionsHealth } from "../lib/use-connection-health";
 import {
   integrationDetailInternalTabFromSearch,
+  toolSelectionSearch,
   type IntegrationDetailInternalTab,
   type IntegrationDetailSearchTab,
 } from "../lib/integration-detail-tabs";
@@ -68,6 +69,7 @@ type ToolRow = {
 export function IntegrationDetailPage(props: {
   namespace: string;
   tab?: IntegrationDetailSearchTab;
+  tool?: string;
   /** Route-validated `addAccount=1`: open the add-connection flow on arrival.
    *  Set by the `/connect/<slug>` deep link, which navigates client-side and so
    *  cannot rely on the raw location search below. */
@@ -105,7 +107,7 @@ export function IntegrationDetailPage(props: {
     };
   }, [refreshTools, refreshIntegrations]);
 
-  const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  const [selectedToolId, setSelectedToolId] = useState<string | null>(props.tool ?? null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -129,10 +131,14 @@ export function IntegrationDetailPage(props: {
     setActiveTab(integrationDetailInternalTabFromSearch(props.tab));
   }, [namespace, props.tab]);
 
+  useEffect(() => {
+    setSelectedToolId(props.tool ?? null);
+  }, [namespace, props.tool]);
+
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
   useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
-  const currentTab = isBuiltInIntegration ? "tools" : activeTab;
+  const currentTab = isBuiltInIntegration || selectedToolId !== null ? "tools" : activeTab;
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
   const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
@@ -457,15 +463,44 @@ export function IntegrationDetailPage(props: {
     setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
   };
 
+  if (isAsyncResultLoading(integration) && !integrationData) {
+    return <IntegrationDetailPageSkeleton />;
+  }
+
   const handleTabChange = (value: string) => {
-    const nextTab = value === "tools" ? "tools" : "accounts";
+    const nextTab: IntegrationDetailInternalTab = value === "tools" ? "tools" : "accounts";
     setActiveTab(nextTab);
+    if (nextTab === "accounts") setSelectedToolId(null);
     void navigate({
       to: "/{-$orgSlug}/integrations/$namespace",
       params: { namespace },
-      search: {
+      search: (previous: {
+        readonly addAccount?: unknown;
+        readonly tab?: IntegrationDetailSearchTab;
+        readonly tool?: string;
+      }) => ({
+        ...previous,
         tab: nextTab,
-      },
+        ...toolSelectionSearch(nextTab === "tools" ? selectedToolId : null),
+      }),
+    });
+  };
+
+  const handleSelectTool = (toolId: string) => {
+    setSelectedToolId(toolId);
+    setActiveTab("tools");
+    void navigate({
+      to: "/{-$orgSlug}/integrations/$namespace",
+      params: { namespace },
+      search: (previous: {
+        readonly addAccount?: unknown;
+        readonly tab?: IntegrationDetailSearchTab;
+        readonly tool?: string;
+      }) => ({
+        ...previous,
+        tab: "tools" as const,
+        ...toolSelectionSearch(toolId),
+      }),
     });
   };
 
@@ -474,11 +509,11 @@ export function IntegrationDetailPage(props: {
       {/* Header bar */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <h2 className="truncate text-sm font-semibold text-foreground">
+          <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">
             {integrationData?.name || namespace}
           </h2>
           {AsyncResult.isSuccess(tools) && (
-            <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
               {distinctToolCount} {distinctToolCount === 1 ? "tool" : "tools"}
             </span>
           )}
@@ -553,7 +588,13 @@ export function IntegrationDetailPage(props: {
         {!isBuiltInIntegration && (
           <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
             {editPlugin?.accounts ? (
-              <Suspense fallback={<AccountsSkeleton />}>
+              <Suspense
+                fallback={
+                  <div className="mx-auto max-w-3xl px-6 py-8 lg:px-8">
+                    <AccountsSkeleton />
+                  </div>
+                }
+              >
                 <editPlugin.accounts
                   integrationId={namespace}
                   integrationName={integrationData?.name || namespace}
@@ -561,7 +602,7 @@ export function IntegrationDetailPage(props: {
                 />
               </Suspense>
             ) : (
-              <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
+              <div className="mx-auto max-w-3xl space-y-8 px-6 py-8 lg:px-8">
                 <AccountsSection
                   integration={slug}
                   integrationName={integrationData?.name || namespace}
@@ -595,7 +636,7 @@ export function IntegrationDetailPage(props: {
                     <ToolTree
                       tools={integrationTools}
                       selectedToolId={selectedToolId}
-                      onSelect={setSelectedToolId}
+                      onSelect={handleSelectTool}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
                       policies={sortedPolicies}
@@ -728,17 +769,16 @@ function IntegrationDetailSkeleton() {
   );
 }
 
-function AccountsSkeleton() {
+function IntegrationDetailPageSkeleton() {
   return (
-    <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
-      <div className="space-y-3">
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-16 w-full rounded-lg" />
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-12 shrink-0 items-center border-b border-border bg-background/95 px-4">
+        <Skeleton className="h-5 w-44" />
       </div>
-      <div className="space-y-3">
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-20 w-full rounded-lg" />
+      <div className="shrink-0 border-b border-border/60 px-4 py-2">
+        <Skeleton className="h-8 w-24 rounded-md" />
       </div>
+      <IntegrationDetailSkeleton />
     </div>
   );
 }

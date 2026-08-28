@@ -294,3 +294,26 @@
     opacity: 0.25;
   }
 }
+
+@keyframes navigation-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.navigation-progress-bar {
+  animation: navigation-progress 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navigation-progress-bar {
+    animation: none;
+    transform: translateX(50%);
+  }
+}

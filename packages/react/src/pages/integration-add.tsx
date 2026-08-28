@@ -5,6 +5,7 @@ import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { PageContainer } from "../components/page";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -26,32 +27,30 @@ export function AddIntegrationPage(props: {
 
   if (!plugin) {
     return (
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-4xl px-6 py-10 lg:px-10 lg:py-14">
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-20">
-            <p className="text-sm font-medium text-foreground/70 mb-1">
-              Unknown integration type: {pluginKey}
-            </p>
-            <p className="text-xs text-muted-foreground mb-5">
-              This integration plugin is not registered.
-            </p>
-            <Link
-              to="/{-$orgSlug}"
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              Back to integrations
-            </Link>
-          </div>
+      <PageContainer>
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-20">
+          <p className="mb-1 text-sm font-medium text-foreground/70">
+            Unknown integration type: {pluginKey}
+          </p>
+          <p className="mb-5 text-xs text-muted-foreground">
+            This integration plugin is not registered.
+          </p>
+          <Link
+            to="/{-$orgSlug}"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Back to integrations
+          </Link>
         </div>
-      </div>
+      </PageContainer>
     );
   }
 
   const AddComponent = plugin.add;
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex min-h-full max-w-4xl flex-col px-6 py-10 lg:px-10 lg:py-14">
+    <PageContainer>
+      <div className="flex min-h-full flex-col">
         <Suspense fallback={null}>
           <AddComponent
             initialUrl={url}
@@ -80,6 +79,6 @@ export function AddIntegrationPage(props: {
           />
         </Suspense>
       </div>
-    </div>
+    </PageContainer>
   );
 }

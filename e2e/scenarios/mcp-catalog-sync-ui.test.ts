@@ -61,7 +61,7 @@ scenario(
         // typing in the filter box expands every match, so it is both the
         // reveal mechanism and a search the video shows off.
         const filterTools = async (query: string) => {
-          const filter = page.getByPlaceholder(/^Filter \d+ tools/);
+          const filter = page.getByPlaceholder("Filter tools…");
           await filter.waitFor();
           await filter.fill(query);
         };

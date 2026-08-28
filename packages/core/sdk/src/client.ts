@@ -54,6 +54,8 @@ export interface PluginPageProps {
   readonly path: string;
   /** The plugin id from `/plugins/$pluginId/...`. */
   readonly pluginId: string;
+  /** Validated search parameters from the host route, when provided. */
+  readonly search?: Readonly<Record<string, unknown>>;
 }
 
 export interface PageDecl {

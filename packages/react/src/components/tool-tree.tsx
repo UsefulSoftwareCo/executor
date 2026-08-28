@@ -194,6 +194,25 @@ const collectGroupPaths = (node: TreeNode, acc: Set<string>): void => {
   }
 };
 
+const collectTopLevelGroupPaths = (node: TreeNode, acc: Set<string>): void => {
+  for (const child of node.children.values()) {
+    if (child.children.size > 0) acc.add(child.path);
+  }
+};
+
+/**
+ * Expand small trees completely so a user can orient and reach a tool without
+ * a ladder of clicks. Large trees open only their first level: enough context
+ * to explain the hierarchy without filling the pane with hundreds of rows.
+ */
+export const defaultExpandedPaths = (tools: readonly ToolSummary[]): ReadonlySet<string> => {
+  const tree = buildTree(tools);
+  const paths = new Set<string>();
+  if (countLeaves(tree) <= 12) collectGroupPaths(tree, paths);
+  else collectTopLevelGroupPaths(tree, paths);
+  return paths;
+};
+
 const flattenTree = (
   node: TreeNode,
   depth: number,
@@ -404,7 +423,7 @@ export function ToolTree(props: {
           ref={searchRef}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Filter ${tools.length} tools…`}
+          placeholder="Filter tools…"
           aria-label="Filter tools"
           className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-xs shadow-none outline-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
         />
@@ -488,8 +507,10 @@ function ToolTreeBody(props: {
     selectedRowRef,
   } = props;
   const [manualOpen, setManualOpen] = useState<Set<string>>(() => new Set());
+  const [manualClosed, setManualClosed] = useState<Set<string>>(() => new Set());
 
   const tree = useMemo(() => buildTree(tools), [tools]);
+  const defaultOpen = useMemo(() => defaultExpandedPaths(tools), [tools]);
 
   // When searching, expand everything so matches are visible.
   // Also auto-expand groups that contain the selected tool.
@@ -499,7 +520,9 @@ function ToolTreeBody(props: {
       collectGroupPaths(tree, all);
       return all;
     }
-    const set = new Set(manualOpen);
+    const set = new Set(defaultOpen);
+    for (const path of manualOpen) set.add(path);
+    for (const path of manualClosed) set.delete(path);
     if (selectedToolId) {
       const parts = selectedToolId.split(".");
       // Progressively add ancestor paths (best-effort, based on dotted name).
@@ -510,7 +533,7 @@ function ToolTreeBody(props: {
       }
     }
     return set;
-  }, [tree, manualOpen, selectedToolId, terms.length]);
+  }, [tree, defaultOpen, manualOpen, manualClosed, selectedToolId, terms.length]);
 
   const rows = useMemo(() => {
     const acc: Row[] = [];
@@ -519,10 +542,17 @@ function ToolTreeBody(props: {
   }, [tree, openSet]);
 
   const toggleGroup = (path: string) => {
+    const isOpen = openSet.has(path);
     setManualOpen((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
+      if (isOpen) next.delete(path);
       else next.add(path);
+      return next;
+    });
+    setManualClosed((prev) => {
+      const next = new Set(prev);
+      if (isOpen) next.add(path);
+      else next.delete(path);
       return next;
     });
   };
