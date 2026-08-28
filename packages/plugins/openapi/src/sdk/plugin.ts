@@ -661,6 +661,7 @@ export const openApiPlugin = definePlugin<
       const adapter = yield* resolveSpecFormatAdapter(
         options?.specFormats ?? [],
         config.specFormat,
+        config.spec.kind === "url" ? config.spec.url : undefined,
       );
       if (adapter) {
         if (config.spec.kind !== "url") {
@@ -782,6 +783,7 @@ export const openApiPlugin = definePlugin<
           const adapter = yield* resolveSpecFormatAdapter(
             options?.specFormats ?? [],
             config.specFormat,
+            config.spec.kind === "url" ? config.spec.url : undefined,
           );
           const derivedIdentity =
             adapter?.deriveIdentity && resolved.document

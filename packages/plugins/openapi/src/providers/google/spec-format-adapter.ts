@@ -6,6 +6,7 @@ import { type DerivedIdentity, type SpecFormatAdapter } from "../../sdk/spec-for
 import {
   convertGoogleDiscoveryBundleToOpenApi,
   fetchGoogleDiscoveryDocument,
+  isGoogleDiscoveryUrl,
   normalizeGoogleDiscoveryUrl,
 } from "./discovery";
 
@@ -47,6 +48,7 @@ export const deriveGoogleDiscoveryIdentity = (doc: unknown): DerivedIdentity | n
 
 export const googleDiscoveryAdapter: SpecFormatAdapter = {
   id: "google-discovery",
+  detectsUrl: isGoogleDiscoveryUrl,
   fetch: (input) =>
     Effect.gen(function* () {
       const documents = yield* Effect.forEach(

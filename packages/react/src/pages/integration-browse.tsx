@@ -475,6 +475,29 @@ export function IntegrationBrowsePage() {
   );
 
   // --- Preset rows ---------------------------------------------------------
+
+  // Registry identity for services a preset also offers. A preset row and a
+  // catalog row for the same product must not read as two different kinds of
+  // thing — the row shows the registry's identity (the domain) like every
+  // other result, and the preset only supplies the better add flow. Keyed by
+  // the rendered title, the same match the dedupe below uses.
+  const catalogIdentityByTitle = useMemo(() => {
+    const map = new Map<string, { readonly domain: string }>();
+    for (const entry of catalogEntries) {
+      const pretty = entry.name ?? domainDisplayName(entry.domain);
+      const surfaces =
+        entry.surfaces && entry.surfaces.length > 0
+          ? entry.surfaces
+          : entry.kinds.map((kind) => ({ kind }));
+      for (const surface of surfaces) {
+        const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
+        const title = withSurface(pretty, word).toLowerCase();
+        if (!map.has(title)) map.set(title, { domain: entry.domain });
+      }
+    }
+    return map;
+  }, [catalogEntries]);
+
   const presetRows = useMemo<readonly Row[]>(() => {
     const rows: Row[] = [];
     for (const entry of allPresets) {
@@ -485,10 +508,13 @@ export function IntegrationBrowsePage() {
         if (!corpus.includes(text)) continue;
       }
       const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
+      const title = withSurface(entry.preset.name, surface);
+      const identity = catalogIdentityByTitle.get(title.toLowerCase());
       rows.push({
         key: `preset-${entry.pluginKey}-${entry.preset.id}`,
         testId: `preset-${entry.preset.id}`,
-        title: withSurface(entry.preset.name, surface),
+        title,
+        ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
         onSelect: () => pickPreset(entry),
@@ -497,7 +523,7 @@ export function IntegrationBrowsePage() {
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, isAdded]);
+  }, [allPresets, kind, text, pickPreset, isAdded, catalogIdentityByTitle]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
