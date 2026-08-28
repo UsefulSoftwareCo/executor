@@ -224,6 +224,13 @@ export function OAuthClientForm(props: {
     mode: "promiseExit",
   });
 
+  // Blank means "send no RFC 8707 resource": persist null so every OAuth
+  // request (authorize, exchange, refresh, client-credentials) omits the
+  // parameter. Clearing must stick — no endpoint is re-derived over an
+  // intentional absence (Entra v2 rejects `resource`, #1789).
+  const normalizedResource =
+    resource == null || resource.trim().length === 0 ? null : resource.trim();
+
   const canSubmit = canSubmitOAuthClientForm({
     submitting,
     name,
@@ -250,7 +257,7 @@ export function OAuthClientForm(props: {
     authorizationUrl,
     tokenUrl,
     issuer: discoveredIssuer,
-    resource,
+    resource: normalizedResource,
   });
   const showAppSetup =
     appSetup !== undefined && grant === "authorization_code" && !showAutoRegister;
@@ -303,7 +310,7 @@ export function OAuthClientForm(props: {
         registrationEndpoint: registrationEndpoint.trim(),
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
-        resource,
+        resource: normalizedResource,
         // DCR sends the integration's declared scopes, or the discovered set when
         // none are declared, to the AS at registration (the app stores none).
         scopes: [...registrationScopes(declaredScopes, discoveredScopes)],
@@ -337,7 +344,7 @@ export function OAuthClientForm(props: {
         grant,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
-        resource,
+        resource: normalizedResource,
         // Editing preserves the app's already-recorded origin (via
         // `intentIntegration`, passed verbatim by the caller); a fresh
         // registration from an integration's dialog stamps recorded intent.
@@ -609,6 +616,26 @@ export function OAuthClientForm(props: {
               placeholder="https://issuer.example.com/token"
               value={tokenUrl}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTokenUrl(e.target.value)}
+              className="font-mono"
+            />
+          </div>
+
+          {/* RFC 8707 resource indicator. Prefilled for MCP servers; the field
+              exists so a user can CLEAR it — some authorization servers
+              (Microsoft Entra v2) reject requests that carry `resource`, and a
+              cleared value persists as "no resource" on every OAuth request. */}
+          <div className="space-y-1.5">
+            <Label htmlFor="oauth-resource" className="text-xs text-muted-foreground">
+              Resource indicator
+              <span className="font-normal text-muted-foreground/70">
+                optional — leave empty if the server rejects the resource parameter
+              </span>
+            </Label>
+            <Input
+              id="oauth-resource"
+              placeholder="https://mcp.example.com/mcp"
+              value={resource ?? ""}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResource(e.target.value)}
               className="font-mono"
             />
           </div>
