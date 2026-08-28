@@ -1,5 +1,25 @@
 # executor
 
+## 1.6.2
+
+### Patch Changes
+
+- [#1802](https://github.com/UsefulSoftwareCo/executor/pull/1802) [`2afb6e8`](https://github.com/UsefulSoftwareCo/executor/commit/2afb6e86ddf081afb8a246d76291a7ae668e05f4) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Concurrent API requests no longer share one database provider build**
+
+  Every HTTP request gets its own database connection, opened when the request fiber's scope opens and closed when it closes. The middleware that builds a request's execution stack, however, captures the boot fiber's context once at layer-construction time and re-applies it to every request. A captured context carries Effect's current memoization map, and re-applying it replaced the fresh per-request map with the boot one — which every in-flight request in the isolate shares.
+
+  The per-request stack build then memoized itself there. Sequential requests still rebuilt, because the memo entry is released once the request that built it finishes, so the problem was confined to requests that overlap: the second request reused the first one's stack build, and with it the first one's database connection. A request could therefore issue queries on a connection it did not own, and lose that connection mid-flight when the owner finished and closed it — typically surfacing as a failed read after a slow outbound call, on a request that had already read successfully.
+
+  The stack is now built with a request-local memoization scope, so overlapping requests each build their own stack over their own connection. The captured context still carries the long-lived services it exists to carry. The two other per-request provider builds that ran under a captured context — the account provider and the admin-users provider — are built the same way, for the same reason.
+
+- [#1807](https://github.com/UsefulSoftwareCo/executor/pull/1807) [`78311a1`](https://github.com/UsefulSoftwareCo/executor/commit/78311a1ce506705a2420239fd96823203a9a1374) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Desktop: restore the macOS signing entitlements and app icon that were accidentally removed from the build inputs, and fail fast at PR time and before publishing when any configured build resource is missing. The v1.6.1 desktop build could not be signed; this release supersedes it.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/runtime-quickjs@1.6.2
+  - @executor-js/local@1.6.2
+  - @executor-js/api@1.4.65
+
 ## 1.6.1
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @executor-js/plugin-graphql
 
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/config@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/react@1.4.65
+
 ## 1.6.1
 
 ### Patch Changes
