@@ -6,7 +6,8 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Ref } from "effect";
+import { Cause, Effect, Exit, Ref, Schema } from "effect";
+import type * as Tracer from "effect/Tracer";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -34,7 +35,10 @@ interface TokenCall {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: URLSearchParams;
+  readonly jsonBody: unknown;
 }
+
+const decodeJsonBody = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 type TokenHandler = (call: TokenCall) => HttpServerResponse.HttpServerResponse;
 
@@ -52,6 +56,9 @@ const serveTokenEndpoint = (handler: TokenHandler) =>
           url: request.url ?? "/",
           headers: request.headers,
           body: new URLSearchParams(bodyText),
+          jsonBody: request.headers["content-type"]?.startsWith("application/json")
+            ? decodeJsonBody(bodyText)
+            : null,
         };
         yield* Ref.update(calls, (all) => [...all, call]);
         return handler(call);
@@ -102,6 +109,45 @@ const tokenResponse =
   (body: unknown): TokenHandler =>
   () =>
     json(200, body);
+
+/** Records each span's attributes and its ending exit, so a test can assert on
+ *  exactly what telemetry would export for the token-request span. */
+interface RecordedSpan {
+  readonly attributes: Map<string, unknown>;
+  endExit?: unknown;
+}
+
+const makeRecordingTracer = (spans: Map<string, RecordedSpan>): Tracer.Tracer => ({
+  span: (options) => {
+    const record: RecordedSpan = { attributes: new Map() };
+    spans.set(options.name, record);
+    let status: Tracer.SpanStatus = { _tag: "Started", startTime: options.startTime };
+    return {
+      _tag: "Span",
+      name: options.name,
+      spanId: "0000000000000001",
+      traceId: "00000000000000000000000000000001",
+      parent: options.parent,
+      annotations: options.annotations,
+      get status() {
+        return status;
+      },
+      attributes: record.attributes,
+      links: options.links,
+      sampled: options.sampled,
+      kind: options.kind,
+      end: (endTime, exit) => {
+        record.endExit = exit;
+        status = { _tag: "Ended", startTime: options.startTime, endTime, exit };
+      },
+      attribute: (key, value) => {
+        record.attributes.set(key, value);
+      },
+      event: () => undefined,
+      addLinks: () => undefined,
+    };
+  },
+});
 
 const tokenResponseFetch =
   (body: unknown): typeof globalThis.fetch =>
@@ -260,6 +306,56 @@ describe("buildAuthorizationUrl", () => {
 });
 
 describe("exchangeAuthorizationCode", () => {
+  it.effect("supports JSON token exchange with HTTP Basic client authentication", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          clientAuth: "basic",
+          requestFormat: "json",
+        });
+        const call = (yield* calls)[0]!;
+        expect(call.headers["content-type"]).toBe("application/json");
+        expect(call.headers["authorization"]).toBe("Basic Y2lkOmNzZWNyZXQ=");
+        expect(call.jsonBody).toEqual({
+          grant_type: "authorization_code",
+          code: "abc",
+          redirect_uri: "https://app.example.com/cb",
+          code_verifier: "verifier",
+        });
+      }),
+    ),
+  );
+
+  it.effect("supports JSON token exchange with client credentials in the body", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          requestFormat: "json",
+        });
+        expect((yield* calls)[0]!.jsonBody).toEqual({
+          grant_type: "authorization_code",
+          code: "abc",
+          redirect_uri: "https://app.example.com/cb",
+          code_verifier: "verifier",
+          client_id: "cid",
+          client_secret: "csecret",
+        });
+      }),
+    ),
+  );
+
   it.effect("posts form-urlencoded body with grant_type=authorization_code and PKCE verifier", () =>
     withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {
@@ -765,6 +861,9 @@ describe("exchangeAuthorizationCode", () => {
     }),
   );
 
+  // Non-secret description text must keep propagating even from a confidential
+  // client: the scrub below removes ONLY the exact submitted secret, never the
+  // AS's verdict prose around it.
   it.effect("propagates RFC 6749 error_description text in the OAuth2Error", () =>
     withTokenEndpoint(
       () =>
@@ -778,6 +877,7 @@ describe("exchangeAuthorizationCode", () => {
             exchangeAuthorizationCode({
               tokenUrl,
               clientId: "cid",
+              clientSecret: "csecret",
               redirectUrl: "https://cb",
               codeVerifier: "v",
               code: "c",
@@ -786,9 +886,66 @@ describe("exchangeAuthorizationCode", () => {
           expect(Exit.isFailure(exit)).toBe(true);
           if (!Exit.isFailure(exit)) return;
           expect(JSON.stringify(exit.cause)).toContain("Code expired");
+          const failure = Cause.squash(exit.cause) as OAuth2Error;
+          expect(failure.error).toBe("invalid_grant");
         }),
     ),
   );
+
+  // The review's canary for the first-party secret leak. A provider that
+  // echoes the submitted client_secret inside error_description would carry a
+  // DEPLOYMENT-WIDE credential into the OAuth2Error message — and from there
+  // into OAuthCompleteError, the popup's browser-visible errorDetails, and the
+  // token-request span. Assert on the WHOLE rendered failure, not just the
+  // message: what a log line or a `JSON.stringify` prints includes the retained
+  // rejection, so an echo surviving anywhere in the cause is still a leak.
+  it.effect("scrubs a client secret echoed in error_description from the whole failure", () => {
+    const spans = new Map<string, RecordedSpan>();
+    return withTokenEndpoint(
+      () =>
+        json(400, {
+          error: "invalid_client",
+          error_description:
+            "authentication failed for secret SECRET-CANARY-must-not-escape, check your credentials",
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              clientSecret: "SECRET-CANARY-must-not-escape",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          for (const rendered of [Cause.pretty(exit.cause), JSON.stringify(exit.cause)]) {
+            expect(rendered).not.toContain("SECRET-CANARY-must-not-escape");
+          }
+          const failure = Cause.squash(exit.cause) as OAuth2Error;
+          expect(failure).toBeInstanceOf(OAuth2Error);
+          // Masked, not dropped: the verdict prose around the secret survives,
+          // and so does everything classification and the span read.
+          expect(failure.message).toContain("[redacted]");
+          expect(failure.message).toContain("check your credentials");
+          expect(failure.message).not.toContain("SECRET-CANARY-must-not-escape");
+          expect(failure.error).toBe("invalid_client");
+          expect(failure.status).toBe(400);
+          // The token-request span — attributes AND ending exit — is what the
+          // exporter sees; the echo must not survive there either.
+          const tokenSpan = spans.get("executor.oauth.token_request");
+          expect(tokenSpan?.attributes.get("executor.oauth.error_code")).toBe("invalid_client");
+          const spanRendered = JSON.stringify({
+            attributes: [...(tokenSpan?.attributes ?? [])],
+            exit: tokenSpan?.endExit,
+          });
+          expect(spanRendered).not.toContain("SECRET-CANARY-must-not-escape");
+        }),
+    ).pipe(Effect.withTracer(makeRecordingTracer(spans)));
+  });
 
   it.effect("includes HTTP status and body preview for non-OAuth token endpoint errors", () =>
     withTokenEndpoint(
@@ -1192,6 +1349,31 @@ describe("exchangeClientCredentials", () => {
 });
 
 describe("refreshAccessToken", () => {
+  it.effect("persists provider-compatible JSON refresh rotation requests", () =>
+    withTokenEndpoint(
+      tokenResponse({ ...validRefreshBody, refresh_token: "rotated" }),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const result = yield* refreshAccessToken({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            refreshToken: "old",
+            scopes: ["read", "offline_access"],
+            requestFormat: "json",
+          });
+          expect(result.refresh_token).toBe("rotated");
+          expect((yield* calls)[0]!.jsonBody).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "old",
+            scope: "read offline_access",
+            client_id: "cid",
+            client_secret: "csecret",
+          });
+        }),
+    ),
+  );
+
   it.effect("normalizes Slack's comma-delimited scopes on refresh", () =>
     Effect.gen(function* () {
       const result = yield* refreshAccessToken({

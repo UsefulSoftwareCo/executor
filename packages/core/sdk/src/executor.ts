@@ -200,6 +200,47 @@ const PLUGIN_STORAGE_CREATE_ROW_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
 
 // ---------------------------------------------------------------------------
+// In-flight OAuth refresh gate — a CROSS-STACK resource.
+//
+// Concurrent resolves of one connection must share a single refresh-token
+// grant: the authorization server rotates the refresh token, so a second
+// grant redeems a token the first already consumed, and a provider that
+// detects reuse revokes the whole token family. The first refresh cycle still
+// succeeds, so the fault hides until a later expiry.
+//
+// The gate therefore cannot live on a single execution stack. A host builds a
+// fresh scoped executor per MCP session (and, since request-scoped stack
+// builds, per request), so a per-`createExecutor` map put every session in its
+// own gate and deduplicated nothing. Hanging it off the root DB handle instead
+// converges every stack over one handle on one map — the same object hosts
+// already treat as their shared, process-lived resource.
+//
+// SCOPE OF THE GUARANTEE: dedup reaches exactly as far as one root DB handle
+// in one process. A host that hands every scoped executor a FRESH handle keys
+// a different map each time and gets no dedup — silently, because an unshared
+// gate still behaves correctly for the one caller holding it. Multi-instance
+// deployments are outside it for the same reason: a process-local map cannot
+// see a peer isolate or replica. Both need database-backed coordination
+// (compare-and-swap on the stored refresh token) rather than a wider map.
+//
+// Weakly keyed so the map dies with the handle and a host that opens and drops
+// handles does not leak one gate per handle.
+type RefreshGate = Map<
+  string,
+  Deferred.Deferred<string | null, StorageFailure | CredentialResolutionError>
+>;
+
+const refreshGateByRootDb = new WeakMap<object, RefreshGate>();
+
+const refreshGateFor = (rootDb: object): RefreshGate => {
+  const existing = refreshGateByRootDb.get(rootDb);
+  if (existing) return existing;
+  const created: RefreshGate = new Map();
+  refreshGateByRootDb.set(rootDb, created);
+  return created;
+};
+
+// ---------------------------------------------------------------------------
 // Elicitation handler — resolved once at `createExecutor({ onElicitation })`
 // and overridable per `execute`. A tool that requests user input mid-execution
 // suspends the fiber and the handler decides how to respond. The "accept-all"
@@ -1697,6 +1738,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     });
     const rootDbUntyped = "db" in dbInput ? dbInput.db : dbInput;
     const closeDb = "db" in dbInput ? dbInput.close : undefined;
+    // Shared with every other execution stack built over this same handle —
+    // see the gate's definition for what that does and does not cover.
+    const refreshInFlight = refreshGateFor(rootDbUntyped);
     yield* Effect.try({
       try: () => {
         validateExecutorDbTables(tables, rootDbUntyped.internal.tables);
@@ -1920,17 +1964,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
       });
 
-    // In-flight refresh gate — concurrent resolves of the same connection share
-    // one refresh (mirrors v1's refresh deferred-map) so we never fire two
-    // refresh-token grants for the same connection in parallel (the AS rotates
-    // the refresh token; the second request would race on a consumed token).
-    const refreshInFlight = new Map<
-      string,
-      Effect.Effect<string | null, StorageFailure | CredentialResolutionError>
-    >();
-
+    // Key for the shared in-flight refresh gate (`refreshInFlight`, bound at
+    // the top of `createExecutor`). The tenant leads because the gate spans
+    // every execution stack over one DB handle, so it spans tenants too:
+    // without it, two tenants whose rows agree on owner/subject/integration/
+    // name would collide on one entry and one tenant's caller could be handed
+    // the other's access token. JSON.stringify keeps the components
+    // unambiguous: tenant, subject, integration, and name are opaque strings
+    // that may contain any delimiter, so a delimiter-joined key would let
+    // tenant "a" + subject "user:b" collide with tenant "a:user" + subject
+    // "b" — the same cross-tenant bleed by another route.
     const connectionKey = (row: ConnectionRow): string =>
-      `${row.owner}:${row.subject}:${row.integration}:${row.name}`;
+      JSON.stringify([tenant, row.owner, row.subject, row.integration, row.name]);
 
     const loadOAuthClientRow = (
       owner: Owner,
@@ -1955,6 +2000,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenUrl: string;
       readonly grant: string;
       readonly resource: string | null;
+      readonly tokenEndpointAuthMethod?: "body" | "basic";
+      readonly tokenRequestFormat?: "form" | "json";
     }
 
     /** What drove a refresh: the pre-call expiry check (`proactive`), or an
@@ -2262,7 +2309,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               clientSecret: firstParty.clientSecret,
               tokenUrl: firstParty.tokenUrl,
               grant: "authorization_code",
-              resource: null,
+              resource: firstParty.resource ?? null,
+              ...(firstParty.tokenEndpointAuthMethod === undefined
+                ? {}
+                : { tokenEndpointAuthMethod: firstParty.tokenEndpointAuthMethod }),
+              ...(firstParty.tokenRequestFormat === undefined
+                ? {}
+                : { tokenRequestFormat: firstParty.tokenRequestFormat }),
             } satisfies RefreshClient;
           }
           const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
@@ -2394,6 +2447,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
                   resource: clientRow.resource ?? undefined,
+                  clientAuth: clientRow.tokenEndpointAuthMethod,
+                  requestFormat: clientRow.tokenRequestFormat,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(
@@ -2526,26 +2581,42 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // token; parallel grants would race on a consumed token — v1's refresh
       // deferred-map). The gate is cleared once the refresh settles so a later
       // expiry can refresh again.
-      Effect.gen(function* () {
+      Effect.suspend(() => {
         const key = connectionKey(row);
         // Joining an in-flight grant is correct for BOTH triggers: whatever
         // that peer mints is newer than the token this fiber just saw rejected,
         // which is exactly what a reactive retry wants. The gate is cleared on
         // settle, so a 401 arriving after a refresh completed starts a fresh
-        // grant rather than replaying the stale memoized one.
+        // grant rather than replaying a stale result.
         const existing = refreshInFlight.get(key);
-        if (existing) return yield* existing;
-        // `Effect.cached` memoizes the grant onto a deferred: it runs once and
-        // replays to every awaiter sharing this entry.
-        const memoized = yield* Effect.cached(performTokenRefresh(row, provider, trigger));
-        const gated = memoized.pipe(
-          Effect.ensuring(Effect.sync(() => refreshInFlight.delete(key))),
+        if (existing) return Deferred.await(existing);
+
+        // The grant runs on a DETACHED fiber and every caller — including this
+        // one — only awaits its deferred. The entry is shared across execution
+        // stacks, so the fiber that registers it is merely the first arrival,
+        // not an owner. Running the grant ON that fiber would hand it that
+        // caller's interruption: a disconnected MCP client, an execution
+        // deadline or a cancelled tool call would fail every peer awaiting the
+        // same entry with an interrupt none of them caused and none can act on.
+        // Awaiting is per-caller, so a cancelled peer detaches without touching
+        // the grant or its siblings, and a grant nobody is left waiting on
+        // still settles and still persists the rotated token — which is what
+        // keeps the next caller off a consumed one. Token requests are bounded
+        // by `AbortSignal.timeout`, so the detached fiber cannot outlive its
+        // request.
+        const deferred = Deferred.makeUnsafe<
+          string | null,
+          StorageFailure | CredentialResolutionError
+        >();
+        // Nothing suspends between the lookup above and this registration, so
+        // check-and-set is atomic against peer fibers and cannot double-fire.
+        refreshInFlight.set(key, deferred);
+        const run = performTokenRefresh(row, provider, trigger).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) => Deferred.done(deferred, exit)),
+          Effect.ensuring(Effect.sync(() => void refreshInFlight.delete(key))),
         );
-        // Re-check after building (a peer fiber may have registered first while
-        // we built ours) so everyone converges on the same shared grant.
-        const winner = refreshInFlight.get(key) ?? gated;
-        if (winner === gated) refreshInFlight.set(key, gated);
-        return yield* winner;
+        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(deferred)));
       });
 
     // Resolve every named input of a connection (`variable → value`). A
