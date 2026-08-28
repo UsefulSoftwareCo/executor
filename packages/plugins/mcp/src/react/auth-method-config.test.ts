@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { AuthTemplateEditorValue } from "@executor-js/react/components/auth-template-editor";
 
+import { parseMcpIntegrationConfig } from "../sdk/types";
 import {
   authMethodsFromConfig,
   editorValueFromMcpAuthMethod,
@@ -13,14 +14,28 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     expect(mcpAuthMethodInputFromEditorValue({ kind: "none" })).toEqual({ kind: "none" });
   });
 
-  it("maps 'oauth' → { kind: 'oauth2' } (endpoints/scopes are resolved at connect time)", () => {
+  it("maps declared oauth scopes while provider endpoints remain discovered", () => {
     const value: AuthTemplateEditorValue = {
       kind: "oauth",
       authorizationUrl: "https://a.example.com/auth",
       tokenUrl: "https://a.example.com/token",
       scopes: ["mcp.read"],
     };
-    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "oauth2" });
+    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
+      kind: "oauth2",
+      scopes: ["mcp.read"],
+    });
+  });
+
+  it("omits an empty oauth scope list so the server metadata remains authoritative", () => {
+    expect(
+      mcpAuthMethodInputFromEditorValue({
+        kind: "oauth",
+        authorizationUrl: "",
+        tokenUrl: "",
+        scopes: [],
+      }),
+    ).toEqual({ kind: "oauth2" });
   });
 
   it("maps a header placement to an apikey method (prefix preserved)", () => {
@@ -69,6 +84,35 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
         placements: [{ carrier: "header", name: "  ", prefix: "" }],
       }),
     ).toEqual({ kind: "none" });
+  });
+});
+
+describe("a stored oauth2 row's scope list", () => {
+  const storedConfig = (method: Record<string, unknown>) => ({
+    transport: "remote",
+    endpoint: "https://mcp.example.com/mcp",
+    authenticationTemplate: [method],
+  });
+
+  it("decodes whether the key is declared or absent", () => {
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2" })),
+    ).not.toBeNull();
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] })),
+    ).not.toBeNull();
+  });
+
+  it("fails the WHOLE config when the row stores an empty list", () => {
+    // `scopes` is a NonEmptyArray, so `[]` is not "declares no scopes" — it is
+    // an invalid row. Decoding is all-or-nothing: one such row does not
+    // degrade to a scope-less oauth method, it makes the entire integration
+    // config undecodable, and the integration then presents no auth method at
+    // all. That is the whole reason the editor codec omits the key rather than
+    // writing `[]`; this test is here so the constraint is not invisible.
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2", scopes: [] })),
+    ).toBeNull();
   });
 });
 
@@ -121,6 +165,25 @@ describe("editorValueFromMcpAuthMethod", () => {
       scopes: [],
     });
   });
+
+  it("round-trips declared oauth2 scopes while endpoints remain discovered", () => {
+    const editor = editorValueFromMcpAuthMethod({
+      slug: "oauth2",
+      kind: "oauth2",
+      scopes: ["mcp"],
+    });
+
+    expect(editor).toEqual({
+      kind: "oauth",
+      authorizationUrl: "",
+      tokenUrl: "",
+      scopes: ["mcp"],
+    });
+    expect(mcpAuthMethodInputFromEditorValue(editor)).toEqual({
+      kind: "oauth2",
+      scopes: ["mcp"],
+    });
+  });
 });
 
 describe("authMethodsFromConfig", () => {
@@ -152,6 +215,19 @@ describe("authMethodsFromConfig", () => {
     ]);
     expect(methods[0]?.oauth?.discoveryUrl).toBe("https://mcp.example.com/mcp");
     expect(methods[0]?.oauth?.scopes).toBeUndefined();
+  });
+
+  it("carries declared oauth2 scopes through to the accounts hub", () => {
+    const methods = authMethodsFromConfig(
+      [{ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] }],
+      "https://mcp.example.com/mcp",
+    );
+
+    expect(methods[0]?.oauth).toEqual({
+      discoveryUrl: "https://mcp.example.com/mcp",
+      scopes: ["mcp"],
+      supportsDynamicRegistration: true,
+    });
   });
 
   it("carries multi-placement methods through to the hub", () => {

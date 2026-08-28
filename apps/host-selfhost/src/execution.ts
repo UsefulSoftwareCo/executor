@@ -55,6 +55,7 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    toolsSyncTtlMs: config.toolsSyncTtlMs,
     onIntegrationChange: (event) =>
       selfHostAnalytics.record(
         event.kind === "added" ? "integration_added" : "integration_removed",
@@ -65,7 +66,12 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
 
 export const SelfHostCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
   CodeExecutorProvider,
-  () => makeQuickJsExecutor(),
+  () => {
+    const { sandboxTimeoutMs } = loadConfig();
+    return makeQuickJsExecutor(
+      sandboxTimeoutMs === undefined ? {} : { timeoutMs: sandboxTimeoutMs },
+    );
+  },
 );
 
 /**

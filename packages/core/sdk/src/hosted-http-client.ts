@@ -1,5 +1,5 @@
 import { Effect, Layer, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, Headers as HttpHeaders, HttpClient } from "effect/unstable/http";
 
 export class HostedOutboundRequestBlocked extends Schema.TaggedErrorClass<HostedOutboundRequestBlocked>()(
   "HostedOutboundRequestBlocked",
@@ -250,10 +250,79 @@ export const makeHostedFetch = (options: HostedHttpClientOptions = {}): typeof g
   // oxlint-disable-next-line executor/no-raw-fetch -- boundary: exposes a guarded Fetch API adapter for libraries that require fetch
   guardFetch(options.fetch ?? globalThis.fetch, options);
 
+// ---------------------------------------------------------------------------
+// Span header redaction.
+//
+// The HttpClient tracer records every request and response header as a span
+// attribute, masking only the names in `Headers.CurrentRedactedNames`
+// (default: authorization, cookie, set-cookie, x-api-key). That blocklist can
+// never be right for a hosted client whose whole job is calling arbitrary
+// upstream APIs: credentials ride in provider-specific headers
+// (x-goog-api-key, api-key, x-auth-token, ...), and any name missing from the
+// list ships a live secret to the trace backend verbatim. So the model is
+// inverted: every header is redacted unless its name is on the allowlist of
+// structurally safe, diagnostically useful headers. Enumerating known
+// secret-bearing names was rejected: new integrations add credential headers
+// faster than a blocklist can learn them, and one miss is a leaked customer
+// credential.
+//
+// Bound to the client itself (not a host telemetry layer): consumers capture
+// the client value at construction and execute requests on fibers whose
+// context a host layer never sees, so the reference must travel with every
+// request effect.
+// ---------------------------------------------------------------------------
+
+const SPAN_SAFE_HEADER_NAMES = [
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "age",
+  "cache-control",
+  "connection",
+  "content-encoding",
+  "content-length",
+  "content-type",
+  "date",
+  "etag",
+  "expires",
+  "host",
+  "if-modified-since",
+  "if-none-match",
+  "last-modified",
+  "location",
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "origin",
+  "referer",
+  "retry-after",
+  "traceparent",
+  "tracestate",
+  "transfer-encoding",
+  "user-agent",
+  "vary",
+  "via",
+  "x-request-id",
+] as const;
+
+// Header names are lowercased at `Headers` construction, and `Headers.redact`
+// masks every name a RegExp entry matches. One negative lookahead turns the
+// allowlist into "redact everything else".
+export const spanRedactedHeaderNames: readonly (string | RegExp)[] = [
+  new RegExp(`^(?!(?:${SPAN_SAFE_HEADER_NAMES.join("|")})$)`),
+];
+
+const withSpanHeaderRedaction = (client: HttpClient.HttpClient): HttpClient.HttpClient =>
+  HttpClient.transformResponse(client, (effect) =>
+    Effect.provideService(effect, HttpHeaders.CurrentRedactedNames, spanRedactedHeaderNames),
+  );
+
 export const makeHostedHttpClientLayer = (
   options: HostedHttpClientOptions = {},
 ): Layer.Layer<HttpClient.HttpClient> =>
-  FetchHttpClient.layer.pipe(
+  Layer.effect(HttpClient.HttpClient)(
+    Effect.map(Effect.service(HttpClient.HttpClient), withSpanHeaderRedaction),
+  ).pipe(
+    Layer.provide(FetchHttpClient.layer),
     Layer.provide(
       options.fetch
         ? Layer.succeed(FetchHttpClient.Fetch)(guardFetch(options.fetch, options))

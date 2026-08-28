@@ -7,7 +7,8 @@ import { resolve } from "node:path";
 
 import { claimAndBoot } from "../src/ports";
 import { SELFHOST_ADMIN } from "../targets/selfhost";
-import { waitForHttp } from "./boot";
+import { isBootReadinessTimeout, waitForHttp } from "./boot";
+import { E2E_SANDBOX_TIMEOUT_MS, SANDBOX_TIMEOUT_ENV } from "./sandbox-timeout";
 import { bootSelfhost } from "./selfhost.boot";
 import { RUNS_DIR } from "../src/scenario";
 
@@ -37,6 +38,10 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     [{ envVar: "E2E_SELFHOST_PORT", offset: 4, label: "selfhost vite dev" }],
     async (ports) => {
       const port = ports.E2E_SELFHOST_PORT!;
+      // Shrink the sandbox execution budget and publish the value to the test
+      // workers (spawned after this globalsetup, so they inherit the env): the
+      // sandbox-deadline scenario reads it to scale its approval delays.
+      process.env[SANDBOX_TIMEOUT_ENV] = String(E2E_SANDBOX_TIMEOUT_MS);
       // Fresh data dir per suite run — hermetic; in-suite isolation comes from
       // fresh identities, not resets (bootSelfhost wipes it).
       const procs = await bootSelfhost({
@@ -44,10 +49,11 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
         webBaseUrl: `http://localhost:${port}`,
         admin: SELFHOST_ADMIN,
         logFile: bootLogFile,
+        sandboxTimeoutMs: E2E_SANDBOX_TIMEOUT_MS,
       });
       return { teardown: procs.teardown, value: procs };
     },
-    { label: "selfhost" },
+    { label: "selfhost", retryWhen: isBootReadinessTimeout },
   );
   return teardown;
 }

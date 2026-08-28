@@ -64,6 +64,7 @@
         "apps/desktop/src/main.ts",
         "scripts/**/*.{ts,js}",
         "apps/*/scripts/**/*.{ts,js}",
+        "packages/*/*/scripts/**/*.{ts,js}",
         "packages/kernel/runtime-*/src/**/*.{ts,tsx,js,mjs}",
       ],
       "rules": {

@@ -36,7 +36,12 @@ export type {
   IFumaClient,
   StorageFailure,
 } from "./fuma-runtime";
-export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
+export {
+  StorageError,
+  StorageConnectionError,
+  UniqueViolationError,
+  isStorageFailure,
+} from "./fuma-runtime";
 
 // IDs (branded) — the v2 set.
 export {
@@ -123,6 +128,8 @@ export {
   sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  pathNamesASecret,
+  REDACTED_SAMPLE_VALUE,
   identityPathTier,
   rankResponseSample,
 } from "./health-check";
@@ -291,6 +298,18 @@ export {
   OAuthProbeError,
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
+  FIRST_PARTY_OAUTH_CLIENT_PREFIX,
+  SubjectTokenTypeSchema,
+  DEFAULT_SUBJECT_TOKEN_TYPE,
+  EnterpriseManagedStartInputSchema,
+  EnterpriseIdentityProviderDescriptorSchema,
+  type SubjectTokenType,
+  type EnterpriseManagedStartInput,
+  type EnterpriseIdentityProviderDescriptor,
+  firstPartyOAuthClientSlug,
+  isFirstPartyOAuthClientSlug,
+  type FirstPartyOAuthClientConfig,
+  type OAuthClientOrigin,
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,
@@ -304,6 +323,18 @@ export {
   type OAuthProbeResult,
   type OAuthService,
 } from "./oauth-client";
+
+// The enterprise-managed rollout PORT (not its implementation): hosts that
+// operate a feature-flag service implement this and hand it to
+// `createExecutor`. Core depends on no vendor.
+export {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
+  type EnterpriseManagedRolloutWithheldReason,
+} from "./oauth-ema";
 
 // NOTE: the OAuth 2.1 implementation helpers (`./oauth-helpers`,
 // `makeOAuthService` in `./oauth-service`, discovery in `./oauth-discovery`)
@@ -393,6 +424,7 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,
   collectTables,
   parseToolAddress,

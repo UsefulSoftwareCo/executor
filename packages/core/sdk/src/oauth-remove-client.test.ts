@@ -3,10 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 
-import { OAuthClientSlug } from "./ids";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  OAuthClientSlug,
+  ProviderItemId,
+  ProviderKey,
+  ToolAddress,
+  ToolName,
+} from "./ids";
+import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
+import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removeClient permanently deletes an owner-scoped oauth_client row, keyed by
 // (owner, slug). The owner policy on `oauth_client` prevents removing another
@@ -172,6 +183,330 @@ describe("oauth.removeClient", () => {
         // It is gone for A too — org rows are tenant-shared.
         const clientsA = yield* a.executor.oauth.listClients();
         expect(clientsA.map((client) => String(client.slug))).not.toContain("shared-org");
+      }),
+    ),
+  );
+
+  // The `oauth.clients.remove` TOOL reports `removed` honestly on top of the
+  // idempotent service call above, so an agent sweeping a list of slugs cannot
+  // read a no-op as a deletion.
+  it.effect("the remove tool distinguishes a real deletion from a no-op", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          coreTools: {},
+        });
+        const remove = ToolAddress.make("executor.coreTools.oauth.clients.remove");
+
+        // The same slug registered under BOTH owners — the shape that made a
+        // hardcoded `owner: "user"` sweep silently skip the org copy.
+        for (const owner of ["org", "user"] as const) {
+          yield* executor.oauth.createClient({
+            owner,
+            slug: ORG_CLIENT,
+            authorizationUrl: "https://acme.test/authorize",
+            tokenUrl: "https://acme.test/token",
+            grant: "authorization_code",
+            clientId: `${owner}-client-id`,
+            clientSecret: `${owner}-secret`,
+          });
+        }
+
+        // A slug that never existed is not a removal.
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "user", slug: "never-existed" },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: false });
+
+        // Removing the user copy leaves the org copy, which still reports as a
+        // real removal of its own rather than as already-gone.
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "user", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: true });
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "org", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: true });
+
+        // Both are gone, and a repeat of either is now a no-op.
+        expect(yield* executor.oauth.listClients()).toEqual([]);
+        expect(
+          yield* executor.execute(
+            remove,
+            { owner: "org", slug: String(ORG_CLIENT) },
+            { onElicitation: "accept-all" },
+          ),
+        ).toEqual({ removed: false });
+      }),
+    ),
+  );
+});
+
+// Removing a client deletes its secret from the provider, and that reaches a
+// store which does not roll back with a transaction. `removeClient` opens none
+// itself, but a caller can wrap it — and an abort would then restore the client
+// row while its secret stayed destroyed, leaving a client that looks configured
+// and can never authenticate again.
+const txPlugin = (store: Map<string, string>) =>
+  definePlugin(() => ({
+    id: "demo" as const,
+    storage: () => ({}),
+    credentialProviders: [
+      {
+        key: ProviderKey.make("memory"),
+        writable: true as const,
+        get: (id: ProviderItemId) => Effect.sync(() => store.get(String(id)) ?? null),
+        set: (id: ProviderItemId, value: string) =>
+          Effect.sync(() => {
+            store.set(String(id), value);
+          }),
+        delete: (id: ProviderItemId) =>
+          Effect.sync(() => {
+            store.delete(String(id));
+          }),
+      },
+    ],
+    extension: (ctx) => ({
+      inTransaction: <A, E>(effect: Effect.Effect<A, E>) => ctx.transaction(effect),
+    }),
+  }))();
+
+// The client secret is keyed by (owner, slug) ALONE — the key outlives the row
+// it belonged to, which is what makes the deferred delete a claim that has to be
+// re-checked rather than replayed.
+const SECRET_ITEM = "oauth-client:user:acme-user:secret";
+
+/** The registration used by the secret-lifecycle tests below, parameterised only
+ *  by the secret so each one can prove which incarnation's secret survived. */
+const userClient = (clientSecret: string) =>
+  ({
+    owner: "user",
+    slug: USER_CLIENT,
+    authorizationUrl: "https://acme.test/authorize",
+    tokenUrl: "https://acme.test/token",
+    grant: "authorization_code",
+    clientId: "user-client-id",
+    clientSecret,
+  }) as const;
+
+describe("removing a client defers the secret deletion to the outermost commit", () => {
+  it.effect("a rolled-back removal leaves the client secret intact", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const store = new Map<string, string>();
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [txPlugin(store)] as const,
+        });
+        yield* executor.oauth.createClient(userClient("user-secret"));
+        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+
+        // A caller wraps the removal in its own transaction, then fails.
+        const outcome = yield* Effect.exit(
+          executor.demo.inTransaction(
+            Effect.gen(function* () {
+              yield* executor.oauth.removeClient("user", USER_CLIENT);
+              return yield* Effect.fail("rollback" as const);
+            }),
+          ),
+        );
+        expect(Exit.isFailure(outcome)).toBe(true);
+
+        // The client came back...
+        const after = yield* executor.oauth.listClients();
+        expect(after.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
+        // ...so its secret must still be there, or it can never authenticate again.
+        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+      }),
+    ),
+  );
+
+  // Deferring must not mean dropping. Without this, removing the deferred
+  // cleanup entirely still passes the rollback test above — the secret would
+  // simply leak on every successful removal, unobserved.
+  it.effect("a committed removal deletes the client secret", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const store = new Map<string, string>();
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [txPlugin(store)] as const,
+        });
+        yield* executor.oauth.createClient(userClient("user-secret"));
+        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+
+        yield* executor.demo.inTransaction(executor.oauth.removeClient("user", USER_CLIENT));
+
+        expect(yield* executor.oauth.listClients()).toEqual([]);
+        expect(store.has(SECRET_ITEM)).toBe(false);
+      }),
+    ),
+  );
+
+  // With no transaction active `afterCommit` runs its effect inline, so the
+  // ordinary removal path stays synchronous rather than waiting for a commit
+  // that will never come.
+  it.effect("a removal outside any transaction deletes the secret immediately", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const store = new Map<string, string>();
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [txPlugin(store)] as const,
+        });
+        yield* executor.oauth.createClient(userClient("user-secret"));
+        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+
+        yield* executor.oauth.removeClient("user", USER_CLIENT);
+
+        expect(store.has(SECRET_ITEM)).toBe(false);
+      }),
+    ),
+  );
+
+  // A removal that matched no row removed nothing, so it has no claim on the
+  // key — and the key is not private to the caller. Here B's removal is scoped
+  // away by the owner policy and touches no row at all, while the secret it
+  // would have deleted is A's live one.
+  it.effect("a removal that matched no row leaves the key alone", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const store = new Map<string, string>();
+        const plugins = [txPlugin(store)] as const;
+        const dataDir = mkdtempSync(join(tmpdir(), "oauth-remove-client-secret-"));
+        const tenant = "shared-tenant";
+
+        const a = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "subject-a",
+          dataDir,
+        });
+        yield* a.executor.oauth.createClient(userClient("a-secret"));
+        expect(store.get(SECRET_ITEM)).toBe("a-secret");
+
+        const b = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "subject-b",
+          dataDir,
+        });
+        yield* b.executor.oauth.removeClient("user", USER_CLIENT);
+
+        // A's client survived the owner-scoped delete...
+        const clientsA = yield* a.executor.oauth.listClients();
+        expect(clientsA.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
+        // ...and so must its secret, which B never owned.
+        expect(store.get(SECRET_ITEM)).toBe("a-secret");
+      }),
+    ),
+  );
+});
+
+// An integration to hang an OAuth connection off, so the recreated client's
+// secret can be proven to still WORK — the test authorization server rejects a
+// token request that presents the wrong secret (or none).
+const INTEG = IntegrationSlug.make("acme");
+const TEMPLATE = AuthTemplateSlug.make("oauth");
+
+const integrationPlugin = definePlugin(() => ({
+  id: "acme" as const,
+  storage: () => ({}),
+  resolveTools: () =>
+    Effect.succeed({ tools: [{ name: ToolName.make("whoami"), description: "whoami" }] }),
+  describeAuthMethods: () => [
+    {
+      id: "oauth",
+      label: "OAuth2",
+      kind: "oauth" as const,
+      template: String(TEMPLATE),
+      oauth: { scopes: [] },
+    },
+  ],
+  invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
+  extension: (ctx) => ({
+    seed: () => ctx.core.integrations.register({ slug: INTEG, description: "Acme", config: {} }),
+  }),
+}))();
+
+// Deferring the delete to the commit is only half the answer. The provider key
+// is derived from (owner, slug) and nothing else, so it is not owned by the row
+// that was removed — it is owned by whichever row holds that identity when the
+// deletion finally runs. A slug recreated inside the removal's own transaction
+// commits together with the removal, and the queued delete then fires against
+// the NEW app's secret: a client that looks configured and can never
+// authenticate, the exact state the rollback path above prevents.
+describe("removing a client does not delete a recreated client's secret", () => {
+  it.effect("a slug recreated before the commit keeps its own working secret", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          clients: { "recreated-client": "second-secret" },
+        });
+        const store = new Map<string, string>();
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [txPlugin(store), integrationPlugin] as const,
+          redirectUri: null,
+        });
+        yield* executor.acme.seed();
+
+        // The first incarnation, registered against a client id the server does
+        // not know: only the second one can ever mint a token.
+        yield* executor.oauth.createClient({
+          owner: "user",
+          slug: USER_CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "first-client",
+          clientSecret: "first-secret",
+        });
+        expect(store.get(SECRET_ITEM)).toBe("first-secret");
+
+        // The race, made deterministic: the removal and the re-registration of
+        // the same slug commit together, so the deferred delete runs against a
+        // live client.
+        yield* executor.demo.inTransaction(
+          Effect.gen(function* () {
+            yield* executor.oauth.removeClient("user", USER_CLIENT);
+            yield* executor.oauth.createClient({
+              owner: "user",
+              slug: USER_CLIENT,
+              authorizationUrl: server.authorizationEndpoint,
+              tokenUrl: server.tokenEndpoint,
+              grant: "client_credentials",
+              clientId: "recreated-client",
+              clientSecret: "second-secret",
+            });
+          }),
+        );
+
+        // The new incarnation is listed, and its secret survived...
+        const after = yield* executor.oauth.listClients();
+        expect(after.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
+        expect(store.get(SECRET_ITEM)).toBe("second-secret");
+
+        // ...and still authenticates: the server refuses a token request that
+        // presents the wrong secret or none, so a connection can only be minted
+        // with the intact one.
+        const started = yield* executor.oauth.start({
+          owner: "user",
+          client: USER_CLIENT,
+          clientOwner: "user",
+          name: ConnectionName.make("cc"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("connected");
       }),
     ),
   );

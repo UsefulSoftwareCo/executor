@@ -14,6 +14,7 @@ import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
+import { forkReportMemberSeats } from "../extensions/billing/member-seats";
 import {
   countSeatsUsed,
   getMemberLimitForPlan,
@@ -82,7 +83,7 @@ export const workosAccountProvider: Layer.Layer<
     // call `authorizeOrganization` (yields `WorkOSClient` + `UserStoreService`) —
     // can be erased to `R = never`, as the neutral AccountProvider shape
     // requires. Provided per method below.
-    const ctx = yield* Effect.context<WorkOSClient | UserStoreService>();
+    const ctx = yield* Effect.context<WorkOSClient | UserStoreService | AutumnService>();
 
     // Unauthenticated (missing/invalid session) => AccountUnauthorized, exactly
     // as the old inline `requireSession` did.
@@ -364,6 +365,7 @@ export const workosAccountProvider: Layer.Layer<
           yield* workos
             .deleteOrgMembership(membershipId)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          yield* forkReportMemberSeats(org.id).pipe(Effect.provideContext(ctx));
           return { success: true };
         }),
 
@@ -386,7 +388,9 @@ export const workosAccountProvider: Layer.Layer<
             .updateOrganization(org.id, name)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
           yield* users
-            .use((s) => s.upsertOrganization({ id: updated.id, name: updated.name }))
+            .use("upsertOrganization", (s) =>
+              s.upsertOrganization({ id: updated.id, name: updated.name }),
+            )
             .pipe(Effect.catchTag("UserStoreError", toAccountError));
           return { name: updated.name };
         }),

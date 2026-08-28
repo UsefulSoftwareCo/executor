@@ -20,6 +20,7 @@ import { AccountHttpApi } from "@executor-js/api";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 declare global {
   interface Window {
@@ -39,7 +40,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Land on the dashboard", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         // The shared shell's main nav lists the workspace sections.
         await page.locator("nav").getByRole("link", { name: "Integrations" }).first().waitFor();
       });
@@ -105,7 +106,7 @@ scenario(
         });
 
         await step("Open the API keys page", async () => {
-          await page.goto("/api-keys", { waitUntil: "networkidle" });
+          await visit(page, "/api-keys");
           await page.getByRole("heading", { name: "API keys", exact: true }).waitFor();
         });
 
@@ -174,7 +175,7 @@ scenario(
         });
 
         await step("Create a new key", async () => {
-          await page.goto("/api-keys", { waitUntil: "networkidle" });
+          await visit(page, "/api-keys");
           await page.getByRole("button", { name: "New key" }).click();
           const dialog = page.getByRole("dialog");
           await dialog.getByLabel("Name").fill(keyName);

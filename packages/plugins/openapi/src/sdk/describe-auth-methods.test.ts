@@ -84,6 +84,23 @@ describe("describeOpenApiAuthMethods", () => {
     ]);
   });
 
+  it("prefers a stored oauth label over the generic OAuth2 fallback", () => {
+    const methods = describeOpenApiAuthMethods(
+      recordWith([
+        {
+          slug: AuthTemplateSlug.make("azureAdDelegated"),
+          kind: "oauth2",
+          label: "OAuth2 (user)",
+          authorizationUrl: "https://auth.example/authorize",
+          tokenUrl: "https://auth.example/token",
+          scopes: ["read"],
+        },
+      ]),
+    );
+
+    expect(methods.map((method) => method.label)).toEqual(["OAuth2 (user)"]);
+  });
+
   it("returns [] when no auth template is declared and for a foreign config", () => {
     expect(describeOpenApiAuthMethods(recordWith([]))).toEqual([]);
     expect(

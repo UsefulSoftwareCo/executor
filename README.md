@@ -8,7 +8,7 @@ and per-tool policies, then use that one catalog from any MCP-compatible agent.
 
 [Website](https://executor.sh) · [Documentation](https://executor.sh/docs) · [Discord](https://discord.gg/eF29HBHwM6)
 
-[https://github.com/user-attachments/assets/11225f83-e848-42ba-99b2-a993bcc88dad](https://github.com/user-attachments/assets/11225f83-e848-42ba-99b2-a993bcc88dad)
+![Executor demo](https://raw.githubusercontent.com/UsefulSoftwareCo/executor/main/assets/executor-demo.gif)
 
 ## Why Executor
 

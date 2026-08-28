@@ -67,6 +67,19 @@ export const readArtifactsEnabled = (request: Request): boolean => {
 };
 
 /**
+ * Read the per-integration search tools opt-IN off an MCP request's
+ * `?search_tools=` query. OFF by default: a clean endpoint URL serves only the
+ * core surface, and only an accepted truthy spelling (`?search_tools=true`)
+ * adds one `search_<integration>` tool per connected integration. Any other
+ * explicit value reads as the default (disabled).
+ */
+export const readSearchToolsEnabled = (request: Request): boolean => {
+  const value = new URL(request.url).searchParams.get("search_tools");
+  if (value === null) return false;
+  return TRUE_QUERY_VALUES.has(value.toLowerCase());
+};
+
+/**
  * Build the console approval URL for a paused execution:
  * `<origin>/<organizationSlug>/resume/<executionId>?mcp_session_id=<sessionId>`
  * when the host knows the org slug, otherwise

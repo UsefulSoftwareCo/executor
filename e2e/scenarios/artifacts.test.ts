@@ -24,6 +24,7 @@ import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([] as const);
 
@@ -143,17 +144,30 @@ const recordHandshakeOrdering = async (page: Page): Promise<void> => {
 const readHandshakeOrdering = (page: Page): Promise<ReadonlyArray<string>> =>
   page.evaluate(() => globalThis.__handshakeOrder ?? []);
 
-const readConsoleStyle = (
-  page: Page,
-): Promise<{ primary: string; buttonBg: string; styleSheets: number }> =>
+const readConsoleStyle = (page: Page): Promise<{ primary: string; buttonBg: string }> =>
   page.evaluate(() => {
     const button = document.querySelector("button");
     return {
       primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
       buttonBg: button ? getComputedStyle(button).backgroundColor : "",
-      styleSheets: document.styleSheets.length,
     };
   });
+
+// The shell's compiled stylesheet declares `--mcp-apps-shell-stylesheet: 1`
+// on `:root` as a provenance marker (see the shell's globals.css): the shell's
+// tokens deliberately mirror the console's, so this marker is the only
+// declaration that identifies the sheet. Reading it as a computed value on a
+// document's root element answers "did the shell's stylesheet land in THIS
+// document?" — unlike counting document.styleSheets, which moves on its own in
+// dev (TanStack Start swaps its route-styles <link> as matches settle, and a
+// swapped-in link only counts once loaded), which made an equality-of-counts
+// assertion flaky.
+const readShellStylesheetMarker = (page: Page): Promise<string> =>
+  page.evaluate(() =>
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--mcp-apps-shell-stylesheet")
+      .trim(),
+  );
 
 scenario(
   "Artifacts · create-artifact hands a non-Apps client a deep link that renders the live component",
@@ -242,14 +256,15 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         // The console's own styling, sampled BEFORE any artifact is opened.
-        // The shell ships its own Tailwind build and its own palette (a teal
-        // `--primary` against the console's near-black), so if its stylesheet
-        // ever reaches the top-level document again these values move.
-        let consoleStyleBefore: { primary: string; buttonBg: string; styleSheets: number };
+        // The shell ships its own Tailwind build; if its stylesheet ever
+        // reaches the top-level document again, its base/utility layers move
+        // these computed values (and its provenance marker appears, asserted
+        // below).
+        let consoleStyleBefore: { primary: string; buttonBg: string };
 
         await step("Open the artifact link the agent handed over", async () => {
           await recordHandshakeOrdering(page);
-          await page.goto(url, { waitUntil: "networkidle" });
+          await visit(page, url);
           consoleStyleBefore = await readConsoleStyle(page);
         });
 
@@ -338,10 +353,6 @@ scenario(
           expect(after.buttonBg, "a console button keeps its own background").toBe(
             consoleStyleBefore.buttonBg,
           );
-          expect(
-            after.styleSheets,
-            "the shell injected no stylesheet into the console document",
-          ).toBe(consoleStyleBefore.styleSheets);
 
           // And positively: the shell's stylesheet IS present, one document
           // down. Without this the assertions above would also pass if the
@@ -349,18 +360,26 @@ scenario(
           const shellHasOwnStyles = await page
             .frameLocator('[data-testid="artifact-shell-frame"]')
             .locator("html")
-            .evaluate((html) => {
-              const primary = getComputedStyle(html).getPropertyValue("--primary").trim();
-              return { primary, sheets: html.ownerDocument.styleSheets.length };
-            });
+            .evaluate((html) => ({
+              marker: getComputedStyle(html).getPropertyValue("--mcp-apps-shell-stylesheet").trim(),
+              sheets: html.ownerDocument.styleSheets.length,
+            }));
           expect(
             shellHasOwnStyles.sheets,
             "the shell document carries its own stylesheets",
           ).toBeGreaterThan(0);
           expect(
-            shellHasOwnStyles.primary,
-            "the shell keeps its own palette inside its own document",
-          ).not.toBe("");
+            shellHasOwnStyles.marker,
+            "the shell document carries the shell's own compiled stylesheet",
+          ).toBe("1");
+
+          // The marker is the injection fingerprint: even a shell sheet that
+          // lost the cascade race (so the computed values above stayed put)
+          // would still surface it on the console's root element.
+          expect(
+            await readShellStylesheetMarker(page),
+            "the shell injected no stylesheet into the console document",
+          ).toBe("");
         });
 
         await step("The artifact fills the page and scrolls inside itself", async () => {
@@ -578,7 +597,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Artifacts tab", async () => {
-          await page.goto("/artifacts", { waitUntil: "networkidle" });
+          await visit(page, "/artifacts");
           await page.getByRole("link", { name: `Open artifact ${originalTitle}` }).waitFor({
             timeout: 20_000,
           });
@@ -616,7 +635,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Delete the artifact from the list", async () => {
-          await page.goto("/artifacts", { waitUntil: "networkidle" });
+          await visit(page, "/artifacts");
           const card = page.locator('[data-slot="artifact-card"]').filter({
             hasText: renamedTitle,
           });
@@ -720,7 +739,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("The artifact's own URL shows the updated component", async () => {
-          await page.goto(`/artifacts/${artifactId}`, { waitUntil: "networkidle" });
+          await visit(page, `/artifacts/${artifactId}`);
           const content = artifactContent(page);
           await content
             .locator('[data-testid="artifact-marker"]')

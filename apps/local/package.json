@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/local",
-  "version": "1.4.4",
+  "version": "1.6.2",
   "private": true,
   "type": "module",
   "exports": {
@@ -46,7 +46,7 @@
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
     "@libsql/client": "catalog:",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tanstack/react-router": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",

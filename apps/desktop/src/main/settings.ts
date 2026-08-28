@@ -12,6 +12,16 @@ const store = new Store<PersistedShape>({
   ...(process.env.EXECUTOR_DESKTOP_SETTINGS_DIR
     ? { cwd: process.env.EXECUTOR_DESKTOP_SETTINGS_DIR }
     : {}),
+  // `serverProfiles` carries a remote server's credential — a bearer token, or a
+  // basic-auth password — so this file is owner-only, the same standard
+  // `local-auth.ts` already applies to `auth.json` in this app.
+  //
+  // Without this, `conf` defaults to `0o666` and the file lands 0644 under a
+  // normal umask. One option is enough: `atomically` only chmods the temp inode
+  // when the requested mode DIFFERS from its own default, so setting it here is
+  // what turns that chmod on, and the atomic rename then carries the tight mode
+  // onto an existing loose file too.
+  configFileMode: 0o600,
   defaults: { server: DEFAULT_SERVER_SETTINGS },
 });
 

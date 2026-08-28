@@ -9,6 +9,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 // One server so "Add integration" is enabled straight from the preview (no
 // base-URL picker to resolve first).
@@ -32,7 +33,7 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Add OpenAPI integration form", async () => {
-          await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
+          await visit(page, "/integrations/add/openapi");
           await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
         });
 

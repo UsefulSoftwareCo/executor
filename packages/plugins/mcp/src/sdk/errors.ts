@@ -3,11 +3,26 @@
 
 import { Data, Schema } from "effect";
 
+export const McpConnectionFailureKind = Schema.Literals([
+  "tls",
+  "dns",
+  "timeout",
+  "connection_refused",
+  "network",
+  "http",
+  "protocol",
+]);
+export type McpConnectionFailureKind = typeof McpConnectionFailureKind.Type;
+
 export class McpConnectionError extends Schema.TaggedErrorClass<McpConnectionError>()(
   "McpConnectionError",
   {
     transport: Schema.String,
     message: Schema.String,
+    /** Safe, structural classification of the connection failure. Auto
+     *  transport uses this to retry only protocol incompatibilities; callers
+     *  can render actionable copy without parsing an external error message. */
+    failureKind: Schema.optional(McpConnectionFailureKind),
     /** HTTP status the handshake observed (e.g. 401 on an auth wall), when the
      *  transport surfaced one. Structural, so the liveness classifier and the
      *  auto-transport fallback never string-match the message. */

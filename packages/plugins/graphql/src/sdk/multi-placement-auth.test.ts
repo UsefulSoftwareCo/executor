@@ -203,4 +203,54 @@ describe("GraphQL multi-placement auth", () => {
       expect(String(result.error?.message ?? "")).toContain("b");
     }),
   );
+
+  it.effect("an EMPTY input is missing too, not a value to dial with", () =>
+    Effect.gen(function* () {
+      // Supplying "" and omitting the input are the same state: no usable
+      // credential. Only the omission used to be caught, so an empty value went
+      // out on the wire and came back as an upstream 401 — an error that names
+      // authentication rather than the empty input that caused it. The OpenAPI
+      // backing already refused "", so this is the behaviour the plugins share.
+      const server = yield* serveGreetingServer;
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.endpoint,
+        slug: "empty_gql",
+        name: "Empty-input GraphQL",
+        authenticationTemplate: [
+          {
+            slug: "two_inputs",
+            kind: "apikey",
+            placements: [
+              { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "a" },
+              { carrier: "query", name: "team_id", variable: "b" },
+            ],
+          },
+        ],
+      });
+
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("empty"),
+        integration: IntegrationSlug.make("empty_gql"),
+        template: AuthTemplateSlug.make("two_inputs"),
+        values: { a: "tok_A", b: "" },
+      });
+
+      const result = (yield* executor.execute(toolAddr("empty_gql", "empty", "query.hello"), {
+        name: "Ada",
+      })) as { ok: boolean; error?: { code?: string; message?: string } };
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatchObject({ code: "connection_value_missing" });
+      expect(String(result.error?.message ?? "")).toContain("b");
+
+      // The server must not have been dialed at all — refusing after sending the
+      // request would still leak an empty credential onto the wire.
+      // Deliberately not asserted here: connect-time introspection dials before
+      // this guard, and does so whether the input is empty or absent — checked
+      // both ways. That is pre-existing behaviour of a different stage, so
+      // pinning it in this test would tie the fix to something it does not do.
+    }),
+  );
 });

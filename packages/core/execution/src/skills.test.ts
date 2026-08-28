@@ -29,6 +29,15 @@ describe("skills registry", () => {
     }
   });
 
+  // A host with no skill tool of its own reads `executor_skills` as the general
+  // one it is missing, so the index has to say what the catalog covers and that
+  // it is closed — otherwise the model asks it for the user's skills next.
+  it("frames the index as Executor's own closed catalog", () => {
+    const index = renderSkillsIndex();
+    expect(index).toContain("Executor's own tools");
+    expect(index).toContain("complete list");
+  });
+
   // A connection that did not opt in to artifacts — the default — has no tool
   // the artifact skills apply to, so they leave its catalog entirely rather
   // than documenting a surface it cannot reach.
