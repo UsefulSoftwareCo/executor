@@ -701,13 +701,31 @@ const serializeFormUrlEncoded = (
   return parts.join("&");
 };
 
+const isFormDataPrimitive = (value: unknown): boolean =>
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  value instanceof Blob ||
+  (typeof File !== "undefined" && value instanceof File);
+
+type FormDataCoercion =
+  | { readonly ok: true; readonly record: FormDataRecord }
+  // The named field carried a tool file whose base64 payload does not decode.
+  | { readonly ok: false; readonly field: string };
+
 /**
  * Best-effort build of a multipart FormData entry record.
  *
- * If `encoding[key].contentType` is declared (OAS3 §4.8.15), wrap the value
- * in a `Blob` with that type so the runtime multipart framer emits the
- * per-part `Content-Type` header (e.g. `application/json` for a metadata
- * part whose server expects parsed JSON).
+ * Tool files come first: a file value — bare, or as an item of an array
+ * property — becomes a real file part, with `encoding[key].contentType`
+ * applied as the per-part content type override. A file whose base64 payload
+ * does not decode fails the whole coercion rather than silently degrading to
+ * a JSON string the upstream cannot use.
+ *
+ * If `encoding[key].contentType` is declared (OAS3 §4.8.15) for a non-file
+ * value, wrap it in a `Blob` with that type so the runtime multipart framer
+ * emits the per-part `Content-Type` header (e.g. `application/json` for a
+ * metadata part whose server expects parsed JSON).
  *
  * Otherwise: primitives pass through, arrays handle their item types, byte
  * shapes wrap as Blob, nested objects JSON-stringify (never `[object Object]`).
@@ -715,7 +733,7 @@ const serializeFormUrlEncoded = (
 const coerceFormDataRecord = (
   value: Record<string, unknown>,
   encoding: Record<string, EncodingObject> | undefined,
-): FormDataRecord => {
+): FormDataCoercion => {
   const out: Record<string, FormDataCoercible> = {};
   for (const [key, raw] of Object.entries(value)) {
     if (raw === undefined || raw === null) continue;
@@ -726,7 +744,26 @@ const coerceFormDataRecord = (
 
     if (isToolFile(raw)) {
       const filePart = formPartFromToolFile(raw, partType);
-      out[key] = (filePart ?? JSON.stringify(raw)) as FormDataCoercible;
+      if (!filePart) return { ok: false, field: key };
+      out[key] = filePart;
+      continue;
+    }
+
+    // Files inside an array are matched BEFORE the per-part content type
+    // branch below: for a file array, `encoding[key].contentType` describes
+    // each file part, not a JSON serialization of the whole array.
+    if (Array.isArray(raw) && raw.some(isToolFile)) {
+      const parts: FormDataCoercible[] = [];
+      for (const item of raw) {
+        if (isToolFile(item)) {
+          const filePart = formPartFromToolFile(item, partType);
+          if (!filePart) return { ok: false, field: key };
+          parts.push(filePart);
+          continue;
+        }
+        parts.push(isFormDataPrimitive(item) ? (item as FormDataCoercible) : JSON.stringify(item));
+      }
+      out[key] = parts as FormDataCoercible;
       continue;
     }
 
@@ -747,27 +784,14 @@ const coerceFormDataRecord = (
       continue;
     }
 
-    if (
-      typeof raw === "string" ||
-      typeof raw === "number" ||
-      typeof raw === "boolean" ||
-      raw instanceof Blob ||
-      (typeof File !== "undefined" && raw instanceof File)
-    ) {
+    if (isFormDataPrimitive(raw)) {
       out[key] = raw as FormDataCoercible;
       continue;
     }
     if (Array.isArray(raw)) {
+      // No tool files here — that array shape returned above.
       out[key] = raw.map((v) =>
-        isToolFile(v)
-          ? (formPartFromToolFile(v, partType) ?? JSON.stringify(v))
-          : typeof v === "string" ||
-              typeof v === "number" ||
-              typeof v === "boolean" ||
-              v instanceof Blob ||
-              (typeof File !== "undefined" && v instanceof File)
-            ? (v as FormDataCoercible)
-            : JSON.stringify(v),
+        isFormDataPrimitive(v) ? (v as FormDataCoercible) : JSON.stringify(v),
       ) as FormDataCoercible;
       continue;
     }
@@ -778,7 +802,7 @@ const coerceFormDataRecord = (
     }
     out[key] = JSON.stringify(raw);
   }
-  return out;
+  return { ok: true, record: out };
 };
 
 // ---------------------------------------------------------------------------
@@ -796,82 +820,94 @@ const coerceFormDataRecord = (
 // — never `String(body)` (which produces the useless `[object Object]`).
 // ---------------------------------------------------------------------------
 
+type AppliedRequestBody =
+  | { readonly ok: true; readonly request: HttpClientRequest.HttpClientRequest }
+  // Only the multipart branch can reject a body: a tool file whose base64
+  // payload does not decode names the offending field here.
+  | { readonly ok: false; readonly invalidFileField: string };
+
 const applyRequestBody = (
   request: HttpClientRequest.HttpClientRequest,
   contentType: string,
   bodyValue: unknown,
   encoding: Record<string, EncodingObject> | undefined,
-): HttpClientRequest.HttpClientRequest => {
+): AppliedRequestBody => {
+  const sent = (req: HttpClientRequest.HttpClientRequest): AppliedRequestBody => ({
+    ok: true,
+    request: req,
+  });
+
   if (isJsonContentType(contentType)) {
     // Pre-serialized JSON strings pass through with the declared media
     // type preserved (important for `application/vnd.foo+json` etc.).
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
-    return HttpClientRequest.bodyJsonUnsafe(request, bodyValue);
+    return sent(HttpClientRequest.bodyJsonUnsafe(request, bodyValue));
   }
 
   if (isFormUrlEncoded(contentType)) {
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     if (typeof bodyValue === "object" && bodyValue !== null && !Array.isArray(bodyValue)) {
       // Serialize ourselves so OAS3 encoding (style/explode/deepObject)
       // is honored. bodyUrlParams doesn't know about per-field style.
       const serialized = serializeFormUrlEncoded(bodyValue as Record<string, unknown>, encoding);
-      return HttpClientRequest.bodyText(request, serialized, contentType);
+      return sent(HttpClientRequest.bodyText(request, serialized, contentType));
     }
     // Non-object body — fall back to platform helper (handles URLSearchParams).
-    return HttpClientRequest.bodyUrlParams(
-      request,
-      bodyValue as Parameters<typeof HttpClientRequest.bodyUrlParams>[1],
+    return sent(
+      HttpClientRequest.bodyUrlParams(
+        request,
+        bodyValue as Parameters<typeof HttpClientRequest.bodyUrlParams>[1],
+      ),
     );
   }
 
   if (isMultipartFormData(contentType)) {
     if (bodyValue instanceof FormData) {
-      return HttpClientRequest.bodyFormData(request, bodyValue);
+      return sent(HttpClientRequest.bodyFormData(request, bodyValue));
     }
     if (typeof bodyValue === "object" && bodyValue !== null) {
-      return HttpClientRequest.bodyFormDataRecord(
-        request,
-        coerceFormDataRecord(bodyValue as Record<string, unknown>, encoding),
-      );
+      const coerced = coerceFormDataRecord(bodyValue as Record<string, unknown>, encoding);
+      if (!coerced.ok) return { ok: false, invalidFileField: coerced.field };
+      return sent(HttpClientRequest.bodyFormDataRecord(request, coerced.record));
     }
     // String / primitive under multipart is almost certainly wrong on the
     // caller's end — send it as text with their declared content type and
     // let the server produce a useful error.
-    return HttpClientRequest.bodyText(request, String(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, String(bodyValue), contentType));
   }
 
   if (isOctetStream(contentType)) {
     const bytes = toUint8Array(bodyValue);
-    if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
+    if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     // Unknown shape — serialize as JSON so at least the payload is visible.
-    return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
   }
 
   if (isXmlContentType(contentType) || isTextContentType(contentType)) {
     if (typeof bodyValue === "string") {
-      return HttpClientRequest.bodyText(request, bodyValue, contentType);
+      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
     }
     const bytes = toUint8Array(bodyValue);
-    if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
+    if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
     // Object body under text/xml is unusual — stringify so the caller sees
     // their own payload instead of `[object Object]`.
-    return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+    return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
   }
 
   // Unknown content type: respect what the caller supplied.
   if (typeof bodyValue === "string") {
-    return HttpClientRequest.bodyText(request, bodyValue, contentType);
+    return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
   }
   const bytes = toUint8Array(bodyValue);
-  if (bytes) return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
-  return HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType);
+  if (bytes) return sent(HttpClientRequest.bodyUint8Array(request, bytes, contentType));
+  return sent(HttpClientRequest.bodyText(request, JSON.stringify(bodyValue), contentType));
 };
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1127,14 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
         : contentsOpt && contentsOpt[0]
           ? Option.getOrUndefined(contentsOpt[0].encoding)
           : undefined;
-      request = applyRequestBody(request, chosenCt, bodyValue, chosenEncoding);
+      const applied = applyRequestBody(request, chosenCt, bodyValue, chosenEncoding);
+      if (!applied.ok) {
+        return yield* new OpenApiInvocationError({
+          message: `Request body field \`${applied.invalidFileField}\` is not a valid file: \`data\` is not valid base64`,
+          statusCode: Option.none(),
+        });
+      }
+      request = applied.request;
     }
   }
 

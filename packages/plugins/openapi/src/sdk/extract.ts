@@ -185,37 +185,79 @@ const isJsonMediaType = (mediaType: string): boolean => {
 const binaryStringSchema = (schema: Record<string, unknown>): boolean =>
   stringType(schema) && (schema.format === "binary" || schema.format === "byte");
 
+const arrayType = (schema: Record<string, unknown>): boolean =>
+  schema.type === "array" || (Array.isArray(schema.type) && schema.type.includes("array"));
+
+const nullableType = (schema: Record<string, unknown>): boolean =>
+  Array.isArray(schema.type) && schema.type.includes("null");
+
 const isMultipartMediaType = (mediaType: string): boolean =>
   normalizedMediaType(mediaType) === "multipart/form-data";
 
+/**
+ * Replace one binary/byte string node with the tool-file schema, carrying the
+ * spec author's own annotations across. A `type: ["string", "null"]` node stays
+ * nullable as `anyOf: [<file>, { type: "null" }]`, since the tool-file schema is
+ * an object and cannot express null through a type array.
+ */
+const toolFileSchemaFor = (node: Record<string, unknown>): Record<string, unknown> => {
+  const annotations: Record<string, unknown> = {};
+  if (typeof node.title === "string") annotations.title = node.title;
+  if (typeof node.description === "string") annotations.description = node.description;
+
+  return nullableType(node)
+    ? { anyOf: [ToolFileJsonSchema, { type: "null" }], ...annotations }
+    : { ...(ToolFileJsonSchema as Record<string, unknown>), ...annotations };
+};
+
+/**
+ * Rewrite one multipart property. Deliberately limited to the two shapes the
+ * invoke-side form encoder can actually deliver: a property that IS a binary
+ * string, and an array property whose direct items are binary strings.
+ */
+const multipartFileProperty = (property: unknown): unknown => {
+  if (!isRecord(property)) return property;
+  if (binaryStringSchema(property)) return toolFileSchemaFor(property);
+
+  const items = property.items;
+  if (arrayType(property) && isRecord(items) && binaryStringSchema(items)) {
+    return { ...property, items: toolFileSchemaFor(items) };
+  }
+
+  return property;
+};
+
+/**
+ * Advertise `multipart/form-data` binary fields as tool files.
+ *
+ * The rewrite is scoped to the request schema's own `properties` map — never a
+ * blind walk of every object key — so `default`, `example`, and vendor
+ * extensions that happen to look like a binary string schema are left alone.
+ *
+ * Two shapes are NOT rewritten, because the invoke-side encoder cannot honor
+ * them and advertising an input it would silently JSON-stringify is worse than
+ * not advertising it at all:
+ *   - binary fields nested inside an object property (only top-level properties
+ *     and direct array items become form parts);
+ *   - a body schema, or a property, behind a `$ref`. Component schemas are
+ *     carried through unresolved by design — the streaming compile path never
+ *     materializes `components.schemas` — so there is nothing to inspect here.
+ */
 const multipartFileInputSchema = (schema: unknown, mediaType: string): unknown => {
-  if (!isMultipartMediaType(mediaType)) return schema;
+  if (!isMultipartMediaType(mediaType) || !isRecord(schema)) return schema;
 
-  const rewrite = (node: unknown): unknown => {
-    if (Array.isArray(node)) {
-      let changed = false;
-      const out = node.map((item) => {
-        const next = rewrite(item);
-        if (next !== item) changed = true;
-        return next;
-      });
-      return changed ? out : node;
-    }
+  const properties = schema.properties;
+  if (!isRecord(properties)) return schema;
 
-    if (!isRecord(node)) return node;
-    if (binaryStringSchema(node)) return ToolFileJsonSchema;
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [name, property] of Object.entries(properties)) {
+    const next = multipartFileProperty(property);
+    if (next !== property) changed = true;
+    out[name] = next;
+  }
 
-    let changed = false;
-    const out: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(node)) {
-      const next = rewrite(value);
-      if (next !== value) changed = true;
-      out[key] = next;
-    }
-    return changed ? out : node;
-  };
-
-  return rewrite(schema);
+  return changed ? { ...schema, properties: out } : schema;
 };
 
 const base64EncodingFromDescription = (schema: Record<string, unknown>): "base64" | "base64url" =>
