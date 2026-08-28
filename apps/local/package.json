@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/local",
-  "version": "1.5.42",
+  "version": "1.6.2",
   "private": true,
   "type": "module",
   "exports": {

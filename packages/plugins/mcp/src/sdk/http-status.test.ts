@@ -1,4 +1,12 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeAll, describe, expect, it } from "@effect/vitest";
+import { InsufficientScopeError, SdkErrorCode, SdkHttpError } from "@modelcontextprotocol/client";
+
+import { loadMcpClientSdk } from "./client-module";
+
+// Classification consults the lazily-loaded client module (client-module.ts);
+// in prod every SDK error is preceded by a connect, which loads it. Mirror
+// that precondition here — these tests construct SDK errors directly.
+beforeAll(() => loadMcpClientSdk());
 
 // oxlint-disable executor/no-error-constructor -- boundary: these tests reproduce the MCP SDK's own transport rejections, which are built-in Errors
 import { insufficientScopeFromCause } from "./http-status";
@@ -9,7 +17,8 @@ import { insufficientScopeFromCause } from "./http-status";
 //   - with an authProvider (the production OAuth path): the StreamableHTTP
 //     transport consumes the insufficient_scope challenge itself, retries
 //     with the broader scope, and only when THAT fails throws the fixed
-//     "Server returned 403 after trying upscoping" message.
+//     typed `InsufficientScopeError`, or after retry exhaustion the fixed
+//     `SdkHttpError` step-up message.
 describe("insufficientScopeFromCause", () => {
   it("detects the OAuth error body embedded in a transport message", () => {
     expect(
@@ -31,9 +40,21 @@ describe("insufficientScopeFromCause", () => {
     ).toBe(true);
   });
 
-  it("detects the SDK's exhausted-upscoping failure (the authProvider path)", () => {
+  it("detects the SDK's typed insufficient-scope failure", () => {
     expect(
-      insufficientScopeFromCause(new Error("Server returned 403 after trying upscoping")),
+      insufficientScopeFromCause(new InsufficientScopeError({ requiredScope: "files.read" })),
+    ).toBe(true);
+  });
+
+  it("detects the SDK's exhausted step-up failure (the authProvider path)", () => {
+    expect(
+      insufficientScopeFromCause(
+        new SdkHttpError(
+          SdkErrorCode.ClientHttpForbidden,
+          "Server returned 403 insufficient_scope after step-up re-authorization (retry limit 2 reached)",
+          { status: 403 },
+        ),
+      ),
     ).toBe(true);
   });
 

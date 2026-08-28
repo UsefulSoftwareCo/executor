@@ -10,6 +10,7 @@ import type {
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import type { SelfHostDbHandle } from "../db/self-host-db";
+import type { SelfHostConfig } from "../config";
 import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
@@ -128,13 +129,24 @@ const makeApprovalHandler =
  * instance provided; it still requires `IdentityProvider` from the resolved
  * identity seam. Returns the three seam Layers plus the `close()` lifetime hook
  * the app wires into shutdown.
+ *
+ * Takes the already-resolved `SelfHostConfig` rather than reading it here: the
+ * app loads it once at boot, and `loadConfig()` refuses to boot on a malformed
+ * operator knob, so calling it from a seam factory would both hide an env read
+ * behind construction and move that failure off the boot path.
  */
 export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
-  webBaseUrl?: string,
+  config: SelfHostConfig,
 ): SelfHostMcpSeams => {
-  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
+  // The pinned public origin keeps browser-approval URLs reachable behind a
+  // reverse proxy (not the internal 127.0.0.1 bind from the request URL).
+  const sessionStore = makeSelfHostMcpSessionStore(
+    dbHandle,
+    config.webBaseUrl,
+    config.mcpSessionIdleTtlMs,
+  );
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );

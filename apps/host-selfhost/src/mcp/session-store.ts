@@ -36,6 +36,7 @@ export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-sto
 export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
+  sessionIdleTtlMs?: number,
 ): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
@@ -48,7 +49,10 @@ export const makeSelfHostMcpSessionStore = (
           selfHostAnalytics.record(`artifact_${action}`, { via: "agent" }),
       },
     ),
-    { webBaseUrl },
+    {
+      ...(webBaseUrl === undefined ? {} : { webBaseUrl }),
+      ...(sessionIdleTtlMs === undefined ? {} : { sessionIdleTtlMs }),
+    },
   );
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */

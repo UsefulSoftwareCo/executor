@@ -160,19 +160,32 @@ export class McpAuth extends Context.Service<
   }
 >()("@executor-js/cloud/McpAuth") {}
 
+/**
+ * The organization an MCP request was authorized against. The full record, not
+ * just its id: the same request later needs the org's display name and slug to
+ * open a session, and re-reading the row for them (from the session Durable
+ * Object, on a fresh database connection) is a redundant failure point on a
+ * request that already has the answer.
+ */
+export type AuthorizedMcpOrganization = {
+  readonly id: string;
+  readonly name: string;
+  readonly slug?: string;
+};
+
 export class McpOrganizationAuth extends Context.Service<
   McpOrganizationAuth,
   {
     /**
      * Authorize `accountId` against an org SELECTOR — a WorkOS org id
      * (`org_…`, from the token or a legacy URL) or the org's URL slug (the
-     * form the install card prints). Returns the resolved org id when the
+     * form the install card prints). Returns the resolved organization when the
      * caller holds an active membership, `null` otherwise.
      */
     readonly authorize: (
       accountId: string,
       organizationSelector: string,
-    ) => Effect.Effect<string | null, unknown>;
+    ) => Effect.Effect<AuthorizedMcpOrganization | null, unknown>;
   }
 >()("@executor-js/cloud/McpOrganizationAuth") {}
 
@@ -216,7 +229,9 @@ export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
       Effect.flatMap((organizationId) =>
         organizationId
           ? authorizeOrganization(accountId, organizationId).pipe(
-              Effect.map((org) => (org ? org.id : null)),
+              Effect.map((org) =>
+                org ? ({ id: org.id, name: org.name, slug: org.slug } as const) : null,
+              ),
             )
           : Effect.succeed(null),
       ),

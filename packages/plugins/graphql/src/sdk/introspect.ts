@@ -235,18 +235,64 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   queryParams?: Record<string, string>,
 ) {
   const client = yield* HttpClient.HttpClient;
-  const requestEndpoint =
-    queryParams && Object.keys(queryParams).length > 0
-      ? (() => {
-          const url = new URL(endpoint);
-          for (const [name, value] of Object.entries(queryParams)) {
-            url.searchParams.set(name, value);
-          }
-          return url.toString();
-        })()
-      : endpoint;
+  // Hand `post` a URL OBJECT rather than a string, deliberately.
+  //
+  // `HttpClientRequest.setUrl` keeps a string verbatim as `request.url`, and
+  // every `HttpClientError` renders `${method} ${request.url}` into its
+  // `message` getter. The `query` carrier is a supported credential placement,
+  // so an endpoint reached with `?token=…` put that secret inside the error
+  // message — and the `Effect.logError(…, cause)` below writes the message
+  // straight to the log on any transport failure or non-JSON response.
+  //
+  // Given a URL object, `setUrl` moves the query into `request.urlParams` and
+  // clears it from `request.url`, so the same failure logs the bare endpoint.
+  // The query still reaches the upstream: the client recombines url + urlParams
+  // when it executes the request. Handling the endpoint's OWN query the same
+  // way (not just the `queryParams` argument) matters — a configured endpoint
+  // can carry a credential in its query string too.
+  //
+  // The split is NOT byte-transparent, and deliberately so. Recombination
+  // appends each pair through `URLSearchParams`, whose form-urlencoded
+  // serializer writes a space as `+` rather than `%20`, percent-encodes `~` and
+  // `!'()`, and gives a valueless `?flag` a trailing `=`. Key order, duplicate
+  // keys and already-encoded reserved characters survive unchanged. No request
+  // shape avoids this: the raw query bytes only survive inside `request.url`,
+  // which is the one field every error message renders, so byte-transparency
+  // and keeping the credential out of the log cannot both hold. Log safety
+  // wins. `introspect-request-url.test.ts` pins the exact resulting URLs.
+  //
+  // An endpoint that does not parse has no such split available: it would go
+  // verbatim into `request.url` — query, credential and all — and `queryParams`
+  // could not be applied to it at all. Reject it instead of dialing a request
+  // that silently omits the credential the caller asked us to send. The
+  // endpoint is deliberately left out of the message, since it may be carrying
+  // the secret.
+  if (!URL.canParse(endpoint)) {
+    return yield* new GraphqlIntrospectionError({
+      message: "GraphQL endpoint is not a valid URL",
+      reason: "invalid-endpoint",
+    });
+  }
 
-  let request = HttpClientRequest.post(requestEndpoint).pipe(
+  const requestUrl = new URL(endpoint);
+
+  // Userinfo (`https://user:pass@host/…`) is a credential placement with no
+  // split of its own: `URL` keeps it in the origin, so it stays in
+  // `request.url` and renders into every `HttpClientError` message exactly the
+  // way a query-carried secret used to. Reject it rather than log it, with the
+  // same constant message that echoes no part of the endpoint.
+  if (requestUrl.username !== "" || requestUrl.password !== "") {
+    return yield* new GraphqlIntrospectionError({
+      message: "GraphQL endpoint must not embed credentials in the URL",
+      reason: "invalid-endpoint",
+    });
+  }
+
+  for (const [name, value] of Object.entries(queryParams ?? {})) {
+    requestUrl.searchParams.set(name, value);
+  }
+
+  let request = HttpClientRequest.post(requestUrl).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
     HttpClientRequest.setHeader("Accept", "application/json"),
     HttpClientRequest.setHeader("User-Agent", "executor-graphql"),

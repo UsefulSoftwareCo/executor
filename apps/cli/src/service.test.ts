@@ -185,6 +185,36 @@ describe("service unit generation", () => {
     expect(wrapper).not.toContain("EXECUTOR_AUTH_PASSWORD");
   });
 
+  it("preserves custom TLS trust paths in the supervised environment", () => {
+    const previousNodeExtraCaCerts = process.env.NODE_EXTRA_CA_CERTS;
+    const previousSslCertFile = process.env.SSL_CERT_FILE;
+    const previousSslCertDir = process.env.SSL_CERT_DIR;
+    process.env.NODE_EXTRA_CA_CERTS = "/Users/x/.certs/node-extra.pem";
+    process.env.SSL_CERT_FILE = "/Users/x/.certs/combined.pem";
+    process.env.SSL_CERT_DIR = "/Users/x/.certs";
+
+    const wrapper = generateWindowsDaemonWrapper(
+      {
+        executablePath: "C:\\Program Files\\Executor\\executor.exe",
+        port: 4789,
+        version: "1.5.10",
+      },
+      "C:\\Users\\x\\.executor",
+      "C:\\Users\\x\\.executor\\logs",
+    );
+
+    if (previousNodeExtraCaCerts === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+    else process.env.NODE_EXTRA_CA_CERTS = previousNodeExtraCaCerts;
+    if (previousSslCertFile === undefined) delete process.env.SSL_CERT_FILE;
+    else process.env.SSL_CERT_FILE = previousSslCertFile;
+    if (previousSslCertDir === undefined) delete process.env.SSL_CERT_DIR;
+    else process.env.SSL_CERT_DIR = previousSslCertDir;
+
+    expect(wrapper).toContain('set "NODE_EXTRA_CA_CERTS=/Users/x/.certs/node-extra.pem"');
+    expect(wrapper).toContain('set "SSL_CERT_FILE=/Users/x/.certs/combined.pem"');
+    expect(wrapper).toContain('set "SSL_CERT_DIR=/Users/x/.certs"');
+  });
+
   it("sanitizes cmd.exe metacharacters in baked env values (cmdSetValue)", () => {
     // A `"` in PATH would close the `set "PATH=..."` quote early and let a
     // `& cmd &` fragment run at boot as the user; strip it (illegal in a path

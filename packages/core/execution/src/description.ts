@@ -74,6 +74,28 @@ const connectionPath = (connection: Connection): string => {
 // connected.
 const INVENTORY_LIMIT = 50;
 
+/** One inventory line per integration: `` - `slug` ``. Owned here beside the
+ *  formatter below so {@link parseIntegrationInventory} cannot drift from it. */
+const INVENTORY_ITEM_PATTERN = /^- `([^`]+)`$/;
+
+/**
+ * Recover the integration slugs from a built execute description — the exact
+ * list `formatIntegrationInventory` rendered, overflow marker excluded. Lets a
+ * host derive per-integration surfaces (the opt-in `search_<integration>` MCP
+ * tools) from the description it already holds, without a second
+ * `connections.list()` that could disagree with what the model reads.
+ */
+export const parseIntegrationInventory = (description: string): readonly string[] => {
+  const index = description.indexOf(INTEGRATION_INVENTORY_HEADER);
+  if (index === -1) return [];
+  const slugs: string[] = [];
+  for (const line of description.slice(index).split("\n")) {
+    const match = INVENTORY_ITEM_PATTERN.exec(line);
+    if (match?.[1]) slugs.push(match[1]);
+  }
+  return slugs;
+};
+
 const formatIntegrationInventory = (connections: readonly Connection[]): string => {
   const slugs = [...new Set(connections.map((connection) => String(connection.integration)))].sort(
     (a, b) => a.localeCompare(b),

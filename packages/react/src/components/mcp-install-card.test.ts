@@ -1,6 +1,31 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { buildMcpHttpEndpoint, buildMcpInstallCommand, shellQuoteWord } from "./mcp-install-card";
+import {
+  buildMcpHttpEndpoint,
+  buildMcpInstallCommand,
+  mcpInstallPreferencesStorageKey,
+  shellQuoteWord,
+} from "./mcp-install-card";
+
+describe("MCP install preference storage key", () => {
+  it("gives each organization its own key", () => {
+    // `localStorage` is per-origin. Two orgs signed in through one browser —
+    // or two people sharing a machine — must not inherit each other's
+    // transport and elicitation choices, because the command they render is
+    // different.
+    expect(mcpInstallPreferencesStorageKey("acme")).not.toBe(
+      mcpInstallPreferencesStorageKey("globex"),
+    );
+    expect(mcpInstallPreferencesStorageKey("acme")).toBe("executor.mcpInstallPreferences.v1.acme");
+  });
+
+  it("falls back to one bucket on hosts with no organization", () => {
+    // Local and desktop are single-user and carry no org slug; they get a
+    // stable key rather than an unscoped one shared with every cloud org.
+    expect(mcpInstallPreferencesStorageKey(null)).toBe("executor.mcpInstallPreferences.v1.local");
+    expect(mcpInstallPreferencesStorageKey(null)).not.toBe(mcpInstallPreferencesStorageKey("acme"));
+  });
+});
 
 describe("MCP install command rendering", () => {
   it("quotes shell words without giving scope paths command syntax", () => {
@@ -109,6 +134,46 @@ describe("MCP install command rendering", () => {
     expect(buildMcpHttpEndpoint({ origin: null, desktop: null, artifacts: false })).toBe(
       "<this-server>/mcp?artifacts=false",
     );
+  });
+
+  // Per-integration search tools are off by default, so only the opt-in is
+  // ever spelled out: a card left alone must still produce the bare endpoint.
+  it("emits the search tools opt-in only when enabled", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        searchTools: false,
+      }),
+    ).toBe("https://executor.example/mcp");
+
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        searchTools: true,
+      }),
+    ).toBe("https://executor.example/mcp?search_tools=true");
+
+    // Both non-defaults together, in the order the card renders them.
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        artifacts: false,
+        searchTools: true,
+      }),
+    ).toBe("https://executor.example/mcp?artifacts=false&search_tools=true");
+  });
+
+  it("passes the search tools opt-in to the stdio CLI as a flag", () => {
+    expect(
+      buildMcpInstallCommand({ mode: "stdio", isDev: false, origin: null, searchTools: false }),
+    ).toBe("npx add-mcp 'executor mcp' --name executor");
+
+    expect(
+      buildMcpInstallCommand({ mode: "stdio", isDev: false, origin: null, searchTools: true }),
+    ).toBe("npx add-mcp 'executor mcp --search-tools' --name executor");
   });
 
   it("passes the artifacts opt-out to the stdio CLI as a flag", () => {

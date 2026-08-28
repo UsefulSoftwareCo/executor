@@ -102,9 +102,14 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     return { ...handle, end: () => handle.close() };
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    _storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
     // Single-tenant: every Access principal belongs to the one configured org,
-    // so there is nothing to resolve — stamp the configured org name.
+    // so there is nothing to resolve — stamp the configured org name. Nothing
+    // to reuse from the stored meta either; config is already the cheapest and
+    // freshest source there is.
     return Effect.succeed({
       organizationId: token.organizationId,
       organizationName: this.cfConfig.organizationName,
@@ -113,6 +118,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       resource: token.resource,
       elicitationMode: token.elicitationMode,
       artifactsEnabled: token.artifactsEnabled,
+      searchToolsEnabled: token.searchToolsEnabled,
     } satisfies SessionMeta);
   }
 
@@ -149,6 +155,9 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         // persisted without a value restores to the default, same as a fresh
         // connection whose URL says nothing about `?artifacts=`.
         artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Per-integration search tools are off by default, opt-in per
+        // connection (`?search_tools=true`). Same restore rule as artifacts.
+        searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,

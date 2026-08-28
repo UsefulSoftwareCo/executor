@@ -1,5 +1,125 @@
 # executor
 
+## 1.6.2
+
+### Patch Changes
+
+- [#1802](https://github.com/UsefulSoftwareCo/executor/pull/1802) [`2afb6e8`](https://github.com/UsefulSoftwareCo/executor/commit/2afb6e86ddf081afb8a246d76291a7ae668e05f4) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Concurrent API requests no longer share one database provider build**
+
+  Every HTTP request gets its own database connection, opened when the request fiber's scope opens and closed when it closes. The middleware that builds a request's execution stack, however, captures the boot fiber's context once at layer-construction time and re-applies it to every request. A captured context carries Effect's current memoization map, and re-applying it replaced the fresh per-request map with the boot one — which every in-flight request in the isolate shares.
+
+  The per-request stack build then memoized itself there. Sequential requests still rebuilt, because the memo entry is released once the request that built it finishes, so the problem was confined to requests that overlap: the second request reused the first one's stack build, and with it the first one's database connection. A request could therefore issue queries on a connection it did not own, and lose that connection mid-flight when the owner finished and closed it — typically surfacing as a failed read after a slow outbound call, on a request that had already read successfully.
+
+  The stack is now built with a request-local memoization scope, so overlapping requests each build their own stack over their own connection. The captured context still carries the long-lived services it exists to carry. The two other per-request provider builds that ran under a captured context — the account provider and the admin-users provider — are built the same way, for the same reason.
+
+- [#1807](https://github.com/UsefulSoftwareCo/executor/pull/1807) [`78311a1`](https://github.com/UsefulSoftwareCo/executor/commit/78311a1ce506705a2420239fd96823203a9a1374) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Desktop: restore the macOS signing entitlements and app icon that were accidentally removed from the build inputs, and fail fast at PR time and before publishing when any configured build resource is missing. The v1.6.1 desktop build could not be signed; this release supersedes it.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/runtime-quickjs@1.6.2
+  - @executor-js/local@1.6.2
+  - @executor-js/api@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1576](https://github.com/UsefulSoftwareCo/executor/pull/1576) [`6535a74`](https://github.com/UsefulSoftwareCo/executor/commit/6535a74de4860e376e5a2e273cb2d5a662f98c5c) Thanks [@GeiserX](https://github.com/GeiserX)! - **The CLI's server-connection store is written owner-only, and two of its tests now actually run**
+
+  `~/.executor/server-connections.json` holds live credentials for a hosted server — a bearer token, or an OAuth access token together with its long-lived refresh token, rewritten on every silent refresh. It was created with no explicit mode, so the process umask applied and it landed world-readable (0644 by default). Any other account on the machine — or anything that copies a home directory, such as a backup or a container layer — could read a durable credential until the user ran `executor logout`.
+
+  It is now created `0600` with a follow-up `chmod`, matching what the local-server manifest already does for the sibling secret it keeps under `server-control/`. Both steps are needed: `mode` applies only on create, and the `chmod` covers rewriting a store that already exists with looser permissions — which is the common path here, since the file is rewritten on every token refresh.
+
+  Separately, two tests in `server-profile.test.ts` were written as `it("…", () => Effect.gen(…))`. An `Effect` is not a thenable, so Vitest treated each as passing without ever running its body — a deliberately falsified assertion still passed. They are now `it.effect` and execute for real. No production behaviour was wrong; the tests simply were not checking it.
+
+- [#1454](https://github.com/UsefulSoftwareCo/executor/pull/1454) [`e8ea62c`](https://github.com/UsefulSoftwareCo/executor/commit/e8ea62c8ba295931cf969cd310278b6a50771bdc) Thanks [@jadch](https://github.com/jadch)! - Prevent concurrent SQLite data-migration runners from failing when another runner commits the same ledger stamp first.
+
+- [#1579](https://github.com/UsefulSoftwareCo/executor/pull/1579) [`31e17c7`](https://github.com/UsefulSoftwareCo/executor/commit/31e17c725f0987f86896519f0626f9c94d39ccb7) Thanks [@GeiserX](https://github.com/GeiserX)! - **The desktop settings store is written owner-only**
+
+  `settings.json` holds `serverProfiles`, which carries a remote server's credential — a bearer token, or a basic-auth username and password — for any "Custom server" the user connects to. `conf` (under electron-store) defaults to `configFileMode: 0o666`, so with no explicit mode the file was created `0644`. On Linux, where `~/.config` is not reliably `0700`, that is readable by every other account on the machine. macOS is protected by `~/Library` being `0700` and Windows by ACLs, so this is primarily a Linux-desktop exposure — but owner-only credential files are already this app's standard: `local-auth.ts` writes `auth.json` at `0o600`, and the sidecar manifest is chmodded the same way.
+
+  One option is sufficient here, rather than the mode-plus-chmod pair used elsewhere: `atomically` chmods the temp inode only when the requested mode differs from its own default, and the atomic rename then carries the tight mode onto an already-loose file. Verified against the installed `conf` — with no option a fresh file lands `0644`; with `configFileMode: 0o600` a fresh file lands `0600` and an existing `0644` file becomes `0600` on the next write.
+
+- [#1582](https://github.com/UsefulSoftwareCo/executor/pull/1582) [`e8e97c4`](https://github.com/UsefulSoftwareCo/executor/commit/e8e97c4c008fce702ee07ec0ffe2a8d3e6946a21) Thanks [@GeiserX](https://github.com/GeiserX)! - **An MCP health check no longer reports `healthy` when the connection's credential is missing**
+
+  Rendering skips an auth placement whose value is unresolved — that is the renderer's documented behaviour, and callers own the missing-value policy. The MCP health check had no such policy, so it dialled unauthenticated, and any server that lists tools without auth answered. `discoverTools` succeeding maps straight to `healthy`, so a connection whose credential was gone reported as healthy.
+
+  Health status is the signal telling a user to re-authenticate, which makes `healthy` the one answer it must never give in that state. The check now reports `expired` with the unresolved input names, mirroring the OpenAPI health check, which already did exactly this.
+
+  The MCP tool-invocation path already refused for the same reason. `resolveTools` is deliberately left alone — its own comment records that discovery tolerating unresolved credentials is intended, since an open server lists tools unauthenticated.
+
+- [#1741](https://github.com/UsefulSoftwareCo/executor/pull/1741) [`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Opt-in per-integration search tools on the MCP surface**
+
+  Connecting with `?search_tools=true` (stdio: `executor mcp --search-tools`) adds one minimally-described `search_<integration>` MCP tool per connected integration, so the integration namespaces reach the model as tool names it can see without calling anything. Each call routes through the same flow as `tools.search({ namespace })` inside `execute`, and the tool list comes from the same inventory the `execute` description shows. Off by default; a clean endpoint URL is unchanged.
+
+- [#1573](https://github.com/UsefulSoftwareCo/executor/pull/1573) [`45ba141`](https://github.com/UsefulSoftwareCo/executor/commit/45ba1419b4e33ad10b0856c5fbc40fabc8f6efe1) Thanks [@GeiserX](https://github.com/GeiserX)! - **The MCP connection pool no longer keeps credentials in its cache key**
+
+  A pooled remote MCP session is looked up by a key describing the connection's identity, and that key included the connection's resolved credential values — plus the headers and query params those same secrets had already been rendered into. The key is retained as a `Map` key for the pool's lifetime, so the secret stayed readable in process memory long after the call that needed it had finished, with nothing left to read it.
+
+  The key is now the SHA-256 digest of that identity rather than the identity itself. Reuse is unchanged, because equal identities still produce equal keys, and separation is unchanged too: a rotated access token, a different rendered auth header and a credential carried in a query param each still dial a fresh session instead of reusing one authenticated as somebody else. Hashing the whole identity rather than only the fields known to be sensitive means a field added later is covered without anyone having to remember it carries a secret.
+
+  Nothing reads the key back — the pool only compares it, and it reaches no log, span or error message — so nothing observable changes.
+
+- [#1800](https://github.com/UsefulSoftwareCo/executor/pull/1800) [`eac13e7`](https://github.com/UsefulSoftwareCo/executor/commit/eac13e7032c027d866c06728f1d5b634fd9ef7dd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Idle MCP session runtimes are actually reclaimed**
+
+  The MCP session Durable Object has an idle timeout that disposes a session's execution runtime — the execution engine and its executor closure, the built tool catalog, and a live database handle — once the session has gone quiet. That timeout never ran.
+
+  The session arms an idle alarm on every request. The agents framework independently recomputes the Durable Object alarm from its own schedule table and keep-alive refcount, and when it finds neither it does not leave the alarm alone: it deletes it. It releases the last keep-alive reference at the end of every ordinary tool call, from a `waitUntil` that runs just after the response goes out — so the idle alarm the session had armed moments earlier was erased, and a session that had just served a request was left with no alarm at all. Its runtime then stayed resident until the platform evicted the whole object.
+
+  Durable Objects are colocated many-to-one onto an isolate with a single heap, so runtimes that are never reclaimed accumulate there. When the heap is exhausted the allocation that fails is whichever comes next, anywhere in the isolate — which is why the failure tended to surface from storage rather than from the runtimes that had consumed the memory.
+
+  The idle deadline belongs to the session, not to the framework's scheduler, so it is now re-asserted after the framework has arranged whatever it needs — and only while a runtime is actually resident, since once there is nothing left to reclaim the framework's answer is correct.
+
+  Disposal also now emits a span carrying a per-isolate resident-runtime gauge, alongside the same gauge on runtime build, so the reclaim can be confirmed in production rather than inferred.
+
+- [#1609](https://github.com/UsefulSoftwareCo/executor/pull/1609) [`662ebe2`](https://github.com/UsefulSoftwareCo/executor/commit/662ebe28d5109156a1aa3b27eaa80ba9daacaf11) Thanks [@timkley](https://github.com/timkley)! - **Fix: declare the OAuth application type during dynamic client registration**
+
+  Dynamic OAuth registrations now identify HTTPS callbacks as web applications
+  and loopback HTTP callbacks as native applications. This lets strict OAuth
+  servers validate Executor's redirect URI against the correct client type.
+
+- [#1570](https://github.com/UsefulSoftwareCo/executor/pull/1570) [`e66a3d8`](https://github.com/UsefulSoftwareCo/executor/commit/e66a3d893c948fcccc7fc028870d051cb2d31860) Thanks [@GeiserX](https://github.com/GeiserX)! - **The OAuth popup clears its result out of `localStorage` after handing it over**
+
+  The popup writes its result to `localStorage` as the fallback completion channel, because `postMessage` is severed when a provider's consent page sets COOP and `BroadcastChannel` can be partitioned or raced by the auto-close. Nothing removed that entry afterwards, so the payload — which carries the identity label, an email, and on failure the error preview — stayed parked in the user's browser profile.
+
+  The entry is now cleared once the handover has had time to land, and on `pagehide` as a backstop — the failure page never auto-closes so the user can read the error, and closing it by hand would otherwise cancel the pending timer and strand the entry. This cannot cost a listener the result: a `storage` event captures `newValue` at dispatch, so an opener that has been notified already holds it.
+
+- [#1574](https://github.com/UsefulSoftwareCo/executor/pull/1574) [`c8bb857`](https://github.com/UsefulSoftwareCo/executor/commit/c8bb8578c3afdc9731274d9e9abc68d7ce32d9ab) Thanks [@GeiserX](https://github.com/GeiserX)! - **The 1Password service-account token is cleared from the op-js global after each call**
+
+  `@1password/op-js` keeps the service-account token on a module-level CLI instance (`cli.serviceAccountToken`) and reads it when it spawns `op`. The CLI backend set that global before each call and never cleared it, so one reachable reference to the token stayed live for the rest of the process.
+
+  It is now cleared as soon as the call that needed it is done, on success, failure and interruption alike. Authentication is unaffected: every read and write of that global already happens inside the backend's semaphore, so the next operation re-sets the token before it spawns anything.
+
+  This is hygiene rather than a boundary change. No unrelated `op` child ever received a stale token — every call routes through the same critical section that sets the correct one immediately before invoking — and the token is separately persisted in plaintext in the plugin's config blob, so an attacker's reach is unchanged. What it removes is a long-lived reachable reference that nothing needed to keep.
+
+- [#1749](https://github.com/UsefulSoftwareCo/executor/pull/1749) [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Slim the per-integration `search_<integration>` tool definitions to under half their size: one shared one-line description (the tool name already carries the namespace) and a single bare `query` parameter, dropping the `limit`/`offset` knobs. A session pays for these definitions once per connected integration, so the surface now costs ~2k tokens instead of ~5k at 30 integrations; paging through a namespace belongs in `execute`.
+
+- [#1798](https://github.com/UsefulSoftwareCo/executor/pull/1798) [`69b0e64`](https://github.com/UsefulSoftwareCo/executor/commit/69b0e6413737599f11848b3877048f789ca84ac5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **The packed Worker toolchain is verified at build time, and an incomplete copy is now reported instead of silently ignored**
+
+  `@cloudflare/worker-bundler` cannot live inside the compiled binary: bunfs has no `node_modules`, so a bare specifier is unresolvable there by construction. The build instead copies the package's `dist/` next to the executable and `native-bindings.ts` publishes that path as `EXECUTOR_WORKER_BUNDLER_DIR` for consumers to load from.
+
+  That handoff was described in two places that were free to drift, and did. The build writes `dist/index.bundled.js` — the entry consumers actually load, packed so it has no bare imports of its own — while the runtime check only looked for `dist/index.js` and `dist/esbuild.wasm`. Nothing verified the staged copy after the compile, so a partial staging produced a binary that looked fine on the build machine and failed on the user's, at startup. Worse, the runtime check failed open: when a file was missing it silently declined to set the environment variable, leaving a consumer to fall through to the bare specifier and crash.
+
+  The required file list is now one shared contract used by both sides, so they cannot disagree. The build asserts the staged copy after compiling each target — every required file present, a size floor on the packed entry, and the `\0asm` magic on the wasm so a truncated copy cannot pass — turning a packaging slip into a failed build rather than a broken install. At runtime, a directory that is present but incomplete is reported on stderr naming the missing files, instead of being swallowed. An absent directory stays quiet, since that is the normal non-packaged path.
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/local@1.6.1
+  - @executor-js/runtime-quickjs@1.6.1
+
+## 1.6.0
+
+### Patch Changes
+
+- [#1737](https://github.com/UsefulSoftwareCo/executor/pull/1737) [`9296f36`](https://github.com/UsefulSoftwareCo/executor/commit/9296f36a8adbfdeec700ce33c37987127857b2fd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Scope the `skills` tool to Executor's own documentation. Its description, argument, index, and unknown-name error now state that it serves a fixed catalog of how-to docs for this server's tools, so an agent on a host without a skill tool of its own no longer reads it as a general reader for the harness's or the user's skills.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/local@1.6.0
+  - @executor-js/api@1.4.63
+  - @executor-js/runtime-quickjs@1.6.0
+
 ## 1.5.42
 
 ### Patch Changes

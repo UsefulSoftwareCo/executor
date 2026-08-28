@@ -1,5 +1,35 @@
 # @executor-js/cloudflare
 
+## 0.0.44
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/execution@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.43
+
+### Patch Changes
+
+- Updated dependencies [[`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095), [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/execution@1.6.1
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/host-mcp@1.4.4
+
+## 0.0.42
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/api@1.4.63
+  - @executor-js/execution@1.6.0
+  - @executor-js/host-mcp@1.4.4
+
 ## 0.0.41
 
 ### Patch Changes
