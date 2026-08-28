@@ -39,6 +39,7 @@ import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
 import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
+import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
@@ -270,11 +271,23 @@ export default function AddMcpIntegration(props: {
 
   // ---- Remote actions ----
 
+  // Each probe run takes a token. Editing the URL invalidates it, so a reply
+  // that lands after the user has moved on is dropped instead of reporting on
+  // a URL that is no longer in the field. The probe atom exposes no abort
+  // signal, so the request itself still finishes; only its answer is ignored.
+  const probeRunRef = useRef(0);
+
+  useEffect(() => {
+    probeRunRef.current += 1;
+  }, [state.url]);
+
   const handleProbe = useCallback(async () => {
+    const run = (probeRunRef.current += 1);
     dispatch({ type: "probe-start" });
     const exit = await doProbe({
       payload: { endpoint: state.url.trim() },
     });
+    if (run !== probeRunRef.current) return;
     if (Exit.isFailure(exit)) {
       dispatch({
         type: "probe-fail",
@@ -291,12 +304,14 @@ export default function AddMcpIntegration(props: {
   handleProbeRef.current = handleProbe;
 
   // Auto-probe whenever the URL changes (debounced) while we're on the
-  // remote transport and not already probing/probed.
+  // remote transport and not already probing/probed. The shape gate keeps a
+  // half-typed URL from being dialled: without it every keystroke that is a
+  // non-empty string gets probed, and the field flashes through a loading and
+  // then an error state for values the user never meant to submit.
   useEffect(() => {
     if (transport !== "remote") return;
     if (state.step !== "url") return;
-    const trimmed = state.url.trim();
-    if (!trimmed) return;
+    if (!isProbableMcpEndpoint(state.url)) return;
     const handle = setTimeout(() => {
       handleProbeRef.current();
     }, 400);
