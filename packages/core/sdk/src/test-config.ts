@@ -53,6 +53,14 @@ const makeLazyTestFumaDb = (options: {
     transaction: async (run) => (await start()).db.internal.transaction(run),
     updateMany: async (table, value) => (await start()).db.internal.updateMany(table, value),
     upsert: async (table, value) => (await start()).db.internal.upsert(table, value),
+    upsertMany: async (table, value) => {
+      const actual = await start();
+      if (!actual.db.internal.upsertMany) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: lazy test DB must expose the current FumaDB adapter surface
+        throw new Error("[FumaDB] upsertMany is not supported by this adapter.");
+      }
+      return actual.db.internal.upsertMany(table, value);
+    },
   };
 
   const queryMethods = new Set<PropertyKey>([
@@ -65,6 +73,7 @@ const makeLazyTestFumaDb = (options: {
     "transaction",
     "updateMany",
     "upsert",
+    "upsertMany",
   ]);
 
   const makeDb = (context?: ExecutorOwnerPolicyContext): FumaDb =>

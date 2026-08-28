@@ -174,6 +174,35 @@ export function memoryAdapter(options: MemoryAdapterOptions = {}): FumaDBAdapter
           }
           await this.create(table, v.create);
         },
+        async upsertMany(table, v) {
+          if (v.target.length === 0) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: adapter rejects invalid upsert shape
+            throw new Error("[FumaDB] upsertMany requires at least one target column.");
+          }
+          if (v.update.length === 0) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: adapter rejects invalid upsert shape
+            throw new Error("[FumaDB] upsertMany requires at least one update column.");
+          }
+          for (const value of v.values) {
+            const existing = tableRows(db, table).find(
+              (row) =>
+                matchesCondition(row, v.where) &&
+                v.target.every((column) => row[column.ormName] === value[column.ormName]),
+            );
+            if (existing) {
+              Object.assign(
+                existing,
+                cloneValue(
+                  Object.fromEntries(
+                    v.update.map((column) => [column.ormName, value[column.ormName]]),
+                  ),
+                ),
+              );
+              continue;
+            }
+            await this.create(table, value);
+          }
+        },
         async create(table, values) {
           const row = applyDefaults(table, values);
           tableRows(db, table).push(row);
