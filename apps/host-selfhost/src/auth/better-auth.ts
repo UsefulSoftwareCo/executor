@@ -1,12 +1,19 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
-import { admin, bearer, deviceAuthorization, mcp, organization } from "better-auth/plugins";
+import {
+  admin,
+  bearer,
+  deviceAuthorization,
+  genericOAuth,
+  mcp,
+  organization,
+} from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { type Client } from "@libsql/client";
 import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
-import { loadConfig, type GoogleSsoConfig } from "../config";
+import { loadConfig, type SsoConfig } from "../config";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
 
@@ -25,13 +32,14 @@ interface SignupGate {
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
 
-// Better Auth serves the social OAuth callback at `/callback/:providerId`
-// (`api/routes/callback` in the installed build) — the only path a
-// social-provider user creation arrives on. Server-side creation (the seed,
-// admin add-user) never carries it, so it cleanly splits "a stranger signed in
-// with Google" from every trusted path.
-const isSocialCallback = (path: string | undefined): boolean =>
-  path?.startsWith("/callback/") === true;
+// Better Auth serves OAuth sign-in callbacks at `/oauth2/callback/:providerId`
+// (the genericOAuth plugin, which carries the configured SSO provider) and
+// `/callback/:providerId` (built-in social providers) — the only paths an
+// IdP-initiated user creation arrives on. Server-side creation (the seed,
+// admin add-user) never carries either, so this cleanly splits "a stranger
+// signed in at the IdP" from every trusted path.
+const isOAuthCallback = (path: string | undefined): boolean =>
+  path?.startsWith("/oauth2/callback/") === true || path?.startsWith("/callback/") === true;
 
 // The domain of a well-formed address, or null — so a malformed email can never
 // match an allowlist entry (`emailDomain("@example.com")` is null, not "example.com").
@@ -41,10 +49,33 @@ export const emailDomain = (email: string): string | null => {
   return email.slice(at + 1).toLowerCase();
 };
 
-const isDomainAdmitted = (sso: GoogleSsoConfig, email: string): boolean => {
-  const domain = emailDomain(email);
+// Admission = the IdP vouches for the address (`email_verified`, mapped to
+// `emailVerified` by the genericOAuth callback) AND its domain is allowlisted.
+// The verified check is load-bearing: an unverified claim is whatever the
+// account holder typed, so without it anyone could register an IdP account
+// with a made-up allowlisted address and walk in.
+const isAdmitted = (sso: SsoConfig, user: { email: string; emailVerified: boolean }): boolean => {
+  if (!user.emailVerified) return false;
+  const domain = emailDomain(user.email);
   return domain !== null && sso.allowedDomains.includes(domain);
 };
+
+// The genericOAuth registration for the configured provider. Everything is
+// derived from the IdP's discovery document; PKCE is on unconditionally (any
+// OIDC-compliant IdP supports it). For Google with a single allowed domain,
+// `hd` pre-filters the account chooser to that Workspace domain — a UX hint
+// only (Google treats it as advisory); the create-hook gate is the enforcement.
+const ssoProviderConfig = (sso: SsoConfig) => ({
+  providerId: sso.providerId,
+  clientId: sso.clientId,
+  clientSecret: sso.clientSecret,
+  discoveryUrl: sso.discoveryUrl,
+  scopes: ["openid", "email", "profile"],
+  pkce: true,
+  ...(sso.providerId === "google" && sso.allowedDomains.length === 1
+    ? { authorizationUrlParams: { hd: sso.allowedDomains[0]! } }
+    : {}),
+});
 
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
@@ -120,19 +151,6 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     baseURL: config.webBaseUrl,
     trustedOrigins: [config.webBaseUrl],
     emailAndPassword: { enabled: true },
-    // Google sign-in, when the operator configured it (see config.ts). The
-    // domain gate below is what admits or refuses the users this creates —
-    // enabling the provider alone never opens registration.
-    ...(config.googleSso
-      ? {
-          socialProviders: {
-            google: {
-              clientId: config.googleSso.clientId,
-              clientSecret: config.googleSso.clientSecret,
-            },
-          },
-        }
-      : {}),
     // `apiKey` issues long-lived personal keys (the API-keys page). With
     // `enableSessionForAPIKeys`, presenting a key resolves to its owner's
     // session — so a key works as a Bearer token for the API + MCP endpoint.
@@ -175,6 +193,14 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       // is the page the user opens to confirm the code — the self-host app serves
       // it at /device (this is also the Better Auth default; pinned for clarity).
       deviceAuthorization({ verificationUri: "/device" }),
+      // The operator-configured SSO provider (see config.ts), spoken over plain
+      // OIDC discovery so Google, Okta, Entra, or any compliant IdP slots in —
+      // and so tests can point it at an emulated IdP. The domain gate below is
+      // what admits or refuses the users this creates; enabling the provider
+      // alone never opens registration. Always in the plugin tuple (an empty
+      // provider list serves no routes that match) so the inferred `auth.api`
+      // shape doesn't depend on the environment.
+      genericOAuth({ config: config.sso ? [ssoProviderConfig(config.sso)] : [] }),
       // `consentPage` makes the MCP authorize flow redirect to a human approval
       // screen instead of auto-issuing a code — but ONLY when the request
       // carries `prompt=consent`. MCP clients don't send that, so the self-host
@@ -211,19 +237,20 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
               create: {
                 before: async (user, context) => {
                   if (context?.path !== SIGNUP_PATH) {
-                    // Social sign-ups arrive on the OAuth callback path; the
-                    // domain allowlist gates them in place of an invite code.
-                    // Server-side creation (the seed, admin add-user) passes.
-                    const sso = config.googleSso;
+                    // SSO sign-ups arrive on an OAuth callback path; the
+                    // verified-domain allowlist gates them in place of an
+                    // invite code. Server-side creation (the seed, admin
+                    // add-user) passes.
+                    const sso = config.sso;
                     if (
-                      isSocialCallback(context?.path) &&
-                      !(sso !== undefined && isDomainAdmitted(sso, user.email))
+                      isOAuthCallback(context?.path) &&
+                      !(sso !== undefined && isAdmitted(sso, user))
                     ) {
                       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
                       throw new APIError("FORBIDDEN", {
                         message: sso
-                          ? `Sign-ups are restricted to ${sso.allowedDomains.map((d) => `@${d}`).join(", ")} accounts.`
-                          : "Social sign-up is not enabled on this instance.",
+                          ? `Sign-ups are restricted to verified ${sso.allowedDomains.map((d) => `@${d}`).join(", ")} accounts.`
+                          : "SSO sign-up is not enabled on this instance.",
                       });
                     }
                     return;
@@ -247,16 +274,16 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
                   const auth = gate.getAuth();
                   if (!auth) return;
                   if (context?.path !== SIGNUP_PATH) {
-                    // A social user that reached `after` was domain-admitted by
+                    // An SSO user that reached `after` was admitted by
                     // `before`; joining the instance org as a member is what an
                     // invite redemption would have done. Server-side creation
                     // (no callback path) is left alone — the seed manages its
                     // own membership.
-                    const sso = config.googleSso;
+                    const sso = config.sso;
                     if (
-                      isSocialCallback(context?.path) &&
+                      isOAuthCallback(context?.path) &&
                       sso !== undefined &&
-                      isDomainAdmitted(sso, user.email)
+                      isAdmitted(sso, user)
                     ) {
                       await auth.api.addMember({
                         body: {

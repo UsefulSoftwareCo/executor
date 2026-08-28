@@ -42,12 +42,13 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
       }),
     )
     .handle("authConfig", () =>
-      // Which social providers the operator configured — provider ids only, so
-      // the pre-login page knows which buttons to render. Config is env-derived
+      // Which SSO provider the operator configured — id + display name only, so
+      // the pre-login page knows which button to render. Config is env-derived
       // and boot-validated, so this read cannot fail.
-      Effect.sync(() => ({
-        socialProviders: loadConfig().googleSso ? ["google"] : [],
-      })),
+      Effect.sync(() => {
+        const sso = loadConfig().sso;
+        return { ssoProviders: sso ? [{ id: sso.providerId, name: sso.providerName }] : [] };
+      }),
     )
     .handle("inviteStatus", ({ params }) =>
       Effect.gen(function* () {
