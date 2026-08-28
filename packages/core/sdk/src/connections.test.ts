@@ -1228,7 +1228,15 @@ const makeHealthHarness = (options?: {
         integration: INTEG,
         name: ConnectionName.make("main"),
       });
-    return { executor, counters, stamp, persisted, hooks } as const;
+    // The public connection shape omits `tools_synced_at`; read the raw row
+    // for tests asserting a conflicting sync's stamp survived a guard.
+    const rawRow = () =>
+      Effect.promise(() =>
+        config.db.findFirst("connection", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+        }),
+      );
+    return { executor, counters, stamp, persisted, rawRow, hooks } as const;
   });
 };
 
@@ -1585,6 +1593,99 @@ describe("verdict write guards close the check-to-write window", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth).toMatchObject({ status: "expired", detail: newerDetail });
+    }),
+  );
+
+  // The three tests above age `updated_at` so the conflict's bump lands in a
+  // different SQLite second granule. The three below do the opposite: the
+  // conflict reuses the EXACT stamp the guard's fresh read observed — the
+  // same-second collision `updated_at` alone cannot see — so only the
+  // `tools_synced_at` leg of the swap can refuse the guarded write. The
+  // conflict is the one collision that must never be buried: a failing tool
+  // sync stores its degraded verdict TOGETHER with a fresh `tools_synced_at`,
+  // so a guard overwriting it with "healthy" would also leave the catalog
+  // looking just-synced and hide the failure for the full sync TTL.
+
+  const SYNC_DETAIL = "Tool sync failing: plugin returned an incomplete tool catalog";
+
+  it.effect("probe persist: a failing sync landing in the same second survives", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted, rawRow, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      const observedSyncedAt = Date.now() - STALE_MS;
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: observedSyncedAt,
+      });
+      const freshSyncedAt = Date.now();
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: freshSyncedAt,
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+      const raw = yield* rawRow();
+      expect(Number(raw?.tools_synced_at)).toBe(freshSyncedAt);
+    }),
+  );
+
+  it.effect("heal-on-use: a failing sync landing in the same second survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, rawRow, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      const observedSyncedAt = Date.now() - STALE_MS;
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: observedSyncedAt,
+      });
+      // `+ 1` rather than `Date.now()`: the invocation itself may re-stamp
+      // `tools_synced_at` before the heal's fresh read, and the conflicting
+      // sync stamp must be guaranteed to differ from whatever that read
+      // observed — an aged value + 1 can match neither it nor "now".
+      const freshSyncedAt = observedSyncedAt + 1;
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: freshSyncedAt,
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+      const raw = yield* rawRow();
+      expect(Number(raw?.tools_synced_at)).toBe(freshSyncedAt);
+    }),
+  );
+
+  it.effect("probe persist: the sync leg guards a never-synced row (NULL stamp)", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: null,
+      });
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: Date.now(),
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
     }),
   );
 });

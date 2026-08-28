@@ -3775,14 +3775,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  them to `json`, which has no comparison operators, so a value-guarded
      *  UPDATE would raise at runtime and, behind `Effect.ignore`, silently
      *  disable verdict persistence. The stamp is millisecond-grained on
-     *  Postgres and second-grained on SQLite; a conflicting write inside the
-     *  same granule as the row's previous stamp can still slip the swap, but
-     *  even then a buried dead grant stays authoritative at read time:
+     *  Postgres but second-grained on SQLite, so a conflicting write inside
+     *  the same granule as the observed stamp can slip past `updated_at`
+     *  alone. That gap is harmless for most collisions but durable for one:
+     *  a failing tool sync stores its degraded verdict TOGETHER with a fresh
+     *  `tools_synced_at`, so a guard burying it under "healthy" also leaves
+     *  the catalog looking just-synced — the failure then hides for the full
+     *  sync TTL instead of until the next probe. `tools_synced_at` (epoch
+     *  ms, bumped to a fresh value by every sync write) therefore joins the
+     *  swap: a sync landing inside the window changes it even when
+     *  `updated_at` collides, and the guarded write matches zero rows. What
+     *  remains is two NON-sync verdict writers colliding within one SQLite
+     *  second — the loser leaves a transiently stale `last_health` that the
+     *  next probe, heal, or read-time revalidation corrects; and a buried
+     *  dead grant stays authoritative at read time regardless:
      *  `deadGrantVerdict` answers from `provider_state`, which no verdict
      *  write touches. Best-effort, like every verdict write. */
     const persistHealthResult = (
       ref: ConnectionRef,
-      observedUpdatedAt: Date,
+      observed: Pick<ConnectionRow, "updated_at" | "tools_synced_at">,
       result: HealthCheckResult,
     ): Effect.Effect<void, never> =>
       core
@@ -3792,7 +3803,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               b("owner", "=", String(ref.owner)),
               b("integration", "=", String(ref.integration)),
               b("name", "=", String(ref.name)),
-              b("updated_at", "=", observedUpdatedAt),
+              b("updated_at", "=", observed.updated_at),
+              observed.tools_synced_at == null
+                ? b.isNull("tools_synced_at")
+                : b("tools_synced_at", "=", observed.tools_synced_at),
             ),
           set: { last_health: result, updated_at: new Date() },
         })
@@ -3821,10 +3835,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  invalid_grant, or a probe, can write a NEWER verdict while the call is
      *  in flight, and an unconditional write here would bury it under
      *  "healthy". So the decision is re-taken against a fresh row, and the
-     *  write itself is compare-and-swapped on that row's `updated_at` stamp
-     *  (`persistHealthResult`) — a conflicting write landing even between the
-     *  re-read and the UPDATE changes the stamp and the heal is a silent
-     *  no-op. Any newer write is newer evidence than this invocation. */
+     *  write itself is compare-and-swapped on that row's `updated_at` +
+     *  `tools_synced_at` stamps (`persistHealthResult`) — a conflicting
+     *  write landing even between the re-read and the UPDATE changes a
+     *  stamp and the heal is a silent no-op. Any newer write is newer
+     *  evidence than this invocation. */
     const healPersistedHealthOnUse = (
       row: ConnectionRow,
       result: unknown,
@@ -3858,7 +3873,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ) {
               return Effect.void;
             }
-            return persistHealthResult(ref, fresh.updated_at, {
+            return persistHealthResult(ref, fresh, {
               status: "healthy",
               checkedAt: Date.now(),
               detail: "Tool invocation succeeded.",
@@ -3984,10 +3999,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  authoritative dead-grant state (with its own `expired` verdict), and a
      *  probe that passed on the old access token's remaining lifetime must
      *  not bury it. The fresh read decides WHETHER to write; the write itself
-     *  is compare-and-swapped on that row's `updated_at` stamp
-     *  (`persistHealthResult`), so a dead-grant write landing even between
-     *  the read and the UPDATE wins and the probe verdict is a silent no-op.
-     *  Best-effort, like every verdict write. */
+     *  is compare-and-swapped on that row's `updated_at` + `tools_synced_at`
+     *  stamps (`persistHealthResult`), so a dead-grant or tool-sync write
+     *  landing even between the read and the UPDATE wins and the probe
+     *  verdict is a silent no-op. Best-effort, like every verdict write. */
     const persistProbeHealthResult = (
       ref: ConnectionRef,
       result: HealthCheckResult,
@@ -3996,7 +4011,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         Effect.flatMap((fresh) =>
           fresh === null || oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
             ? Effect.void
-            : persistHealthResult(ref, fresh.updated_at, result),
+            : persistHealthResult(ref, fresh, result),
         ),
         Effect.ignore,
       );
