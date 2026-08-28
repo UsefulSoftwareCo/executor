@@ -27,7 +27,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
-import { visit } from "../src/surfaces/browser";
+import { clickToReveal, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -163,9 +163,15 @@ scenario(
 
         await step("Open the integration's Tools tab", async () => {
           await visit(page, `/integrations/${integration}`);
-          await page.getByRole("tab", { name: "Tools" }).click();
-          await sectionFor(alpha).waitFor();
-          await sectionFor(beta).waitFor();
+          // The org-scoped redirect can replace the document between the tab
+          // becoming visible and React receiving the click. Reveal a node that
+          // exists only in the Tools panel so the Accounts panel's connection
+          // sections cannot satisfy the readiness check.
+          await clickToReveal(
+            page.getByRole("tab", { name: "Tools" }),
+            closedGroup(alpha, integration),
+          );
+          await closedGroup(beta, integration).waitFor();
         });
 
         await step("Expand the records category in the first account", async () => {

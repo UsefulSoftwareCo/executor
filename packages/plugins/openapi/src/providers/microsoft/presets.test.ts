@@ -288,6 +288,13 @@ describe("Microsoft Graph scope presets", () => {
       expect(preset.defaultSlug).toBeTruthy();
       expect(preset.authTemplate).toHaveLength(2);
       expect(preset.authTemplate?.map((template) => template.kind)).toEqual(["oauth2", "oauth2"]);
+      // Both methods are oauth2, so distinct labels are what keeps the
+      // delegated and app-only tabs tellable apart in the connection dialog.
+      expect(
+        preset.authTemplate?.map((template) =>
+          template.kind === "oauth2" ? template.label : null,
+        ),
+      ).toEqual(["OAuth2 (user)", "OAuth2 (app-only)"]);
     }
   });
 

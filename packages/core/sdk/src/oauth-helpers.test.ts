@@ -20,6 +20,7 @@ import {
   exchangeAuthorizationCode,
   exchangeClientCredentials,
   idTokenIdentityLabel,
+  isPermanentTokenRejection,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -1109,6 +1110,29 @@ describe("refreshAccessToken", () => {
           expect((error as OAuth2Error).error).toBeUndefined();
         }),
     ),
+  );
+
+  // Every refusal the classifier can be handed as an HTTP RESPONSE — a
+  // text/plain 400, a text/plain 404, a 200 carrying an error body, a 200 with
+  // no usable token, a 5xx — is covered black-box by
+  // `e2e/scenarios/oauth-refresh-rejected-non-json.test.ts`, where the test
+  // authorization server can actually emit those bytes. The one shape no
+  // authorization server can emit is *no answer at all*, so this case stays
+  // here: it is the boundary between "the server said no" (permanent) and "we
+  // never got an answer" (retryable), and only a dead socket expresses it.
+  it.effect("a transport failure stays transient and carries no status", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        refreshAccessToken({
+          tokenUrl: "http://127.0.0.1:1/token",
+          clientId: "cid",
+          refreshToken: "old",
+          timeoutMs: 100,
+        }),
+      );
+      expect(error.status).toBeUndefined();
+      expect(isPermanentTokenRejection(error)).toBe(false);
+    }),
   );
 });
 

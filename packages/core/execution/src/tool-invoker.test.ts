@@ -877,6 +877,33 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("serves an observed shape with a provenance note once a schemaless tool runs", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      // Cold: no declared output schema — data renders as unknown, no note.
+      const cold = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
+      expect(cold.outputTypeScript).toContain("data: unknown;");
+      expect(cold.outputTypeScriptNote).toBeUndefined();
+
+      yield* invoker.invoke({
+        path: "github.org.main.listRepositoryIssues",
+        args: { owner: "executor", repo: "executor" },
+      });
+
+      // Warm: the live `[]` payload becomes the served type, marked observed
+      // both inline and via the note.
+      const warm = yield* describeTool(executor, "github.org.main.listRepositoryIssues");
+      expect(warm.outputTypeScript).toBe(
+        "{ ok: true; data: unknown[] /* observed; may be incomplete */; http?: ToolHttpMeta } | { ok: false; error: ToolError }",
+      );
+      expect(warm.outputTypeScriptNote).toContain("observed from 1 live response");
+    }),
+  );
+
   it.effect("describes a return type that accepts the sandbox invocation result", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();

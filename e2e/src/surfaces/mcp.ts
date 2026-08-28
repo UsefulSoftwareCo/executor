@@ -168,6 +168,10 @@ export interface McpSurface {
        *  (`?artifacts=false`). Omitted means the product default: the full
        *  artifact surface. */
       readonly artifacts?: boolean;
+      /** Set `true` to opt this session into the per-integration
+       *  `search_<integration>` tools (`?search_tools=true`). Omitted means
+       *  the product default: none. */
+      readonly searchTools?: boolean;
       readonly url?: string;
     },
   ) => McpSession;
@@ -303,12 +307,14 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
     // Per-connection settings ride the MCP endpoint query, the ecosystem
     // convention: `elicitation_mode` so a paused execution yields an approvalUrl
-    // instead of letting the model resume inline, and `artifacts=false` to opt
-    // the session out of the artifact surface. Both are non-defaults, so a
-    // plain session's URL carries no query at all.
+    // instead of letting the model resume inline, `artifacts=false` to opt the
+    // session out of the artifact surface, and `search_tools=true` to opt into
+    // the per-integration search tools. All are non-defaults, so a plain
+    // session's URL carries no query at all.
     const sessionQuery = [
       ...(options?.elicitationMode ? [`elicitation_mode=${options.elicitationMode}`] : []),
       ...(options?.artifacts === false ? ["artifacts=false"] : []),
+      ...(options?.searchTools === true ? ["search_tools=true"] : []),
     ].join("&");
     const sessionUrl = sessionQuery ? `${mcpUrl}?${sessionQuery}` : mcpUrl;
 

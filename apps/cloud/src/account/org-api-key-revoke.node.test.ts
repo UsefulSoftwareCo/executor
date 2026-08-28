@@ -108,6 +108,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
 
 const stubAutumn = Layer.succeed(AutumnService)({
   use: () => Effect.die("revoke does not touch billing"),
+  ensureCustomer: () => Effect.die("revoke does not touch billing"),
   checkExecutionBalance: () => Effect.die("revoke does not touch billing"),
   trackExecution: () => Effect.void,
 });
