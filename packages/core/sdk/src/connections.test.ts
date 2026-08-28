@@ -617,8 +617,11 @@ const durabilityPlugin = (provider: CredentialProvider) =>
 
 /** Wrap a test `FumaDb` so deletes on the `connection` table can be made to
  *  fail on demand — the raw driver-level failure the compensating delete must
- *  survive loudly. Transactions hand out wrapped handles too, so the guarded
- *  delete inside the compensation transaction is covered. */
+ *  survive loudly. A rejection during the delete statement is ambiguous on an
+ *  auto-commit adapter (the statement may have executed first), so this
+ *  failure is reported as unconfirmed, never as definitively stranded.
+ *  Transactions hand out wrapped handles too, so the guarded delete inside
+ *  the compensation transaction is covered. */
 const failableConnectionDeletes = (db: FumaDb, shouldFail: () => boolean): FumaDb => {
   const wrap = (inner: FumaDb): FumaDb =>
     new Proxy(inner, {
@@ -639,6 +642,56 @@ const failableConnectionDeletes = (db: FumaDb, shouldFail: () => boolean): FumaD
               ? // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
                 Promise.reject(new StorageError({ message: "delete refused", cause: undefined }))
               : (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(table, query);
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
+/** Wrap a test `FumaDb` so compensation fails strictly BEFORE its guarded
+ *  delete statement is issued: the identity read that opens the compensation
+ *  transaction rejects. Only a pre-attempt failure keeps the definitive
+ *  stranded-row claim truthful — a rejection during the delete statement
+ *  itself is reported as unconfirmed instead (see
+ *  `failableConnectionDeletes`). The read is identified by sequence: the
+ *  first `connection` read after this create's row insert. The conflict-check
+ *  read runs before the insert and no other `connection` read happens in
+ *  between, so that read is compensation's. Transactions hand out wrapped
+ *  handles too. */
+const failableCompensationRowDelete = (db: FumaDb, shouldFail: () => boolean): FumaDb => {
+  let insertSeen = false;
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "transaction") {
+          return (run: (tx: FumaDb) => Promise<unknown>) =>
+            (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+              (tx) => run(wrap(tx)),
+            );
+        }
+        if (prop === "create") {
+          return async (table: unknown, values: unknown) => {
+            const row = await (target.create as (t: unknown, v: unknown) => Promise<unknown>)(
+              table,
+              values,
+            );
+            if (table === "connection") insertSeen = true;
+            return row;
+          };
+        }
+        if (prop === "findFirst") {
+          return (table: unknown, query: unknown) =>
+            shouldFail() && insertSeen && table === "connection"
+              ? // oxlint-disable-next-line executor/no-promise-reject -- boundary: the proxy fakes a driver-level rejection from the raw FumaDb handle
+                Promise.reject(
+                  new StorageError({ message: "identity read refused", cause: undefined }),
+                )
+              : (target.findFirst as (t: unknown, q: unknown) => Promise<unknown>)(table, query);
         }
         return Reflect.get(target, prop);
       },
@@ -866,10 +919,13 @@ describe("connections.create credential-write compensation", () => {
     }),
   );
 
-  // The compensating delete can itself fail. Swallowing that failure strands
-  // a visible credential-less row behind an error that never mentions it. The
-  // create must fail with an error that NAMES the stranded connection so an
-  // operator can act on it.
+  // The compensating delete can fail before its guarded delete statement is
+  // even issued (here: the identity read that opens the compensation
+  // transaction rejects). Nothing can have been deleted, so the surviving
+  // credential-less row is definitively stranded — and swallowing that
+  // failure hides it behind an error that never mentions it. The create must
+  // fail with an error that NAMES the stranded connection so an operator can
+  // act on it.
   it.effect("names the stranded connection when the compensating delete fails", () =>
     Effect.gen(function* () {
       let failRowDelete = false;
@@ -883,7 +939,7 @@ describe("connections.create credential-write compensation", () => {
       const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
       const executor = yield* createExecutor({
         ...config,
-        db: failableConnectionDeletes(config.db, () => failRowDelete),
+        db: failableCompensationRowDelete(config.db, () => failRowDelete),
       });
       yield* executor.durable.seed();
       failRowDelete = true;
@@ -905,6 +961,8 @@ describe("connections.create credential-write compensation", () => {
       if (!Predicate.isTagged("StorageError")(failure)) return;
       expect(failure.message).toContain("main");
       expect(failure.message).toContain("vercel");
+      // Pre-attempt failure: the stranded claim is definitive and stated.
+      expect(failure.message).toContain("stranded");
       // The original write failure is retained as the cause, not replaced.
       const isStorageError = (u: unknown): u is StorageError =>
         Predicate.isTagged("StorageError")(u);
@@ -1169,10 +1227,89 @@ describe("connections.create credential-write compensation", () => {
     }),
   );
 
+  // The guarded delete STATEMENT can itself reject. On an interactive adapter
+  // the rejection rolls the transaction back and the row survives — but on an
+  // auto-commit adapter (Cloudflare D1) the statement may have executed
+  // before the rejection surfaced, so a definitive stranded-row claim would
+  // be false. Once the delete has been attempted, the row state is genuinely
+  // unknown at this layer: the create must skip ALL credential-item deletion
+  // and report the delete as unconfirmed, never as stranded.
+  it.effect("a rejected delete statement skips item cleanup and reports the row unconfirmed", () =>
+    Effect.gen(function* () {
+      let failRowDelete = false;
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
+            : Effect.sync(() => void store.set(String(id), value)),
+      });
+      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: failableConnectionDeletes(config.db, () => failRowDelete),
+      });
+      yield* executor.durable.seed();
+      failRowDelete = true;
+
+      const errors: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Error") {
+          errors.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const result = yield* Effect.result(
+        executor.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: { first: "1", second: "2" },
+          })
+          .pipe(Effect.provide(Logger.layer([capture]))),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      const failure = result.failure;
+      expect(Predicate.isTagged("StorageError")(failure)).toBe(true);
+      if (!Predicate.isTagged("StorageError")(failure)) return;
+      // The error names the connection and reports the unconfirmed state; it
+      // must NOT claim the row is stranded — on an auto-commit adapter the
+      // delete may already have executed before the rejection surfaced.
+      expect(failure.message).toContain("main");
+      expect(failure.message).toContain("vercel");
+      expect(failure.message).toContain("could not be confirmed");
+      expect(failure.message).not.toContain("stranded");
+      // The original write failure is retained as the cause, not replaced.
+      const isStorageError = (u: unknown): u is StorageError =>
+        Predicate.isTagged("StorageError")(u);
+      expect(isStorageError(failure.cause)).toBe(true);
+      if (!isStorageError(failure.cause)) return;
+      expect(failure.cause.message).toBe("provider write refused");
+
+      // The unknown outcome skips ALL credential-item deletion: the item that
+      // landed before the failed write is untouched.
+      expect(store.get("connection:org:vercel:main:first")).toBe("1");
+      // The log reports the unconfirmed state, not a stranded-row claim.
+      expect(errors.some((line) => line.includes("could not confirm"))).toBe(true);
+      expect(errors.every((line) => !line.includes("stranded a connection row"))).toBe(true);
+
+      // Non-vacuous: the armed proxy rejected the delete statement without
+      // running it, so on this interactive adapter the row survived.
+      failRowDelete = false;
+      const rows = yield* executor.connections.list();
+      expect(rows.length).toBe(1);
+      expect(String(rows[0]?.name)).toBe("main");
+    }),
+  );
+
   // A provider write can die with a defect instead of failing. The stranded-
-  // row promise must hold there too: a defect followed by a failed
-  // compensating delete surfaces the same typed StorageError naming the
-  // stranded connection, not an anonymous crash.
+  // row promise must hold there too: a defect followed by a compensating
+  // delete that fails before its delete statement is issued surfaces the
+  // same typed StorageError naming the stranded connection, not an anonymous
+  // crash.
   it.effect("a defect followed by a failed row delete still names the stranded connection", () =>
     Effect.gen(function* () {
       let failRowDelete = false;
@@ -1186,7 +1323,7 @@ describe("connections.create credential-write compensation", () => {
       const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
       const executor = yield* createExecutor({
         ...config,
-        db: failableConnectionDeletes(config.db, () => failRowDelete),
+        db: failableCompensationRowDelete(config.db, () => failRowDelete),
       });
       yield* executor.durable.seed();
       failRowDelete = true;
@@ -1225,10 +1362,12 @@ describe("connections.create credential-write compensation", () => {
   );
 
   // Interruption cannot carry a typed error — interrupting wins over failing
-  // — so when an interrupted create cannot delete its row, the stranded row
-  // is reported through a loud error log and the create stays an
-  // interruption. The items that landed before the interrupt stay with the
-  // stranded row: credential teardown is gated on the row delete succeeding.
+  // — so when an interrupted create cannot delete its row (compensation
+  // fails before the delete statement is issued, leaving the row
+  // definitively stranded), the stranded row is reported through a loud
+  // error log and the create stays an interruption. The items that landed
+  // before the interrupt stay with the stranded row: credential teardown is
+  // gated on the row delete succeeding.
   it.effect("an interrupted create with a failed row delete logs the stranded row", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1244,7 +1383,7 @@ describe("connections.create credential-write compensation", () => {
         const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
         const executor = yield* createExecutor({
           ...config,
-          db: failableConnectionDeletes(config.db, () => failRowDelete),
+          db: failableCompensationRowDelete(config.db, () => failRowDelete),
         });
         yield* executor.durable.seed();
 

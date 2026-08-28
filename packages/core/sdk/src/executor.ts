@@ -3712,8 +3712,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           //   loudly as the typed StorageError below, naming the connection.
           // - On a non-transactional adapter (statements auto-commit, no
           //   rollback — Cloudflare D1) the guarded delete may already have
-          //   committed when the confirmation read fails; the items are left
-          //   in place as inert orphans.
+          //   committed when its own rejection surfaces or when the
+          //   confirmation read fails; the items are left in place as inert
+          //   orphans.
           const rowOutcomeRef = yield* Ref.make<
             "removed" | "superseded" | "overtaken" | "failed" | "unknown"
           >("removed");
@@ -3724,17 +3725,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           };
           const compensate = Effect.gen(function* () {
             // Progress marker for the transaction below. It distinguishes
-            // "the guarded delete itself failed" (nothing was deleted; a
-            // surviving row is truthfully stranded) from "the delete ran and
-            // the confirmation read failed". Deliberately a plain mutable
-            // outside the transaction: a rollback cannot un-set it, which is
-            // the point — it records statement execution, not committed
-            // state. On an interactive adapter a post-delete failure rolls
-            // the delete back; on an auto-commit adapter (D1) the delete has
-            // already committed. This layer cannot tell which world it is
-            // in, so a post-delete failure is reported as "unknown", never
-            // as a stranded row.
-            let rowDeleteRan = false;
+            // "compensation failed before the guarded delete was issued"
+            // (nothing can have been deleted; a surviving row is truthfully
+            // stranded) from "the delete was attempted". Set BEFORE the
+            // delete statement is issued, not after it resolves: a rejection
+            // DURING the statement is already ambiguous on an auto-commit
+            // adapter (D1), where the delete may have executed before the
+            // rejection surfaced. Deliberately a plain mutable outside the
+            // transaction: a rollback cannot un-set it, which is the point —
+            // it records that the statement was issued, not committed state.
+            // On an interactive adapter a failure from the attempt onward
+            // rolls the delete back; on an auto-commit adapter the delete
+            // may already have committed. This layer cannot tell which world
+            // it is in, so any failure from the attempt onward is reported
+            // as "unknown", never as a stranded row.
+            let rowDeleteAttempted = false;
             const rowOutcome = yield* transaction(
               Effect.gen(function* () {
                 const current = yield* findConnectionRow({
@@ -3745,6 +3750,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (rowIdOf(current) !== insertedRowId) {
                   return "superseded" as const;
                 }
+                // From here on a failure can no longer prove the row
+                // survived: the statement below may execute before its
+                // rejection surfaces.
+                rowDeleteAttempted = true;
                 yield* core.deleteMany("connection", {
                   where: (b: AnyCb) =>
                     b.and(
@@ -3756,7 +3765,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                       b("row_id", "=", insertedRowId),
                     ),
                 });
-                rowDeleteRan = true;
                 // `deleteMany` returns void, so whether the guarded delete
                 // removed OUR row cannot be read off its result — and the
                 // identity read above and the delete can straddle a
@@ -3783,7 +3791,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               }),
             ).pipe(
               Effect.catchCause((cause) =>
-                rowDeleteRan
+                rowDeleteAttempted
                   ? Effect.logError(
                       "executor connection create could not confirm its compensating row delete: the connection row may be deleted or stranded",
                       { ...logContext, cause },
@@ -3818,19 +3826,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               return;
             }
             if (rowOutcome === "failed") {
-              // The row delete failed, so the row — still ours — keeps
-              // holding the name together with the items that already
-              // landed. Leave the items in place (they belong to the
+              // Compensation failed before the row delete was even issued,
+              // so the row — still ours — keeps holding the name together
+              // with the items that already landed. Leave the items in
+              // place (they belong to the
               // stranded row the caller is told to remove) and let the exit
               // handling below surface the error.
               return;
             }
             if (rowOutcome === "unknown") {
-              // The guarded delete ran but its confirmation read failed, so
-              // whether OUR row survived cannot be known: an interactive
-              // adapter rolled the delete back with the transaction (row
-              // stranded), a non-transactional adapter had already committed
-              // it (row gone). Deleting the items under a surviving row
+              // The guarded delete was attempted but its outcome could not
+              // be confirmed — the statement itself rejected, or the
+              // confirmation read after it failed — so whether OUR row
+              // survived cannot be known: an interactive adapter rolled the
+              // delete back with the transaction (row stranded), a
+              // non-transactional adapter may have already committed it (row
+              // gone). Deleting the items under a surviving row
               // would strand it valueless, so ALL item deletion is skipped;
               // the exit handling below reports the unconfirmed state.
               return;
