@@ -2,7 +2,9 @@
 "executor": patch
 ---
 
-Stop exporting credential-bearing URLs in span attributes. OAuth callback
-authorization codes and CSRF state are stripped from span URL attributes before
-export, and user-supplied MCP endpoints are sanitized of query-string and
-userinfo credentials before being stamped.
+Stop exporting credential-bearing URLs in telemetry. Every query parameter
+value, URL fragment, and userinfo component is stripped from exported span
+URLs — no parameter name is trusted — on every exporter path: the cloud span
+processors, the self-host OTLP exporter, the browser client's OTLP exporter,
+and the forwarded browser trace batches. User-supplied MCP endpoints are
+sanitized before being stamped onto spans.

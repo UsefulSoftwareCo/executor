@@ -53,6 +53,98 @@ describe("browserTracesResponse", () => {
     expect(await response?.text()).toBe("");
   });
 
+  it("scrubs credential-bearing URLs from the forwarded payload", async () => {
+    // The browser's OTLP batch is pre-serialized JSON; the worker must scrub
+    // the decoded payload before forwarding — the page-side exporter is not a
+    // trust boundary.
+    const SECRET = "synthetic-browser-forward-canary";
+    const payload = {
+      resourceSpans: [
+        {
+          resource: { attributes: [] },
+          scopeSpans: [
+            {
+              scope: { name: "executor-web" },
+              spans: [
+                {
+                  traceId: "0af7651916cd43dd8448eb211c80319c",
+                  spanId: "b7ad6b7169203331",
+                  name: "http.client GET",
+                  kind: 3,
+                  startTimeUnixNano: "0",
+                  endTimeUnixNano: "1",
+                  attributes: [
+                    {
+                      key: "url.full",
+                      value: {
+                        stringValue: `https://app.test/api/oauth/callback?code=${SECRET}-code#access_token=${SECRET}-fragment`,
+                      },
+                    },
+                    { key: "url.query", value: { stringValue: `code=${SECRET}-code` } },
+                  ],
+                  events: [
+                    {
+                      name: "exception",
+                      timeUnixNano: "1",
+                      attributes: [
+                        {
+                          key: "exception.message",
+                          value: {
+                            stringValue: `GET https://u:${SECRET}-userinfo@api.test/x?key=${SECRET}-key failed`,
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                  status: {
+                    code: 2,
+                    message: `GET https://api.test/x?key=${SECRET}-status failed`,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    let forwarded: string | undefined;
+    const response = await browserTracesResponse(
+      makeRequest({
+        headers: { cookie: "wos-session=abc" },
+        body: JSON.stringify(payload),
+      }),
+      baseEnv,
+      (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        forwarded = await new Response(init?.body as BodyInit).text();
+        return new Response(null, { status: 200 });
+      }) as typeof fetch,
+    );
+    expect(response?.status).toBe(204);
+    expect(forwarded).toBeDefined();
+    expect(forwarded).not.toContain(SECRET);
+    // Non-vacuous: the span, its route, and its trace identity survive.
+    expect(forwarded).toContain("/api/oauth/callback");
+    expect(forwarded).toContain("0af7651916cd43dd8448eb211c80319c");
+    expect(forwarded).toContain("exception");
+  });
+
+  it("rejects an unparseable batch instead of forwarding it unscrubbed", async () => {
+    let forwardedCount = 0;
+    const response = await browserTracesResponse(
+      makeRequest({
+        headers: { cookie: "wos-session=abc" },
+        body: `not-json ?token=synthetic-unparsed-secret`,
+      }),
+      baseEnv,
+      (async () => {
+        forwardedCount += 1;
+        return new Response(null, { status: 200 });
+      }) as typeof fetch,
+    );
+    expect(response?.status).toBe(400);
+    expect(forwardedCount).toBe(0);
+  });
+
   it("reports upstream failure as 502 without leaking detail", async () => {
     const response = await browserTracesResponse(
       makeRequest({ headers: { cookie: "wos-session=abc" } }),

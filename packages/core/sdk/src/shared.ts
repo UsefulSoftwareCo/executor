@@ -210,3 +210,16 @@ export {
   type OAuthPopupResult,
   isOAuthPopupResult,
 } from "./oauth-popup-types";
+
+// URL redaction for exported telemetry (browser-safe — pure Effect). The
+// browser client provides the redacting OTLP serialization to its exporter so
+// page-side spans are scrubbed before they leave the page.
+export {
+  redactOtlpTraceExport,
+  redactSpanUrlAttributes,
+  redactUrlForTelemetry,
+  redactUrlsInText,
+  STRIPPED_QUERY_ATTRIBUTE,
+  UrlRedactingOtlpSerializationJson,
+  type RedactedUrl,
+} from "./telemetry-url-redaction";

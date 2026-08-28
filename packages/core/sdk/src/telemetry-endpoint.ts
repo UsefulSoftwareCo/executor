@@ -17,20 +17,31 @@
 // ---------------------------------------------------------------------------
 
 /** Fallback for input `URL` cannot parse. A malformed paste can still carry
- *  both credential shapes (`user:password@` and `?token=…`), so it must never
- *  pass through verbatim — degrade by truncation instead. Everything from the
- *  first `?` or `#` is dropped (an unparseable query string cannot be proven
- *  credential-free), and anything before a remaining `@` is dropped with it
- *  (it may be userinfo; over-stripping is the safe direction here). */
+ *  every credential shape (`user:password@`, `?token=…`, `#access_token=…`),
+ *  so it must never pass through verbatim — degrade by truncation instead.
+ *  Everything from the first `?` or `#` is dropped (an unparseable query
+ *  string cannot be proven credential-free), and anything before a remaining
+ *  `@` is dropped with it (it may be userinfo; over-stripping is the safe
+ *  direction here). The `hadQuery` / `hadFragment` booleans are honest: a `?`
+ *  after the `#` is fragment content, not a query, and a fragment-only paste
+ *  reports no query. */
 const opaqueEndpoint = (
   endpoint: string,
-): { readonly sanitized: string; readonly hadQuery: boolean; readonly hadUserinfo: boolean } => {
-  const queryStart = endpoint.search(/[?#]/);
-  const beforeQuery = queryStart === -1 ? endpoint : endpoint.slice(0, queryStart);
-  const userinfoEnd = beforeQuery.lastIndexOf("@");
+): {
+  readonly sanitized: string;
+  readonly hadQuery: boolean;
+  readonly hadFragment: boolean;
+  readonly hadUserinfo: boolean;
+} => {
+  const queryStart = endpoint.indexOf("?");
+  const fragmentStart = endpoint.indexOf("#");
+  const cut = endpoint.search(/[?#]/);
+  const beforeCut = cut === -1 ? endpoint : endpoint.slice(0, cut);
+  const userinfoEnd = beforeCut.lastIndexOf("@");
   return {
-    sanitized: userinfoEnd === -1 ? beforeQuery : beforeQuery.slice(userinfoEnd + 1),
-    hadQuery: queryStart !== -1,
+    sanitized: userinfoEnd === -1 ? beforeCut : beforeCut.slice(userinfoEnd + 1),
+    hadQuery: queryStart !== -1 && (fragmentStart === -1 || queryStart < fragmentStart),
+    hadFragment: fragmentStart !== -1,
     hadUserinfo: userinfoEnd !== -1,
   };
 };
@@ -51,7 +62,8 @@ export const endpointForTelemetry = (endpoint: string): string => {
 
 /** Span attributes describing an endpoint without exposing its credentials.
  *  `<prefix>` is the sanitized URL, `<prefix>.origin` the scheme+host, and the
- *  two booleans record that a query string / userinfo was stripped. */
+ *  booleans record which credential-bearing components (query string,
+ *  fragment, userinfo) were stripped. */
 export const endpointTelemetryAttributes = (
   prefix: string,
   endpoint: string,
@@ -61,6 +73,7 @@ export const endpointTelemetryAttributes = (
     return {
       [prefix]: opaque.sanitized,
       [`${prefix}.has_query`]: opaque.hadQuery,
+      [`${prefix}.has_fragment`]: opaque.hadFragment,
       [`${prefix}.has_userinfo`]: opaque.hadUserinfo,
     };
   }
@@ -69,6 +82,7 @@ export const endpointTelemetryAttributes = (
     [prefix]: endpointForTelemetry(endpoint),
     [`${prefix}.origin`]: url.origin,
     [`${prefix}.has_query`]: url.search !== "",
+    [`${prefix}.has_fragment`]: url.hash !== "",
     [`${prefix}.has_userinfo`]: url.username !== "" || url.password !== "",
   };
 };

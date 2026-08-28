@@ -68,6 +68,7 @@ describe("endpointTelemetryAttributes", () => {
       "mcp.endpoint": "https://mcp.example.test/mcp",
       "mcp.endpoint.origin": "https://mcp.example.test",
       "mcp.endpoint.has_query": true,
+      "mcp.endpoint.has_fragment": false,
       "mcp.endpoint.has_userinfo": true,
     });
     expect(JSON.stringify(attributes)).not.toContain(QUERY_TOKEN);
@@ -79,8 +80,35 @@ describe("endpointTelemetryAttributes", () => {
       "mcp.endpoint": "https://mcp.example.test/mcp",
       "mcp.endpoint.origin": "https://mcp.example.test",
       "mcp.endpoint.has_query": false,
+      "mcp.endpoint.has_fragment": false,
       "mcp.endpoint.has_userinfo": false,
     });
+  });
+
+  it("reports a fragment-only malformed endpoint honestly", () => {
+    // The `#` starts a fragment, not a query — `has_query` must not claim one,
+    // and the fragment's presence must be recorded as its own signal.
+    const attributes = endpointTelemetryAttributes(
+      "mcp.endpoint",
+      `http://exa mple.test/mcp#access_token=${QUERY_TOKEN}`,
+    );
+
+    expect(attributes["mcp.endpoint"]).toBe("http://exa mple.test/mcp");
+    expect(attributes["mcp.endpoint.has_query"]).toBe(false);
+    expect(attributes["mcp.endpoint.has_fragment"]).toBe(true);
+    expect(JSON.stringify(attributes)).not.toContain(QUERY_TOKEN);
+  });
+
+  it("reports a fragment on a parseable endpoint", () => {
+    const attributes = endpointTelemetryAttributes(
+      "mcp.endpoint",
+      `https://mcp.example.test/mcp#access_token=${QUERY_TOKEN}`,
+    );
+
+    expect(attributes["mcp.endpoint"]).toBe("https://mcp.example.test/mcp");
+    expect(attributes["mcp.endpoint.has_query"]).toBe(false);
+    expect(attributes["mcp.endpoint.has_fragment"]).toBe(true);
+    expect(JSON.stringify(attributes)).not.toContain(QUERY_TOKEN);
   });
 
   it("degrades an unparseable paste without leaking either credential shape", () => {
@@ -92,6 +120,7 @@ describe("endpointTelemetryAttributes", () => {
     expect(attributes).toEqual({
       "mcp.endpoint": "exa mple.test/mcp",
       "mcp.endpoint.has_query": true,
+      "mcp.endpoint.has_fragment": false,
       "mcp.endpoint.has_userinfo": true,
     });
     expect(JSON.stringify(attributes)).not.toContain(QUERY_TOKEN);

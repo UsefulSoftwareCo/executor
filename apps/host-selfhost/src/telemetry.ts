@@ -20,8 +20,10 @@
 // ---------------------------------------------------------------------------
 
 import { FetchHttpClient } from "effect/unstable/http";
-import { OtlpLogger, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { OtlpLogger, OtlpTracer } from "effect/unstable/observability";
 import { Layer } from "effect";
+
+import { UrlRedactingOtlpSerializationJson } from "@executor-js/sdk";
 
 import packageJson from "../package.json" with { type: "json" };
 
@@ -111,7 +113,11 @@ export const makeTelemetryLive = (
   );
 
   return Layer.merge(TracerLive, LoggerLive).pipe(
-    Layer.provide(OtlpSerialization.layerJson),
+    // The redacting serialization is the scrub for this exporter path: no
+    // cloud span processor runs here, so credential-bearing URL components
+    // (query values, userinfo, fragments) are stripped from the trace payload
+    // at the serialization seam every exported span passes through.
+    Layer.provide(UrlRedactingOtlpSerializationJson),
     // The exporter gets a plain fetch client, deliberately not the guarded
     // hosted client: the collector is an address the operator configured, so
     // the SSRF guard's job (stopping agent-chosen URLs from reaching the

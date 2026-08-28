@@ -1,3 +1,8 @@
+// The redaction rules themselves are tested in `@executor-js/sdk`
+// (`telemetry-url-redaction.test.ts`). These tests cover the cloud-specific
+// adapter: the span-processor seam every isolate span passes through on its
+// way to the exporter.
+
 import * as Resource from "@effect/opentelemetry/Resource";
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import { describe, expect, it } from "@effect/vitest";
@@ -11,11 +16,9 @@ import {
 import { Effect, Exit, Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
-import {
-  redactSpanUrlAttributes,
-  STRIPPED_QUERY_ATTRIBUTE,
-  UrlRedactingSpanProcessor,
-} from "./redact-span-urls";
+import { STRIPPED_QUERY_ATTRIBUTE } from "@executor-js/sdk";
+
+import { UrlRedactingSpanProcessor } from "./redact-span-urls";
 
 // Synthetic placeholders only — never a real authorization code or state.
 const CODE = "synthetic-authorization-code";
@@ -43,115 +46,6 @@ const exportSpanWith = (
   return exporter.getFinishedSpans()[0];
 };
 
-describe("redactSpanUrlAttributes", () => {
-  it("strips the authorization code and state from url.full and url.query", () => {
-    const attributes: Record<string, unknown> = {
-      "url.full": callbackUrl,
-      "url.query": `code=${CODE}&state=${STATE}&domain=example.test`,
-      "url.path": "/api/oauth/callback",
-      "http.request.method": "GET",
-    };
-
-    const stripped = redactSpanUrlAttributes(attributes);
-
-    expect(stripped).toEqual(["code", "state"]);
-    expect(JSON.stringify(attributes)).not.toContain(CODE);
-    expect(JSON.stringify(attributes)).not.toContain(STATE);
-    // Route-level visibility is preserved.
-    expect(attributes["url.path"]).toBe("/api/oauth/callback");
-    expect(attributes["url.full"]).toBe("https://app.test/api/oauth/callback?domain=example.test");
-    expect(attributes["url.query"]).toBe("domain=example.test");
-  });
-
-  it("strips a code nested inside the login redirect's returnTo parameter", () => {
-    // `/login` is not an app-owned path, so its span comes from the worker
-    // boundary — the callback query rides along inside `returnTo`
-    // (auth/return-to.ts + the sign-in redirect in start.ts).
-    const returnTo = encodeURIComponent(`/api/oauth/callback?code=${CODE}&state=${STATE}`);
-    const attributes: Record<string, unknown> = {
-      "url.full": `https://app.test/login?returnTo=${returnTo}`,
-      "url.query": `returnTo=${returnTo}`,
-    };
-
-    const stripped = redactSpanUrlAttributes(attributes);
-
-    expect(stripped).toEqual(["returnTo.code", "returnTo.state"]);
-    expect(JSON.stringify(attributes)).not.toContain(CODE);
-    expect(JSON.stringify(attributes)).not.toContain(STATE);
-    expect(String(attributes["url.full"])).toContain("%2Fapi%2Foauth%2Fcallback");
-  });
-
-  it("leaves a span with no sensitive parameters untouched", () => {
-    const attributes: Record<string, unknown> = {
-      "url.full": "https://app.test/api/integrations?owner=org",
-      "url.query": "owner=org",
-      "url.path": "/api/integrations",
-    };
-
-    expect(redactSpanUrlAttributes(attributes)).toEqual([]);
-    expect(attributes["url.full"]).toBe("https://app.test/api/integrations?owner=org");
-    expect(attributes["url.query"]).toBe("owner=org");
-  });
-
-  it("strips the other sensitive OAuth parameters", () => {
-    const attributes: Record<string, unknown> = {
-      "url.query":
-        "id_token=synthetic-id-token&session_state=synthetic-session&error_description=synthetic-detail&error=access_denied",
-    };
-
-    expect(redactSpanUrlAttributes(attributes)).toEqual([
-      "error_description",
-      "id_token",
-      "session_state",
-    ]);
-    // `error` is an enumerable code, not a secret — it stays.
-    expect(attributes["url.query"]).toBe("error=access_denied");
-  });
-
-  it("drops a query parameter it has no allowlist entry for — unknown names cannot leak", () => {
-    // GraphQL integrations authenticate with arbitrary query-param names
-    // (`?key=…`); no blocklist can enumerate them, so the default is drop.
-    const attributes: Record<string, unknown> = {
-      "url.full": "https://api.test/graphql?key=synthetic-graphql-key&owner=org",
-      "url.query": "key=synthetic-graphql-key&owner=org",
-    };
-
-    expect(redactSpanUrlAttributes(attributes)).toEqual(["key"]);
-    expect(JSON.stringify(attributes)).not.toContain("synthetic-graphql-key");
-    expect(attributes["url.full"]).toBe("https://api.test/graphql?owner=org");
-    expect(attributes["url.query"]).toBe("owner=org");
-  });
-
-  it("strips userinfo from a URL attribute", () => {
-    const attributes: Record<string, unknown> = {
-      "url.full": "https://svc:synthetic-basic-password@api.test/graphql",
-    };
-
-    expect(redactSpanUrlAttributes(attributes)).toEqual(["userinfo"]);
-    expect(attributes["url.full"]).toBe("https://api.test/graphql");
-    expect(JSON.stringify(attributes)).not.toContain("synthetic-basic-password");
-  });
-
-  it("scrubs a URL embedded in a free-text attribute", () => {
-    const attributes: Record<string, unknown> = {
-      "error.message": "request to https://api.test/graphql?key=synthetic-key failed",
-    };
-
-    redactSpanUrlAttributes(attributes);
-
-    expect(attributes["error.message"]).toBe("request to https://api.test/graphql failed");
-  });
-
-  it("degrades an unparseable URL attribute instead of passing it through", () => {
-    const attributes: Record<string, unknown> = {
-      "url.full": "http://exa mple.test/graphql?key=synthetic-key",
-    };
-
-    expect(redactSpanUrlAttributes(attributes)).toEqual(["key"]);
-    expect(attributes["url.full"]).toBe("http://exa mple.test/graphql");
-  });
-});
-
 describe("UrlRedactingSpanProcessor", () => {
   it("scrubs the span before the exporter sees it", () => {
     const exported = exportSpanWith({
@@ -163,17 +57,31 @@ describe("UrlRedactingSpanProcessor", () => {
     expect(exported).toBeDefined();
     expect(JSON.stringify(exported?.attributes)).not.toContain(CODE);
     expect(JSON.stringify(exported?.attributes)).not.toContain(STATE);
+    expect(exported?.attributes["url.full"]).toBe("https://app.test/api/oauth/callback");
     expect(exported?.attributes["url.path"]).toBe("/api/oauth/callback");
-    expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBe("code,state");
+    expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBe("code,domain,state");
   });
 
-  it("leaves a span with no sensitive parameters unchanged", () => {
+  it("drops a query value regardless of its parameter name", () => {
+    // Query-auth placement names are arbitrary strings — a key configured as
+    // `?owner=…` is exactly as much a credential as `?key=…`.
     const exported = exportSpanWith({
-      "url.full": "https://app.test/api/integrations?owner=org",
-      "url.query": "owner=org",
+      "url.full": "https://app.test/api/integrations?owner=synthetic-owner-secret",
+      "url.query": "owner=synthetic-owner-secret",
     });
 
-    expect(exported?.attributes["url.full"]).toBe("https://app.test/api/integrations?owner=org");
+    expect(JSON.stringify(exported?.attributes)).not.toContain("synthetic-owner-secret");
+    expect(exported?.attributes["url.full"]).toBe("https://app.test/api/integrations");
+    expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBe("owner");
+  });
+
+  it("leaves a query-free span unchanged", () => {
+    const exported = exportSpanWith({
+      "url.full": "https://app.test/api/integrations",
+      "url.path": "/api/integrations",
+    });
+
+    expect(exported?.attributes["url.full"]).toBe("https://app.test/api/integrations");
     expect(exported?.attributes[STRIPPED_QUERY_ATTRIBUTE]).toBeUndefined();
   });
 
