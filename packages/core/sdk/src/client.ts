@@ -198,6 +198,12 @@ export interface IntegrationPlugin {
     readonly initialUrl?: string;
     readonly initialPreset?: string;
     readonly initialNamespace?: string;
+    /** Registry-declared credential placement for the surface, e.g.
+     *  "Authorization: {api_key}" — the pattern Linear's no-Bearer personal
+     *  keys need. Plugins whose surfaces can't self-describe auth (GraphQL)
+     *  seed their auth-method editor from it. */
+    readonly initialAuthHeader?: string;
+    readonly initialAuthNote?: string;
   }>;
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */

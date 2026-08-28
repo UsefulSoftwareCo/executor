@@ -407,6 +407,7 @@ export function IntegrationBrowsePage() {
       readonly url: string;
       readonly slug?: string;
       readonly domain: string;
+      readonly auth?: CatalogSurface["auth"];
     }) => {
       trackEvent("integration_add_started", {
         plugin_key: input.kind,
@@ -416,7 +417,12 @@ export function IntegrationBrowsePage() {
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey: input.kind },
-        search: { url: input.url, ...(input.slug ? { namespace: input.slug } : {}) },
+        search: {
+          url: input.url,
+          ...(input.slug ? { namespace: input.slug } : {}),
+          ...(input.auth?.header ? { authHeader: input.auth.header } : {}),
+          ...(input.auth?.note ? { authNote: input.auth.note } : {}),
+        },
       });
     },
     [navigate],
@@ -433,6 +439,7 @@ export function IntegrationBrowsePage() {
           url: knownUrl,
           domain: entry.domain,
           ...(surface ? { slug: surface.slug } : {}),
+          ...(surface?.auth ? { auth: surface.auth } : {}),
         });
         return;
       }
@@ -457,7 +464,7 @@ export function IntegrationBrowsePage() {
   );
 
   const pickPreset = useCallback(
-    (entry: PresetEntry) => {
+    (entry: PresetEntry, auth?: CatalogSurface["auth"]) => {
       trackEvent("integration_add_started", {
         plugin_key: entry.pluginKey,
         via: "preset",
@@ -465,6 +472,11 @@ export function IntegrationBrowsePage() {
       });
       const search: Record<string, string> = { preset: entry.preset.id };
       if (entry.preset.url) search.url = entry.preset.url;
+      // The registry's credential facts ride along even when the preset owns
+      // the flow — the preset knows the endpoint, the registry knows the
+      // header pattern.
+      if (auth?.header) search.authHeader = auth.header;
+      if (auth?.note) search.authNote = auth.note;
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey: entry.pluginKey },
@@ -482,7 +494,10 @@ export function IntegrationBrowsePage() {
   // other result, and the preset only supplies the better add flow. Keyed by
   // the rendered title, the same match the dedupe below uses.
   const catalogIdentityByTitle = useMemo(() => {
-    const map = new Map<string, { readonly domain: string }>();
+    const map = new Map<
+      string,
+      { readonly domain: string; readonly auth?: CatalogSurface["auth"] }
+    >();
     for (const entry of catalogEntries) {
       const pretty = entry.name ?? domainDisplayName(entry.domain);
       const surfaces =
@@ -492,7 +507,12 @@ export function IntegrationBrowsePage() {
       for (const surface of surfaces) {
         const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
         const title = withSurface(pretty, word).toLowerCase();
-        if (!map.has(title)) map.set(title, { domain: entry.domain });
+        if (!map.has(title)) {
+          map.set(title, {
+            domain: entry.domain,
+            ...("auth" in surface && surface.auth ? { auth: surface.auth } : {}),
+          });
+        }
       }
     }
     return map;
@@ -517,7 +537,7 @@ export function IntegrationBrowsePage() {
         ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
-        onSelect: () => pickPreset(entry),
+        onSelect: () => pickPreset(entry, identity?.auth),
         added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
         busy: false,
       });

@@ -45,6 +45,15 @@ export interface CatalogSurface {
    *  machine-readable locator, in which case the surface document still has to
    *  be fetched on click. */
   readonly url?: string;
+  /** How to authenticate, for surfaces whose connect target cannot describe
+   *  it itself — a GraphQL endpoint has no spec document, so the registry is
+   *  the only carrier of facts like Linear's no-Bearer-prefix header. */
+  readonly auth?: {
+    readonly kind?: string;
+    /** Header pattern, e.g. "Authorization: Bearer {token}". */
+    readonly header?: string;
+    readonly note?: string;
+  };
 }
 
 export interface CatalogSearchEntry {
@@ -107,6 +116,13 @@ const SearchResponse = Schema.Struct({
             kind: Schema.String,
             slug: Schema.String,
             url: Schema.optional(Schema.String),
+            auth: Schema.optional(
+              Schema.Struct({
+                kind: Schema.optional(Schema.String),
+                header: Schema.optional(Schema.String),
+                note: Schema.optional(Schema.String),
+              }),
+            ),
           }),
         ),
       ),
@@ -128,6 +144,7 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
                     kind: surface.kind,
                     slug: surface.slug,
                     ...(surface.url ? { url: surface.url } : {}),
+                    ...(surface.auth ? { auth: surface.auth } : {}),
                   },
                 ]
               : [],

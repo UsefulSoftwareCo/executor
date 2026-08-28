@@ -258,9 +258,12 @@ function DetectedMethodSummary(props: {
           from its own page. Saying so is the difference between a confident
           next click and hunting for a field that is not here. */}
       <p className="text-[11px] text-muted-foreground">
+        {/* "Declared by this API", not "read from the spec": GraphQL surfaces
+            have no spec — their methods arrive from the registry record — and
+            the claim that matters is the same either way. */}
         {value.kind === "oauth"
-          ? "Read from the spec. You'll sign in after adding this integration."
-          : "Read from the spec. You'll enter your key after adding this integration."}
+          ? "Declared by this API. You'll sign in after adding this integration."
+          : "Declared by this API. You'll enter your key after adding this integration."}
       </p>
     </div>
   );

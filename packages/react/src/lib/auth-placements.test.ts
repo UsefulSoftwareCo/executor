@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { AuthMethodDescriptor } from "@executor-js/sdk/shared";
 
-import { authMethodsFromDescriptors } from "./auth-placements";
+import { authMethodsFromDescriptors, placementFromHeaderPattern } from "./auth-placements";
 
 describe("authMethodsFromDescriptors", () => {
   it("maps an oauth descriptor and carries discoveryUrl + supportsDynamicRegistration", () => {
@@ -99,5 +99,27 @@ describe("authMethodsFromDescriptors", () => {
 
   it("returns an empty array for no descriptors", () => {
     expect(authMethodsFromDescriptors([])).toEqual([]);
+  });
+});
+
+describe("placementFromHeaderPattern", () => {
+  it("keeps a Bearer prefix, space included", () => {
+    expect(placementFromHeaderPattern("Authorization: Bearer {token}")).toEqual({
+      carrier: "header",
+      name: "Authorization",
+      prefix: "Bearer ",
+    });
+  });
+
+  it("an empty prefix is meaningful: Linear's keys take no Bearer", () => {
+    expect(placementFromHeaderPattern("Authorization: {api_key}")).toEqual({
+      carrier: "header",
+      name: "Authorization",
+      prefix: "",
+    });
+  });
+
+  it("rejects text that is not a header pattern", () => {
+    expect(placementFromHeaderPattern("just some prose")).toBeNull();
   });
 });
