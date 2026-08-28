@@ -102,8 +102,12 @@ scenario(
           await visit(page, `/integrations/${integration}`);
           await addConnection.click();
           // The registered app is auto-selected, so the OAuth connect button is
-          // present and enabled.
+          // present and enabled. Auto-selection resolves asynchronously after
+          // the modal opens, so the button legitimately renders disabled for a
+          // beat first — wait for actionability (trial click waits for
+          // enabled + stable) rather than reading that transient first paint.
           await connectWithOAuth.waitFor({ state: "visible", timeout: 15_000 });
+          await connectWithOAuth.click({ trial: true, timeout: 15_000 });
           expect(
             await connectWithOAuth.isDisabled(),
             "the auto-selected app makes Connect with OAuth actionable",
