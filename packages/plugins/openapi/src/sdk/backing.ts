@@ -7,7 +7,7 @@ import {
   ToolName,
   ToolResult,
   authToolFailure,
-  classifyHttpStatus,
+  classifyProbeResponse,
   detectInsufficientScope,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
@@ -973,7 +973,9 @@ export const checkHealthOpenApi = (input: {
       } satisfies HealthCheckResult;
     }
 
-    const status = classifyHttpStatus(probe.result.status);
+    // Body-aware: a configuration 403 (Google accessNotConfigured /
+    // SERVICE_DISABLED) reads misconfigured, not expired.
+    const status = classifyProbeResponse(probe.result.status, probe.result.error);
     const rawIdentity =
       status === "healthy" ? extractIdentity(probe.result.data, spec.identityField) : undefined;
     // The identity is read straight off the raw body, so unlike the sample it
