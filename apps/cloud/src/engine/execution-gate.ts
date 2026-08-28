@@ -100,10 +100,17 @@ export const withPreExecutionGate = <E extends Cause.YieldableError>(
     ),
   // resume is never gated: paused executions must be able to complete.
   resume: (executionId, response) => engine.resume(executionId, response),
+  // Optional member, so it must be forwarded explicitly — a decorator that
+  // rebuilds the object literal drops it, and the host then reads every settled
+  // execution as "never existed".
+  isExecutionSettled: engine.isExecutionSettled,
   getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
   pausedExecutionCount: () => engine.pausedExecutionCount(),
   hasPausedExecutions: () => engine.hasPausedExecutions(),
   getDescription: engine.getDescription,
+  // Forwarded, not re-implemented: the wrapped engine owns the sandbox fibers,
+  // so the host's request-scope teardown has to reach through this decorator.
+  shutdown: engine.shutdown,
 });
 
 // ---------------------------------------------------------------------------

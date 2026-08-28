@@ -162,7 +162,18 @@ export interface McpSurface {
   readonly url: string;
   readonly session: (
     identity: Identity,
-    options?: { readonly elicitationMode?: McpElicitationMode; readonly url?: string },
+    options?: {
+      readonly elicitationMode?: McpElicitationMode;
+      /** Set `false` to opt this session out of artifacts
+       *  (`?artifacts=false`). Omitted means the product default: the full
+       *  artifact surface. */
+      readonly artifacts?: boolean;
+      /** Set `true` to opt this session into the per-integration
+       *  `search_<integration>` tools (`?search_tools=true`). Omitted means
+       *  the product default: none. */
+      readonly searchTools?: boolean;
+      readonly url?: string;
+    },
   ) => McpSession;
   /**
    * Mint a real MCP bearer headlessly: protected-resource discovery →
@@ -294,12 +305,18 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     // identity's OAuth isolated. The traceparent ledger keys off the URL, not
     // this name, so it is unaffected.
     const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
-    // `browser` mode is selected per the ecosystem convention — an
-    // `?elicitation_mode=` query on the MCP endpoint — so a paused execution
-    // yields an approvalUrl instead of letting the model resume inline.
-    const sessionUrl = options?.elicitationMode
-      ? `${mcpUrl}?elicitation_mode=${options.elicitationMode}`
-      : mcpUrl;
+    // Per-connection settings ride the MCP endpoint query, the ecosystem
+    // convention: `elicitation_mode` so a paused execution yields an approvalUrl
+    // instead of letting the model resume inline, `artifacts=false` to opt the
+    // session out of the artifact surface, and `search_tools=true` to opt into
+    // the per-integration search tools. All are non-defaults, so a plain
+    // session's URL carries no query at all.
+    const sessionQuery = [
+      ...(options?.elicitationMode ? [`elicitation_mode=${options.elicitationMode}`] : []),
+      ...(options?.artifacts === false ? ["artifacts=false"] : []),
+      ...(options?.searchTools === true ? ["search_tools=true"] : []),
+    ].join("&");
+    const sessionUrl = sessionQuery ? `${mcpUrl}?${sessionQuery}` : mcpUrl;
 
     if (target.name === "cloudflare") {
       let clientPromise: Promise<Client> | undefined;

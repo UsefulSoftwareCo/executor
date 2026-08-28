@@ -11,17 +11,27 @@ import {
 } from "@executor-js/host-mcp";
 import {
   currentPropagationHeaders,
+  readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import {
+  classifyDurableObjectError,
+  durableObjectFailureResponse,
+  type DurableObjectFailure,
+} from "@executor-js/cloudflare/mcp/durable-object-errors";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
+import { isMcpSessionMetaUnavailable } from "./session-meta";
 import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
+
+const MCP_SESSION_UNAVAILABLE_MESSAGE = "Session storage temporarily unavailable - please retry";
 
 const corsPreflightResponse = (): Response =>
   new Response(null, {
@@ -78,6 +88,41 @@ const renderAuthError = (
   });
 };
 
+/**
+ * A Cloudflare *platform* Durable Object failure happened at one of this
+ * handler's stub touchpoints. Record what kind it was — on an exported span and
+ * in a structured log — so the production volume stays countable per cause
+ * (deploy reset vs storage timeout vs destroyed session) now that it is no
+ * longer a pile of 500s.
+ *
+ * Talking to a session DO means talking to a process the platform can reset out
+ * from under us: a deploy, a storage timeout, a backend blip, the session's own
+ * `ctx.abort("destroyed")`. None of those are application defects. An
+ * unrecognized failure never reaches here and keeps escaping as before.
+ */
+const recordDurableObjectFailure = (
+  failure: DurableObjectFailure,
+  operation: string,
+): Effect.Effect<void> =>
+  Effect.sync(() => {
+    console.warn(
+      JSON.stringify({
+        event: "mcp_durable_object_platform_failure",
+        operation,
+        resetKind: failure.kind,
+        disposition: failure.disposition,
+      }),
+    );
+  }).pipe(
+    Effect.withSpan("mcp.do.platform_failure", {
+      attributes: {
+        "mcp.do.reset_kind": failure.kind,
+        "mcp.do.reset_disposition": failure.disposition,
+        "mcp.do.reset_operation": operation,
+      },
+    }),
+  );
+
 const authenticate = (request: Request) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
@@ -129,8 +174,17 @@ const propsForPrincipal = (
     return {
       session: {
         organizationId: principal.organizationId,
+        // The org record the live membership check resolved microseconds ago,
+        // handed to the session DO so it never opens a connection of its own to
+        // re-read it. An unnamed org (no auth plane could resolve one) is
+        // omitted rather than sent empty, so the DO can tell "not carried" from
+        // "carried, and blank".
+        ...(principal.organizationName ? { organizationName: principal.organizationName } : {}),
+        ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        artifactsEnabled: readArtifactsEnabled(request),
+        searchToolsEnabled: readSearchToolsEnabled(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },
@@ -197,10 +251,27 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      });
+      let owner: "ok" | "not_found" | "forbidden" | "terminated";
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a Durable Object stub RPC rejects with a plain platform Error, never a typed failure
+      try {
+        owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        });
+      } catch (error) {
+        // The sibling stub touchpoints in this handler are both guarded — the
+        // `_cf_scheduleDestroy` call above with `Effect.ignore`, the
+        // `target.fetch` below with a catch — and this one was not, so a session
+        // whose DO had been destroyed or reset by the platform 500ed here before
+        // any of that handling could run.
+        const failure = classifyDurableObjectError(error);
+        if (!failure) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: an unrecognized failure is a real defect and must reach the runtime unchanged
+          throw error;
+        }
+        await runTraced(request, recordDurableObjectFailure(failure, "validate_session_owner"));
+        return durableObjectFailureResponse(failure);
+      }
       if (owner === "not_found") {
         return jsonRpcResponse(404, -32001, "Session not found");
       }
@@ -240,12 +311,35 @@ export const makeCloudMcpAgentHandler = () => {
       // DO ever getting to answer. Map it to the old envelope's reconnect
       // error for a dead session (e2e/cloud/mcp-protocol.test.ts expects the
       // client to be told to reconnect, matching a timed-out session).
-      // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message IS the signal
-      if (Predicate.isError(error) && error.message === "destroyed") {
-        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+      //
+      // The same catch now also covers the rest of the platform's reset
+      // vocabulary — a deploy, a storage timeout, a cancelled
+      // blockConcurrencyWhile — which reaches here through the agents SDK's own
+      // `getServerByName` retry and used to 500 identically.
+      // The session DO could not reach the organization directory to name the
+      // org (after its own bounded retry). Transient by construction, so it
+      // gets the same retryable envelope a WorkOS blip gets on the auth path —
+      // not an unclassified 500 the agents SDK then retries the whole DO
+      // operation over, which is what turned a 10s connect timeout into a
+      // half-minute client hang.
+      //
+      // Checked BEFORE the platform classifier: this is an application failure
+      // that merely escapes through the same seam, and it names its own cause.
+      // The classifier only recognizes the runtime's own reset vocabulary, so
+      // the two never contend — the order just keeps it that way if either
+      // vocabulary grows.
+      if (isMcpSessionMetaUnavailable(error)) {
+        return jsonRpcErrorBody(503, -32001, MCP_SESSION_UNAVAILABLE_MESSAGE, {
+          retryAfterSeconds: UNAVAILABLE_RETRY_AFTER_SECONDS,
+        });
       }
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
-      throw error;
+      const failure = classifyDurableObjectError(error);
+      if (!failure) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't a recognized platform failure to the Workers runtime unchanged
+        throw error;
+      }
+      await runTraced(request, recordDurableObjectFailure(failure, "session_fetch"));
+      return durableObjectFailureResponse(failure);
     }
     // The agents SDK answers a bare DELETE with 204; the old envelope's
     // contract (see above) was 200 — rewrite for consistency.

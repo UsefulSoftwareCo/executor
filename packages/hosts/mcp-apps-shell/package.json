@@ -1,0 +1,102 @@
+{
+  "name": "@executor-js/mcp-apps-shell",
+  "version": "1.4.13",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./shell-html": {
+      "types": "./src/shell-html.ts",
+      "default": "./src/shell-html.ts"
+    },
+    "./worker": {
+      "types": "./src/worker.ts",
+      "default": "./src/worker.ts"
+    },
+    "./smoke-render": {
+      "types": "./src/smoke-render-entry.ts",
+      "default": "./src/smoke-render-entry.ts"
+    },
+    "./vite": {
+      "types": "./src/vite.ts",
+      "default": "./src/vite.ts"
+    },
+    "./shell/components": {
+      "types": "./src/shell/components.ts",
+      "default": "./src/shell/components.ts"
+    },
+    "./shell/shell-app": {
+      "types": "./src/shell/shell-app.tsx",
+      "default": "./src/shell/shell-app.tsx"
+    },
+    "./shell/artifact-renderer": {
+      "types": "./src/shell/artifact-renderer.tsx",
+      "default": "./src/shell/artifact-renderer.tsx"
+    },
+    "./shell/proxy": {
+      "types": "./src/shell/proxy.ts",
+      "default": "./src/shell/proxy.ts"
+    },
+    "./shell/component-runtime": {
+      "types": "./src/shell/component-runtime.ts",
+      "default": "./src/shell/component-runtime.ts"
+    },
+    "./shell/tools-proxy": {
+      "types": "./src/shell/tools-proxy.ts",
+      "default": "./src/shell/tools-proxy.ts"
+    },
+    "./shell/smoke-render": {
+      "types": "./src/shell/smoke-render.ts",
+      "default": "./src/shell/smoke-render.ts"
+    },
+    "./globals.css": "./src/shell/globals.css"
+  },
+  "scripts": {
+    "build:shell": "bun run gen:smoke-harness && vite build --config vite.config.shell.ts",
+    "gen:provided-globals": "bun scripts/gen-provided-globals.ts",
+    "fonts:subset": "bun scripts/subset-fonts.ts",
+    "typecheck": "tsgo --noEmit",
+    "pretest": "bun run build:shell",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json",
+    "gen:smoke-harness": "bun scripts/gen-smoke-harness.ts"
+  },
+  "dependencies": {
+    "@executor-js/react": "workspace:*",
+    "@executor-js/runtime-quickjs": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tanstack/react-query": "^5.99.0",
+    "effect": "catalog:",
+    "esbuild": "^0.27.7",
+    "sucrase": "^3.35.1"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@tailwindcss/browser": "^4.2.2",
+    "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "bun-types": "catalog:",
+    "lucide-react": "^1.7.0",
+    "playwright-core": "^1.59.1",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "recharts": "3.8.0",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-singlefile": "^2.3.2",
+    "vitest": "catalog:",
+    "zod": "4.3.6"
+  }
+}

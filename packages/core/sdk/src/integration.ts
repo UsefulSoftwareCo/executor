@@ -1,4 +1,5 @@
 import type { IntegrationSlug } from "./ids";
+import type { EnterpriseIdentityProviderDescriptor } from "./oauth-client";
 
 /* Core knows only an integration's catalog identity — slug + description + which
  * plugin (`kind`) owns it. The type-specific shape (openapi auth templates + spec,
@@ -64,6 +65,13 @@ export interface AuthMethodOAuthDescriptor {
    *  clients. The UI can create a local public OAuth client using this host's
    *  metadata-document URL as `client_id`, with no provider app registration. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** The enterprise identity provider this integration is configured to obtain
+   *  identity assertions from (MCP Enterprise-Managed Authorization). Present
+   *  only when the deployment has declared one for this integration; the
+   *  connect path still verifies at discovery time that the server advertises
+   *  the ID-JAG grant profile, and falls back to the interactive flow when it
+   *  does not. */
+  readonly enterpriseIdentityProvider?: EnterpriseIdentityProviderDescriptor;
 }
 
 /** A single declared auth method on an integration's catalog response. */
@@ -151,6 +159,20 @@ export const mergeAuthTemplates = <T extends { readonly slug: string }>(
   }
   return result;
 };
+
+/**
+ * A durable change to the integration catalog, emitted through
+ * `ExecutorConfig.onIntegrationChange`: a row was created (`added` — upsert
+ * re-registers of an existing slug do not fire) or removed. The hook is a
+ * neutral notification seam — hosts decide what to do with it (the non-cloud
+ * hosts feed product analytics); core carries no analytics vocabulary.
+ */
+export interface IntegrationChangeEvent {
+  readonly kind: "added" | "removed";
+  /** The owning plugin's id (`openapi`, `mcp`, `graphql`, ...). */
+  readonly pluginKey: string;
+  readonly slug: IntegrationSlug;
+}
 
 /** What a plugin's extension method passes to `ctx.core.integrations.register`.
  *  The v2 analog of v1's `SourceInput`, minus the per-source tool list (tools are

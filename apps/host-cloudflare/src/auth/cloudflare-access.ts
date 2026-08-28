@@ -38,6 +38,7 @@ export const principalFromAccessClaims = (
   const isAdmin = email.length > 0 && config.adminEmails.includes(email.toLowerCase());
 
   return {
+    kind: "member",
     accountId: sub || email || commonName,
     organizationId: config.organizationId,
     organizationName: config.organizationName,
@@ -60,12 +61,15 @@ export const principalFromAccessClaims = (
 export const makeAccessVerifier = (config: CloudflareConfig) => {
   const issuer = `https://${config.accessTeamDomain}`;
   // Cached, lazily-fetched team signing keys; jose handles rotation + caching.
-  const jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
+  const jwks = config.enableDevAuth
+    ? null
+    : createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
 
   // Dev/single-user escape hatch: bypass Access entirely, every request is a
   // fixed admin. Only when explicitly enabled (and the instance is otherwise
   // unprotected). Mirrors the local app's single-user model.
   const devPrincipal: Principal = {
+    kind: "member",
     accountId: "dev",
     organizationId: config.organizationId,
     organizationName: config.organizationName,
@@ -79,6 +83,7 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
   const verify = (request: Request): Effect.Effect<Principal | null> =>
     Effect.gen(function* () {
       if (config.enableDevAuth) return devPrincipal;
+      if (!jwks) return null;
       const token = request.headers.get("Cf-Access-Jwt-Assertion");
       if (!token) return null;
 

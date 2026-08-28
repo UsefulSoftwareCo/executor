@@ -37,5 +37,5 @@ WORKDIR /app/apps/host-selfhost
 VOLUME ["/data"]
 EXPOSE 4788
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-  CMD bun -e "fetch('http://127.0.0.1:4788/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD ["bun", "-e", "fetch('http://127.0.0.1:4788/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 CMD ["bun", "run", "dist-server/serve.js"]

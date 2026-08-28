@@ -2,12 +2,18 @@ import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
+import { AccountApi, AdminUsersApi } from "@executor-js/api";
+
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
 import { OrgApi } from "../org/api";
 
 import { ProtectedCloudApi } from "../api/layers";
 
-export const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi).add(CloudAuthApi).add(OrgApi);
+export const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi)
+  .add(CloudAuthApi)
+  .add(OrgApi)
+  .add(AccountApi)
+  .add(AdminUsersApi);
 
 const spec = OpenApi.fromApi(CloudOpenApi);
 

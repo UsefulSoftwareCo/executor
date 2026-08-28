@@ -13,8 +13,9 @@
 //      the cloud Worker, console in the CLI, in-memory in tests) to
 //      record causes and return correlation ids. Optional; absent →
 //      empty trace ids, nothing breaks.
-//   3. `capture(eff)` — the one translator. Catches `StorageError` and
-//      `UniqueViolationError` in the typed channel: the former is
+//   3. `capture(eff)` — the one translator. Catches `StorageError`,
+//      `StorageConnectionError` and `UniqueViolationError` in the typed
+//      channel: the storage failures are
 //      captured via `ErrorCapture` and re-failed as `InternalError({
 //      traceId })`; the latter dies as a defect (plugins that want to
 //      surface it as a typed domain error should `Effect.catchTag`
@@ -75,6 +76,10 @@ const resolveCapture = Effect.serviceOption(ErrorCapture).pipe(
  *
  *   - `StorageError` — known backend failure. Capture the cause via
  *     `ErrorCapture`, fail with `InternalError({ traceId })`.
+ *   - `StorageConnectionError` — the database connection failed, so the
+ *     statement never got a verdict. Same edge treatment as
+ *     `StorageError` (capture, opaque 500); the tag exists so callers
+ *     that can retry on a fresh pool are able to tell the two apart.
  *   - `UniqueViolationError` — invariant violation at the HTTP edge:
  *     if a plugin wanted to surface a unique-conflict as a typed
  *     domain error (e.g. "source already exists") it should
@@ -92,6 +97,12 @@ export const capture = <A, E, R>(
     // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unique conflicts that reach the HTTP edge are unexpected defects captured by observabilityMiddleware
     Effect.catchTag("UniqueViolationError", (err) => Effect.die(err)),
     Effect.catchTag("StorageError", (err) =>
+      resolveCapture.pipe(
+        Effect.flatMap((c) => c.captureException(Cause.fail(err))),
+        Effect.flatMap((traceId) => Effect.fail(new InternalError({ traceId }))),
+      ),
+    ),
+    Effect.catchTag("StorageConnectionError", (err) =>
       resolveCapture.pipe(
         Effect.flatMap((c) => c.captureException(Cause.fail(err))),
         Effect.flatMap((traceId) => Effect.fail(new InternalError({ traceId }))),

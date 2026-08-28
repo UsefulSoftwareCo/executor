@@ -17,8 +17,9 @@ import { loadPluginsFromJsonc } from "@executor-js/config";
 import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
 import executorConfig from "../executor.config";
+import { localAnalytics } from "./analytics";
 import { localDataMigrations } from "./db/data-migrations";
-import { openOwnedLocalDatabase } from "./db/owned-database";
+import { openOwnedLocalDatabase, type OwnedLocalDatabase } from "./db/owned-database";
 
 interface ResolvedStorage {
   readonly dataDir: string;
@@ -55,6 +56,16 @@ type LocalPlugins = readonly AnyPlugin[];
 
 export interface LocalExecutorOptions {
   readonly activeToolkitSlug?: string;
+  /**
+   * Reuse an already-open owned database instead of opening (and locking) the
+   * data dir again. A toolkit-scoped MCP session differs from the default one
+   * only in its plugin set, so it must ride the running server's DB handle:
+   * `openOwnedLocalDatabase` takes an EXCLUSIVE lock, and a second open from
+   * inside the same process contends with the lock this process already holds.
+   * The borrowed handle is NOT closed when the derived executor disposes —
+   * whoever opened it still owns its lifetime.
+   */
+  readonly borrowedDb?: OwnedLocalDatabase;
 }
 
 const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
@@ -91,6 +102,14 @@ const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
   readonly plugins: LocalPlugins;
+  /** The owned DB this bundle opened (or borrowed). Surfaced so a
+   *  toolkit-scoped executor can ride the SAME handle instead of contending
+   *  with this process's own exclusive data-dir lock. */
+  readonly db: OwnedLocalDatabase;
+  /** Where this daemon's web UI is reachable, resolved once at boot. Surfaced
+   *  so callers building user-facing links (MCP artifact deep links) use the
+   *  same origin the executor itself was configured with. */
+  readonly webBaseUrl: string;
 }
 
 class LocalExecutorTag extends Context.Service<LocalExecutorTag, LocalExecutorBundle>()(
@@ -146,23 +165,27 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
       const tenantId = makeTenantId(cwd);
       const tables = collectTables();
 
-      const owned = yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            openOwnedLocalDatabase({
-              dataDir: storage.dataDir,
-              tables,
-              namespace: localNamespace,
-              tenantId,
+      // A borrowed handle is owned by its opener, so it is used as-is and left
+      // open on release; only a handle opened here is closed here.
+      const owned = options.borrowedDb
+        ? options.borrowedDb
+        : yield* Effect.acquireRelease(
+            Effect.tryPromise({
+              try: () =>
+                openOwnedLocalDatabase({
+                  dataDir: storage.dataDir,
+                  tables,
+                  namespace: localNamespace,
+                  tenantId,
+                }),
+              catch: (cause) =>
+                new LocalExecutorCreateError({
+                  message: CREATE_SQLITE_ERROR_MESSAGE,
+                  cause,
+                }),
             }),
-          catch: (cause) =>
-            new LocalExecutorCreateError({
-              message: CREATE_SQLITE_ERROR_MESSAGE,
-              cause,
-            }),
-        }),
-        (database) => Effect.promise(() => database.close()).pipe(Effect.ignore),
-      );
+            (database) => Effect.promise(() => database.close()).pipe(Effect.ignore),
+          );
       const sqlite = owned.db;
       const migration = owned.migration;
 
@@ -191,6 +214,11 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
         subject: Subject.make(LOCAL_SUBJECT),
         db: sqlite.db,
         plugins,
+        onIntegrationChange: (event) =>
+          localAnalytics.record(
+            event.kind === "added" ? "integration_added" : "integration_removed",
+            { plugin_key: event.pluginKey },
+          ),
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
         // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
@@ -233,7 +261,7 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
           );
       }
 
-      return { executor, plugins };
+      return { executor, plugins, webBaseUrl, db: owned };
     }),
   );
 };
@@ -246,6 +274,8 @@ export const createExecutorHandle = async (options: LocalExecutorOptions = {}) =
   return {
     executor: bundle.executor,
     plugins: bundle.plugins,
+    webBaseUrl: bundle.webBaseUrl,
+    db: bundle.db,
     dispose: async () => {
       await Effect.runPromise(Effect.ignore(bundle.executor.close()));
       await ignorePromiseFailure("disposeRuntime", () => runtime.dispose());

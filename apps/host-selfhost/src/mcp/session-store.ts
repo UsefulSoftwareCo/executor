@@ -8,6 +8,7 @@ import {
   type InMemoryMcpSessionStore,
 } from "@executor-js/host-mcp/in-memory-session-store";
 
+import { selfHostAnalytics } from "../analytics";
 import { ErrorCaptureLive } from "../observability";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
 import { SelfHostExecutionStackLayer } from "../execution";
@@ -22,6 +23,9 @@ import { SelfHostExecutionStackLayer } from "../execution";
 // identical seam with its own stack layer.
 // ---------------------------------------------------------------------------
 
+import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
+import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
+
 export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-store";
 
 /**
@@ -32,12 +36,23 @@ export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-sto
 export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
+  sessionIdleTtlMs?: number,
 ): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
+      {
+        loadAppShellHtml: loadMcpAppsShellHtml,
+        smokeRenderArtifact,
+        // Artifact operations on the MCP plane come from an agent's tools.
+        onArtifactUsage: (action) =>
+          selfHostAnalytics.record(`artifact_${action}`, { via: "agent" }),
+      },
     ),
-    { webBaseUrl },
+    {
+      ...(webBaseUrl === undefined ? {} : { webBaseUrl }),
+      ...(sessionIdleTtlMs === undefined ? {} : { sessionIdleTtlMs }),
+    },
   );
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */

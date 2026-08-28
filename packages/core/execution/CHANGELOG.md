@@ -1,5 +1,99 @@
 # @executor-js/execution
 
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/codemode-core@1.6.2
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1741](https://github.com/UsefulSoftwareCo/executor/pull/1741) [`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Opt-in per-integration search tools on the MCP surface**
+
+  Connecting with `?search_tools=true` (stdio: `executor mcp --search-tools`) adds one minimally-described `search_<integration>` MCP tool per connected integration, so the integration namespaces reach the model as tool names it can see without calling anything. Each call routes through the same flow as `tools.search({ namespace })` inside `execute`, and the tool list comes from the same inventory the `execute` description shows. Off by default; a clean endpoint URL is unchanged.
+
+- [#1749](https://github.com/UsefulSoftwareCo/executor/pull/1749) [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Slim the per-integration `search_<integration>` tool definitions to under half their size: one shared one-line description (the tool name already carries the namespace) and a single bare `query` parameter, dropping the `limit`/`offset` knobs. A session pays for these definitions once per connected integration, so the surface now costs ~2k tokens instead of ~5k at 30 integrations; paging through a namespace belongs in `execute`.
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+  - @executor-js/codemode-core@1.6.1
+
+## 1.6.0
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/codemode-core@1.6.0
+
+## 1.5.42
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/codemode-core@1.5.42
+
+## 1.5.41
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/codemode-core@1.5.41
+
+## 1.5.40
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/codemode-core@1.5.40
+
+## 1.5.39
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/codemode-core@1.5.39
+
+## 1.5.38
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/codemode-core@1.5.38
+
+## 1.5.37
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/codemode-core@1.5.37
+
+## 1.5.36
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/codemode-core@1.5.36
+
+## 1.5.35
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/codemode-core@1.5.35
+
 ## 1.5.34
 
 ### Patch Changes

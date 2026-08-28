@@ -6,6 +6,32 @@
 @source "../../../../apps/local/src/**/*.{ts,tsx}";
 @source "../../../../apps/cloud/src/**/*.{ts,tsx}";
 @source "../../../plugins/*/src/**/*.{ts,tsx}";
+/* The artifact page embeds the MCP-Apps shell, so the shell's own chrome
+   (loading state, trusted-approval modal) must compile into the app stylesheet.
+   Classes the MODEL invents at runtime are not scannable at build time — the
+   shell compiles those in-browser inside its sandboxed frame. */
+@source "../../../hosts/mcp-apps-shell/src/shell/**/*.{ts,tsx}";
+
+/* The artifact GALLERY draws stored preview markup directly in this document
+   (see `artifact-preview.tsx`), so unlike the shell there is no in-browser
+   Tailwind compiler to fall back on — a class the model used that this
+   stylesheet lacks simply does not apply, and the preview loses the structure
+   that made it worth showing.
+   Most of what a preview needs is already here because the console uses it
+   too. What is NOT is the wide end of the layout scales: the console is a
+   settings UI and never needs a four-column stat row, while a generated
+   dashboard almost always does. Inlining the grid and flex tracks is enough to
+   keep a preview's SHAPE intact; the fine typography and spacing utilities are
+   already compiled from console sources.
+   Deliberately narrow: this is a fixed list of layout primitives, not an
+   attempt to precompile everything a model might write. Anything missing
+   degrades to an unstyled block inside the preview, never a broken console. */
+@source inline("grid-cols-{1,2,3,4,5,6,7,8,9,10,11,12}");
+@source inline("md:grid-cols-{1,2,3,4,5,6}");
+@source inline("lg:grid-cols-{1,2,3,4,5,6}");
+@source inline("col-span-{1,2,3,4,5,6,7,8,9,10,11,12}");
+@source inline("row-span-{1,2,3,4,5,6}");
+@source inline("grid-rows-{1,2,3,4,5,6}");
 
 @theme inline {
   /* Geist sets UI and prose; Geist Mono sets code, slugs, IDs, counts, and labels.

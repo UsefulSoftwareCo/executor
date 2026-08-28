@@ -70,6 +70,7 @@ const provide = (auth: typeof adminAuth, workosOverrides: StubOverrides = {}) =>
 // Mirrors `org/handlers.ts` `requireAdmin`.
 const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
+  if (auth.accountId === null) return yield* new Forbidden();
   const workos = yield* WorkOSClient;
   const current = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
   if (!current || current.role?.slug !== "admin") {

@@ -70,9 +70,11 @@ const stubOrgAuthNoMembership = Layer.succeed(McpOrganizationAuth)({
   authorize: () => Effect.succeed(null),
 });
 
-// `authorize` SUCCEEDS with an org id — active membership.
+// `authorize` SUCCEEDS with the resolved org record — active membership. The
+// record, not just the id: the session props carry the org's name and slug so
+// the session DO never re-reads the row.
 const stubOrgAuthActive = Layer.succeed(McpOrganizationAuth)({
-  authorize: () => Effect.succeed(ORG_ID),
+  authorize: () => Effect.succeed({ id: ORG_ID, name: "Stub Org", slug: "stub-org" }),
 });
 
 // A failure that is not a WorkOSError at all (e.g. the per-request DB layer

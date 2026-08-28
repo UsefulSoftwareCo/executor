@@ -31,11 +31,18 @@ const initializedNotification = {
   method: "notifications/initialized",
 };
 
-const executeBody = (id: string, code: string) => ({
+const executeBody = (id: string | number, code: string) => ({
   jsonrpc: "2.0" as const,
   id,
   method: "tools/call",
   params: { name: "execute", arguments: { code } },
+});
+
+const toolsListBody = (id: number) => ({
+  jsonrpc: "2.0" as const,
+  id,
+  method: "tools/list",
+  params: {},
 });
 
 const mcpHeaders = (bearer: string, sessionId?: string) => ({
@@ -67,6 +74,8 @@ const openSession = async (mcpUrl: string, bearer: string): Promise<string> => {
   return sessionId;
 };
 
+type JsonRpcId = string | number;
+
 type JsonRpcMessage = {
   readonly id?: unknown;
   readonly result?: unknown;
@@ -78,9 +87,10 @@ class SseCapture {
   readonly eventIds: string[] = [];
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private readonly waiters = new Map<
-    string,
+    JsonRpcId,
     Array<{ readonly resolve: (message: JsonRpcMessage) => void }>
   >();
+  private responseWaiters: Array<{ readonly resolve: (message: JsonRpcMessage) => void }> = [];
   readonly finished: Promise<void>;
 
   constructor(
@@ -90,7 +100,7 @@ class SseCapture {
     this.finished = this.consume();
   }
 
-  waitForId(id: string, timeoutMs: number): Promise<JsonRpcMessage> {
+  waitForId(id: JsonRpcId, timeoutMs: number): Promise<JsonRpcMessage> {
     const existing = this.messages.find((message) => message.id === id);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
@@ -105,6 +115,25 @@ class SseCapture {
         },
       };
       this.waiters.set(id, [...(this.waiters.get(id) ?? []), waiter]);
+    });
+  }
+
+  waitForFirstResponse(timeoutMs: number): Promise<JsonRpcMessage> {
+    const existing = this.messages.find(
+      (message) => typeof message.id === "string" || typeof message.id === "number",
+    );
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: Promise timeout adapter for e2e polling.
+        reject(new Error("timed out waiting for the first JSON-RPC response"));
+      }, timeoutMs);
+      this.responseWaiters.push({
+        resolve: (message) => {
+          clearTimeout(timeout);
+          resolve(message);
+        },
+      });
     });
   }
 
@@ -159,14 +188,22 @@ class SseCapture {
     if (!trimmed) return;
     const parsed = JSON.parse(trimmed) as JsonRpcMessage;
     this.messages.push(parsed);
-    if (typeof parsed.id !== "string") return;
+    if (typeof parsed.id !== "string" && typeof parsed.id !== "number") return;
+    const responseWaiters = this.responseWaiters;
+    this.responseWaiters = [];
+    for (const waiter of responseWaiters) waiter.resolve(parsed);
     const waiters = this.waiters.get(parsed.id) ?? [];
     this.waiters.delete(parsed.id);
     for (const waiter of waiters) waiter.resolve(parsed);
   }
 }
 
-const openGet = async (mcpUrl: string, bearer: string, sessionId: string): Promise<SseCapture> => {
+const openGet = async (
+  mcpUrl: string,
+  bearer: string,
+  sessionId: string,
+  lastEventId?: string,
+): Promise<SseCapture> => {
   const abortController = new AbortController();
   const response = await fetch(mcpUrl, {
     method: "GET",
@@ -175,6 +212,7 @@ const openGet = async (mcpUrl: string, bearer: string, sessionId: string): Promi
       authorization: `Bearer ${bearer}`,
       "mcp-protocol-version": PROTOCOL_VERSION,
       "mcp-session-id": sessionId,
+      ...(lastEventId ? { "last-event-id": lastEventId } : {}),
     },
     signal: abortController.signal,
   });
@@ -243,6 +281,78 @@ scenario(
     expect(replay.eventIds.length, "the replayed result carries an SSE event id").toBeGreaterThan(
       0,
     );
+  }),
+);
+
+scenario(
+  "MCP streamable HTTP · Last-Event-ID recovery stays scoped to its originating request",
+  { timeout: 90_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+    const sessionId = yield* Effect.promise(() => openSession(target.mcpUrl, bearer));
+
+    // Initialize's POST response is intentionally retained as undelivered.
+    // Drain it through the cursorless compatibility path first so id=20 below
+    // is the only unrelated response available to expose cross-stream replay.
+    const initializeReplay = yield* Effect.promise(() => openGet(target.mcpUrl, bearer, sessionId));
+    yield* Effect.promise(() => initializeReplay.waitForId("initialize", 15_000));
+    yield* Effect.promise(() => initializeReplay.finished);
+    yield* Effect.promise(() => delay(200));
+
+    const expectedId = 21;
+    const unrelatedId = 20;
+    const marker = `MARKER_STREAM_SCOPED_${randomUUID()}`;
+    const interrupted = new AbortController();
+    const expectedPost = yield* Effect.promise(() =>
+      startPostCapture(
+        target.mcpUrl,
+        bearer,
+        sessionId,
+        executeBody(expectedId, delayedCode(marker, 5_000)),
+        interrupted,
+      ),
+    );
+
+    // The priming event is always the first event on this POST stream. Its id
+    // is the cursor the real SDK carries when that stream is interrupted.
+    yield* Effect.promise(async () => {
+      const deadline = Date.now() + 10_000;
+      while (expectedPost.eventIds.length === 0 && Date.now() < deadline) await delay(25);
+      if (expectedPost.eventIds.length === 0) {
+        throw new Error("timed out waiting for the expected POST priming cursor");
+      }
+    });
+    const expectedCursor = expectedPost.eventIds[0];
+    if (!expectedCursor) return yield* Effect.die("expected POST priming cursor is missing");
+
+    // Fully consume another POST response. workerd cannot prove that delivery,
+    // so Executor deliberately leaves id=20 persisted and marked undelivered.
+    const unrelated = yield* Effect.promise(() =>
+      postJson(target.mcpUrl, bearer, toolsListBody(unrelatedId), sessionId),
+    );
+    yield* Effect.promise(() => unrelated.text());
+    expect(unrelated.status, "the unrelated tools/list completed normally").toBe(200);
+
+    interrupted.abort("simulate the id=21 POST stream disconnecting after priming");
+    yield* Effect.promise(() => expectedPost.finished.catch(() => undefined));
+
+    const recovery = yield* Effect.promise(() =>
+      openGet(target.mcpUrl, bearer, sessionId, expectedCursor),
+    );
+    const firstResponse = yield* Effect.promise(() => recovery.waitForFirstResponse(15_000));
+    recovery.abort("scenario complete");
+
+    expect(
+      firstResponse.id,
+      "a targeted recovery never receives the unrelated persisted response",
+    ).toBe(expectedId);
+    expect(
+      JSON.stringify(firstResponse),
+      "the targeted request receives its own completed result",
+    ).toContain(marker);
   }),
 );
 

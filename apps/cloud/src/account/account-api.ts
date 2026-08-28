@@ -72,13 +72,16 @@ const AccountProviderMiddleware = HttpRouter.middleware<{ provides: AccountProvi
 
         // Built inside the request body so the WorkOS account service closes
         // over the per-request `UserStoreService` (postgres socket) supplied by
-        // the combined request-scoped layer.
+        // the combined request-scoped layer. `local` keeps that promise: the
+        // `longLived` context re-applied below carries the boot `CurrentMemoMap`,
+        // so a shared build would hand overlapping requests one another's socket.
         const accountProvider = yield* Effect.provide(
           AccountProvider.asEffect(),
           workosAccountProvider.pipe(
             Layer.provide(ApiKeyService.WorkOS),
             Layer.provide(Layer.succeed(AccountCaller)({ session })),
           ),
+          { local: true },
         );
         return yield* Effect.provideService(httpEffect, AccountProvider, accountProvider);
       }).pipe(Effect.provideContext(longLived));

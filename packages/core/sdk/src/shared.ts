@@ -10,6 +10,7 @@
 
 // Branded ids + the owner literal.
 export {
+  ArtifactId,
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
@@ -62,6 +63,7 @@ export {
   InvalidConnectionInputError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
+  ArtifactNotFoundError,
   isUserActionableError,
   type ExecuteError,
   type ExecutorError,
@@ -101,6 +103,20 @@ export {
 } from "./policies";
 export type { ToolPolicyAction } from "./core-schema";
 
+// Artifact projections (the row mappers are server-side; the binding schemas
+// are shared, because the HTTP contract carries them).
+export { ArtifactBinding, ArtifactBindings } from "./artifact";
+export type {
+  Artifact,
+  ArtifactPreview,
+  ArtifactSummary,
+  SaveArtifactInput,
+  RenameArtifactInput,
+  RemoveArtifactInput,
+  SetArtifactPreviewInput,
+} from "./artifact";
+export { ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
+
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 
@@ -128,6 +144,17 @@ export {
 
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {
+  FIRST_PARTY_OAUTH_CLIENT_PREFIX,
+  firstPartyOAuthClientSlug,
+  isFirstPartyOAuthClientSlug,
+  SubjectTokenTypeSchema,
+  DEFAULT_SUBJECT_TOKEN_TYPE,
+  EnterpriseManagedStartInputSchema,
+  EnterpriseIdentityProviderDescriptorSchema,
+  type SubjectTokenType,
+  type EnterpriseManagedStartInput,
+  type EnterpriseIdentityProviderDescriptor,
+  type FirstPartyOAuthClientConfig,
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,
@@ -156,17 +183,22 @@ export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
   DEFAULT_EXECUTOR_SERVER_USERNAME,
   EXECUTOR_ORG_SELECTOR_HEADER,
+  ExecutorServerHeaderResolutionError,
   apiBaseUrlForServerOrigin,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
   originFromApiBaseUrl,
   parseExecutorLocalServerManifest,
+  resolveExecutorServerConfiguredHeaders,
+  resolveExecutorServerRequestHeaders,
   serializeExecutorLocalServerManifest,
   type ExecutorServerAuth,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
   type ExecutorServerConnectionKind,
+  type ExecutorServerHeaders,
+  type ExecutorServerHeaderValue,
   type ExecutorLocalServerKind,
   type ExecutorLocalServerManifest,
 } from "./server-connection";

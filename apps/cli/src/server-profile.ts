@@ -62,6 +62,11 @@ const PersistedAuth = Schema.Union([
   }),
 ]);
 
+const PersistedHeader = Schema.Struct({
+  kind: Schema.Literal("env"),
+  name: Schema.String,
+});
+
 const PersistedConnection = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["http", "desktop-sidecar"])),
   key: Schema.optional(Schema.String),
@@ -69,6 +74,7 @@ const PersistedConnection = Schema.Struct({
   apiBaseUrl: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   auth: Schema.optional(PersistedAuth),
+  headers: Schema.optional(Schema.Record(Schema.String, PersistedHeader)),
 });
 
 const PersistedProfile = Schema.Struct({
@@ -144,10 +150,22 @@ export const writeCliServerConnectionStore = (
     const path = yield* Path.Path;
     const dataDir = resolveDataDir(path);
     yield* fs.makeDirectory(dataDir, { recursive: true });
-    yield* fs.writeFileString(
-      serverConnectionStorePath(path),
-      serializeCliServerConnectionStore(store),
-    );
+    const storePath = serverConnectionStorePath(path);
+    // This store holds live credentials for a hosted server — a bearer token, or
+    // an OAuth access token AND its long-lived refresh token — so create it
+    // owner-only, exactly as the local-server manifest does for the sibling
+    // secret it keeps under `server-control/`.
+    //
+    // Both steps are needed, and the second matters more here than it does
+    // there. `mode` applies only when the file is CREATED, so it closes the
+    // window where a fresh store is briefly world-readable. The `chmod` covers
+    // overwriting a store that already exists with looser permissions — and this
+    // file is rewritten on every silent token refresh, so overwrite is the
+    // common path, not the rare one.
+    yield* fs.writeFileString(storePath, serializeCliServerConnectionStore(store), {
+      mode: 0o600,
+    });
+    yield* fs.chmod(storePath, 0o600).pipe(Effect.ignore);
   });
 
 export const upsertCliServerConnectionProfile = (input: {

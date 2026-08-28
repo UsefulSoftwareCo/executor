@@ -585,6 +585,73 @@ scenario(
 );
 
 scenario(
+  "Toolkits · a broad approve policy applies over a narrower connection grant",
+  { timeout: 240_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const { client: makeClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeClient(api, identity);
+
+    const toolkitName = unique("broad-approve-kit");
+    const createdPattern = `${unique("broad-approved-policy")}.*`;
+
+    yield* Effect.gen(function* () {
+      const toolkit = yield* client.toolkits.create({
+        payload: { owner: "org", name: toolkitName },
+      });
+      yield* client.toolkits.createConnection({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: "executor.coreTools.policies.create" },
+      });
+      yield* client.toolkits.createPolicy({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: "executor.coreTools.*", action: "approve" },
+      });
+
+      const session = mcp.session(identity, {
+        url: toolkitUrl(target.baseUrl, toolkit.slug),
+      });
+      const result = yield* session.call("execute", {
+        code: createPolicyCode({ pattern: createdPattern, action: "block" }),
+      });
+
+      expect(result.text, "the broad approve policy does not pause execution").not.toContain(
+        "Execution paused",
+      );
+      expect(result.ok, `the approved tool succeeds: ${result.text}`).toBe(true);
+      const policies = yield* client.policies.list();
+      expect(
+        policies.map((policy) => `${policy.owner} ${policy.pattern} ${policy.action}`),
+        "the approved tool reaches its side effect",
+      ).toContain(`user ${createdPattern} block`);
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const listed = yield* client.toolkits.list();
+          yield* Effect.forEach(
+            listed.toolkits.filter((toolkit) => toolkit.name === toolkitName),
+            (toolkit) => client.toolkits.remove({ params: { toolkitId: toolkit.id } }),
+            { discard: true },
+          );
+          const policies = yield* client.policies.list();
+          yield* Effect.forEach(
+            policies.filter((policy) => policy.pattern === createdPattern),
+            (policy) =>
+              client.policies.remove({
+                params: { policyId: policy.id },
+                payload: { owner: policy.owner },
+              }),
+            { discard: true },
+          );
+        }).pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
+
+scenario(
   "Toolkits · the provider catalog hides integrations the toolkit grants no tools",
   { timeout: 240_000 },
   Effect.scoped(

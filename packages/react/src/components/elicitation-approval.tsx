@@ -225,6 +225,23 @@ const buildElicitationContent = (
   return { content, errors };
 };
 
+/**
+ * The content an approval would send if nobody touched the form: every field's
+ * schema default, validated by exactly the same rules the form applies.
+ *
+ * `null` means "this schema cannot be answered without a human": a required
+ * field has no default, or a default fails its own constraints. Callers that
+ * approve without showing the form (the shell's remembered "don't ask again"
+ * grants) MUST fall back to the form in that case rather than sending
+ * fabricated values — a remembered approval is consent to skip the prompt, not
+ * consent to invent the answer.
+ */
+export const elicitationDefaultContent = (schema: unknown): Record<string, unknown> | null => {
+  const formSchema = parseElicitationFormSchema(schema);
+  const result = buildElicitationContent(formSchema, initialFormValues(formSchema));
+  return Object.keys(result.errors).length > 0 ? null : result.content;
+};
+
 export function useElicitationApproval(schema: unknown): ElicitationApprovalState {
   const formSchema = useMemo(() => parseElicitationFormSchema(schema), [schema]);
   const [formValues, setFormValues] = useState<Record<string, ElicitationFieldValue>>(() =>

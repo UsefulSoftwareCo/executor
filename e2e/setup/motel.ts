@@ -8,7 +8,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bootProcesses, waitForHttp, type BootedProcesses } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp, type MonitoredBootedProcesses } from "./boot";
 
 export const MOTEL_PORT = 4796;
 export const MOTEL_URL = `http://127.0.0.1:${MOTEL_PORT}`;
@@ -28,7 +28,7 @@ export const bootMotel = async (): Promise<SuiteMotel | null> => {
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(dataDir, { recursive: true });
 
-  let procs: BootedProcesses | null = null;
+  let procs: MonitoredBootedProcesses | null = null;
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: optional infrastructure; a motel-less host still runs the suite
   try {
     procs = bootProcesses(
@@ -45,7 +45,7 @@ export const bootMotel = async (): Promise<SuiteMotel | null> => {
       ],
       { label: "motel" },
     );
-    await waitForHttp(`${MOTEL_URL}/api/health`);
+    await waitForBoot(procs, (signal) => waitForHttp(`${MOTEL_URL}/api/health`, { signal }));
     console.log(`[e2e] traces → suite motel at ${MOTEL_URL}`);
     return { url: MOTEL_URL, teardown: procs.teardown };
   } catch (error) {

@@ -1,0 +1,243 @@
+/**
+ * The HTTP-backed host an embedded MCP-Apps shell talks to.
+ *
+ * A shell normally runs inside an MCP client, where `callServerTool` is the
+ * MCP bridge. On the artifact page there is no MCP client — the console renders
+ * the artifact itself — so this adapter answers the same two tool calls over
+ * the ordinary executions HTTP API instead:
+ *
+ *   execute-action        -> POST /executions
+ *   execute-action-resume -> POST /executions/:id/resume
+ *
+ * The shell's `proxy.ts` already turns `tools.a.b.c(...)` into `execute-action`
+ * and recurses through `waiting_for_interaction` -> trusted modal -> resume, so
+ * elicitation approvals work unchanged; this layer only moves bytes.
+ *
+ * The type is declared structurally rather than imported from
+ * `@executor-js/mcp-apps-shell`: that package depends on THIS one for its
+ * component barrel, so a type import here would close a package cycle that
+ * turbo rejects outright. The shell's `McpAppsShellHost` is deliberately
+ * structural for exactly this reason — see its declaration.
+ */
+
+import {
+  getExecutorApiBaseUrl,
+  getExecutorOrganizationHeaders,
+  getExecutorServerAuthorizationHeader,
+} from "./server-connection";
+
+/** The wire shape of `POST /executions` and `POST /executions/:id/resume`. */
+type ExecutionResponse =
+  | {
+      readonly status: "completed";
+      readonly text: string;
+      readonly structured: unknown;
+      readonly isError: boolean;
+    }
+  | { readonly status: "paused"; readonly text: string; readonly structured: unknown };
+
+/** The subset of `CallToolResult` the shell reads back. */
+export interface ShellToolResult {
+  readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>;
+  readonly structuredContent?: Record<string, unknown>;
+  readonly isError?: boolean | undefined;
+}
+
+/** Structurally compatible with the shell package's `McpAppsShellHost`. */
+export interface HttpShellHost {
+  readonly callServerTool: (params: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }) => Promise<ShellToolResult>;
+  readonly getHostContext: () => { readonly theme: "light" | "dark" } | undefined;
+  readonly openLink: (params: { url: string }) => Promise<unknown>;
+  /** Store a settled-render snapshot as the artifact's gallery preview.
+   *  Best-effort: failures are swallowed, since the layout preview remains. */
+  readonly savePreview: (artifactId: string, preview: string) => void;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** `ApprovalExpiredError`'s status: the paused execution existed and
+ *  deliberately no longer does. See `packages/core/api/src/executions/api.ts`. */
+const APPROVAL_EXPIRED_STATUS = 410;
+
+/** What the user reads when their approval arrived too late. Phrased as the next
+ *  action, because nothing ran and retrying is safe. */
+export const APPROVAL_EXPIRED_MESSAGE = "This approval expired. Trigger the action again.";
+
+/**
+ * The kernel's envelope travels in `structured`; the shell unwraps it itself.
+ * A completed-and-failed execution maps to `isError` so the shell's proxy
+ * throws inside the generated component instead of handing it a bogus value.
+ */
+const toShellToolResult = (response: ExecutionResponse): ShellToolResult => ({
+  content: [{ type: "text", text: response.text }],
+  structuredContent: isRecord(response.structured)
+    ? response.structured
+    : { result: response.structured },
+  isError: response.status === "completed" && response.isError ? true : undefined,
+});
+
+/** The resume action the shell sends back after the user answers the modal. */
+const isResumeAction = (value: unknown): value is "accept" | "decline" | "cancel" =>
+  value === "accept" || value === "decline" || value === "cancel";
+
+/**
+ * `execute-action-resume` carries the elicitation answer as a JSON *string*
+ * (the MCP tool contract is string-typed), so it is parsed back here. An
+ * unparseable or non-object body becomes `undefined` rather than throwing: the
+ * user's decision (accept/decline/cancel) still deserves to reach the server.
+ */
+const parseResumeContent = (raw: unknown): Record<string, unknown> | undefined => {
+  if (typeof raw !== "string" || raw === "{}") return undefined;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: JSON.parse over a value the shell built; a malformed body must not lose the user's answer
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: the resume content arrives as an opaque JSON string across the shell's postMessage bridge
+    const parsed: unknown = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const prefersDark = (): boolean =>
+  typeof globalThis.window !== "undefined" &&
+  typeof globalThis.window.matchMedia === "function" &&
+  globalThis.window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+/**
+ * Build the host. `fetch` is injectable so the seam can be tested without a
+ * server; everything else is read at call time from the active server
+ * connection, matching how the typed API client resolves its base URL and
+ * bearer (a desktop connection carries no auth and sends none).
+ */
+export const createHttpShellHost = (options?: {
+  readonly fetch?: typeof globalThis.fetch;
+}): HttpShellHost => {
+  const doFetch = options?.fetch ?? globalThis.fetch.bind(globalThis);
+
+  /**
+   * Every request this host makes, headed the same way as the typed API client
+   * (`api/client.tsx`'s `transformClient`): bearer when the connection carries
+   * one, plus the active org selector.
+   *
+   * The selector is what an org-scoped host (cloud) scopes the request by, and
+   * it fails CLOSED — a session request that omits it is rejected outright
+   * rather than falling back to the session's stored org. Without it here every
+   * artifact tool call 403'd with `no_organization`. Resolved per request, not
+   * captured at construction: the host is memoized for the page's lifetime,
+   * while the scope authority is set during render, so a captured value could
+   * outlive the org it named.
+   *
+   * Hosts without org scoping (local, desktop, self-host) produce no slug and
+   * so send no header, which is the same convention the neighboring clients
+   * follow.
+   */
+  const requestHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      ...getExecutorOrganizationHeaders(),
+    };
+    const authorization = getExecutorServerAuthorizationHeader();
+    if (authorization) headers.authorization = authorization;
+    return headers;
+  };
+
+  const post = async (path: string, payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await doFetch(`${getExecutorApiBaseUrl()}${path}`, {
+      method: "POST",
+      headers: requestHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      // An approval that outlived its window is an ordinary outcome, not a
+      // fault: nothing ran, and the fix is to trigger the action again. Say that
+      // instead of surfacing the transport's error body, which reached the user
+      // as a raw `ExecutionNotFoundError` inside a JSON-RPC envelope.
+      if (response.status === APPROVAL_EXPIRED_STATUS) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the shell's tool proxy is Promise-based and surfaces rejections as component errors
+        throw new Error(APPROVAL_EXPIRED_MESSAGE);
+      }
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the shell's tool proxy is Promise-based and surfaces rejections as component errors
+      throw new Error(text || `Executor API request failed with ${response.status}`);
+    }
+    return response.json();
+  };
+
+  return {
+    getHostContext: () => ({ theme: prefersDark() ? "dark" : "light" }),
+
+    /**
+     * Store a snapshot of the settled render as the artifact's gallery preview.
+     *
+     * Best-effort in every direction: a failure is swallowed, because the card
+     * already has a layout preview to fall back on and a viewer who merely
+     * opened an artifact has done nothing that deserves an error. Supplying
+     * this at all is what tells the shell it may capture — see `savePreview` on
+     * `McpAppsShellHost`.
+     */
+    savePreview: (artifactId: string, preview: string): void => {
+      void doFetch(
+        `${getExecutorApiBaseUrl()}/artifacts/${encodeURIComponent(artifactId)}/preview`,
+        { method: "PUT", headers: requestHeaders(), body: JSON.stringify({ preview }) },
+      ).then(
+        () => undefined,
+        // Deliberately silent, and not an Effect: there is no caller to report
+        // to and nothing downstream to recover. A failed upload leaves the card
+        // on its layout preview, which is already a good picture.
+        () => undefined,
+      );
+    },
+
+    openLink: async ({ url }) => {
+      globalThis.window?.open(url, "_blank", "noopener,noreferrer");
+      return {};
+    },
+
+    callServerTool: async ({ name, arguments: args }) => {
+      const input = args ?? {};
+
+      if (name === "execute-action") {
+        const code = input.code;
+        if (typeof code !== "string") {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
+          throw new Error("Missing execute-action code.");
+        }
+        // The artifact id travels with the call: the code addresses integrations
+        // by role, and the bindings that resolve a role live on the artifact row.
+        const artifactId = input.artifactId;
+        return toShellToolResult(
+          (await post("/executions", {
+            code,
+            ...(typeof artifactId === "string" ? { artifactId } : {}),
+          })) as ExecutionResponse,
+        );
+      }
+
+      if (name === "execute-action-resume") {
+        const executionId = input.executionId;
+        const action = input.action;
+        if (typeof executionId !== "string") {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
+          throw new Error("Missing execution id.");
+        }
+        if (!isResumeAction(action)) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
+          throw new Error("Invalid resume action.");
+        }
+        return toShellToolResult(
+          (await post(`/executions/${encodeURIComponent(executionId)}/resume`, {
+            action,
+            content: parseResumeContent(input.content),
+          })) as ExecutionResponse,
+        );
+      }
+
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
+      throw new Error(`Unsupported shell tool: ${name}`);
+    },
+  };
+};

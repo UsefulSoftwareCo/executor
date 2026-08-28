@@ -4,9 +4,14 @@ import { RouterProvider } from "@tanstack/react-router";
 import { bootstrapLocalAuthToken } from "@executor-js/react/api/local-auth";
 import { getRouter } from "./router";
 import { initDesktopCrashReporting } from "./crash-reporting";
+import { installServerDisconnectedRecovery } from "./server-disconnected";
 import "@executor-js/react/globals.css";
 
 initDesktopCrashReporting();
+// A route chunk that fails to load usually means the server serving this bundle
+// went away (desktop: the sidecar exited). Recover instead of leaving a dead
+// route behind an unhandled TypeError.
+installServerDisconnectedRecovery();
 
 if ("executor" in window && navigator.platform.includes("Mac")) {
   document.documentElement.classList.add("executor-desktop-macos");

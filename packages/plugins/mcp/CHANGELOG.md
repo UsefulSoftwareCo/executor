@@ -1,5 +1,141 @@
 # @executor-js/plugin-mcp
 
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/config@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/react@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1747](https://github.com/UsefulSoftwareCo/executor/pull/1747) [`91062c2`](https://github.com/UsefulSoftwareCo/executor/commit/91062c2b1d7b8edbc8470ca5eaa544045652afaa) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Load the MCP client SDK lazily on first outbound connection instead of at module evaluation. Runtimes that bundle the plugin (notably Cloudflare Workers) no longer pay the client package's module-eval memory and CPU on startup or on code paths that never dial an MCP server.
+
+- [#1716](https://github.com/UsefulSoftwareCo/executor/pull/1716) [`9c35f26`](https://github.com/UsefulSoftwareCo/executor/commit/9c35f269dd5de3548111fe5c83cf1e877f23c80d) Thanks [@xav-ie](https://github.com/xav-ie)! - **Closing a remote MCP connection now ends its streamable-http SSE request**
+
+  On a supplied `httpClientLayer`, the fetch adapter wired the caller's `AbortSignal` only to the pending response promise, never to the response body, so closing a connection left the long-lived `GET` channel in flight forever — one abandoned request per dial. Under Bun each holds one of the 256 concurrent-request slots, so a long-running process eventually exhausts the pool and every connection starts failing with `MCP discovery timed out after 15000ms`. The response stream is now interrupted when the signal aborts.
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/config@1.6.1
+
+## 1.6.0
+
+### Minor Changes
+
+- [#1733](https://github.com/UsefulSoftwareCo/executor/pull/1733) [`0b0b74f`](https://github.com/UsefulSoftwareCo/executor/commit/0b0b74f673b8098c5248159be36c648097f3c87b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Restore MCP spec 2026-07-28 negotiation for outbound MCP connections. Remote Streamable HTTP connections auto-negotiate the modern protocol era again, stdio servers can opt in per integration, and the negotiated era is recorded on connection handshake traces.
+
+### Patch Changes
+
+- [#1660](https://github.com/UsefulSoftwareCo/executor/pull/1660) [`c11bef2`](https://github.com/UsefulSoftwareCo/executor/commit/c11bef2cd049db7bbf51b15e18761b14acccb534) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Cloudflare ships as MCP-only, with code mode opted out**
+
+  The Cloudflare OpenAPI preset is gone from the default catalog; the MCP preset is the one Cloudflare entry. Its endpoint now pins `?codemode=false` because Cloudflare's MCP server otherwise hides the tool catalog behind a single code-execution tool, and executor already provides the code-execution surface. Hand-entered `mcp.cloudflare.com` URLs missing the opt-out get an inline warning in the add flow telling the user to append `?codemode=false`.
+
+- [#1654](https://github.com/UsefulSoftwareCo/executor/pull/1654) [`256e25e`](https://github.com/UsefulSoftwareCo/executor/commit/256e25e7b291b0c023bc7547d092004b66781bba) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Interrupted stdio dials no longer strand the spawned child process**
+
+  Cancelling an in-flight health check or tool discovery (a UI refresh aborting the request, or the 15s discovery timeout) abandoned the MCP connect handshake without closing the transport, leaving the spawned stdio child running indefinitely: for `docker run -i --rm` integrations, one stranded container per interrupted dial. The connect handshake now aborts on interruption (the SDK closes the transport, ending stdin and escalating to SIGTERM/SIGKILL), and tool discovery closes the connection even when the interrupt lands between the handshake completing and discovery starting.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+  - @executor-js/config@1.6.0
+
+## 1.5.42
+
+### Patch Changes
+
+- [#1646](https://github.com/UsefulSoftwareCo/executor/pull/1646) [`9ecc7cb`](https://github.com/UsefulSoftwareCo/executor/commit/9ecc7cb8b30375ffa960e3fefe4d211e0254e691) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Stdio MCP servers can negotiate the modern protocol (`versionNegotiation: "auto"`)**
+
+  Spawned stdio MCP integrations previously always opened with the legacy 2025 `initialize` handshake, so an SDK v2 server running with its legacy compatibility lane disabled could not connect. Stdio integrations now accept `versionNegotiation: "auto"` (on `mcp.addServer` and the stored config) to probe `server/discover` per spec 2026-07-28, falling back to `initialize` on legacy servers. The default stays `legacy`: the SDK's stdio probe costs an extra short-lived child process per connect and stalls on silent legacy servers, which is the wrong trade for spawn-per-call CLI servers. The connect handshake span now records the negotiated era (`plugin.mcp.protocol_era`) so integration authors can verify which handshake a connection used.
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+  - @executor-js/api@1.4.62
+  - @executor-js/config@1.5.42
+  - @executor-js/react@1.4.62
+
+## 1.5.41
+
+### Patch Changes
+
+- [#1617](https://github.com/UsefulSoftwareCo/executor/pull/1617) [`a9b33d2`](https://github.com/UsefulSoftwareCo/executor/commit/a9b33d25c32fbb4a292b7e8963e22392f862a16f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Support MCP spec 2026-07-28 end to end. The MCP client negotiates the protocol era automatically (`server/discover` probe with legacy fallback), so integrations hosted on modern-only MCP servers connect without the server enabling legacy compatibility. Executor-hosted MCP endpoints serve both eras, and the `executor mcp` stdio bridge passes either era through to the daemon.
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/config@1.5.41
+  - @executor-js/react@1.4.61
+
+## 1.5.40
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+  - @executor-js/api@1.4.60
+  - @executor-js/config@1.5.40
+  - @executor-js/react@1.4.60
+
+## 1.5.39
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+  - @executor-js/api@1.4.59
+  - @executor-js/config@1.5.39
+  - @executor-js/react@1.4.59
+
+## 1.5.38
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4), [`1de85fc`](https://github.com/UsefulSoftwareCo/executor/commit/1de85fc0201c0c23c0e71e003c49228d406af6c8)]:
+  - @executor-js/sdk@1.5.38
+  - @executor-js/react@1.4.58
+  - @executor-js/api@1.4.58
+  - @executor-js/config@1.5.38
+
+## 1.5.37
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+  - @executor-js/api@1.4.57
+  - @executor-js/config@1.5.37
+  - @executor-js/react@1.4.57
+
+## 1.5.36
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+  - @executor-js/config@1.5.36
+  - @executor-js/api@1.4.56
+  - @executor-js/react@1.4.56
+
+## 1.5.35
+
+### Patch Changes
+
+- [#1435](https://github.com/UsefulSoftwareCo/executor/pull/1435) [`af95edb`](https://github.com/UsefulSoftwareCo/executor/commit/af95edbb0bbde544bb1f4c6e18e9d64a2bcab0f8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Reuse downstream MCP sessions across tool calls. Remote MCP invocations now lease connections from a per-plugin-instance pool (one idle session per resolved credential identity, exclusive per invoke, 5-minute idle TTL) instead of dialing a fresh connection per call, so servers that key state by `Mcp-Session-Id` (workspace selection and similar) see consecutive calls in the same session. A reused session rejected with HTTP 404 is redialed once transparently; stdio transports and endpoint probing remain per-call.
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+  - @executor-js/api@1.4.55
+  - @executor-js/config@1.5.35
+  - @executor-js/react@1.4.55
+
 ## 1.5.34
 
 ### Patch Changes

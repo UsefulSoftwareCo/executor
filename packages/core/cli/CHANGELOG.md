@@ -1,5 +1,82 @@
 # @executor-js/cli
 
+## 0.2.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+
+## 0.2.51
+
+### Patch Changes
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+
+## 0.2.50
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+
+## 0.2.49
+
+### Patch Changes
+
+- Updated dependencies [[`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d)]:
+  - @executor-js/sdk@1.5.42
+
+## 0.2.48
+
+### Patch Changes
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+
+## 0.2.47
+
+### Patch Changes
+
+- Updated dependencies [[`8ba64f6`](https://github.com/UsefulSoftwareCo/executor/commit/8ba64f675f6d6ab5302d4f68390c0b055d006f4a)]:
+  - @executor-js/sdk@1.5.40
+
+## 0.2.46
+
+### Patch Changes
+
+- Updated dependencies [[`6c316c7`](https://github.com/UsefulSoftwareCo/executor/commit/6c316c77a9efc98784976236852b58c6156e016e)]:
+  - @executor-js/sdk@1.5.39
+
+## 0.2.45
+
+### Patch Changes
+
+- Updated dependencies [[`6a924dd`](https://github.com/UsefulSoftwareCo/executor/commit/6a924dd98de916d6ff8cea2329bf672f149b64f4)]:
+  - @executor-js/sdk@1.5.38
+
+## 0.2.44
+
+### Patch Changes
+
+- Updated dependencies [[`657b913`](https://github.com/UsefulSoftwareCo/executor/commit/657b9135b8b841495b362936bf60bdca998c16eb)]:
+  - @executor-js/sdk@1.5.37
+
+## 0.2.43
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.36
+
+## 0.2.42
+
+### Patch Changes
+
+- Updated dependencies [[`1b9b1f1`](https://github.com/UsefulSoftwareCo/executor/commit/1b9b1f10313834a625a411169ebf83f6181589df)]:
+  - @executor-js/sdk@1.5.35
+
 ## 0.2.41
 
 ### Patch Changes
