@@ -305,18 +305,25 @@ export function IntegrationBrowsePage() {
     [catalog.entries, excludeDomains, availableKinds],
   );
 
-  /** Domains already connected in this workspace, so a row can say "Added"
-   *  instead of offering it again. Matched on domain because that is the one
-   *  identifier a preset, a catalog entry and a saved integration all share. */
-  const installedDomains = useMemo(() => {
+  /** What is already connected, keyed `<domain>:<kind>`.
+   *
+   *  Domain ALONE is not the identity of a row. Rows are per surface now, so
+   *  "Stripe API" and "Stripe MCP" share a domain while being two different
+   *  integrations — matching on domain marked both Added the moment either one
+   *  was. The kind is what separates them.
+   *
+   *  A saved integration's `kind` is the wire kind, which the shared map turns
+   *  back into the plugin key a row carries. */
+  const installedKeys = useMemo(() => {
     const rows: readonly Integration[] = AsyncResult.isSuccess(installed) ? installed.value : [];
-    const domains = new Set<string>();
+    const keys = new Set<string>();
     for (const row of rows) {
       if (!row.displayUrl) continue;
       const domain = getDomain(row.displayUrl);
-      if (domain) domains.add(domain);
+      if (!domain) continue;
+      keys.add(`${domain}:${KIND_TO_PLUGIN_KEY[row.kind] ?? row.kind}`);
     }
-    return domains;
+    return keys;
   }, [installed]);
 
   const allPresets = useMemo(() => {
@@ -432,12 +439,12 @@ export function IntegrationBrowsePage() {
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
         onSelect: () => pickPreset(entry),
-        added: domain !== null && installedDomains.has(domain),
+        added: domain !== null && installedKeys.has(`${domain}:${entry.pluginKey}`),
         busy: false,
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, installedDomains]);
+  }, [allPresets, kind, text, pickPreset, installedKeys]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
@@ -454,7 +461,7 @@ export function IntegrationBrowsePage() {
           ...(description ? { description } : {}),
           iconUrl: catalogLogoUrl(entry.domain, 10),
           onSelect: () => void pickCatalogEntry(entry, [entryKind]),
-          added: installedDomains.has(entry.domain),
+          added: installedKeys.has(`${entry.domain}:${entryKind}`),
           busy: resolvingDomain === entry.domain,
         };
       });
@@ -465,7 +472,7 @@ export function IntegrationBrowsePage() {
     // Gmail. Stable within each group, so the registry's own order survives.
     const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
-  }, [catalogEntries, installedDomains, resolvingDomain, pickCatalogEntry, text]);
+  }, [catalogEntries, installedKeys, resolvingDomain, pickCatalogEntry, text]);
 
   const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
 
