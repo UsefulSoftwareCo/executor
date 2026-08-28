@@ -2,7 +2,7 @@ import { createMiddleware, createStart } from "@tanstack/react-start";
 import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
 import { isAppOwnedPath } from "./app-paths";
-import { authGateMiddleware } from "./auth/ssr-gate";
+import { authGateMiddleware } from "./auth/doc-gate";
 import { parseCookie } from "./auth/cookies";
 import { ORG_SELECTOR_HEADER } from "./auth/organization";
 import { loginPath } from "./auth/return-to";

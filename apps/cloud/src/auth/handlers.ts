@@ -22,6 +22,7 @@ import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
 import { AutumnService } from "../extensions/billing/service";
+import { captureCauseEffect } from "../observability";
 import {
   hasPaidOrganizationSubscription,
   isOverFreeOrganizationLimit,
@@ -415,7 +416,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               ),
               { concurrency: 3 },
             ).pipe(
-              Effect.catchTag("AutumnError", () => Effect.fail(new WorkOSError())),
+              // Any Autumn failure here (outage or missing customer) leaves the
+              // paid/free split unknown, and the limit must fail closed.
+              Effect.mapError(() => new WorkOSError()),
               Effect.map((ids) => new Set(ids.filter(Predicate.isNotNull))),
             );
 
@@ -429,6 +432,24 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // `upsertOrganization` mints the slug at insert — no separate heal step.
           const mirrored = yield* users.use("upsertOrganization", (s) =>
             s.upsertOrganization({ id: org.id, name: org.name }),
+          );
+
+          // Provision the org's billing customer while we're the ones creating
+          // the org. Without this the first billing call an org ever makes is a
+          // non-creating one (balance check / usage track), which 404s and keeps
+          // 404ing — unlimited unbilled executions. Non-fatal: a billing blip
+          // must not block signup, and the billing seam heals a customer that
+          // is still missing later.
+          yield* autumn.ensureCustomer(org.id).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning(
+                  "createOrganization: could not provision the Autumn customer",
+                  { organizationId: org.id, error },
+                );
+                yield* captureCauseEffect(error);
+              }),
+            ),
           );
 
           // Try to attach the new org to the current session. This can fail
@@ -515,7 +536,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           yield* autumn
             .use((client) => client.customers.delete({ customerId: organizationId }))
             .pipe(
-              Effect.catchTag("AutumnError", (error) =>
+              // Includes the "customer never existed" answer: nothing to cancel
+              // is a fine outcome for a deleted org, and it is still worth a line.
+              Effect.catch((error) =>
                 Effect.logWarning("deleteOrganization: failed to delete Autumn customer", {
                   organizationId,
                   error,

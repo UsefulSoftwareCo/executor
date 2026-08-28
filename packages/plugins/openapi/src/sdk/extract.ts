@@ -742,6 +742,23 @@ export const streamOperationBindings = <E, R>(
 const isPathItemValue = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** Parse one path-item range to its kept (optionally trimmed) value. Applied
+ *  identically wherever a structure is walked more than once, so per-operation
+ *  indexes stay aligned across passes. */
+const parseKeptPathItem = (
+  structure: SpecStructure,
+  range: ByteRange,
+  keepPathItem: KeepPathItem | undefined,
+): readonly [string, PathItemObject] | null => {
+  const entry = parseEntry(structure.text, range, 2);
+  if (!entry) return null;
+  const [path, rawValue] = entry;
+  if (!isPathItemValue(rawValue)) return null;
+  if (!keepPathItem) return [path, rawValue as PathItemObject];
+  const kept = keepPathItem(path, rawValue);
+  return kept ? [path, kept as PathItemObject] : null;
+};
+
 /**
  * Stream invocation bindings straight from a `SpecStructure` (the structural
  * split of a large spec) without ever materializing the whole-document tree.
@@ -775,15 +792,8 @@ export const streamOperationBindingsFromStructure = <E, R>(
 
     // Parse one path-item range to its kept (optionally trimmed) value, applying
     // `keepPathItem` identically in both passes so the operation index aligns.
-    const keptPathItem = (range: ByteRange): readonly [string, PathItemObject] | null => {
-      const entry = parseEntry(structure.text, range, 2);
-      if (!entry) return null;
-      const [path, rawValue] = entry;
-      if (!isPathItemValue(rawValue)) return null;
-      if (!keepPathItem) return [path, rawValue as PathItemObject];
-      const kept = keepPathItem(path, rawValue);
-      return kept ? [path, kept as PathItemObject] : null;
-    };
+    const keptPathItem = (range: ByteRange): readonly [string, PathItemObject] | null =>
+      parseKeptPathItem(structure, range, keepPathItem);
 
     // Pass 1 (light): collect schema-free tool-path planning metadata in
     // document order. No bindings, no schemas; one path-item resident at a time.
@@ -874,3 +884,162 @@ export const streamOperationBindingsFromStructure = <E, R>(
 
     return { toolCount: plans.length, toolNames: plans.map((plan) => plan.toolPath) };
   }).pipe(Effect.withSpan("OpenApi.streamOperationBindingsFromStructure"));
+
+// ---------------------------------------------------------------------------
+// Streaming preview extraction
+// ---------------------------------------------------------------------------
+
+export interface StreamedPreviewParameter {
+  readonly name: string;
+  readonly location: ParameterLocation;
+  readonly required: boolean;
+  readonly description?: string;
+}
+
+/** Schema-free per-operation metadata for the preview path: everything the
+ *  add screen's operation list and health-check candidate ranking need, and
+ *  nothing that scales with schema size. */
+export interface StreamedPreviewOperation {
+  readonly operationId: string;
+  /** Tool path planned over the full kept operation set, so preview candidates
+   *  match the names registration will assign. */
+  readonly toolPath: string;
+  readonly method: HttpMethod;
+  readonly pathTemplate: string;
+  readonly summary: string | undefined;
+  readonly description: string | undefined;
+  readonly tags: readonly string[];
+  readonly deprecated: boolean;
+  readonly parameters: readonly StreamedPreviewParameter[];
+  /** Position in kept-document order; key for `streamOutputSchemas`. */
+  readonly operationIndex: number;
+}
+
+export interface StreamedPreviewExtraction {
+  /** Parsed document head (openapi, info, servers, tags, security, ...). */
+  readonly head: Record<string, unknown>;
+  /** Schema-free components (parameters / requestBodies / responses /
+   *  securitySchemes / ...) for `$ref` resolution and auth extraction. */
+  readonly components: Record<string, unknown>;
+  readonly servers: readonly ServerInfo[];
+  readonly operations: readonly StreamedPreviewOperation[];
+}
+
+/**
+ * Streaming twin of `extract` for the preview path: walk a `SpecStructure`
+ * path-item by path-item (each parsed in isolation and discarded) and keep only
+ * schema-free per-operation metadata, so previewing a Graph-sized spec never
+ * materializes the whole-document tree that OOMs a 128MB Workers isolate.
+ * `keepPathItem` applies the same selection filter as the streaming compile, so
+ * the preview describes exactly the operation set registration would persist.
+ */
+export const streamPreviewOperations = (
+  structure: SpecStructure,
+  keepPathItem?: KeepPathItem,
+): StreamedPreviewExtraction => {
+  const head = parseHead(structure);
+  const components = parseSmallComponents(structure);
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: same schema-free resolver doc as `streamOperationBindingsFromStructure` (head + small components, empty paths), read only for .servers and `$ref` resolution.
+  const resolverDoc = { ...head, paths: {}, components } as unknown as ParsedDocument;
+  const r = new DocResolver(resolverDoc);
+  const docServers = extractServers(resolverDoc);
+
+  const inputs: OperationPathInput[] = [];
+  const metas: Omit<StreamedPreviewOperation, "toolPath">[] = [];
+  for (const range of structure.pathItems) {
+    const kept = parseKeptPathItem(structure, range, keepPathItem);
+    if (!kept) continue;
+    const [path, pathItem] = kept;
+    for (const method of HTTP_METHODS) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const resolvedPathTemplate = explicitPathTemplate(operation) ?? path;
+      const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
+      const operationId = deriveOperationId(method, path, operation);
+      inputs.push({
+        operationId,
+        explicitToolPath: explicitToolPath(operation),
+        method,
+        pathTemplate: resolvedPathTemplate,
+        tag0: tags[0],
+      });
+      const parameters = extractParameters(pathItem, operation, r).map(
+        (parameter): StreamedPreviewParameter => ({
+          name: parameter.name,
+          location: parameter.location,
+          required: parameter.required,
+          ...(Option.isSome(parameter.description)
+            ? { description: parameter.description.value }
+            : {}),
+        }),
+      );
+      metas.push({
+        operationId,
+        method,
+        pathTemplate: resolvedPathTemplate,
+        summary: operation.summary,
+        description: operation.description,
+        tags,
+        deprecated: operation.deprecated === true,
+        parameters,
+        operationIndex: metas.length,
+      });
+    }
+  }
+
+  const plans = planToolPaths(inputs);
+  const toolPathByOpIndex: (string | undefined)[] = new Array(inputs.length);
+  for (const plan of plans) toolPathByOpIndex[plan.operationIndex] = plan.toolPath;
+
+  return {
+    head,
+    components,
+    servers: docServers,
+    operations: metas.flatMap((meta) => {
+      const toolPath = toolPathByOpIndex[meta.operationIndex];
+      return toolPath === undefined ? [] : [{ ...meta, toolPath }];
+    }),
+  };
+};
+
+/**
+ * Re-walk the structure and build the raw output schema (component `$ref`s
+ * intact) for just the operations in `wanted` — the bounded response-schema
+ * walk behind the preview's typed identity picker. Iteration order and
+ * `keepPathItem` application match `streamPreviewOperations`, so the indexes
+ * line up.
+ */
+export const streamOutputSchemas = (
+  structure: SpecStructure,
+  wanted: ReadonlySet<number>,
+  keepPathItem?: KeepPathItem,
+): ReadonlyMap<number, unknown> => {
+  const result = new Map<number, unknown>();
+  if (wanted.size === 0) return result;
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: same schema-free resolver doc as `streamPreviewOperations`.
+  const resolverDoc = {
+    ...parseHead(structure),
+    paths: {},
+    components: parseSmallComponents(structure),
+  } as unknown as ParsedDocument;
+  const r = new DocResolver(resolverDoc);
+
+  let opIndex = 0;
+  for (const range of structure.pathItems) {
+    if (result.size >= wanted.size) break;
+    const kept = parseKeptPathItem(structure, range, keepPathItem);
+    if (!kept) continue;
+    const [, pathItem] = kept;
+    for (const method of HTTP_METHODS) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const index = opIndex;
+      opIndex += 1;
+      if (!wanted.has(index)) continue;
+      const responseBody = extractResponseBody(operation, r);
+      const outputSchema = responseBody ? outputSchemaFromResponseBody(responseBody) : undefined;
+      if (outputSchema !== undefined) result.set(index, outputSchema);
+    }
+  }
+  return result;
+};

@@ -14,7 +14,7 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Match, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -31,6 +31,7 @@ import {
   ProviderItemId,
 } from "./ids";
 import {
+  DEFAULT_SUBJECT_TOKEN_TYPE,
   OAuthCompleteError,
   OAuthProbeError,
   OAuthRegisterDynamicError,
@@ -41,6 +42,7 @@ import {
   isFirstPartyOAuthClientSlug,
   type ConnectResult,
   type CreateOAuthClientInput,
+  type EnterpriseManagedStartInput,
   type FirstPartyOAuthClientConfig,
   type OAuthClientOrigin,
   type OAuthClientSummary,
@@ -51,6 +53,7 @@ import {
   type OAuthService,
   type OAuthStartInput,
   type RegisterDynamicClientInput,
+  type SubjectTokenType,
 } from "./oauth-client";
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
@@ -61,6 +64,17 @@ import {
   registerDynamicClient as registerDynamicClientDcr,
   type OAuthAuthorizationServerMetadata,
 } from "./oauth-discovery";
+import {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
+  runEnterpriseManagedAuthorization,
+  type EnterpriseManagedConnectionState,
+  type EnterpriseManagedGrant,
+  type EnterpriseManagedMintError,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
+} from "./oauth-ema";
 import {
   assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
@@ -102,11 +116,52 @@ export interface MintOAuthConnectionInput {
   readonly expiresAt: number | null;
   readonly oauthScope: string | null;
   readonly missingOAuthScopes?: readonly string[];
+  /** Enterprise-managed authorization wiring, for connections minted through
+   *  the ID-JAG grant profile. Persisted on the connection so token renewal can
+   *  re-run the exchange without the user. Omitted for every other grant. */
+  readonly enterpriseManaged?: EnterpriseManagedConnectionState;
   /** Per-connection override for the token endpoint, persisted only when the
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
   readonly oauthTokenUrl?: string | null;
 }
+
+/** Project an enterprise-managed mint failure onto the connect boundary,
+ *  KEEPING the taxonomy structural. `EmaPolicyDenied` is the one verdict a
+ *  console must treat differently from every other start failure: it means the
+ *  administrator declined, so re-authenticating cannot help and the ordinary
+ *  per-server flow must not be offered as a way around it. That decision has to
+ *  be readable as a field — a UI cannot branch on a sentence. */
+const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAuthStartError => {
+  const rendered = (failure: EnterpriseManagedMintError): string =>
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: every EMA error declares `message` as a getter over its own typed fields, so this is a projection of a typed failure, not a read off an unknown throwable
+    failure.message;
+  return Match.value(cause).pipe(
+    Match.tag(
+      "EmaPolicyDenied",
+      (denied) =>
+        new OAuthStartError({
+          message: rendered(denied),
+          blockedByAdmin: true,
+          oauthErrorCode: denied.error,
+        }),
+    ),
+    Match.tag(
+      "EmaRedemptionRejected",
+      (rejected) =>
+        new OAuthStartError({
+          message: rendered(rejected),
+          ...(rejected.error === undefined ? {} : { oauthErrorCode: rejected.error }),
+        }),
+    ),
+    Match.tag(
+      "EmaSubjectTokenRejected",
+      "EmaUpstreamUnavailable",
+      (failure) => new OAuthStartError({ message: rendered(failure) }),
+    ),
+    Match.exhaustive,
+  );
+};
 
 /** The OAuth scope policy for a `(integration, template)`. Either the
  *  integration declares the scopes to request (`scopes`, possibly empty — an
@@ -162,6 +217,18 @@ export interface OAuthServiceDeps {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly fetch?: typeof globalThis.fetch;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  /**
+   * Host-owned rollout gate for enterprise-managed authorization (see
+   * {@link EnterpriseManagedRollout}). Consulted ONCE per `id_jag` connect,
+   * before discovery, and never again — not after the IdP has ruled, and not on
+   * the credential-refresh path, which follows the state persisted on the
+   * connection instead.
+   *
+   * OMITTED means enterprise-managed authorization is attempted, which is what
+   * every host did before this seam existed. Only a host that actually operates
+   * a flag service supplies one; core takes no dependency on any.
+   */
+  readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
   /**
    * The OAuth callback URL (`${webBaseUrl}${mountPrefix}/oauth/callback`) the host
    * serves and sends to providers on every authorization request + DCR registration.
@@ -309,7 +376,9 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
  *  `authorization_code`; an unknown grant means a corrupt row and callers that
  *  drive token exchange (`loadClient`) must fail loudly rather than guessing. */
 const parseGrant = (grant: unknown): OAuthGrant | null =>
-  grant === "client_credentials" || grant === "authorization_code" ? grant : null;
+  grant === "client_credentials" || grant === "authorization_code" || grant === "id_jag"
+    ? grant
+    : null;
 
 const canonicalDcrIssuer = (
   issuer: string | null | undefined,
@@ -541,6 +610,41 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const redirectUri = deps.redirectUri;
   const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy };
 
+  // -------------------------------------------------------------------------
+  // Enterprise-managed rollout seam.
+  //
+  // ROLLOUT SEMANTIC, stated once here because it is the whole reason the gate
+  // sits where it does: the gate answers "may this connect attempt the
+  // enterprise-managed path", and nothing else. It runs once, before discovery,
+  // so a withheld verdict costs no round trip and spends no identity assertion.
+  // The verdict it produces is then FROZEN onto the connection
+  // (`ENTERPRISE_MANAGED_PROVIDER_STATE_KEY`), and the credential-refresh path
+  // reads that state instead of re-asking. Turning the flag off therefore stops
+  // new enterprise-managed connects and leaves every existing one renewing — no
+  // stranded connections, no silent downgrade, and no third-party network
+  // dependency anywhere in credential resolution.
+  // -------------------------------------------------------------------------
+  const rollout = deps.enterpriseManagedRollout;
+
+  /** The gate's verdict, or "enabled" when no host injected a gate. */
+  const decideEnterpriseManagedRollout = (
+    context: EnterpriseManagedRolloutContext,
+  ): Effect.Effect<EnterpriseManagedRolloutDecision> =>
+    rollout === undefined
+      ? Effect.succeed(ENTERPRISE_MANAGED_ROLLOUT_ENABLED)
+      : rollout.decide(context);
+
+  /** Best-effort rollout observation. Failures AND defects are discarded here,
+   *  so no implementation of `record` can fail a connect or change its outcome;
+   *  keeping it off the critical path is the host's side of the contract.
+   *  Mirrors how `afterCommit` treats `onIntegrationChange`. */
+  const recordEnterpriseManagedRollout = (
+    event: EnterpriseManagedRolloutEvent,
+  ): Effect.Effect<void> =>
+    rollout === undefined
+      ? Effect.void
+      : rollout.record(event).pipe(Effect.ignoreCause({ log: false }));
+
   const filterAuthorizationCodeScopes = (
     client: LoadedOAuthClient,
     requestedScopes: readonly string[],
@@ -570,6 +674,53 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const capScopes = (scopes: readonly string[]): readonly string[] =>
     dedupeScopes(scopes).slice(0, MAX_DISCOVERED_SCOPES);
 
+  // Bound a whole discovery sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
+  // fetches, each with its own request timeout). 30s is larger than a single
+  // request timeout so it bounds the sequence, not a slow-but-valid request.
+  const withDiscoverySequenceTimeout = <A>(
+    sequence: Effect.Effect<A, OAuthDiscoveryError>,
+    message: string,
+  ): Effect.Effect<A, OAuthDiscoveryError> =>
+    sequence.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(30),
+        orElse: () => Effect.fail(new OAuthDiscoveryError({ message, cause: "timeout" })),
+      }),
+    );
+
+  /** Probe, in order, the authorization servers a protected resource named, and
+   *  return the first whose RFC 8414 metadata both reads cleanly and satisfies
+   *  `accept`. Any AS we cannot read clean metadata from — unreachable, 404,
+   *  malformed, or issuer-mismatched — contributes nothing and we move on
+   *  (mirroring the dynamic-registration discovery path). We never probe an
+   *  arbitrary URL: only the hosts the resource itself named, already capped by
+   *  the caller because that list is server-controlled. */
+  const firstReadableAuthorizationServer = (
+    issuers: readonly string[],
+    accept: (metadata: OAuthAuthorizationServerMetadata) => boolean,
+  ): Effect.Effect<OAuthAuthorizationServerMetadata | null> =>
+    Effect.gen(function* () {
+      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
+      for (const issuer of issuers) {
+        const authServer = yield* discoverAuthorizationServerMetadata(
+          issuer,
+          discoveryOptions,
+        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
+        if (authServer && accept(authServer.metadata)) return authServer.metadata;
+      }
+      return null;
+    });
+
+  /** The authorization servers a protected resource names, capped: the list is
+   *  server-controlled and a hostile or buggy server must not be able to make
+   *  us walk an unbounded number of hosts. */
+  const authorizationServerIssuersFor = (
+    protectedResource: {
+      readonly metadata: { readonly authorization_servers?: readonly string[] };
+    } | null,
+  ): readonly string[] =>
+    (protectedResource?.metadata.authorization_servers ?? []).slice(0, MAX_DISCOVERY_AUTH_SERVERS);
+
   // Discover the scopes to request when the integration declares none — only
   // reached for integrations that opt in (MCP-style). The resource's own RFC
   // 9728 `scopes_supported` is authoritative when present, even when empty (§2
@@ -598,39 +749,50 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
       // The resource is silent on scopes — read them from the authorization
       // servers it names, in order. An advertised list is authoritative even
-      // when empty. Any AS we cannot read clean RFC 8414 metadata from —
-      // unreachable, 404, malformed, or issuer-mismatched — contributes nothing
-      // and we move on (mirroring the dynamic-registration discovery path); if
-      // none advertise scopes we request none and let the AS apply its defaults
-      // (RFC 8414 metadata is optional, so its absence is not a failure). The
-      // list is server-controlled, so cap how many of its hosts we probe.
-      for (const issuer of (protectedResource?.metadata.authorization_servers ?? []).slice(
-        0,
-        MAX_DISCOVERY_AUTH_SERVERS,
-      )) {
-        const authServer = yield* discoverAuthorizationServerMetadata(
-          issuer,
-          discoveryOptions,
-        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
-        const scopes = authServer?.metadata.scopes_supported;
-        if (scopes !== undefined) return capScopes(scopes);
-      }
+      // when empty, so "advertises scopes at all" is the acceptance test. If
+      // none do we request none and let the AS apply its defaults (RFC 8414
+      // metadata is optional, so its absence is not a failure).
+      const authServer = yield* firstReadableAuthorizationServer(
+        authorizationServerIssuersFor(protectedResource),
+        (metadata) => metadata.scopes_supported !== undefined,
+      );
+      return authServer?.scopes_supported === undefined
+        ? []
+        : capScopes(authServer.scopes_supported);
+    }).pipe((sequence) =>
+      withDiscoverySequenceTimeout(sequence, "OAuth scope discovery timed out"),
+    );
 
-      return [];
-    }).pipe(
-      // Bound the whole sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
-      // fetches, each with its own request timeout). 30s is larger than a single
-      // request timeout so it bounds the sequence, not a slow-but-valid request.
-      Effect.timeoutOrElse({
-        duration: Duration.seconds(30),
-        orElse: () =>
-          Effect.fail(
-            new OAuthDiscoveryError({
-              message: "OAuth scope discovery timed out",
-              cause: "timeout",
-            }),
-          ),
-      }),
+  /** The RFC 8414 metadata of the authorization server that protects `resource`.
+   *  Enterprise-managed authorization needs two facts that live ONLY here: the
+   *  issuer identifier the ID-JAG must name as its audience, and whether the
+   *  server implements the ID-JAG grant profile at all. Same discovery order as
+   *  scope discovery — the protected resource names its authorization servers;
+   *  we never probe an arbitrary URL. */
+  const discoverResourceAuthorizationServer = (
+    resource: string | null,
+  ): Effect.Effect<OAuthAuthorizationServerMetadata, OAuthDiscoveryError> =>
+    Effect.gen(function* () {
+      if (resource == null) {
+        return yield* new OAuthDiscoveryError({
+          message:
+            "Cannot discover the authorization server: the OAuth app has no resource configured",
+        });
+      }
+      const protectedResource = yield* discoverProtectedResourceMetadata(resource, {
+        endpointUrlPolicy: deps.endpointUrlPolicy,
+        httpClientLayer,
+      });
+      const issuers = authorizationServerIssuersFor(protectedResource);
+      const metadata = yield* firstReadableAuthorizationServer(issuers, () => true);
+      if (metadata) return metadata;
+      return yield* new OAuthDiscoveryError({
+        message: `No authorization-server metadata found for ${resource}${
+          issuers.length > 0 ? ` (tried: ${issuers.join(", ")})` : ""
+        }`,
+      });
+    }).pipe((sequence) =>
+      withDiscoverySequenceTimeout(sequence, "OAuth authorization-server discovery timed out"),
     );
 
   // -----------------------------------------------------------------------
@@ -1019,8 +1181,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     // and projected exactly like stored rows — clientId only, never the secret.
     // Owner is reported as "org" (the widest visibility the summary shape can
     // express); the flow itself ignores owner for first-party slugs.
-    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()].map(
-      (config) => ({
+    //
+    // `unlisted` apps are withheld here and ONLY here: listing is what offers an
+    // app for a NEW connection, so this is the whole of "stop offering it".
+    // `loadClient` still resolves them, keeping every existing connection's
+    // refresh and reconnect intact.
+    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()]
+      .filter((config) => config.unlisted !== true)
+      .map((config) => ({
         owner: "org",
         slug: firstPartyOAuthClientSlug(config.name),
         grant: "authorization_code",
@@ -1033,8 +1201,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
           ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
         },
-      }),
-    );
+      }));
     return deps.fuma
       .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
       .pipe(
@@ -1286,6 +1453,146 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
         return { status: "connected", connection } as const;
+      }
+
+      // Enterprise-managed authorization (draft §4): no browser, no per-server
+      // consent — exchange the identity assertion the user already holds. Only
+      // an authorization server that does NOT advertise the grant profile falls
+      // through to the interactive flow below; an IdP refusal is an enterprise
+      // policy decision and stops here, because offering the interactive flow
+      // instead would let the user route straight around it.
+      if (client.grant === "id_jag") {
+        // The rollout gate, consulted ONCE and BEFORE anything else in this
+        // branch: before the IdP registration is loaded, before discovery,
+        // before a single request leaves the process. A withheld verdict must
+        // therefore cost no round trip and spend no identity assertion.
+        //
+        // Its answer is read exactly here and never again. Once the IdP has
+        // ruled, that verdict is final: re-consulting a flag after a denial
+        // would turn the flag into an escape hatch around the enterprise
+        // control this whole profile exists to enforce.
+        const rolloutContext: EnterpriseManagedRolloutContext = {
+          userId: deps.subject,
+          organizationId: deps.tenant,
+          integration: input.integration,
+        };
+        const rolloutDecision = yield* decideEnterpriseManagedRollout(rolloutContext);
+        // Recorded for BOTH arms, so the funnel below it has a denominator.
+        yield* recordEnterpriseManagedRollout({
+          kind: "attempted",
+          context: rolloutContext,
+          decision: rolloutDecision,
+        });
+
+        if (rolloutDecision.kind === "withheld") {
+          // Withheld takes the SAME exit an authorization server that never
+          // implemented the profile takes: fall through to the ordinary
+          // interactive flow below. There is deliberately no second fallback
+          // path to keep in step with the first.
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.enterprise_managed_fallback": true,
+            "executor.oauth.enterprise_managed_withheld": rolloutDecision.reason,
+          });
+        } else {
+          const enterprise = input.enterprise;
+          if (enterprise === undefined) {
+            return yield* new OAuthStartError({
+              message:
+                "This OAuth app uses enterprise-managed authorization, which requires an enterprise identity provider and an identity assertion on the connect request.",
+            });
+          }
+          const idpClient = yield* loadClient(enterprise.idpClientOwner, enterprise.idpClient);
+          if (!idpClient) {
+            return yield* new OAuthStartError({
+              message: `Enterprise identity provider OAuth client not found: ${enterprise.idpClient}`,
+            });
+          }
+          const metadata = yield* discoverResourceAuthorizationServer(client.resource).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OAuthStartError({
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                  message: `Failed to discover the MCP server's authorization server: ${cause.message}`,
+                }),
+            ),
+          );
+          // Resolve the caller's optional assertion type ONCE: the chain sends
+          // it and the connection persists it, and those two must not be able
+          // to disagree about what was presented.
+          const resolvedEnterprise = {
+            ...enterprise,
+            subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+          };
+          const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
+            authorizationServerMetadata: metadata,
+            idp: {
+              tokenUrl: idpClient.tokenUrl,
+              clientId: idpClient.clientId,
+              clientSecret: idpClient.clientSecret,
+            },
+            resourceAuthorizationServer: {
+              clientId: client.clientId,
+              clientSecret: client.clientSecret,
+            },
+            subjectToken: resolvedEnterprise.subjectToken,
+            subjectTokenType: resolvedEnterprise.subjectTokenType,
+            resource: client.resource,
+            scopes: requestedScopes,
+            endpointUrlPolicy: deps.endpointUrlPolicy,
+            // No `httpClientLayer` here, deliberately: like every other token
+            // request in this service, the ID-JAG chain runs through oauth4webapi
+            // on the configured `fetch`, not Effect's HttpClient. Only discovery
+            // speaks HttpClient. Providing the layer here would claim otherwise.
+            fetch,
+          }).pipe(
+            Effect.map((grant) => ({ supported: true as const, grant })),
+            // Only the unsupported-profile failure is recoverable; every other
+            // tag reaches the caller as a start error carrying its own verdict.
+            Effect.catchTag("EmaGrantProfileUnsupported", () =>
+              Effect.succeed({ supported: false as const }),
+            ),
+            Effect.mapError(startErrorFromEnterpriseManaged),
+            // OBSERVATION ONLY. This taps the denial on its way out; it does not
+            // recover it, and no branch below reads the rollout decision again.
+            Effect.tapError((failure) =>
+              failure.blockedByAdmin === true
+                ? recordEnterpriseManagedRollout({
+                    kind: "blocked-by-admin",
+                    context: rolloutContext,
+                    decision: rolloutDecision,
+                    oauthErrorCode: failure.oauthErrorCode,
+                  })
+                : Effect.void,
+            ),
+          );
+          if (enterpriseGrant.supported) {
+            const connection = yield* mintEnterpriseManagedConnection(
+              { ...input, name },
+              client,
+              input.clientOwner,
+              enterpriseGrant.grant,
+              resolvedEnterprise,
+              metadata.issuer,
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OAuthStartError({
+                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                    message: `Failed to mint OAuth connection: ${cause.message}`,
+                  }),
+              ),
+            );
+            yield* recordEnterpriseManagedRollout({
+              kind: "connected",
+              context: rolloutContext,
+              decision: rolloutDecision,
+            });
+            return { status: "connected", connection } as const;
+          }
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.enterprise_managed_fallback": true,
+          });
+        }
       }
 
       // authorization_code requires our callback to receive the code — fail
@@ -1629,6 +1936,70 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         oauthScope,
         missingOAuthScopes: missingScopes,
         oauthTokenUrl,
+      });
+    });
+
+  /** Mint a connection from an enterprise-managed grant. Distinct from
+   *  `mintFromToken` because the material persisted is different: there is no
+   *  refresh token (draft §4.4.3), and the identity assertion takes the refresh
+   *  slot — it is exactly the credential that lets renewal run without the
+   *  user, which is what that slot means. */
+  const mintEnterpriseManagedConnection = (
+    target: {
+      readonly owner: Owner;
+      readonly name: ConnectionName;
+      readonly integration: IntegrationSlug;
+      readonly template: AuthTemplateSlug;
+      readonly identityLabel?: string | null;
+    },
+    client: LoadedOAuthClient,
+    clientOwner: Owner,
+    grant: EnterpriseManagedGrant,
+    /** The connect request's enterprise inputs with the assertion type already
+     *  resolved — the persisted state records what was actually presented, so
+     *  it must not re-derive a default the chain might have differed on. */
+    enterprise: EnterpriseManagedStartInput & { readonly subjectTokenType: SubjectTokenType },
+    /** The Resource Authorization Server's issuer identifier, as discovered. */
+    audience: string,
+  ): Effect.Effect<Connection, StorageFailure> =>
+    Effect.gen(function* () {
+      const provider = deps.defaultWritableProvider();
+      if (!provider || !provider.set) {
+        return yield* new StorageError({
+          message:
+            "No default writable credential provider is registered to store the OAuth access token.",
+          cause: undefined,
+        });
+      }
+      const itemId = accessItemId(target.owner, target.integration, target.name);
+      yield* provider.set(ProviderItemId.make(itemId), grant.token.access_token);
+      const subjectTokenItemId = refreshItemIdFor(itemId);
+      yield* provider.set(ProviderItemId.make(subjectTokenItemId), enterprise.subjectToken);
+
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.has_advertised_expiry": typeof grant.token.expires_in === "number",
+        "executor.oauth.enterprise_managed": true,
+      });
+      return yield* deps.mintOAuthConnection({
+        owner: target.owner,
+        name: target.name,
+        integration: target.integration,
+        template: target.template,
+        identityLabel: target.identityLabel ?? null,
+        derivedIdentityLabel: grant.token.idTokenIdentityLabel ?? null,
+        provider: String(provider.key),
+        itemId,
+        oauthClient: OAuthClientSlug.make(client.slug),
+        oauthClientOwner: clientOwner,
+        refreshItemId: subjectTokenItemId,
+        expiresAt: expiresAtFrom(grant.token),
+        oauthScope: grant.scope,
+        enterpriseManaged: {
+          idpClient: enterprise.idpClient,
+          idpClientOwner: enterprise.idpClientOwner,
+          audience,
+          subjectTokenType: enterprise.subjectTokenType,
+        },
       });
     });
 
