@@ -260,6 +260,24 @@ describe("describeMcpAuthMethods", () => {
     ).toEqual({ url: "https://mcp.posthog.com/mcp" });
   });
 
+  it("projects catalog family for remote and stdio integrations", () => {
+    expect(
+      describeMcpIntegrationDisplay(
+        recordWith({
+          transport: "remote",
+          family: "cloudflare",
+          endpoint: "https://mcp.cloudflare.com/mcp",
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+    ).toEqual({ url: "https://mcp.cloudflare.com/mcp", family: "cloudflare" });
+    expect(
+      describeMcpIntegrationDisplay(
+        recordWith({ transport: "stdio", family: "design", command: "design-mcp" }),
+      ),
+    ).toEqual({ family: "design" });
+  });
+
   it("does not expose display metadata for stdio or malformed configs", () => {
     expect(
       describeMcpIntegrationDisplay(recordWith({ transport: "stdio", command: "run" })),

@@ -13,11 +13,17 @@
 //   - managed cloud (`"managed"`): nothing, it deploys itself.
 //
 // The "is a newer version published?" verdict comes from the same resolver as
-// the CLI notice (@executor-js/api) so the two can never disagree.
+// the CLI notice (@executor-js/api) — `isUpdateAvailable` — so the two can
+// never disagree.
 import { useCallback, useEffect, useState } from "react";
 
 import { Effect, Exit } from "effect";
-import { compareVersions, resolveUpdateChannel, type UpdateChannel } from "@executor-js/api";
+import {
+  isUpdateAvailable,
+  resolveComparisonChannel,
+  resolveUpdateChannel,
+  type UpdateChannel,
+} from "@executor-js/api";
 
 import { Button } from "./button";
 import { toast } from "./sonner";
@@ -47,12 +53,31 @@ const UPGRADE_DOCS_URL: Partial<Record<UpgradeHint, string>> = {
 
 // ── useLatestVersion ────────────────────────────────────────────────────
 
+/**
+ * The dist-tag channel to fetch for `currentVersion`, or `null` when there is
+ * nothing to check — no version baked in yet, or a build the check should
+ * stay quiet on (an unstamped `0.0.0*` fallback, or a prerelease channel with
+ * no published dist-tag; see `resolveComparisonChannel`). Returning `null`
+ * here is what lets the hook skip the network call entirely, so a dev build
+ * never even hits `/v1/app/npm/dist-tags`.
+ */
+export function updateFetchChannel(currentVersion: string | undefined): UpdateChannel | null {
+  if (currentVersion === undefined) return null;
+  return resolveComparisonChannel(currentVersion);
+}
+
 function useLatestVersion(currentVersion: string | undefined) {
-  const channel: UpdateChannel = currentVersion ? resolveUpdateChannel(currentVersion) : "latest";
+  // The channel shown in the upgrade command differs from the channel
+  // fetched for comparison: the command always names a real channel, while
+  // the fetch is skipped entirely for a version with nothing to compare.
+  const displayChannel: UpdateChannel = currentVersion
+    ? resolveUpdateChannel(currentVersion)
+    : "latest";
+  const fetchChannel = updateFetchChannel(currentVersion);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!currentVersion) return;
+    if (fetchChannel === null) return;
     let cancelled = false;
     void Effect.runPromiseExit(
       Effect.tryPromise({
@@ -65,20 +90,17 @@ function useLatestVersion(currentVersion: string | undefined) {
       }),
     ).then((exit) => {
       if (!cancelled && Exit.isSuccess(exit)) {
-        setLatestVersion(exit.value?.[channel] ?? null);
+        setLatestVersion(exit.value?.[fetchChannel] ?? null);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [channel, currentVersion]);
+  }, [fetchChannel]);
 
-  const updateAvailable =
-    currentVersion !== undefined &&
-    latestVersion !== null &&
-    compareVersions(currentVersion, latestVersion) === -1;
+  const updateAvailable = isUpdateAvailable(currentVersion, latestVersion);
 
-  return { latestVersion, updateAvailable, channel };
+  return { latestVersion, updateAvailable, channel: displayChannel };
 }
 
 // ── Card chrome ──────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@
 
 import {
   Effect,
+  bigintStorageClassSqliteMigration,
   oauthClientGcSqliteMigration,
   sqliteDataMigration,
   type SqliteDataMigration,
@@ -30,6 +31,11 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   // stamped atomically inside the staged v2 build; fresh/pre-v2-native DBs get
   // the same stamp here so future boots skip legacy shape probing.
   { name: LOCAL_V1_V2_LEDGER_NAME, run: () => Effect.void },
+  // FIRST, because it un-bricks reads every later migration and the whole app
+  // depend on: `bigint` columns an older build left in SQLite's INTEGER storage
+  // class cannot be read by the bigint row mapper, so a single legacy
+  // `connection.expires_at` failed every catalog read (issue #1771).
+  bigintStorageClassSqliteMigration,
   // Rewrite pre-canonical integration auth configs (incl. v1→v2 outputs)
   // into the shared placements model.
   sqliteDataMigration("2026-06-05-auth-config-placements", (client) =>

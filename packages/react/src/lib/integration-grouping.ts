@@ -1,7 +1,5 @@
 import type { Integration } from "@executor-js/sdk/shared";
 
-export const MULTI_SERVICE_FAMILIES: ReadonlySet<string> = new Set(["google", "microsoft"]);
-
 const FAMILY_LABELS: Record<string, string> = {
   google: "Google",
   microsoft: "Microsoft",
@@ -12,7 +10,7 @@ export const familyLabel = (family: string): string =>
 
 export const integrationFamily = (integration: Integration): string | null => {
   const family = integration.family?.trim();
-  return family && MULTI_SERVICE_FAMILIES.has(family) ? family : null;
+  return family || null;
 };
 
 export interface IntegrationFamilyGroup {

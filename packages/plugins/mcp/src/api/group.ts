@@ -31,6 +31,7 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 const AddRemoteServerPayload = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
@@ -48,6 +49,7 @@ const AddRemoteServerPayload = Schema.Struct({
 const AddStdioServerPayload = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),

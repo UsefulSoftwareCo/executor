@@ -123,6 +123,15 @@ export interface HostConfigShape {
    * operator knob.
    */
   readonly toolsSyncTtlMs?: number | null;
+  /**
+   * Forwarded verbatim to `ExecutorConfig.waitUntil`: the host's keep-alive
+   * for background work that outlives a request (stale tool-catalog rebuilds
+   * that keep running after a read stops waiting). Cloud supplies the
+   * platform `waitUntil` from `cloudflare:workers`, which binds to the
+   * in-flight invocation ambiently; long-lived hosts (self-host, local,
+   * tests) omit it and detached fibers simply run to completion in-process.
+   */
+  readonly waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -305,6 +314,7 @@ export const makeScopedExecutor = <
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
+      ...(config.waitUntil !== undefined ? { waitUntil: config.waitUntil } : {}),
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,

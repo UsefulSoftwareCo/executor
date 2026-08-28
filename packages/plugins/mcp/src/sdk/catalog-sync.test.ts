@@ -42,11 +42,17 @@ const TEMPLATE = AuthTemplateSlug.make("none");
 
 const makeCatalogTestExecutor = (
   serverUrl: string,
-  options?: { readonly toolsSyncTtlMs?: number | null },
+  options?: {
+    readonly toolsSyncTtlMs?: number | null;
+    readonly toolsSyncGraceMs?: number | null;
+  },
 ) =>
   createExecutor({
     ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
     ...(options?.toolsSyncTtlMs === undefined ? {} : { toolsSyncTtlMs: options.toolsSyncTtlMs }),
+    ...(options?.toolsSyncGraceMs === undefined
+      ? {}
+      : { toolsSyncGraceMs: options.toolsSyncGraceMs }),
   }).pipe(
     Effect.tap((executor) =>
       Effect.gen(function* () {
@@ -355,6 +361,11 @@ describe("MCP stale-catalog refresh", () => {
         // Everything is expired on every read, so a single tools read has the
         // whole set to rebuild.
         toolsSyncTtlMs: 0,
+        // Strict mode: the assertions below synchronize on the read fiber
+        // completing only after every rebuild has finished. With a grace
+        // budget the read would return early and `Fiber.join` would no longer
+        // order the final listing before the count assertion.
+        toolsSyncGraceMs: null,
       });
 
       for (let index = 0; index < STALE_CONNECTIONS; index++) {
@@ -398,6 +409,98 @@ describe("MCP stale-catalog refresh", () => {
       const refreshed = yield* Fiber.join(readFiber).pipe(Effect.timeoutOption("10 seconds"));
       expect(Option.isSome(refreshed)).toBe(true);
       expect(yield* fixture.listings).toBe(STALE_CONNECTIONS);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stale-refresh grace budget.
+//
+// A tools read waits at most `toolsSyncGraceMs` for stale rebuilds, then
+// answers from the persisted catalog while the rebuilds finish detached. One
+// slow upstream server must bound neither the read nor convergence: the read
+// serves the stale-but-working rows now, and a later read reflects the
+// re-listed catalog once the server finally answers.
+// ---------------------------------------------------------------------------
+
+const serveLatchedMutableServer = () =>
+  Effect.gen(function* () {
+    const catalog = yield* Ref.make("alpha");
+    const armed = yield* Ref.make(false);
+    const release = yield* Deferred.make<void>();
+
+    const server = yield* serveTestHttpApp((request) =>
+      Effect.gen(function* () {
+        if (request.method === "GET") {
+          return HttpServerResponse.text("SSE disabled", { status: 405 });
+        }
+        const body = yield* request.text.pipe(Effect.orDie);
+        const rpc = Option.getOrUndefined(decodeJsonRpcRequest(body));
+        if (!rpc) {
+          return HttpServerResponse.text("Invalid JSON-RPC fixture request", { status: 400 });
+        }
+        if (rpc.method === "initialize") {
+          return jsonRpcResult(rpc, {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: { listChanged: true } },
+            serverInfo: { name: "latched-mutable-fixture", version: "1.0.0" },
+          });
+        }
+        if (rpc.method === "notifications/initialized") {
+          return HttpServerResponse.text("", { status: 202 });
+        }
+        if (rpc.method !== "tools/list") {
+          return HttpServerResponse.text("Unexpected JSON-RPC method", { status: 400 });
+        }
+        // Once armed, park every listing until released — the "slow server".
+        if (yield* Ref.get(armed)) {
+          yield* Deferred.await(release);
+        }
+        return jsonRpcResult(rpc, { tools: [pageTool(yield* Ref.get(catalog))] });
+      }),
+    );
+
+    return {
+      url: server.url("/mcp"),
+      rename: Ref.set(catalog, "beta"),
+      arm: Ref.set(armed, true),
+      release: Deferred.succeed(release, undefined),
+    } as const;
+  });
+
+describe("MCP stale-refresh grace budget", () => {
+  // `it.live` (real clock): the grace timeout must actually fire while a real
+  // HTTP listing stays parked.
+  it.live("a read outlasting the grace serves the stored catalog, then converges", () =>
+    Effect.gen(function* () {
+      const fixture = yield* serveLatchedMutableServer();
+      const executor = yield* makeCatalogTestExecutor(fixture.url, {
+        // Every read finds the catalog expired, and waits at most 100ms.
+        toolsSyncTtlMs: 0,
+        toolsSyncGraceMs: 100,
+      });
+
+      expect(toolNames(yield* executor.tools.list())).toContain("alpha");
+
+      // The server's catalog changes AND the server stops answering listings.
+      yield* fixture.rename;
+      yield* fixture.arm;
+
+      // The re-list is parked, so only the grace path can produce an answer —
+      // and it is the persisted (stale) catalog, not a failure or a hang.
+      expect(toolNames(yield* executor.tools.list())).toContain("alpha");
+
+      // Once the server answers, the detached rebuild lands and a later read
+      // reflects the re-listed catalog.
+      yield* fixture.release;
+      const converged = yield* Effect.gen(function* () {
+        while (true) {
+          const names = toolNames(yield* executor.tools.list());
+          if (names.includes("beta")) return names;
+          yield* Effect.sleep("100 millis");
+        }
+      }).pipe(Effect.timeoutOption("10 seconds"));
+      expect(Option.isSome(converged)).toBe(true);
     }),
   );
 });
