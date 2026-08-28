@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { AuthTemplateEditorValue } from "@executor-js/react/components/auth-template-editor";
 
+import { parseMcpIntegrationConfig } from "../sdk/types";
 import {
   authMethodsFromConfig,
   editorValueFromMcpAuthMethod,
@@ -83,6 +84,35 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
         placements: [{ carrier: "header", name: "  ", prefix: "" }],
       }),
     ).toEqual({ kind: "none" });
+  });
+});
+
+describe("a stored oauth2 row's scope list", () => {
+  const storedConfig = (method: Record<string, unknown>) => ({
+    transport: "remote",
+    endpoint: "https://mcp.example.com/mcp",
+    authenticationTemplate: [method],
+  });
+
+  it("decodes whether the key is declared or absent", () => {
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2" })),
+    ).not.toBeNull();
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] })),
+    ).not.toBeNull();
+  });
+
+  it("fails the WHOLE config when the row stores an empty list", () => {
+    // `scopes` is a NonEmptyArray, so `[]` is not "declares no scopes" — it is
+    // an invalid row. Decoding is all-or-nothing: one such row does not
+    // degrade to a scope-less oauth method, it makes the entire integration
+    // config undecodable, and the integration then presents no auth method at
+    // all. That is the whole reason the editor codec omits the key rather than
+    // writing `[]`; this test is here so the constraint is not invisible.
+    expect(
+      parseMcpIntegrationConfig(storedConfig({ slug: "oauth2", kind: "oauth2", scopes: [] })),
+    ).toBeNull();
   });
 });
 
