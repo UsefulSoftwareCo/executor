@@ -103,6 +103,45 @@ const serveCallToolServer = (callTool: CallToolResponder) =>
     }),
   );
 
+const rejectedOAuthDiscoveryLayer = (endpoint: string) => {
+  const issuer = new URL(endpoint).origin;
+  const requests: string[] = [];
+  const layer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      const response =
+        request.url === endpoint
+          ? new Response("", { status: 401 })
+          : url.pathname === "/.well-known/oauth-protected-resource/mcp"
+            ? Response.json({ resource: endpoint, authorization_servers: [issuer] })
+            : url.pathname === "/.well-known/oauth-authorization-server"
+              ? Response.json({
+                  issuer,
+                  authorization_endpoint: `${issuer}/authorize`,
+                  token_endpoint: `${issuer}/token`,
+                  registration_endpoint: `${issuer}/register`,
+                  response_types_supported: ["code"],
+                  code_challenge_methods_supported: ["S256"],
+                })
+              : url.pathname === "/register"
+                ? Response.json(
+                    {
+                      client_id: "replacement-client",
+                      redirect_uris: ["http://localhost/oauth/callback"],
+                      grant_types: ["authorization_code", "refresh_token"],
+                      response_types: ["code"],
+                      token_endpoint_auth_method: "none",
+                    },
+                    { status: 201 },
+                  )
+                : new Response("unexpected request", { status: 500 });
+      return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+    }),
+  );
+  return { layer, requests };
+};
+
 // `tools/call` responders. Both embed a "do-not-leak" sentinel the assertions
 // confirm never reaches the caller-facing failure.
 const httpStatusCallTool =
@@ -296,6 +335,44 @@ describe("joinToolPath", () => {
 // ---------------------------------------------------------------------------
 
 describe("mcpPlugin", () => {
+  it.effect("surfaces OAuth reauthorization from resolveTools as expired health", () =>
+    Effect.gen(function* () {
+      const endpoint = "https://mcp.example.test/mcp";
+      const plugin = mcpPlugin();
+      const ledger = rejectedOAuthDiscoveryLayer(endpoint);
+      const result = yield* plugin.resolveTools!({
+        config: {
+          transport: "remote",
+          endpoint,
+          remoteTransport: "streamable-http",
+          authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+        },
+        connection: {
+          owner: "org",
+          integration: IntegrationSlug.make("oauth_mcp"),
+          name: ConnectionName.make("main"),
+        },
+        template: AuthTemplateSlug.make("oauth2"),
+        getValues: () => Effect.succeed({ token: "rejected-token" }),
+        getValue: () => Effect.succeed("rejected-token"),
+        httpClientLayer: ledger.layer,
+        ctx: null as never,
+        integration: null as never,
+        storage: {},
+      });
+
+      expect(result).toMatchObject({
+        tools: [],
+        incomplete: true,
+        health: {
+          status: "expired",
+          detail: expect.stringContaining("reauthorization"),
+        },
+      });
+      expect(ledger.requests.filter((url) => new URL(url).pathname === "/register")).toEqual([]);
+    }),
+  );
+
   it.effect("creates executor with mcp plugin", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(

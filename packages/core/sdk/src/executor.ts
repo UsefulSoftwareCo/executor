@@ -3020,12 +3020,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             where: connectionWhere,
             set: syncedSet(row),
           });
-        const stampSyncedWithHealth = (reason: string) =>
+        const stampSyncedWithHealth = (reason: string, health?: HealthCheckResult) =>
           core.updateMany("connection", {
             where: connectionWhere,
             set: {
               tools_synced_at: Date.now(),
-              last_health: toolSyncHealth(reason),
+              last_health: health ?? toolSyncHealth(reason),
               updated_at: new Date(),
             },
           });
@@ -3092,7 +3092,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // server isn't re-dialed on every read; the freshness TTL re-attempts
           // later.
           const reason = syncHealthReason(result);
-          yield* stampSyncedWithHealth(reason);
+          yield* stampSyncedWithHealth(reason, result.health);
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
             integration: String(ref.integration),
