@@ -60,6 +60,7 @@ import {
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
+  McpToolMeta,
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
@@ -139,14 +140,17 @@ const legacyMcpClientMatches = (
 // ---------------------------------------------------------------------------
 // Tool annotations carry an `mcp` envelope alongside the executor's policy
 // hints. The executor persists `ToolDef.annotations` verbatim into the tool
-// row's JSON column, so the real MCP tool name + upstream annotations survive
-// to `invokeTool` / `resolveAnnotations` with no plugin-side store (resolveTools
-// has no ctx to write one anyway). The envelope is opaque to core.
+// row's JSON column, so the real MCP tool name, the upstream annotations, and
+// the tool's reserved `_meta` map survive to `invokeTool` /
+// `resolveAnnotations` with no plugin-side store (resolveTools has no ctx to
+// write one anyway). The envelope is opaque to core.
 // ---------------------------------------------------------------------------
 
 interface McpToolStamp {
   readonly toolName: string;
   readonly upstream?: McpToolAnnotations;
+  /** The tool's reserved MCP `_meta` map, opaque to core and to the model. */
+  readonly _meta?: McpToolMeta;
 }
 
 type StampedAnnotations = ToolAnnotations & { readonly mcp: McpToolStamp };
@@ -162,6 +166,7 @@ const McpStampSchema = Schema.Struct({
       openWorldHint: Schema.optional(Schema.Boolean),
     }),
   ),
+  _meta: Schema.optional(McpToolMeta),
 });
 const AnnotationsWithStamp = Schema.Struct({ mcp: McpStampSchema });
 const decodeStamp = Schema.decodeUnknownOption(AnnotationsWithStamp);
@@ -427,13 +432,16 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
 };
 
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
- *  real MCP tool name + upstream annotations into the persisted annotations so
- *  they survive to invokeTool with no plugin-side store. */
+ *  real MCP tool name, the upstream annotations, and the tool's `_meta` map
+ *  into the persisted annotations so they survive to invokeTool with no
+ *  plugin-side store. Executor's `ToolDef` has no `_meta` field of its own, so
+ *  the stamp is where a host reads it back. */
 const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   const destructive = entry.annotations?.destructiveHint === true;
   const stamp: McpToolStamp = {
     toolName: entry.toolName,
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
+    ...(entry._meta ? { _meta: entry._meta } : {}),
   };
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,

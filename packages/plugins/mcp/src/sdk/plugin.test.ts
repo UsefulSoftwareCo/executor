@@ -239,6 +239,45 @@ describe("extractManifestFromListToolsResult", () => {
       expect(result.tools[2]!.annotations).toBeUndefined();
     }),
   );
+
+  it.effect("carries the reserved `_meta` map through verbatim", () =>
+    Effect.sync(() => {
+      const meta = {
+        serverName: "time",
+        shortDescription: "Current time",
+        defer_loading: false,
+        nested: { any: ["shape"] },
+      };
+
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          {
+            name: "time_get_current_time",
+            description: "Get the current time",
+            inputSchema: { type: "object" },
+            _meta: meta,
+          },
+          { name: "no_meta", description: "Has no _meta" },
+        ],
+      });
+
+      expect(result.tools[0]!._meta).toEqual(meta);
+      expect(result.tools[1]!._meta).toBeUndefined();
+    }),
+  );
+
+  // `_meta` is opaque and server-controlled, so a value that does not match the
+  // spec's map shape must not take the rest of the list down with it.
+  it.effect("ignores a malformed `_meta` without dropping the tool", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [{ name: "odd_meta", _meta: "not-a-map" }, { name: "plain" }],
+      });
+
+      expect(result.tools.map((tool) => tool.toolName)).toEqual(["odd_meta", "plain"]);
+      expect(result.tools[0]!._meta).toBeUndefined();
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1043,31 @@ describe("MCP destructiveHint → requiresApproval", () => {
       const deleteTitled = tools.find((t) => String(t.name) === "delete_titled");
       expect(deleteTitled?.annotations?.requiresApproval).toBe(true);
       expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
+    }),
+  );
+
+  // Executor's `Tool` has no `_meta` field, so the reserved MCP map rides in
+  // the `mcp` stamp the plugin persists into the tool row's annotations. A host
+  // embedding the plugin reads it back from there.
+  it.effect("persists the tool's reserved `_meta` into the catalog stamp", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+
+      const stamped = tools.find((t) => String(t.name) === "meta_stamped");
+      expect(stamped?.annotations).toMatchObject({
+        mcp: {
+          toolName: "meta_stamped",
+          _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+        },
+      });
+
+      const ping = tools.find((t) => String(t.name) === "ping");
+      expect(
+        (ping?.annotations as { readonly mcp?: { readonly _meta?: unknown } })?.mcp?._meta,
+      ).toBeUndefined();
     }),
   );
 });

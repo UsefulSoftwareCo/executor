@@ -288,6 +288,16 @@ export const McpToolAnnotations = Schema.Struct({
 export type McpToolAnnotations = typeof McpToolAnnotations.Type;
 
 // ---------------------------------------------------------------------------
+// Tool `_meta` — the reserved, implementation-defined map the MCP spec puts on
+// `Tool`. It is opaque to the executor and to the model: servers use it for
+// host-only routing and policy hints that do not belong in the closed
+// `annotations` set. It is carried through verbatim, never interpreted.
+// ---------------------------------------------------------------------------
+
+export const McpToolMeta = Schema.Record(Schema.String, Schema.Unknown);
+export type McpToolMeta = typeof McpToolMeta.Type;
+
+// ---------------------------------------------------------------------------
 // Tool binding — maps a persisted (sanitized) tool name back to its real MCP
 // tool name and upstream annotations, persisted per-connection so invokeTool
 // can dial the server with the correct name.
