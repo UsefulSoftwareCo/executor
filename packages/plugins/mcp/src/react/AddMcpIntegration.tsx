@@ -1,4 +1,4 @@
-import { useReducer, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useReducer, useCallback, useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as Match from "effect/Match";
@@ -262,7 +262,6 @@ export default function AddMcpIntegration(props: {
   const remoteSlugExists = useSlugAlreadyExists(remoteSlug);
   const stdioSlugExists = useSlugAlreadyExists(stdioSlug);
 
-  const canAdd = Boolean(probe) && !isAdding && !remoteSlugExists;
   // Probe failures are shown inline on the URL field; other failures
   // (add server) render in the bottom error block.
   const probeError = state.step === "error" && state.probe === null ? state.error : null;
@@ -284,24 +283,6 @@ export default function AddMcpIntegration(props: {
     }
     dispatch({ type: "probe-ok", probe: exit.value });
   }, [state.url, doProbe]);
-
-  // Keep the latest handleProbe in a ref so the debounced effect can call it
-  // without depending on its identity (which changes every render).
-  const handleProbeRef = useRef(handleProbe);
-  handleProbeRef.current = handleProbe;
-
-  // Auto-probe whenever the URL changes (debounced) while we're on the
-  // remote transport and not already probing/probed.
-  useEffect(() => {
-    if (transport !== "remote") return;
-    if (state.step !== "url") return;
-    const trimmed = state.url.trim();
-    if (!trimmed) return;
-    const handle = setTimeout(() => {
-      handleProbeRef.current();
-    }, 400);
-    return () => clearTimeout(handle);
-  }, [transport, state.step, state.url]);
 
   // Register the integration with the declared auth methods, returning the
   // assigned slug (or null on failure — an error is dispatched in that case).
@@ -335,7 +316,23 @@ export default function AddMcpIntegration(props: {
   );
 
   const handleAddRemote = useCallback(async () => {
-    if (!probe) return;
+    const url = state.url.trim();
+    if (!url) {
+      dispatch({ type: "probe-fail", error: "Enter an MCP server URL." });
+      return;
+    }
+    // URL parsing is a browser API boundary; invalid user input is expected.
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor validates user input
+    try {
+      new URL(url);
+    } catch {
+      dispatch({ type: "probe-fail", error: "Enter a valid MCP server URL." });
+      return;
+    }
+    if (!probe) {
+      await handleProbe();
+      return;
+    }
     dispatch({ type: "add-start" });
     // Every row registers as a declared method (a lone no-auth row registers
     // the open-server method). Slugs are assigned server-side by kind.
@@ -347,7 +344,7 @@ export default function AddMcpIntegration(props: {
     );
     if (slug === null) return;
     props.onComplete(slug);
-  }, [probe, authMethodList.rows, registerIntegration, props]);
+  }, [probe, authMethodList.rows, handleProbe, registerIntegration, props, state.url]);
 
   // ---- Stdio actions ----
 
@@ -487,11 +484,14 @@ export default function AddMcpIntegration(props: {
             >
               Cancel
             </Button>
-            {(probe || isProbing) && (
-              <Button type="button" onClick={handleAddRemote} disabled={!canAdd} loading={isAdding}>
-                Add integration
-              </Button>
-            )}
+            <Button
+              type="button"
+              onClick={handleAddRemote}
+              disabled={isAdding || isProbing || Boolean(remoteSlugExists)}
+              loading={isAdding || isProbing}
+            >
+              {probe ? "Add integration" : "Check server"}
+            </Button>
           </FloatActions>
         </>
       ) : (
