@@ -18,8 +18,10 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   OAuthState,
+  WorkIdentityLinkError,
   type Connection,
   type ConnectResult,
+  type OAuthCallbackCompletion,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
@@ -32,6 +34,7 @@ const decodeOAuthStartError = Schema.decodeUnknownOption(OAuthStartError);
 const decodeOAuthCompleteError = Schema.decodeUnknownOption(OAuthCompleteError);
 const decodeOAuthProbeError = Schema.decodeUnknownOption(OAuthProbeError);
 const decodeOAuthSessionNotFoundError = Schema.decodeUnknownOption(OAuthSessionNotFoundError);
+const decodeWorkIdentityLinkError = Schema.decodeUnknownOption(WorkIdentityLinkError);
 
 const connectionToResponse = (c: Connection) => ({
   owner: c.owner,
@@ -57,6 +60,19 @@ const startResultToResponse = (result: ConnectResult) =>
         state: result.state,
       };
 
+/** What the popup posts back to the opener for each flow the shared callback can
+ *  complete.
+ *
+ *  A connection keeps the historical shape verbatim — spread flat into the
+ *  message — because openers already read its fields. A work identity is spread
+ *  under its own key instead of flat: the two objects share field names
+ *  (`owner`, for one) and a console must be able to tell which arrived by
+ *  looking, not by guessing from overlapping keys. */
+const callbackToPopupPayload = (completion: OAuthCallbackCompletion) =>
+  completion.kind === "connection"
+    ? connectionToResponse(completion.connection)
+    : { workIdentity: completion.workIdentity };
+
 const toPopupErrorMessage = (error: unknown): PopupErrorMessage => {
   const completeError = decodeOAuthCompleteError(error);
   if (Option.isSome(completeError))
@@ -70,6 +86,13 @@ const toPopupErrorMessage = (error: unknown): PopupErrorMessage => {
     return {
       short: "Could not start authentication",
       details: startError.value.message,
+    };
+
+  const linkError = decodeWorkIdentityLinkError(error);
+  if (Option.isSome(linkError))
+    return {
+      short: "Could not link your work identity",
+      details: linkError.value.message,
     };
 
   const probeError = decodeOAuthProbeError(error);
@@ -202,16 +225,73 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
         }),
       ),
     )
+    .handle("startWorkIdentityLink", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.oauth.startWorkIdentityLink({
+            owner: payload.owner,
+            idpClient: payload.idpClient,
+            idpClientOwner: payload.idpClientOwner,
+            scopes: payload.scopes,
+            redirectUri: payload.redirectUri,
+          });
+        }),
+      ),
+    )
+    .handle("completeWorkIdentityLink", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.oauth.completeWorkIdentityLink({
+            state: payload.state,
+            code: payload.code,
+          });
+        }),
+      ),
+    )
+    .handle("workIdentityStatus", ({ query }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.oauth.workIdentityStatus({
+            owner: query.owner,
+            idpClient: query.idpClient,
+            idpClientOwner: query.idpClientOwner,
+          });
+        }),
+      ),
+    )
+    .handle("unlinkWorkIdentity", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          yield* executor.oauth.unlinkWorkIdentity({
+            owner: payload.owner,
+            idpClient: payload.idpClient,
+            idpClientOwner: payload.idpClientOwner,
+          });
+          return { unlinked: true };
+        }),
+      ),
+    )
     .handle("callback", ({ query: urlParams }) =>
       // The callback always renders HTML, even on failure — the popup shows the
       // error + messages it back to the opener.
+      //
+      // BOTH browser flows land here: connecting an integration, and linking a
+      // work identity. `completeCallback` reads the in-flight session to decide
+      // which, so the route infers nothing from the URL. The popup payload stays
+      // backward compatible — a connection is still spread flat, exactly as
+      // before — and a link is spread as `{ workIdentity }`, which is how an
+      // opener tells the two apart without the connection shape changing.
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const html = yield* runOAuthCallback({
             complete: ({ state, code, callbackDomain }) =>
               executor.oauth
-                .complete({
+                .completeCallback({
                   // `runOAuthCallback`'s `state` is a raw string from the URL;
                   // the SDK speaks the branded `OAuthState` (nominal brand).
                   state: OAuthState.make(state),
@@ -219,6 +299,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
                   callbackDomain,
                 })
                 .pipe(
+                  Effect.map(callbackToPopupPayload),
                   Effect.tapError((cause: unknown) =>
                     Effect.logError("OAuth callback completion failed", cause),
                   ),

@@ -208,6 +208,13 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
      *  NOT offer the ordinary per-server OAuth flow as an alternative route:
      *  that would let the user walk around the policy the IdP just enforced. */
     blockedByAdmin: Schema.optional(Schema.Boolean),
+    /** True when this connection renews from a shared WORK IDENTITY and that
+     *  identity — not this connection — is what died. Narrows `reauthRequired`
+     *  to the action that actually helps: re-link the enterprise identity once,
+     *  and every enterprise-managed connection backed by it recovers. Telling
+     *  the user to "reconnect" here would be wrong twice over: the connection is
+     *  intact, and reconnecting N of them fixes nothing the one link would not. */
+    workIdentityRelinkRequired: Schema.optional(Schema.Boolean),
   },
 ) {}
 

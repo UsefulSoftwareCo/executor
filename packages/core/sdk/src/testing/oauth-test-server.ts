@@ -64,6 +64,12 @@ export interface OAuthTestServerOptions {
   readonly scopes?: readonly string[];
   readonly omitTokenResponseScopes?: readonly string[];
   readonly supportRefresh?: boolean;
+  /** Whether the authorization-code grant ISSUES a refresh token at all.
+   *  Default true. Set false to stand in for an identity provider that hands
+   *  back only an access + ID token, which is the case that forces work-identity
+   *  custody onto the (expiring) ID token. Distinct from `supportRefresh`, which
+   *  governs whether an ISSUED refresh token can still be redeemed. */
+  readonly issueRefreshToken?: boolean;
   readonly tokenExpiresInSeconds?: number;
   readonly invalidRefreshTokenDescription?: string;
   /** RFC 6749 error code returned when a refresh-token grant is rejected.
@@ -167,6 +173,15 @@ export interface OAuthTestServerShape {
    *  fixture rejects the exchange afterwards exactly as it would for an expired
    *  or revoked assertion. */
   readonly revokeAccessToken: (token: string) => Effect.Effect<void>;
+  /** Stop honouring every refresh token this server issued to a client, and
+   *  report how many that was. Models the enterprise-side action a client cannot
+   *  see: an administrator ends the user's sessions, and the next ID-JAG exchange
+   *  presenting one of those refresh tokens is rejected as `invalid_grant`.
+   *
+   *  Keyed by CLIENT rather than by token value on purpose — a test driving this
+   *  holds no refresh token (custody is the server's), so revoking by value would
+   *  force it to reach into private state to find one. */
+  readonly revokeRefreshTokensFor: (clientId: string) => Effect.Effect<number>;
   /** Start (or stop) refusing every RFC 8693 exchange with this §5.2 error.
    *  `enterpriseIdp.denyExchangeWith` sets the same policy up front; this drives
    *  the case that only exists over time — an administrator withdrawing access
@@ -543,6 +558,7 @@ export const serveOAuthTestServer = (
       ...(options.users ?? {}),
     };
     const supportRefresh = options.supportRefresh ?? true;
+    const issueRefreshToken = options.issueRefreshToken ?? true;
     const tokenExpiresInSeconds = options.tokenExpiresInSeconds ?? 3600;
     const invalidRefreshTokenDescription =
       options.invalidRefreshTokenDescription ?? "Unknown refresh token";
@@ -809,20 +825,22 @@ export const serveOAuthTestServer = (
             }
             authorizationCodes.delete(code);
             const accessToken = `at_${randomUUID()}`;
-            const refreshToken = `rt_${randomUUID()}`;
+            const refreshToken = issueRefreshToken ? `rt_${randomUUID()}` : null;
             yield* Ref.update(issuedAccessTokens, (tokens) => new Set([...tokens, accessToken]));
-            refreshTokens.set(refreshToken, {
-              clientId,
-              username: record.username,
-              scope: record.scope,
-              resource: record.resource,
-            });
+            if (refreshToken !== null) {
+              refreshTokens.set(refreshToken, {
+                clientId,
+                username: record.username,
+                scope: record.scope,
+                resource: record.resource,
+              });
+            }
             const scope = tokenResponseScope(record.scope);
             return jsonResponse(
               200,
               {
                 access_token: accessToken,
-                refresh_token: refreshToken,
+                ...(refreshToken === null ? {} : { refresh_token: refreshToken }),
                 token_type: "Bearer",
                 expires_in: tokenExpiresInSeconds,
                 ...(scope ? { scope } : {}),
@@ -931,9 +949,18 @@ export const serveOAuthTestServer = (
             if (denial) {
               return oauthError(400, denial.error, denial.errorDescription);
             }
-            const subjectAccepted = yield* Ref.get(issuedAccessTokens).pipe(
-              Effect.map((tokens) => tokens.has(subjectToken)),
-            );
+            // draft §4.5: a REFRESH token is a first-class subject, and it is
+            // VALIDATED, NOT CONSUMED — the exchange is not a refresh-token
+            // grant and must not rotate the client's durable subject out from
+            // under it. (Matches the Okta emulator's behavior, which this
+            // fixture stands in for in the hermetic tests.) A refresh token is
+            // also only acceptable from the client it was issued to.
+            const subjectAccepted =
+              subjectTokenType === "urn:ietf:params:oauth:token-type:refresh_token"
+                ? refreshTokens.get(subjectToken)?.clientId === clientId
+                : yield* Ref.get(issuedAccessTokens).pipe(
+                    Effect.map((tokens) => tokens.has(subjectToken)),
+                  );
             if (!subjectAccepted) {
               return oauthError(
                 400,
@@ -1092,6 +1119,14 @@ export const serveOAuthTestServer = (
           const next = new Set(tokens);
           next.delete(token);
           return next;
+        }),
+      revokeRefreshTokensFor: (clientId) =>
+        Effect.sync(() => {
+          const doomed = [...refreshTokens.entries()].filter(
+            ([, record]) => record.clientId === clientId,
+          );
+          for (const [token] of doomed) refreshTokens.delete(token);
+          return doomed.length;
         }),
       setTokenExchangeDenial: (denial) => Ref.set(tokenExchangeDenial, denial),
       acceptsAuthorizationHeader: (authorization) => {

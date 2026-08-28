@@ -101,6 +101,19 @@ export type OAuth2TokenResponse = {
   readonly expires_in?: number;
   readonly scope?: string;
   readonly idTokenIdentityLabel?: string;
+  /**
+   * The raw OIDC ID token the endpoint returned, when it returned one.
+   *
+   * Named in camelCase deliberately: this is NOT the wire field (that one is
+   * stripped before oauth4webapi validates the response — see `stripIdToken`),
+   * so nothing can re-serialize this object as an RFC 6749 token response and
+   * accidentally re-emit it.
+   *
+   * It exists for ONE caller: the enterprise work-identity link, which takes
+   * custody of the ID token when the IdP issues no refresh token. The ordinary
+   * connection mint reads named fields and never persists this.
+   */
+  readonly idToken?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -954,9 +967,33 @@ export const idTokenIdentityLabel = (idToken: string | undefined): string | unde
   );
 };
 
+/** The account an ID token names, as far as a display and a deadline go.
+ *
+ *  Read UNVERIFIED, and only ever used that way: these claims describe a token
+ *  we already hold from a token endpoint we just authenticated to, so they are
+ *  provenance for the user's benefit, never an authorization input. `expiresAt`
+ *  is epoch MILLIseconds (`exp` is seconds on the wire). */
+export const idTokenAccountFacts = (
+  idToken: string | undefined,
+): {
+  readonly subject: string | null;
+  readonly label: string | null;
+  readonly expiresAt: number | null;
+} => {
+  const claims = idToken === undefined ? null : decodeJwtPayload(idToken);
+  if (claims === null) return { subject: null, label: null, expiresAt: null };
+  const exp = claims.exp;
+  return {
+    subject: stringClaim(claims, "sub") ?? null,
+    label: idTokenIdentityLabel(idToken) ?? null,
+    expiresAt: typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null,
+  };
+};
+
 type StrippedTokenResponse = {
   readonly response: Response;
   readonly idTokenIdentityLabel?: string;
+  readonly idToken?: string;
 };
 
 const NestedAuthedUserScope = Schema.Struct({
@@ -1025,6 +1062,7 @@ const stripIdToken = async (response: Response): Promise<StrippedTokenResponse> 
       headers: response.headers,
     }),
     ...(label ? { idTokenIdentityLabel: label } : {}),
+    ...(typeof idToken === "string" && idToken.length > 0 ? { idToken } : {}),
   };
 };
 
@@ -1051,9 +1089,13 @@ const processTokenEndpointResponse = async (
             scope: providerUserGrant.scope,
           }
       : parsed;
-  return stripped.idTokenIdentityLabel
-    ? { ...token, idTokenIdentityLabel: stripped.idTokenIdentityLabel }
-    : token;
+  return {
+    ...token,
+    ...(stripped.idTokenIdentityLabel === undefined
+      ? {}
+      : { idTokenIdentityLabel: stripped.idTokenIdentityLabel }),
+    ...(stripped.idToken === undefined ? {} : { idToken: stripped.idToken }),
+  };
 };
 
 // ---------------------------------------------------------------------------

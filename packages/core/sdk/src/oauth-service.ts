@@ -44,6 +44,8 @@ import {
   type CreateOAuthClientInput,
   type EnterpriseManagedStartInput,
   type FirstPartyOAuthClientConfig,
+  type OAuthCallbackCompletion,
+  type WorkIdentityLinkStart,
   type OAuthClientOrigin,
   type OAuthClientSummary,
   type OAuthCompleteInput,
@@ -76,6 +78,23 @@ import {
   type EnterpriseManagedRolloutEvent,
 } from "./oauth-ema";
 import {
+  DEFAULT_WORK_IDENTITY_SCOPES,
+  WORK_IDENTITY_SESSION_SENTINEL,
+  WorkIdentityLinkError,
+  decodeWorkIdentityRecord,
+  encodeWorkIdentityRecord,
+  isWorkIdentityUsable,
+  workIdentityCustodyType,
+  workIdentityItemId,
+  workIdentitySessionPayloadFrom,
+  workIdentityStatusOf,
+  type CompleteWorkIdentityLinkInput,
+  type StartWorkIdentityLinkInput,
+  type WorkIdentityRecord,
+  type WorkIdentityRef,
+  type WorkIdentityStatus,
+} from "./oauth-work-identity";
+import {
   assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
   providerAuthorizeExtras,
@@ -84,6 +103,7 @@ import {
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
   exchangeClientCredentials,
+  idTokenAccountFacts,
   isLoopbackHttpUrl,
   rebindTokenEndpointHostToCallbackDomain,
   type OAuth2TokenResponse,
@@ -371,16 +391,25 @@ export const missingGrantedOAuthScopes = (
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 
-/** Extract the persisted `requestedScopes` from an `oauth_session.payload`. The
- *  jsonColumn may surface as a parsed object (in-memory backends) or a JSON
- *  string (serialized backends); decode strings before reading. Returns `null`
- *  for legacy sessions written before `requestedScopes` was persisted, so
- *  `complete` can fall back to the client's scopes. */
+/** The stored `oauth_session` row, as this module reads it. `looseDb` returns an
+ *  untyped record; naming the columns we touch keeps the reads honest without
+ *  claiming a decoded row. */
+type SessionRow = Readonly<Record<string, unknown>>;
+
+/** An `oauth_session.payload` as a value, whichever way the backend surfaced it.
+ *  The jsonColumn is a parsed object on in-memory backends and a JSON string on
+ *  serialized ones; every payload reader starts here so that difference is
+ *  handled exactly once. */
+const sessionPayload = (payload: unknown): unknown =>
+  typeof payload === "string"
+    ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
+    : payload;
+
+/** Extract the persisted `requestedScopes` from an `oauth_session.payload`.
+ *  Returns `null` for legacy sessions written before `requestedScopes` was
+ *  persisted, so `complete` can fall back to the client's scopes. */
 const requestedScopesFromPayload = (payload: unknown): readonly string[] | null => {
-  const decoded =
-    typeof payload === "string"
-      ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
-      : payload;
+  const decoded = sessionPayload(payload);
   if (decoded === null || typeof decoded !== "object") return null;
   const value = (decoded as Record<string, unknown>).requestedScopes;
   return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : null;
@@ -390,10 +419,7 @@ const requestedScopesFromPayload = (payload: unknown): readonly string[] | null 
  *  (same-owner connects, or sessions written before this field), so `complete`
  *  falls back to the session owner. */
 const clientOwnerFromPayload = (payload: unknown): Owner | null => {
-  const decoded =
-    typeof payload === "string"
-      ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
-      : payload;
+  const decoded = sessionPayload(payload);
   if (decoded === null || typeof decoded !== "object") return null;
   const value = (decoded as Record<string, unknown>).clientOwner;
   return value === "user" || value === "org" ? value : null;
@@ -1367,6 +1393,353 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   };
 
   // -----------------------------------------------------------------------
+  // Work identity — linking the enterprise assertion the EMA connect consumes.
+  //
+  // Everything here runs on the SAME machinery as the interactive connect flow:
+  // one `oauth_session` row (same table, same TTL, same cleanup), one
+  // `buildAuthorizationUrl`, one `exchangeAuthorizationCode`, one callback
+  // route. What differs is only what the redeemed grant becomes — custody of a
+  // durable subject token instead of a connection.
+  // -----------------------------------------------------------------------
+
+  const loadSessionRow = (state: OAuthState): Effect.Effect<SessionRow | null, StorageFailure> =>
+    deps.fuma
+      .use("oauth_session.findFirst", (db) =>
+        looseDb(db).findFirst("oauth_session", {
+          where: (b: any) => b("state", "=", String(state)),
+        }),
+      )
+      .pipe(Effect.map((row) => row as SessionRow | null));
+
+  /** The default writable store paired with its `set`, or a loud failure. Work
+   *  identities are credential material; there is no degraded mode where they
+   *  live elsewhere.
+   *
+   *  Returns a PAIR rather than a narrowed provider so the provider object is
+   *  passed through untouched — copying it to re-type `set` would silently drop
+   *  anything a backend carries on a prototype. */
+  const requireWritableProvider = (
+    purpose: string,
+  ): Effect.Effect<
+    {
+      readonly provider: CredentialProvider;
+      readonly set: NonNullable<CredentialProvider["set"]>;
+    },
+    StorageFailure
+  > => {
+    const provider = deps.defaultWritableProvider();
+    const set = provider?.set;
+    if (!provider || set === undefined) {
+      return Effect.fail(
+        new StorageError({
+          message: `No default writable credential provider is registered to ${purpose}.`,
+          cause: undefined,
+        }),
+      );
+    }
+    return Effect.succeed({ provider, set });
+  };
+
+  /** Read the held record, or null when nothing usable is stored. A value that
+   *  does not decode reads as ABSENT: the product then offers a link, which
+   *  overwrites it — the one action that both tells the truth ("nothing usable
+   *  is held") and repairs the state. */
+  const loadWorkIdentity = (
+    ref: WorkIdentityRef,
+  ): Effect.Effect<WorkIdentityRecord | null, StorageFailure> =>
+    Effect.gen(function* () {
+      const provider = deps.defaultWritableProvider();
+      if (!provider) return null;
+      const stored = yield* provider.get(workIdentityItemId(ref));
+      if (stored === null) return null;
+      return Option.getOrNull(decodeWorkIdentityRecord(stored));
+    });
+
+  const storeWorkIdentity = (
+    ref: WorkIdentityRef,
+    record: WorkIdentityRecord,
+  ): Effect.Effect<void, StorageFailure> =>
+    requireWritableProvider("store the enterprise work identity").pipe(
+      Effect.flatMap(({ set }) => set(workIdentityItemId(ref), encodeWorkIdentityRecord(record))),
+    );
+
+  const startWorkIdentityLink = (
+    input: StartWorkIdentityLinkInput,
+  ): Effect.Effect<WorkIdentityLinkStart, WorkIdentityLinkError | StorageFailure> =>
+    Effect.gen(function* () {
+      const keys = yield* Effect.try({
+        try: () => deps.ownedKeys(input.owner),
+        catch: (cause) =>
+          new StorageError({
+            message: "Cannot link a work identity for an owner without a subject",
+            cause,
+          }),
+      });
+      const client = yield* loadClient(input.idpClientOwner, input.idpClient);
+      if (!client) {
+        return yield* new WorkIdentityLinkError({
+          message: `Enterprise identity provider OAuth client not found: ${input.idpClient}`,
+        });
+      }
+      // The link RUNS this app's authorization-code flow. An app registered for
+      // any other grant cannot serve one, and finding that out at the IdP's
+      // authorize endpoint would surface as an opaque provider error page.
+      if (client.grant !== "authorization_code") {
+        return yield* new WorkIdentityLinkError({
+          message: `OAuth app "${input.idpClient}" uses the ${client.grant} grant; linking a work identity runs the authorization-code flow, so the enterprise identity provider's app must be registered for it.`,
+        });
+      }
+      const flowRedirectUri = input.redirectUri ?? redirectUri;
+      if (flowRedirectUri == null) {
+        return yield* new WorkIdentityLinkError({ message: REDIRECT_URI_REQUIRED_MESSAGE });
+      }
+      const requestedScopes = dedupeScopes(input.scopes ?? DEFAULT_WORK_IDENTITY_SCOPES);
+
+      const verifier = createPkceCodeVerifier();
+      const challenge = yield* Effect.promise(() => createPkceCodeChallenge(verifier));
+      const state = OAuthState.make(createOAuthState());
+      const providerState = encodeOAuthCallbackState({
+        state: String(state),
+        orgSlug: deps.callbackStateOrgSlug,
+      });
+
+      yield* deps.fuma.use("oauth_session.create", (db) =>
+        looseDb(db).create("oauth_session", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          state: String(state),
+          client_slug: String(input.idpClient),
+          // No integration, connection or template is involved in a link. The
+          // sentinel says so explicitly; the payload below is what completion reads.
+          integration: WORK_IDENTITY_SESSION_SENTINEL,
+          name: WORK_IDENTITY_SESSION_SENTINEL,
+          template: WORK_IDENTITY_SESSION_SENTINEL,
+          redirect_url: flowRedirectUri,
+          pkce_verifier: verifier,
+          identity_label: null,
+          payload: {
+            kind: WORK_IDENTITY_SESSION_SENTINEL,
+            owner: input.owner,
+            idpClient: String(input.idpClient),
+            idpClientOwner: input.idpClientOwner,
+            requestedScopes,
+          },
+          expires_at: Date.now() + OAUTH2_SESSION_TTL_MS,
+          created_at: new Date(),
+        }),
+      );
+
+      const authorizationUrl = yield* Effect.try({
+        try: () =>
+          buildAuthorizationUrl({
+            authorizationUrl: client.authorizationUrl,
+            clientId: client.clientId,
+            redirectUrl: flowRedirectUri,
+            scopes: requestedScopes,
+            state: providerState,
+            codeChallenge: challenge,
+            resource: client.resource ?? undefined,
+            // The same provider quirks the connect flow needs, for the same
+            // reason: without Google's `access_type=offline` there is no refresh
+            // token, and a work identity with no refresh token is exactly the
+            // hour-long custody this feature exists to avoid.
+            extraParams: providerAuthorizeExtras(client.authorizationUrl),
+            endpointUrlPolicy: deps.endpointUrlPolicy,
+          }),
+        catch: (cause) =>
+          new WorkIdentityLinkError({
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: surface the URL-construction failure
+            message: `Failed to build the work identity authorization URL: ${String(cause)}`,
+          }),
+      });
+
+      return { authorizationUrl, state } satisfies WorkIdentityLinkStart;
+    }).pipe(
+      Effect.withSpan("executor.oauth.work_identity.start", {
+        attributes: {
+          "executor.tenant": deps.tenant,
+          "executor.oauth.client": String(input.idpClient),
+        },
+      }),
+    );
+
+  const completeWorkIdentityLink = (
+    input: CompleteWorkIdentityLinkInput,
+  ): Effect.Effect<
+    WorkIdentityStatus,
+    WorkIdentityLinkError | OAuthSessionNotFoundError | StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const sessionRow = yield* loadSessionRow(input.state);
+      if (!sessionRow) return yield* new OAuthSessionNotFoundError({ state: input.state });
+      const link = workIdentitySessionPayloadFrom(sessionPayload(sessionRow.payload));
+      if (link === null) {
+        // The state belongs to a CONNECT. Refusing here is what stops a link
+        // completion from redeeming someone else's authorization code into
+        // identity custody, and it is checked rather than assumed even though
+        // the callback edge already routes by session kind.
+        return yield* new WorkIdentityLinkError({
+          message: `OAuth state ${input.state} does not belong to a work identity link.`,
+          restartRequired: true,
+        });
+      }
+      const expiresAt = Number(sessionRow.expires_at);
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+        yield* deleteSession(input.state);
+        return yield* new OAuthSessionNotFoundError({ state: input.state });
+      }
+      const verifier = sessionRow.pkce_verifier == null ? null : String(sessionRow.pkce_verifier);
+      if (verifier === null) {
+        return yield* new WorkIdentityLinkError({
+          message: `Work identity link ${input.state} is missing its PKCE code verifier; start the link again.`,
+          restartRequired: true,
+        });
+      }
+      const client = yield* loadClient(link.idpClientOwner, link.idpClient);
+      if (!client) {
+        return yield* new WorkIdentityLinkError({
+          message: `Enterprise identity provider OAuth client not found: ${link.idpClient}`,
+          restartRequired: true,
+        });
+      }
+
+      const token = yield* exchangeAuthorizationCode({
+        tokenUrl: client.tokenUrl,
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+        redirectUrl: String(sessionRow.redirect_url),
+        codeVerifier: verifier,
+        code: input.code,
+        resource: client.resource ?? undefined,
+        endpointUrlPolicy: deps.endpointUrlPolicy,
+        fetch,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WorkIdentityLinkError({
+              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message` field
+              message: `The enterprise identity provider rejected the sign-in: ${cause.message}`,
+              restartRequired: cause.error === "invalid_grant",
+            }),
+        ),
+      );
+
+      // §4.5: the refresh token is the durable subject and is preferred whenever
+      // the IdP issued one. ID-token custody is the recorded degradation for an
+      // IdP that issues none — it is stored with its own type and its `exp`, so
+      // the product can say when it dies instead of discovering it at renewal.
+      const tokenType = workIdentityCustodyType({
+        refreshToken: token.refresh_token,
+        idToken: token.idToken,
+      });
+      if (tokenType === null) {
+        return yield* new WorkIdentityLinkError({
+          message:
+            "The enterprise identity provider returned neither a refresh token nor an ID token, so there is nothing durable to hold. Request `openid` and `offline_access` on the link, or check that the identity provider's app is allowed to issue refresh tokens.",
+        });
+      }
+      const facts = idTokenAccountFacts(token.idToken);
+      const isRefreshCustody = tokenType === "urn:ietf:params:oauth:token-type:refresh_token";
+      const ref: WorkIdentityRef = {
+        owner: link.owner,
+        idpClient: link.idpClient,
+        idpClientOwner: link.idpClientOwner,
+      };
+      const record: WorkIdentityRecord = {
+        // SAFETY-adjacent: `workIdentityCustodyType` already established which
+        // of the two is present, so the branch below cannot read an absent one.
+        token: isRefreshCustody ? (token.refresh_token ?? "") : (token.idToken ?? ""),
+        tokenType,
+        subject: facts.subject,
+        label: facts.label ?? token.idTokenIdentityLabel ?? null,
+        linkedAt: Date.now(),
+        // A refresh token has no client-visible expiry; that is the property
+        // this whole design is buying.
+        expiresAt: isRefreshCustody ? null : facts.expiresAt,
+        // What the IdP said it granted, falling back to what was asked for when
+        // it said nothing. "No scope at all" is null, not an empty string.
+        scope: token.scope ?? (link.requestedScopes.join(" ") || null),
+      };
+      yield* storeWorkIdentity(ref, record);
+      yield* deleteSession(input.state);
+
+      // Enumerable facts only: which custody was taken and whether the account
+      // could be named. Never the token, never the account identifier itself.
+      yield* Effect.annotateCurrentSpan({
+        "executor.oauth.work_identity.custody": isRefreshCustody ? "refresh_token" : "id_token",
+        "executor.oauth.work_identity.has_account_claims": facts.subject !== null,
+      });
+      return workIdentityStatusOf(ref, record);
+    }).pipe(
+      Effect.withSpan("executor.oauth.work_identity.complete", {
+        attributes: {
+          "executor.tenant": deps.tenant,
+          ...(deps.subject != null ? { "executor.subject": deps.subject } : {}),
+        },
+      }),
+    );
+
+  const workIdentityStatus = (
+    ref: WorkIdentityRef,
+  ): Effect.Effect<WorkIdentityStatus, StorageFailure> =>
+    loadWorkIdentity(ref).pipe(Effect.map((record) => workIdentityStatusOf(ref, record)));
+
+  const unlinkWorkIdentity = (ref: WorkIdentityRef): Effect.Effect<void, StorageFailure> => {
+    const provider = deps.defaultWritableProvider();
+    // Idempotent by construction: a store that cannot delete, or an item that is
+    // already gone, both leave the caller with "nothing is held", which is the
+    // outcome asked for.
+    return provider?.delete === undefined ? Effect.void : provider.delete(workIdentityItemId(ref));
+  };
+
+  /** Which subject token an enterprise-managed connect will present, and who
+   *  owns it. The ONE place the two custody models diverge; every caller below
+   *  works off the result rather than re-deciding. */
+  const resolveEnterpriseSubject = (
+    owner: Owner,
+    enterprise: EnterpriseManagedStartInput,
+  ): Effect.Effect<
+    {
+      readonly token: string;
+      readonly tokenType: SubjectTokenType;
+      readonly source: "caller" | "work-identity";
+    },
+    OAuthStartError | StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const supplied = enterprise.subjectToken;
+      if (supplied !== undefined && supplied.length > 0) {
+        return {
+          token: supplied,
+          tokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
+          source: "caller" as const,
+        };
+      }
+      const ref: WorkIdentityRef = {
+        owner,
+        idpClient: enterprise.idpClient,
+        idpClientOwner: enterprise.idpClientOwner,
+      };
+      const record = yield* loadWorkIdentity(ref);
+      if (record === null) {
+        return yield* new OAuthStartError({
+          message:
+            "No enterprise work identity is linked for this identity provider. Link your work identity, then connect again.",
+          workIdentityLinkRequired: true,
+        });
+      }
+      if (!isWorkIdentityUsable(record)) {
+        return yield* new OAuthStartError({
+          message:
+            "Your enterprise work identity was rejected by the identity provider. Link it again, then connect.",
+          workIdentityLinkRequired: true,
+        });
+      }
+      return { token: record.token, tokenType: record.tokenType, source: "work-identity" as const };
+    });
+
+  // -----------------------------------------------------------------------
   // start — begin a flow through a client to mint a connection.
   // -----------------------------------------------------------------------
   const start = (
@@ -1585,13 +1958,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 }),
             ),
           );
-          // Resolve the caller's optional assertion type ONCE: the chain sends
-          // it and the connection persists it, and those two must not be able
-          // to disagree about what was presented.
-          const resolvedEnterprise = {
-            ...enterprise,
-            subjectTokenType: enterprise.subjectTokenType ?? DEFAULT_SUBJECT_TOKEN_TYPE,
-          };
+          // Resolve WHICH subject token is presented — and whose it is — ONCE:
+          // the chain sends it and the connection persists custody of it, and
+          // those two must not be able to disagree about what was presented.
+          const subject = yield* resolveEnterpriseSubject(input.owner, enterprise);
           const enterpriseGrant = yield* runEnterpriseManagedAuthorization({
             authorizationServerMetadata: metadata,
             idp: {
@@ -1603,8 +1973,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               clientId: client.clientId,
               clientSecret: client.clientSecret,
             },
-            subjectToken: resolvedEnterprise.subjectToken,
-            subjectTokenType: resolvedEnterprise.subjectTokenType,
+            subjectToken: subject.token,
+            subjectTokenType: subject.tokenType,
             resource: client.resource,
             scopes: requestedScopes,
             endpointUrlPolicy: deps.endpointUrlPolicy,
@@ -1640,7 +2010,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               client,
               input.clientOwner,
               enterpriseGrant.grant,
-              resolvedEnterprise,
+              { idpClient: enterprise.idpClient, idpClientOwner: enterprise.idpClientOwner },
+              subject,
               metadata.issuer,
             ).pipe(
               Effect.mapError(
@@ -1784,13 +2155,19 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: OAuthCompleteInput,
   ): Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure> =>
     Effect.gen(function* () {
-      const sessionRow = yield* deps.fuma.use("oauth_session.findFirst", (db) =>
-        looseDb(db).findFirst("oauth_session", {
-          where: (b: any) => b("state", "=", String(input.state)),
-        }),
-      );
+      const sessionRow = yield* loadSessionRow(input.state);
       if (!sessionRow) {
         return yield* new OAuthSessionNotFoundError({ state: input.state });
+      }
+      // A work-identity link shares this table and this callback URL. Its
+      // integration/name/template columns are sentinels, so completing one HERE
+      // would mint a connection out of placeholder text. Refuse explicitly
+      // rather than relying on the callback edge having routed correctly.
+      if (workIdentitySessionPayloadFrom(sessionPayload(sessionRow.payload)) !== null) {
+        return yield* new OAuthCompleteError({
+          message: `OAuth state ${input.state} belongs to a work identity link, not a connection.`,
+          restartRequired: true,
+        });
       }
       const session = {
         owner: String(sessionRow.owner) as Owner,
@@ -2053,9 +2430,19 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
   /** Mint a connection from an enterprise-managed grant. Distinct from
    *  `mintFromToken` because the material persisted is different: there is no
-   *  refresh token (draft §4.4.3), and the identity assertion takes the refresh
-   *  slot — it is exactly the credential that lets renewal run without the
-   *  user, which is what that slot means. */
+   *  refresh token (draft §4.4.3), and the SUBJECT TOKEN takes the refresh slot
+   *  — it is exactly the credential that lets renewal run without the user,
+   *  which is what that slot means.
+   *
+   *  WHERE that slot points is the whole custody decision:
+   *
+   *   - a CALLER-supplied assertion is copied into the connection's own
+   *     `:refresh` item. The connection owns it, and nothing else can revive it.
+   *   - a WORK IDENTITY is not copied at all: the slot points at the shared
+   *     `work-identity:…` record. N connections, one item — which is what makes
+   *     one re-link revive all of them, and what makes "this identity died"
+   *     expressible as a fact about the identity instead of N facts about N
+   *     connections. */
   const mintEnterpriseManagedConnection = (
     target: {
       readonly owner: Owner;
@@ -2067,30 +2454,45 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     client: LoadedOAuthClient,
     clientOwner: Owner,
     grant: EnterpriseManagedGrant,
-    /** The connect request's enterprise inputs with the assertion type already
-     *  resolved — the persisted state records what was actually presented, so
-     *  it must not re-derive a default the chain might have differed on. */
-    enterprise: EnterpriseManagedStartInput & { readonly subjectTokenType: SubjectTokenType },
+    /** Which IdP registration minted the ID-JAG, as named on the connect. */
+    idp: Pick<EnterpriseManagedStartInput, "idpClient" | "idpClientOwner">,
+    /** The subject actually presented, with its type and its custody already
+     *  decided — the persisted state records what happened, and must not
+     *  re-derive a default the chain might have differed on. */
+    subject: {
+      readonly token: string;
+      readonly tokenType: SubjectTokenType;
+      readonly source: "caller" | "work-identity";
+    },
     /** The Resource Authorization Server's issuer identifier, as discovered. */
     audience: string,
   ): Effect.Effect<Connection, StorageFailure> =>
     Effect.gen(function* () {
-      const provider = deps.defaultWritableProvider();
-      if (!provider || !provider.set) {
-        return yield* new StorageError({
-          message:
-            "No default writable credential provider is registered to store the OAuth access token.",
-          cause: undefined,
-        });
-      }
+      const { provider, set } = yield* requireWritableProvider("store the OAuth access token");
       const itemId = accessItemId(target.owner, target.integration, target.name);
-      yield* provider.set(ProviderItemId.make(itemId), grant.token.access_token);
-      const subjectTokenItemId = refreshItemIdFor(itemId);
-      yield* provider.set(ProviderItemId.make(subjectTokenItemId), enterprise.subjectToken);
+      yield* set(ProviderItemId.make(itemId), grant.token.access_token);
+
+      const subjectTokenItemId =
+        subject.source === "work-identity"
+          ? String(
+              workIdentityItemId({
+                owner: target.owner,
+                idpClient: idp.idpClient,
+                idpClientOwner: idp.idpClientOwner,
+              }),
+            )
+          : refreshItemIdFor(itemId);
+      // Only a caller-supplied assertion is written here. Re-writing the work
+      // identity would replace a record (the durable subject plus its account
+      // facts and any rejection) with a bare token string.
+      if (subject.source === "caller") {
+        yield* set(ProviderItemId.make(subjectTokenItemId), subject.token);
+      }
 
       yield* Effect.annotateCurrentSpan({
         "executor.oauth.has_advertised_expiry": typeof grant.token.expires_in === "number",
         "executor.oauth.enterprise_managed": true,
+        "executor.oauth.enterprise_subject_source": subject.source,
       });
       return yield* deps.mintOAuthConnection({
         owner: target.owner,
@@ -2107,12 +2509,40 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         expiresAt: expiresAtFrom(grant.token),
         oauthScope: grant.scope,
         enterpriseManaged: {
-          idpClient: enterprise.idpClient,
-          idpClientOwner: enterprise.idpClientOwner,
+          idpClient: idp.idpClient,
+          idpClientOwner: idp.idpClientOwner,
           audience,
-          subjectTokenType: enterprise.subjectTokenType,
+          subjectTokenType: subject.tokenType,
+          subjectSource: subject.source,
         },
       });
+    });
+
+  // -----------------------------------------------------------------------
+  // completeCallback — finish whichever flow this callback belongs to.
+  //
+  // Both browser flows land on the SAME redirect URI, because an enterprise
+  // registers executor's callback with its identity provider once and a second
+  // URL would be a second thing to get wrong. The session row is therefore the
+  // only trustworthy answer to "what is this?" — not the URL, and not the state
+  // envelope (which degrades to the raw state on hosts that route no org slug).
+  // -----------------------------------------------------------------------
+  const completeCallback = (
+    input: OAuthCompleteInput,
+  ): Effect.Effect<
+    OAuthCallbackCompletion,
+    OAuthCompleteError | WorkIdentityLinkError | OAuthSessionNotFoundError | StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const sessionRow = yield* loadSessionRow(input.state);
+      if (!sessionRow) return yield* new OAuthSessionNotFoundError({ state: input.state });
+      return workIdentitySessionPayloadFrom(sessionPayload(sessionRow.payload)) === null
+        ? yield* complete(input).pipe(
+            Effect.map((connection) => ({ kind: "connection" as const, connection })),
+          )
+        : yield* completeWorkIdentityLink({ state: input.state, code: input.code }).pipe(
+            Effect.map((workIdentity) => ({ kind: "work-identity" as const, workIdentity })),
+          );
     });
 
   const deleteSession = (state: OAuthState): Effect.Effect<void, StorageFailure> =>
@@ -2186,7 +2616,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     listClients,
     start,
     complete,
+    completeCallback,
     cancel,
     probe,
+    startWorkIdentityLink,
+    completeWorkIdentityLink,
+    workIdentityStatus,
+    unlinkWorkIdentity,
   };
 };

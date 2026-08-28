@@ -6,6 +6,7 @@
 //   connection:<owner>:<integration>:<name>:<variable>
 //   oauth:<owner>:<integration>:<name>[:refresh[:store-probe]]
 //   oauth-client:<owner>:<slug>:secret
+//   work-identity:<owner>:<idp-client-owner>:<idp-client>
 //
 // The `:store-probe` tail is the one id here that holds no credential: a
 // refresh writes it to prove the store accepts writes before a grant spends
@@ -26,6 +27,11 @@ export const OWNER_SCOPED_ITEM_ID_PREFIXES: ReadonlySet<string> = new Set([
   "connection",
   "oauth",
   "oauth-client",
+  // A held enterprise identity is filed under the owner its enterprise-managed
+  // connections are made under, for the same reason (#950, #1453): a Workspace
+  // connection linked in one member's browser must stay resolvable by the rest
+  // of the org, and a Personal one must stay private to its subject.
+  "work-identity",
 ]);
 
 /** The owner a logical item id embeds, or null for ids that carry none

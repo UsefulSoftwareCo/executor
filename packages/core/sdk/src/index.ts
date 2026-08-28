@@ -322,7 +322,29 @@ export {
   type OAuthProbeInput,
   type OAuthProbeResult,
   type OAuthService,
+  type OAuthCallbackCompletion,
+  type WorkIdentityLinkStart,
 } from "./oauth-client";
+
+// Work identity — how the enterprise assertion the EMA connect consumes is
+// acquired and held. Contracts + the persisted record's schema; the flow itself
+// lives in the OAuth service.
+export {
+  DEFAULT_WORK_IDENTITY_SCOPES,
+  WORK_IDENTITY_SESSION_SENTINEL,
+  WorkIdentityLinkError,
+  WorkIdentityRefSchema,
+  WorkIdentityRevocationReasonSchema,
+  WorkIdentityStatusSchema,
+  workIdentityItemId,
+  workIdentityStatusOf,
+  type CompleteWorkIdentityLinkInput,
+  type StartWorkIdentityLinkInput,
+  type WorkIdentityRecord,
+  type WorkIdentityRef,
+  type WorkIdentityRevocationReason,
+  type WorkIdentityStatus,
+} from "./oauth-work-identity";
 
 // The enterprise-managed rollout PORT (not its implementation): hosts that
 // operate a feature-flag service implement this and hand it to

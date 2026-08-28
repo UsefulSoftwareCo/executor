@@ -12,6 +12,13 @@ import {
   OAuthState,
   Owner,
 } from "./ids";
+import type {
+  CompleteWorkIdentityLinkInput,
+  StartWorkIdentityLinkInput,
+  WorkIdentityLinkError,
+  WorkIdentityRef,
+  WorkIdentityStatus,
+} from "./oauth-work-identity";
 
 /** RFC 8693 §3 security token type identifiers usable as a `subject_token_type`
  *  when exchanging an enterprise identity assertion for an ID-JAG. The id-jag
@@ -288,9 +295,19 @@ export interface OAuthStartInput {
 }
 
 /** What an enterprise-managed connect needs beyond the ordinary start inputs.
- *  The subject token is supplied by the caller because "where the identity
- *  assertion comes from" is a host concern: a desktop app holds its own SSO
- *  tokens, a hosted deployment holds the session's.
+ *
+ *  Two ways to say who is connecting, and the difference is custody:
+ *
+ *   - OMIT `subjectToken` (the console's path). The server resolves the user's
+ *     HELD work identity for this IdP app — the durable refresh-token subject a
+ *     `oauth.startWorkIdentityLink` put in custody. The minted connection points
+ *     at that shared record, so renewals outlive any ID token and one re-link
+ *     revives every connection made this way. Not linked yet → the start fails
+ *     with `workIdentityLinkRequired`, which is the console's cue to link.
+ *   - SUPPLY `subjectToken` (the API/headless path). The caller is the source of
+ *     the assertion, exactly as before: a desktop app holding its own SSO
+ *     tokens, or a script. The connection keeps a private copy of what was
+ *     passed, and its lifetime is whatever that token's lifetime is.
  *
  *  Declared as a Schema because this shape crosses the HTTP boundary: the API's
  *  `oauth.start` payload embeds THIS schema rather than restating its fields. */
@@ -298,18 +315,30 @@ export const EnterpriseManagedStartInputSchema = Schema.Struct({
   /** `oauth_client` slug of the client's registration at the enterprise IdP. */
   idpClient: OAuthClientSlug,
   idpClientOwner: Owner,
-  /** The identity assertion from single sign-on with the IdP (an OIDC ID token
-   *  by default). Persisted through the credential provider so token renewal
-   *  needs no further user interaction. */
-  subjectToken: Schema.String,
-  /** RFC 8693 §3 type of `subjectToken`. Defaults to an OIDC ID token. */
+  /** The identity assertion from single sign-on with the IdP. OMIT to use the
+   *  work identity the user already linked for `idpClient`; supply one to make
+   *  the caller the source, in which case the connection takes custody of
+   *  exactly this value. */
+  subjectToken: Schema.optional(Schema.String),
+  /** RFC 8693 §3 type of `subjectToken`. Read only alongside an explicit
+   *  `subjectToken`; a resolved work identity carries its own type (its custody
+   *  decides it, not the caller). Defaults to an OIDC ID token. */
   subjectTokenType: Schema.optional(SubjectTokenTypeSchema),
 }).annotate({
   identifier: "EnterpriseManagedStartInput",
   description:
-    "The second client registration (at the enterprise identity provider) and the identity assertion an enterprise-managed connect presents.",
+    "The second client registration (at the enterprise identity provider) and, optionally, the identity assertion an enterprise-managed connect presents. Omitted, the caller's linked work identity is used.",
 });
 export type EnterpriseManagedStartInput = typeof EnterpriseManagedStartInputSchema.Type;
+
+/** What one OAuth callback turned out to be. The redirect URI is shared by both
+ *  browser flows executor runs — connecting an integration, and linking a work
+ *  identity — so the callback edge cannot know which it received until the
+ *  session says. The IN-FLIGHT SESSION is that answer; nothing is inferred from
+ *  the URL. */
+export type OAuthCallbackCompletion =
+  | { readonly kind: "connection"; readonly connection: Connection }
+  | { readonly kind: "work-identity"; readonly workIdentity: WorkIdentityStatus };
 
 export interface OAuthCompleteInput {
   readonly state: OAuthState;
@@ -388,6 +417,13 @@ export class OAuthStartError
      *  token-endpoint refusal. A typed field rather than message text so
      *  telemetry and support tooling read the verdict structurally. */
     oauthErrorCode: Schema.optional(Schema.String),
+    /** True when this enterprise-managed connect could not proceed because the
+     *  user holds no usable work identity for the named IdP app — never linked,
+     *  or linked and since rejected. The remedy is a work-identity LINK, not a
+     *  retry and not the interactive per-server flow, so a console branches on
+     *  this field to send the user to the right place. Never set together with
+     *  `blockedByAdmin`: nothing was asked of the IdP. */
+    workIdentityLinkRequired: Schema.optional(Schema.Boolean),
   })
   implements UserActionableError
 {
@@ -478,8 +514,63 @@ export interface OAuthService {
   readonly complete: (
     input: OAuthCompleteInput,
   ) => Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure>;
+  /** Complete whatever flow this callback belongs to, as decided by the stored
+   *  session. The HTTP callback route calls THIS; `complete` and
+   *  `completeWorkIdentityLink` remain the direct, single-purpose entry points
+   *  for callers that already know which flow they started, and each refuses a
+   *  state belonging to the other. */
+  readonly completeCallback: (
+    input: OAuthCompleteInput,
+  ) => Effect.Effect<
+    OAuthCallbackCompletion,
+    OAuthCompleteError | WorkIdentityLinkError | OAuthSessionNotFoundError | StorageFailure
+  >;
   readonly cancel: (state: OAuthState) => Effect.Effect<void, StorageFailure>;
   readonly probe: (
     input: OAuthProbeInput,
   ) => Effect.Effect<OAuthProbeResult, OAuthProbeError | StorageFailure>;
+
+  // -------------------------------------------------------------------------
+  // Work identity — acquiring the enterprise assertion `start` consumes.
+  //
+  // A separate flow from `start`/`complete` on purpose. It mints NO connection
+  // and touches no integration: it links a PERSON to an enterprise IdP app, once,
+  // and every enterprise-managed connect for that app afterwards resolves it.
+  // Its callback is its own route for the same reason — a link redirect must not
+  // be able to arrive at a handler that would try to mint a connection from it.
+  // -------------------------------------------------------------------------
+
+  /** Begin linking the caller's enterprise identity: build the authorization URL
+   *  for the registered IdP app and persist the in-flight session. Returns the
+   *  URL to visit and the state that identifies the flow. */
+  readonly startWorkIdentityLink: (
+    input: StartWorkIdentityLinkInput,
+  ) => Effect.Effect<WorkIdentityLinkStart, WorkIdentityLinkError | StorageFailure>;
+  /** Redeem a link's authorization code with the IdP app's own credentials and
+   *  take custody of the durable subject. Returns the resulting status, so the
+   *  caller that completes the flow already knows which account was linked. */
+  readonly completeWorkIdentityLink: (
+    input: CompleteWorkIdentityLinkInput,
+  ) => Effect.Effect<
+    WorkIdentityStatus,
+    WorkIdentityLinkError | OAuthSessionNotFoundError | StorageFailure
+  >;
+  /** Whether a usable enterprise identity is held for this (owner, IdP app), and
+   *  which account it is. The console's poll; never returns credential material. */
+  readonly workIdentityStatus: (
+    ref: WorkIdentityRef,
+  ) => Effect.Effect<WorkIdentityStatus, StorageFailure>;
+  /** Drop a held identity. Idempotent. Enterprise-managed connections backed by
+   *  it stop renewing and report that a link is required — they are NOT removed,
+   *  because linking again revives them. */
+  readonly unlinkWorkIdentity: (ref: WorkIdentityRef) => Effect.Effect<void, StorageFailure>;
+}
+
+/** Where to send the user to link their enterprise identity, and the state that
+ *  identifies the flow on the way back. Mirrors `ConnectResult`'s redirect arm —
+ *  there is no "connected" counterpart, because a link ALWAYS requires the
+ *  user's browser to visit the IdP. */
+export interface WorkIdentityLinkStart {
+  readonly authorizationUrl: string;
+  readonly state: OAuthState;
 }
