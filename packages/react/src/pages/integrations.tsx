@@ -163,7 +163,7 @@ const looksLikeUrl = (raw: string): boolean => {
   return false;
 };
 
-function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const integrationPlugins = useIntegrationPlugins();
   const doDetect = useAtomSet(detectIntegration, { mode: "promiseExit" });
   const navigate = useNavigate();

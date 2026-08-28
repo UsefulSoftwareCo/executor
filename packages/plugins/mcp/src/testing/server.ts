@@ -634,5 +634,17 @@ export const makeAnnotationsMcpServer = () => {
     async () => ({ content: [] }),
   );
 
+  // Host-only routing/policy hints the MCP spec reserves on `Tool._meta`. They
+  // are not part of the closed `annotations` set and are never shown to a model.
+  server.registerTool(
+    "meta_stamped",
+    {
+      description: "A tool carrying reserved `_meta`",
+      inputSchema: {},
+      _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+    },
+    async () => ({ content: [] }),
+  );
+
   return server;
 };

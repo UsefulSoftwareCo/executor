@@ -1,0 +1,100 @@
+name: Bug report
+description: Something in Executor does not work as expected.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please update to the latest version first — the bug may already be fixed.
+        If the desktop app crashes, will not start, or shows a blank window, use the
+        **[Desktop app crash](?template=desktop-crash.yml)** template instead.
+  - type: input
+    id: version
+    attributes:
+      label: Executor version
+      description: Run `executor --version`, or open the About menu in the desktop app.
+      placeholder: "1.5.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: How do you run Executor?
+      options:
+        - Executor Cloud
+        - CLI
+        - Desktop app
+        - Self-host (Docker)
+        - Self-host (Cloudflare)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: For Executor Cloud, select the system you browse from.
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: integration
+    attributes:
+      label: Integration involved
+      description: The integration or source type, if the bug is specific to one.
+      placeholder: "MCP server, OpenAPI spec, GraphQL API, …"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the behaviour you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Describe the behaviour you wanted instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the bug. Include the commands you ran.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics / logs
+      description: |
+        In the desktop app, open the **Executor** menu → **Export Diagnostics…** and attach
+        the zip — it has everything we need and no secrets.
+
+        Otherwise attach the relevant log:
+        - CLI / self-host: `~/.executor/logs/` (run `executor service status` for the exact path)
+        - macOS desktop: `~/Library/Logs/Executor/main.log`
+        - Windows desktop: `%APPDATA%\Executor\logs\main.log`
+        - Linux desktop: `~/.config/Executor/logs/main.log`
+
+        (Please don't attach anything else from `~/.executor` — that's where your data and
+        secrets live. Remove API keys and tokens from anything you paste.)
+      placeholder: Drag the diagnostics zip or log file here.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the open issues for a duplicate.
+          required: true
+        - label: I removed all keys, tokens, and credentials from this report.
+          required: true

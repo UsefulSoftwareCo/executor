@@ -737,16 +737,16 @@ const checkGraphqlHealth = (input: {
         : { ...verdict, detail: scrubCredentialValues(verdict.detail, input.credential.values) };
     }
 
+    // No `identity`: the schema's root type name ("Query" almost everywhere)
+    // identifies nothing, and the accounts UI would show it as the account
+    // label. Introspection proves reachability, not who the credential is.
     const queryType = result.introspection.__schema.queryType?.name;
     return {
       status: "healthy",
       httpStatus: 200,
       checkedAt,
       ...(queryType != null
-        ? {
-            identity: `GraphQL schema: ${queryType}`,
-            responseSample: [{ path: "__schema.queryType.name", value: queryType }],
-          }
+        ? { responseSample: [{ path: "__schema.queryType.name", value: queryType }] }
         : {}),
     } satisfies HealthCheckResult;
   });
