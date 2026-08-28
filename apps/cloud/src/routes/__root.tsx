@@ -23,7 +23,6 @@ import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-renderer";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
-import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
@@ -111,27 +110,6 @@ function NotFoundPage() {
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
-  // What the SSR gate attached to this document request (ssr-gate.ts →
-  // middleware context → serverContext). Loader data is dehydrated, so the
-  // client's first render sees the SAME values the server rendered with — the
-  // two can't disagree:
-  //   - authHint: the verified identity, seeding AuthProvider's initial state.
-  //   - origin:   the request origin, seeding the server connection so the
-  //               connect-card MCP URL SSRs as the real origin instead of the
-  //               127.0.0.1 client-side default (which would flash to the real
-  //               value at hydration).
-  // Client-side re-runs have no serverContext and return null; both consumers
-  // fall back gracefully (the hint is already held, the origin to the
-  // window-derived global).
-  loader: (opts) => {
-    const serverContext = (
-      opts as { serverContext?: { authHint?: AuthHint | null; origin?: string } }
-    ).serverContext;
-    return {
-      authHint: serverContext?.authHint ?? null,
-      origin: serverContext?.origin ?? null,
-    };
-  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -171,12 +149,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
-  const { authHint, origin } = Route.useLoaderData();
+  // SPA mode: no per-request server render, so nothing is dehydrated. Auth
+  // seeds from the client-readable hint cookie one frame after mount
+  // (AuthProvider's own fallback), and origin-derived UI reads the
+  // window-derived global.
   return (
     <PostHogProvider client={posthog}>
       <AnalyticsProvider client={analyticsClient}>
-        <AuthProvider initialHint={authHint}>
-          <AuthGate ssrOrigin={origin} />
+        <AuthProvider>
+          <AuthGate />
         </AuthProvider>
       </AnalyticsProvider>
     </PostHogProvider>
@@ -213,7 +194,7 @@ function ShellErrorFallback() {
   );
 }
 
-function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
+function AuthGate() {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -265,11 +246,11 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   }
 
   // Every state that isn't "authenticated with an org, on a page that wants
-  // the shell" is a moment between redirects or an edge the gates make
-  // near-impossible (a verified user whose hint hasn't seeded yet). Neutral
+  // the shell" is a moment between redirects, or the one frame between mount
+  // and the hint cookie seeding (SPA mode reads it in an effect). Neutral
   // blank — the one placeholder that's correct whatever happens next. The
   // app-shell skeleton this file used to render here is exactly the
-  // wrong-UI flash the SSR gate + hint exist to prevent.
+  // wrong-UI flash the document gate + hint exist to prevent.
   if (auth.status === "loading" || auth.status === "unauthenticated") {
     return <BlankScreen />;
   }
@@ -286,12 +267,6 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
     return urlOrgSlug ? <NotFoundPage /> : <BlankScreen />;
   }
 
-  // Seed the server connection from the SSR origin so origin-derived UI (the
-  // connect card's MCP URL) renders the real host on the first paint instead
-  // of the 127.0.0.1 default the client-side global falls back to during SSR.
-  // Null on client loader re-runs → undefined → the window-derived global,
-  // which is the same origin, so the key never changes and nothing remounts.
-  const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
   const activeSlug = auth.organization.slug;
   // The org context's slug feeds the connect card's `/<slug>/mcp` install URL.
   // Prefer the URL's slug over the session's: on first paint `auth.organization`
@@ -315,11 +290,7 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
             canonicalization remounts the registry so anything fetched
             header-less on first paint (rejected server-side) is refetched
             with the org header. */}
-        <ExecutorProvider
-          connection={connection}
-          scopeKey={pathnameOrgSlug}
-          onHandledError={captureFrontendError}
-        >
+        <ExecutorProvider scopeKey={pathnameOrgSlug} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider

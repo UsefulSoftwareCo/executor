@@ -181,6 +181,15 @@ const McpApprovalErrors = [
 /** Public auth endpoints — no authentication required */
 export class CloudAuthPublicApi extends HttpApiGroup.make("cloudAuthPublic")
   .add(HttpApiEndpoint.get("login", "/auth/login", { query: AuthLoginSearch }))
+  // Sign-out is PUBLIC on purpose. The console posts it as a top-level form
+  // navigation (the WorkOS hop is cross-origin, so it can't be a fetch), which
+  // means an error response is rendered as the page — and a browser whose
+  // session has already ended is exactly the browser most likely to click it
+  // (a second tab, a re-submit from history, an expired or revoked session).
+  // Behind SessionAuth all of those got a raw `{"_tag":"Unauthorized"}` screen
+  // instead of being signed out. There is nothing to authorize here anyway:
+  // the request can only end the session whose cookie it presents.
+  .add(HttpApiEndpoint.post("logout", "/auth/logout"))
   .add(
     HttpApiEndpoint.get("callback", "/auth/callback", {
       query: AuthCallbackSearch,
@@ -201,7 +210,6 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
       error: AuthErrors,
     }),
   )
-  .add(HttpApiEndpoint.post("logout", "/auth/logout"))
   .add(
     HttpApiEndpoint.get("organizations", "/auth/organizations", {
       success: AuthOrganizationsResponse,

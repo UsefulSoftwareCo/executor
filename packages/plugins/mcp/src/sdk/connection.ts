@@ -1,19 +1,17 @@
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import type { Client, FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
 import { Effect, Layer, Predicate, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-// NOTE: `StdioClientTransport` is NOT imported eagerly. The upstream module
-// (`@modelcontextprotocol/sdk/client/stdio.js`) touches `node:child_process`
-// at evaluation time, which crashes workerd (incl. vitest-pool-workers) at
-// SIGSEGV on module instantiation. Cloud callers set
-// `dangerouslyAllowStdioMCP: false` and never reach the stdio branch below;
-// prod bundles that DO use stdio load it via a dynamic import inside the
-// stdio branch of `createMcpConnector`.
+// NOTE: nothing from `@modelcontextprotocol/client` is imported eagerly —
+// value access goes through `loadMcpClientSdk` (see client-module.ts for the
+// isolate-startup cost rationale). `StdioClientTransport` additionally stays
+// out of even the lazy barrel: the upstream `@modelcontextprotocol/client/stdio`
+// entry imports Node process/stream and `cross-spawn` at evaluation time,
+// which crashes workerd (including vitest-pool-workers) with SIGSEGV on
+// module instantiation. Cloud callers set `dangerouslyAllowStdioMCP: false`
+// and never reach the stdio branch below; prod bundles that DO use stdio load
+// it via the dynamic import inside the stdio branch of `createMcpConnector`.
+import { loadMcpClientSdk, type McpClientSdk } from "./client-module";
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import {
@@ -172,6 +170,15 @@ const fetchFromHttpClientLayer = (
       }
       return response;
     });
+    // Mark the request promise observed (a no-op handler on the ORIGINAL
+    // promise; callers still see the rejection). The MCP SDK fires some
+    // requests without a rejection handler — a cancellation notification
+    // after a request timeout, an SSE dial raced against an abort — and when
+    // the upstream is already gone that rejection is unhandled, which kills
+    // the whole Bun server process, not just this call. Browsers never crash
+    // on an unobserved fetch rejection; this adapter must match.
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: Fetch-compatible adapter must observe rejections the SDK abandons
+    promise.catch(() => undefined);
     if (!init?.signal) return promise;
     // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
     if (init.signal.aborted) return Promise.reject(abortError(init.signal));
@@ -192,12 +199,13 @@ const fetchFromHttpClientLayer = (
 // MCP plugin runs inside a Cloudflare Worker (executor.sh). The
 // cfworker validator does not use code generation and works in every
 // runtime we ship to.
-const createClient = (): Client =>
-  new Client(
+const createClient = (sdk: McpClientSdk, versionNegotiation?: { readonly mode: "auto" }): Client =>
+  new sdk.client.Client(
     { name: "executor-mcp", version: "0.1.0" },
     {
       capabilities: { elicitation: { form: {}, url: {} } },
-      jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+      jsonSchemaValidator: new sdk.validators.CfWorkerJsonSchemaValidator(),
+      ...(versionNegotiation === undefined ? {} : { versionNegotiation }),
     },
   );
 
@@ -237,17 +245,40 @@ const connectionFailure = (
 
 const connectClient = (input: {
   transport: string;
-  createTransport: () => Parameters<Client["connect"]>[0];
+  createTransport: (sdk: McpClientSdk) => Parameters<Client["connect"]>[0];
+  versionNegotiation?: { readonly mode: "auto" };
 }): Effect.Effect<McpConnection, McpConnectionError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
-    const client = createClient();
-    const transportInstance = input.createTransport();
+    const sdk = yield* Effect.tryPromise({
+      try: () => loadMcpClientSdk(),
+      catch: () =>
+        new McpConnectionError({
+          transport: input.transport,
+          message: "Failed to load MCP client module",
+        }),
+    });
+    const client = createClient(sdk, input.versionNegotiation);
+    const transportInstance = input.createTransport(sdk);
 
     yield* Effect.tryPromise({
-      try: () => client.connect(transportInstance),
+      // Interruption (an HTTP 499 cancelling a health check, the discovery
+      // timeout) aborts this signal; the SDK then fails the in-flight
+      // handshake and closes the transport. Without it the abandoned connect
+      // kept the spawned stdio child alive forever; `docker run -i --rm`
+      // integrations stranded a container per interrupted dial (#1631).
+      try: (signal) => client.connect(transportInstance, { signal }),
       catch: (cause) =>
         connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
     }).pipe(
+      // The negotiated era ("modern" = 2026-07-28 server/discover, "legacy" =
+      // 2025 initialize) is otherwise invisible: both eras list and call tools
+      // identically, so traces are the one place an integration author can
+      // verify which handshake a connection actually used.
+      Effect.tap(() =>
+        Effect.annotateCurrentSpan({
+          "plugin.mcp.protocol_era": client.getProtocolEra() ?? "unknown",
+        }),
+      ),
       Effect.withSpan("plugin.mcp.connection.handshake", {
         attributes: { "plugin.mcp.transport": input.transport },
       }),
@@ -286,6 +317,12 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
       return yield* connectClient({
         transport: "stdio",
+        // Opt-in per integration (default legacy) — see
+        // `McpStdioVersionNegotiation` for why stdio does not follow the
+        // remote transport's unconditional auto.
+        ...(input.versionNegotiation === "auto"
+          ? { versionNegotiation: { mode: "auto" as const } }
+          : {}),
         createTransport: () =>
           createStdioTransport({
             command,
@@ -305,10 +342,15 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
+  // Auto-negotiate the 2026-07-28 era unconditionally only on Streamable
+  // HTTP. SSE is a legacy-only transport; stdio negotiates per the
+  // integration's `versionNegotiation` (default legacy — see the stdio
+  // branch above).
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
-    createTransport: () =>
-      new StreamableHTTPClientTransport(endpoint, {
+    versionNegotiation: { mode: "auto" },
+    createTransport: (sdk) =>
+      new sdk.client.StreamableHTTPClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,
@@ -317,8 +359,8 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const connectSse = connectClient({
     transport: "sse",
-    createTransport: () =>
-      new SSEClientTransport(endpoint, {
+    createTransport: (sdk) =>
+      new sdk.client.SSEClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,

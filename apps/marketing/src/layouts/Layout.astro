@@ -50,9 +50,16 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
       // deploy env, so it's a no-op in dev / unconfigured builds (and the SDK
       // isn't even shipped, thanks to the dynamic import). Events are proxied
       // first-party through src/middleware.ts to survive adblockers.
-      // autocapture and pageviews are off on purpose: we only send the explicit
-      // events the page fires (e.g. the "Set up with your agent" copy). Flip
-      // capture_pageview on if you want a denominator for conversion.
+      // autocapture stays off on purpose: beyond $pageview we only send the
+      // explicit events the page fires (e.g. the "Set up with your agent" copy).
+      //
+      // capture_pageview is ON because this is the campaign landing surface.
+      // With it off, a visit to executor.sh/?utm_source=... produced no
+      // $pageview at all, so every UTM-tagged campaign read as zero traffic in
+      // PostHog — the params only ever reached $web_vitals, which no funnel or
+      // web-analytics view is built on. Astro serves a full page load per
+      // navigation, so plain `true` (capture once on init) is right here;
+      // `history_change` is for SPAs like apps/cloud.
       const phKey = import.meta.env.PUBLIC_POSTHOG_KEY;
       if (phKey) {
         // api_host rides the `/_astro` prefix that the cloud edge forwards to
@@ -62,7 +69,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
             api_host: `${window.location.origin}/_astro/_ph`,
             ui_host: import.meta.env.PUBLIC_POSTHOG_HOST ?? "https://us.posthog.com",
             autocapture: false,
-            capture_pageview: false,
+            capture_pageview: true,
             persistence: "localStorage",
           });
           return posthog;

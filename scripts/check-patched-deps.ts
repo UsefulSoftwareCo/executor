@@ -81,6 +81,21 @@ const runtimeChecks: readonly RuntimeCheck[] = [
     // not exist in the upstream 0.17.3 dist.
     sentinels: ["markStreamUndelivered", "replayUndeliveredResponses"],
   },
+  {
+    package: "@modelcontextprotocol/client@2.0.0 (dist/shimsWorkerd.mjs)",
+    purpose:
+      "drops the workerd shim's module-eval preloadSchemas() (~15MB heap per isolate; " +
+      "collapsed isolate reuse in the 2026-08-25 latency incident) — schemas build lazily",
+    resolveEntry: () => {
+      // The workerd shim is only reachable through the `workerd` export
+      // condition, which require.resolve doesn't use — resolve the package
+      // main from the workspace package that depends on it and take the
+      // sibling shim file.
+      const main = resolveFrom("@modelcontextprotocol/client", "packages/plugins/mcp");
+      return resolve(main, "..", "shimsWorkerd.mjs");
+    },
+    sentinels: ["executor-patch: no-preload-schemas"],
+  },
 ];
 
 for (const check of runtimeChecks) {

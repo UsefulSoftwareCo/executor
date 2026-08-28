@@ -16,6 +16,21 @@ export interface OpenApiPreset {
   readonly healthCheck?: HealthCheckSpec;
 }
 
+/** GitHub OAuth-app flow (classic apps, not GitHub Apps): scopes are requested
+ *  at authorize time, tokens don't expire, and the token endpoint returns
+ *  form-encoded unless the request sends `Accept: application/json` — which the
+ *  SDK's token exchange always does (oauth4webapi sets it). `repo` + `read:org`
+ *  + `user:email` covers the common repo/issue/PR surface without admin grants. */
+export const GITHUB_SUPPORTED_OAUTH_SCOPES = ["repo", "read:org", "user:email"] as const;
+
+export const GITHUB_OAUTH_TEMPLATE: IntegrationPresetAuthentication = {
+  slug: "oauth2",
+  kind: "oauth2",
+  authorizationUrl: "https://github.com/login/oauth/authorize",
+  tokenUrl: "https://github.com/login/oauth/access_token",
+  scopes: GITHUB_SUPPORTED_OAUTH_SCOPES,
+};
+
 export const FIGMA_SUPPORTED_OAUTH_SCOPES = [
   "current_user:read",
   "file_comments:read",
@@ -68,6 +83,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
     icon: "https://integrations.sh/logo/github.com",
     featured: true,
+    authTemplate: [GITHUB_OAUTH_TEMPLATE],
   },
   {
     id: "vercel",
@@ -75,14 +91,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     summary: "Deployments, domains, projects, and edge config.",
     url: "https://openapi.vercel.sh",
     icon: "https://integrations.sh/logo/vercel.com",
-    featured: true,
-  },
-  {
-    id: "cloudflare",
-    name: "Cloudflare",
-    summary: "DNS, workers, pages, R2, and security rules.",
-    url: "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
-    icon: "https://integrations.sh/logo/cloudflare.com",
     featured: true,
   },
   {

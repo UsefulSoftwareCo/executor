@@ -6,6 +6,7 @@ import { AccountError, AccountForbidden } from "@executor-js/api";
 
 import { ApiKeyService, OrgApiKeyNotFound } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
+import { ORG_SELECTOR_HEADER } from "../auth/organization";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
@@ -36,6 +37,7 @@ const MEMBER = "user_member";
 const ORG_KEY = "key_org_1";
 const USER_KEY = "key_user_1";
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
+const orgHeaders = { [ORG_SELECTOR_HEADER]: ORG };
 
 const session = (accountId: string) => ({
   accountId,
@@ -77,7 +79,7 @@ const stubWorkOS = Layer.succeed(
 );
 
 const stubUsers = Layer.succeed(UserStoreService)({
-  use: (fn) =>
+  use: (_op, fn) =>
     Effect.promise(() =>
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
@@ -106,6 +108,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
 
 const stubAutumn = Layer.succeed(AutumnService)({
   use: () => Effect.die("revoke does not touch billing"),
+  ensureCustomer: () => Effect.die("revoke does not touch billing"),
   checkExecutionBalance: () => Effect.die("revoke does not touch billing"),
   trackExecution: () => Effect.void,
 });
@@ -157,7 +160,7 @@ describe("revokeOrgApiKey · provider boundary", () => {
       const { provider, revoked } = providerWith(ADMIN);
       const account = yield* provider;
 
-      const result = yield* account.revokeOrgApiKey({}, ORG_KEY);
+      const result = yield* account.revokeOrgApiKey(orgHeaders, ORG_KEY);
 
       expect(result).toEqual({ success: true });
       expect(revoked, "the revoke reached the key service").toEqual([ORG_KEY]);
@@ -169,7 +172,7 @@ describe("revokeOrgApiKey · provider boundary", () => {
       const { provider, revoked } = providerWith(MEMBER);
       const account = yield* provider;
 
-      const error = yield* Effect.flip(account.revokeOrgApiKey({}, ORG_KEY));
+      const error = yield* Effect.flip(account.revokeOrgApiKey(orgHeaders, ORG_KEY));
 
       expect(error, "same admin gate as the mint").toBeInstanceOf(AccountForbidden);
       expect(revoked, "the gate runs BEFORE the key service is touched").toEqual([]);
@@ -183,7 +186,7 @@ describe("revokeOrgApiKey · provider boundary", () => {
       const { provider, revoked } = providerWith(ADMIN);
       const account = yield* provider;
 
-      const error = yield* Effect.flip(account.revokeOrgApiKey({}, USER_KEY));
+      const error = yield* Effect.flip(account.revokeOrgApiKey(orgHeaders, USER_KEY));
 
       expect(error).toBeInstanceOf(AccountError);
       expect(revoked).toEqual([]);

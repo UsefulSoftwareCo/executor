@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { type InStatement } from "@libsql/client";
 
 import {
   ADMIN_DEFAULT_PAGE_SIZE,
@@ -808,6 +809,92 @@ describe("platform view — default off", () => {
           "shared",
           "work",
         ]);
+      }),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The joined read is BATCHED: two queries, not one per subject.
+// ---------------------------------------------------------------------------
+
+const SUBJECT_C = "user_c";
+
+/** Count the SELECTs against `connection` a body issues. The joined read used
+ *  to fan out one per subject in the page; the count is the regression guard,
+ *  since the returned rows look identical either way. */
+const countingConnectionReads = (db: SqliteTestFumaDb) => {
+  const client = db.client;
+  const execute = client.execute.bind(client);
+  let reads = 0;
+  client.execute = (statement: InStatement) => {
+    const sql = typeof statement === "string" ? statement : statement.sql;
+    if (/^\s*select/i.test(sql) && /\bconnection\b/i.test(sql)) reads += 1;
+    return execute(statement);
+  };
+  return () => reads;
+};
+
+describe("platform view — the joined read does not fan out per subject", () => {
+  it.effect("reads every subject's connections in ONE query", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        // A third principal, so a per-subject fan-out would be visibly >1.
+        yield* touchSubject(db.db, { tenant: TENANT, externalId: SUBJECT_C });
+        const executor = yield* makePlatformExecutor(db);
+        const admin = yield* requireAdmin(executor);
+
+        const connectionReads = countingConnectionReads(db);
+        const rows = yield* admin.listSubjectsWithConnections();
+
+        expect(rows).toHaveLength(3);
+        expect(connectionReads()).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("keeps a subject with no connections in the page, with an empty array", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        yield* touchSubject(db.db, { tenant: TENANT, externalId: SUBJECT_C });
+        const executor = yield* makePlatformExecutor(db);
+        const admin = yield* requireAdmin(executor);
+
+        const rows = yield* admin.listSubjectsWithConnections();
+        const byId = new Map(rows.map((row) => [row.externalId, row]));
+
+        expect(byId.get(SUBJECT_C)?.connections).toEqual([]);
+        // The rows that DO have connections are unchanged by the batching.
+        expect(
+          byId
+            .get(SUBJECT_A)
+            ?.connections.map((c) => c.name)
+            .sort(),
+        ).toEqual(["personal", "work"]);
+        expect(byId.get(SUBJECT_B)?.connections.map((c) => c.name)).toEqual(["b-personal"]);
+      }),
+    ),
+  );
+
+  it.effect("keeps the batched read inside the tenant, and off org-owned rows", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        // The seed holds both traps: SUBJECT_A also owns a connection in
+        // OTHER_TENANT, and this tenant has an org-owned row whose `subject`
+        // is the empty-string sentinel. Widening one per-subject `=` into a
+        // single `in` must reach neither.
+        yield* seed(db);
+        const executor = yield* makePlatformExecutor(db);
+        const admin = yield* requireAdmin(executor);
+
+        const rows = yield* admin.listSubjectsWithConnections();
+        const names = rows.flatMap((row) => row.connections).map((c) => c.name);
+
+        expect(names).not.toContain("other-tenant");
+        expect(names).not.toContain("shared");
+        expect(names.sort()).toEqual(["b-personal", "personal", "work"]);
       }),
     ),
   );

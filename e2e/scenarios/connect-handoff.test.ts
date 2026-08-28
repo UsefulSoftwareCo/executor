@@ -32,6 +32,7 @@ import { Api, Browser, Mcp, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
 import type { BrowserSurface } from "../src/surfaces/browser";
 import type { McpSession } from "../src/surfaces/mcp";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -214,7 +215,7 @@ const runScenario = (input: {
     // 4. The user opens the handoff URL and pastes the credential.
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the handoff URL from the agent", async () => {
-        await page.goto(handoffUrl, { waitUntil: "networkidle" });
+        await visit(page, handoffUrl);
       });
 
       await step("The Add connection modal is open", async () => {

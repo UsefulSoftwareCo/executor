@@ -34,6 +34,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -281,7 +282,7 @@ scenario(
             const dialog = page.getByRole("dialog");
 
             await step("Open the Add Connection modal", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("button", { name: "Add connection", exact: true }).click();
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
@@ -395,7 +396,7 @@ scenario(
             const options = page.getByRole("option");
 
             await step("Open the health-check editor over the large spec", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
               await page.getByRole("button", { name: "Set up" }).click();
               await input.waitFor();
@@ -479,7 +480,7 @@ scenario(
             const options = page.getByRole("option");
 
             await step("Open the Add form and paste the large spec", async () => {
-              await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
+              await visit(page, "/integrations/add/openapi");
               await page.getByPlaceholder("https://api.example.com/openapi.json").fill(spec);
               await page
                 .getByRole("heading", { name: "Health check (optional)" })
@@ -558,7 +559,7 @@ scenario(
             const operationInput = page.locator("#health-check-operation");
 
             await step("Open the health-check editor", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
               await page.getByRole("button", { name: "Set up" }).click();
               await operationInput.waitFor();
@@ -629,7 +630,7 @@ scenario(
             const list = page.locator("[data-slot='combobox-list']").first();
 
             await step("Open the operation combobox in the sheet", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
               await page.getByRole("button", { name: "Set up" }).click();
               await operationInput.waitFor();
@@ -705,7 +706,7 @@ scenario(
             const menuTrigger = connections.locator('button[aria-haspopup="menu"]');
 
             await step("Open the integration's connections", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await connections.getByText("main", { exact: true }).waitFor();
               await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
             });
@@ -795,7 +796,7 @@ scenario(
             const dialog = page.getByRole("dialog");
 
             await step("Open the Add Connection modal", async () => {
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("button", { name: "Add connection", exact: true }).click();
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
@@ -888,7 +889,7 @@ scenario(
             await step(
               "A fresh page load shows the expired connection with NO clicking",
               async () => {
-                await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+                await visit(page, `/integrations/${slug}`);
                 // The persisted verdict drives the row: red dot + Expired badge
                 // are already there on first paint of the list.
                 await connections.getByLabel("Status: Expired").waitFor({ timeout: 30_000 });
@@ -907,7 +908,7 @@ scenario(
                 // not after the freshness window). Restore the key, reload,
                 // and the dot flips back with no clicks.
                 server.restore();
-                await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+                await visit(page, `/integrations/${slug}`);
                 // The row mounts with the stale expired verdict, then the
                 // background revalidation flips it to healthy in place.
                 await connections.getByLabel("Status: Healthy").waitFor({ timeout: 30_000 });
@@ -993,7 +994,7 @@ scenario(
               // while the operation combobox still renders (a healthy probe
               // saves the check and turns the request line static).
               await page.setViewportSize({ width: 1280, height: 420 });
-              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await visit(page, `/integrations/${slug}`);
               await page.getByRole("button", { name: "Add connection", exact: true }).click();
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
               await page.keyboard.type(goodToken);
@@ -1136,7 +1137,7 @@ scenario(
             await step(
               "Load the integrations list: the dead MCP row reads Expired with no clicks",
               async () => {
-                await page.goto("/", { waitUntil: "networkidle" });
+                await visit(page, "/");
                 // The row itself is the assertion surface: the list-page
                 // summary probes in the background and paints the worst-of
                 // verdict onto the row, scoped so a verdict from another row
