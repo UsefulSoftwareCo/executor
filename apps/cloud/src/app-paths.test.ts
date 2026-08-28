@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { isAppOwnedPath } from "./app-paths";
+import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 
 // Guards the start.ts dispatch decision: every surface the unified app handler
 // serves must be classified app-owned (forwarded to `app.handler`), and Start's
@@ -61,4 +61,40 @@ describe("isAppOwnedPath", () => {
       expect(isAppOwnedPath(pathname)).toBe(false);
     });
   }
+});
+
+describe("app-plane dispatch", () => {
+  // These two are the whole risk of dispatching `/api` before Start: both still
+  // return a response if routed early, just the wrong one, so nothing else would
+  // catch a regression here.
+  it("leaves the Sentry tunnel POST to Start's middleware", () => {
+    expect(servedByAppPlane("/api/sentry-tunnel", "POST")).toBe(false);
+    // Only the POST is claimed; anything else under that path is ordinary API.
+    expect(servedByAppPlane("/api/sentry-tunnel", "GET")).toBe(true);
+  });
+
+  it("leaves the OAuth callback to Start, for the signed-out redirect", () => {
+    expect(servedByAppPlane("/api/oauth/callback", "GET")).toBe(false);
+    expect(servedByAppPlane("/api/oauth/callback", "POST")).toBe(false);
+  });
+
+  const appPlane = [
+    "/api/connections",
+    "/api/tools",
+    "/api/integrations",
+    "/api/account/members",
+    "/api/docs",
+    "/api/billing/checkout",
+  ];
+  for (const pathname of appPlane) {
+    it(`serves ${pathname} without entering Start`, () => {
+      expect(servedByAppPlane(pathname, "GET")).toBe(true);
+    });
+  }
+
+  it("never claims a non-API path, however app-owned", () => {
+    expect(servedByAppPlane("/mcp", "POST")).toBe(false);
+    expect(servedByAppPlane("/", "GET")).toBe(false);
+    expect(servedByAppPlane("/.well-known/oauth-authorization-server", "GET")).toBe(false);
+  });
 });

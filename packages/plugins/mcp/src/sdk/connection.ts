@@ -1,27 +1,26 @@
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
-import { Effect, Layer, Predicate, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import type { Client, FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
+import { Effect, Layer, Option, Predicate, Schema, Stream } from "effect";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
 
-// NOTE: `StdioClientTransport` is NOT imported eagerly. The upstream module
-// (`@modelcontextprotocol/sdk/client/stdio.js`) touches `node:child_process`
-// at evaluation time, which crashes workerd (incl. vitest-pool-workers) at
-// SIGSEGV on module instantiation. Cloud callers set
-// `dangerouslyAllowStdioMCP: false` and never reach the stdio branch below;
-// prod bundles that DO use stdio load it via a dynamic import inside the
-// stdio branch of `createMcpConnector`.
+// NOTE: nothing from `@modelcontextprotocol/client` is imported eagerly —
+// value access goes through `loadMcpClientSdk` (see client-module.ts for the
+// isolate-startup cost rationale). `StdioClientTransport` additionally stays
+// out of even the lazy barrel: the upstream `@modelcontextprotocol/client/stdio`
+// entry imports Node process/stream and `cross-spawn` at evaluation time,
+// which crashes workerd (including vitest-pool-workers) with SIGSEGV on
+// module instantiation. Cloud callers set `dangerouslyAllowStdioMCP: false`
+// and never reach the stdio branch below; prod bundles that DO use stdio load
+// it via the dynamic import inside the stdio branch of `createMcpConnector`.
+import { loadMcpClientSdk, type McpClientSdk } from "./client-module";
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import {
   McpConnectionError,
+  McpConnectionFailureKind,
   McpInsufficientScopeError,
   McpOAuthReauthorizationRequired,
 } from "./errors";
-import { httpStatusFromCause } from "./http-status";
+import { connectionHttpStatusFromCause, isStreamableHttpProtocolError } from "./http-status";
 import { detectInsufficientScope } from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +90,102 @@ const headersFrom = (headers: HeadersInit | undefined): Headers =>
 const recordFromHeaders = (headers: Headers): Record<string, string> =>
   Object.fromEntries(headers.entries());
 
+const ExternalTransportCause = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+  data: Schema.optional(
+    Schema.Struct({
+      cause: Schema.optional(Schema.Unknown),
+    }),
+  ),
+});
+const decodeExternalTransportCause = Schema.decodeUnknownOption(ExternalTransportCause);
+
+const TLS_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+const DNS_ERROR_CODES = new Set(["EAI_AGAIN", "ENOTFOUND"]);
+const TIMEOUT_ERROR_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
+const PROTOCOL_HTTP_STATUSES = new Set([400, 404, 405, 406, 415, 422, 501]);
+
+const CONNECTION_FAILURE_MESSAGES: Record<McpConnectionFailureKind, string> = {
+  tls: "MCP HTTPS connection failed: TLS certificate verification failed. Check the server certificate and Executor's CA trust configuration.",
+  dns: "MCP connection failed: the server hostname could not be resolved.",
+  timeout: "MCP connection failed: the server did not respond before the connection timed out.",
+  connection_refused: "MCP connection failed: the server refused the connection.",
+  network: "MCP connection failed before transport negotiation completed.",
+  http: "MCP server rejected the HTTP connection.",
+  protocol: "MCP server does not support the requested transport.",
+};
+
+const CONNECTION_ATTEMPT_SUMMARIES: Partial<Record<McpConnectionFailureKind, string>> = {
+  tls: "TLS certificate verification failed",
+  dns: "hostname resolution failed",
+  timeout: "connection timed out",
+  connection_refused: "connection refused",
+  protocol: "unsupported protocol response",
+};
+
+class McpHttpTransportError extends Schema.TaggedErrorClass<McpHttpTransportError>()(
+  "McpHttpTransportError",
+  {
+    failureKind: McpConnectionFailureKind,
+    cause: Schema.Defect,
+  },
+) {}
+const decodeMcpHttpTransportError = Schema.decodeUnknownOption(McpHttpTransportError);
+
+const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTransportError> => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decodedError = decodeMcpHttpTransportError(current);
+    if (Option.isSome(decodedError)) return decodedError;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return Option.none();
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return Option.none();
+  }
+  return Option.none();
+};
+
+const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
+  const codes = new Set<string>();
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decoded = decodeExternalTransportCause(current);
+    if (Option.isNone(decoded)) break;
+    if (decoded.value.code !== undefined) codes.add(decoded.value.code);
+    current = decoded.value.cause ?? decoded.value.data?.cause;
+    if (current === undefined) break;
+  }
+  return codes;
+};
+
+const classifyHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpConnectionFailureKind => {
+  if (!Predicate.isTagged(failure.reason, "TransportError")) return "network";
+  const codes = externalTransportCodes(failure.reason.cause);
+  if ([...codes].some((code) => TLS_ERROR_CODES.has(code))) return "tls";
+  if ([...codes].some((code) => DNS_ERROR_CODES.has(code))) return "dns";
+  if ([...codes].some((code) => TIMEOUT_ERROR_CODES.has(code))) return "timeout";
+  if (codes.has("ECONNREFUSED")) return "connection_refused";
+  return "network";
+};
+
+const normalizeHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpHttpTransportError =>
+  new McpHttpTransportError({
+    failureKind: classifyHttpClientFailure(failure),
+    cause: failure,
+  });
+
 const applyBody = async (
   request: HttpClientRequest.HttpClientRequest,
   headers: Headers,
@@ -123,6 +218,16 @@ const abortError = (signal: AbortSignal): unknown => {
   return error;
 };
 
+/** An effect that completes when `signal` aborts (already-aborted = now). */
+const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    if (signal.aborted) {
+      resume(Effect.void);
+      return;
+    }
+    signal.addEventListener("abort", () => resume(Effect.void), { once: true });
+  });
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): FetchLike => {
@@ -139,15 +244,24 @@ const fetchFromHttpClientLayer = (
       for (const [key, value] of Object.entries(response.headers)) {
         if (value !== undefined) responseHeaders.set(key, value);
       }
+      // Abort must reach the body, not just the pending request: this stream
+      // fiber outlives the `runPromise` below, so without this streamable
+      // http's SSE `GET` stays in flight after `close()`. Interrupted at the
+      // source because the SDK holds a locked reader on that same stream,
+      // which rules out cancelling the ReadableStream.
+      const stream =
+        init?.signal == null
+          ? response.stream
+          : Stream.interruptWhen(response.stream, awaitAbort(init.signal));
       const body =
         response.status === 204 || response.status === 205 || response.status === 304
           ? null
-          : Stream.toReadableStream(response.stream);
+          : Stream.toReadableStream(stream);
       return new Response(body, {
         status: response.status,
         headers: responseHeaders,
       });
-    }).pipe(Effect.provide(httpClientLayer));
+    }).pipe(Effect.mapError(normalizeHttpClientFailure), Effect.provide(httpClientLayer));
     // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
     // HERE, below the SDK: with an authProvider the SDK would consume the
     // challenge and re-run auth ("upscoping"), which our static-token
@@ -201,12 +315,13 @@ const fetchFromHttpClientLayer = (
 // MCP plugin runs inside a Cloudflare Worker (executor.sh). The
 // cfworker validator does not use code generation and works in every
 // runtime we ship to.
-const createClient = (): Client =>
-  new Client(
+const createClient = (sdk: McpClientSdk, versionNegotiation?: { readonly mode: "auto" }): Client =>
+  new sdk.client.Client(
     { name: "executor-mcp", version: "0.1.0" },
     {
       capabilities: { elicitation: { form: {}, url: {} } },
-      jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+      jsonSchemaValidator: new sdk.validators.CfWorkerJsonSchemaValidator(),
+      ...(versionNegotiation === undefined ? {} : { versionNegotiation }),
     },
   );
 
@@ -233,30 +348,86 @@ const connectionFailure = (
       insufficientScope: true,
     });
   }
+  const httpTransportError = nestedMcpHttpTransportError(cause);
+  if (Option.isSome(httpTransportError)) {
+    return new McpConnectionError({
+      transport,
+      message: CONNECTION_FAILURE_MESSAGES[httpTransportError.value.failureKind],
+      failureKind: httpTransportError.value.failureKind,
+    });
+  }
   // Carry the handshake HTTP status structurally (and in the message for
   // humans) so the liveness health check can classify a rejected credential
   // as expired rather than a generic connection failure.
-  const status = httpStatusFromCause(cause);
+  const status = connectionHttpStatusFromCause(cause);
+  const failureKind: McpConnectionFailureKind =
+    isStreamableHttpProtocolError(cause) ||
+    (status !== undefined && PROTOCOL_HTTP_STATUSES.has(status))
+      ? "protocol"
+      : status === undefined
+        ? "network"
+        : "http";
   return new McpConnectionError({
     transport,
     message: status === undefined ? message : `${message} (HTTP ${status})`,
+    failureKind,
     ...(status === undefined ? {} : { httpStatus: status }),
   });
 };
 
+const connectionAttemptSummary = (failure: McpConnectionError): string => {
+  if (failure.httpStatus !== undefined) return `HTTP ${failure.httpStatus}`;
+  return failure.failureKind === undefined
+    ? "connection failed"
+    : (CONNECTION_ATTEMPT_SUMMARIES[failure.failureKind] ?? "connection failed");
+};
+
+const autoTransportFailure = (
+  streamableHttp: McpConnectionError,
+  sse: McpConnectionError,
+): McpConnectionError =>
+  new McpConnectionError({
+    transport: "auto",
+    failureKind: "protocol",
+    message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
+  });
+
 const connectClient = (input: {
   transport: string;
-  createTransport: () => Parameters<Client["connect"]>[0];
+  createTransport: (sdk: McpClientSdk) => Parameters<Client["connect"]>[0];
+  versionNegotiation?: { readonly mode: "auto" };
 }): Effect.Effect<McpConnection, McpConnectionError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
-    const client = createClient();
-    const transportInstance = input.createTransport();
+    const sdk = yield* Effect.tryPromise({
+      try: () => loadMcpClientSdk(),
+      catch: () =>
+        new McpConnectionError({
+          transport: input.transport,
+          message: "Failed to load MCP client module",
+        }),
+    });
+    const client = createClient(sdk, input.versionNegotiation);
+    const transportInstance = input.createTransport(sdk);
 
     yield* Effect.tryPromise({
-      try: () => client.connect(transportInstance),
+      // Interruption (an HTTP 499 cancelling a health check, the discovery
+      // timeout) aborts this signal; the SDK then fails the in-flight
+      // handshake and closes the transport. Without it the abandoned connect
+      // kept the spawned stdio child alive forever; `docker run -i --rm`
+      // integrations stranded a container per interrupted dial (#1631).
+      try: (signal) => client.connect(transportInstance, { signal }),
       catch: (cause) =>
         connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
     }).pipe(
+      // The negotiated era ("modern" = 2026-07-28 server/discover, "legacy" =
+      // 2025 initialize) is otherwise invisible: both eras list and call tools
+      // identically, so traces are the one place an integration author can
+      // verify which handshake a connection actually used.
+      Effect.tap(() =>
+        Effect.annotateCurrentSpan({
+          "plugin.mcp.protocol_era": client.getProtocolEra() ?? "unknown",
+        }),
+      ),
       Effect.withSpan("plugin.mcp.connection.handshake", {
         attributes: { "plugin.mcp.transport": input.transport },
       }),
@@ -295,6 +466,12 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
       return yield* connectClient({
         transport: "stdio",
+        // Opt-in per integration (default legacy) — see
+        // `McpStdioVersionNegotiation` for why stdio does not follow the
+        // remote transport's unconditional auto.
+        ...(input.versionNegotiation === "auto"
+          ? { versionNegotiation: { mode: "auto" as const } }
+          : {}),
         createTransport: () =>
           createStdioTransport({
             command,
@@ -314,10 +491,15 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
+  // Auto-negotiate the 2026-07-28 era unconditionally only on Streamable
+  // HTTP. SSE is a legacy-only transport; stdio negotiates per the
+  // integration's `versionNegotiation` (default legacy — see the stdio
+  // branch above).
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
-    createTransport: () =>
-      new StreamableHTTPClientTransport(endpoint, {
+    versionNegotiation: { mode: "auto" },
+    createTransport: (sdk) =>
+      new sdk.client.StreamableHTTPClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,
@@ -326,8 +508,8 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const connectSse = connectClient({
     transport: "sse",
-    createTransport: () =>
-      new SSEClientTransport(endpoint, {
+    createTransport: (sdk) =>
+      new sdk.client.SSEClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
         fetch,
@@ -344,10 +526,18 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) => {
-      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
-      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
-      return connectSse;
+    Effect.catchTags({
+      McpOAuthReauthorizationRequired: Effect.fail,
+      McpConnectionError: (error) => {
+        if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
+        if (error.failureKind !== "protocol") return Effect.fail(error);
+        return connectSse.pipe(
+          Effect.catchTags({
+            McpOAuthReauthorizationRequired: Effect.fail,
+            McpConnectionError: (sseError) => Effect.fail(autoTransportFailure(error, sseError)),
+          }),
+        );
+      },
     }),
   );
 };

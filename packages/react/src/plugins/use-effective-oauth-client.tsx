@@ -47,6 +47,29 @@ export interface OAuthClientOption {
 export const isDcrClient = (app: OAuthClientOption): boolean =>
   app.origin.kind === "dynamic_client_registration";
 
+/** True for host-operated first-party apps (config-declared, `first-party:`
+ *  slugs). They rank ABOVE user/workspace apps when they match an integration:
+ *  the one-click "nothing to paste" path is the default, BYO the escape hatch. */
+export const isFirstPartyClient = (app: OAuthClientOption): boolean =>
+  app.origin.kind === "first_party";
+
+/** Mirror the host's first-party scope boundary in the picker. The server is
+ *  authoritative; this prevents offering a built-in app for a flow it will
+ *  reject. An explicit policy with unknown scopes fails closed. */
+const firstPartyClientAllowsScopes = (
+  app: OAuthClientOption,
+  requestedScopes: readonly string[] | undefined,
+  discoversScopes: boolean,
+): boolean => {
+  if (app.origin.kind !== "first_party" || app.origin.allowedScopes === undefined) return true;
+  // MCP providers discover their scopes at OAuth start. The server intersects
+  // that catalog with this same allow-list before redirecting, so an absent
+  // static scope list is safe only on the explicit discovery path.
+  if (requestedScopes === undefined) return discoversScopes;
+  const allowed = new Set(app.origin.allowedScopes);
+  return requestedScopes.every((scope) => allowed.has(scope));
+};
+
 const hostOf = (url: string): string | undefined => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input; treat as "no host"
   try {
@@ -115,12 +138,14 @@ const EMPTY_CLIENTS: readonly OAuthClientOption[] = [];
 const hostEq = (a: string | undefined, b: string | undefined): boolean =>
   a !== undefined && b !== undefined && a === b;
 
-/** Sort apps user-owned first (so the user's own apps surface before shared
- *  workspace apps). */
+/** Sort first-party apps first (the one-click default), then user-owned before
+ *  shared workspace apps. */
 const sortUserFirst = (apps: readonly OAuthClientOption[]): readonly OAuthClientOption[] =>
-  [...apps].sort((a: OAuthClientOption, b: OAuthClientOption) =>
-    a.owner === b.owner ? 0 : a.owner === "user" ? -1 : 1,
-  );
+  [...apps].sort((a: OAuthClientOption, b: OAuthClientOption) => {
+    const aFirstParty = isFirstPartyClient(a);
+    if (aFirstParty !== isFirstPartyClient(b)) return aFirstParty ? -1 : 1;
+    return a.owner === b.owner ? 0 : a.owner === "user" ? -1 : 1;
+  });
 
 /**
  * Pure matcher (no React/atoms) — split owner-visible apps into three honest
@@ -154,6 +179,12 @@ export function selectClientsForEndpoints(
     /** The integration whose picker this is. A manual app stamped with this
      *  integration (recorded intent) is a tier-1 match regardless of host. */
     readonly integration?: IntegrationSlug;
+    /** Complete scope set declared by the selected OAuth auth method. Used to
+     *  hide scope-limited first-party apps that the host will reject. */
+    readonly scopes?: readonly string[];
+    /** The OAuth service discovers provider scopes at connect time and caps a
+     *  first-party app's result to its configured allow-list. */
+    readonly discoversScopes?: boolean;
     /** When set, an integration that targets a SPECIFIC server (MCP, whose
      *  endpoints are discovered at connect) must match by endpoint — absent
      *  endpoints mean NO match (show the register CTA), never "every app
@@ -167,14 +198,26 @@ export function selectClientsForEndpoints(
   readonly endpointMatched: boolean;
 } {
   // DCR clients are plumbing, never picker options.
-  const manual = all.filter((app) => !isDcrClient(app));
+  const manual = all.filter(
+    (app) =>
+      !isDcrClient(app) &&
+      firstPartyClientAllowsScopes(app, endpoints.scopes, endpoints.discoversScopes === true),
+  );
 
   const intent = endpoints.integration;
-  const matchesIntent = (app: OAuthClientOption): boolean =>
-    intent != null &&
-    app.origin.kind === "manual" &&
-    app.origin.integration != null &&
-    app.origin.integration === intent;
+  const matchesIntent = (app: OAuthClientOption): boolean => {
+    if (intent == null) return false;
+    // A first-party app declaring this integration is intent-matched the same
+    // way a BYO app registered from this dialog is.
+    if (app.origin.kind === "first_party") {
+      return (app.origin.integrations ?? []).includes(intent);
+    }
+    return (
+      app.origin.kind === "manual" &&
+      app.origin.integration != null &&
+      app.origin.integration === intent
+    );
+  };
 
   const wantedTokenHost = endpoints.tokenUrl ? hostOf(endpoints.tokenUrl) : undefined;
   const wantedAuthorizationHost = endpoints.authorizationUrl
@@ -246,6 +289,8 @@ export function useOAuthClientsForIntegration(opts: {
   readonly tokenUrl?: string;
   readonly authorizationUrl?: string;
   readonly integration?: IntegrationSlug;
+  readonly scopes?: readonly string[];
+  readonly discoversScopes?: boolean;
   readonly requireEndpointMatch?: boolean;
 }): UseOAuthClientsResult {
   // Read the optimistic list so a just-registered/edited/removed app paints
@@ -267,9 +312,19 @@ export function useOAuthClientsForIntegration(opts: {
         tokenUrl: opts.tokenUrl,
         authorizationUrl: opts.authorizationUrl,
         integration: opts.integration,
+        scopes: opts.scopes,
+        discoversScopes: opts.discoversScopes,
         requireEndpointMatch: opts.requireEndpointMatch,
       }),
-    [all, opts.tokenUrl, opts.authorizationUrl, opts.integration, opts.requireEndpointMatch],
+    [
+      all,
+      opts.tokenUrl,
+      opts.authorizationUrl,
+      opts.integration,
+      opts.scopes,
+      opts.discoversScopes,
+      opts.requireEndpointMatch,
+    ],
   );
 
   if (!loaded) {
@@ -377,9 +432,12 @@ export function optimisticDcrClientSlug(issuerOrEndpoint: string): OAuthClientSl
   return OAuthClientSlug.make(`dcr-${base || "authorization-server"}`);
 }
 
-/** Humanize a client slug for display ("spotify-prod" → "Spotify prod"). */
+/** Humanize a client slug for display ("spotify-prod" → "Spotify prod").
+ *  First-party slugs drop their namespace prefix ("first-party:github" →
+ *  "Github") — the row's badge already says it's the built-in app. */
 export function clientDisplayName(slug: string): string {
-  const text = slug.replace(/[-_]/g, " ").trim();
+  const bare = slug.startsWith("first-party:") ? slug.slice("first-party:".length) : slug;
+  const text = bare.replace(/[-_]/g, " ").trim();
   return text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : slug;
 }
 

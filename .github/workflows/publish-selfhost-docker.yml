@@ -16,6 +16,18 @@ concurrency:
   group: publish-selfhost-docker-${{ inputs.tag }}
   cancel-in-progress: false
 
+# CI is not a user. Without this, executor's own product telemetry reports to the
+# production PostHog project from every e2e shard: the analytics layer
+# (integration_added, execution_completed, artifact_*) and the
+# integrations-registry fetch, which lands as a `hit` event. Each shard is a
+# fresh container, so it mints a fresh anonymous id and arrives on a fresh
+# runner IP — inflating machine and user counts by roughly an order of
+# magnitude. Both opt-outs are the packages' documented CI/test hooks.
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
 jobs:
   metadata:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -281,9 +293,6 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       packages: write
-    env:
-      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
-
     steps:
       - name: Download image digests
         uses: actions/download-artifact@v4
@@ -330,9 +339,27 @@ jobs:
 
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
+  # Mirrors each release to the pre-org-move namespace
+  # (ghcr.io/rhyssullivan/executor-selfhost), which GHCR cannot redirect.
+  # Deliberately a separate job: the canonical publish above never depends on
+  # it, and a failure here (an expired GHCR_LEGACY_TOKEN, historically) shows
+  # as one red job pointing at exactly what to fix.
+  mirror-legacy:
+    needs:
+      - metadata
+      - merge
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
+
+    steps:
       - name: Skip legacy GHCR mirror (GHCR_LEGACY_TOKEN not configured)
         if: env.HAS_LEGACY_TOKEN != 'true'
         run: echo "GHCR_LEGACY_TOKEN is not configured; skipping legacy GHCR mirror."
+
+      - name: Set up Docker Buildx
+        if: env.HAS_LEGACY_TOKEN == 'true'
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to legacy GHCR namespace
         if: env.HAS_LEGACY_TOKEN == 'true'
@@ -342,7 +369,7 @@ jobs:
           username: rhyssullivan
           password: ${{ secrets.GHCR_LEGACY_TOKEN }}
 
-      - name: Mirror self-host image to legacy GHCR namespace
+      - name: Mirror release tags to the legacy namespace
         if: env.HAS_LEGACY_TOKEN == 'true'
         shell: bash
         env:

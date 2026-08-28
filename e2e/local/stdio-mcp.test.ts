@@ -146,6 +146,36 @@ scenario(
           declTools.map((t) => t.name),
           "connecting with the secret discovers the env-gated tool",
         ).toContain("whoami");
+
+        // --- versionNegotiation "auto" survives the API → config → connector
+        // path and still reaches a legacy server: the probe gets the fixture's
+        // method-not-found for `server/discover` (a definitive legacy verdict)
+        // and falls back to `initialize`. Modern-era acceptance against a real
+        // legacy-disabled SDK v2 server lives in the plugin's
+        // stdio-negotiation.test.ts. ---
+        const autoSlug = "e2e-stdio-auto";
+        yield* client.mcp.addServer({
+          payload: {
+            transport: "stdio",
+            name: "E2E Stdio Auto",
+            command: "node",
+            args: [FIXTURE],
+            versionNegotiation: "auto",
+            slug: autoSlug,
+          },
+        });
+
+        const autoStored = yield* client.mcp.getServer({ params: { slug: autoSlug } });
+        expect(
+          JSON.stringify(autoStored?.config ?? {}),
+          "the negotiation mode is persisted on the integration config",
+        ).toContain('"versionNegotiation":"auto"');
+
+        const autoTools = yield* client.tools.list({ query: { integration: autoSlug } });
+        expect(
+          autoTools.map((t) => t.name),
+          "auto negotiation falls back to legacy and still discovers tools",
+        ).toContain("echo_tool");
       }),
     );
   }),

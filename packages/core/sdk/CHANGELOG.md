@@ -1,5 +1,38 @@
 # @executor-js/sdk
 
+## 1.6.0
+
+### Patch Changes
+
+- [#1648](https://github.com/UsefulSoftwareCo/executor/pull/1648) [`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Keep `connections.list` health output compact unless callers opt into diagnostics with `verbose: true`. Default list responses now retain only the health status, identity, and check timestamp; verbose responses continue to include HTTP status, diagnostic detail, and bounded upstream response samples.
+
+## 1.5.42
+
+### Patch Changes
+
+- [#1626](https://github.com/UsefulSoftwareCo/executor/pull/1626) [`d3f0617`](https://github.com/UsefulSoftwareCo/executor/commit/d3f0617deec06c57e0d6e1479fe668f79daf977d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Redact every span header attribute outside a safe allowlist on the hosted HTTP client. The tracer's default four-name blocklist let provider-specific credential headers reach the trace backend verbatim; the hosted client now inverts the model and masks everything except structurally safe negotiation, caching, and tracing headers.
+
+## 1.5.41
+
+### Patch Changes
+
+- [#1580](https://github.com/UsefulSoftwareCo/executor/pull/1580) [`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: the admin joined user view no longer issues one connection query per subject**
+
+  `admin.listSubjectsWithConnections` read a page of subjects and then queried
+  connections once per subject, sequentially. A default page therefore cost 100
+  round trips inside a single request, which on a per-request socket dominated
+  the response. It now reads the page and then batches every subject's
+  connections into one query, so the cost is two queries regardless of page size.
+  A subject with no connections still reports an empty array rather than dropping
+  out of the page, and the batched read carries the same `owner: "user"` and
+  tenant scoping the per-subject read did.
+
+  The `?email=` filter on the admin users endpoints is also applied before the
+  read rather than after it: the address resolves to a principal id and that id is
+  read directly, instead of paging the tenant and keeping the row that matched.
+  Paging still applies to a filtered response, but to the selected row — one row
+  at `offset: 0`, empty beyond it.
+
 ## 1.5.40
 
 ### Patch Changes

@@ -37,6 +37,7 @@ import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import type { McpSession } from "../src/surfaces/mcp";
+import { visit } from "../src/surfaces/browser";
 
 const microsoftApi = composePluginApi([
   openApiHttpPlugin({ presets: microsoftCatalog, specFormats: [microsoftGraphAdapter] }),
@@ -400,7 +401,7 @@ scenario(
         //    pre-filled from the handoff. They type ONLY the secret.
         yield* browser.session(identity, async ({ page, step }) => {
           await step("Open the agent's handoff URL", async () => {
-            await page.goto(handoffUrl, { waitUntil: "networkidle" });
+            await visit(page, handoffUrl);
           });
 
           await step("The Register-OAuth-app form auto-opens, pre-filled", async () => {

@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { clickToReveal, visit } from "../src/surfaces/browser";
 
 scenario(
   "Provider catalog · Google and Microsoft services are OpenAPI presets",
@@ -14,9 +15,11 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the integrations picker", async () => {
-        await page.goto("/integrations", { waitUntil: "networkidle" });
-        await page.getByRole("button", { name: "Connect" }).click();
-        await page.getByRole("dialog", { name: "Connect an integration" }).waitFor();
+        await visit(page, "/integrations");
+        await clickToReveal(
+          page.getByRole("button", { name: "Connect" }),
+          page.getByRole("dialog", { name: "Connect an integration" }),
+        );
       });
 
       await step("The picker exposes OpenAPI plus provider service presets", async () => {
@@ -54,11 +57,13 @@ scenario(
 
       await step("A Microsoft service preset opens the OpenAPI add flow", async () => {
         await page.goto(
-          "/integrations/add/openapi?preset=microsoft-files&url=https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoftgraph%2Fmsgraph-metadata%2Fmaster%2Fopenapi%2Fv1.0%2Fopenapi.yaml%23preset%3Dfiles",
+          "/integrations/add/openapi?preset=microsoft-files&url=https%3A%2F%2Fgithub.com%2FUsefulSoftwareCo%2Fexecutor%2Freleases%2Fdownload%2Fgraph-slices%2Ffiles.yaml",
           { waitUntil: "domcontentloaded" },
         );
         await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
-        await expect.poll(() => page.locator("textarea").inputValue()).toContain("preset=files");
+        await expect
+          .poll(() => page.locator("textarea").inputValue())
+          .toContain("graph-slices/files.yaml");
       });
     });
   }),

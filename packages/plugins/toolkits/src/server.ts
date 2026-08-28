@@ -181,11 +181,12 @@ const legacyConnectionPolicyIds = (
   policies: readonly ToolkitPolicyRecord[],
   connections: readonly ToolkitConnectionRecord[],
 ): ReadonlySet<string> => {
-  const connectionPatterns = new Set(connections.map((connection) => connection.pattern));
   return new Set(
     policies
       .filter(
-        (policy) => isLegacyConnectionPolicy(policy) && !connectionPatterns.has(policy.pattern),
+        (policy) =>
+          isLegacyConnectionPolicy(policy) &&
+          !connections.some((connection) => matchPattern(policy.pattern, connection.pattern)),
       )
       .map((policy) => policy.id),
   );

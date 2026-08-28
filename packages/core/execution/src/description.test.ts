@@ -13,7 +13,7 @@ import {
 } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
-import { buildExecuteDescription } from "./description";
+import { buildExecuteDescription, parseIntegrationInventory } from "./description";
 
 const memoryProvider = (): CredentialProvider => {
   const store = new Map<string, string>();
@@ -189,4 +189,53 @@ describe("buildExecuteDescription", () => {
       expect(description).not.toContain("## Available integrations");
     }),
   );
+});
+
+describe("parseIntegrationInventory", () => {
+  it.effect("round-trips the slugs a built description lists", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: SLACK,
+        template: TEMPLATE,
+        value: "slack-token",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(parseIntegrationInventory(description)).toEqual(["github", "slack"]);
+    }),
+  );
+
+  it("returns nothing for a description without an inventory block", () => {
+    expect(parseIntegrationInventory("Execute TypeScript in a sandboxed runtime.")).toEqual([]);
+  });
+
+  it("reads item lines only, not the overflow marker or prose", () => {
+    const description = [
+      "Execute TypeScript in a sandboxed runtime.",
+      "",
+      "## Available integrations",
+      "",
+      "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
+      "- `github`",
+      "- `google_gmail`",
+      "- ... 3 more",
+    ].join("\n");
+
+    expect(parseIntegrationInventory(description)).toEqual(["github", "google_gmail"]);
+  });
 });

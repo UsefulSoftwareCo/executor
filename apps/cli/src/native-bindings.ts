@@ -17,6 +17,8 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { WORKER_BUNDLER_DIRNAME, missingWorkerBundlerFiles } from "./worker-bundler-artifact";
+
 const execDir = dirname(process.execPath);
 
 // libSQL: our `libsql` patch reads EXECUTOR_LIBSQL_NATIVE_PATH and loads the
@@ -48,12 +50,27 @@ if (typeof Bun !== "undefined" && !process.env.EXECUTOR_WORKERD_BIN && existsSyn
   process.env.EXECUTOR_WORKERD_BIN = workerdOnDisk;
 }
 
-const workerBundlerOnDisk = join(execDir, "worker-bundler");
+// worker-bundler: the compiled binary cannot resolve `@cloudflare/worker-bundler`
+// by name (bunfs has no node_modules), so build.ts stages the package's dist
+// beside the executable and we publish its path here. An absent directory is
+// normal off the packaged path (dev, `bun run`), so that stays quiet — but a
+// directory that is PRESENT AND INCOMPLETE is a broken install, and swallowing
+// it is what turns a packaging slip into an unresolvable bare import at
+// startup. Report it on stderr instead of failing open.
+const workerBundlerOnDisk = join(execDir, WORKER_BUNDLER_DIRNAME);
 if (
   typeof Bun !== "undefined" &&
   !process.env.EXECUTOR_WORKER_BUNDLER_DIR &&
-  existsSync(join(workerBundlerOnDisk, "dist", "index.js")) &&
-  existsSync(join(workerBundlerOnDisk, "dist", "esbuild.wasm"))
+  existsSync(workerBundlerOnDisk)
 ) {
-  process.env.EXECUTOR_WORKER_BUNDLER_DIR = workerBundlerOnDisk;
+  const missing = missingWorkerBundlerFiles(workerBundlerOnDisk, existsSync);
+  if (missing.length === 0) {
+    process.env.EXECUTOR_WORKER_BUNDLER_DIR = workerBundlerOnDisk;
+  } else {
+    process.stderr.write(
+      `executor: the bundled Worker toolchain at ${workerBundlerOnDisk} is incomplete ` +
+        `(missing ${missing.join(", ")}). Features that build Workers will be unavailable; ` +
+        `reinstall or update executor to repair it.\n`,
+    );
+  }
 }

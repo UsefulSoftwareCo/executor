@@ -21,6 +21,7 @@ import { serveOAuthTestServer, type OAuthTestServerShape } from "@executor-js/sd
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -300,7 +301,7 @@ scenario(
         const menuTrigger = connections.locator('button[aria-haspopup="menu"]').first();
 
         await step("Open the MCP integration with its expired OAuth connection", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}`);
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
         });
 
@@ -380,7 +381,7 @@ scenario(
         const menuTrigger = connections.locator('button[aria-haspopup="menu"]').first();
 
         await step("Open the integration: the connection reads Expired", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}`);
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
           await connections.getByLabel("Status: Expired").waitFor({ timeout: 30_000 });
         });
@@ -451,7 +452,7 @@ scenario(
         });
 
         await step("Open the MCP integration with its DCR OAuth connection", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await visit(page, `/integrations/${slug}`);
           await connections.getByText("main", { exact: true }).waitFor({ timeout: 30_000 });
         });
 

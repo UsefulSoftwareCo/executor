@@ -10,6 +10,7 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readSearchToolsEnabled,
 } from "./browser-approval";
 import {
   makeInProcessBrowserApprovalStore,
@@ -75,6 +76,9 @@ export interface McpBuildServerOptions {
    *  with `?artifacts=false`; opted out, the built server registers none of
    *  the artifact tools, resource, or skills. */
   readonly artifactsEnabled?: boolean;
+  /** Whether this session serves the per-integration `search_<integration>`
+   *  tools. False unless the client connected with `?search_tools=true`. */
+  readonly searchToolsEnabled?: boolean;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
@@ -224,10 +228,14 @@ export const makeInMemoryMcpSessionStore = (
     sessionId: () => string | null,
   ): McpBuildServerOptions => {
     const artifactsEnabled = readArtifactsEnabled(request);
+    const searchToolsEnabled = readSearchToolsEnabled(request);
     const mode = readElicitationMode(request);
-    if (mode !== "browser") return { artifactsEnabled, elicitationMode: { mode } };
+    if (mode !== "browser") {
+      return { artifactsEnabled, searchToolsEnabled, elicitationMode: { mode } };
+    }
     return {
       artifactsEnabled,
+      searchToolsEnabled,
       elicitationMode: {
         mode: "browser",
         // Prefer the pinned public origin; fall back to the request URL (correct

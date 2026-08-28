@@ -144,6 +144,17 @@ export {
 
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {
+  FIRST_PARTY_OAUTH_CLIENT_PREFIX,
+  firstPartyOAuthClientSlug,
+  isFirstPartyOAuthClientSlug,
+  SubjectTokenTypeSchema,
+  DEFAULT_SUBJECT_TOKEN_TYPE,
+  EnterpriseManagedStartInputSchema,
+  EnterpriseIdentityProviderDescriptorSchema,
+  type SubjectTokenType,
+  type EnterpriseManagedStartInput,
+  type EnterpriseIdentityProviderDescriptor,
+  type FirstPartyOAuthClientConfig,
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,
