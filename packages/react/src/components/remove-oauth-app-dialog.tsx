@@ -29,7 +29,8 @@ export function RemoveOAuthAppDialog(props: {
   const inUse = connections.length > 0;
   return (
     <Dialog open onOpenChange={(open: boolean) => (open ? undefined : props.onClose())}>
-      <DialogContent>
+      {/* A confirmation with nothing to lose: clicking away cancels it. */}
+      <DialogContent dismissOnOutsideClick>
         <DialogHeader>
           <DialogTitle>Remove {String(client.slug)}?</DialogTitle>
           <DialogDescription>

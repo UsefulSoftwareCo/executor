@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest a capability or an improvement for Executor.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us the task you want to do and why Executor cannot do it today.
+        A concrete example helps more than a general proposal.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does Executor stop you?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: |
+        The change you want, as concretely as you can describe it. Name the command,
+        the setting, or the screen where it would live.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you tried, and why they are not sufficient.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it belongs
+      description: Select every form of Executor this applies to.
+      options:
+        - Executor Cloud
+        - CLI
+        - Desktop app
+        - Self-host (Docker)
+        - Self-host (Cloudflare)
+        - Not sure
+      multiple: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the open issues for a duplicate.
+          required: true

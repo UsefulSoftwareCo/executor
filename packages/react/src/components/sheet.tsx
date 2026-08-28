@@ -4,6 +4,7 @@ import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Dialog as SheetPrimitive } from "radix-ui";
 
+import { applyOutsideDismissPolicy } from "../lib/outside-dismiss";
 import { cn } from "../lib/utils";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
@@ -38,34 +39,36 @@ function SheetOverlay({
   );
 }
 
-// base-ui popups (combobox/select) portal their list OUTSIDE the dialog content,
-// so clicking an option reads as an interaction outside the sheet and would
-// dismiss it before the selection lands. Keep the sheet open for interactions
-// that originate inside such a popup.
-const PORTALED_POPUP_SELECTOR = "[data-slot='combobox-content'],[data-slot='select-content']";
-
 function SheetContent({
   className,
   children,
   side = "right",
   showCloseButton = true,
+  dismissOnOutsideClick = false,
   onInteractOutside,
+  onPointerDownOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
   showCloseButton?: boolean;
+  /** Let a click outside the sheet close it. Off by default: a stray click on
+   *  the page behind a form must not discard what the user typed. Turn it on
+   *  for a sheet with nothing to lose — navigation, a picker, a read-only
+   *  panel. Escape and the close button close either way. */
+  dismissOnOutsideClick?: boolean;
 }) {
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
         data-slot="sheet-content"
+        onPointerDownOutside={(event) => {
+          onPointerDownOutside?.(event);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+        }}
         onInteractOutside={(event) => {
-          const target = event.detail.originalEvent.target;
-          if (target instanceof Element && target.closest(PORTALED_POPUP_SELECTOR)) {
-            event.preventDefault();
-          }
           onInteractOutside?.(event);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
         }}
         className={cn(
           "fixed z-50 flex flex-col gap-4 bg-background shadow-lg transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500",
