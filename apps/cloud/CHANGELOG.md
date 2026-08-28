@@ -1,5 +1,26 @@
 # @executor-js/cloud
 
+## 1.4.62
+
+### Patch Changes
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`7c12aee`](https://github.com/UsefulSoftwareCo/executor/commit/7c12aeea390225291ce4c97865b392237ee7934d), [`ddbf0fe`](https://github.com/UsefulSoftwareCo/executor/commit/ddbf0feba38c8502d78fa20c3081391b8ba3d112), [`91062c2`](https://github.com/UsefulSoftwareCo/executor/commit/91062c2b1d7b8edbc8470ca5eaa544045652afaa), [`9c35f26`](https://github.com/UsefulSoftwareCo/executor/commit/9c35f269dd5de3548111fe5c83cf1e877f23c80d), [`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095), [`0007474`](https://github.com/UsefulSoftwareCo/executor/commit/0007474602d8da3642648f216bfdb0f09eb0914f), [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/plugin-openapi@1.6.1
+  - @executor-js/plugin-mcp@1.6.1
+  - @executor-js/execution@1.6.1
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/mcp-apps-shell@1.4.12
+  - @executor-js/plugin-graphql@1.6.1
+  - @executor-js/plugin-toolkits@1.5.36
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/cloudflare@0.0.43
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/vite-plugin@0.0.61
+  - @executor-js/runtime-quickjs@1.6.1
+
 ## 1.4.61
 
 ### Patch Changes

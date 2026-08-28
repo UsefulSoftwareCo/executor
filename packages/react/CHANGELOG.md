@@ -1,5 +1,19 @@
 # @executor-js/react
 
+## 1.4.64
+
+### Patch Changes
+
+- [#1746](https://github.com/UsefulSoftwareCo/executor/pull/1746) [`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb) Thanks [@sergical](https://github.com/sergical)! - **The connection edit sheet now previews what agents actually read**
+
+  The "What agents see" preview in the connection edit sheet rendered a `- \`<prefix>\` — <description>`inventory line. That line left the`execute`tool description when the inventory was slimmed to bare integration slugs, so the preview showed text no agent reads. The account label was also marked "Display-only", but`connections.list` returns it to agents alongside the description.
+
+  The preview now mirrors the `connections.list` item for the connection (`name`, `identityLabel`, `description`), and the sheet copy says that both fields are agent-visible while the callable name stays as it was at connect time.
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+
 ## 1.4.63
 
 ### Patch Changes

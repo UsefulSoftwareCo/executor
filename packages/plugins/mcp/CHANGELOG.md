@@ -1,5 +1,21 @@
 # @executor-js/plugin-mcp
 
+## 1.6.1
+
+### Patch Changes
+
+- [#1747](https://github.com/UsefulSoftwareCo/executor/pull/1747) [`91062c2`](https://github.com/UsefulSoftwareCo/executor/commit/91062c2b1d7b8edbc8470ca5eaa544045652afaa) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Load the MCP client SDK lazily on first outbound connection instead of at module evaluation. Runtimes that bundle the plugin (notably Cloudflare Workers) no longer pay the client package's module-eval memory and CPU on startup or on code paths that never dial an MCP server.
+
+- [#1716](https://github.com/UsefulSoftwareCo/executor/pull/1716) [`9c35f26`](https://github.com/UsefulSoftwareCo/executor/commit/9c35f269dd5de3548111fe5c83cf1e877f23c80d) Thanks [@xav-ie](https://github.com/xav-ie)! - **Closing a remote MCP connection now ends its streamable-http SSE request**
+
+  On a supplied `httpClientLayer`, the fetch adapter wired the caller's `AbortSignal` only to the pending response promise, never to the response body, so closing a connection left the long-lived `GET` channel in flight forever — one abandoned request per dial. Under Bun each holds one of the 256 concurrent-request slots, so a long-running process eventually exhausts the pool and every connection starts failing with `MCP discovery timed out after 15000ms`. The response stream is now interrupted when the signal aborts.
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/config@1.6.1
+
 ## 1.6.0
 
 ### Minor Changes

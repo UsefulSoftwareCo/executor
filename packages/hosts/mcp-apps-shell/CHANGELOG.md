@@ -1,5 +1,13 @@
 # @executor-js/mcp-apps-shell
 
+## 1.4.12
+
+### Patch Changes
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/runtime-quickjs@1.6.1
+
 ## 1.4.11
 
 ### Patch Changes

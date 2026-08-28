@@ -1,5 +1,12 @@
 # @executor-js/plugin-file-secrets
 
+## 1.6.1
+
+### Patch Changes
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+
 ## 1.6.0
 
 ### Patch Changes
