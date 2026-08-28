@@ -1,3 +1,4 @@
+import { isJSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Match, Predicate } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -149,6 +150,33 @@ export const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
 const METHOD_NOT_FOUND = -32601;
 
 /**
+ * The transport's POST content negotiation, mirrored.
+ *
+ * `WebStandardStreamableHTTPServerTransport.handlePostRequest` refuses a POST
+ * on its headers alone, BEFORE it reads the body:
+ *
+ *   - `Accept` must list BOTH `application/json` and `text/event-stream`, else
+ *     406 Not Acceptable.
+ *   - `Content-Type` must include `application/json`, else 415 Unsupported
+ *     Media Type.
+ *
+ * The guard below answers 200 without ever consulting the transport, so it must
+ * not fire on a request the transport would have refused — that would turn a
+ * 406 or a 415 into a success. These are the SDK's own substring tests on the
+ * raw header values, copied so the two agree; a request that fails either falls
+ * through untouched and gets the transport's real 406/415.
+ *
+ * The transport's DNS-rebinding check runs earlier still, but it is inert
+ * unless a host passes `enableDnsRebindingProtection`, which no host here does.
+ */
+const passesTransportContentNegotiation = (request: Request): boolean => {
+  const accept = request.headers.get("accept");
+  if (!accept?.includes("application/json") || !accept.includes("text/event-stream")) return false;
+  const contentType = request.headers.get("content-type");
+  return contentType !== null && contentType.includes("application/json");
+};
+
+/**
  * The pre-initialize dispatch guard, for the session-less POST every host
  * handles before it hands the request to a fresh streamable-HTTP transport.
  *
@@ -169,13 +197,24 @@ const METHOD_NOT_FOUND = -32601;
  * can't silently mask a future real `server/discover` — implementing it means
  * it stops being unknown here, instead of a special case going stale.
  *
- * Succeeds with `null` for anything that must reach the transport untouched: a
- * non-POST, an unparseable or non-JSON-RPC body, `initialize` itself, and
- * notifications (no id, so no response may be sent). Reads a clone, leaving the
- * caller's request body intact for the transport.
+ * The guard REPLACES one transport answer and must not shadow any of the
+ * others, so it fires only where it is the whole story: a POST that clears the
+ * transport's content negotiation AND carries a structurally valid JSON-RPC 2.0
+ * request. Everything else succeeds with `null` and reaches the transport
+ * untouched, keeping the transport's own response — a non-POST, a bad
+ * `Accept`/`Content-Type` (406/415), unparseable JSON or a message that is not
+ * a valid JSON-RPC request (400 parse error: a fractional id, a non-object
+ * `params`, an unknown top-level field), a batch, a notification or a response
+ * (no id to answer), and `initialize` itself.
+ *
+ * Structural validity is decided by the SDK's own `isJSONRPCRequest`, the exact
+ * predicate behind the transport's `JSONRPCMessageSchema.parse`, rather than a
+ * hand-rolled re-implementation that could drift from it.
+ *
+ * Reads a clone, leaving the caller's request body intact for the transport.
  */
 export const preInitializeMethodNotFound = (request: Request): Effect.Effect<Response | null> =>
-  request.method !== "POST"
+  request.method !== "POST" || !passesTransportContentNegotiation(request)
     ? Effect.succeed(null)
     : Effect.tryPromise({
         try: (): Promise<unknown> => request.clone().json(),
@@ -188,16 +227,13 @@ export const preInitializeMethodNotFound = (request: Request): Effect.Effect<Res
 
 /** The pure decision behind {@link preInitializeMethodNotFound}. */
 const renderPreInitializeMethodNotFound = (body: unknown): Response | null => {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
-  const message = body as { readonly jsonrpc?: unknown; readonly method?: unknown; id?: unknown };
-  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") return null;
-  if (message.method === "initialize") return null;
-  if (typeof message.id !== "string" && typeof message.id !== "number") return null;
+  if (!isJSONRPCRequest(body)) return null;
+  if (body.method === "initialize") return null;
   // An INNER response like every other store/handler error body: the host's
   // outer envelope owns the CORS headers on the way out.
   return jsonRpcErrorBody(200, METHOD_NOT_FOUND, "Method not found", {
     cors: false,
-    id: message.id,
+    id: body.id,
   });
 };
 
