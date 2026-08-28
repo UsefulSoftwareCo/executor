@@ -516,6 +516,8 @@ interface LoadedOAuthClient {
   /** Resolved literal secret (read from the provider via the stored item id). */
   readonly clientSecret: string;
   readonly resource: string | null;
+  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenRequestFormat?: "form" | "json";
 }
 
 /** Where an OAuth app's client secret is stored in the default writable
@@ -618,6 +620,8 @@ export const loadedFirstPartyClient = (
   readonly clientId: string;
   readonly clientSecret: string;
   readonly resource: string | null;
+  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenRequestFormat?: "form" | "json";
 } => ({
   slug: String(firstPartyOAuthClientSlug(config.name)),
   authorizationUrl: config.authorizationUrl,
@@ -626,6 +630,12 @@ export const loadedFirstPartyClient = (
   clientId: config.clientId,
   clientSecret: config.clientSecret,
   resource: config.resource ?? null,
+  ...(config.tokenEndpointAuthMethod === undefined
+    ? {}
+    : { tokenEndpointAuthMethod: config.tokenEndpointAuthMethod }),
+  ...(config.tokenRequestFormat === undefined
+    ? {}
+    : { tokenRequestFormat: config.tokenRequestFormat }),
 });
 
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
@@ -1697,6 +1707,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           : scopePolicy.kind === "discover"
             ? requestedScopes
             : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+      const completeAuthorizationScopes = dedupeScopes([
+        ...authorizationRequestedScopes,
+        ...(firstParty?.additionalAuthorizationScopes ?? []),
+      ]);
 
       // authorization_code: persist a session + build the authorize URL.
       const verifier = createPkceCodeVerifier();
@@ -1758,7 +1772,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           payload: {
             owner: input.owner,
             clientOwner: input.clientOwner,
-            requestedScopes: authorizationRequestedScopes,
+            requestedScopes: completeAuthorizationScopes,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -1771,14 +1785,18 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             authorizationUrl: client.authorizationUrl,
             clientId: client.clientId,
             redirectUrl: flowRedirectUri,
-            scopes: authorizationRequestedScopes,
+            scopes: completeAuthorizationScopes,
             state: providerState,
             codeChallenge: challenge,
+            scopeSeparator: firstParty?.authorizationScopeSeparator,
             resource: client.resource ?? undefined,
             // Provider quirks (Google: access_type=offline + prompt=consent) —
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
-            extraParams: providerAuthorizeExtras(client.authorizationUrl),
+            extraParams: {
+              ...providerAuthorizeExtras(client.authorizationUrl),
+              ...(firstParty?.authorizationExtraParams ?? {}),
+            },
             endpointUrlPolicy: deps.endpointUrlPolicy,
           }),
         catch: (cause) =>
@@ -1897,6 +1915,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         redirectUrl: session.redirectUrl,
         codeVerifier: session.pkceVerifier,
         code: input.code,
+        clientAuth: client.tokenEndpointAuthMethod,
+        requestFormat: client.tokenRequestFormat,
         resource: client.resource ?? undefined,
         endpointUrlPolicy: deps.endpointUrlPolicy,
         fetch,

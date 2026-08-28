@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
@@ -41,6 +42,19 @@ const EXECUTOR_GITHUB_URL = (
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
+
+// js-yaml reaches the browser through @executor-js/plugin-openapi's UI, so it
+// belongs in the pre-bundle below. Vite resolves `optimizeDeps.include` from
+// `root`, which here is packages/app, and bun's isolated install keeps js-yaml
+// in the openapi plugin's own node_modules — out of reach of both a plain
+// "js-yaml" specifier and the "<pkg> > <dep>" form from that directory. Point
+// the bare specifier at the package the plugin already resolves, so `root` can
+// name it. It is the same copy either way, so nothing about resolution changes.
+const JS_YAML_DIR = dirname(
+  createRequire(fileURLToPath(new URL("../../packages/plugins/openapi/", import.meta.url))).resolve(
+    "js-yaml",
+  ),
+);
 
 const oauthClientMetadataResponse = (requestUrl: string, webRequest: Request): Response =>
   new Response(
@@ -215,6 +229,25 @@ export default defineConfig({
     outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
   },
+  // Deps vite only discovers once a lazy-loaded React chunk actually renders
+  // (e.g. opening the integration Edit sheet, or the MCP/OpenAPI add-source
+  // flow). Discovering one mid-run forces a re-optimize and a full page
+  // reload, which throws away whatever the person was doing — an open sheet
+  // and its form state included. Pre-bundle them at boot so vite never
+  // discovers them mid-run. Keep in sync with apps/host-selfhost and
+  // apps/cloud.
+  optimizeDeps: {
+    include: [
+      "effect/Match",
+      "effect/Predicate",
+      "effect/Exit",
+      "effect/Option",
+      "effect/Cause",
+      "effect/Data",
+      "effect/Schema",
+      "js-yaml",
+    ],
+  },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
     // The local app IS the npm-installed CLI, so its update card shows the npm
@@ -229,6 +262,7 @@ export default defineConfig({
   },
   resolve: {
     tsconfigPaths: true,
+    alias: { "js-yaml": JS_YAML_DIR },
   },
   server: {
     port: parseInt(process.env.PORT ?? "5173", 10),

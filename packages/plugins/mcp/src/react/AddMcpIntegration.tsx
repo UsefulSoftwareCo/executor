@@ -41,6 +41,7 @@ import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { McpRequestHeadersEditor } from "./McpRequestHeadersEditor";
 import { mcpHeadersFromRows, type McpHeaderRow } from "./request-headers";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
+import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
@@ -60,19 +61,6 @@ import { mcpPresets, type McpPreset } from "../sdk/presets";
 function findPreset(id: string | undefined): McpPreset | undefined {
   if (!id) return undefined;
   return mcpPresets.find((p) => p.id === id);
-}
-
-// Splits the raw args field into tokens, honoring double-quoted groups so an
-// argument with spaces stays intact.
-function parseStdioArgs(raw: string): string[] {
-  if (!raw.trim()) return [];
-  const args: string[] = [];
-  const regex = /[^\s"]+|"([^"]*)"/g;
-  let match;
-  while ((match = regex.exec(raw)) !== null) {
-    args.push(match[1] ?? match[0]);
-  }
-  return args;
 }
 
 // ---------------------------------------------------------------------------
