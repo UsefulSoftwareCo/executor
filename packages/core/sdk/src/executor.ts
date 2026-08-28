@@ -19,7 +19,6 @@ import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/sch
 import type { AnyColumn } from "@executor-js/fumadb/schema";
 import {
   StorageError,
-  activeFumaDbRef,
   afterCommit,
   isStorageFailure,
   makeFumaClient,
@@ -3390,10 +3389,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         let providerKey: string;
         const itemIds: Record<string, string> = {};
-        // Pasted-value provider writes, built here but run only after the row
-        // insert below is DURABLE (the post-insert block owns that ordering).
-        // Each entry carries its own undo so a write that does not complete
-        // can tear down exactly the items it already stored.
+        // Pasted-value provider writes, built here but run only AFTER this
+        // create wins the row insert below. Each entry carries its own undo
+        // so a write that does not complete can tear down exactly the items
+        // it already stored.
         const pastedWrites: Array<{
           readonly itemId: ProviderItemId;
           readonly write: Effect.Effect<void, StorageFailure>;
@@ -3504,20 +3503,26 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
         );
 
-        // Winner-only, durable-only credential write. Only the create whose
-        // row insert COMMITTED may touch the provider — a pasted value's item
-        // id is deterministic, so a losing create would clobber the winner's
-        // (or a pre-existing connection's) secret. "Committed" is load-bearing:
-        // `transaction` nests by pass-through, so under an enclosing plugin
-        // transaction the insert above is not durable yet, and a write here
-        // would orphan the secret if that transaction rolls back. With a
-        // transaction active the writes are deferred to its real commit via
-        // `afterCommit`; with none they run immediately, as before.
+        // Winner-only credential write: only the create whose row insert
+        // committed may touch the provider — a pasted value's item id is
+        // deterministic, so a losing create would clobber the winner's (or a
+        // pre-existing connection's) secret. The writes run inline, straight
+        // after the transactional insert above and BEFORE the connection's
+        // tools are produced below: GraphQL/MCP plugins do authenticated
+        // introspection via `getValues()` at tool-production time, so the
+        // credentials must exist by then or the catalog is discovered
+        // empty/incomplete and never re-discovered.
         //
-        // The immediate path deliberately does NOT go through `afterCommit`'s
-        // no-transaction fallback: that fallback swallows failures by
-        // contract, and an immediate create must keep surfacing a failed
-        // write as its own typed StorageFailure.
+        // Known limitation (pre-existing, not addressed here): `transaction`
+        // nests by pass-through, so a create running inside an enclosing
+        // plugin `ctx.transaction` writes credentials before the OUTER
+        // commit. If that transaction rolls back, the row vanishes with it
+        // but the credential items survive as orphans at their deterministic
+        // ids — inert until the next same-shaped create overwrites them.
+        // External credential stores cannot join a database transaction, and
+        // deferring the write past the outer commit was tried and reverted:
+        // it broke the tool-production ordering above and could not guarantee
+        // the deferred hook runs exactly once under interruption.
         if (pastedWrites.length > 0) {
           const written: ProviderItemId[] = [];
           const writeAll = Effect.gen(function* () {
@@ -3533,10 +3538,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // failing every invocation with `connection_value_missing`.
           // Compensation covers BOTH halves: best-effort deletes of the items
           // already written (the earlier secrets of a partial multi-variable
-          // write), then the row itself plus any tool rows a deferred create
-          // produced before its commit. Nothing here is silent: every failed
-          // undo is logged, and `rowRemoved` lets the immediate path convert
-          // a stranded row into an error that names it.
+          // write), then the row itself. Nothing here is silent: every failed
+          // or impossible undo is logged, and `rowRemoved` converts a
+          // stranded row into an error that names it.
           let rowRemoved = true;
           const logContext = {
             owner: input.owner,
@@ -3545,7 +3549,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           };
           const compensate = Effect.gen(function* () {
             for (const entry of pastedWrites) {
-              if (entry.remove === null || !written.includes(entry.itemId)) continue;
+              if (!written.includes(entry.itemId)) continue;
+              if (entry.remove === null) {
+                // A provider exposing `set` without `delete` cannot undo its
+                // own writes; say so instead of silently skipping.
+                yield* Effect.logWarning(
+                  "executor connection create cannot undo a credential write: the provider has no delete, so a partial credential may be stranded",
+                  { ...logContext, item: String(entry.itemId) },
+                );
+                continue;
+              }
               yield* entry.remove.pipe(
                 Effect.catchCause((cause) =>
                   Effect.logError("executor connection create failed to undo a credential write", {
@@ -3556,77 +3569,46 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 ),
               );
             }
-            const where = (b: AnyCb) =>
-              b.and(
-                byOwner(input.owner)(b),
-                b("integration", "=", String(input.integration)),
-                b("connection", "=", String(name)),
-              );
-            yield* Effect.gen(function* () {
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* core.deleteMany("connection", {
+            yield* core
+              .deleteMany("connection", {
                 where: (b: AnyCb) =>
                   b.and(
                     byOwner(input.owner)(b),
                     b("integration", "=", String(input.integration)),
                     b("name", "=", String(name)),
                   ),
-              });
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Effect.sync(() => {
-                  rowRemoved = false;
-                }).pipe(
-                  Effect.andThen(
-                    Effect.logError(
-                      "executor connection create stranded a credential-less connection row",
-                      { ...logContext, cause },
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.sync(() => {
+                    rowRemoved = false;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.logError(
+                        "executor connection create stranded a credential-less connection row",
+                        { ...logContext, cause },
+                      ),
                     ),
                   ),
                 ),
-              ),
-            );
+              );
           });
 
           // `onExit`, not `tapError`: compensation must also run when the
           // write is interrupted or dies with a defect.
-          const guardedWrites = writeAll.pipe(
+          yield* writeAll.pipe(
             Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : compensate)),
-          );
-
-          const enclosingTransaction = yield* Effect.service(activeFumaDbRef);
-          if (enclosingTransaction === null) {
-            yield* guardedWrites.pipe(
-              Effect.catch((error) =>
-                rowRemoved
-                  ? Effect.fail(error)
-                  : Effect.fail(
-                      new StorageError({
-                        message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded without stored credentials and must be removed manually.`,
-                        cause: error,
-                      }),
-                    ),
-              ),
-            );
-          } else {
-            // The create returns to its enclosing transaction before this
-            // hook runs, so a failure here can no longer become the caller's
-            // typed error — compensation plus a loud log IS the contract.
-            // Between the outer commit and this hook the row is briefly
-            // visible without its credentials; closing that window takes a
-            // reservation/staging scheme and is deliberately out of scope.
-            yield* afterCommit(
-              guardedWrites.pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logError(
-                    "executor connection create credential write failed after commit",
-                    { ...logContext, rowRemoved, cause },
+            Effect.catch((error) =>
+              rowRemoved
+                ? Effect.fail(error)
+                : Effect.fail(
+                    new StorageError({
+                      message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded without stored credentials and must be removed manually.`,
+                      cause: error,
+                    }),
                   ),
-                ),
-              ),
-            );
-          }
+            ),
+          );
         }
 
         // Record the sighting. The request seam (`makeScopedExecutor`) already

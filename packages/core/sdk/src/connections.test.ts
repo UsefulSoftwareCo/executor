@@ -576,17 +576,17 @@ describe("connections.create", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Credential-write durability & compensation. The row insert and the provider
-// write cannot be atomic — the provider may live outside the database — so the
-// create sequences them: the row must be DURABLE before the provider is
-// touched, and a write that does not complete must tear down everything it
+// Credential-write compensation. The row insert and the provider write cannot
+// be atomic — the provider may live outside the database — so the create
+// sequences them: the provider is touched only after this create wins the row
+// insert, and a write that does not complete must tear down everything it
 // already stored. The worst outcome is a committed row whose credentials were
 // never written: it 409s every retry while resolving nothing.
 // ---------------------------------------------------------------------------
 
 const trackingProvider = (
   store: Map<string, string>,
-  overrides?: Partial<Pick<CredentialProvider, "set">>,
+  overrides?: Partial<Pick<CredentialProvider, "set" | "delete">>,
 ): CredentialProvider => ({
   key: ProviderKey.make("memory"),
   writable: true,
@@ -607,98 +607,10 @@ const durabilityPlugin = (provider: CredentialProvider) =>
     extension: (ctx) => ({
       seed: () =>
         ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
-      resolveValue: (name: string) =>
-        ctx.connections.resolveValue({
-          owner: "org",
-          integration: INTEG,
-          name: ConnectionName.make(name),
-        }),
-      /** A plugin composing a create into its own atomic unit — the shape that
-       *  makes the create's inner insert a pass-through with no commit of its
-       *  own. */
-      createInTransaction: (rollback: boolean) =>
-        ctx.transaction(
-          Effect.gen(function* () {
-            const created = yield* ctx.connections.create({
-              owner: "org",
-              name: ConnectionName.make("main"),
-              integration: INTEG,
-              template: TEMPLATE,
-              value: "secret-token",
-            });
-            if (rollback) return yield* Effect.fail("rollback" as const);
-            return created;
-          }),
-        ),
     }),
   }))();
 
-describe("connections.create credential-write durability", () => {
-  // `transaction` nests by pass-through: inside a plugin's `ctx.transaction`
-  // the create's inner insert commits nothing — the row becomes durable only
-  // with the OUTER commit. A credential written inline in that window outlives
-  // a rollback as an orphan at a deterministic item id, where the next create
-  // of the same name silently adopts it. The write must wait for the real
-  // commit, and the caller's own typed failure must pass through untouched.
-  it.effect("discards the credential write when an enclosing transaction rolls back", () =>
-    Effect.gen(function* () {
-      const store = new Map<string, string>();
-      const executor = yield* makeTestExecutor({
-        plugins: [durabilityPlugin(trackingProvider(store))] as const,
-      });
-      yield* executor.durable.seed();
-
-      const result = yield* Effect.result(executor.durable.createInTransaction(true));
-      expect(Result.isFailure(result)).toBe(true);
-      if (!Result.isFailure(result)) return;
-      expect(result.failure).toBe("rollback");
-
-      // No zombie row and no orphaned credential survived the rollback.
-      expect(yield* executor.connections.list()).toEqual([]);
-      expect(store.size).toBe(0);
-
-      // The name is fully reusable: a committed create stores its own value.
-      yield* executor.durable.createInTransaction(false);
-      expect((yield* executor.connections.list()).length).toBe(1);
-      expect(yield* executor.durable.resolveValue("main")).toBe("secret-token");
-    }),
-  );
-
-  // Inside an enclosing transaction the create returns before its deferred
-  // credential write runs, so a write failure can no longer become the
-  // caller's typed error. What it must NOT become is a silent zombie: the
-  // deferred failure removes the committed row (and its tools) and reports
-  // the failure loudly.
-  it.effect("a deferred credential-write failure removes the committed row and logs", () =>
-    Effect.gen(function* () {
-      const store = new Map<string, string>();
-      const provider = trackingProvider(store, {
-        set: () =>
-          Effect.fail(new StorageError({ message: "provider write refused", cause: undefined })),
-      });
-      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
-      yield* executor.durable.seed();
-
-      const errors: string[] = [];
-      const capture = Logger.make<unknown, void>((options) => {
-        if (options.logLevel === "Error") {
-          errors.push(Inspectable.toStringUnknown(options.message, 0));
-        }
-      });
-      const result = yield* Effect.result(
-        executor.durable.createInTransaction(false).pipe(Effect.provide(Logger.layer([capture]))),
-      );
-
-      // The transaction committed, so the create itself reported success ...
-      expect(Result.isSuccess(result)).toBe(true);
-      // ... but the failed write tore the committed row (and its tools) down
-      // instead of leaving it to 409 every retry while resolving nothing.
-      expect(yield* executor.connections.list()).toEqual([]);
-      expect(yield* executor.tools.list()).toEqual([]);
-      expect(errors.some((line) => line.includes("failed after commit"))).toBe(true);
-    }),
-  );
-
+describe("connections.create credential-write compensation", () => {
   // Interruption is not an error: error-channel compensation never sees it. A
   // create interrupted mid-write must still tear down what it already did —
   // the committed row and every item that landed before the interrupt.
@@ -773,6 +685,53 @@ describe("connections.create credential-write durability", () => {
     }),
   );
 
+  // A provider can expose `set` without `delete`. Compensation then cannot
+  // undo the items already written — that is acceptable only if it is loud:
+  // a warning must name the item that may be stranded, never a silent skip.
+  it.effect("warns about possibly stranded items when the provider has no delete", () =>
+    Effect.gen(function* () {
+      const store = new Map<string, string>();
+      const provider = trackingProvider(store, {
+        set: (id, value) =>
+          String(id).endsWith(":second")
+            ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
+            : Effect.sync(() => void store.set(String(id), value)),
+        delete: undefined,
+      });
+      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
+      yield* executor.durable.seed();
+
+      const warnings: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Warn") {
+          warnings.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const result = yield* Effect.result(
+        executor.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: { first: "1", second: "2" },
+          })
+          .pipe(Effect.provide(Logger.layer([capture]))),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+      // The row is gone, but the first item cannot be undone without a
+      // provider delete ...
+      expect(yield* executor.connections.list()).toEqual([]);
+      expect(store.size).toBe(1);
+      // ... and the create said so, naming the item.
+      expect(warnings.some((line) => line.includes("stranded"))).toBe(true);
+      expect(warnings.some((line) => line.includes("first"))).toBe(true);
+    }),
+  );
+
   // The compensating delete can itself fail. Swallowing that failure strands
   // a visible credential-less row behind an error that never mentions it. The
   // create must fail with an error that NAMES the stranded connection so an
@@ -841,6 +800,19 @@ describe("connections.create credential-write durability", () => {
       if (!Predicate.isTagged("StorageError")(failure)) return;
       expect(failure.message).toContain("main");
       expect(failure.message).toContain("vercel");
+      // The original write failure is retained as the cause, not replaced.
+      const isStorageError = (u: unknown): u is StorageError =>
+        Predicate.isTagged("StorageError")(u);
+      expect(isStorageError(failure.cause)).toBe(true);
+      if (!isStorageError(failure.cause)) return;
+      expect(failure.cause.message).toBe("provider write refused");
+
+      // Non-vacuous: the compensating delete really did fail, so the
+      // credential-less row the error names is still there.
+      failRowDelete = false;
+      const rows = yield* executor.connections.list();
+      expect(rows.length).toBe(1);
+      expect(String(rows[0]?.name)).toBe("main");
     }),
   );
 });
