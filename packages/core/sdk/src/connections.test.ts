@@ -19,6 +19,8 @@ import {
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  Subject,
+  Tenant,
   ToolAddress,
   ToolName,
 } from "./ids";
@@ -29,6 +31,7 @@ import { HealthCheckResult } from "./health-check";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
+import { ToolResult } from "./tool-result";
 
 // removed: v1 connection-refresh lifecycle, ConnectionProvider.refresh,
 // SecretProvider, accessToken token-refresh + in-flight dedup tests — the v2
@@ -1638,6 +1641,93 @@ describe("tool catalog sync safety", () => {
     ),
   );
 
+  it.effect("a failing sync does not bury a dead grant's expired verdict", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let incomplete = false;
+        const guardedPlugin = definePlugin(() => ({
+          id: "guarded" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.sync(() =>
+              incomplete
+                ? {
+                    tools: [],
+                    incomplete: true,
+                    incompleteReason: "upstream rejected the credential",
+                  }
+                : {
+                    tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+                  },
+            ),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Vercel",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.guarded.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        // The refresh recorder's authoritative write: the sync's own
+        // credential resolution discovered invalid_grant, so by the time the
+        // sync fails, the row records the dead grant WITH its expired verdict.
+        const expired = {
+          status: "expired" as const,
+          checkedAt: Date.now(),
+          detail: "invalid_grant: Grant not found",
+        };
+        incomplete = true;
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: {
+              tools_synced_at: null,
+              last_health: expired,
+              provider_state: {
+                oauthReauthRequiredAt: Date.now(),
+                oauthReauthRequiredDetail: "invalid_grant: Grant not found",
+              },
+            },
+          }),
+        );
+        yield* executor.tools.list({ integration: INTEG });
+
+        // "expired, reconnect" outranks "tool sync failing": nothing would
+        // re-assert the dead grant's verdict (it is never probed), while the
+        // reconnect that clears it re-syncs tools anyway.
+        const connection = yield* executor.connections.get({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        expect(connection?.lastHealth).toMatchObject(expired);
+
+        // The sync time still stamps, so the failing catalog is not
+        // re-attempted on every read.
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+          }),
+        );
+        expect(row?.tools_synced_at).not.toBeNull();
+      }),
+    ),
+  );
+
   it.effect("successful sync preserves genuine health-check records", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1927,6 +2017,846 @@ describe("execute over a connection", () => {
       });
       const out = yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
       expect(out).toEqual({ ran: "deploy", value: "secret-token" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Sticky-verdict repair: agents read `lastHealth` through coreTools
+// connections.list, and nothing else ever re-probes a persisted verdict, so a
+// transient failure used to read as "unhealthy, reconnect" until a human
+// clicked "Check now". These cover the two repair paths: read-time
+// revalidation on the agent list, and heal-on-use from a successful
+// invocation.
+// ---------------------------------------------------------------------------
+
+const CORE_LIST = ToolAddress.make("executor.coreTools.connections.list");
+const STALE_MS = 5 * 60 * 1000;
+
+type ListedConnections = {
+  readonly connections: readonly {
+    readonly name: string;
+    readonly lastHealth: { readonly status: string; readonly detail?: string } | null;
+  }[];
+};
+
+const makeHealthHarness = (options?: {
+  /** Replaces the default instant-healthy probe. Entries are still counted in
+   *  `counters.probes`, so a Deferred-gated probe lets a test hold every
+   *  in-flight health check open and count how many actually started. */
+  readonly probe?: Effect.Effect<typeof HealthCheckResult.Type, unknown>;
+}) => {
+  const counters = { probes: 0, resolves: 0 };
+  const hooks = {
+    // Runs inside every invocation before it returns, so a test can interleave
+    // a concurrent write (e.g. a refresh discovering invalid_grant) between the
+    // row load and the heal-on-use decision.
+    onInvoke: Effect.void as Effect.Effect<void>,
+    // Runs inside every credential-provider read (counted in
+    // `counters.resolves`), so a Deferred here holds the credential-only
+    // health path open the way a Deferred probe holds the probing path open.
+    onResolve: Effect.void as Effect.Effect<void>,
+    // One-shot: runs immediately before a connection UPDATE that writes
+    // `last_health` reaches the database — INSIDE a verdict guard's
+    // check-to-write window, after its fresh read has already been taken.
+    // Cleared before it runs, so the conflicting write it performs (through
+    // the unwrapped `config.db`) is not intercepted again.
+    beforeHealthPersist: null as Effect.Effect<void> | null,
+  };
+  // Wraps the executor's FumaDb handle so `beforeHealthPersist` can commit a
+  // conflicting write in the exact window the write guards must close.
+  // `withContext` re-wraps because `createExecutor` rebinds the handle to its
+  // owner context; without that the interception would be dropped.
+  const interceptHealthWrites = (db: FumaDb): FumaDb =>
+    new Proxy(db as object, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            interceptHealthWrites((value as (context: unknown) => FumaDb).call(target, context));
+        }
+        if (prop === "updateMany") {
+          return async (
+            table: string,
+            updateOptions: { readonly set?: Record<string, unknown> },
+          ) => {
+            const hook = hooks.beforeHealthPersist;
+            if (
+              hook !== null &&
+              table === "connection" &&
+              updateOptions.set !== undefined &&
+              "last_health" in updateOptions.set
+            ) {
+              hooks.beforeHealthPersist = null;
+              await Effect.runPromise(hook);
+            }
+            return (value as (...args: unknown[]) => Promise<void>).call(
+              target,
+              table,
+              updateOptions,
+            );
+          };
+        }
+        return value;
+      },
+    }) as FumaDb;
+  const baseProvider = memoryProvider();
+  const countingProvider: CredentialProvider = {
+    ...baseProvider,
+    get: (id) =>
+      Effect.suspend(() => {
+        counters.resolves += 1;
+        return hooks.onResolve.pipe(Effect.andThen(baseProvider.get(id)));
+      }),
+  };
+  const plugin = definePlugin(() => ({
+    id: "healthdemo" as const,
+    credentialProviders: [countingProvider],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+    invokeTool: ({ toolRow, credential, args }) =>
+      Effect.as(
+        hooks.onInvoke,
+        (args as { fail?: boolean }).fail === true
+          ? ToolResult.fail({ code: "upstream_error", message: "boom" })
+          : { ran: toolRow.name, value: credential.value },
+      ),
+    checkHealth: () =>
+      Effect.suspend(() => {
+        counters.probes += 1;
+        return (
+          options?.probe ??
+          Effect.succeed({ status: "healthy" as const, checkedAt: Date.now(), detail: "probe ok" })
+        );
+      }),
+    extension: (ctx) => ({
+      seed: () =>
+        ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+    }),
+  }))();
+
+  return Effect.gen(function* () {
+    const config = makeTestConfig({
+      plugins: [plugin] as const,
+      coreTools: { webBaseUrl: "http://localhost:3000" },
+    });
+    const executor = yield* createExecutor({ ...config, db: interceptHealthWrites(config.db) });
+    yield* executor.healthdemo.seed();
+    yield* executor.connections.create({
+      owner: "org",
+      name: ConnectionName.make("main"),
+      integration: INTEG,
+      template: TEMPLATE,
+      value: "secret-token",
+    });
+    const stamp = (set: Record<string, unknown>) =>
+      Effect.promise(() =>
+        config.db.updateMany("connection", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+          set,
+        }),
+      );
+    const persisted = () =>
+      executor.connections.get({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+    // The public connection shape omits `tools_synced_at`; read the raw row
+    // for tests asserting a conflicting sync's stamp survived a guard.
+    const rawRow = () =>
+      Effect.promise(() =>
+        config.db.findFirst("connection", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+        }),
+      );
+    return { executor, counters, stamp, persisted, rawRow, hooks } as const;
+  });
+};
+
+describe("agent read revalidation (coreTools connections.list)", () => {
+  it.effect("re-probes a stale non-healthy verdict and reports + persists the fresh one", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+
+  it.effect("serves a fresh non-healthy verdict without re-probing", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "HTTP 401" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+    }),
+  );
+
+  it.effect("never probes a healthy verdict, however old", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "healthy", checkedAt: Date.now() - STALE_MS, detail: "probe ok" },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("healthy");
+      expect(counters.probes).toBe(0);
+    }),
+  );
+
+  it.effect("concurrent lists past the freshness gate collapse to one probe", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness({
+        probe: Deferred.await(gate).pipe(
+          Effect.map(() => ({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "probe ok",
+          })),
+        ),
+      });
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      const lists = yield* Effect.forkChild(
+        Effect.all(
+          Array.from({ length: 5 }, () => executor.execute(CORE_LIST, {})),
+          { concurrency: "unbounded" },
+        ),
+      );
+      // The probe is held open by the gate, so NOTHING has been persisted yet:
+      // every one of the five lists must pass the freshness check and reach
+      // the probe path. Give them real time to get there — the counter then
+      // says how many probes actually started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.probes).toBe(1);
+
+      yield* Deferred.succeed(gate, void 0);
+      const outs = (yield* Fiber.join(lists)) as readonly ListedConnections[];
+      for (const out of outs) {
+        const listed = out.connections.find((c) => c.name === "main");
+        expect(listed?.lastHealth?.status).toBe("healthy");
+      }
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+
+  it.effect("a grant recorded invalid_grant-dead is never auto-revalidated", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: {
+          status: "expired",
+          checkedAt: Date.now() - STALE_MS,
+          detail: "invalid_grant",
+        },
+      });
+
+      // The list serves the persisted verdict without probing: a probe could
+      // pass on the access token's remaining lifetime and persist "healthy",
+      // hiding the required reconnect forever.
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      // The manual "Check now" (no freshness window) refuses too: only an
+      // explicit reconnect clears a dead grant.
+      const manual = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(manual.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("a buried dead-grant verdict presents expired on every read, without a write", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted, rawRow } = yield* makeHealthHarness();
+      const detail = "invalid_grant: Grant not found";
+      // A racing writer's verdict landed after the recorder's: the row reads
+      // "degraded" while provider_state still records the dead grant.
+      yield* stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now(), oauthReauthRequiredDetail: detail },
+        last_health: {
+          status: "degraded",
+          checkedAt: Date.now(),
+          detail: "Tool sync failing: upstream rejected the credential",
+        },
+      });
+      const before = yield* rawRow();
+
+      // Check now: still no probe — the dead grant refuses those — and the
+      // served verdict is the authoritative expired one, not the buried
+      // degraded.
+      const manual = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(manual.status).toBe("expired");
+      expect(manual.detail).toBe(detail);
+      expect(counters.probes).toBe(0);
+
+      // connections.get and the agent list present the same derivation.
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail });
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      // Derivation, not repair: no read wrote anything back. A repair write
+      // could race a concurrent reconnect and stamp the old grant's expired
+      // verdict onto the fresh connection; presenting from `provider_state`
+      // needs no write, so there is nothing to race.
+      const after = yield* rawRow();
+      expect(after?.updated_at).toEqual(before?.updated_at);
+      expect(after?.last_health).toEqual(before?.last_health);
+    }),
+  );
+
+  it.effect("reconnect clearing the dead grant ends the derivation on reads", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: {
+          status: "degraded",
+          checkedAt: Date.now(),
+          detail: "Tool sync failing: upstream rejected the credential",
+        },
+      });
+      const buried = yield* persisted();
+      expect(buried?.lastHealth?.status).toBe("expired");
+
+      // The reconnect mint rewrites `provider_state` wholesale and clears the
+      // old grant's verdict. That alone must end the expired presentation —
+      // no repair write exists to resurrect the old grant's verdict onto the
+      // fresh connection.
+      yield* stamp({ provider_state: null, last_health: null, updated_at: new Date() });
+
+      const fresh = yield* persisted();
+      expect(fresh?.lastHealth).toBeNull();
+
+      // And probing is re-opened for the new grant.
+      const check = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(check.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+    }),
+  );
+
+  it.effect("leaves tool-sync failure verdicts for sync to clear", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      const detail = "Tool sync failing: plugin returned an incomplete tool catalog";
+      yield* stamp({
+        last_health: { status: "degraded", checkedAt: Date.now() - STALE_MS, detail },
+      });
+
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("degraded");
+      expect(counters.probes).toBe(0);
+
+      // The compact list shape omits `detail`, so read the untouched verdict
+      // off the row: a tool-sync failure is cleared by a successful sync, not
+      // by a credential probe.
+      const row = yield* persisted();
+      expect(row?.lastHealth?.detail).toBe(detail);
+    }),
+  );
+});
+
+describe("heal-on-use", () => {
+  it.effect("a successful invocation flips a stale non-healthy verdict to healthy", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({
+        status: "healthy",
+        detail: "Tool invocation succeeded.",
+      });
+    }),
+  );
+
+  it.effect("an explicit tool failure does not heal", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), { fail: true });
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("a grant recorded invalid_grant-dead is not healed by a lingering token", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: {
+          status: "expired",
+          checkedAt: Date.now() - STALE_MS,
+          detail: "invalid_grant",
+        },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("does not overwrite a newer verdict written while the call was in flight", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+      // A probe (or refresh) lands a NEWER expired verdict while the call is
+      // in flight. Heal-on-use decided from the row loaded BEFORE invocation;
+      // it must re-check at write time and leave the newer evidence standing.
+      const newerDetail = "revoked upstream while the call ran";
+      hooks.onInvoke = stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: newerDetail },
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: newerDetail });
+    }),
+  );
+
+  it.effect("does not resurrect a grant that died while the call was in flight", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+      // A concurrent refresh discovers invalid_grant mid-call and records the
+      // dead grant. The invocation still succeeded on the old access token's
+      // remaining lifetime — healing from it would bury the reconnect.
+      hooks.onInvoke = stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
+    }),
+  );
+
+  it.effect("a call whose credential no longer resolves is not healed", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted } = yield* makeHealthHarness();
+      // The stored credential is gone from the provider. Rendering skips a
+      // missing placement, so an upstream that answers unauthenticated still
+      // succeeds — that success says nothing about a credential that no longer
+      // exists, and healing from it would tell the user to stop reconnecting.
+      yield* stamp({
+        item_ids: { token: "vanished-item" },
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The guards above re-take their decision from a fresh row at write time, but
+// a re-read alone leaves a window: a conflicting write can commit AFTER the
+// fresh read and BEFORE the guard's own UPDATE. These tests commit the
+// conflict inside that exact window (`hooks.beforeHealthPersist` fires after
+// the guard's fresh read, immediately before its UPDATE reaches the
+// database) and assert the guarded write loses: the UPDATE is
+// compare-and-swapped on the `updated_at` stamp the fresh read observed, so
+// the conflict's bump makes it match zero rows. Every initial stamp ages
+// `updated_at` because SQLite stores the stamp at second granularity — the
+// conflict's fresh stamp must land in a different granule than the observed
+// one for the swap to see it.
+// ---------------------------------------------------------------------------
+
+describe("verdict write guards close the check-to-write window", () => {
+  const REF = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+  it.effect("probe persist: a dead grant recorded inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      // The probe passes on the old access token's remaining lifetime while a
+      // concurrent refresh discovers invalid_grant. The dead-grant write
+      // commits after the guard's fresh read (which saw no dead grant) and
+      // before its UPDATE — the window a re-read alone cannot close.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      // The dead-grant verdict survived the probe's guarded write...
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
+
+      // ...and the next check serves it without probing, as for any dead grant.
+      const after = yield* executor.connections.checkHealth(REF);
+      expect(after.status).toBe("expired");
+      expect(counters.probes).toBe(1);
+    }),
+  );
+
+  it.effect("heal-on-use: a dead grant recorded inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      // Heal-on-use re-reads, sees the stale verdict it observed at load and
+      // no dead grant, and decides to heal — then the dead-grant write
+      // commits before its UPDATE.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
+    }),
+  );
+
+  it.effect("heal-on-use: a newer verdict written inside the window survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: new Date(Date.now() - STALE_MS),
+      });
+      const newerDetail = "revoked upstream while the heal was in flight";
+      hooks.beforeHealthPersist = stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: newerDetail },
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: newerDetail });
+    }),
+  );
+
+  // The three tests above age `updated_at` so the conflict's bump lands in a
+  // different SQLite second granule. The three below do the opposite: the
+  // conflict reuses the EXACT stamp the guard's fresh read observed — the
+  // same-second collision `updated_at` alone cannot see — so only the
+  // `tools_synced_at` leg of the swap can refuse the guarded write. The
+  // conflict is the one collision that must never be buried: a failing tool
+  // sync stores its degraded verdict TOGETHER with a fresh `tools_synced_at`,
+  // so a guard overwriting it with "healthy" would also leave the catalog
+  // looking just-synced and hide the failure for the full sync TTL.
+
+  const SYNC_DETAIL = "Tool sync failing: plugin returned an incomplete tool catalog";
+
+  it.effect("probe persist: a failing sync landing in the same second survives", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted, rawRow, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      const observedSyncedAt = Date.now() - STALE_MS;
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: observedSyncedAt,
+      });
+      const freshSyncedAt = Date.now();
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: freshSyncedAt,
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+      const raw = yield* rawRow();
+      expect(Number(raw?.tools_synced_at)).toBe(freshSyncedAt);
+    }),
+  );
+
+  it.effect("heal-on-use: a failing sync landing in the same second survives", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, rawRow, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      const observedSyncedAt = Date.now() - STALE_MS;
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: observedSyncedAt,
+      });
+      // `+ 1` rather than `Date.now()`: the invocation itself may re-stamp
+      // `tools_synced_at` before the heal's fresh read, and the conflicting
+      // sync stamp must be guaranteed to differ from whatever that read
+      // observed — an aged value + 1 can match neither it nor "now".
+      const freshSyncedAt = observedSyncedAt + 1;
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: freshSyncedAt,
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+      const raw = yield* rawRow();
+      expect(Number(raw?.tools_synced_at)).toBe(freshSyncedAt);
+    }),
+  );
+
+  it.effect("probe persist: the sync leg guards a never-synced row (NULL stamp)", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      const observedUpdatedAt = new Date();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+        updated_at: observedUpdatedAt,
+        tools_synced_at: null,
+      });
+      hooks.beforeHealthPersist = stamp({
+        tools_synced_at: Date.now(),
+        last_health: { status: "degraded", checkedAt: Date.now(), detail: SYNC_DETAIL },
+        updated_at: observedUpdatedAt,
+      }).pipe(Effect.asVoid);
+
+      const result = yield* executor.connections.checkHealth(REF);
+      expect(result.status).toBe("healthy");
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+    }),
+  );
+});
+
+describe("credential-only health path", () => {
+  it.effect("concurrent checks collapse to one credential resolution", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
+      // No declared probe spec + an OAuth client on the row routes checkHealth
+      // down the credential-only path: the verdict is "the credential
+      // resolved", produced without invoking the plugin probe. That path runs
+      // behind the same in-flight gate as probing, so concurrent checks must
+      // collapse to ONE resolution.
+      yield* stamp({ oauth_client: "acme", expires_at: null });
+      hooks.onResolve = Deferred.await(gate);
+      counters.resolves = 0;
+      const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+      const checks = yield* Effect.forkChild(
+        Effect.all([executor.connections.checkHealth(ref), executor.connections.checkHealth(ref)], {
+          concurrency: "unbounded",
+        }),
+      );
+      // The resolution is held open by the gate, so nothing has been
+      // persisted: both checks must reach the credential path. Give them real
+      // time to get there — the counter then says how many resolutions started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.resolves).toBe(1);
+
+      yield* Deferred.succeed(gate, void 0);
+      const [first, second] = yield* Fiber.join(checks);
+      expect(first.status).toBe("healthy");
+      expect(second.status).toBe("healthy");
+      expect(counters.resolves).toBe(1);
+      expect(counters.probes).toBe(0);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+});
+
+describe("health probe gate lifecycle", () => {
+  it.effect("a failed probe clears its gate entry for the next check", () =>
+    Effect.gen(function* () {
+      let firstProbe = true;
+      const { executor, counters } = yield* makeHealthHarness({
+        probe: Effect.suspend(() => {
+          if (firstProbe) {
+            firstProbe = false;
+            return Effect.fail("probe exploded" as const);
+          }
+          return Effect.succeed({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "probe ok",
+          });
+        }),
+      });
+      const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+
+      const first = yield* executor.connections.checkHealth(ref).pipe(Effect.exit);
+      expect(Exit.isFailure(first)).toBe(true);
+
+      // A leaked gate entry would hand this check the first probe's settled
+      // Deferred (failing again without probing); a second probe run proves
+      // the failure removed the entry.
+      const second = yield* executor.connections.checkHealth(ref);
+      expect(second.status).toBe("healthy");
+      expect(counters.probes).toBe(2);
+    }),
+  );
+});
+
+describe("health probe gate key integrity", () => {
+  // The in-flight probe gate is shared across every executor holding the same
+  // root db handle, so the key must be collision-free across tenants. A
+  // colon-join is not: tenant and subject are opaque strings that may contain
+  // colons, so (tenant "a", subject "user:b") and (tenant "a:user", subject
+  // "b") both read "a:user:user:b:<integration>:<name>" — and colliding keys
+  // share one Deferred, serving one tenant's probe outcome (run with ITS
+  // credentials) as the other tenant's health verdict.
+  it.effect("colliding colon-join identities run two distinct probes, not one shared gate", () =>
+    Effect.gen(function* () {
+      const counters = { probes: 0 };
+      const gate = yield* Deferred.make<void>();
+      // Every probe increments the shared counter and then parks on the gate,
+      // so both checks are provably in flight at once: nothing is persisted,
+      // and a collided gate would let the second check join the first probe's
+      // Deferred instead of starting its own.
+      const probingPlugin = definePlugin(() => ({
+        id: "healthgate" as const,
+        credentialProviders: [memoryProvider()],
+        storage: () => ({}),
+        resolveTools: () =>
+          Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+        invokeTool: ({ toolRow, credential }) =>
+          Effect.succeed({ ran: toolRow.name, value: credential.value }),
+        checkHealth: () =>
+          Effect.suspend(() => {
+            counters.probes += 1;
+            return Deferred.await(gate).pipe(
+              Effect.map(() => ({
+                status: "healthy" as const,
+                checkedAt: Date.now(),
+                detail: "probe ok",
+              })),
+            );
+          }),
+        extension: (ctx) => ({
+          seed: () =>
+            ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+        }),
+      }));
+
+      // Both executors share ONE root db handle — and therefore one gate map;
+      // only the key separates their probes.
+      const configA = makeTestConfig({
+        plugins: [probingPlugin()] as const,
+        tenant: "a",
+        subject: "user:b",
+      });
+      const executorA = yield* createExecutor(configA);
+      const executorB = yield* createExecutor({
+        ...configA,
+        tenant: Tenant.make("a:user"),
+        subject: Subject.make("b"),
+        plugins: [probingPlugin()] as const,
+      });
+      yield* executorA.healthgate.seed();
+      yield* executorB.healthgate.seed();
+      const ref = {
+        owner: "user",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+      } as const;
+      yield* executorA.connections.create({ ...ref, template: TEMPLATE, value: "token-a" });
+      yield* executorB.connections.create({ ...ref, template: TEMPLATE, value: "token-b" });
+
+      const checkA = yield* Effect.forkChild(executorA.connections.checkHealth(ref));
+      const checkB = yield* Effect.forkChild(executorB.connections.checkHealth(ref));
+      // Give both fibers real time to reach the probe path while the gate
+      // holds every probe open; the counter then says how many started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.probes).toBe(2);
+
+      yield* Deferred.succeed(gate, void 0);
+      const resultA = yield* Fiber.join(checkA);
+      const resultB = yield* Fiber.join(checkB);
+      expect(resultA.status).toBe("healthy");
+      expect(resultB.status).toBe("healthy");
+      expect(counters.probes).toBe(2);
     }),
   );
 });

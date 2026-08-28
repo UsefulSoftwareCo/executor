@@ -31,7 +31,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "bin": {
         "executor": "./bin/executor.ts",
       },
@@ -60,7 +60,7 @@
     },
     "apps/cloud": {
       "name": "@executor-js/cloud",
-      "version": "1.4.63",
+      "version": "1.4.64",
       "dependencies": {
         "@cloudflare/vite-plugin": "^1.31.1",
         "@effect/atom-react": "catalog:",
@@ -133,7 +133,7 @@
     },
     "apps/desktop": {
       "name": "@executor-js/desktop",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@sentry/bun": "^10.57.0",
         "@sentry/electron": "^7.13.0",
@@ -220,7 +220,7 @@
     },
     "apps/host-selfhost": {
       "name": "@executor-js/host-selfhost",
-      "version": "0.0.44",
+      "version": "0.0.45",
       "dependencies": {
         "@better-auth/api-key": "^1.6.11",
         "@cloudflare/worker-bundler": "0.2.1",
@@ -272,7 +272,7 @@
     },
     "apps/local": {
       "name": "@executor-js/local",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@effect/atom-react": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -352,7 +352,7 @@
     },
     "e2e": {
       "name": "@executor-js/e2e",
-      "version": "0.0.42",
+      "version": "0.0.43",
       "dependencies": {
         "@executor-js/api": "workspace:*",
         "@executor-js/emulate": "^0.14.1",
@@ -387,7 +387,7 @@
     },
     "examples/all-plugins": {
       "name": "@executor-js/example-all-plugins",
-      "version": "0.0.63",
+      "version": "0.0.64",
       "dependencies": {
         "@executor-js/plugin-file-secrets": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -406,7 +406,7 @@
     },
     "examples/docs-sdk-quickstart": {
       "name": "@executor-js/example-docs-sdk-quickstart",
-      "version": "0.0.48",
+      "version": "0.0.49",
       "dependencies": {
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -463,7 +463,7 @@
     },
     "packages/core/analytics": {
       "name": "@executor-js/analytics",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/execution": "workspace:*",
@@ -479,7 +479,7 @@
     },
     "packages/core/api": {
       "name": "@executor-js/api",
-      "version": "1.4.65",
+      "version": "1.4.66",
       "dependencies": {
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
@@ -496,7 +496,7 @@
     },
     "packages/core/cli": {
       "name": "@executor-js/cli",
-      "version": "0.2.52",
+      "version": "0.2.53",
       "bin": {
         "executor-sdk": "./dist/index.js",
       },
@@ -517,7 +517,7 @@
     },
     "packages/core/config": {
       "name": "@executor-js/config",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "jiti": "^2.6.1",
@@ -538,7 +538,7 @@
     },
     "packages/core/execution": {
       "name": "@executor-js/execution",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -559,7 +559,7 @@
     },
     "packages/core/fumadb": {
       "name": "@executor-js/fumadb",
-      "version": "1.5.7",
+      "version": "1.5.8",
       "dependencies": {
         "@clack/prompts": "^1.3.0",
         "@paralleldrive/cuid2": "^3.3.0",
@@ -604,7 +604,7 @@
     },
     "packages/core/sdk": {
       "name": "@executor-js/sdk",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/fumadb": "workspace:*",
         "@standard-schema/spec": "^1.1.0",
@@ -657,7 +657,7 @@
     },
     "packages/core/vite-plugin": {
       "name": "@executor-js/vite-plugin",
-      "version": "0.0.62",
+      "version": "0.0.63",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "jiti": "^2.6.1",
@@ -677,7 +677,7 @@
     },
     "packages/hosts/cloudflare": {
       "name": "@executor-js/cloudflare",
-      "version": "0.0.44",
+      "version": "0.0.45",
       "dependencies": {
         "@executor-js/api": "workspace:*",
         "@executor-js/execution": "workspace:*",
@@ -718,7 +718,7 @@
     },
     "packages/hosts/mcp-apps-shell": {
       "name": "@executor-js/mcp-apps-shell",
-      "version": "1.4.13",
+      "version": "1.4.14",
       "dependencies": {
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -756,7 +756,7 @@
     },
     "packages/kernel/core": {
       "name": "@executor-js/codemode-core",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@babel/parser": "^7.29.2",
         "@standard-schema/spec": "^1.0.0",
@@ -829,7 +829,7 @@
     },
     "packages/kernel/runtime-quickjs": {
       "name": "@executor-js/runtime-quickjs",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "quickjs-emscripten": "catalog:",
@@ -849,7 +849,7 @@
     },
     "packages/kernel/runtime-workerd-subprocess": {
       "name": "@executor-js/runtime-workerd-subprocess",
-      "version": "0.0.17",
+      "version": "0.0.18",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
         "effect": "catalog:",
@@ -864,7 +864,7 @@
     },
     "packages/plugins/desktop-settings": {
       "name": "@executor-js/plugin-desktop-settings",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "react": "catalog:",
@@ -877,7 +877,7 @@
     },
     "packages/plugins/encrypted-secrets": {
       "name": "@executor-js/plugin-encrypted-secrets",
-      "version": "0.0.44",
+      "version": "0.0.45",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
@@ -892,7 +892,7 @@
     },
     "packages/plugins/example": {
       "name": "@executor-js/plugin-example",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -915,7 +915,7 @@
     },
     "packages/plugins/file-secrets": {
       "name": "@executor-js/plugin-file-secrets",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -932,7 +932,7 @@
     },
     "packages/plugins/graphql": {
       "name": "@executor-js/plugin-graphql",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
@@ -971,7 +971,7 @@
     },
     "packages/plugins/keychain": {
       "name": "@executor-js/plugin-keychain",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "@napi-rs/keyring": "^1.2.0",
@@ -990,7 +990,7 @@
     },
     "packages/plugins/mcp": {
       "name": "@executor-js/plugin-mcp",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@cfworker/json-schema": "^4.1.1",
         "@effect/platform-node": "catalog:",
@@ -1034,7 +1034,7 @@
     },
     "packages/plugins/onepassword": {
       "name": "@executor-js/plugin-onepassword",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@1password/op-js": "^0.1.13",
         "@1password/sdk": "^0.4.1-beta.1",
@@ -1068,7 +1068,7 @@
     },
     "packages/plugins/openapi": {
       "name": "@executor-js/plugin-openapi",
-      "version": "1.6.2",
+      "version": "1.6.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
@@ -1109,7 +1109,7 @@
     },
     "packages/plugins/provider-service-split": {
       "name": "@executor-js/plugin-provider-service-split",
-      "version": "0.0.16",
+      "version": "0.0.17",
       "dependencies": {
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -1126,7 +1126,7 @@
     },
     "packages/plugins/toolkits": {
       "name": "@executor-js/plugin-toolkits",
-      "version": "1.5.37",
+      "version": "1.5.38",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
       },
@@ -1195,7 +1195,7 @@
     },
     "packages/react": {
       "name": "@executor-js/react",
-      "version": "1.4.65",
+      "version": "1.4.66",
       "dependencies": {
         "@base-ui/react": "^1.3.0",
         "@effect/atom-react": "catalog:",

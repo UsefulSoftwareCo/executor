@@ -25,17 +25,51 @@ export const OnePasswordAuth = Schema.Union([DesktopAppAuth, ServiceAccountAuth]
 export type OnePasswordAuth = typeof OnePasswordAuth.Type;
 
 // ---------------------------------------------------------------------------
+// Vault
+// ---------------------------------------------------------------------------
+
+export const Vault = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+});
+export type Vault = typeof Vault.Type;
+
+// ---------------------------------------------------------------------------
 // Stored config — persisted via KV
 // ---------------------------------------------------------------------------
 
 export const OnePasswordConfig = Schema.Struct({
   auth: OnePasswordAuth,
-  /** Vault to scope operations to */
-  vaultId: Schema.String,
-  /** Human label */
+  /** Vaults to scope operations to. Order is presentational only: refs are
+   *  vault-qualified, and a bare ref that matches in more than one vault is an
+   *  explicit ambiguity failure, never a precedence pick. */
+  vaults: Schema.NonEmptyArray(Vault),
+  /** Human label for the whole connection */
   name: Schema.String,
 });
 export type OnePasswordConfig = typeof OnePasswordConfig.Type;
+
+/** Pre-multi-vault stored shape: a single vault id whose display name doubled
+ *  as the connection label. Still accepted on read; every save writes the
+ *  current shape, so a config row upgrades the first time it is re-saved. */
+export const LegacyOnePasswordConfig = Schema.Struct({
+  auth: OnePasswordAuth,
+  vaultId: Schema.String,
+  name: Schema.String,
+});
+export type LegacyOnePasswordConfig = typeof LegacyOnePasswordConfig.Type;
+
+export const StoredOnePasswordConfig = Schema.Union([OnePasswordConfig, LegacyOnePasswordConfig]);
+export type StoredOnePasswordConfig = typeof StoredOnePasswordConfig.Type;
+
+export const normalizeStoredConfig = (stored: StoredOnePasswordConfig): OnePasswordConfig =>
+  "vaultId" in stored
+    ? {
+        auth: stored.auth,
+        vaults: [{ id: stored.vaultId, name: stored.name }],
+        name: stored.name,
+      }
+    : stored;
 
 // ---------------------------------------------------------------------------
 // Redacted config — what `getConfig` returns to agents / the UI. The
@@ -56,7 +90,7 @@ export const RedactedOnePasswordAuth = Schema.Union([
 
 export const RedactedOnePasswordConfig = Schema.Struct({
   auth: RedactedOnePasswordAuth,
-  vaultId: Schema.String,
+  vaults: Schema.NonEmptyArray(Vault),
   name: Schema.String,
 });
 export type RedactedOnePasswordConfig = typeof RedactedOnePasswordConfig.Type;
@@ -67,19 +101,9 @@ export const redactConfig = (config: OnePasswordConfig): RedactedOnePasswordConf
     config.auth.kind === "desktop-app"
       ? { kind: "desktop-app", accountName: config.auth.accountName }
       : { kind: "service-account" },
-  vaultId: config.vaultId,
+  vaults: config.vaults,
   name: config.name,
 });
-
-// ---------------------------------------------------------------------------
-// Vault
-// ---------------------------------------------------------------------------
-
-export const Vault = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-});
-export type Vault = typeof Vault.Type;
 
 // ---------------------------------------------------------------------------
 // Connection status
@@ -87,7 +111,7 @@ export type Vault = typeof Vault.Type;
 
 export const ConnectionStatus = Schema.Struct({
   connected: Schema.Boolean,
-  vaultName: Schema.optional(Schema.String),
+  vaultNames: Schema.optional(Schema.Array(Schema.String)),
   error: Schema.optional(Schema.String),
 });
 export type ConnectionStatus = typeof ConnectionStatus.Type;

@@ -16,6 +16,7 @@ import {
   ProviderKey,
   ToolAddress,
   createExecutor,
+  endpointForTelemetry,
 } from "@executor-js/sdk";
 import {
   makeTestConfig,
@@ -24,7 +25,6 @@ import {
 } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";
-import { endpointForTelemetry } from "./invoke";
 import { introspect } from "./introspect";
 import type { IntrospectionResult } from "./introspect";
 import {

@@ -10,6 +10,7 @@ import {
   AuthTemplateSlug,
   ConnectionName,
   definePlugin,
+  endpointTelemetryAttributes,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   mergeAuthTemplates,
@@ -963,7 +964,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
-            attributes: { "mcp.endpoint": typeof input === "string" ? input : input.endpoint },
+            // The probed endpoint is raw user paste and routinely carries a
+            // credential in its query string (`?token=…`) — sanitize before
+            // stamping.
+            attributes: endpointTelemetryAttributes(
+              "mcp.endpoint",
+              typeof input === "string" ? input : input.endpoint,
+            ),
           }),
         );
 
@@ -1583,7 +1590,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       }).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.withSpan("mcp.plugin.detect", {
-          attributes: { "mcp.endpoint": url },
+          // Same raw-paste input as probe_endpoint — sanitize before stamping.
+          attributes: endpointTelemetryAttributes("mcp.endpoint", url),
         }),
       ),
 

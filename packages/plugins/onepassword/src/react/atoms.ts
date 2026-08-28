@@ -33,7 +33,10 @@ export const onepasswordVaultsAtom = (
 ) =>
   OnePasswordClient.query("onepassword", "listVaults", {
     query: { authKind, account },
-    timeToLive: "30 seconds",
+    // Long retention on purpose: vault listing goes through the op CLI/SDK and
+    // is slow, so a reopened dialog renders the last-known vaults instantly
+    // and revalidates in the background instead of flashing a loading state.
+    timeToLive: "10 minutes",
     reactivityKeys: [ReactivityKey.providers],
   });
 

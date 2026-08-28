@@ -1,5 +1,12 @@
 # fumadb
 
+## 1.5.8
+
+### Patch Changes
+
+- [#1098](https://github.com/UsefulSoftwareCo/executor/pull/1098) [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae) Thanks [@aryasaatvik](https://github.com/aryasaatvik)! - Add a FumaDB bulk upsert query path and route plugin-storage bulk writes through
+  it so existing rows are updated without delete/reinsert churn.
+
 ## 1.5.7
 
 ### Patch Changes

@@ -2419,3 +2419,160 @@ describe("reactive OAuth refresh on upstream 401", () => {
     ),
   );
 });
+
+// ---------------------------------------------------------------------------
+// RFC 8707 resource omission for a resource-less client (#1789)
+//
+// A client persisted with NO resource sends no `resource` parameter on ANY
+// request — authorize, code exchange, refresh, client-credentials. Microsoft
+// Entra v2 rejects requests that carry `resource` next to a v2 `scope`
+// (AADSTS9010010), and the way out is a client whose resource is absent; that
+// absence must hold on every grant, or the token audience diverges between
+// authorize and token. The mirror-image assertions — a client WITH a resource
+// sends it on authorize + exchange + refresh — live in the tests above.
+// ---------------------------------------------------------------------------
+describe("resource-less client sends no resource parameter (#1789)", () => {
+  it.effect("authorize, code exchange, and refresh all omit `resource`", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        // `resource: null` — explicitly none, not merely unset.
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: null,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(new URL(started.authorizationUrl).searchParams.has("resource")).toBe(false);
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        // Force expiry so the next execute refreshes.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        const refreshed = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.main.whoami"),
+          {},
+        )) as { token: string };
+        expect(refreshed.token).toMatch(/^at_/);
+
+        // What the authorization server actually SAW: the authorize request,
+        // the code exchange, and the refresh each carried no `resource`.
+        const requests = yield* server.requests;
+        const authorize = requests.find((r) => r.path === "/authorize" && r.method === "GET");
+        expect(authorize).toBeDefined();
+        expect(authorize?.query.resource ?? null).toBeNull();
+        const exchange = requests.find(
+          (r) => r.path === "/token" && r.body.includes("grant_type=authorization_code"),
+        );
+        expect(exchange).toBeDefined();
+        expect(exchange?.body ?? "").not.toContain("resource=");
+        const refresh = requests.find(
+          (r) => r.path === "/token" && r.body.includes("grant_type=refresh_token"),
+        );
+        expect(refresh).toBeDefined();
+        expect(refresh?.body ?? "").not.toContain("resource=");
+      }),
+    ),
+  );
+
+  it.effect("client_credentials omits `resource` for a resource-less client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: null,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("cc"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("connected");
+
+        const requests = yield* server.requests;
+        const grant = requests.find(
+          (r) => r.path === "/token" && r.body.includes("grant_type=client_credentials"),
+        );
+        expect(grant).toBeDefined();
+        expect(grant?.body ?? "").not.toContain("resource=");
+      }),
+    ),
+  );
+
+  it.effect("client_credentials sends `resource` when the client has one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("cc"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("connected");
+
+        const requests = yield* server.requests;
+        const grant = requests.find(
+          (r) => r.path === "/token" && r.body.includes("grant_type=client_credentials"),
+        );
+        expect(grant?.body).toContain(`resource=${encodeURIComponent(server.mcpResourceUrl)}`);
+      }),
+    ),
+  );
+});

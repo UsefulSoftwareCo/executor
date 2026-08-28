@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Schema } from "effect";
 
-import { StorageError } from "./fuma-runtime";
+import { createExecutor } from "./executor";
+import { StorageError, type FumaDb } from "./fuma-runtime";
 import { Owner } from "./ids";
 import { definePlugin } from "./plugin";
 import {
@@ -10,7 +11,7 @@ import {
   type PluginStorageCollectionQueryInput,
   type PluginStorageCollectionWhere,
 } from "./plugin-storage";
-import { makeTestExecutor } from "./testing";
+import { makeTestConfig, makeTestExecutor } from "./testing";
 
 const ToolCall = Schema.Struct({
   runId: Schema.String,
@@ -112,6 +113,55 @@ const call = (input: {
   startedAt: input.startedAt,
   durationMs: input.durationMs ?? 0,
 });
+
+// A FumaDB that commits the FIRST row of a multi-row `plugin_storage` bulk
+// write and then fails. Injecting the fault mid-write, rather than before it,
+// is what makes the two rollback cases below meaningful: the row is really on
+// disk when the failure lands, so only the enclosing transaction can take it
+// back. The fault is unconditional (not armed by entering a transaction) so
+// that dropping the transaction is a visible failure and not a silently
+// disarmed test.
+const failPluginStorageBulkWriteAfterFirstRow = (db: FumaDb): FumaDb => {
+  const wrap = (source: FumaDb): FumaDb =>
+    new Proxy(source, {
+      get(target, property, receiver) {
+        if (property === "withContext") {
+          const withContext = target.withContext;
+          return withContext === undefined
+            ? undefined
+            : (context: unknown) => wrap(withContext(context));
+        }
+        if (property === "transaction") {
+          const transaction: FumaDb["transaction"] = (run) =>
+            target.transaction((transactionDb) => run(wrap(transactionDb)));
+          return transaction;
+        }
+        if (property === "upsertMany") {
+          const upsertMany: FumaDb["upsertMany"] = async (table, options) => {
+            if (table !== "plugin_storage" || options.values.length < 2) {
+              return target.upsertMany(table, options);
+            }
+
+            await target.upsertMany(table, {
+              ...options,
+              values: options.values.slice(0, 1),
+            });
+            // oxlint-disable-next-line executor/no-promise-reject -- boundary: fault-injecting FumaDB adapter must reject to exercise transaction rollback
+            return Promise.reject(
+              new StorageError({
+                message: "Injected plugin storage bulk-write failure.",
+                cause: undefined,
+              }),
+            );
+          };
+          return upsertMany;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+  return wrap(db);
+};
 
 describe("plugin storage collections", () => {
   it.effect("queries declared indexes through the executor's SQLite FumaDB target", () =>
@@ -219,6 +269,164 @@ describe("plugin storage collections", () => {
       );
       const remaining = yield* executor.executionHistory.query({ where: { runId: "run-bulk" } });
       expect(remaining).toEqual([]);
+    }),
+  );
+
+  it.effect("stores and overwrites every row when a bulk write spans multiple batches", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      // A plugin_storage row binds ~9 values, so 300 rows exceed one
+      // 999-bound-variable statement budget and must span several batches.
+      const entries = (status: "ok" | "failed") =>
+        Array.from({ length: 300 }, (_, index) => ({
+          key: `batched-call-${String(index).padStart(3, "0")}`,
+          data: call({
+            runId: "run-batched",
+            toolId: "browser",
+            status,
+            startedAt: new Date(Date.UTC(2026, 4, 29, 12, 0, index)).toISOString(),
+          }),
+        }));
+
+      yield* executor.executionHistory.recordMany("org", entries("ok"));
+      const total = yield* executor.executionHistory.count({
+        where: { runId: "run-batched" },
+      });
+      expect(total).toBe(300);
+
+      yield* executor.executionHistory.recordMany("org", entries("failed"));
+      const failed = yield* executor.executionHistory.count({
+        where: { runId: "run-batched", status: "failed" },
+      });
+      expect(failed).toBe(300);
+      const totalAfterOverwrite = yield* executor.executionHistory.count({
+        where: { runId: "run-batched" },
+      });
+      expect(totalAfterOverwrite).toBe(300);
+    }),
+  );
+
+  it.effect("rolls back every plugin storage row when a bulk write fails", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const executor = yield* Effect.acquireRelease(
+        createExecutor({
+          ...config,
+          db: failPluginStorageBulkWriteAfterFirstRow(config.db),
+        }),
+        (instance) =>
+          instance
+            .close()
+            .pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.promise(() => config.testDb.close()).pipe(Effect.ignore)),
+            ),
+      );
+
+      const exit = yield* Effect.exit(
+        executor.executionHistory.recordMany("org", [
+          {
+            key: "call-first",
+            data: call({
+              runId: "run-rollback",
+              toolId: "browser",
+              status: "ok",
+              startedAt: "2026-05-29T12:00:00.000Z",
+            }),
+          },
+          {
+            key: "call-second",
+            data: call({
+              runId: "run-rollback",
+              toolId: "shell",
+              status: "ok",
+              startedAt: "2026-05-29T12:01:00.000Z",
+            }),
+          },
+        ]),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const stored = yield* executor.executionHistory.query({
+        where: { runId: "run-rollback" },
+      });
+      expect(stored).toEqual([]);
+    }),
+  );
+
+  // The hazard this whole change exists to remove: the previous implementation
+  // deleted every target key and only then re-created the rows, so a failure
+  // between the two halves destroyed data the caller never meant to touch. An
+  // upsert inside a transaction cannot lose a row it did not successfully
+  // replace, so the ORIGINAL values must still be readable after the failure —
+  // not merely absent-and-consistent like the rolled-back insert above.
+  it.effect("leaves pre-existing rows intact when a bulk overwrite fails mid-batch", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const executor = yield* Effect.acquireRelease(
+        createExecutor({
+          ...config,
+          db: failPluginStorageBulkWriteAfterFirstRow(config.db),
+        }),
+        (instance) =>
+          instance
+            .close()
+            .pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.promise(() => config.testDb.close()).pipe(Effect.ignore)),
+            ),
+      );
+
+      // Seeded one row at a time, so the seeding itself never goes through the
+      // bulk path the fault injector breaks.
+      const original = [
+        {
+          key: "call-first",
+          data: call({
+            runId: "run-preexisting",
+            toolId: "browser",
+            status: "ok",
+            startedAt: "2026-05-29T12:00:00.000Z",
+          }),
+        },
+        {
+          key: "call-second",
+          data: call({
+            runId: "run-preexisting",
+            toolId: "shell",
+            status: "ok",
+            startedAt: "2026-05-29T12:01:00.000Z",
+          }),
+        },
+      ];
+      for (const row of original) {
+        yield* executor.executionHistory.record("org", row.key, row.data);
+      }
+
+      const exit = yield* Effect.exit(
+        executor.executionHistory.recordMany(
+          "org",
+          original.map((row) => ({
+            key: row.key,
+            data: { ...row.data, toolId: "overwritten", status: "failed" as const },
+          })),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const first = yield* executor.executionHistory.get("call-first");
+      const second = yield* executor.executionHistory.get("call-second");
+      expect(first?.data).toEqual(original[0]!.data);
+      expect(second?.data).toEqual(original[1]!.data);
     }),
   );
 

@@ -4,6 +4,7 @@ import type {
   AnySchema,
   AnyTable,
 } from "../../schema";
+import { Column } from "../../schema";
 import type {
   AbstractQuery,
   AnySelectClause,
@@ -12,7 +13,12 @@ import type {
   JoinBuilder,
   OrderBy,
 } from "..";
-import { buildCondition, createBuilder, type Condition } from "../condition-builder";
+import {
+  buildCondition,
+  createBuilder,
+  type Condition,
+  ConditionType,
+} from "../condition-builder";
 
 export interface CompiledJoin {
   relation: AnyRelation;
@@ -231,6 +237,68 @@ const applyUpdatePolicies = async (
   return nextWhere;
 };
 
+// Structural equality over predicate values. Policy predicates may carry any
+// column value shape — string, number, bigint, boolean, null, Date, binary,
+// JSON objects, and arrays of those — so serializing them to string keys
+// (e.g. JSON.stringify) either throws (bigint) or collides (values with the
+// same serialized form). Comparing structurally is unambiguous; a false
+// negative only splits a group and never merges rows under the wrong
+// predicate.
+export const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return (
+      a instanceof Uint8Array &&
+      b instanceof Uint8Array &&
+      a.length === b.length &&
+      a.every((byte, index) => byte === b[index])
+    );
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    // Compare by index instead of `.every`, which skips holes in sparse
+    // arrays — `Array(1)` would otherwise equal `[123]` and merge rows under
+    // the wrong predicate group. A hole and a present element are unequal.
+    for (let index = 0; index < a.length; index += 1) {
+      const aHas = index in a;
+      if (aHas !== index in b) return false;
+      if (aHas && !predicateValuesEqual(a[index], b[index])) return false;
+    }
+    return true;
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return (
+      aKeys.length === bKeys.length &&
+      aKeys.every((key) => Object.hasOwn(b, key) && predicateValuesEqual(a[key], b[key]))
+    );
+  }
+  return false;
+};
+
+const conditionsEqual = (a: Condition | undefined, b: Condition | undefined): boolean => {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.type === ConditionType.Compare || b.type === ConditionType.Compare) {
+    if (a.type !== ConditionType.Compare || b.type !== ConditionType.Compare) return false;
+    if (a.a !== b.a || a.operator !== b.operator) return false;
+    if (a.b instanceof Column || b.b instanceof Column) return a.b === b.b;
+    return predicateValuesEqual(a.b, b.b);
+  }
+  if (a.type === ConditionType.Not || b.type === ConditionType.Not) {
+    if (a.type !== ConditionType.Not || b.type !== ConditionType.Not) return false;
+    return conditionsEqual(a.item, b.item);
+  }
+  return (
+    a.type === b.type &&
+    a.items.length === b.items.length &&
+    a.items.every((item, index) => conditionsEqual(item, b.items[index]))
+  );
+};
+
 const applyDeletePolicies = async (
   table: AnyTable,
   where: Condition | undefined,
@@ -281,6 +349,16 @@ export interface ORMAdapter<S extends AnySchema = AnySchema> {
       where: Condition | undefined;
       update: Record<string, unknown>;
       create: Record<string, unknown>;
+    },
+  ) => Promise<void>;
+
+  upsertMany?: (
+    table: AnyTable,
+    v: {
+      target: AnyColumn[];
+      update: AnyColumn[];
+      values: Record<string, unknown>[];
+      where?: Condition;
     },
   ) => Promise<void>;
 
@@ -366,6 +444,110 @@ export function toORM<S extends AnySchema>(
         where: compiledWhere,
         ...options,
       });
+    },
+    async upsertMany(name, { target, update, values }) {
+      const table = toTable(name);
+      if (values.length === 0) return;
+      if (target.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one target column.");
+      }
+      if (update.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one update column.");
+      }
+
+      const targetColumns = target.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+      const updateColumns = update.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+
+      const builder = createBuilder(table.columns);
+      const permittedRows: {
+        readonly value: Record<string, unknown>;
+        readonly where: Condition | undefined;
+      }[] = [];
+      for (const value of values) {
+        const updateValues = Object.fromEntries(
+          updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+        );
+        const constrainedWhere = await applyUpdatePolicies(
+          table,
+          undefined,
+          updateValues,
+          context,
+          "upsert",
+          value,
+        );
+        if (constrainedWhere === false) continue;
+        await runCreatePolicies(table, value, context);
+        permittedRows.push({ value, where: constrainedWhere });
+      }
+      if (permittedRows.length === 0) return;
+
+      if (internal.upsertMany) {
+        const groups: {
+          readonly where: Condition | undefined;
+          readonly values: Record<string, unknown>[];
+        }[] = [];
+        for (const row of permittedRows) {
+          const group = groups.find((candidate) => conditionsEqual(candidate.where, row.where));
+          if (group) {
+            group.values.push(row.value);
+          } else {
+            groups.push({ where: row.where, values: [row.value] });
+          }
+        }
+        const runGroups = async (adapter: ORMAdapter<S>): Promise<void> => {
+          if (!adapter.upsertMany) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a transaction adapter must mirror the base adapter's upsertMany support
+            throw new Error("[FumaDB] Transaction adapter does not support upsertMany.");
+          }
+          for (const group of groups) {
+            await adapter.upsertMany(table, {
+              target: targetColumns,
+              update: updateColumns,
+              values: group.values,
+              where: group.where,
+            });
+          }
+        };
+
+        // A single group is one adapter call, which is as atomic as the
+        // engine allows. Multiple predicate groups are separate adapter
+        // calls, so run them inside one transaction: a later group's failure
+        // must not leave earlier groups committed.
+        if (groups.length === 1) {
+          await runGroups(internal);
+          return;
+        }
+        await internal.transaction(async (transactionInstance) => {
+          await runGroups(transactionInstance.internal);
+        });
+        return;
+      }
+
+      for (const row of permittedRows) {
+        const value = row.value;
+        const targetWhere = builder.and(
+          ...targetColumns.map((column) => builder(column.ormName, "=", value[column.ormName])),
+        );
+        const where = builder.and(targetWhere, row.where ?? true);
+        if (where === false) continue;
+        await internal.upsert(table, {
+          where: where === true ? undefined : where,
+          update: Object.fromEntries(
+            updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+          ),
+          create: value,
+        });
+      }
     },
     async create(name, values) {
       const table = toTable(name);

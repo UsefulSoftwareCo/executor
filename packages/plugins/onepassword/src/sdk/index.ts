@@ -1,12 +1,18 @@
 export {
   onepasswordPlugin,
   makeOnePasswordStore,
+  resolveConfiguredRef,
+  ambiguityMessage,
+  type RefResolution,
   type OnePasswordExtension,
   type OnePasswordPluginOptions,
   type OnePasswordStore,
 } from "./plugin";
 export {
   OnePasswordConfig,
+  LegacyOnePasswordConfig,
+  StoredOnePasswordConfig,
+  normalizeStoredConfig,
   RedactedOnePasswordConfig,
   RedactedOnePasswordAuth,
   redactConfig,

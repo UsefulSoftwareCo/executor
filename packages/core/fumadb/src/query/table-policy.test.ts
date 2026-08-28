@@ -8,6 +8,7 @@ import {
   createDrizzleRuntimeSchemaSqlFromTables,
   drizzleAdapter,
 } from "@executor-js/fumadb/adapters/drizzle";
+import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
 import { withQueryContext, type AbstractQuery } from "@executor-js/fumadb/query";
 import { column, idColumn, schema, table } from "@executor-js/fumadb/schema";
 
@@ -16,6 +17,7 @@ interface TenantPolicyContext {
   readonly deniedTables: ReadonlySet<string>;
   readonly marker: string;
   readonly observed: string[];
+  readonly allowedRegionId?: bigint;
 }
 
 const observe = (context: TenantPolicyContext, event: string) => {
@@ -103,16 +105,68 @@ const comments = table("policy_comments", {
   },
 });
 
+// Policy predicate carries a bigint value; string-keyed grouping of these
+// predicates (e.g. JSON.stringify) throws on bigint.
+const quotas = table("policy_quotas", {
+  id: idColumn("id", "varchar(255)"),
+  region: column("region", "bigint"),
+  label: column("label", "string"),
+}).policy<TenantPolicyContext>({
+  name: "tenant.quotas",
+  onUpdate: ({ builder, context }) => builder("region", "=", context.allowedRegionId ?? BigInt(-1)),
+});
+
+// The update policy predicate depends on the row itself, so rows with
+// different `shard` values compile to different predicates and split one
+// upsertMany call into separate predicate groups.
+const shards = table("policy_shards", {
+  id: idColumn("id", "varchar(255)"),
+  shard: column("shard", "string"),
+  authorId: column("author_id", "varchar(255)"),
+}).policy<TenantPolicyContext>({
+  name: "tenant.shards",
+  onUpdate: ({ builder, set }) => builder("shard", "=", set.shard ?? ""),
+});
+
+// Ten columns, so a row-count-sized batch would bind ten parameters per row.
+const wideRows = table("policy_wide_rows", {
+  id: idColumn("id", "varchar(255)"),
+  c1: column("c1", "string"),
+  c2: column("c2", "string"),
+  c3: column("c3", "string"),
+  c4: column("c4", "string"),
+  c5: column("c5", "string"),
+  c6: column("c6", "string"),
+  c7: column("c7", "string"),
+  c8: column("c8", "string"),
+  c9: column("c9", "string"),
+});
+
+// The physical column name needs identifier quoting; the bulk upsert conflict
+// SET clause references it as `excluded.<name>` and must quote it.
+const quotedNames = table("policy_quoted_names", {
+  id: idColumn("id", "varchar(255)"),
+  displayName: column("display-name", "string"),
+});
+
 const v1 = schema({
   version: "1.0.0",
   tables: {
     authors,
     posts,
     comments,
+    quotas,
+    shards,
+    wideRows,
+    quotedNames,
   },
   relations: {
     authors: ({ many }) => ({
       posts: many("posts"),
+      shards: many("shards"),
+    }),
+    shards: ({ one }) => ({
+      author: one("authors", ["authorId", "id"]).foreignKey(),
     }),
     posts: ({ one, many }) => ({
       author: one("authors", ["authorId", "id"]).foreignKey(),
@@ -142,7 +196,10 @@ const makeContext = (
   observed: [],
 });
 
-const makeHarness = async () => {
+const makeHarness = async (options?: {
+  readonly nativeBatch?: boolean;
+  readonly maxBoundParameters?: number;
+}) => {
   const sqlite = new Database(":memory:");
   sqlite.pragma("foreign_keys = ON");
   const runtimeSchema = createDrizzleRuntimeSchemaFromTables({
@@ -151,7 +208,25 @@ const makeHarness = async () => {
     version: "1.0.0",
     provider: "sqlite",
   });
-  const drizzleDb = drizzle(sqlite, { schema: runtimeSchema });
+  const statements: { readonly sql: string; readonly paramCount: number }[] = [];
+  const drizzleDb = drizzle(sqlite, {
+    schema: runtimeSchema,
+    logger: {
+      logQuery: (query: string, params: unknown[]) => {
+        statements.push({ sql: query, paramCount: params.length });
+      },
+    },
+  });
+  let batchCalls = 0;
+
+  if (options?.nativeBatch) {
+    Object.assign(drizzleDb, {
+      batch: async (queries: readonly { run: () => unknown }[]) => {
+        batchCalls += 1;
+        return sqlite.transaction(() => queries.map((query) => query.run()))();
+      },
+    });
+  }
 
   for (const statement of createDrizzleRuntimeSchemaSqlFromTables({
     tables: v1.tables,
@@ -166,11 +241,16 @@ const makeHarness = async () => {
     drizzleAdapter({
       db: drizzleDb,
       provider: "sqlite",
+      interactiveTransactions: options?.nativeBatch ? false : undefined,
+      maxBoundParameters: options?.maxBoundParameters,
     }),
   );
 
   return {
     orm: client.orm("1.0.0"),
+    getBatchCalls: () => batchCalls,
+    getStatements: (): readonly { readonly sql: string; readonly paramCount: number }[] =>
+      statements,
     close: async () => {
       sqlite.close();
     },
@@ -179,8 +259,42 @@ const makeHarness = async () => {
 
 const useHarness = <A>(run: (orm: TablePolicyQuery) => Promise<A>) =>
   Effect.acquireUseRelease(
-    Effect.promise(makeHarness),
+    Effect.promise(() => makeHarness()),
     ({ orm }) => Effect.promise(() => run(orm)),
+    ({ close }) => Effect.promise(close),
+  );
+
+const useStatementHarness = <A>(
+  run: (harness: {
+    readonly orm: TablePolicyQuery;
+    readonly getStatements: () => readonly { readonly sql: string; readonly paramCount: number }[];
+  }) => Promise<A>,
+) =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => makeHarness()),
+    (harness) => Effect.promise(() => run(harness)),
+    ({ close }) => Effect.promise(close),
+  );
+
+const useBudgetHarness = <A>(
+  maxBoundParameters: number,
+  run: (orm: TablePolicyQuery) => Promise<A>,
+) =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => makeHarness({ maxBoundParameters })),
+    ({ orm }) => Effect.promise(() => run(orm)),
+    ({ close }) => Effect.promise(close),
+  );
+
+const useNativeBatchHarness = <A>(
+  run: (harness: {
+    readonly orm: TablePolicyQuery;
+    readonly getBatchCalls: () => number;
+  }) => Promise<A>,
+) =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => makeHarness({ nativeBatch: true, maxBoundParameters: 8 })),
+    (harness) => Effect.promise(() => run(harness)),
     ({ close }) => Effect.promise(close),
   );
 
@@ -382,6 +496,24 @@ describe("FumaDB table policies", () => {
             title: "A Three",
           },
         });
+        await tenantA.upsertMany("posts", {
+          target: ["id"],
+          update: ["title"],
+          values: [
+            {
+              id: "post-a-1",
+              tenantId: "tenant-a",
+              authorId: "author-a",
+              title: "tenant-a-bulk-upserted",
+            },
+            {
+              id: "post-a-4",
+              tenantId: "tenant-a",
+              authorId: "author-a",
+              title: "A Four",
+            },
+          ],
+        });
 
         await expect(
           tenantA.findMany("posts", {
@@ -391,7 +523,7 @@ describe("FumaDB table policies", () => {
         ).resolves.toEqual([
           {
             id: "post-a-1",
-            title: "tenant-a-updated",
+            title: "tenant-a-bulk-upserted",
           },
           {
             id: "post-a-2",
@@ -400,6 +532,10 @@ describe("FumaDB table policies", () => {
           {
             id: "post-a-3",
             title: "A Three",
+          },
+          {
+            id: "post-a-4",
+            title: "A Four",
           },
         ]);
 
@@ -460,6 +596,395 @@ describe("FumaDB table policies", () => {
     }),
   );
 
+  it.effect("rejects invalid bulk upsert conflict shapes", () =>
+    useHarness(async (orm) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      const values = [
+        {
+          id: "post-a-bulk-upsert",
+          tenantId: "tenant-a",
+          authorId: "author-a",
+          title: "A bulk upsert",
+        },
+      ];
+
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: [],
+          update: ["title"],
+          values,
+        }),
+      ).rejects.toThrow("[FumaDB] upsertMany requires at least one target column.");
+
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: ["id"],
+          update: [],
+          values,
+        }),
+      ).rejects.toThrow("[FumaDB] upsertMany requires at least one update column.");
+    }),
+  );
+
+  it.effect("keeps every bulk upsert statement inside the bound-variable budget", () =>
+    useStatementHarness(async ({ orm, getStatements }) => {
+      // 250 rows * 10 columns = 2,500 bound variables in a single statement —
+      // over older SQLite's 999-variable cap. The adapter advertises no limit
+      // here, so batching must fall back to the conservative 999 budget.
+      const values = Array.from({ length: 250 }, (_, index) => ({
+        id: `wide-${String(index).padStart(3, "0")}`,
+        c1: `value-${index}-1`,
+        c2: `value-${index}-2`,
+        c3: `value-${index}-3`,
+        c4: `value-${index}-4`,
+        c5: `value-${index}-5`,
+        c6: `value-${index}-6`,
+        c7: `value-${index}-7`,
+        c8: `value-${index}-8`,
+        c9: `value-${index}-9`,
+      }));
+
+      await orm.upsertMany("wideRows", {
+        target: ["id"],
+        update: ["c1"],
+        values,
+      });
+
+      const inserts = getStatements().filter((statement) =>
+        statement.sql.toLowerCase().startsWith("insert into"),
+      );
+      expect(inserts.length).toBeGreaterThanOrEqual(3);
+      for (const statement of inserts) {
+        expect(statement.paramCount).toBeLessThanOrEqual(999);
+      }
+      await expect(orm.count("wideRows")).resolves.toBe(250);
+    }),
+  );
+
+  it.effect("bulk upserts a column whose physical name needs identifier quoting", () =>
+    useHarness(async (orm) => {
+      await orm.createMany("quotedNames", [{ id: "row-1", displayName: "before" }]);
+
+      // The conflict SET clause references the update column through the
+      // `excluded` pseudo-table; an unquoted physical name like
+      // `display-name` is a syntax error there.
+      await orm.upsertMany("quotedNames", {
+        target: ["id"],
+        update: ["displayName"],
+        values: [
+          { id: "row-1", displayName: "after" },
+          { id: "row-2", displayName: "created" },
+        ],
+      });
+
+      await expect(
+        orm.findMany("quotedNames", {
+          select: ["id", "displayName"],
+          orderBy: ["id", "asc"],
+        }),
+      ).resolves.toEqual([
+        { id: "row-1", displayName: "after" },
+        { id: "row-2", displayName: "created" },
+      ]);
+    }),
+  );
+
+  it.effect("keeps a successful sibling nested transaction when the other rolls back", () =>
+    useHarness(async (orm) => {
+      const writer = withQueryContext(orm, makeContext(["tenant-a"], "siblings"));
+
+      await writer.transaction(async (tx) => {
+        // Two sibling savepoint scopes started concurrently on the one shared
+        // SQLite connection: the failing sibling's ROLLBACK TO must not undo
+        // work the successful sibling already released.
+        const failing = tx.transaction(async (inner) => {
+          await inner.create("authors", {
+            id: "author-rolled-back",
+            tenantId: "tenant-a",
+            name: "Rolled Back",
+          });
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test forces one sibling to roll back
+          throw new Error("sibling failure");
+        });
+        const succeeding = tx.transaction(async (inner) => {
+          await inner.create("authors", {
+            id: "author-committed",
+            tenantId: "tenant-a",
+            name: "Committed",
+          });
+        });
+
+        const [failed, succeeded] = await Promise.allSettled([failing, succeeding]);
+        expect(failed.status).toBe("rejected");
+        expect(succeeded.status).toBe("fulfilled");
+      });
+
+      await expect(
+        writer.findMany("authors", {
+          select: ["id"],
+          where: (builder) =>
+            builder.or(
+              builder("id", "=", "author-rolled-back"),
+              builder("id", "=", "author-committed"),
+            ),
+        }),
+      ).resolves.toEqual([{ id: "author-committed" }]);
+    }),
+  );
+
+  it.effect("bulk upserts through a policy predicate that contains a bigint", () =>
+    useHarness(async (orm) => {
+      const region = withQueryContext(orm, {
+        ...makeContext(["tenant-a"], "region"),
+        allowedRegionId: BigInt(7),
+      });
+
+      await region.createMany("quotas", [
+        { id: "quota-in-region", region: BigInt(7), label: "before" },
+        { id: "quota-out-of-region", region: BigInt(9), label: "before" },
+      ]);
+
+      await region.upsertMany("quotas", {
+        target: ["id"],
+        update: ["label"],
+        values: [
+          { id: "quota-in-region", region: BigInt(7), label: "after" },
+          { id: "quota-out-of-region", region: BigInt(9), label: "after" },
+          { id: "quota-created", region: BigInt(7), label: "created" },
+        ],
+      });
+
+      await expect(
+        region.findMany("quotas", {
+          select: ["id", "label"],
+          orderBy: ["id", "asc"],
+        }),
+      ).resolves.toEqual([
+        { id: "quota-created", label: "created" },
+        { id: "quota-in-region", label: "after" },
+        { id: "quota-out-of-region", label: "before" },
+      ]);
+    }),
+  );
+
+  it.effect("skips policy-excluded conflicts identically on drizzle and memory adapters", () => {
+    // `post-b-1` already exists for tenant-b, so its unique target conflicts,
+    // and the tenant-a update policy excludes the conflicting row. SQL detects
+    // the conflict first and the predicate only gates the update, so the row
+    // is skipped — never duplicated.
+    const upsertAcrossPolicyExcludedConflict = async (orm: TablePolicyQuery) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      await tenantA.upsertMany("posts", {
+        target: ["id"],
+        update: ["title"],
+        values: [
+          {
+            id: "post-b-1",
+            tenantId: "tenant-a",
+            authorId: "author-a",
+            title: "hijack attempt",
+          },
+          {
+            id: "post-a-9",
+            tenantId: "tenant-a",
+            authorId: "author-a",
+            title: "A Nine",
+          },
+        ],
+      });
+      const allTenants = withQueryContext(orm, makeContext(["tenant-a", "tenant-b"], "all"));
+      return allTenants.findMany("posts", {
+        select: ["id", "tenantId", "title"],
+        orderBy: ["id", "asc"],
+      });
+    };
+
+    const expected = [
+      { id: "post-a-1", tenantId: "tenant-a", title: "A One" },
+      { id: "post-a-2", tenantId: "tenant-a", title: "A Two" },
+      { id: "post-a-9", tenantId: "tenant-a", title: "A Nine" },
+      { id: "post-b-1", tenantId: "tenant-b", title: "B One" },
+    ];
+
+    return useHarness(async (orm) => {
+      await expect(upsertAcrossPolicyExcludedConflict(orm)).resolves.toEqual(expected);
+
+      const memoryOrm = tablePolicyDB.client(memoryAdapter()).orm("1.0.0");
+      await expect(upsertAcrossPolicyExcludedConflict(memoryOrm)).resolves.toEqual(expected);
+    });
+  });
+
+  it.effect("rolls back every bounded upsert statement when a native batch fails", () =>
+    useNativeBatchHarness(async ({ orm, getBatchCalls }) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: ["id"],
+          update: ["title"],
+          values: [
+            {
+              id: "post-a-batch-1",
+              tenantId: "tenant-a",
+              authorId: "author-a",
+              title: "A batch one",
+            },
+            {
+              id: "post-a-batch-2",
+              tenantId: "tenant-a",
+              authorId: "author-a",
+              title: "A batch two",
+            },
+            {
+              id: "post-a-batch-invalid",
+              tenantId: "tenant-a",
+              authorId: "missing-author",
+              title: "Must roll back",
+            },
+          ],
+        }),
+      ).rejects.toThrow();
+
+      expect(getBatchCalls()).toBe(1);
+      await expect(
+        tenantA.findMany("posts", {
+          where: (builder) => builder("id", "starts with", "post-a-batch-"),
+          select: ["id"],
+        }),
+      ).resolves.toEqual([]);
+    }),
+  );
+
+  it.effect("rolls back earlier predicate groups when a later group fails", () =>
+    useHarness(async (orm) => {
+      await seedTenants(orm);
+      const writer = withQueryContext(orm, makeContext(["tenant-a"], "groups"));
+
+      // Two distinct per-row predicates split this call into two internal
+      // groups. The second group's row references a missing author, so its
+      // insert violates the foreign key — the first group's rows must roll
+      // back with it instead of staying committed.
+      await expect(
+        writer.upsertMany("shards", {
+          target: ["id"],
+          update: ["shard"],
+          values: [
+            { id: "shard-a-1", shard: "a", authorId: "author-a" },
+            { id: "shard-b-1", shard: "b", authorId: "missing-author" },
+          ],
+        }),
+      ).rejects.toThrow();
+
+      await expect(orm.count("shards")).resolves.toBe(0);
+    }),
+  );
+
+  it.effect("rolls back earlier createMany batches when a later batch fails", () =>
+    useBudgetHarness(8, async (orm) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+
+      // Four columns per row against an 8-parameter budget forces two-row
+      // batches, so this insert runs as two statements. The last row reuses
+      // the seeded `post-a-1` id, so the second statement violates the
+      // primary key — the first statement's rows must roll back with it.
+      await expect(
+        tenantA.createMany("posts", [
+          { id: "post-a-n1", tenantId: "tenant-a", authorId: "author-a", title: "N1" },
+          { id: "post-a-n2", tenantId: "tenant-a", authorId: "author-a", title: "N2" },
+          { id: "post-a-n3", tenantId: "tenant-a", authorId: "author-a", title: "N3" },
+          { id: "post-a-1", tenantId: "tenant-a", authorId: "author-a", title: "Duplicate" },
+        ]),
+      ).rejects.toThrow();
+
+      await expect(
+        tenantA.findMany("posts", {
+          where: (builder) => builder("id", "starts with", "post-a-n"),
+          select: ["id"],
+        }),
+      ).resolves.toEqual([]);
+    }),
+  );
+
+  it.effect("fails fast when a single row exceeds the bound-parameter budget", () =>
+    useBudgetHarness(8, async (orm) => {
+      await expect(
+        orm.createMany("wideRows", [
+          {
+            id: "wide-overflow",
+            c1: "1",
+            c2: "2",
+            c3: "3",
+            c4: "4",
+            c5: "5",
+            c6: "6",
+            c7: "7",
+            c8: "8",
+            c9: "9",
+          },
+        ]),
+      ).rejects.toThrow(
+        'one row binds 10 bound parameters, which exceeds the 8-parameter budget',
+      );
+
+      await expect(orm.count("wideRows")).resolves.toBe(0);
+    }),
+  );
+
+  it.effect("fails fast when reserved predicate parameters consume the budget", () =>
+    useBudgetHarness(4, async (orm) => {
+      const seed = withQueryContext(orm, makeContext(["tenant-a"], "seed"));
+      await seed.createMany("authors", [{ id: "author-a", tenantId: "tenant-a", name: "Ada" }]);
+
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      // A posts row alone fits the 4-parameter budget exactly, but the update
+      // policy predicate reserves one more bound parameter per statement.
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: ["id"],
+          update: ["title"],
+          values: [{ id: "post-a-r1", tenantId: "tenant-a", authorId: "author-a", title: "R1" }],
+        }),
+      ).rejects.toThrow("the predicate reserves 1 more");
+
+      await expect(tenantA.count("posts")).resolves.toBe(0);
+    }),
+  );
+
+  it.effect("applies intra-call conflicts identically on drizzle and memory adapters", () => {
+    // The second value's unique target conflicts with a row created by the
+    // first value in the SAME upsertMany call: both adapters must update the
+    // freshly created row instead of duplicating or dropping it.
+    const upsertIntraCallConflict = async (orm: TablePolicyQuery) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      await tenantA.upsertMany("posts", {
+        target: ["id"],
+        update: ["title"],
+        values: [
+          { id: "post-a-dup", tenantId: "tenant-a", authorId: "author-a", title: "first write" },
+          { id: "post-a-dup", tenantId: "tenant-a", authorId: "author-a", title: "second write" },
+        ],
+      });
+      return tenantA.findMany("posts", {
+        where: (builder) => builder("id", "=", "post-a-dup"),
+        select: ["id", "title"],
+      });
+    };
+
+    const expected = [{ id: "post-a-dup", title: "second write" }];
+
+    return useHarness(async (orm) => {
+      await expect(upsertIntraCallConflict(orm)).resolves.toEqual(expected);
+
+      const memoryOrm = tablePolicyDB.client(memoryAdapter()).orm("1.0.0");
+      await expect(upsertIntraCallConflict(memoryOrm)).resolves.toEqual(expected);
+    });
+  });
+
   it.effect("fails closed when a query wrapper does not forward context rebinding", () =>
     useHarness(async (orm) => {
       const wrapped = { ...orm };
@@ -471,7 +996,7 @@ describe("FumaDB table policies", () => {
   );
 
   it.effect(
-    "rejects out-of-context writes across createMany, updateMany, upsert, and transactions",
+    "rejects out-of-context writes across createMany, updateMany, upsert, upsertMany, and transactions",
     () =>
       useHarness(async (orm) => {
         await seedTenants(orm);
@@ -521,6 +1046,47 @@ describe("FumaDB table policies", () => {
               authorId: "author-b",
               title: "B Two",
             },
+          }),
+        ).rejects.toThrow("tenant tenant-b is not allowed for posts");
+
+        await expect(
+          tenantA.upsertMany("posts", {
+            target: ["id"],
+            update: ["title"],
+            values: [
+              {
+                id: "post-a-bulk-upsert",
+                tenantId: "tenant-a",
+                authorId: "author-a",
+                title: "A bulk upsert",
+              },
+              {
+                id: "post-b-bulk-upsert",
+                tenantId: "tenant-b",
+                authorId: "author-b",
+                title: "B bulk upsert",
+              },
+            ],
+          }),
+        ).rejects.toThrow("tenant tenant-b is not allowed for posts");
+        await expect(
+          tenantA.findFirst("posts", {
+            where: (builder) => builder("id", "=", "post-a-bulk-upsert"),
+          }),
+        ).resolves.toBeNull();
+
+        await expect(
+          tenantA.upsertMany("posts", {
+            target: ["id"],
+            update: ["tenantId"],
+            values: [
+              {
+                id: "post-a-1",
+                tenantId: "tenant-b",
+                authorId: "author-b",
+                title: "tenant move",
+              },
+            ],
           }),
         ).rejects.toThrow("tenant tenant-b is not allowed for posts");
 
