@@ -9,7 +9,10 @@ import {
   toolsAllAtom,
 } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
-import { integrationPresetIconUrl } from "@executor-js/react/components/integration-favicon";
+import {
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "@executor-js/react/components/integration-favicon";
 import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
@@ -133,12 +136,23 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                     : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
                 ].join(" ")}
               >
+                {/* Same inputs as the integrations list. Passing only the
+                    slug and kind meant an icon could be found ONLY when a
+                    bundled preset happened to match — anything added from the
+                    registry has a slug no preset knows, so the sidebar sat
+                    blank while the same integration showed its mark in the
+                    list. The display URL is what a favicon is derived from. */}
                 <IntegrationIconWithAccount
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind },
+                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
                   integrationId={slug}
+                  url={
+                    integration.displayUrl ??
+                    integrationInferredUrl({ id: slug, name }) ??
+                    undefined
+                  }
                   size="sm"
                 />
                 <span className="flex-1 truncate">{name}</span>
