@@ -34,11 +34,12 @@ declare global {
 }
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const INTEGRATION_TITLE = "Ping API";
 
 /** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
 const pingSpec = JSON.stringify({
   openapi: "3.0.3",
-  info: { title: "Ping API", version: "1.0.0" },
+  info: { title: INTEGRATION_TITLE, version: "1.0.0" },
   paths: {
     "/ping": {
       get: { operationId: "ping", summary: "Ping", responses: { "200": { description: "pong" } } },
@@ -94,8 +95,20 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // The member stores their own credential, so the owner's view has
-        // something to report that the owner's product view cannot see.
+        // Members may add Personal credentials, but the API refuses the same
+        // request in Workspace scope even if they bypass the owner picker.
+        const refusal = yield* memberClient.connections
+          .create({
+            payload: {
+              owner: "org",
+              name: memberConnection,
+              integration,
+              template: TEMPLATE_API_KEY,
+              value: "member-personal-token",
+            },
+          })
+          .pipe(Effect.flip);
+        expect(refusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
         yield* memberClient.connections.create({
           payload: {
             owner: "user",
@@ -119,7 +132,7 @@ scenario(
               .waitFor({ state: "visible", timeout: 30_000 });
           });
 
-          await step("The invited member's connection is attributed to them", async () => {
+          await step("The invited member is listed with their Personal connection", async () => {
             // Selfhost shares one org across scenarios, so this asserts the
             // member's own row exists — never a count of the whole instance.
             const row = page
@@ -311,6 +324,38 @@ scenario(
               await page.locator("[data-slot='admin-users-table']").count(),
               "the refusal replaces the table rather than rendering it empty",
             ).toBe(0);
+          });
+
+          await step("A member can add Personal connections without a scope dropdown", async () => {
+            await visit(page, `/integrations/${availableIntegration}?tab=accounts`);
+            const add = page.getByRole("button", { name: "Add connection" });
+            await add.waitFor({ state: "visible", timeout: 30_000 });
+            await add.click();
+            const dialog = page.getByRole("dialog");
+            await dialog
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
+            expect(
+              await dialog.getByText("Workspace", { exact: true }).count(),
+              "the member is forced to Personal rather than offered a scope picker",
+            ).toBe(0);
+            await page.keyboard.press("Escape");
+          });
+
+          await step("A member's connect deep link opens the Personal add flow", async () => {
+            await visit(page, `/connect/${availableIntegration}`);
+            await page.waitForURL(
+              (url) => url.pathname.endsWith(`/integrations/${availableIntegration}`),
+              { timeout: 30_000 },
+            );
+            expect(
+              new URL(page.url()).searchParams.get("addAccount"),
+              "the deep link enters the member's forced-Personal add flow",
+            ).toBe("1");
+            await page
+              .getByRole("dialog")
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
           });
         });
       }),

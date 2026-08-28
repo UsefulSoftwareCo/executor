@@ -126,6 +126,7 @@ test("a member cannot escalate by owning an organization of their own", async ()
   // Every admin users route, not just the list: a gate applied at four call
   // sites can be fixed at three.
   for (const path of [
+    "/api/admin/audit-events",
     "/api/admin/users",
     "/api/admin/users/with-connections",
     "/api/admin/users/user_anyone/connections",

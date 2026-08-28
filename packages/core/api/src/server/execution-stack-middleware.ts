@@ -239,6 +239,9 @@ export const makeExecutionStackMiddleware = <
             resolved.accountId,
             resolved.organizationId,
             resolved.organizationName,
+            // A plain member binds with workspace writes denied; an admin —
+            // or a host with no role model (`orgRole` absent) — binds allowed.
+            { orgWrites: resolved.orgRole === "member" ? "denied" : "allowed" },
           ).pipe(
             Effect.provide(options.stackLayer),
             Effect.provideService(RequestWebOrigin, {

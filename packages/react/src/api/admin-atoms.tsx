@@ -20,11 +20,25 @@ import { ReactivityKey } from "./reactivity-keys";
  *  1..500 bound; the joined endpoint reads per-user connections, so a modest
  *  page keeps that join cheap. */
 export const ADMIN_USERS_PAGE_SIZE = 25;
+export const ADMIN_AUDIT_EVENTS_PAGE_SIZE = 50;
 
 export interface AdminUsersPage {
   readonly limit: number;
   readonly offset: number;
 }
+
+export interface AdminAuditEventsPage {
+  readonly limit: number;
+  readonly offset: number;
+}
+
+export const adminAuditEventsAtom = Atom.family((page: AdminAuditEventsPage) =>
+  AdminApiClient.query("adminUsers", "listAuditEvents", {
+    query: { limit: page.limit + 1, offset: page.offset },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.adminUsers],
+  }),
+);
 
 /**
  * One page of users joined with their connections — what the list renders.

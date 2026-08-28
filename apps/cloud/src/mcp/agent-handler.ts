@@ -181,6 +181,7 @@ const propsForPrincipal = (
         // "carried, and blank".
         ...(principal.organizationName ? { organizationName: principal.organizationName } : {}),
         ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
+        ...(principal.orgRole ? { orgRole: principal.orgRole } : {}),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),

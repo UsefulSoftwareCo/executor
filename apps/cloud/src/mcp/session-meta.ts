@@ -111,17 +111,25 @@ const failureReason = (failure: unknown): string =>
 
 const metaFromIdentity = (
   token: McpSessionInit,
-  organization: { readonly name: string; readonly slug?: string },
-): SessionMeta => ({
-  organizationId: token.organizationId,
-  organizationName: organization.name,
-  ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
-  userId: token.userId,
-  resource: token.resource,
-  elicitationMode: token.elicitationMode,
-  artifactsEnabled: token.artifactsEnabled,
-  searchToolsEnabled: token.searchToolsEnabled,
-});
+  organization: {
+    readonly name: string;
+    readonly slug?: string;
+    readonly orgRole?: "admin" | "member";
+  },
+): SessionMeta => {
+  const orgRole = token.orgRole ?? organization.orgRole;
+  return {
+    organizationId: token.organizationId,
+    organizationName: organization.name,
+    ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
+    ...(orgRole === undefined ? {} : { orgRole }),
+    userId: token.userId,
+    resource: token.resource,
+    elicitationMode: token.elicitationMode,
+    artifactsEnabled: token.artifactsEnabled,
+    searchToolsEnabled: token.searchToolsEnabled,
+  };
+};
 
 /**
  * Read the organization row, retrying only failures a retry can clear, and
@@ -200,6 +208,7 @@ export const resolveSessionMetaForToken = (
       return metaFromIdentity(token, {
         name: storedMeta.organizationName,
         slug: storedMeta.organizationSlug,
+        orgRole: storedMeta.orgRole,
       });
     }
 

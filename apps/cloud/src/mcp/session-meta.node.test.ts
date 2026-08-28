@@ -23,6 +23,7 @@ import {
 
 const TOKEN: McpSessionInit = {
   organizationId: "org_test",
+  orgRole: "member",
   userId: "user_test",
   elicitationMode: "model",
   resource: defaultMcpResource,
@@ -33,6 +34,7 @@ const STORED: SessionMeta = {
   organizationId: "org_test",
   organizationName: "Stored Org",
   organizationSlug: "stored-org",
+  orgRole: "admin",
   userId: "user_test",
   resource: defaultMcpResource,
 };
@@ -104,7 +106,22 @@ describe("resolveSessionMetaForToken", () => {
 
     expect(meta.organizationName).toBe("Stored Org");
     expect(meta.organizationSlug).toBe("stored-org");
+    expect(meta.orgRole).toBe("member");
     expect(store.calls(), "a restore reuses what it persisted").toBe(0);
+  });
+
+  it("preserves a stored role when legacy init props do not carry one", async () => {
+    const store = countingConnectTimeoutStore();
+    const { orgRole: _orgRole, ...legacyToken } = TOKEN;
+
+    const meta = await Effect.runPromise(
+      resolveSessionMetaForToken(legacyToken, STORED).pipe(
+        Effect.provide(Layer.mergeAll(store.layer, unusedWorkOS)),
+      ),
+    );
+
+    expect(meta.orgRole).toBe("admin");
+    expect(store.calls()).toBe(0);
   });
 
   it("reads the database only when nothing else names the org", async () => {
@@ -117,6 +134,7 @@ describe("resolveSessionMetaForToken", () => {
     );
 
     expect(meta.organizationName).toBe("Database Org");
+    expect(meta.orgRole).toBe("member");
     expect(store.calls()).toBe(1);
   });
 

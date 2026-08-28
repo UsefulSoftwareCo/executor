@@ -11,6 +11,7 @@ import {
   type Principal,
 } from "@executor-js/host-mcp";
 
+import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth } from "../auth/better-auth";
 import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
@@ -205,6 +206,24 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         Effect.gen(function* () {
           const user = yield* Effect.promise(() => context.internalAdapter.findUserById(userId));
           if (!user) return null;
+          // The workspace role, read from the INSTANCE org's membership row
+          // (an OAuth token carries no session, so the header-based
+          // `getActiveMemberRole` gate is out of reach — the adapter query
+          // answers the same question against the same table). FAIL CLOSED to
+          // "member": an infra fault demotes rather than escalates.
+          const membership = yield* Effect.promise(() =>
+            context.adapter.findOne<{ readonly role?: string | null }>({
+              model: "member",
+              where: [
+                { field: "userId", value: userId },
+                { field: "organizationId", value: organizationId },
+              ],
+            }),
+          ).pipe(Effect.orElseSucceed(() => null));
+          const orgRole =
+            membership?.role != null && isPrivileged(membership.role)
+              ? ("admin" as const)
+              : ("member" as const);
           return {
             accountId: user.id,
             // Single-org self-host: OAuth tokens carry no active org, so pin to
@@ -216,6 +235,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
             name: user.name ?? null,
             avatarUrl: user.image ?? null,
             roles: parseRoles(userRole(user)),
+            orgRole,
           } satisfies Principal;
         });
 

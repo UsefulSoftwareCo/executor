@@ -9,7 +9,9 @@ import type { HealthStatus, Integration, IntegrationSlug } from "@executor-js/sd
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
 
 import {
+  ADMIN_AUDIT_EVENTS_PAGE_SIZE,
   ADMIN_USERS_PAGE_SIZE,
+  adminAuditEventsAtom,
   adminUserConnectionsAtom,
   adminUsersWithConnectionsAtom,
 } from "../api/admin-atoms";
@@ -18,6 +20,7 @@ import { ownerLabel } from "../api/owner-display";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
 import { ErrorState } from "../components/error-state";
+import { FilterTabs } from "../components/filter-tabs";
 import {
   IntegrationFavicon,
   integrationInferredUrl,
@@ -33,6 +36,9 @@ import {
 } from "../components/sheet";
 import { Skeleton } from "../components/skeleton";
 import {
+  adminAuditActorLabel,
+  adminAuditResourceLabel,
+  adminAuditScopeLabel,
   adminUserCopyableEmail,
   adminUserTitle,
   connectionHealthStatus,
@@ -55,6 +61,7 @@ import {
 } from "../lib/health-display";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { formatRelativeTime } from "../lib/relative-time";
 
 // ---------------------------------------------------------------------------
 // Admin · Users — the tenant-wide operator view.
@@ -523,8 +530,142 @@ function UserDetail(props: {
 
 // ── Page ────────────────────────────────────────────────────────────────────
 
+type AdminAuditEventRow = {
+  readonly id: string;
+  readonly actorId: string | null;
+  readonly actorEmail: string | null;
+  readonly actorDisplayName: string | null;
+  readonly action: "created" | "updated" | "removed";
+  readonly resourceType: "connection" | "integration" | "oauth_client";
+  readonly resourceOwner: "org" | "user" | null;
+  readonly resourceParent: string | null;
+  readonly resourceId: string;
+  readonly createdAt: number;
+};
+
+const auditActionLabel = (action: AdminAuditEventRow["action"]): string =>
+  `${action.slice(0, 1).toUpperCase()}${action.slice(1)}`;
+
+function AuditActivity() {
+  const [offset, setOffset] = useState(0);
+  const page = { limit: ADMIN_AUDIT_EVENTS_PAGE_SIZE, offset };
+  const result = useAtomValue(adminAuditEventsAtom(page));
+  const refresh = useAtomRefresh(adminAuditEventsAtom(page));
+  const loading = (
+    <div className="flex flex-col gap-2">
+      {[0, 1, 2, 3].map((row) => (
+        <Skeleton key={row} className="h-14" />
+      ))}
+    </div>
+  );
+
+  if (isAsyncResultLoading(result)) return loading;
+  return AsyncResult.match(result, {
+    onInitial: () => loading,
+    onFailure: (failure) =>
+      isAccessDenied(failure.cause) ? (
+        <AccessDenied />
+      ) : (
+        <ErrorState message="Couldn't load workspace activity" onRetry={refresh} />
+      ),
+    onSuccess: ({ value }) => {
+      const { rows, hasNext } = splitPage(value.events, ADMIN_AUDIT_EVENTS_PAGE_SIZE);
+      if (rows.length === 0) {
+        return (
+          <div className="rounded-lg border border-dashed border-border bg-card p-8">
+            <h2 className="text-base font-semibold text-foreground">
+              {offset === 0 ? "No activity yet" : "No activity on this page"}
+            </h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+              {offset === 0
+                ? "Connection, integration, and OAuth app changes will appear here."
+                : "Go back a page to see earlier workspace activity."}
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <>
+          <div
+            className="overflow-hidden rounded-lg border border-border bg-card"
+            data-slot="admin-audit-table"
+          >
+            <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground md:grid-cols-[0.7fr_1fr_0.65fr_1.5fr_0.65fr]">
+              <span>When</span>
+              <span className="hidden md:block">Actor</span>
+              <span className="hidden md:block">Action</span>
+              <span className="text-right md:text-left">Resource</span>
+              <span className="hidden md:block">Scope</span>
+            </div>
+            {rows.map((event: AdminAuditEventRow) => (
+              <div
+                key={event.id}
+                data-slot="admin-audit-row"
+                className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 last:border-b-0 md:grid-cols-[0.7fr_1fr_0.65fr_1.5fr_0.65fr]"
+              >
+                <span
+                  className="font-mono text-xs text-muted-foreground"
+                  title={new Date(event.createdAt).toLocaleString()}
+                >
+                  {formatRelativeTime(event.createdAt)}
+                </span>
+                <span
+                  className="hidden truncate text-sm text-foreground md:block"
+                  title={event.actorId ?? "System event"}
+                >
+                  {adminAuditActorLabel(event)}
+                </span>
+                <span className="hidden font-mono text-xs text-muted-foreground md:block">
+                  {auditActionLabel(event.action)}
+                </span>
+                <span
+                  className="truncate text-right font-mono text-xs text-foreground md:text-left"
+                  title={adminAuditResourceLabel(event)}
+                >
+                  {adminAuditResourceLabel(event)}
+                </span>
+                <span className="hidden font-mono text-xs text-muted-foreground md:block">
+                  {adminAuditScopeLabel(event.resourceOwner)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {(hasNext || offset > 0) && (
+            <div className="mt-4 flex items-center justify-between">
+              <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                Page {pageNumber(offset, ADMIN_AUDIT_EVENTS_PAGE_SIZE)}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={offset === 0}
+                  onClick={() => setOffset(Math.max(0, offset - ADMIN_AUDIT_EVENTS_PAGE_SIZE))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!hasNext}
+                  onClick={() => setOffset(offset + ADMIN_AUDIT_EVENTS_PAGE_SIZE)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    },
+  });
+}
+
 export function AdminUsersPage() {
   useExecutorDocumentTitle("Users");
+  const [view, setView] = useState<"users" | "activity">("users");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<AdminUserRow | null>(null);
 
@@ -559,115 +700,128 @@ export function AdminUsersPage() {
     <PageContainer>
       {header}
 
-      {isAsyncResultLoading(result)
-        ? loading
-        : AsyncResult.match(result, {
-            onInitial: () => loading,
-            onFailure: (failure) =>
-              isAccessDenied(failure.cause) ? (
-                <AccessDenied />
-              ) : (
-                <ErrorState message="Couldn't load users" onRetry={refresh} />
-              ),
-            onSuccess: ({ value }) => {
-              const { rows, hasNext } = splitPage(value.users, ADMIN_USERS_PAGE_SIZE);
+      <FilterTabs
+        tabs={[
+          { value: "users", label: "Users" },
+          { value: "activity", label: "Activity" },
+        ]}
+        value={view}
+        onChange={setView}
+      />
 
-              if (rows.length === 0) {
-                return (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8">
-                    <h2 className="text-base font-semibold text-foreground">
-                      {offset === 0 ? "No users yet" : "No users on this page"}
-                    </h2>
-                    <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                      {offset === 0
-                        ? "A user appears here the first time they reach this workspace or connect an account."
-                        : "Go back a page to see this workspace's users."}
-                    </p>
-                    {offset > 0 && (
+      {view === "activity" ? (
+        <AuditActivity />
+      ) : isAsyncResultLoading(result) ? (
+        loading
+      ) : (
+        AsyncResult.match(result, {
+          onInitial: () => loading,
+          onFailure: (failure) =>
+            isAccessDenied(failure.cause) ? (
+              <AccessDenied />
+            ) : (
+              <ErrorState message="Couldn't load users" onRetry={refresh} />
+            ),
+          onSuccess: ({ value }) => {
+            const { rows, hasNext } = splitPage(value.users, ADMIN_USERS_PAGE_SIZE);
+
+            if (rows.length === 0) {
+              return (
+                <div className="rounded-lg border border-dashed border-border bg-card p-8">
+                  <h2 className="text-base font-semibold text-foreground">
+                    {offset === 0 ? "No users yet" : "No users on this page"}
+                  </h2>
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                    {offset === 0
+                      ? "A user appears here the first time they reach this workspace or connect an account."
+                      : "Go back a page to see this workspace's users."}
+                  </p>
+                  {offset > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      onClick={() => setOffset(Math.max(0, offset - ADMIN_USERS_PAGE_SIZE))}
+                    >
+                      Previous
+                    </Button>
+                  )}
+                </div>
+              );
+            }
+
+            return (
+              <>
+                <div
+                  className="overflow-hidden rounded-lg border border-border bg-card"
+                  data-slot="admin-users-table"
+                >
+                  <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground md:grid-cols-[1.6fr_0.8fr_0.9fr_1.1fr]">
+                    <span>User</span>
+                    <span className="hidden md:block">Created</span>
+                    <span className="hidden md:block">Last seen</span>
+                    <span className="text-right md:text-left">Connections</span>
+                  </div>
+                  {rows.map((user: AdminUserRow) => (
+                    // oxlint-disable-next-line react/forbid-elements
+                    <button
+                      key={user.externalId}
+                      type="button"
+                      onClick={() => setSelected(user)}
+                      data-slot="admin-user-row"
+                      className="grid w-full grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-accent md:grid-cols-[1.6fr_0.8fr_0.9fr_1.1fr]"
+                    >
+                      <UserIdentityCell user={user} />
+                      <span className="hidden font-mono text-xs text-muted-foreground md:block">
+                        {formatAdminDate(user.createdAt)}
+                      </span>
+                      <span
+                        className="hidden font-mono text-xs text-muted-foreground md:block"
+                        title={lastSeenTitle(user.lastSeenAt)}
+                      >
+                        {formatLastSeen(user.lastSeenAt)}
+                      </span>
+                      <span className="justify-self-end md:justify-self-start">
+                        <ConnectionGrid
+                          catalog={catalog}
+                          connections={user.connections}
+                          icons={icons}
+                        />
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {(hasNext || offset > 0) && (
+                  <div className="mt-4 flex items-center justify-between">
+                    <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                      Page {pageNumber(offset, ADMIN_USERS_PAGE_SIZE)}
+                    </span>
+                    <div className="flex items-center gap-2">
                       <Button
                         variant="outline"
                         size="sm"
-                        className="mt-4"
+                        disabled={offset === 0}
                         onClick={() => setOffset(Math.max(0, offset - ADMIN_USERS_PAGE_SIZE))}
                       >
                         Previous
                       </Button>
-                    )}
-                  </div>
-                );
-              }
-
-              return (
-                <>
-                  <div
-                    className="overflow-hidden rounded-lg border border-border bg-card"
-                    data-slot="admin-users-table"
-                  >
-                    <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground md:grid-cols-[1.6fr_0.8fr_0.9fr_1.1fr]">
-                      <span>User</span>
-                      <span className="hidden md:block">Created</span>
-                      <span className="hidden md:block">Last seen</span>
-                      <span className="text-right md:text-left">Connections</span>
-                    </div>
-                    {rows.map((user: AdminUserRow) => (
-                      // oxlint-disable-next-line react/forbid-elements
-                      <button
-                        key={user.externalId}
-                        type="button"
-                        onClick={() => setSelected(user)}
-                        data-slot="admin-user-row"
-                        className="grid w-full grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-accent md:grid-cols-[1.6fr_0.8fr_0.9fr_1.1fr]"
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!hasNext}
+                        onClick={() => setOffset(offset + ADMIN_USERS_PAGE_SIZE)}
                       >
-                        <UserIdentityCell user={user} />
-                        <span className="hidden font-mono text-xs text-muted-foreground md:block">
-                          {formatAdminDate(user.createdAt)}
-                        </span>
-                        <span
-                          className="hidden font-mono text-xs text-muted-foreground md:block"
-                          title={lastSeenTitle(user.lastSeenAt)}
-                        >
-                          {formatLastSeen(user.lastSeenAt)}
-                        </span>
-                        <span className="justify-self-end md:justify-self-start">
-                          <ConnectionGrid
-                            catalog={catalog}
-                            connections={user.connections}
-                            icons={icons}
-                          />
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {(hasNext || offset > 0) && (
-                    <div className="mt-4 flex items-center justify-between">
-                      <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
-                        Page {pageNumber(offset, ADMIN_USERS_PAGE_SIZE)}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={offset === 0}
-                          onClick={() => setOffset(Math.max(0, offset - ADMIN_USERS_PAGE_SIZE))}
-                        >
-                          Previous
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!hasNext}
-                          onClick={() => setOffset(offset + ADMIN_USERS_PAGE_SIZE)}
-                        >
-                          Next
-                        </Button>
-                      </div>
+                        Next
+                      </Button>
                     </div>
-                  )}
-                </>
-              );
-            },
-          })}
+                  </div>
+                )}
+              </>
+            );
+          },
+        })
+      )}
 
       <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
         <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">

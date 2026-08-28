@@ -69,6 +69,8 @@ export {
   AdminUsersForbidden,
   AdminUsersUnauthorized,
   AdminUserNotFound,
+  AdminAuditEvent,
+  AdminAuditEventsResponse,
   AdminUser,
   AdminUserConnection,
   AdminUserWithConnections,

@@ -37,6 +37,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import { Schema } from "effect";
 
 import { ConnectionName, HealthStatus, IntegrationSlug, Owner } from "@executor-js/sdk/shared";
+import { AUDIT_EVENT_ACTIONS, AUDIT_RESOURCE_TYPES } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -196,6 +197,24 @@ export const AdminUserResponse = Schema.Struct({
   user: AdminUserWithConnections,
 });
 
+export const AdminAuditEvent = Schema.Struct({
+  id: Schema.String,
+  actorId: Schema.NullOr(Schema.String),
+  actorEmail: Schema.NullOr(Schema.String),
+  actorDisplayName: Schema.NullOr(Schema.String),
+  action: Schema.Literals(AUDIT_EVENT_ACTIONS),
+  resourceType: Schema.Literals(AUDIT_RESOURCE_TYPES),
+  resourceOwner: Schema.NullOr(Owner),
+  resourceParent: Schema.NullOr(Schema.String),
+  resourceId: Schema.String,
+  /** Epoch milliseconds. */
+  createdAt: Schema.Number,
+});
+
+export const AdminAuditEventsResponse = Schema.Struct({
+  events: Schema.Array(AdminAuditEvent),
+});
+
 // ---------------------------------------------------------------------------
 // Params / query
 // ---------------------------------------------------------------------------
@@ -274,6 +293,22 @@ const AdminListQuery = Schema.Struct({
   email: Schema.optional(Schema.String),
 });
 
+const AdminAuditListQuery = Schema.Struct({
+  limit: Schema.optional(
+    Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 500 })),
+  ),
+  offset: Schema.optional(
+    Schema.FiniteFromString.check(
+      Schema.isInt(),
+      Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    ),
+  ),
+  actorId: Schema.optional(Schema.String),
+  action: Schema.optional(Schema.Literals(AUDIT_EVENT_ACTIONS)),
+  resourceType: Schema.optional(Schema.Literals(AUDIT_RESOURCE_TYPES)),
+  resourceOwner: Schema.optional(Owner),
+});
+
 // ---------------------------------------------------------------------------
 // Group
 // ---------------------------------------------------------------------------
@@ -304,6 +339,13 @@ const AdminListQuery = Schema.Struct({
  * same position, and the tree matches on position, not on name.
  */
 export const AdminUsersApi = HttpApiGroup.make("adminUsers")
+  .add(
+    HttpApiEndpoint.get("listAuditEvents", "/admin/audit-events", {
+      query: AdminAuditListQuery,
+      success: AdminAuditEventsResponse,
+      error: [AdminUsersError, AdminUsersUnauthorized, AdminUsersForbidden],
+    }),
+  )
   .add(
     HttpApiEndpoint.get("listUsers", "/admin/users", {
       query: AdminListQuery,

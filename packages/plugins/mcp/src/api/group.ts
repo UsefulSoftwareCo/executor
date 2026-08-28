@@ -4,6 +4,7 @@ import {
   IntegrationSlug,
   InternalError,
   IntegrationAlreadyExistsError,
+  OrgWriteDeniedError,
 } from "@executor-js/sdk/shared";
 
 import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
@@ -153,6 +154,7 @@ export const McpGroup = HttpApiGroup.make("mcp")
         McpConnectionError,
         McpToolDiscoveryError,
         IntegrationAlreadyExistsError,
+        OrgWriteDeniedError,
       ],
     }),
   )
@@ -160,7 +162,7 @@ export const McpGroup = HttpApiGroup.make("mcp")
     HttpApiEndpoint.delete("removeServer", "/mcp/servers/:slug", {
       params: SlugParams,
       success: RemoveServerResponse,
-      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -175,7 +177,7 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SlugParams,
       payload: ConfigureServerPayload,
       success: ConfigureServerResponse,
-      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -183,6 +185,6 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SlugParams,
       payload: ConfigureAuthPayload,
       success: ConfigureAuthResponse,
-      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError, OrgWriteDeniedError],
     }),
   );

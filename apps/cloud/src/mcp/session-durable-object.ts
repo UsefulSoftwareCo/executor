@@ -272,7 +272,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource },
+        {
+          mcpResource: sessionMeta.resource,
+          orgWrites: sessionMeta.orgRole === "member" ? "denied" : "allowed",
+        },
       ).pipe(
         // The metered stack tracks each execution to Autumn. It requires
         // `AutumnService | DbService`; `AutumnService.Default` is provided here

@@ -2,7 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { orgMembersAtom } from "../api/account-atoms";
-import { isTenantAdminMember, type TenantMemberRow } from "../lib/admin-access";
+import { useOrganizationId } from "../api/organization-context";
+import {
+  canCreateWorkspaceConnectionsForHost,
+  isTenantAdminMember,
+  type TenantMemberRow,
+} from "../lib/admin-access";
 import type { ShellNavItem } from "./shell";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +41,14 @@ export const useIsTenantAdmin = (): boolean => {
     onFailure: () => false,
     onSuccess: ({ value }) => isTenantAdminMember(value.members as readonly TenantMemberRow[]),
   });
+};
+
+/** Whether this host and active role allow adding Workspace credentials.
+ * Personal connection creation is available to every active member. */
+export const useCanCreateWorkspaceConnections = (): boolean => {
+  const organizationId = useOrganizationId();
+  const isAdmin = useIsTenantAdmin();
+  return canCreateWorkspaceConnectionsForHost(organizationId, isAdmin);
 };
 
 /**

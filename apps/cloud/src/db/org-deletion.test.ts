@@ -29,6 +29,7 @@ import * as executorSchema from "./executor-schema";
 import { memberships, accounts } from "./schema";
 import {
   artifact,
+  audit_event,
   blob,
   connection,
   definition,
@@ -147,6 +148,18 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     tenant,
   });
 
+  await db.insert(audit_event).values({
+    id: `aud-${tag}`,
+    actor_id: `acct-${tag}`,
+    action: "created",
+    resource_type: "connection",
+    resource_owner: "org",
+    resource_parent: "int",
+    resource_id: `conn-${tag}`,
+    created_at: now,
+    tenant,
+  });
+
   await db.insert(artifact).values({
     id: `art-${tag}`,
     title: "Dashboard",
@@ -184,6 +197,7 @@ const TENANT_TABLES = [
   tool_policy,
   plugin_storage,
   subject,
+  audit_event,
   artifact,
 ] as const;
 

@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { Context, type Effect } from "effect";
+import type { AdminListAuditEventsOptions } from "@executor-js/sdk";
 
 import {
   type AdminUserNotFound,
@@ -24,6 +25,7 @@ import {
   type AdminUsersForbidden,
   type AdminUsersUnauthorized,
   AdminUserResponse,
+  AdminAuditEventsResponse,
   AdminUsersResponse,
   AdminUserConnectionsResponse,
   AdminUsersWithConnectionsResponse,
@@ -41,6 +43,7 @@ export interface AdminUsersListOptions {
 }
 
 type User = typeof AdminUserResponse.Type;
+type AuditEvents = typeof AdminAuditEventsResponse.Type;
 type Users = typeof AdminUsersResponse.Type;
 type UserConnections = typeof AdminUserConnectionsResponse.Type;
 type UsersWithConnections = typeof AdminUsersWithConnectionsResponse.Type;
@@ -52,6 +55,10 @@ type Authorized<A> = Effect.Effect<
 >;
 
 export interface AdminUsersProviderShape {
+  readonly listAuditEvents: (
+    headers: AdminUsersHeaders,
+    options: AdminListAuditEventsOptions,
+  ) => Authorized<AuditEvents>;
   readonly listUsers: (
     headers: AdminUsersHeaders,
     options: AdminUsersListOptions,

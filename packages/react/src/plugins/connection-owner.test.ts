@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   connectionOwnerOptions,
+  connectionOwnerOptionsForAccess,
   connectionOwnerOptionsForHost,
   defaultConnectionOwnerForHost,
   normalizeConnectionOwner,
@@ -33,6 +34,26 @@ describe("connectionOwnerOptions", () => {
 
   it("keeps Personal as the default owner for org-scoped hosts", () => {
     expect(defaultConnectionOwnerForHost("org_123")).toBe("user");
+  });
+
+  it("gives members exactly one forced Personal option", () => {
+    expect(connectionOwnerOptionsForAccess("org_123", false)).toEqual([
+      {
+        owner: "user",
+        label: "Personal",
+        description: "Saved only for your account.",
+      },
+    ]);
+  });
+
+  it("keeps both choices for admins and Local for single-user hosts", () => {
+    expect(connectionOwnerOptionsForAccess("org_123", true).map((option) => option.owner)).toEqual([
+      "user",
+      "org",
+    ]);
+    expect(connectionOwnerOptionsForAccess(null, false).map((option) => option.owner)).toEqual([
+      "org",
+    ]);
   });
 });
 
