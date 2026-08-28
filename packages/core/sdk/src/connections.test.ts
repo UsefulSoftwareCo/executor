@@ -643,6 +643,56 @@ const failableConnectionDeletes = (db: FumaDb, shouldFail: () => boolean): FumaD
   return wrap(db);
 };
 
+/** Wrap a test `FumaDb` so one armed `connection` read observes a stale row.
+ *  This models the read/delete race inside the compensation transaction: under
+ *  read-committed isolation the pre-delete identity read can see this create's
+ *  row while a concurrent remove/recreate has already replaced it by the time
+ *  the guarded delete runs. SQLite serializes the whole transaction, so that
+ *  interleaving cannot be produced with real concurrency here — the wrapper
+ *  reproduces the exact observation order instead: the armed read returns the
+ *  create's own (captured) row while the table already holds the successor;
+ *  every other read, including the confirmation read after the guarded
+ *  delete, sees the real table. */
+const staleCompensationRead = (db: FumaDb, state: { armed: boolean }): FumaDb => {
+  let captured: Record<string, unknown> | null = null;
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "transaction") {
+          return (run: (tx: FumaDb) => Promise<unknown>) =>
+            (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+              (tx) => run(wrap(tx)),
+            );
+        }
+        if (prop === "create") {
+          return async (table: unknown, values: unknown) => {
+            const row = await (
+              target.create as (t: unknown, v: unknown) => Promise<Record<string, unknown>>
+            )(table, values);
+            // Keep the FIRST inserted connection row — the raced create's own.
+            if (table === "connection" && captured === null) captured = row;
+            return row;
+          };
+        }
+        if (prop === "findFirst") {
+          return (table: unknown, query: unknown) => {
+            if (table === "connection" && state.armed && captured !== null) {
+              state.armed = false;
+              return Promise.resolve(captured);
+            }
+            return (target.findFirst as (t: unknown, q: unknown) => Promise<unknown>)(table, query);
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
 describe("connections.create credential-write compensation", () => {
   // Interruption is not an error: error-channel compensation never sees it. A
   // create interrupted mid-write must still tear down what it already did —
@@ -893,6 +943,100 @@ describe("connections.create credential-write compensation", () => {
         expect(String(rows[0]?.name)).toBe("main");
         expect(store.get("connection:org:vercel:main:first")).toBe("c-1");
         expect(store.get("connection:org:vercel:main:second")).toBe("c-2");
+      }),
+    ),
+  );
+
+  // fumadb's `deleteMany` returns void, so the guarded delete cannot report
+  // whether it removed anything. Under read-committed isolation the identity
+  // read and the delete can straddle a concurrent remove/recreate: the read
+  // sees this create's row, then the delete matches ZERO rows because a
+  // successor already holds the name. Treating that zero-row delete as "our
+  // row is gone, the items are ours to undo" destroys the successor's freshly
+  // written secrets at the same deterministic item ids. The confirmation read
+  // after the guarded delete, in the same transaction, must observe the
+  // surviving row, skip ALL item deletion, and say so.
+  it.effect("a zero-row guarded delete never touches a successor's credentials", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const secondWriteEntered = yield* Deferred.make<void>();
+        const releaseSecondWrite = yield* Deferred.make<void>();
+        const store = new Map<string, string>();
+        let parkNextSecondWrite = true;
+        const provider = trackingProvider(store, {
+          set: (id, value) => {
+            if (String(id).endsWith(":second") && parkNextSecondWrite) {
+              parkNextSecondWrite = false;
+              return Deferred.succeed(secondWriteEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseSecondWrite)),
+                Effect.andThen(
+                  Effect.fail(
+                    new StorageError({ message: "provider write refused", cause: undefined }),
+                  ),
+                ),
+              );
+            }
+            return Effect.sync(() => void store.set(String(id), value));
+          },
+        });
+        const raceState = { armed: false };
+        const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: staleCompensationRead(config.db, raceState),
+        });
+        yield* executor.durable.seed();
+
+        const infos: string[] = [];
+        const capture = Logger.make<unknown, void>((options) => {
+          if (options.logLevel === "Info") {
+            infos.push(Inspectable.toStringUnknown(options.message, 0));
+          }
+        });
+        const fiber = yield* Effect.forkChild(
+          executor.connections
+            .create({
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: INTEG,
+              template: TEMPLATE,
+              values: { first: "a-1", second: "a-2" },
+            })
+            .pipe(Effect.provide(Logger.layer([capture]))),
+        );
+        yield* Deferred.await(secondWriteEntered);
+
+        // While the first create is parked in its provider write, the user
+        // removes the connection and recreates it with different secrets.
+        yield* executor.connections.remove({
+          owner: "org",
+          integration: INTEG,
+          name: ConnectionName.make("main"),
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: { first: "c-1", second: "c-2" },
+        });
+
+        // Arm the stale read and release the parked write: compensation's
+        // identity read sees the raced create's own row (the race), its
+        // guarded delete then removes zero rows.
+        raceState.armed = true;
+        yield* Deferred.succeed(releaseSecondWrite, undefined);
+        const exit = yield* Fiber.await(fiber);
+        expect(Exit.isFailure(exit)).toBe(true);
+
+        // The successor row AND its credentials survive untouched, and the
+        // skip was reported, not silent.
+        const rows = yield* executor.connections.list();
+        expect(rows.length).toBe(1);
+        expect(String(rows[0]?.name)).toBe("main");
+        expect(store.get("connection:org:vercel:main:first")).toBe("c-1");
+        expect(store.get("connection:org:vercel:main:second")).toBe("c-2");
+        expect(infos.some((line) => line.includes("removed nothing"))).toBe(true);
       }),
     ),
   );

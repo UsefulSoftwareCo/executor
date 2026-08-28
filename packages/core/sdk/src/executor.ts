@@ -3577,7 +3577,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // them here would clobber a healthy connection. Nothing here is
           // silent: every failed or impossible undo is logged, and
           // `rowOutcome` converts a stranded row into an error that names it.
-          const rowOutcomeRef = yield* Ref.make<"removed" | "superseded" | "failed">("removed");
+          //
+          // Known limitations, accepted deliberately: provider credential
+          // stores expose no conditional delete, so perfect cleanup under a
+          // concurrent remove/recreate is impossible at this layer, and no
+          // further machinery is built for it.
+          // - Under concurrent remove/recreate, compensation may skip item
+          //   deletion, leaving orphaned credential values at the
+          //   deterministic item ids. Orphans are inert without a row and the
+          //   next same-shaped create overwrites them; orphans are preferred
+          //   over the alternative, clobbering a live successor's secrets.
+          // - A successor that overwrites one variable, fails before the
+          //   next, and then also fails its own compensating row delete
+          //   leaves a stranded connection that can resolve one stale
+          //   predecessor value. Closing this needs provider-side conditional
+          //   deletes, which do not exist; the stranded state is surfaced
+          //   loudly as the typed StorageError below, naming the connection.
+          const rowOutcomeRef = yield* Ref.make<"removed" | "superseded" | "overtaken" | "failed">(
+            "removed",
+          );
           const logContext = {
             owner: input.owner,
             integration: String(input.integration),
@@ -3605,6 +3623,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                       b("row_id", "=", insertedRowId),
                     ),
                 });
+                // `deleteMany` returns void, so whether the guarded delete
+                // removed OUR row cannot be read off its result — and the
+                // identity read above and the delete can straddle a
+                // concurrent remove/recreate under weak isolation. Confirm
+                // against the table instead, in this same transaction: the
+                // guarded delete could only ever match our row, so any row
+                // still holding the name is a successor (or restored
+                // original) — our delete removed nothing, and the surviving
+                // row's owner owns both the name and the credential items.
+                // Only when no row remains is ours provably gone and the
+                // items ours to undo. A successor inserting after this
+                // transaction commits can still interleave with the item
+                // deletes below; that residual is accepted (see the
+                // known-limitations note above).
+                const survivor = yield* findConnectionRow({
+                  owner: input.owner,
+                  integration: input.integration,
+                  name,
+                });
+                if (survivor !== null) {
+                  return "overtaken" as const;
+                }
                 return "removed" as const;
               }),
             ).pipe(
@@ -3622,6 +3662,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // nothing left here is ours to touch.
               yield* Effect.logInfo(
                 "executor connection create skipped compensation: the connection row was already removed or replaced",
+                logContext,
+              );
+              return;
+            }
+            if (rowOutcome === "overtaken") {
+              // The guarded delete removed nothing and another row now holds
+              // the name: a concurrent remove/recreate interleaved between
+              // the identity read and the delete. The surviving row's owner
+              // owns the name and the credential items; deleting the items
+              // here would destroy that live connection's secrets.
+              yield* Effect.logInfo(
+                "executor connection create skipped credential cleanup: its guarded row delete removed nothing and another connection now holds the name; the surviving connection owns the credential items",
                 logContext,
               );
               return;
