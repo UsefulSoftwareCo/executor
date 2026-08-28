@@ -632,10 +632,14 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 owner: input.owner === undefined ? undefined : (input.owner as Owner),
               });
               // Re-verify sticky non-healthy verdicts before reporting them
-              // (the same probe as the UI's "Check now", server-cached via
-              // `ifStaleMs` so repeated lists collapse to one probe per
-              // window). Quiet on probe failure: the persisted verdict is
-              // still the best known state, exactly like the UI surfaces.
+              // (the same probe as the UI's "Check now"). The server owns the
+              // stampede control: `ifStaleMs` caches settled verdicts per
+              // window, and concurrent readers past that gate coalesce onto
+              // one in-flight probe per connection. A grant the AS recorded
+              // dead is never re-probed there — only an explicit reconnect
+              // clears that verdict. Quiet on probe failure: the persisted
+              // verdict is still the best known state, exactly like the UI
+              // surfaces.
               const revalidated = yield* Effect.forEach(
                 connections,
                 (connection) =>

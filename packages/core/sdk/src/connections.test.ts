@@ -1102,8 +1102,17 @@ type ListedConnections = {
   }[];
 };
 
-const makeHealthHarness = () => {
+const makeHealthHarness = (options?: {
+  /** Replaces the default instant-healthy probe. Entries are still counted in
+   *  `counters.probes`, so a Deferred-gated probe lets a test hold every
+   *  in-flight health check open and count how many actually started. */
+  readonly probe?: Effect.Effect<typeof HealthCheckResult.Type>;
+}) => {
   const counters = { probes: 0 };
+  // Runs inside every invocation before it returns, so a test can interleave
+  // a concurrent write (e.g. a refresh discovering invalid_grant) between the
+  // row load and the heal-on-use decision.
+  const hooks = { onInvoke: Effect.void as Effect.Effect<void> };
   const plugin = definePlugin(() => ({
     id: "healthdemo" as const,
     credentialProviders: [memoryProvider()],
@@ -1111,15 +1120,19 @@ const makeHealthHarness = () => {
     resolveTools: () =>
       Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
     invokeTool: ({ toolRow, credential, args }) =>
-      Effect.succeed(
+      Effect.as(
+        hooks.onInvoke,
         (args as { fail?: boolean }).fail === true
           ? ToolResult.fail({ code: "upstream_error", message: "boom" })
           : { ran: toolRow.name, value: credential.value },
       ),
     checkHealth: () =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         counters.probes += 1;
-        return { status: "healthy" as const, checkedAt: Date.now(), detail: "probe ok" };
+        return (
+          options?.probe ??
+          Effect.succeed({ status: "healthy" as const, checkedAt: Date.now(), detail: "probe ok" })
+        );
       }),
     extension: (ctx) => ({
       seed: () =>
@@ -1154,7 +1167,7 @@ const makeHealthHarness = () => {
         integration: INTEG,
         name: ConnectionName.make("main"),
       });
-    return { executor, counters, stamp, persisted } as const;
+    return { executor, counters, stamp, persisted, hooks } as const;
   });
 };
 
@@ -1201,6 +1214,86 @@ describe("agent read revalidation (coreTools connections.list)", () => {
       const listed = out.connections.find((c) => c.name === "main");
       expect(listed?.lastHealth?.status).toBe("healthy");
       expect(counters.probes).toBe(0);
+    }),
+  );
+
+  it.effect("concurrent lists past the freshness gate collapse to one probe", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness({
+        probe: Deferred.await(gate).pipe(
+          Effect.map(() => ({
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "probe ok",
+          })),
+        ),
+      });
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+
+      const lists = yield* Effect.forkChild(
+        Effect.all(
+          Array.from({ length: 5 }, () => executor.execute(CORE_LIST, {})),
+          { concurrency: "unbounded" },
+        ),
+      );
+      // The probe is held open by the gate, so NOTHING has been persisted yet:
+      // every one of the five lists must pass the freshness check and reach
+      // the probe path. Give them real time to get there — the counter then
+      // says how many probes actually started.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      expect(counters.probes).toBe(1);
+
+      yield* Deferred.succeed(gate, void 0);
+      const outs = (yield* Fiber.join(lists)) as readonly ListedConnections[];
+      for (const out of outs) {
+        const listed = out.connections.find((c) => c.name === "main");
+        expect(listed?.lastHealth?.status).toBe("healthy");
+      }
+      expect(counters.probes).toBe(1);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("healthy");
+    }),
+  );
+
+  it.effect("a grant recorded invalid_grant-dead is never auto-revalidated", () =>
+    Effect.gen(function* () {
+      const { executor, counters, stamp, persisted } = yield* makeHealthHarness();
+      yield* stamp({
+        provider_state: {
+          oauthReauthRequiredAt: Date.now(),
+          oauthReauthRequiredDetail: "invalid_grant",
+        },
+        last_health: {
+          status: "expired",
+          checkedAt: Date.now() - STALE_MS,
+          detail: "invalid_grant",
+        },
+      });
+
+      // The list serves the persisted verdict without probing: a probe could
+      // pass on the access token's remaining lifetime and persist "healthy",
+      // hiding the required reconnect forever.
+      const out = (yield* executor.execute(CORE_LIST, {})) as ListedConnections;
+      const listed = out.connections.find((c) => c.name === "main");
+      expect(listed?.lastHealth?.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      // The manual "Check now" (no freshness window) refuses too: only an
+      // explicit reconnect clears a dead grant.
+      const manual = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("main"),
+      });
+      expect(manual.status).toBe("expired");
+      expect(counters.probes).toBe(0);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.status).toBe("expired");
     }),
   );
 
@@ -1274,6 +1367,48 @@ describe("heal-on-use", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth?.status).toBe("expired");
+    }),
+  );
+
+  it.effect("does not overwrite a newer verdict written while the call was in flight", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+      // A probe (or refresh) lands a NEWER expired verdict while the call is
+      // in flight. Heal-on-use decided from the row loaded BEFORE invocation;
+      // it must re-check at write time and leave the newer evidence standing.
+      const newerDetail = "revoked upstream while the call ran";
+      hooks.onInvoke = stamp({
+        last_health: { status: "expired", checkedAt: Date.now(), detail: newerDetail },
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: newerDetail });
+    }),
+  );
+
+  it.effect("does not resurrect a grant that died while the call was in flight", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
+      });
+      // A concurrent refresh discovers invalid_grant mid-call and records the
+      // dead grant. The invocation still succeeded on the old access token's
+      // remaining lifetime — healing from it would bury the reconnect.
+      hooks.onInvoke = stamp({
+        provider_state: { oauthReauthRequiredAt: Date.now() },
+        last_health: { status: "expired", checkedAt: Date.now(), detail: "invalid_grant" },
+      }).pipe(Effect.asVoid);
+
+      yield* executor.execute(ToolAddress.make("tools.vercel.org.main.deploy"), {});
+
+      const row = yield* persisted();
+      expect(row?.lastHealth).toMatchObject({ status: "expired", detail: "invalid_grant" });
     }),
   );
 
