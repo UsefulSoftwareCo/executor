@@ -259,6 +259,25 @@ export const makeExecutionStackMiddleware = <
             Effect.provideService(ExecutorService, executor),
             Effect.provideService(ExecutionEngineService, engine),
             provideExecutorExtensions(executor),
+            // This engine belongs to THIS request: the stack above was built
+            // from the host's request-scoped DB handle, and `executeWithPause`
+            // forks its sandbox as a daemon that would otherwise outlive the
+            // handler. The host closes the connection when the request scope
+            // closes — which happens AFTER this effect returns — so ending the
+            // engine here is what keeps a sandbox fiber from waking up on a
+            // closed pool.
+            //
+            // Nothing is lost by ending it: on a per-request engine the paused
+            // fiber is already unreachable once the response is written (a
+            // resume lands on a different engine and replays the call instead),
+            // so the fiber could only ever have failed. The MCP session Durable
+            // Object does NOT come through here — it builds its own stack over a
+            // session-lifetime handle, so its pauses still survive between
+            // requests, which is the whole point of that plane.
+            //
+            // `ensuring`, not `tap`: interruption and failure have to end the
+            // fiber too, and it must not run before the response is produced.
+            Effect.ensuring(engine.shutdown),
           );
           // Provide the boot-captured context; uncaptured deps (cloud's
           // request-scoped `DbService`) remain residual and flow through here.
@@ -315,6 +334,9 @@ const readOnlyExecutionEngine: ExecutionEngine<Cause.YieldableError> = {
   getPausedExecution: () => Effect.succeed(null),
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
+  // Nothing is ever forked here — the platform branch cannot execute — so there
+  // is no sandbox fiber to end.
+  shutdown: Effect.void,
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: only the MCP tool server reads this, and the MCP plane never serves a platform credential
   getDescription: Effect.die(new PlatformEngineUnavailable({ member: "getDescription" })),
 };

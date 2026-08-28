@@ -60,6 +60,8 @@ const makeFakeEngine = (
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed("fake"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 });
 
 describe("withExecutionAnalytics", () => {
