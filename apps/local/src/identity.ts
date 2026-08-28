@@ -31,6 +31,7 @@ import { safeEqual } from "./serve-shared";
  * cwd-derived (in `app.ts`), independent of these ids.
  */
 export const LOCAL_PRINCIPAL: Principal = {
+  kind: "member",
   accountId: "local",
   organizationId: "local",
   organizationName: "Local",

@@ -26,6 +26,19 @@ export const apiKeysAtom = AccountApiClient.query("account", "listApiKeys", {
 export const createApiKey = AccountApiClient.mutation("account", "createApiKey");
 export const revokeApiKey = AccountApiClient.mutation("account", "revokeApiKey");
 
+// ── Org API keys ────────────────────────────────────────────────────────────
+
+// Admin-gated on the server (403 for a plain member) and refused entirely on
+// self-host. The page only reads this atom for an admin on a host that mints
+// org keys, so a failure here renders as the section's error state, not as a
+// role probe.
+export const orgApiKeysAtom = AccountApiClient.query("account", "listOrgApiKeys", {
+  reactivityKeys: [ReactivityKey.orgApiKeys],
+});
+
+export const createOrgApiKey = AccountApiClient.mutation("account", "createOrgApiKey");
+export const revokeOrgApiKey = AccountApiClient.mutation("account", "revokeOrgApiKey");
+
 // ── Organization members ─────────────────────────────────────────────────────
 
 // `refreshOnWindowFocus` is BROWSER-ONLY: its signal atom subscribes to

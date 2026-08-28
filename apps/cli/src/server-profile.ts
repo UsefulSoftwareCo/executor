@@ -62,6 +62,11 @@ const PersistedAuth = Schema.Union([
   }),
 ]);
 
+const PersistedHeader = Schema.Struct({
+  kind: Schema.Literal("env"),
+  name: Schema.String,
+});
+
 const PersistedConnection = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["http", "desktop-sidecar"])),
   key: Schema.optional(Schema.String),
@@ -69,6 +74,7 @@ const PersistedConnection = Schema.Struct({
   apiBaseUrl: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   auth: Schema.optional(PersistedAuth),
+  headers: Schema.optional(Schema.Record(Schema.String, PersistedHeader)),
 });
 
 const PersistedProfile = Schema.Struct({

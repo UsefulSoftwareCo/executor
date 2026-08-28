@@ -24,6 +24,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import { accountIdOf, forBrowser, joinOrg } from "./support/session";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -126,7 +127,7 @@ scenario(
           let slug = "";
 
           await step("Land in the workspace and canonicalize onto the org slug", async () => {
-            await page.goto("/", { waitUntil: "networkidle" });
+            await visit(page, "/");
             await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
               timeout: 30_000,
             });
@@ -323,7 +324,7 @@ scenario(
           let slug = "";
 
           await step("Sign in as a plain member of the same workspace", async () => {
-            await page.goto("/", { waitUntil: "networkidle" });
+            await visit(page, "/");
             await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
               timeout: 30_000,
             });
@@ -345,7 +346,7 @@ scenario(
           await step(
             "Reaching the URL directly says no access, not an empty workspace",
             async () => {
-              await page.goto(`/${slug}/users`, { waitUntil: "networkidle" });
+              await visit(page, `/${slug}/users`);
               // The denial is the assertion: an empty table here would misreport
               // a populated workspace as having no users.
               await page

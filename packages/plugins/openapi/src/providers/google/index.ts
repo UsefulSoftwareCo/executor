@@ -17,6 +17,7 @@ export {
   googleStandardUserOAuthPresets,
   googleOAuthConsentScopes,
   googleOAuthConsentScopesForPreset,
+  googleCatalogOAuthScopesForPreset,
   googleServiceSlug,
   googleAudienceWarningsForUrls,
   googlePresetForDiscoveryUrl,

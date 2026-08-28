@@ -16,9 +16,16 @@ import {
 import type { Authentication } from "../../sdk/types";
 
 import {
+  fetchMicrosoftGraphSlice,
+  microsoftGraphPresetIdsForSliceAsset,
+  microsoftGraphSliceAssetFromUrl,
+} from "./slices";
+import {
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_DELEGATED_AUTH_LABEL,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
@@ -168,6 +175,7 @@ const microsoftOAuthTemplate = (
   {
     slug: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
     kind: "oauth2",
+    label: MICROSOFT_DELEGATED_AUTH_LABEL,
     authorizationUrl: endpoints.authorizationUrl,
     tokenUrl: endpoints.tokenUrl,
     scopes,
@@ -175,6 +183,7 @@ const microsoftOAuthTemplate = (
   {
     slug: AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
     kind: "oauth2",
+    label: MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL,
     authorizationUrl: endpoints.authorizationUrl,
     tokenUrl: endpoints.clientCredentialsTokenUrl,
     scopes: [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
@@ -243,6 +252,10 @@ const normalizeMicrosoftGraphSpecUrl = (
   policy?: MicrosoftGraphUrlPolicy,
 ): string | null => {
   if (value === MICROSOFT_GRAPH_OPENAPI_URL) return value;
+  const sliceAsset = microsoftGraphSliceAssetFromUrl(value);
+  if (sliceAsset !== null && microsoftGraphPresetIdsForSliceAsset(sliceAsset) !== null) {
+    return value;
+  }
   return allowUnsafeUrl(value, policy) ?? null;
 };
 
@@ -758,10 +771,29 @@ export const buildMicrosoftGraphOpenApiSpec = (
   urlPolicy?: MicrosoftGraphUrlPolicy,
 ): Effect.Effect<MicrosoftGraphSpecBuild, OpenApiParseError> =>
   Effect.gen(function* () {
-    const selection = yield* validateSelectionUrls(normalizeSelection(input), urlPolicy);
-    const sourceText = yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
-      Effect.provide(httpClientLayer),
-    );
+    // A slice URL carries its own selection: when the caller passes no preset
+    // ids, the asset's selection applies (rather than the default bundle).
+    const inputSliceAsset = input.specUrl
+      ? microsoftGraphSliceAssetFromUrl(input.specUrl.trim())
+      : null;
+    const inputSlicePresetIds =
+      inputSliceAsset !== null ? microsoftGraphPresetIdsForSliceAsset(inputSliceAsset) : null;
+    const selectionInput =
+      inputSlicePresetIds !== null && (!input.presetIds || input.presetIds.length === 0)
+        ? { ...input, presetIds: inputSlicePresetIds }
+        : input;
+    const selection = yield* validateSelectionUrls(normalizeSelection(selectionInput), urlPolicy);
+    // The URL is the byte source, never substituted. Catalog selections point
+    // at precomputed slice URLs (the 43MB monolith cannot be processed in a
+    // 128MB isolate — its fetch completed once in the 30 days before
+    // 2026-08-26); the monolith and emulator-override URLs fetch exactly what
+    // they name.
+    const sourceText =
+      microsoftGraphSliceAssetFromUrl(selection.specUrl) !== null
+        ? yield* fetchMicrosoftGraphSlice(selection.specUrl).pipe(Effect.provide(httpClientLayer))
+        : yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
+            Effect.provide(httpClientLayer),
+          );
 
     // Structural split is the only entry point: parsing the whole 37MB tree
     // OOMs the 128MB Workers isolate (measured: HTTP 503). No fallback. A spec

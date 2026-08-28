@@ -36,6 +36,9 @@ describe("CLI server connection profiles", () => {
           connection: {
             origin: "https://executor.example/api",
             auth: { kind: "bearer", token: "key_123" },
+            headers: {
+              "CF-Access-Client-Id": { kind: "env", name: "EXECUTOR_CF_ACCESS_CLIENT_ID" },
+            },
           },
           makeDefault: true,
         });
@@ -49,6 +52,9 @@ describe("CLI server connection profiles", () => {
         expect(store.profiles[0]?.connection.auth).toEqual({
           kind: "bearer",
           token: "key_123",
+        });
+        expect(store.profiles[0]?.connection.headers).toEqual({
+          "CF-Access-Client-Id": { kind: "env", name: "EXECUTOR_CF_ACCESS_CLIENT_ID" },
         });
         expect(defaultCliServerConnectionProfile(store)?.name).toBe("remote");
       } finally {
@@ -114,6 +120,12 @@ describe("CLI server connection profiles", () => {
               key: "desktop-sidecar",
               origin: "http://127.0.0.1:4789",
               auth: { kind: "basic", username: "executor", password: "secret" },
+              headers: {
+                "CF-Access-Client-Id": {
+                  kind: "env",
+                  name: "EXECUTOR_CF_ACCESS_CLIENT_ID",
+                },
+              },
             },
           },
         ],
@@ -126,6 +138,9 @@ describe("CLI server connection profiles", () => {
       kind: "basic",
       username: "executor",
       password: "secret",
+    });
+    expect(store.profiles[0]?.connection.headers).toEqual({
+      "CF-Access-Client-Id": { kind: "env", name: "EXECUTOR_CF_ACCESS_CLIENT_ID" },
     });
   });
 });

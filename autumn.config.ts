@@ -31,7 +31,7 @@ export const free = plan({
   items: [
     item({
       featureId: executions.id,
-      included: 10000,
+      included: 100000,
       reset: {
         interval: "month",
       },
@@ -47,7 +47,7 @@ export const freePayAsYouGo = plan({
   items: [
     item({
       featureId: executions.id,
-      included: 10000,
+      included: 100000,
       price: {
         amount: 0.2,
         billingUnits: 1000,

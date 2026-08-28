@@ -1,19 +1,23 @@
 // ---------------------------------------------------------------------------
-// SSR auth gate — the server-side session check for DOCUMENT requests.
+// Document auth gate — the server-side session check for DOCUMENT requests.
 //
 // The sealed `wos-session` cookie is verified right here in the worker
 // (unseal + JWT check against cached JWKS — no per-request WorkOS round trip
-// except token refresh), so by the time the SPA is served the server KNOWS
-// who it's serving:
+// except token refresh), so by the time the SPA shell is served the server
+// KNOWS who it's serving:
 //
 // - signed out → 302 /login (carrying ?returnTo=) before any app HTML exists
 // - org-less   → 302 /create-org (onboarding owns those sessions)
-// - signed in  → the document is served WITH the verified identity: the
-//   auth-hint travels to the SSR render via request-middleware context (the
-//   root loader picks it up), and is minted as a cookie when the browser
-//   doesn't hold a current one — so the very first paint is the real app
-//   shell, never a skeleton. The hint is display-only; /account/me remains
-//   the authority and the client keeps it fresh from then on.
+// - signed in  → the prerendered shell is served, and the auth-hint cookie is
+//   minted when the browser doesn't hold a current one — the client seeds its
+//   auth state from that cookie right after mount (there is no per-request
+//   render to dehydrate it into). The hint is display-only; /account/me
+//   remains the authority and the client keeps it fresh from then on.
+//
+// Beyond redirects, this gate is load-bearing for SESSION LIFETIME: WorkOS
+// refresh tokens are single-use, and a verify that rotates the sealed session
+// must deliver the new cookie to the browser or the next expiry logs the user
+// out. Document navigations are where that rotation lands.
 //
 // Scope: GET/HEAD requests that are document navigations (sec-fetch-dest /
 // accept), excluding app-owned paths (/api, /mcp — they answer for themselves
@@ -39,7 +43,6 @@ import { parseCookie } from "./cookies";
 import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import { sealedSessionDisplayName } from "./middleware";
 import { authorizeOrganizationSelector } from "./organization";
-import { browserOriginFromRequest } from "./request-origin";
 import { loginPath, safeReturnTo } from "./return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "./route-paths";
 import { WorkOSClient } from "./workos";
@@ -153,7 +156,7 @@ const organizationDisplay = async (
 ): Promise<{ name: string; slug: string }> => {
   const exit = await getRuntime().runPromiseExit(
     Effect.flatMap(UserStoreService.asEffect(), (users) =>
-      users.use((store) => store.getOrganization(organizationId)),
+      users.use("getOrganization", (store) => store.getOrganization(organizationId)),
     ).pipe(Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer()))),
   );
   return Exit.isSuccess(exit)
@@ -279,19 +282,11 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
       }
     }
 
-    // Serve the document WITH the verified identity: the hint rides to the
-    // SSR render through middleware context (the root loader reads it), so
-    // the server paints the real authenticated shell — no loading state, no
-    // skeleton. The request origin rides along too: it's what the connect
-    // card's MCP URL is built from, and the server knows it (the SPA only
-    // learns `window.location.origin` after mount), so passing it here lets
-    // SSR render the real `https://…/<org>/mcp` instead of the client-side
-    // `http://127.0.0.1:4000` default — which would otherwise flash until
-    // hydration corrected it. Set-cookie writes ride on the rendered response.
+    // Serve the shell, minting the auth-hint cookie when the browser lacks a
+    // current one so the client's post-mount cookie read seeds the verified
+    // identity. Set-cookie writes ride on the shell response.
     const { hint, mint } = await resolveAuthHint(session, cookieHeader);
-    const result = await next({
-      context: { authHint: hint, origin: browserOriginFromRequest(request) },
-    });
+    const result = await next();
     if (!mint && !session.refreshedSession) return result;
 
     const response = new Response(result.response.body, result.response);
