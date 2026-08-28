@@ -4,8 +4,13 @@
 // ids in executor.ts, the oauth-client secret ids):
 //
 //   connection:<owner>:<integration>:<name>:<variable>
-//   oauth:<owner>:<integration>:<name>[:refresh]
+//   oauth:<owner>:<integration>:<name>[:refresh[:store-probe]]
 //   oauth-client:<owner>:<slug>:secret
+//
+// The `:store-probe` tail is the one id here that holds no credential: a
+// refresh writes it to prove the store accepts writes before a grant spends
+// the refresh token. It hangs off the refresh id so it inherits the same
+// owner, and therefore the same partition, as the credential it stands in for.
 //
 // Credential providers file plugin-storage rows by THIS owner, not the acting
 // caller's binding — an org connection whose OAuth consent completes in one

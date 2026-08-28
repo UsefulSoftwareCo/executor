@@ -142,6 +142,16 @@ export default defineConfig(({ command, mode }) => {
         router: {
           virtualRouteConfig: routes,
         },
+        // SPA mode: the console is 100% authenticated UI (marketing is its own
+        // Astro app, docs are a proxy), so nothing needs per-request React
+        // SSR. The shell is prerendered once at build; document requests still
+        // run the request-middleware chain (doc-gate auth redirects + session
+        // cookie rotation) but serve that static shell, which drops the whole
+        // React app from the worker bundle and takes per-request render cost
+        // to zero.
+        spa: {
+          enabled: true,
+        },
       }),
       react(),
     ],

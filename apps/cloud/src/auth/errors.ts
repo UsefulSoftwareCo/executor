@@ -1,10 +1,103 @@
 import { Data, Effect, Option, Predicate, Schema } from "effect";
 
+// How a user-store call failed, classified from the driver cause. Safe to put
+// on the wire and on a Sentry tag: it names a failure MODE, never a query, a
+// value, or a customer.
+export const USER_STORE_FAILURE_REASONS = [
+  "connect_timeout",
+  "connection_closed",
+  "query",
+  "unknown",
+] as const;
+
+export type UserStoreFailureReason = (typeof USER_STORE_FAILURE_REASONS)[number];
+
+/**
+ * The public failure of every cloud user-store call.
+ *
+ * It carries the two fields that make an issue diagnosable from the error
+ * alone: which store call failed, and how. Before those existed the error had
+ * an empty field set, so Sentry showed a titleless, messageless issue and the
+ * only cause detail (the pretty-printed Effect cause in a Sentry `extra`) is
+ * scrubbed server-side — the failing operation and the driver reason existed
+ * only in the trace store. Same shape as `WorkOSError.status`: a small, safe
+ * classification field threaded at the service boundary.
+ */
 export class UserStoreError extends Schema.TaggedErrorClass<UserStoreError>()(
   "UserStoreError",
-  {},
+  {
+    /** The store call that failed, e.g. `getOrganization`. */
+    operation: Schema.String,
+    /** How it failed, classified from the driver cause chain. */
+    reason: Schema.Literals(USER_STORE_FAILURE_REASONS),
+  },
   { httpApiStatus: 500 },
-) {}
+) {
+  override get message(): string {
+    return `user store ${this.operation} failed: ${this.reason}`;
+  }
+}
+
+/** Reasons a retry can plausibly clear: the query never reached a healthy
+ *  server. A `query` failure is deterministic and must not be retried. */
+export const isTransientUserStoreReason = (reason: UserStoreFailureReason): boolean =>
+  reason === "connect_timeout" || reason === "connection_closed";
+
+// postgres.js tags its connection failures with a string `code`
+// (`CONNECT_TIMEOUT`, `CONNECTION_CLOSED`, …) and its query failures with the
+// SQLSTATE. Drizzle re-throws both wrapped in its own "Failed query" error with
+// the driver error in `.cause`, and the service adapter wraps that again, so
+// the classification walks the chain rather than inspecting one level.
+const MAX_CAUSE_DEPTH = 8;
+
+const REASON_BY_DRIVER_CODE: Readonly<Record<string, UserStoreFailureReason>> = {
+  CONNECT_TIMEOUT: "connect_timeout",
+  ETIMEDOUT: "connect_timeout",
+  CONNECTION_CLOSED: "connection_closed",
+  CONNECTION_ENDED: "connection_closed",
+  CONNECTION_DESTROYED: "connection_closed",
+  ECONNREFUSED: "connection_closed",
+  ECONNRESET: "connection_closed",
+};
+
+const stringCodeOf = (value: unknown): string | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const code = (value as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+};
+
+const driverCodesOf = (failure: unknown): readonly string[] => {
+  const codes: string[] = [];
+  let current: unknown = isServiceAdapterError(failure) ? failure.cause : failure;
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null;
+    depth++
+  ) {
+    const code = stringCodeOf(current);
+    if (code !== undefined) codes.push(code);
+    current =
+      typeof current === "object" ? (current as { readonly cause?: unknown }).cause : undefined;
+  }
+  return codes;
+};
+
+/** Classify a raw store failure. A recognised connection code wins; any other
+ *  driver code (a SQLSTATE) is a deterministic query failure; nothing at all is
+ *  `unknown`. */
+export const userStoreReasonFromCause = (failure: unknown): UserStoreFailureReason => {
+  const codes = driverCodesOf(failure);
+  for (const code of codes) {
+    const reason = REASON_BY_DRIVER_CODE[code];
+    if (reason !== undefined) return reason;
+  }
+  return codes.length > 0 ? "query" : "unknown";
+};
+
+/** Build the public `UserStoreError` for a store-adapter failure, naming the
+ *  operation the call site already knows and classifying the driver cause. */
+export const userStoreErrorFromFailure = (operation: string, failure: unknown): UserStoreError =>
+  new UserStoreError({ operation, reason: userStoreReasonFromCause(failure) });
 
 export class WorkOSError extends Schema.TaggedErrorClass<WorkOSError>()(
   "WorkOSError",

@@ -19,7 +19,6 @@ export const members = feature({
   name: "Members",
   type: "metered",
   consumable: false,
-  archived: true,
 });
 
 // Plans
@@ -30,8 +29,12 @@ export const free = plan({
   autoEnable: true,
   items: [
     item({
+      featureId: members.id,
+      included: 3,
+    }),
+    item({
       featureId: executions.id,
-      included: 10000,
+      included: 100000,
       reset: {
         interval: "month",
       },
@@ -47,7 +50,7 @@ export const freePayAsYouGo = plan({
   items: [
     item({
       featureId: executions.id,
-      included: 10000,
+      included: 100000,
       price: {
         amount: 0.2,
         billingUnits: 1000,
@@ -63,23 +66,28 @@ export const team = plan({
   name: "Team",
   addOn: false,
   autoEnable: false,
-  price: {
-    amount: 150,
-    interval: "month",
-  },
   freeTrial: {
     durationLength: 14,
     durationType: "day",
     cardRequired: true,
   },
   items: [
+    // Billed in arrears on the seat count the app reports (active members
+    // only — see apps/cloud/src/extensions/billing/member-seats.ts).
+    item({
+      featureId: members.id,
+      included: 0,
+      price: {
+        amount: 15,
+        billingUnits: 1,
+        billingMethod: "usage_based",
+        interval: "month",
+      },
+    }),
     item({
       featureId: executions.id,
-      included: 250000,
-      price: {
-        amount: 0.2,
-        billingUnits: 1000,
-        billingMethod: "usage_based",
+      unlimited: true,
+      reset: {
         interval: "month",
       },
     }),
@@ -95,6 +103,12 @@ export const enterprise = plan({
   addOn: false,
   autoEnable: false,
   items: [
+    // Seat usage is tracked for visibility; pricing is set per contract at
+    // attach time, so the plan itself carries no price.
+    item({
+      featureId: members.id,
+      unlimited: true,
+    }),
     item({
       featureId: executions.id,
       unlimited: true,

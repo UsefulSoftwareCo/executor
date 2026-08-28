@@ -109,7 +109,7 @@ const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
 
 export const startServer = async (): Promise<void> => {
   const config = loadConfig();
-  const { AppLayer, betterAuth } = await makeSelfHostApp();
+  const { AppLayer, betterAuth, closeDb } = await makeSelfHostApp();
 
   // Serve the built SPA, split by cacheability so a redeploy is picked up at
   // once instead of stranding browsers on a stale shell:
@@ -141,6 +141,16 @@ export const startServer = async (): Promise<void> => {
     Effect.addFinalizer(() => Effect.promise(() => disposeAnalytics())),
   );
 
+  // Server-scope finalizer: release what the app opened at boot — every live
+  // MCP session (transport, server, and its execution engine, whose detached
+  // sandbox fibers keep querying the DB until the engine is shut down) and then
+  // the shared libSQL handle itself. `makeSelfHostApiHandler` runs this in its
+  // `dispose`, so tests have always released it; the long-lived server dropped
+  // the hook on the floor and leaked both across a graceful shutdown.
+  const AppResourcesLive = Layer.effectDiscard(
+    Effect.addFinalizer(() => Effect.promise(() => closeDb())),
+  );
+
   // OTLP export, or `Layer.empty` when no collector is configured (see
   // ./telemetry). The `http.server` envelope span each request's `withSpan`
   // children parent under is NOT wired here: `HttpEffect.toHandled` already
@@ -162,7 +172,11 @@ export const startServer = async (): Promise<void> => {
   // in scope while the app's layers build, or spans created during construction
   // resolve the default no-op tracer and are silently dropped.
   await BunRuntime.runMain(
-    Layer.launch(Layer.merge(ServerLive, AnalyticsFlushLive).pipe(Layer.provide(TelemetryLive))),
+    Layer.launch(
+      Layer.mergeAll(ServerLive, AnalyticsFlushLive, AppResourcesLive).pipe(
+        Layer.provide(TelemetryLive),
+      ),
+    ),
   );
 };
 
