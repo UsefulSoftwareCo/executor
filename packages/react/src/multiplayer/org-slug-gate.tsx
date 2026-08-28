@@ -16,7 +16,11 @@ import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 // membership and resolves data for that org — same as the MCP URL-pinned org.
 // So a foreign slug never reaches this gate as "active" on a multi-org host:
 // the server returns no organization for an org the caller can't see, and the
-// shell 404s upstream. That makes two browser tabs on different orgs fully
+// shell 404s upstream. The host is what enforces that — it must not build this
+// subtree until the authenticated answer NAMES the slug in the URL, or an
+// optimistic answer about the session's own org (cloud's auth-hint cookie)
+// would mount the shell under a foreign address before the server ever
+// replies. That makes two browser tabs on different orgs fully
 // independent — no shared "active org" to steal. On a single-org host (e.g.
 // self-host) every slug resolves to the same org server-side, so a bogus slug
 // (e.g. `/totally-bogus`) would otherwise fuzzy-match a route and render
