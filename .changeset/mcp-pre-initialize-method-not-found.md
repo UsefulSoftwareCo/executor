@@ -1,5 +1,4 @@
 ---
-"@executor-js/host-mcp": patch
 "@executor-js/local": patch
 ---
 
