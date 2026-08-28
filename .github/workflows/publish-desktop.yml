@@ -155,8 +155,22 @@ jobs:
           #     → notarytool authentication for the notarization upload
           # When the secrets aren't set (forks, local), electron-builder
           # silently produces an unsigned build.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          #
+          # CSC_LINK / CSC_KEY_PASSWORD MUST stay scoped to the mac legs.
+          # Despite the name used here, CSC_LINK is electron-builder's
+          # cross-platform certificate variable: WinPackager falls back to it
+          # whenever WIN_CSC_LINK is unset, via
+          # platformPackager.getCscLink("WIN_CSC_LINK"). Handing the Apple
+          # Developer ID .p12 to the windows leg made electron-builder read its
+          # subject and write `publisherName: Developer ID Application: ...`
+          # into app-update.yml, so every Windows client rejected the update it
+          # had just downloaded with "New version is not signed by the
+          # application owner". Empty string is the documented "no certificate"
+          # value — WindowsSignToolManager treats `cscLink === ""` exactly like
+          # unset. The APPLE_* vars below need no such guard: they are only
+          # read by notarytool on darwin and are inert elsewhere.
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
           APPLE_API_KEY: ${{ env.APPLE_API_KEY_PATH }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
