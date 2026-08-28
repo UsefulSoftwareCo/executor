@@ -1,5 +1,5 @@
 ---
-"executor": minor
+"executor": patch
 ---
 
 **Irreversible cleanup now waits for the transaction to commit, and plugins can do the same**

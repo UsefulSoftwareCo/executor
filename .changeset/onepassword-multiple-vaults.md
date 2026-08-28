@@ -1,5 +1,5 @@
 ---
-"executor": minor
+"executor": patch
 ---
 
 **The 1Password provider can now be scoped to several vaults, with explicit per-vault addressing**
