@@ -16,6 +16,7 @@ import { Cause, Effect, Layer, Predicate } from "effect";
 import type * as Tracer from "effect/Tracer";
 
 import { ErrorCapture } from "@executor-js/api";
+import { classifyDurableObjectError } from "@executor-js/cloudflare/mcp/durable-object-errors";
 import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
 
 // Drizzle/postgres-js include the failing SQL (params + bound values) in
@@ -129,11 +130,54 @@ const isClaimedDurableObjectEcho = (event: ErrorEvent): boolean => {
   return typeof mechanism === "string" && mechanism.startsWith("auto.");
 };
 
+/**
+ * The mechanism `instrumentDurableObjectWithSentry` stamps on a rejection it
+ * catches escaping a Durable Object entry point.
+ */
+const DO_FAAS_MECHANISM = "auto.faas.cloudflare.durable_object";
+
+/**
+ * True when this event is the Durable Object instrumentation reporting the
+ * platform tearing its own object down.
+ *
+ * The capture-owner scheme above covers every reset a worker seam observed: the
+ * seam classifies the failure, answers the client with a retryable envelope and
+ * claims the cause, so the instrumentation's echo is dropped. A deploy has no
+ * such seam. The runtime resets every live object as the new script rolls out,
+ * and the instrumentation captures that from INSIDE the dying object, where
+ * there is no request to own it — so a handful of these file on every deploy
+ * with nothing behind them. The client-facing side is already handled: the
+ * in-flight request fails at the worker seam and is rendered as a 503 there.
+ *
+ * Both conditions are required, and the classifier is the one the seams use so
+ * this can never recognize a different set of messages than they do:
+ *
+ * - the mechanism must be the DO instrumentation, so a reset message arriving
+ *   through any other path (an ordinary worker capture, the DO's own
+ *   `captureCause` seam) is untouched;
+ * - the message must classify as a TRANSIENT platform failure, so a real defect
+ *   thrown inside a DO — an alarm crash, a broken handler — still reports. The
+ *   classifier returns null for everything it does not recognize, and this
+ *   drops nothing on a null.
+ *
+ * `session_dead` is deliberately not dropped: that disposition means our own
+ * code called `ctx.abort`, which is an act of the application rather than the
+ * platform, and how often it happens is worth seeing.
+ */
+const isDurableObjectPlatformResetNoise = (event: ErrorEvent): boolean => {
+  const exception = event.exception?.values?.[0];
+  if (exception?.mechanism?.type !== DO_FAAS_MECHANISM) return false;
+  // The exception's `value` is the workerd message verbatim, and the classifier
+  // already accepts a bare string as its input.
+  return classifyDurableObjectError(exception.value)?.disposition === "transient";
+};
+
 export const beforeSendWithOtelCorrelation = (
   event: ErrorEvent,
   options?: { readonly logPayload?: boolean },
 ): ErrorEvent | null => {
   if (isClaimedDurableObjectEcho(event)) return null;
+  if (isDurableObjectPlatformResetNoise(event)) return null;
   if (options?.logPayload) {
     console.info(
       JSON.stringify({
@@ -156,9 +200,10 @@ export const beforeSendWithOtelCorrelation = (
  * `withStableGroupingFingerprint` pins a key with the hash normalized out;
  * events with no hashed grouping input are left on the default algorithm.
  *
- * The two stages are independent and compose in this order: the capture-owner
- * pass decides WHETHER the event is reported at all (a cause the Durable
- * Object already claimed is dropped, and a dropped event is never
+ * The two stages are independent and compose in this order: the reporting pass
+ * decides WHETHER the event is reported at all (a cause the Durable Object
+ * already claimed, or a platform reset the DO instrumentation caught from
+ * inside a dying object, is dropped, and a dropped event is never
  * fingerprinted), and the grouping pass then decides HOW whatever survives is
  * grouped.
  */
