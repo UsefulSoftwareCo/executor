@@ -34,6 +34,11 @@ import {
   pausedLeaseExtensionLog,
   runningLeaseExtensionLog,
 } from "./session-alarm-policy";
+import {
+  acquireResidentRuntime,
+  releaseResidentRuntime,
+  residencyAttributes,
+} from "./session-runtime-residency";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
 
@@ -246,6 +251,10 @@ export abstract class McpAgentSessionDOBase<
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
   private initialized = false;
+  /** Whether this instance is currently counted in the isolate's residency
+   *  gauge. Tracked separately from `engine` because `closeRuntime` runs on
+   *  paths where nothing was ever built, and it must not decrement then. */
+  private countedAsResident = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private approvalResponses = new Map<string, ResumeResponse>();
@@ -442,6 +451,34 @@ export abstract class McpAgentSessionDOBase<
     ]);
   }
 
+  /**
+   * Keep this session's idle deadline armed across the SDK's own alarm
+   * bookkeeping.
+   *
+   * The agents SDK recomputes the Durable Object alarm from its schedule table
+   * and keep-alive refcount, and when it finds neither it does not leave the
+   * alarm alone — it DELETES it. It releases the last keep-alive ref at the end
+   * of every ordinary request, from a `waitUntil`, so the idle alarm that
+   * `markActivity` had just armed was being erased moments after the response
+   * went out. A session that had just served a tool call was therefore left
+   * with no alarm at all: the idle policy never ran again, and its runtime
+   * stayed resident until the platform evicted the whole object.
+   *
+   * The idle deadline belongs to this class, not to the SDK's scheduler, so it
+   * is re-asserted after the SDK has arranged whatever it needs. Only while a
+   * runtime is actually resident — once there is nothing left to reclaim the
+   * SDK's answer is right and re-arming would spin the alarm forever.
+   */
+  protected async ensureIdleAlarmArmed(): Promise<void> {
+    if (!this.hasResidentRuntime()) return;
+    const lastActivityMs = await this.loadLastActivity();
+    if (lastActivityMs <= 0) return;
+    const idleDeadlineMs = lastActivityMs + this.sessionTimeoutMs();
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed !== null && armed <= idleDeadlineMs) return;
+    await this.ctx.storage.setAlarm(Math.max(idleDeadlineMs, Date.now() + 1));
+  }
+
   private async loadLastActivity(): Promise<number> {
     if (this.lastActivityMs > 0) return this.lastActivityMs;
     const stored = await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY);
@@ -520,9 +557,20 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
+  /** Whether anything is currently holding isolate memory for this session. */
+  private hasResidentRuntime(): boolean {
+    return this.initialized || this.engine !== null || this.dbHandle !== null;
+  }
+
+  /**
+   * Drop this session's execution runtime because it has gone idle, returning
+   * its memory to the isolate. Nothing durable is discarded, so the next
+   * request restores the session and the client sees only restore latency.
+   */
   private async disposeIdleRuntime(input: {
     readonly idleMs: number;
     readonly pausedExecutionCount: number;
+    readonly activeStreamCount: number;
   }): Promise<void> {
     console.info(
       JSON.stringify({
@@ -530,15 +578,34 @@ export abstract class McpAgentSessionDOBase<
         sessionId: this.sessionId,
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
+        activeStreamCount: input.activeStreamCount,
       }),
     );
-    await Effect.runPromise(this.closeRuntime());
-    await Effect.runPromise(
-      Effect.all([
-        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.deleteAlarm())),
-        Effect.ignore(Effect.tryPromise(() => this.ctx.storage.delete(LAST_ACTIVITY_KEY))),
-      ]),
+    const self = this;
+    const program = Effect.gen(function* () {
+      yield* self.closeRuntime();
+      yield* Effect.all([
+        Effect.ignore(Effect.tryPromise(() => self.ctx.storage.deleteAlarm())),
+        Effect.ignore(Effect.tryPromise(() => self.ctx.storage.delete(LAST_ACTIVITY_KEY))),
+      ]);
+      // Read the gauge AFTER the release, so the attribute reports what the
+      // isolate is actually holding now rather than what it held a moment ago.
+      yield* Effect.annotateCurrentSpan(residencyAttributes());
+    }).pipe(
+      Effect.withSpan("mcp.session.idle_runtime_dispose", {
+        attributes: {
+          "mcp.session.id": self.sessionId,
+          "mcp.session.idle_ms": input.idleMs,
+          "mcp.session.paused_execution_count": input.pausedExecutionCount,
+          "mcp.session.active_stream_count": input.activeStreamCount,
+        },
+      }),
     );
+    // The alarm has no incoming trace context of its own, so this starts a new
+    // trace. It still has to be flushed explicitly — the alarm is not on any
+    // request's response path, and without the flush the span dies with the
+    // isolate and the mechanism stays unobservable in production.
+    await Effect.runPromise(this.withSpanFlush(this.withTelemetry(program)));
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -749,6 +816,10 @@ export abstract class McpAgentSessionDOBase<
         yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
       }
       self.initialized = false;
+      if (self.countedAsResident) {
+        self.countedAsResident = false;
+        releaseResidentRuntime();
+      }
     });
   }
 
@@ -824,6 +895,14 @@ export abstract class McpAgentSessionDOBase<
       self.server = mcpServer;
       self.engine = engine;
       self.initialized = true;
+      if (!self.countedAsResident) {
+        self.countedAsResident = true;
+        acquireResidentRuntime();
+      }
+      // The gauge on the way up. Paired with the same attributes on
+      // `mcp.session.idle_runtime_dispose`, this is what shows whether idle
+      // sessions are actually giving their runtimes back in production.
+      yield* Effect.annotateCurrentSpan(residencyAttributes());
       // Last statement, and pure bookkeeping: the runtime above is already
       // installed and serving. Losing the timestamp/alarm write to a platform
       // reset must not undo any of it — the in-memory clock is already set and
@@ -1117,7 +1196,7 @@ export abstract class McpAgentSessionDOBase<
       return;
     }
 
-    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount });
+    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount, activeStreamCount });
   }
 
   private validateApprovalIdentity(
@@ -1492,5 +1571,38 @@ export abstract class McpAgentSessionDOBase<
 
   private async cleanup(): Promise<void> {
     await Effect.runPromise(this.closeRuntime());
+  }
+}
+
+/**
+ * Install the idle-deadline repair described on
+ * {@link McpAgentSessionDOBase.ensureIdleAlarmArmed}.
+ *
+ * At runtime this is an ordinary method override — the agents SDK calls
+ * `this._scheduleNextAlarm()` and gets this one. It cannot be written in the
+ * class body because the SDK declares that member `private`, and TypeScript
+ * refuses to let a subclass redeclare a private base member at all. So it is
+ * installed on the prototype, which is the same thing to the runtime and the
+ * only form the compiler accepts.
+ */
+type BoundAsyncMethod = (this: object) => Promise<void>;
+
+{
+  // Read off the INHERITED prototype, so this captures the SDK's own
+  // implementation rather than the wrapper being installed just below.
+  const inherited: object = Object.getPrototypeOf(McpAgentSessionDOBase.prototype);
+  const scheduleNextAlarm = Reflect.get(inherited, "_scheduleNextAlarm") as
+    | BoundAsyncMethod
+    | undefined;
+  if (scheduleNextAlarm) {
+    Reflect.set(
+      McpAgentSessionDOBase.prototype,
+      "_scheduleNextAlarm",
+      async function (this: object): Promise<void> {
+        await scheduleNextAlarm.call(this);
+        const ensureIdleAlarmArmed = Reflect.get(this, "ensureIdleAlarmArmed") as BoundAsyncMethod;
+        await ensureIdleAlarmArmed.call(this);
+      },
+    );
   }
 }
