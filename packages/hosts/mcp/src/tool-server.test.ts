@@ -1807,6 +1807,19 @@ describe("MCP host server — skills tool", () => {
     });
   });
 
+  // pi and other hosts that ship no skill tool of their own read
+  // `executor_skills` as the general skill reader they are missing, so the
+  // description has to scope itself to this server before a model tries to
+  // read a SKILL.md through it.
+  it("scopes the skills tool description to this server's own docs", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === "skills")?.description ?? "";
+      expect(description).toContain("Not a general skill reader");
+      expect(description).toContain("SKILL.md");
+    });
+  });
+
   it("returns the execute skill body by name", async () => {
     await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
       const result = await client.callTool({
@@ -1866,6 +1879,9 @@ describe("MCP host server — skills tool", () => {
       });
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('No skill named "nope"');
+      // The miss is where a model that asked for an outside skill lands, so the
+      // note names the boundary instead of only reporting the bad name.
+      expect(textOf(result)).toContain("only Executor's own docs");
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
     });

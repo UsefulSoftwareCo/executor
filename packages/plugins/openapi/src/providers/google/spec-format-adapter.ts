@@ -61,7 +61,10 @@ export const googleDiscoveryAdapter: SpecFormatAdapter = {
           ),
         { concurrency: 4 },
       );
-      const conversion = yield* convertGoogleDiscoveryBundleToOpenApi({ documents });
+      const conversion = yield* convertGoogleDiscoveryBundleToOpenApi({
+        documents,
+        ...(input.consentScopes ? { consentScopes: input.consentScopes } : {}),
+      });
       const document =
         documents.length === 1
           ? yield* parseJson(documents[0]!.documentText)

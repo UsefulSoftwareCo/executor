@@ -6,6 +6,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit, settle } from "../src/surfaces/browser";
 
 scenario(
   "Connect · the agent-connect panel gives working copy for both transports",
@@ -17,7 +18,7 @@ scenario(
 
     yield* browser.session(identity, async ({ page, step }) => {
       await step("Open the Integrations page", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.getByText("Connect an agent").first().waitFor();
       });
 
@@ -35,7 +36,7 @@ scenario(
 
       await step("Switch to Standard I/O", async () => {
         await page.getByRole("tab", { name: "Standard I/O" }).click();
-        await page.waitForLoadState("networkidle");
+        await settle(page);
       });
       const stdioCommand = await command();
       expect(stdioCommand, "the command changed for stdio").not.toBe(httpCommand);
@@ -45,7 +46,7 @@ scenario(
 
       await step("Switch back to Remote HTTP", async () => {
         await page.getByRole("tab", { name: "Remote HTTP" }).click();
-        await page.waitForLoadState("networkidle");
+        await settle(page);
       });
       expect(await command(), "the HTTP command is restored").toContain("--transport http");
     });

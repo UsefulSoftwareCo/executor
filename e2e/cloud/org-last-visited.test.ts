@@ -13,6 +13,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { visit } from "../src/surfaces/browser";
 
 const CLOUD_ORIGIN_HEADERS = (baseUrl: string) => ({ origin: new URL(baseUrl).origin });
 
@@ -64,7 +65,7 @@ scenario(
 
     yield* browser.session(inB, async ({ page, step }) => {
       await step("Work in org A by its slug URL (the session still pins org B)", async () => {
-        await page.goto(`/${slugA}`, { waitUntil: "networkidle" });
+        await visit(page, `/${slugA}`);
         await page.getByText("Integrations").first().waitFor({ timeout: 30_000 });
         // The client records the viewed org once /account/me confirms it.
         await page.waitForFunction(
@@ -75,7 +76,7 @@ scenario(
       });
 
       await step("A bare entry (`/`) returns to org A, not the session's org B", async () => {
-        await page.goto("/", { waitUntil: "networkidle" });
+        await visit(page, "/");
         await page.waitForURL(
           (url) => url.pathname === `/${slugA}` || url.pathname === `/${slugA}/`,
           {
@@ -86,7 +87,7 @@ scenario(
       });
 
       await step("A bare deep link keeps its path while landing in org A", async () => {
-        await page.goto("/policies", { waitUntil: "networkidle" });
+        await visit(page, "/policies");
         await page.waitForURL((url) => url.pathname === `/${slugA}/policies`, { timeout: 30_000 });
         await page.getByText("Policies").first().waitFor({ timeout: 30_000 });
       });
