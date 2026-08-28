@@ -111,6 +111,46 @@ describe("MCP install command rendering", () => {
     );
   });
 
+  // Per-integration search tools are off by default, so only the opt-in is
+  // ever spelled out: a card left alone must still produce the bare endpoint.
+  it("emits the search tools opt-in only when enabled", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        searchTools: false,
+      }),
+    ).toBe("https://executor.example/mcp");
+
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        searchTools: true,
+      }),
+    ).toBe("https://executor.example/mcp?search_tools=true");
+
+    // Both non-defaults together, in the order the card renders them.
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        artifacts: false,
+        searchTools: true,
+      }),
+    ).toBe("https://executor.example/mcp?artifacts=false&search_tools=true");
+  });
+
+  it("passes the search tools opt-in to the stdio CLI as a flag", () => {
+    expect(
+      buildMcpInstallCommand({ mode: "stdio", isDev: false, origin: null, searchTools: false }),
+    ).toBe("npx add-mcp 'executor mcp' --name executor");
+
+    expect(
+      buildMcpInstallCommand({ mode: "stdio", isDev: false, origin: null, searchTools: true }),
+    ).toBe("npx add-mcp 'executor mcp --search-tools' --name executor");
+  });
+
   it("passes the artifacts opt-out to the stdio CLI as a flag", () => {
     expect(
       buildMcpInstallCommand({ mode: "stdio", isDev: false, origin: null, artifacts: true }),

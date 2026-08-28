@@ -283,6 +283,7 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.error).toBe('{"code":"bad_request","detail":"team missing"}');
+    expect(result.errorKind).toBe("thrown");
     expect(result.result).toBeNull();
   });
 
@@ -304,6 +305,7 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.error).toBeUndefined();
+    expect(result.errorKind).toBeUndefined();
     expect(result.result).toBe(7);
   });
 
@@ -316,6 +318,25 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.error).toBe("Internal tool error");
+    expect(result.errorKind).toBe("tool_error");
+  });
+
+  it("classifies a wrong-shape property access as a type error", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = makeInvoker(() => ({ ok: true, data: {} }));
+
+    // The wrong-shape-guess signature: the script assumes a response field
+    // that isn't there and dereferences undefined.
+    const result = await Effect.runPromise(
+      executor.execute(
+        "async () => { const r = await tools.issues.list({}); return r.issues.length; }",
+        invoker,
+      ),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toContain("undefined");
+    expect(result.errorKind).toBe("type_error");
   });
 
   it("surfaces a syntax error with the parser's descriptive message, not an opaque generic", async () => {
@@ -335,6 +356,7 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.error).not.toBe("Internal tool error");
     expect(result.error).not.toContain("Internal tool error");
     expect(result.error?.toLowerCase()).toContain("unexpected");
+    expect(result.errorKind).toBe("syntax_error");
   });
 
   it("surfaces smart-quote paste errors descriptively", async () => {
@@ -369,6 +391,7 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.error).not.toBe("Internal tool error");
     expect(result.error).not.toContain("Internal tool error");
     expect(result.error?.toLowerCase()).toContain("could not be cloned");
+    expect(result.errorKind).toBe("serialization_error");
   });
 
   it("preserves public ExecutionToolError messages across the worker bridge", async () => {
@@ -390,6 +413,7 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.error).toBe(
       "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
     );
+    expect(result.errorKind).toBe("tool_error");
   });
 
   it("does not expose host error stack details to sandbox error handlers", async () => {
@@ -518,6 +542,7 @@ describe("makeDynamicWorkerExecutor", () => {
 
     expect(result.result).toBeNull();
     expect(result.error).toBe(`Execution timed out after ${timeoutMs}ms`);
+    expect(result.errorKind).toBe("timeout");
   });
 
   it("resets the execution deadline after a tool dispatch returns", async () => {
@@ -540,6 +565,7 @@ describe("makeDynamicWorkerExecutor", () => {
 
     expect(result.result).toBeNull();
     expect(result.error).toBe(`Execution timed out after ${timeoutMs}ms`);
+    expect(result.errorKind).toBe("timeout");
   });
 
   it("returns an execution error for circular tool args", async () => {

@@ -94,14 +94,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     featured: true,
   },
   {
-    id: "cloudflare",
-    name: "Cloudflare",
-    summary: "DNS, workers, pages, R2, and security rules.",
-    url: "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
-    icon: "https://integrations.sh/logo/cloudflare.com",
-    featured: true,
-  },
-  {
     id: "neon",
     name: "Neon",
     summary: "Serverless Postgres: projects, branches, and endpoints.",
