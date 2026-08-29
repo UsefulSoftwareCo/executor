@@ -9,7 +9,7 @@
 // GraphQL endpoint).
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -176,6 +176,8 @@ export interface CatalogQuery {
   readonly kind?: CatalogKind;
   /** The registry caps this at 100. */
   readonly limit?: number;
+  /** Ranked results to skip — how the picker pages an endless list. */
+  readonly offset?: number;
 }
 
 export const searchCatalog = (
@@ -185,6 +187,7 @@ export const searchCatalog = (
   url.searchParams.set("q", input.query);
   url.searchParams.set("limit", String(input.limit ?? 10));
   if (input.kind) url.searchParams.set("kind", input.kind);
+  if (input.offset) url.searchParams.set("offset", String(input.offset));
   return Effect.map(fetchCatalogJson(url), parseCatalogSearch);
 };
 
@@ -331,6 +334,13 @@ export interface CatalogSearchState {
   /** The registry could not be reached. The rest of the page still works, so
    *  this is a section-level notice rather than a page error. */
   readonly failed: boolean;
+  /** The last page came back full, so more rows likely exist. */
+  readonly hasMore: boolean;
+  /** A further page is being fetched and appended. */
+  readonly loadingMore: boolean;
+  /** Fetch the next page. Safe to call repeatedly: no-op while a page is in
+   *  flight or once the catalog is exhausted. */
+  readonly loadMore: () => void;
 }
 
 const cacheKey = (input: CatalogQuery): string =>
@@ -358,12 +368,22 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
   const query = input.query.trim().toLowerCase();
   const kind = input.kind;
   const limit = input.limit ?? BROWSE_LIMIT;
-  const [state, setState] = useState<CatalogSearchState>({
-    entries: [],
-    loading: true,
-    failed: false,
-  });
+  const [state, setState] = useState<{
+    readonly entries: readonly CatalogSearchEntry[];
+    readonly loading: boolean;
+    readonly failed: boolean;
+  }>({ entries: [], loading: true, failed: false });
   const generation = useRef(0);
+
+  const requestKey = cacheKey({ query, limit, ...(kind ? { kind } : {}) });
+  // Pages beyond the first, keyed to the request they extend so a keystroke
+  // discards them with the first page rather than leaking into new results.
+  const [more, setMore] = useState<{
+    readonly key: string;
+    readonly entries: readonly CatalogSearchEntry[];
+    readonly loadingMore: boolean;
+    readonly exhausted: boolean;
+  }>({ key: requestKey, entries: [], loadingMore: false, exhausted: false });
 
   useEffect(() => {
     const requestId = ++generation.current;
@@ -400,7 +420,69 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
     return () => clearTimeout(timer);
   }, [query, kind, limit]);
 
-  return state;
+  const extras = more.key === requestKey ? more : null;
+  const baseCount = state.entries.length;
+  const extraCount = extras?.entries.length ?? 0;
+  const hasMore =
+    !state.loading &&
+    !state.failed &&
+    baseCount >= limit &&
+    !(extras?.exhausted ?? false) &&
+    !(query.length > 0 && query.length < MIN_QUERY_LENGTH);
+
+  const loadMore = useCallback(() => {
+    if (!hasMore || (extras?.loadingMore ?? false)) return;
+    setMore((previous) =>
+      previous.key === requestKey
+        ? { ...previous, loadingMore: true }
+        : { key: requestKey, entries: [], loadingMore: true, exhausted: false },
+    );
+    const request: CatalogQuery = {
+      query,
+      limit,
+      offset: baseCount + extraCount,
+      ...(kind ? { kind } : {}),
+    };
+    void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
+      setMore((previous) => {
+        if (previous.key !== requestKey) return previous;
+        const page = Exit.isSuccess(exit) ? exit.value : [];
+        return {
+          key: requestKey,
+          entries: [...previous.entries, ...page],
+          loadingMore: false,
+          // A failed fetch is not the end of the catalog; the sentinel will
+          // simply try again the next time it scrolls into view.
+          exhausted: Exit.isSuccess(exit) && page.length < limit,
+        };
+      });
+    });
+  }, [hasMore, extras?.loadingMore, requestKey, query, kind, limit, baseCount, extraCount]);
+
+  const entries = useMemo(() => {
+    if (!extras || extras.entries.length === 0) return state.entries;
+    // Ranking can shift between page fetches (the live index moves); a row
+    // that slid across a page boundary must not render twice.
+    const seen = new Set(state.entries.map((entry) => `${entry.domain}|${entry.name ?? ""}`));
+    return [
+      ...state.entries,
+      ...extras.entries.filter((entry) => {
+        const key = `${entry.domain}|${entry.name ?? ""}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    ];
+  }, [state.entries, extras]);
+
+  return {
+    entries,
+    loading: state.loading,
+    failed: state.failed,
+    hasMore,
+    loadingMore: extras?.loadingMore ?? false,
+    loadMore,
+  };
 }
 
 // ---------------------------------------------------------------------------

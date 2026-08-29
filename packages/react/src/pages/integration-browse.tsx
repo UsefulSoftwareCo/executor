@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -171,6 +171,31 @@ interface Row {
   readonly onSelect: () => void;
   readonly added: boolean;
   readonly busy: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Infinite scroll
+// ---------------------------------------------------------------------------
+
+/** Fires `onVisible` whenever the sentinel scrolls near the viewport. The
+ *  rootMargin starts the next page a screen early, so scrolling never visibly
+ *  hits the bottom of a still-growing list. */
+function LoadMoreSentinel(props: { readonly onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const { onVisible } = props;
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (observed) => {
+        if (observed.some((entry) => entry.isIntersecting)) onVisible();
+      },
+      { rootMargin: "600px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [onVisible]);
+  return <div ref={ref} aria-hidden className="h-px" />;
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +735,18 @@ export function IntegrationBrowsePage() {
           {results.map((row) => (
             <ResultRow key={row.key} row={row} />
           ))}
+          {catalog.loadingMore
+            ? Array.from({ length: 3 }, (_, index) => (
+                <div key={`more-${index}`} className="flex items-center gap-3 px-3 py-2.5">
+                  <Skeleton className="size-8 shrink-0 rounded-md" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-40" />
+                    <Skeleton className="h-3 w-64" />
+                  </div>
+                </div>
+              ))
+            : null}
+          {catalog.hasMore ? <LoadMoreSentinel onVisible={catalog.loadMore} /> : null}
         </div>
       )}
 
