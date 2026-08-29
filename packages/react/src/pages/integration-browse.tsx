@@ -47,18 +47,13 @@ import {
 // a duplicate; two rows reading "Stripe API" and "Stripe MCP" look like a
 // choice, which is what they are.
 //
-// TWO SOURCES, ONE LIST. The registry is the bulk of it, but this deployment's
-// own presets come first and cannot be dropped for it: production usage says
-// the most-added integrations are Gmail, Google Calendar, Drive, Sheets and
-// Docs, and the whole Microsoft Graph family (Outlook mail and calendar,
-// Teams, OneDrive, SharePoint, OneNote, Excel) — all of them presets. The
-// registry has no Outlook, no OneDrive and no OneNote at all, and answers
-// "google drive" with file.googleapis.com, which is Filestore. Sourcing from
-// it alone silently removed the top of the catalog.
-//
-// A preset wins over a registry row for the same service: it carries the auth
-// template, scopes and health check the bare catalog entry lacks. Neither
-// source is named or badged — where a row came from is executor's business.
+// THE REGISTRY IS THE LIST. Every connectable card is a registry row: the
+// registry carries the name, domain, description, spec or endpoint, auth
+// facts, and corrective spec overrides, and the spec itself declares how to
+// authenticate — a deployment's first-party OAuth clients bind at connect
+// time by endpoint host, not through the picker. The one exception is
+// presets WITHOUT a connect URL (local-process servers like Chrome DevTools
+// over stdio): those cannot be registry rows yet, so they remain cards.
 //
 // FACETS ARE SURFACE KIND, NOT CATEGORY. There is no taxonomy to facet on, so a
 // category rail would have to invent one. Kind is real, filtered server-side.
@@ -522,75 +517,30 @@ export function IntegrationBrowsePage() {
   );
 
   const pickPreset = useCallback(
-    (
-      entry: PresetEntry,
-      auth?: CatalogSurface["auth"],
-      specOverrides?: CatalogSurface["specOverrides"],
-    ) => {
+    (entry: PresetEntry) => {
       trackEvent("integration_add_started", {
         plugin_key: entry.pluginKey,
         via: "preset",
         preset_id: entry.preset.id,
       });
-      const search: Record<string, string> = { preset: entry.preset.id };
-      if (entry.preset.url) search.url = entry.preset.url;
-      // The registry's credential facts ride along even when the preset owns
-      // the flow — the preset knows the endpoint, the registry knows the
-      // header pattern.
-      if (auth?.header) search.authHeader = auth.header;
-      if (auth?.note) search.authNote = auth.note;
-      if (auth?.kind) search.authKind = auth.kind;
-      if (specOverrides) search.specOverrides = JSON.stringify(specOverrides);
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey: entry.pluginKey },
-        search,
+        search: { preset: entry.preset.id },
       });
     },
     [navigate],
   );
 
   // --- Preset rows ---------------------------------------------------------
-
-  // Registry identity for services a preset also offers. A preset row and a
-  // catalog row for the same product must not read as two different kinds of
-  // thing — the row shows the registry's identity (the domain) like every
-  // other result, and the preset only supplies the better add flow. Keyed by
-  // productKey, the same match the dedupe below uses.
-  const catalogIdentityByKey = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        readonly domain: string;
-        readonly auth?: CatalogSurface["auth"];
-        readonly specOverrides?: CatalogSurface["specOverrides"];
-      }
-    >();
-    for (const entry of catalogEntries) {
-      const pretty = entry.name ?? domainDisplayName(entry.domain);
-      const surfaces =
-        entry.surfaces && entry.surfaces.length > 0
-          ? entry.surfaces
-          : entry.kinds.map((kind) => ({ kind }));
-      for (const surface of surfaces) {
-        const key = productKey(pretty, surface.kind);
-        if (!map.has(key)) {
-          map.set(key, {
-            domain: entry.domain,
-            ...("auth" in surface && surface.auth ? { auth: surface.auth } : {}),
-            ...("specOverrides" in surface && surface.specOverrides
-              ? { specOverrides: surface.specOverrides }
-              : {}),
-          });
-        }
-      }
-    }
-    return map;
-  }, [catalogEntries]);
-
+  //
+  // Only presets WITHOUT a connect URL remain cards: a preset with a URL is a
+  // registry row's job now, while a local-process server (Chrome DevTools over
+  // stdio) has no registry representation yet.
   const presetRows = useMemo<readonly Row[]>(() => {
     const rows: Row[] = [];
     for (const entry of allPresets) {
+      if (entry.preset.url !== undefined || entry.preset.endpoint !== undefined) continue;
       if (kind !== null && entry.pluginKey !== kind) continue;
       if (text.length > 0) {
         const corpus =
@@ -600,28 +550,23 @@ export function IntegrationBrowsePage() {
       const surface = SURFACE_WORD[entry.pluginKey] ?? entry.pluginLabel;
       const title = withSurface(entry.preset.name, surface);
       const kindKey = entry.pluginKey === "google" ? "openapi" : entry.pluginKey;
-      const identity = catalogIdentityByKey.get(productKey(entry.preset.name, kindKey));
       rows.push({
         key: `preset-${entry.pluginKey}-${entry.preset.id}`,
-        // Plugin key included: two plugins can both name a preset "stripe",
-        // and a duplicated test id matches two cards.
         testId: `preset-${entry.pluginKey}-${entry.preset.id}`,
         title,
         kindKey,
-        ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
-        onSelect: () => pickPreset(entry, identity?.auth, identity?.specOverrides),
+        onSelect: () => pickPreset(entry),
         // The rendered title is also what the add flow derives the namespace
-        // from ("Stripe" + MCP → "Stripe MCP" → stripe_mcp), so it recognises
-        // an add made through this very card even when the preset declares no
-        // defaultSlug and its bare name would miss.
+        // from, so the card recognises an add made through it even when the
+        // preset declares no defaultSlug and its bare name would miss.
         added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name, title),
         busy: false,
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, isAdded, catalogIdentityByKey]);
+  }, [allPresets, kind, text, pickPreset, isAdded]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
