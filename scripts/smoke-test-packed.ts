@@ -78,6 +78,13 @@ type SmokeFailure = {
 
 const PRIVATE_PACKAGE_RE = /Cannot find package '(@executor-js\/[^']+)'/;
 
+// `import { X } from "@executor-js/sdk"` where the published entry doesn't
+// export `X` — the packed bundle references a symbol that only exists on a
+// different subpath (or in the dev-time workspace view). This is a bundle
+// bug, never a missing-peer environment issue, so it's a hard failure.
+const MISSING_EXPORT_RE =
+  /The requested module '([^']+)' does not provide an export named '([^']+)'/;
+
 const firstMeaningfulLine = (stderr: string): string => {
   const lines = stderr
     .split("\n")
@@ -180,6 +187,17 @@ const smokeTestPackage = async (
           reason: `published bundle imports private workspace package '${offending}'`,
         });
         console.log(`  FAIL ${spec} — references private '${offending}'`);
+        continue;
+      }
+      const missingExportMatch = stderr.match(MISSING_EXPORT_RE);
+      if (missingExportMatch) {
+        const [, module, symbol] = missingExportMatch;
+        failures.push({
+          pkg: pkg.name,
+          subpath,
+          reason: `published '${module}' does not export '${symbol}'`,
+        });
+        console.log(`  FAIL ${spec} — '${module}' does not export '${symbol}'`);
         continue;
       }
       const peerMatch =

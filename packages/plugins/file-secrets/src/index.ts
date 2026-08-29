@@ -9,7 +9,7 @@ import {
   ProviderKey,
   StorageError,
   type CredentialProvider,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
 // Auth file location
