@@ -287,6 +287,33 @@ describe("codex app-server bridge", () => {
     ),
   );
 
+  it.effect("carries an approval's own terms upstream, not just its message", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Chrome's per-site approval sends an EMPTY schema and puts the terms
+        // of the grant in `_meta` — accepting means "always, for this
+        // origin". Dropping that left a caller consenting to more than the
+        // prompt said, so the metadata has to reach the client.
+        const connection = yield* withConnection(browserInput());
+        let seen: Record<string, unknown> | undefined;
+        connection.client.setRequestHandler("elicitation/create", (request) => {
+          seen = request.params._meta;
+          return Promise.resolve({ action: "accept" as const, content: {} });
+        });
+
+        yield* Effect.promise(() =>
+          connection.client.callTool({
+            name: "navigate",
+            arguments: { url: "https://example.com/__needs_site_approval" },
+          }),
+        );
+        expect(seen?.["persist"], "the grant's persistence reaches the client").toBe("always");
+        expect(seen?.["origin"]).toBe("https://example.com");
+        expect(seen?.["connector_name"], "and which plugin is asking").toBe("Browser use");
+      }),
+    ),
+  );
+
   it.effect("a server name Codex does not report fails the tools listing, not the connect", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -147,6 +147,7 @@ const decodeElicitationParams = Schema.decodeUnknownOption(
     requestedSchema: Schema.optional(Schema.Unknown),
     url: Schema.optional(Schema.NullOr(Schema.String)),
     elicitationId: Schema.optional(Schema.NullOr(Schema.String)),
+    _meta: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
   }),
 );
 
@@ -600,12 +601,27 @@ class AppServerClientTransport implements Transport {
 
   /** An approval prompt from the plugin, surfaced through Codex — re-emitted
    *  upstream as a standard MCP `elicitation/create` so executor's existing
-   *  elicitation bridge (native / browser / model) answers it. */
+   *  elicitation bridge (native / browser / model) answers it.
+   *
+   *  The request's `_meta` travels with it, because for some prompts it holds
+   *  the terms of the answer rather than decoration. Chrome's per-site
+   *  approval is the case that matters: it sends an EMPTY `requestedSchema`
+   *  and carries `persist: "always"` plus the `origin` in `_meta`, so
+   *  accepting grants a permanent allow for that site. Dropping `_meta` left
+   *  a caller answering "Allow Browser use to access …?" with no way to know
+   *  the grant was permanent — strictly less than the same prompt shows in
+   *  Codex. (Messages, by contrast, puts the choice in the schema as a
+   *  required `scope` field, and needs nothing extra.) */
   #forwardElicitation(downstreamId: string | number, rawParams: unknown): void {
     const params = Option.getOrUndefined(decodeElicitationParams(rawParams));
     const upstreamId = `codex-elicitation-${this.#nextElicitationId++}`;
     this.#elicitations.set(upstreamId, downstreamId);
-    const prompt = params?.message ?? `Approve this Codex "${this.#config.server}" request?`;
+    const meta = params?._meta ?? undefined;
+    // The prompt is attributed to the plugin the user recognises ("Browser
+    // use"), not the server the call happened to travel through (`node_repl`).
+    const connector =
+      typeof meta?.["connector_name"] === "string" ? meta["connector_name"] : undefined;
+    const prompt = params?.message ?? `Approve this ${connector ?? this.#config.server} request?`;
     const upstreamParams =
       params?.mode === "url" && params.url != null && params.elicitationId != null
         ? { mode: "url", message: prompt, url: params.url, elicitationId: params.elicitationId }
@@ -619,7 +635,7 @@ class AppServerClientTransport implements Transport {
       jsonrpc: "2.0",
       id: upstreamId,
       method: "elicitation/create",
-      params: upstreamParams,
+      params: { ...upstreamParams, ...(meta === undefined ? {} : { _meta: meta }) },
     });
   }
 

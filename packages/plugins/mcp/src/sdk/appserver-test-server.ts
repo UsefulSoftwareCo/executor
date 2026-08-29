@@ -152,6 +152,32 @@ const handleToolCall = (id: number | string, params: unknown): void => {
   // the sky surface compiled without needing a real REPL.
   if (call.server === "node_repl") {
     const args = call.arguments as { code?: string } | undefined;
+    // A Chrome-shaped per-site approval: no schema to fill in, and the terms
+    // of the grant (`persist`, `origin`) carried in `_meta`.
+    if (args?.code?.includes("__needs_site_approval")) {
+      const elicitationId = nextServerRequestId++;
+      pendingApprovals.set(elicitationId, id);
+      write({
+        jsonrpc: "2.0",
+        id: elicitationId,
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: THREAD_ID,
+          turnId: null,
+          serverName: "node_repl",
+          mode: "form",
+          message: "Allow Browser use to access https://example.com?",
+          requestedSchema: { type: "object", properties: {} },
+          _meta: {
+            connector_id: "browser-use",
+            connector_name: "Browser use",
+            origin: "https://example.com",
+            persist: "always",
+          },
+        },
+      });
+      return;
+    }
     reply(id, {
       content: [{ type: "text", text: args?.code ?? "" }],
       // Echoed so a test can assert the turn metadata the Chrome client
