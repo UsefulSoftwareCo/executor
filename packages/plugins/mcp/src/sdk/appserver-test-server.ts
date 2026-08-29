@@ -62,6 +62,11 @@ const TOOLS = {
     description: "Echo the arguments back",
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
   },
+  announce_restart: {
+    name: "announce_restart",
+    description: "Emit server status notifications",
+    inputSchema: { type: "object", properties: {} },
+  },
   needs_approval: {
     name: "needs_approval",
     description: "Succeeds only after an accepted elicitation",
@@ -188,6 +193,27 @@ const handleToolCall = (id: number | string, params: unknown): void => {
   }
   if (call.threadId !== THREAD_ID || call.server !== "messages") {
     replyError(id, -32602, `unknown thread or server: ${call.threadId}/${call.server}`);
+    return;
+  }
+  if (call.tool === "announce_restart") {
+    // Codex reports a server's startup transitions; it names every server it
+    // runs, so the fixture emits a decoy alongside the real one.
+    write({
+      jsonrpc: "2.0",
+      method: "mcpServer/startupStatus/updated",
+      params: { threadId: THREAD_ID, name: "someone-else", status: "ready", error: null },
+    });
+    write({
+      jsonrpc: "2.0",
+      method: "mcpServer/startupStatus/updated",
+      params: { threadId: THREAD_ID, name: "messages", status: "starting", error: null },
+    });
+    write({
+      jsonrpc: "2.0",
+      method: "mcpServer/startupStatus/updated",
+      params: { threadId: THREAD_ID, name: "messages", status: "ready", error: null },
+    });
+    reply(id, { content: [{ type: "text", text: "announced" }] });
     return;
   }
   if (call.tool === "echo") {

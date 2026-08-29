@@ -38,7 +38,11 @@ describe("codex app-server bridge", () => {
         const connection = yield* withConnection(appServerInput("messages"));
 
         const tools = yield* Effect.promise(() => connection.client.listTools());
-        expect(tools.tools.map(({ name }) => name).sort()).toEqual(["echo", "needs_approval"]);
+        expect(tools.tools.map(({ name }) => name).sort()).toEqual([
+          "announce_restart",
+          "echo",
+          "needs_approval",
+        ]);
         const echo = tools.tools.find(({ name }) => name === "echo");
         expect(echo?.description).toBe("Echo the arguments back");
         expect(echo?.inputSchema).toMatchObject({ type: "object" });
@@ -118,6 +122,28 @@ describe("codex app-server bridge", () => {
         );
         expect(result.isError).toBe(true);
         expect(result.content).toEqual([{ type: "text", text: "denied: decline" }]);
+      }),
+    ),
+  );
+
+  it.effect("turns a server becoming ready into the spec's tool-list-changed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Installing or updating a plugin inside Codex can change a server's
+        // tools underneath a synced catalog. Executor already restales on the
+        // spec notification, so the bridge only has to translate Codex's.
+        const connection = yield* withConnection(appServerInput("messages"));
+        let changed = 0;
+        connection.client.setNotificationHandler("notifications/tools/list_changed", () => {
+          changed += 1;
+        });
+
+        yield* Effect.promise(() =>
+          connection.client.callTool({ name: "announce_restart", arguments: {} }),
+        );
+        // Give the notifications a turn to land after the call's response.
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        expect(changed, "only this server's ready transition counts").toBe(1);
       }),
     ),
   );

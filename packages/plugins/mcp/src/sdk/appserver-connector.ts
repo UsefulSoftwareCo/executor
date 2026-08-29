@@ -158,6 +158,13 @@ const decodeElicitResult = Schema.decodeUnknownOption(
   }),
 );
 
+const decodeServerStatusNotification = Schema.decodeUnknownOption(
+  Schema.Struct({
+    name: Schema.String,
+    status: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+);
+
 const decodeRpcError = Schema.decodeUnknownOption(
   Schema.Struct({
     code: Schema.optional(Schema.NullOr(Schema.Number)),
@@ -178,6 +185,9 @@ type AppServerReply =
 
 const INTERNAL_ERROR = -32603;
 const METHOD_NOT_FOUND = -32601;
+
+/** Codex's own notification for a server's startup transitions. */
+const SERVER_STATUS_NOTIFICATION = "mcpServer/startupStatus/updated";
 
 /** Ceiling for one browser action inside the REPL. */
 const BROWSER_TIMEOUT_MS = 120_000;
@@ -582,7 +592,10 @@ class AppServerClientTransport implements Transport {
       });
       return;
     }
-    if (message.id === undefined) return; // App-server notifications carry no work for the bridge.
+    if (message.id === undefined) {
+      this.#handleDownstreamNotification(message.method, message.params);
+      return;
+    }
     if (message.method === "mcpServer/elicitation/request") {
       this.#forwardElicitation(message.id, message.params);
       return;
@@ -597,6 +610,20 @@ class AppServerClientTransport implements Transport {
         message: `The Codex app-server bridge does not handle ${message.method}`,
       },
     });
+  }
+
+  /** Codex reports a bridged server's startup transitions as it installs,
+   *  updates, or restarts plugins. A server that has just become ready may be
+   *  advertising a different tool set than the one executor synced, so this
+   *  becomes the spec notification executor already acts on — it marks the
+   *  connection's catalog stale and re-lists on the next read. Only this
+   *  connection's own server counts; Codex reports every server it runs. */
+  #handleDownstreamNotification(method: string, rawParams: unknown): void {
+    if (method !== SERVER_STATUS_NOTIFICATION) return;
+    const params = Option.getOrUndefined(decodeServerStatusNotification(rawParams));
+    if (params?.name !== this.#config.server) return;
+    if (params.status !== "ready") return;
+    this.#emit({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
   }
 
   /** An approval prompt from the plugin, surfaced through Codex — re-emitted
