@@ -17,6 +17,8 @@
 //
 //   MCP upstream                      app-server downstream
 //   initialize                    →   initialize → initialized → thread/start
+//                                     (with an approval policy that lets the
+//                                      plugin's own prompts reach the client)
 //   tools/list                    →   mcpServerStatus/list (one server's tools)
 //   tools/call                    →   mcpServer/tool/call
 //   elicitation/create (to client) ←  mcpServer/elicitation/request
@@ -277,7 +279,18 @@ class AppServerClientTransport implements Transport {
       return;
     }
     this.#sendDownstream({ jsonrpc: "2.0", method: "initialized" });
-    const started = await this.#request("thread/start", { sessionStartSource: "startup" });
+    // `approvalPolicy` is load-bearing, not a default worth inheriting: on a
+    // thread whose policy is `never` (or a granular one without
+    // `mcpElicitations`) Codex DECLINES every MCP elicitation itself and never
+    // forwards it, which surfaces as an unexplained "access was not approved"
+    // on any tool that asks — `read_messages` above all. `on-request` is the
+    // policy that routes the plugin's own approval prompt to the client, where
+    // executor's elicitation bridge answers it. Nothing else can escalate here:
+    // this thread runs no turns, so there is no shell or exec approval to ask.
+    const started = await this.#request("thread/start", {
+      sessionStartSource: "startup",
+      approvalPolicy: "on-request",
+    });
     if (!started.ok) {
       this.#fail(message.id, started.error);
       return;

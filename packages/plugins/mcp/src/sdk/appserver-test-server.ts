@@ -29,6 +29,10 @@ const decodeInitializeParams = Schema.decodeUnknownOption(
   Schema.Struct({ clientInfo: Schema.Struct({ name: Schema.String }) }),
 );
 
+const decodeThreadStartParams = Schema.decodeUnknownOption(
+  Schema.Struct({ approvalPolicy: Schema.optional(Schema.String) }),
+);
+
 const decodeThreadParams = Schema.decodeUnknownOption(
   Schema.Struct({
     threadId: Schema.optional(Schema.String),
@@ -77,6 +81,7 @@ const replyError = (id: number | string, code: number, message: string): void =>
 };
 
 let initializedSeen = false;
+let elicitationsAllowed = false;
 let nextServerRequestId = 1000;
 /** Elicitation request id → the pending tool call's request id. */
 const pendingApprovals = new Map<number | string, number | string>();
@@ -134,6 +139,15 @@ const handleToolCall = (id: number | string, params: unknown): void => {
     return;
   }
   if (call.tool === "needs_approval") {
+    if (!elicitationsAllowed) {
+      // Exactly what Codex returns when it declines the elicitation for the
+      // client: an error result, no prompt, no explanation.
+      reply(id, {
+        content: [{ type: "text", text: "access was not approved" }],
+        isError: true,
+      });
+      return;
+    }
     const elicitationId = nextServerRequestId++;
     pendingApprovals.set(elicitationId, id);
     write({
@@ -200,6 +214,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       replyError(message.id, -32600, "thread/start before the initialized notification");
       return;
     }
+    // Codex DECLINES every MCP elicitation itself on a thread whose approval
+    // policy does not allow them, so a thread started without one can never
+    // receive an approval prompt. The fixture models that: it only elicits
+    // when the bridge asked for a policy that permits elicitations.
+    const params = Option.getOrUndefined(decodeThreadStartParams(message.params));
+    elicitationsAllowed = params?.approvalPolicy === "on-request";
     reply(message.id, { thread: { id: THREAD_ID } });
     return;
   }

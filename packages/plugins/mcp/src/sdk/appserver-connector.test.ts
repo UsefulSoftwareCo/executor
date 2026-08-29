@@ -78,6 +78,30 @@ describe("codex app-server bridge", () => {
     ),
   );
 
+  it.effect("starts the thread with an approval policy that lets prompts through", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Codex declines MCP elicitations ITSELF on a thread whose approval
+        // policy does not allow them — the prompt never reaches the client and
+        // the tool just reports "access was not approved". The fixture only
+        // elicits when the bridge asked for a permitting policy, so reaching
+        // the handler at all is the assertion.
+        const connection = yield* withConnection(appServerInput("messages"));
+        let prompted = false;
+        connection.client.setRequestHandler("elicitation/create", () => {
+          prompted = true;
+          return Promise.resolve({ action: "accept" as const, content: {} });
+        });
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "needs_approval", arguments: {} }),
+        );
+        expect(prompted, "the plugin's own approval prompt reached the client").toBe(true);
+        expect(result.isError).toBeFalsy();
+      }),
+    ),
+  );
+
   it.effect("a declined elicitation reaches the app-server as a decline, not an approval", () =>
     Effect.scoped(
       Effect.gen(function* () {
