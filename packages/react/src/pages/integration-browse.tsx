@@ -19,7 +19,12 @@ import { slugifyNamespace } from "../plugins/namespace";
 import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { Input } from "../components/input";
-import { PageContainer, PageHeader } from "../components/page";
+import { PageHeader } from "../components/page";
+import {
+  integrationFaviconUrl,
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "../components/integration-favicon";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import {
@@ -804,8 +809,28 @@ export function IntegrationBrowsePage() {
             row.name.toLowerCase().includes(text) ||
             String(row.slug).includes(text)),
       )
-      .map(
-        (row): Row => ({
+      .map((row): Row => {
+        // The SAME icon cascade the sidebar runs — preset icon by exact
+        // identity, else the logo proxy from the integration's own URL. Two
+        // resolvers for one integration is how the sidebar and the picker
+        // ended up disagreeing about what DeepWiki looks like.
+        const iconUrl =
+          integrationPresetIconUrl(
+            {
+              id: String(row.slug),
+              kind: row.kind,
+              name: row.name,
+              ...(row.displayUrl ? { url: row.displayUrl } : {}),
+            },
+            integrationPlugins,
+          ) ??
+          integrationFaviconUrl(
+            row.displayUrl ??
+              integrationInferredUrl({ id: String(row.slug), name: row.name }) ??
+              undefined,
+            10,
+          );
+        return {
           key: `installed-${String(row.slug)}`,
           testId: `installed-${String(row.slug)}`,
           title: row.name,
@@ -813,134 +838,155 @@ export function IntegrationBrowsePage() {
           ...(row.description && row.description !== row.name
             ? { description: tidyDescription(row.description) }
             : {}),
+          ...(iconUrl ? { iconUrl } : {}),
           onSelect: () => {},
           added: true,
           viewSlug: String(row.slug),
           busy: false,
-        }),
-      );
+        };
+      });
     return [...installedRows, ...merged.filter(floats), ...merged.filter((row) => !floats(row))];
-  }, [presetRows, catalogRows, catalog.loading, catalog.failed, installed, text]);
+  }, [
+    presetRows,
+    catalogRows,
+    catalog.loading,
+    catalog.failed,
+    installed,
+    text,
+    integrationPlugins,
+  ]);
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
   const loading = catalog.loading && results.length === 0;
 
   return (
-    <PageContainer>
+    // PageContainer scrolls the whole page; this page pins the header and
+    // search, and ONLY the results grid scrolls — an endless list makes the
+    // page scrollbar meaningless and drags the search box off screen.
+    <div className="flex min-h-0 flex-1 flex-col" data-slot="page-container">
       {integrationPlugins.map((plugin) => (
         <QuickAddBridge key={plugin.key} plugin={plugin} register={registerQuickAdd} />
       ))}
-      <PageHeader
-        title="Add an integration"
-        description="Search for a service, or point executor at any MCP server, OpenAPI spec, or GraphQL endpoint."
-      />
+      <div className="mx-auto w-full max-w-4xl shrink-0 px-6 pt-10 lg:px-8 lg:pt-14">
+        <PageHeader
+          title="Add an integration"
+          description="Search for a service, or point executor at any MCP server, OpenAPI spec, or GraphQL endpoint."
+        />
 
-      <div className="mb-4 flex gap-2">
-        <div className="relative min-w-0 flex-1">
-          <SearchIcon
-            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            type="text"
-            value={query}
-            onChange={(event) => {
-              setQuery((event.target as HTMLInputElement).value);
-              setError(null);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && isUrl) void handleDetect();
-            }}
-            placeholder="Search integrations, or paste a URL…"
-            aria-label="Search integrations, or paste a URL"
-            disabled={detecting}
-            // oxlint-disable-next-line jsx_a11y/no-autofocus -- deliberate: searching is the page's only purpose, and it is reached by an explicit "Add integration" action
-            autoFocus
-            className="h-11 pl-9 text-sm"
-          />
+        <div className="mb-4 flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon
+              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              type="text"
+              value={query}
+              onChange={(event) => {
+                setQuery((event.target as HTMLInputElement).value);
+                setError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && isUrl) void handleDetect();
+              }}
+              placeholder="Search integrations, or paste a URL…"
+              aria-label="Search integrations, or paste a URL"
+              disabled={detecting}
+              // oxlint-disable-next-line jsx_a11y/no-autofocus -- deliberate: searching is the page's only purpose, and it is reached by an explicit "Add integration" action
+              autoFocus
+              className="h-11 pl-9 text-sm"
+            />
+          </div>
+          {isUrl ? (
+            <Button
+              className="h-11 shrink-0"
+              onClick={() => void handleDetect()}
+              disabled={detecting || query.trim().length === 0}
+              loading={detecting}
+            >
+              Add this URL
+            </Button>
+          ) : null}
         </div>
-        {isUrl ? (
-          <Button
-            className="h-11 shrink-0"
-            onClick={() => void handleDetect()}
-            disabled={detecting || query.trim().length === 0}
-            loading={detecting}
-          >
-            Add this URL
-          </Button>
-        ) : null}
-      </div>
 
-      {/* Above the results, not below: an endless list has no reachable
+        {/* Above the results, not below: an endless list has no reachable
           bottom, and this is the escape hatch for exactly the person the
           list is failing. One quiet line; the label carries the action, so
           the chips stay bare format names. */}
-      <div className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="shrink-0 text-xs text-muted-foreground">Start from scratch:</span>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {integrationPlugins.map(
-            (plugin: IntegrationPlugin): ReactNode => (
-              // oxlint-disable-next-line react/forbid-elements -- a chip, not a Button variant
-              <button
-                key={plugin.key}
-                type="button"
-                aria-label={`New ${plugin.label} integration from scratch`}
-                onClick={() => {
-                  trackEvent("integration_add_started", { plugin_key: plugin.key, via: "manual" });
-                  void navigate({
-                    to: "/{-$orgSlug}/integrations/add/$pluginKey",
-                    params: { pluginKey: plugin.key },
-                  });
-                }}
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <PlusIcon className="size-3" aria-hidden />
-                {plugin.label}
-              </button>
-            ),
-          )}
+        <div className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <span className="shrink-0 text-xs text-muted-foreground">Start from scratch:</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {integrationPlugins.map(
+              (plugin: IntegrationPlugin): ReactNode => (
+                // oxlint-disable-next-line react/forbid-elements -- a chip, not a Button variant
+                <button
+                  key={plugin.key}
+                  type="button"
+                  aria-label={`New ${plugin.label} integration from scratch`}
+                  onClick={() => {
+                    trackEvent("integration_add_started", {
+                      plugin_key: plugin.key,
+                      via: "manual",
+                    });
+                    void navigate({
+                      to: "/{-$orgSlug}/integrations/add/$pluginKey",
+                      params: { pluginKey: plugin.key },
+                    });
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <PlusIcon className="size-3" aria-hidden />
+                  {plugin.label}
+                </button>
+              ),
+            )}
+          </div>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            Can&apos;t find it? Paste its URL above.
+          </span>
         </div>
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          Can&apos;t find it? Paste its URL above.
-        </span>
+
+        {error ? (
+          <p role="alert" className="mb-4 text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
       </div>
 
-      {error ? (
-        <p role="alert" className="mb-4 text-xs text-destructive">
-          {error}
-        </p>
-      ) : null}
-
-      {loading ? (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 9 }).map((_, index) => (
-            <CardSkeleton key={index} index={index} />
-          ))}
-        </div>
-      ) : results.length === 0 ? (
-        <p className="px-3 py-10 text-center text-sm text-muted-foreground">
-          {catalog.failed
-            ? "Couldn't load the full list right now. You can still paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."
-            : "Nothing matches that. Paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."}
-        </p>
-      ) : (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {results.map((row) => (
-            <ResultCard key={row.key} row={row} />
-          ))}
-          {catalog.loadingMore
-            ? Array.from({ length: 3 }, (_, index) => (
-                <CardSkeleton key={`more-${index}`} index={index} />
-              ))
-            : null}
-          {catalog.hasMore ? (
-            <div className="col-span-full">
-              <LoadMoreSentinel onVisible={catalog.loadMore} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl px-6 pb-10 lg:px-8">
+          {loading ? (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 9 }).map((_, index) => (
+                <CardSkeleton key={index} index={index} />
+              ))}
             </div>
-          ) : null}
+          ) : results.length === 0 ? (
+            <p className="px-3 py-10 text-center text-sm text-muted-foreground">
+              {catalog.failed
+                ? "Couldn't load the full list right now. You can still paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."
+                : "Nothing matches that. Paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {results.map((row) => (
+                <ResultCard key={row.key} row={row} />
+              ))}
+              {catalog.loadingMore
+                ? Array.from({ length: 3 }, (_, index) => (
+                    <CardSkeleton key={`more-${index}`} index={index} />
+                  ))
+                : null}
+              {catalog.hasMore ? (
+                <div className="col-span-full">
+                  <LoadMoreSentinel onVisible={catalog.loadMore} />
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
-      )}
-    </PageContainer>
+      </div>
+    </div>
   );
 }
