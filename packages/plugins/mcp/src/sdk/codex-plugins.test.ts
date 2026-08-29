@@ -182,7 +182,10 @@ describe("scanCodexPlugins", () => {
     expect(byId.get("codex-messages")?.setupUrl).toBe("https://openai.com/codex");
     expect(byId.get("codex-chrome")?.setupUrl).toContain("learn.chatgpt.com");
     expect(byId.get("codex-computer-use")?.fallbackIcon).toContain("computer-use-plugin-icon");
-    expect(byId.get("codex-messages")?.fallbackIcon).toContain("integrations.sh");
+    expect(byId.get("codex-messages")?.fallbackIcon).toContain("apple.com");
+    // Computer History has no published mark of its own, so it identifies its
+    // provider instead.
+    expect(byId.get("codex-computer-history")?.fallbackIcon).toContain("openai.com");
     expect(byId.get("codex-messages")?.setupHint).not.toContain("browser extension");
     // And the steps are numbered and name the plugin the person clicked.
     expect(byId.get("codex-messages")?.setupHint).toContain("1. Install the Codex app");
