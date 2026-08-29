@@ -182,7 +182,7 @@ describe("scanCodexPlugins", () => {
     expect(byId.get("codex-messages")?.setupUrl).toBe("https://openai.com/codex");
     expect(byId.get("codex-chrome")?.setupUrl).toContain("learn.chatgpt.com");
     expect(byId.get("codex-computer-use")?.fallbackIcon).toContain("computer-use-plugin-icon");
-    expect(byId.get("codex-messages")?.fallbackIcon).toContain("apple.com");
+    expect(byId.get("codex-messages")?.fallbackIcon).toBe("/plugin-icons/messages.webp");
     // Computer History has no published mark of its own, so it identifies its
     // provider instead.
     expect(byId.get("codex-computer-history")?.fallbackIcon).toContain("openai.com");

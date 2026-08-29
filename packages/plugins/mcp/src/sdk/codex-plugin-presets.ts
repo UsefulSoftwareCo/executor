@@ -92,11 +92,11 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "messages",
     name: "Messages",
     slug: "codex_messages",
-    // Apple's own mark. The Messages app icon is not published anywhere
-    // hotlinkable — it is a system app, so it is absent from the App Store
-    // artwork API, and `messages.apple.com` resolves to this same Apple mark.
-    // It is the honest stand-in: this plugin drives Apple's Messages app.
-    publicIcon: "https://integrations.sh/logo/apple.com",
+    // Served by the app itself (`packages/app/public`), because the Messages
+    // app icon is published nowhere hotlinkable: it is a system app, absent
+    // from the App Store artwork API, and `messages.apple.com` resolves to
+    // the plain Apple mark. Root-relative, so local and cloud both serve it.
+    publicIcon: "/plugin-icons/messages.webp",
     requires: "computer-use-app",
     server: "messages",
     summary:
