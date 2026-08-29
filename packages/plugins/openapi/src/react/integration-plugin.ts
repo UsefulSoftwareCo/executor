@@ -59,17 +59,42 @@ export const quickAddSpecPlan = (
   const presetOverrides = preset?.specOverrides
     ? decodeOpenApiSpecOverrides(preset.specOverrides)
     : undefined;
-  const effective =
-    presetOverrides && presetOverrides.length > 0
-      ? presetOverrides
-      : registryOverrides && registryOverrides.length > 0
-        ? registryOverrides
-        : undefined;
+  // PRESENCE-based, mirroring the full page's `presetOverrides ??
+  // registryOverrides`: a preset declaring an explicitly EMPTY override list
+  // is a decision — suppress the registry's patches — not an absence.
+  const effective = presetOverrides !== undefined ? presetOverrides : registryOverrides;
   return {
     ...(preset?.specFormat ? { specFormat: preset.specFormat } : {}),
-    ...(effective ? { specOverrides: effective } : {}),
+    ...(effective && effective.length > 0 ? { specOverrides: effective } : {}),
   };
 };
+
+/** The preview and add requests built from ONE plan, so they cannot diverge:
+ *  deriving auth from a different effective document than the one stored is
+ *  the bug this module has now had twice. The add payload takes further
+ *  fields (family, health check, auth template) AFTER this base. */
+export const quickAddRequestPayloads = (
+  input: { readonly url: string; readonly name: string; readonly domain?: string },
+  slug: string,
+  specPlan: ReturnType<typeof quickAddSpecPlan>,
+): {
+  readonly preview: { readonly spec: string } & ReturnType<typeof quickAddSpecPlan>;
+  readonly add: {
+    readonly spec: { readonly kind: "url"; readonly url: string };
+    readonly slug: string;
+    readonly name: string;
+    readonly displayDomain?: string;
+  } & ReturnType<typeof quickAddSpecPlan>;
+} => ({
+  preview: { spec: input.url, ...specPlan },
+  add: {
+    spec: { kind: "url", url: input.url },
+    slug,
+    name: input.name,
+    ...(input.domain ? { displayDomain: input.domain } : {}),
+    ...specPlan,
+  },
+});
 
 /** The full add page's method policy as one pure step: preset OAuth wins
  *  outright; else every preview-detected method is preserved and the
@@ -143,14 +168,17 @@ function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
         // different effective document than the one stored is how a preset's
         // scope overrides got silently dropped.
         const specPlan = quickAddSpecPlan(preset, specOverrides);
+        const requests = quickAddRequestPayloads(
+          { url: input.url, name: input.name, ...(input.domain ? { domain: input.domain } : {}) },
+          slug,
+          specPlan,
+        );
         let preview: Parameters<typeof composeQuickAddAuth>[2] = null;
         if (presetMethods.length === 0 && registryPlacement) {
           // Composing with spec knowledge needs the spec: one preview call,
           // only on this path (a plain registry row with no auth facts still
           // adds with zero extra round trips).
-          const previewExit = await doPreview({
-            payload: { spec: input.url, ...specPlan },
-          });
+          const previewExit = await doPreview({ payload: requests.preview });
           if (Exit.isFailure(previewExit)) return { ok: false, reason: "preview failed" };
           preview = previewExit.value;
         }
@@ -161,11 +189,7 @@ function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
         );
         const exit = await doAdd({
           payload: {
-            spec: { kind: "url" as const, url: input.url },
-            slug,
-            name: input.name,
-            ...(input.domain ? { displayDomain: input.domain } : {}),
-            ...specPlan,
+            ...requests.add,
             ...(preset?.family ? { family: preset.family } : {}),
             ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),
             ...(authenticationTemplate.length > 0

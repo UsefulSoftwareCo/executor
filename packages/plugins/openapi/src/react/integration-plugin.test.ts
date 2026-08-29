@@ -2,7 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 import { Option } from "effect";
 
 import { decodeOpenApiSpecOverrides } from "../sdk/spec-overrides";
-import { composeQuickAddAuth, quickAddSpecPlan } from "./integration-plugin";
+import {
+  composeQuickAddAuth,
+  quickAddRequestPayloads,
+  quickAddSpecPlan,
+} from "./integration-plugin";
 
 // The quick add's composition is where review found bugs twice: first it
 // suppressed spec-declared methods, then it derived auth from the unmodified
@@ -34,6 +38,19 @@ describe("quickAddSpecPlan", () => {
     // Preset overrides win over the registry's, mirroring the full add page.
     expect(plan.specOverrides).toEqual(scopeOverride);
     expect(plan.specFormat).toBe("plain-ish");
+  });
+
+  it("an explicitly EMPTY preset override list suppresses the registry's", () => {
+    // Presence-based, like the full page's `presetOverrides ?? registry`:
+    // an empty list is a decision, not an absence.
+    const registryOverrides = decodeOpenApiSpecOverrides([
+      { op: "remove", path: "/components/securitySchemes/Cookie" },
+    ]);
+    const plan = quickAddSpecPlan(
+      { id: "custom", name: "Custom", summary: "", specOverrides: [] },
+      registryOverrides,
+    );
+    expect(plan.specOverrides).toBeUndefined();
   });
 
   it("falls through to registry overrides when the preset has none", () => {
@@ -99,5 +116,33 @@ describe("composeQuickAddAuth", () => {
     });
     expect(template).toHaveLength(1);
     expect(JSON.stringify(template[0])).toContain("X-API-Key");
+  });
+});
+
+describe("quickAddRequestPayloads", () => {
+  it("the preview and the add carry the identical spec plan", () => {
+    // The regression contract itself: reverting either call site to a bare
+    // payload makes these fields diverge and this test fail.
+    const plan = quickAddSpecPlan(
+      {
+        id: "figma",
+        name: "Figma",
+        summary: "",
+        specFormat: "fmt",
+        specOverrides: [...scopeOverride],
+      },
+      undefined,
+    );
+    const requests = quickAddRequestPayloads(
+      { url: "https://example.com/spec.yaml", name: "Figma API", domain: "figma.com" },
+      "figma_api",
+      plan,
+    );
+    expect(requests.preview.specFormat).toBe("fmt");
+    expect(requests.preview.specOverrides).toEqual(scopeOverride);
+    expect(requests.add.specFormat).toBe(requests.preview.specFormat);
+    expect(requests.add.specOverrides).toEqual(requests.preview.specOverrides);
+    expect(requests.add.displayDomain).toBe("figma.com");
+    expect(requests.add.spec).toEqual({ kind: "url", url: "https://example.com/spec.yaml" });
   });
 });
