@@ -9,7 +9,7 @@ import type {
 } from "@executor-js/sdk/client";
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 import { slugifyNamespace } from "@executor-js/react/plugins/integration-identity";
-import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
+import { placementFromHeaderPattern, type Placement } from "@executor-js/react/lib/auth-placements";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { openApiPresets } from "../sdk/presets";
 import { detectedAuthenticationTemplates } from "../sdk/derive-auth";
@@ -44,6 +44,67 @@ const presetForSpecUrl = (
  *  configuration: omitting `authenticationTemplate` and `baseUrl` tells the
  *  server to derive both from the document, exactly what the add page's
  *  untouched defaults submit. Registry spec overrides ride along. */
+
+/** The spec inputs a quick add must hold CONSISTENT between preview and add:
+ *  deriving auth from a document other than the one being added is how a
+ *  preset's scope overrides got silently dropped. Preset overrides win over
+ *  the registry's, mirroring the full add page. */
+export const quickAddSpecPlan = (
+  preset: IntegrationPreset | undefined,
+  registryOverrides: ReturnType<typeof decodeOpenApiSpecOverrides>,
+): {
+  readonly specFormat?: string;
+  readonly specOverrides?: NonNullable<ReturnType<typeof decodeOpenApiSpecOverrides>>;
+} => {
+  const presetOverrides = preset?.specOverrides
+    ? decodeOpenApiSpecOverrides(preset.specOverrides)
+    : undefined;
+  const effective =
+    presetOverrides && presetOverrides.length > 0
+      ? presetOverrides
+      : registryOverrides && registryOverrides.length > 0
+        ? registryOverrides
+        : undefined;
+  return {
+    ...(preset?.specFormat ? { specFormat: preset.specFormat } : {}),
+    ...(effective ? { specOverrides: effective } : {}),
+  };
+};
+
+/** The full add page's method policy as one pure step: preset OAuth wins
+ *  outright; else every preview-detected method is preserved and the
+ *  registry's key placement is appended only when the detected set has no
+ *  key method (GitHub declares no security at all). `preview` MUST be the
+ *  summary of the same effective document the add will store. */
+export const composeQuickAddAuth = (
+  presetMethods: readonly ReturnType<typeof openApiWireAuthInput>[],
+  registryPlacement: Placement | null,
+  preview: {
+    readonly headerPresets: Parameters<typeof detectedAuthenticationTemplates>[0];
+    readonly oauth2Presets: Parameters<typeof detectedAuthenticationTemplates>[1];
+    readonly servers: readonly { readonly url: string }[];
+  } | null,
+): readonly ReturnType<typeof openApiWireAuthInput>[] => {
+  if (presetMethods.length > 0) {
+    return registryPlacement
+      ? [...presetMethods, openApiWireAuthInput(templateFromPlacements([registryPlacement]))]
+      : presetMethods;
+  }
+  if (!registryPlacement || preview === null) return presetMethods;
+  const detected = detectedAuthenticationTemplates(
+    preview.headerPresets,
+    preview.oauth2Presets,
+    preview.servers[0]?.url ?? "",
+  );
+  const detectedHasApiKey = detected.some((template) => template.kind === "apikey");
+  return [
+    ...detected.map(openApiWireAuthInput),
+    ...(detectedHasApiKey
+      ? []
+      : [openApiWireAuthInput(templateFromPlacements([registryPlacement]))]),
+  ];
+};
+
 function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
   return function useOpenApiQuickAdd(): (
     input: IntegrationQuickAddInput,
@@ -64,13 +125,6 @@ function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
           return { ok: false, reason: "unparseable spec overrides" };
         }
         const preset = presetForSpecUrl(presets, input.url);
-        // The FULL add page's method policy, replicated exactly: a preset's
-        // OAuth template wins outright; otherwise EVERY spec-detected method is
-        // preserved (an explicit template suppresses server-side derivation, so
-        // sending only the registry header would erase a spec's declared OAuth
-        // and key schemes); the registry's header pattern is appended only when
-        // the detected set has no API-key method (GitHub declares no security
-        // at all, and a PAT header is how most calls actually authenticate).
         const registryPlacement = input.authHeader
           ? placementFromHeaderPattern(input.authHeader)
           : null;
@@ -85,53 +139,38 @@ function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
               ]
             : [],
         );
-        let authenticationTemplate = presetMethods;
+        // ONE spec plan for both preview and add: deriving auth from a
+        // different effective document than the one stored is how a preset's
+        // scope overrides got silently dropped.
+        const specPlan = quickAddSpecPlan(preset, specOverrides);
+        let preview: Parameters<typeof composeQuickAddAuth>[2] = null;
         if (presetMethods.length === 0 && registryPlacement) {
           // Composing with spec knowledge needs the spec: one preview call,
           // only on this path (a plain registry row with no auth facts still
           // adds with zero extra round trips).
-          const previewExit = await doPreview({ payload: { spec: input.url } });
+          const previewExit = await doPreview({
+            payload: { spec: input.url, ...specPlan },
+          });
           if (Exit.isFailure(previewExit)) return { ok: false, reason: "preview failed" };
-          const previewSummary = previewExit.value;
-          const detected = detectedAuthenticationTemplates(
-            previewSummary.headerPresets,
-            previewSummary.oauth2Presets,
-            previewSummary.servers[0]?.url ?? "",
-          );
-          const detectedHasApiKey = detected.some((template) => template.kind === "apikey");
-          authenticationTemplate = [
-            ...detected.map(openApiWireAuthInput),
-            ...(detectedHasApiKey
-              ? []
-              : [openApiWireAuthInput(templateFromPlacements([registryPlacement]))]),
-          ];
-        } else if (presetMethods.length > 0 && registryPlacement) {
-          authenticationTemplate = [
-            ...presetMethods,
-            openApiWireAuthInput(templateFromPlacements([registryPlacement])),
-          ];
+          preview = previewExit.value;
         }
-        // Preset overrides arrive as the same untyped JSON shape the registry
-        // sends; decode both through the one boundary.
-        const presetOverrides =
-          specOverrides && specOverrides.length > 0
-            ? specOverrides
-            : preset?.specOverrides
-              ? decodeOpenApiSpecOverrides(preset.specOverrides)
-              : undefined;
+        const authenticationTemplate = composeQuickAddAuth(
+          presetMethods,
+          registryPlacement,
+          preview,
+        );
         const exit = await doAdd({
           payload: {
             spec: { kind: "url" as const, url: input.url },
             slug,
             name: input.name,
             ...(input.domain ? { displayDomain: input.domain } : {}),
-            ...(preset?.specFormat ? { specFormat: preset.specFormat } : {}),
+            ...specPlan,
             ...(preset?.family ? { family: preset.family } : {}),
             ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),
-            ...(presetOverrides && presetOverrides.length > 0
-              ? { specOverrides: presetOverrides }
+            ...(authenticationTemplate.length > 0
+              ? { authenticationTemplate: [...authenticationTemplate] }
               : {}),
-            ...(authenticationTemplate.length > 0 ? { authenticationTemplate } : {}),
           },
           reactivityKeys: integrationWriteKeys,
         });
