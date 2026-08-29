@@ -4,6 +4,7 @@ import type { CloudflareConfig } from "../config";
 import { principalFromAccessClaims } from "./cloudflare-access";
 
 const config: CloudflareConfig = {
+  authMode: "access",
   accessTeamDomain: "team.cloudflareaccess.com",
   accessAud: "aud-tag",
   accessNameClaim: "name",

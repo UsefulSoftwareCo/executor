@@ -2,13 +2,12 @@ import * as AtomHttpApi from "effect/unstable/reactivity/AtomHttpApi";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as Effect from "effect/Effect";
 
+import { AdminHttpApi } from "@executor-js/api";
 import { reportApiClientInfrastructureCause } from "@executor-js/react/api/client";
 import {
   getExecutorApiBaseUrl,
   getExecutorServerAuthorizationHeader,
 } from "@executor-js/react/api/server-connection";
-
-import { AdminHttpApi } from "../src/admin/api";
 
 // ---------------------------------------------------------------------------
 // Self-host admin atom client — the invite-code surface (/api/admin/*).

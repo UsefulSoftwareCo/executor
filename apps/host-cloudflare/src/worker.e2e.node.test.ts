@@ -550,5 +550,129 @@ describe("cloudflare host configuration errors", () => {
         "Cloudflare Access is not configured. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD before serving requests.\n",
       );
     }
+  }, 30_000);
+});
+
+describe("cloudflare host e2e with built-in auth (AUTH_MODE=builtin)", () => {
+  let worker: Unstable_DevWorker;
+
+  beforeAll(async () => {
+    ensureStaticAssets();
+
+    worker = await unstable_dev(resolve(dir, "worker.ts"), {
+      config: resolve(dir, "../wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      experimental: { disableExperimentalWarning: true },
+      vars: {
+        EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
+        AUTH_MODE: "builtin",
+        BETTER_AUTH_SECRET: "test-secret-0123456789-abcdefghijklmnop-qrstuv",
+      },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await worker?.stop();
   });
+
+  it("manages the entire first-run setup, signup restrictions, and invite code flow", async () => {
+    // 1. Initial setup-status check
+    const statusBefore = await worker.fetch("/api/setup-status");
+    expect(statusBefore.status).toBe(200);
+    const bodyBefore = (await statusBefore.json()) as { needsSetup: boolean };
+    expect(bodyBefore.needsSetup).toBe(true);
+
+    // 2. First-run owner signup
+    const signUpOwner = await worker.fetch("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "admin@test.local",
+        password: "admin-password-123",
+        name: "Admin Owner",
+      }),
+    });
+    expect(signUpOwner.status).toBe(200);
+    const ownerToken = signUpOwner.headers.get("set-auth-token");
+    const ownerCookie = signUpOwner.headers.get("set-cookie");
+    const ownerHeaders = {
+      ...(ownerToken ? { authorization: `Bearer ${ownerToken}` } : {}),
+      ...(ownerCookie ? { cookie: ownerCookie } : {}),
+    };
+
+    // 3. Setup-status check after owner signup
+    const statusAfter = await worker.fetch("/api/setup-status");
+    expect(statusAfter.status).toBe(200);
+    const bodyAfter = (await statusAfter.json()) as { needsSetup: boolean };
+    expect(bodyAfter.needsSetup).toBe(false);
+
+    // 4. Registering a second user without an invite code must be forbidden
+    const signUpForbidden = await worker.fetch("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "user@test.local",
+        password: "user-password-123",
+        name: "Regular User",
+      }),
+    });
+    expect(signUpForbidden.status).toBe(403);
+
+    // 5. Generate an invite code using the admin API
+    const createInvite = await worker.fetch("/api/admin/invites", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...ownerHeaders,
+      },
+      body: JSON.stringify({ role: "member", label: "Test Invite" }),
+    });
+    expect(createInvite.status).toBe(200);
+    const invite = (await createInvite.json()) as { code: string };
+    expect(invite.code).toBeTruthy();
+
+    // 6. Check that the invite code status endpoint reports it as valid
+    const inviteStatus = await worker.fetch(`/api/invite-status/${invite.code}`);
+    expect(inviteStatus.status).toBe(200);
+    const inviteStatusBody = (await inviteStatus.json()) as { valid: boolean };
+    expect(inviteStatusBody.valid).toBe(true);
+
+    // 7. Registering with the invite code must succeed
+    const signUpUser = await worker.fetch("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "user@test.local",
+        password: "user-password-123",
+        name: "Regular User",
+        inviteCode: invite.code,
+      }),
+    });
+    expect(signUpUser.status).toBe(200);
+    const userToken = signUpUser.headers.get("set-auth-token");
+    const userCookie = signUpUser.headers.get("set-cookie");
+    const userHeaders = {
+      ...(userToken ? { authorization: `Bearer ${userToken}` } : {}),
+      ...(userCookie ? { cookie: userCookie } : {}),
+    };
+
+    // 8. Re-checking the invite code status must report it as invalid (consumed)
+    const inviteStatusConsumed = await worker.fetch(`/api/invite-status/${invite.code}`);
+    expect(inviteStatusConsumed.status).toBe(200);
+    const inviteStatusConsumedBody = (await inviteStatusConsumed.json()) as { valid: boolean };
+    expect(inviteStatusConsumedBody.valid).toBe(false);
+
+    // 9. Retrieve user details using /api/account/me for both accounts
+    const meOwner = await worker.fetch("/api/account/me", { headers: ownerHeaders });
+    expect(meOwner.status).toBe(200);
+    const meOwnerBody = (await meOwner.json()) as { user: { email: string } };
+    expect(meOwnerBody.user.email).toBe("admin@test.local");
+
+    const meUser = await worker.fetch("/api/account/me", { headers: userHeaders });
+    expect(meUser.status).toBe(200);
+    const meUserBody = (await meUser.json()) as { user: { email: string } };
+    expect(meUserBody.user.email).toBe("user@test.local");
+  }, 90_000);
 });

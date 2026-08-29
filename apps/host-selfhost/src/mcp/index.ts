@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider } from "@executor-js/api/server";
+import { IdentityProvider, betterAuthMcpAuth } from "@executor-js/api/server";
 import type {
   McpAuthProvider,
   McpErrorReporter,
@@ -11,14 +11,13 @@ import type {
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import type { SelfHostConfig } from "../config";
-import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
   selfHostMcpReporter,
   selfHostMcpSessions,
 } from "./session-store";
 
-export { selfHostMcpAuth } from "./auth";
+export { betterAuthMcpAuth as selfHostMcpAuth };
 export {
   makeSelfHostMcpSessionStore,
   selfHostMcpReporter,
@@ -85,12 +84,12 @@ const principalFromSession = (
   betterAuth: BetterAuthHandle,
 ): Principal => ({
   accountId: resolved.user.id,
-  organizationId: resolved.session.activeOrganizationId ?? betterAuth.organizationId,
+  organizationId: (resolved.session as any).activeOrganizationId ?? betterAuth.organizationId,
   organizationName: betterAuth.organizationName,
   email: resolved.user.email,
   name: resolved.user.name ?? null,
   avatarUrl: resolved.user.image ?? null,
-  roles: parseRoles(resolved.user.role ?? null),
+  roles: parseRoles((resolved.user as any).role ?? null),
 });
 
 /**
@@ -147,7 +146,7 @@ export const makeSelfHostMcpSeams = (
     config.webBaseUrl,
     config.mcpSessionIdleTtlMs,
   );
-  const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
+  const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = betterAuthMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );
   return {

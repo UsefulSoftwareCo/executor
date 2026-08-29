@@ -94,3 +94,22 @@ export {
   captureEngineError,
   type ErrorCaptureShape,
 } from "./observability";
+export { postLoginTarget } from "./better-auth/redirection";
+export {
+  AdminHttpApi,
+  AdminApi,
+  AdminError,
+  AdminForbidden,
+  AdminUnauthorized,
+  InviteCode,
+  InvitesResponse,
+  CreateInviteBody,
+} from "./better-auth/admin-api";
+export {
+  SystemHttpApi,
+  SystemApi,
+  SystemError,
+  HealthResponse,
+  SetupStatusResponse,
+  InviteStatusResponse,
+} from "./better-auth/system-api";

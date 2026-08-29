@@ -4,9 +4,9 @@ import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
+import { postLoginTarget } from "@executor-js/api";
 import { authClient } from "./auth-client";
 import { AuthLayout } from "./auth-layout";
-import { postLoginTarget } from "../src/auth/return-to";
 
 // Self-host login: email + password sign-in via Better Auth. On success we
 // reload so the shared AuthProvider re-reads /account/me and the AuthGate swaps

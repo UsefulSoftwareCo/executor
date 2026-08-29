@@ -1,6 +1,4 @@
 import { betterAuth } from "better-auth";
-import { type Client } from "@libsql/client";
-import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 
 import {
   makeBetterAuthSharedOptions,
@@ -11,22 +9,27 @@ import {
   type BetterAuthInstance,
   type BetterAuthDbClient,
   type SignupGate,
-  BetterAuth as SharedBetterAuth,
-  type BetterAuthHandle as SharedBetterAuthHandle,
+  type BetterAuthHandle,
 } from "@executor-js/api/server";
 
-import { loadConfig } from "../config";
+import type { CloudflareConfig } from "../config";
 
-export const libSqlClientAdapter = (client: Client): BetterAuthDbClient => ({
+export const d1ClientAdapter = (db: D1Database): BetterAuthDbClient => ({
   execute: async (sql, args) => {
-    const result = await client.execute({ sql, args: args ?? [] });
-    return { rows: result.rows as any[], rowsAffected: result.rowsAffected };
+    const stmt = db.prepare(sql).bind(...(args ?? []));
+    const result = await stmt.all();
+    return {
+      rows: result.results ?? [],
+      rowsAffected: result.meta?.changes ?? 0,
+    };
   },
 });
 
-export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle> => {
-  const config = loadConfig();
-  const dbClient = libSqlClientAdapter(client);
+export const buildD1BetterAuth = async (
+  db: D1Database,
+  config: CloudflareConfig,
+): Promise<BetterAuthHandle> => {
+  const dbClient = d1ClientAdapter(db);
 
   let auth: BetterAuthInstance | null = null;
   const orgRef = { id: "" };
@@ -42,30 +45,34 @@ export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle>
   const sharedOptions = makeBetterAuthSharedOptions(
     () => orgRef.id,
     {
-      authSecret: config.authSecret,
-      webBaseUrl: config.webBaseUrl,
-      trustedOrigins: config.trustedOrigins,
+      authSecret: config.betterAuthSecret!,
+      webBaseUrl: config.webBaseUrl!,
     },
     gate,
   );
 
   const authOptions = {
     ...sharedOptions,
-    database: {
-      // oxlint-disable-next-line executor/no-double-cast -- boundary: version structural compatibility
-      dialect: new LibsqlDialect({ client } as unknown as LibsqlDialectConfig),
-      type: "sqlite" as const,
-    },
+    database: db,
   };
 
   const authInstance = betterAuth(authOptions);
   auth = authInstance as any;
   await (await authInstance.$context).runMigrations();
   await ensureInviteCodeTable(dbClient);
+
+  const seedConfig = {
+    orgSlug: config.organizationSlug,
+    organizationName: config.organizationName,
+    bootstrapAdminEmail: config.bootstrapAdminEmail,
+    bootstrapAdminPassword: config.bootstrapAdminPassword,
+    bootstrapAdminName: config.bootstrapAdminName,
+  };
+
   const { organizationId, organizationName } = await seedOrgAndAdmin(
     authInstance as any,
     dbClient,
-    config,
+    seedConfig,
   );
   orgRef.id = organizationId;
 
@@ -73,14 +80,8 @@ export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle>
     auth: authInstance as any,
     organizationId,
     organizationName,
-    organizationSlug: config.orgSlug,
+    organizationSlug: config.organizationSlug,
     handler: authInstance.handler,
     dbClient,
   };
 };
-
-export type Auth = BetterAuthInstance;
-export type BetterAuthHandle = SharedBetterAuthHandle;
-export const BetterAuth = SharedBetterAuth;
-
-export { countOrgMembers } from "@executor-js/api/server";

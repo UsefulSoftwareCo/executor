@@ -193,6 +193,7 @@
         "@jitl/quickjs-wasmfile-release-sync": "catalog:",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@tanstack/react-router": "catalog:",
+        "better-auth": "^1.6.11",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
         "jose": "^5.9.6",
@@ -481,9 +482,11 @@
       "name": "@executor-js/api",
       "version": "1.4.66",
       "dependencies": {
+        "@better-auth/api-key": "^1.6.11",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
         "@executor-js/sdk": "workspace:*",
+        "better-auth": "^1.6.11",
         "effect": "catalog:",
       },
       "devDependencies": {

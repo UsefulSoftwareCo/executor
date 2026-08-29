@@ -154,3 +154,17 @@ export type {
   EngineProviders,
   McpProviders,
 } from "./server/executor-app";
+
+export * from "./better-auth/shared";
+export * from "./better-auth/identity";
+export * from "./better-auth/account-provider";
+export * from "./better-auth/mcp-auth";
+export * from "./better-auth/consent";
+export * from "./better-auth/invalid-origin";
+export * from "./better-auth/redirection";
+export * from "./better-auth/invites";
+export * from "./better-auth/seed";
+export * from "./better-auth/admin-api";
+export * from "./better-auth/admin";
+export * from "./better-auth/system-api";
+export * from "./better-auth/system";

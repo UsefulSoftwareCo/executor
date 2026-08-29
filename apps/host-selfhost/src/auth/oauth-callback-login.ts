@@ -1,4 +1,4 @@
-import { loginPath } from "./return-to";
+import { loginPath } from "@executor-js/api/server";
 
 export const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 

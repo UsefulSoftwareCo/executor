@@ -1,12 +1,24 @@
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
-import { dbProviderLayer, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
+import {
+  dbProviderLayer,
+  ExecutorApp,
+  textFailureStrategy,
+  accountProviderMiddlewareLayer,
+  BetterAuth,
+  betterAuthIdentityLayer,
+  betterAuthAccountProvider,
+  makeBetterAuthAdminApiLayer,
+  makeBetterAuthSystemApiLayer,
+  type BetterAuthHandle,
+} from "@executor-js/api/server";
 
 import { loadConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins } from "./plugins";
 import { createD1ExecutorDb } from "./db/d1";
 import { cloudflareAccessIdentityLayer } from "./auth/cloudflare-access";
+import { buildD1BetterAuth } from "./auth/builtin-auth";
 import {
   CloudflareCodeExecutorProvider,
   makeCloudflareHostConfig,
@@ -44,9 +56,26 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
   // Open and idempotently bring up the D1 schema once. This is the long-lived
   // handle the per-request scoped executor reads through the DbProvider seam.
   const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
-  const identityLayer = cloudflareAccessIdentityLayer(config);
-  const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
-  const approvalHandler = makeCloudflareApprovalHandler(config, env);
+
+  const isBuiltin = config.authMode === "builtin";
+  let betterAuth: BetterAuthHandle | null = null;
+  let identityLayer;
+  let accountMiddleware;
+
+  if (isBuiltin) {
+    betterAuth = await buildD1BetterAuth(env.DB, config);
+    const betterAuthLayer = Layer.succeed(BetterAuth)(betterAuth);
+    identityLayer = betterAuthIdentityLayer.pipe(Layer.provide(betterAuthLayer));
+    accountMiddleware = accountProviderMiddlewareLayer(
+      betterAuthAccountProvider.pipe(Layer.provide(betterAuthLayer)),
+    );
+  } else {
+    identityLayer = cloudflareAccessIdentityLayer(config);
+    accountMiddleware = cloudflareAccountMiddleware(config);
+  }
+
+  const mcpAgentHandler = makeCloudflareMcpAgentHandler(config, betterAuth, identityLayer);
+  const approvalHandler = makeCloudflareApprovalHandler(config, env, betterAuth);
 
   const { appLayer, toWebHandler } = ExecutorApp.make({
     plugins,
@@ -62,14 +91,38 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
       // The account API (`/api/account/*`) backs the shared multiplayer shell's
       // auth context; `me` reflects the Access principal. Members/keys are
       // Access-managed, so the rest of the surface is stubbed.
-      account: cloudflareAccountMiddleware(config),
+      account: accountMiddleware,
     },
     extensions: {
       routes: [
         // Browser approval of paused MCP executions: the console resume page
         // reads paused detail (GET) and records the decision (POST .../resume),
-        // Access-gated, routed to the owning session's Durable Object.
+        // Access/BetterAuth-gated, routed to the owning session's Durable Object.
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(approvalHandler)),
+        ...(isBuiltin && betterAuth
+          ? [
+              HttpRouter.add(
+                "GET",
+                "/api/auth/cli-login",
+                HttpEffect.fromWebHandler(
+                  async () =>
+                    new Response(
+                      JSON.stringify({
+                        provider: "better-auth",
+                        deviceAuthorizationEndpoint: `${config.webBaseUrl}/api/auth/device/code`,
+                        tokenEndpoint: `${config.webBaseUrl}/api/auth/device/token`,
+                        clientId: "executor-cli",
+                        requestFormat: "json",
+                      }),
+                      { headers: { "content-type": "application/json" } },
+                    ),
+                ),
+              ),
+              HttpRouter.add("*", "/api/auth/*", HttpEffect.fromWebHandler(betterAuth.handler)),
+              makeBetterAuthAdminApiLayer({ betterAuth, mountPrefix: "/api" }),
+              makeBetterAuthSystemApiLayer({ betterAuth, mountPrefix: "/api" }),
+            ]
+          : []),
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },

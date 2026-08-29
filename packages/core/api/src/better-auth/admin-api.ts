@@ -1,19 +1,6 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
-// ---------------------------------------------------------------------------
-// Self-host admin API — the invite-code surface (app-local, self-host only).
-//
-// Member/role management is the shared, provider-neutral /account/* surface
-// (served by the Better Auth AccountProvider, rendered by the shared org page).
-// Invite CODES are self-host's join mechanism and have no neutral equivalent —
-// cloud joins via WorkOS — so they live in this app-local group, served
-// alongside the core API under /api and consumed by a self-host atom client.
-//
-// Browser-safe: schemas + the HttpApi value only (no server imports), so the
-// web client can build a typed AtomHttpApi from it.
-// ---------------------------------------------------------------------------
-
 export class AdminError extends Schema.TaggedErrorClass<AdminError>()(
   "AdminError",
   { message: Schema.String },
@@ -59,9 +46,6 @@ export const SuccessResponse = Schema.Struct({
 
 const InviteParams = { inviteId: Schema.String };
 
-// Paths are `/admin/*` (no `/api`): the server mounts this on the same
-// `/api`-prefixed router as the core API, and the client prepends the `/api`
-// base — symmetric with the account API.
 export const AdminApi = HttpApiGroup.make("admin")
   .add(
     HttpApiEndpoint.get("listInvites", "/admin/invites", {
@@ -84,9 +68,4 @@ export const AdminApi = HttpApiGroup.make("admin")
     }),
   );
 
-/**
- * Standalone HttpApi wrapping the admin group — used to build the self-host
- * `AdminApiClient` atoms in the web app, and mounted server-side as an
- * extension route layer.
- */
 export const AdminHttpApi = HttpApi.make("executor-self-host-admin").add(AdminApi);

@@ -8,7 +8,7 @@ const retryDelaysMs = [250, 500, 1_000] as const;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class SetupStatusError extends Error {
-  constructor() {
+  constructor(public readonly status?: number) {
     super("Unable to check setup status");
     this.name = "SetupStatusError";
   }
@@ -26,6 +26,10 @@ export const fetchNeedsSetup = async (): Promise<boolean> => {
         () => ({}),
       )) as { needsSetup?: boolean };
       return data.needsSetup === true;
+    }
+    if (response && response.status === 404) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: setup status absent (Access mode) rejects immediately
+      throw new SetupStatusError(404);
     }
     if (attempt < retryDelaysMs.length - 1) await sleep(retryDelaysMs[attempt]);
   }

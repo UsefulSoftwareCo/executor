@@ -42,9 +42,12 @@ const accessConfigErrorResponse = (missingVars: readonly string[]): Response =>
 
 export default {
   fetch: async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
-    const missingAccessVars = missingCloudflareAccessVars(env);
-    if (missingAccessVars.length > 0) {
-      return accessConfigErrorResponse(missingAccessVars);
+    const authMode = (env.AUTH_MODE ?? "access").toLowerCase();
+    if (authMode === "access") {
+      const missingAccessVars = missingCloudflareAccessVars(env);
+      if (missingAccessVars.length > 0) {
+        return accessConfigErrorResponse(missingAccessVars);
+      }
     }
 
     const serve = await resolveHandler(env);

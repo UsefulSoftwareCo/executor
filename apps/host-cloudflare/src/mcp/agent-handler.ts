@@ -1,4 +1,4 @@
-import { Effect, Predicate } from "effect";
+import { Effect, Predicate, Layer } from "effect";
 
 import {
   McpAuthProvider,
@@ -16,6 +16,12 @@ import {
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import {
+  BetterAuth,
+  betterAuthMcpAuth,
+  type BetterAuthHandle,
+  type IdentityProvider,
+} from "@executor-js/api/server";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
@@ -62,12 +68,26 @@ const renderAuthError = (
   return jsonRpcResponse(503, -32001, outcome.message);
 };
 
-const authenticate = (request: Request, config: CloudflareConfig) =>
+const authenticate = (
+  request: Request,
+  config: CloudflareConfig,
+  betterAuth: BetterAuthHandle | null,
+  identityLayer: Layer.Layer<IdentityProvider> | null,
+) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(cloudflareAccessMcpAuth(config)));
+  }).pipe(
+    Effect.provide(
+      config.authMode === "builtin" && betterAuth && identityLayer
+        ? betterAuthMcpAuth.pipe(
+            Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
+            Layer.provide(identityLayer),
+          )
+        : cloudflareAccessMcpAuth(config),
+    ),
+  );
 
 const propsForPrincipal = (
   request: Request,
@@ -92,7 +112,11 @@ const propsForPrincipal = (
     };
   });
 
-export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
+export const makeCloudflareMcpAgentHandler = (
+  config: CloudflareConfig,
+  betterAuth: BetterAuthHandle | null,
+  identityLayer: Layer.Layer<IdentityProvider> | null,
+) => {
   const serve = McpSessionDO.serve("/mcp", {
     binding: "MCP_SESSION",
     transport: "streamable-http",
@@ -102,7 +126,9 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
+    const { auth, outcome } = await Effect.runPromise(
+      authenticate(request, config, betterAuth, identityLayer),
+    );
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
         await Effect.runPromise(

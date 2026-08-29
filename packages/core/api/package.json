@@ -14,9 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@better-auth/api-key": "^1.6.11",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "better-auth": "^1.6.11",
     "effect": "catalog:"
   },
   "devDependencies": {

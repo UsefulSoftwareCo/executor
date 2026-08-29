@@ -37,6 +37,7 @@
     "@jitl/quickjs-wasmfile-release-sync": "catalog:",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@tanstack/react-router": "catalog:",
+    "better-auth": "^1.6.11",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
     "jose": "^5.9.6",

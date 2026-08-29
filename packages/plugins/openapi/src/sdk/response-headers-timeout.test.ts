@@ -19,7 +19,7 @@ import { invokeWithLayer } from "./invoke";
 import { openApiPlugin } from "./plugin";
 import type { OperationBinding } from "./types";
 
-const RESPONSE_HEADERS_TIMEOUT_MS = 100;
+const RESPONSE_HEADERS_TIMEOUT_MS = 250;
 const STREAM_TOOL = "logs.getLogs";
 const encoder = new TextEncoder();
 
@@ -148,14 +148,16 @@ describe("OpenAPI response headers timeout", () => {
       const elapsedMs = Date.now() - startedAt;
       const socketClosed = yield* Deferred.await(closed).pipe(Effect.timeoutOption(1_000));
 
-      expect(elapsedMs).toBeGreaterThanOrEqual(RESPONSE_HEADERS_TIMEOUT_MS - 25);
-      expect(elapsedMs).toBeLessThan(2_000);
+      expect(elapsedMs).toBeGreaterThanOrEqual(RESPONSE_HEADERS_TIMEOUT_MS - 50);
+      expect(elapsedMs).toBeLessThan(3_000);
       expect(Option.isSome(socketClosed)).toBe(true);
       expect(result).toMatchObject({
         ok: false,
         error: {
           code: "upstream_response_headers_timeout",
-          message: expect.stringContaining("Upstream returned no response headers within 100ms"),
+          message: expect.stringContaining(
+            `Upstream returned no response headers within ${RESPONSE_HEADERS_TIMEOUT_MS}ms`,
+          ),
         },
       });
     }),

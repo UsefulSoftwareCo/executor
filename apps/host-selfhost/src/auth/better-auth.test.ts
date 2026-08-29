@@ -4,8 +4,6 @@ import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
 
-import { mintInviteCode } from "../testing/mint-invite";
-
 // Real Better Auth path: set a secret + bootstrap admin before importing.
 // Better Auth skips origin checks in test mode by default; this suite exercises
 // the production check so the trusted-origin cases below cover the real path.
@@ -19,6 +17,7 @@ process.env.EXECUTOR_WEB_BASE_URL = "https://executor.example.com";
 process.env.EXECUTOR_TRUSTED_ORIGINS = "http://executor.home.arpa:4788";
 
 const { makeSelfHostApiHandler } = await import("../app");
+const { mintInviteCode } = await import("../testing/mint-invite");
 
 const { handler, dispose } = await makeSelfHostApiHandler();
 afterAll(() => dispose());

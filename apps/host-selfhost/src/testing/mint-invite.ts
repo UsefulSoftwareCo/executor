@@ -2,8 +2,7 @@ import { Effect, Layer } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { FetchHttpClient } from "effect/unstable/http";
 
-import { AdminHttpApi } from "../admin/api";
-import { type InviteRole } from "../auth/invites";
+import { AdminHttpApi, type InviteRole } from "@executor-js/api/server";
 
 // Test helper: mint an invite code through the TYPED admin HttpApi client, the
 // same surface the web app calls — no raw request building, no direct DB poke.

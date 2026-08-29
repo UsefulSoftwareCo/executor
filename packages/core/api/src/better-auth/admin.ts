@@ -7,37 +7,56 @@ import {
   AdminForbidden,
   AdminHttpApi,
   AdminUnauthorized,
-  type InviteCode as InviteCodeSchema,
-} from "./api";
-import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
-import { requireInstanceAdmin } from "./require-admin";
-import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
+  InviteCode as InviteCodeSchema,
+} from "./admin-api";
+import { BetterAuth, type BetterAuthHandle } from "./identity";
 import {
   createInviteCode,
   listInviteCodes,
   revokeInviteCode,
   type InviteCodeRow,
   type InviteRole,
-} from "../auth/invites";
+} from "./invites";
 
-// ---------------------------------------------------------------------------
-// Handlers for the self-host admin (invite-code) API. Every Promise-returning
-// boundary (Better Auth, the libSQL store) is wrapped in Effect.tryPromise with
-// a typed failure — no raw try/catch, no Promise.catch. Each route is gated by
-// the SHARED `requireInstanceAdmin`: the caller must be an owner/admin member
-// of THIS INSTANCE'S organization, named explicitly rather than taken from the
-// caller's session (see require-admin.ts for the escalation that rule refuses —
-// this plane mints invite codes, so a bypass here is durable admin).
-// ---------------------------------------------------------------------------
+export type AdminGateDenial = "unauthorized" | "forbidden";
+
+export interface InstanceAdmin {
+  readonly userId: string;
+  readonly role: string;
+}
+
+const isPrivileged = (role: string): boolean =>
+  role
+    .split(",")
+    .map((part) => part.trim())
+    .some((part) => part === "owner" || part === "admin");
+
+export const requireInstanceAdmin = (
+  headers: Headers,
+): Effect.Effect<InstanceAdmin, AdminGateDenial, BetterAuth> =>
+  Effect.gen(function* () {
+    const { auth, organizationId } = yield* BetterAuth;
+
+    const session = yield* Effect.tryPromise(() => auth.api.getSession({ headers })).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (!session) return yield* Effect.fail<AdminGateDenial>("unauthorized");
+
+    const resolved = yield* Effect.tryPromise(() =>
+      auth.api.getActiveMemberRole({ headers, query: { organizationId } }),
+    ).pipe(Effect.orElseSucceed(() => null));
+    if (!resolved || !isPrivileged(resolved.role)) {
+      return yield* Effect.fail<AdminGateDenial>("forbidden");
+    }
+
+    return { userId: session.user.id, role: resolved.role };
+  });
 
 const requestHeaders = Effect.map(
   HttpServerRequest.HttpServerRequest.asEffect(),
   (request): Headers => new Headers({ ...request.headers }),
 );
 
-// Resolve + authorize the caller, rendering the shared gate's denial in THIS
-// plane's error vocabulary (the HttpApi group declares these, not the users
-// plane's).
 const requireAdmin = (headers: Headers) =>
   requireInstanceAdmin(headers).pipe(
     Effect.mapError((denial) =>
@@ -48,7 +67,6 @@ const requireAdmin = (headers: Headers) =>
 const narrowRole = (role: string | undefined): InviteRole =>
   role === "admin" ? "admin" : "member";
 
-// Drop the internal audit columns (createdBy/usedBy) for the wire shape.
 const toWire = (row: InviteCodeRow): typeof InviteCodeSchema.Type => ({
   id: row.id,
   code: row.code,
@@ -65,9 +83,9 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
     .handle("listInvites", () =>
       Effect.gen(function* () {
         yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
+        const { dbClient } = yield* BetterAuth;
         const rows = yield* Effect.tryPromise({
-          try: () => listInviteCodes(client),
+          try: () => listInviteCodes(dbClient),
           catch: () => new AdminError({ message: "Failed to list invites" }),
         });
         return { invites: rows.map(toWire) };
@@ -76,13 +94,13 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
     .handle("createInvite", ({ payload }) =>
       Effect.gen(function* () {
         const member = yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
+        const { dbClient } = yield* BetterAuth;
         const days = payload.expiresInDays ?? null;
         const expiresAt =
           days && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
         const row = yield* Effect.tryPromise({
           try: () =>
-            createInviteCode(client, {
+            createInviteCode(dbClient, {
               createdBy: member.userId,
               role: narrowRole(payload.role),
               label: payload.label?.trim() ? payload.label.trim() : null,
@@ -96,9 +114,9 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
     .handle("revokeInvite", ({ params }) =>
       Effect.gen(function* () {
         yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
+        const { dbClient } = yield* BetterAuth;
         yield* Effect.tryPromise({
-          try: () => revokeInviteCode(client, params.inviteId),
+          try: () => revokeInviteCode(dbClient, params.inviteId),
           catch: () => new AdminError({ message: "Failed to revoke invite" }),
         });
         return { success: true };
@@ -106,34 +124,21 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
     ),
 );
 
-export interface SelfHostAdminApiDeps {
+export interface BetterAuthAdminApiDeps {
   readonly betterAuth: BetterAuthHandle;
-  readonly db: SelfHostDbHandle;
   readonly mountPrefix: `/${string}`;
 }
 
-/**
- * The mountable extension route layer: registers the admin routes on the
- * `mountPrefix`-prefixed view of the ambient router (so `/admin/*` is served at
- * `/api/admin/*`). Better Auth + the DB handle are app singletons, provided via
- * `provideRequest` so the handlers' per-request requirement markers are cleared
- * (a plain `Layer.provide` leaves them on the layer's requirement channel). The
- * residual platform/router requirements are cleared by the serve binding — the
- * loose `RouteExtension` channel the app's `extensions.routes` accepts.
- */
-export const makeSelfHostAdminApiLayer = ({
+export const makeBetterAuthAdminApiLayer = ({
   betterAuth,
-  db,
   mountPrefix,
-}: SelfHostAdminApiDeps) => {
+}: BetterAuthAdminApiDeps) => {
   const prefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
     Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(mountPrefix)),
   );
   return HttpApiBuilder.layer(AdminHttpApi).pipe(
     Layer.provide(AdminHandlers),
     Layer.provide(prefixedRouter),
-    HttpRouter.provideRequest(
-      Layer.mergeAll(Layer.succeed(BetterAuth)(betterAuth), Layer.succeed(SelfHostDb)(db)),
-    ),
+    HttpRouter.provideRequest(Layer.succeed(BetterAuth)(betterAuth)),
   );
 };

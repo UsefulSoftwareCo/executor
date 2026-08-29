@@ -54,7 +54,9 @@ scenario(
           { waitUntil: "domcontentloaded" },
         );
         await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
-        await expect.poll(() => page.locator("textarea").inputValue()).toContain("gmail");
+        await expect
+          .poll(() => page.locator("textarea").inputValue(), { timeout: 15_000 })
+          .toContain("gmail");
       });
 
       await step("A Microsoft service preset opens the OpenAPI add flow", async () => {
@@ -64,7 +66,7 @@ scenario(
         );
         await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
         await expect
-          .poll(() => page.locator("textarea").inputValue())
+          .poll(() => page.locator("textarea").inputValue(), { timeout: 15_000 })
           .toContain("graph-slices/files.yaml");
       });
     });

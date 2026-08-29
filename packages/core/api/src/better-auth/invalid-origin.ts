@@ -1,13 +1,5 @@
-// Better Auth rejects any request whose Origin isn't the configured webBaseUrl
-// with a bare 403 "Invalid origin". On a self-host deploy that almost always
-// means the instance's public URL wasn't detected or configured — so we replace
-// that dead-end with a message naming the exact fix (the URL to set). The error
-// `code` is preserved so programmatic clients are unaffected; only the
-// human-facing `message` changes.
-
 const INVALID_ORIGIN = /invalid origin/i;
 
-/** The origin a request came from: the browser `Origin`, else the proxy host. */
 export const originOf = (request: Request): string | null => {
   const explicit = request.headers.get("origin");
   if (explicit) return explicit;
@@ -17,7 +9,6 @@ export const originOf = (request: Request): string | null => {
   return `${proto}://${host}`;
 };
 
-/** Actionable replacement for "Invalid origin". */
 export const invalidOriginHelp = (requestOrigin: string | null, webBaseUrl: string): string =>
   requestOrigin
     ? `This Executor instance is configured for ${webBaseUrl}, but you're connecting from ${requestOrigin}. ` +
@@ -27,11 +18,6 @@ export const invalidOriginHelp = (requestOrigin: string | null, webBaseUrl: stri
     : `This Executor instance is configured for ${webBaseUrl}. If you're reaching it at a different address, ` +
       `set EXECUTOR_WEB_BASE_URL to that canonical address or add the alias to EXECUTOR_TRUSTED_ORIGINS, then restart the server.`;
 
-/**
- * If `response` is Better Auth's 403 "Invalid origin", return a friendlier copy
- * with the same status + `code` but an actionable message. Otherwise null — the
- * caller passes the original response through untouched.
- */
 export const rewriteInvalidOrigin = async (
   request: Request,
   response: Response,

@@ -56,9 +56,21 @@ export interface CloudflareEnv {
    * behind Access, or the instance is wide open.
    */
   readonly ENABLE_DEV_AUTH?: string;
+  /** Better Auth variables */
+  readonly AUTH_MODE?: string;
+  readonly BETTER_AUTH_SECRET?: string;
+  readonly AUTH_SECRET?: string;
+  readonly EXECUTOR_BOOTSTRAP_ADMIN_EMAIL?: string;
+  readonly EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD?: string;
+  readonly EXECUTOR_BOOTSTRAP_ADMIN_NAME?: string;
 }
 
 export interface CloudflareConfig {
+  readonly authMode: "access" | "builtin";
+  readonly betterAuthSecret?: string;
+  readonly bootstrapAdminEmail?: string;
+  readonly bootstrapAdminPassword?: string;
+  readonly bootstrapAdminName?: string;
   readonly accessTeamDomain: string;
   readonly accessAud: string;
   readonly accessNameClaim: string;
@@ -137,14 +149,30 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
       "EXECUTOR_SECRET_KEY must be set (wrangler secret put EXECUTOR_SECRET_KEY) — it encrypts stored secrets at rest in D1",
     );
   }
-  const enableDevAuth = env.ENABLE_DEV_AUTH === "true";
-  const accessTeamDomain = normalizeAccessTeamDomain(env.ACCESS_TEAM_DOMAIN);
-  const accessAud = (env.ACCESS_AUD ?? "").trim();
-  const missingAccessVars = missingCloudflareAccessVars(env);
-  if (missingAccessVars.length > 0) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: production must fail closed without a valid Access verifier
-    throw new Error(cloudflareAccessConfigErrorMessage(missingAccessVars));
+  const rawAuthMode = (env.AUTH_MODE ?? "access").toLowerCase();
+  const authMode: "access" | "builtin" = rawAuthMode === "builtin" ? "builtin" : "access";
+
+  const betterAuthSecret = (env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET)?.trim();
+  if (authMode === "builtin" && (!betterAuthSecret || betterAuthSecret.length < 32)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: Better Auth requires a secure secret to boot
+    throw new Error(
+      "BETTER_AUTH_SECRET (or AUTH_SECRET) must be set and be at least 32 characters long when AUTH_MODE=builtin",
+    );
   }
+
+  const enableDevAuth = authMode === "access" && env.ENABLE_DEV_AUTH === "true";
+  const accessTeamDomain =
+    authMode === "access" ? normalizeAccessTeamDomain(env.ACCESS_TEAM_DOMAIN) : "";
+  const accessAud = authMode === "access" ? (env.ACCESS_AUD ?? "").trim() : "";
+
+  if (authMode === "access") {
+    const missingAccessVars = missingCloudflareAccessVars(env);
+    if (missingAccessVars.length > 0) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: production must fail closed without a valid Access verifier
+      throw new Error(cloudflareAccessConfigErrorMessage(missingAccessVars));
+    }
+  }
+
   const webBaseUrl = resolvePublicOrigin({ explicit: env.VITE_PUBLIC_SITE_URL, env: {} });
   if (!webBaseUrl && !enableDevAuth && !warnedNoCloudflareOrigin) {
     warnedNoCloudflareOrigin = true;
@@ -156,6 +184,11 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     );
   }
   return {
+    authMode,
+    betterAuthSecret,
+    bootstrapAdminEmail: env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
+    bootstrapAdminPassword: env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
+    bootstrapAdminName: env.EXECUTOR_BOOTSTRAP_ADMIN_NAME,
     accessTeamDomain,
     accessAud,
     accessNameClaim: env.ACCESS_NAME_CLAIM ?? "name",
