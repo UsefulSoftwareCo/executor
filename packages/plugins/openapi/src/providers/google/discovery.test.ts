@@ -1093,6 +1093,130 @@ it.effect("filters Gmail operations to the explicitly selected consent scope", (
   }),
 );
 
+it.effect("publishes only Google Analytics operations covered by read-only consent", () =>
+  Effect.gen(function* () {
+    const readOnlyScope = "https://www.googleapis.com/auth/analytics.readonly";
+    const analyticsScope = "https://www.googleapis.com/auth/analytics";
+    const editScope = "https://www.googleapis.com/auth/analytics.edit";
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://analyticsadmin.googleapis.com/$discovery/rest?version=v1beta",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "analyticsadmin",
+            version: "v1beta",
+            title: "Google Analytics Admin API",
+            rootUrl: "https://analyticsadmin.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  [readOnlyScope]: { description: "Read Analytics configuration" },
+                  [editScope]: { description: "Edit Analytics configuration" },
+                },
+              },
+            },
+            resources: {
+              accounts: {
+                methods: {
+                  list: {
+                    id: "analyticsadmin.accounts.list",
+                    httpMethod: "GET",
+                    path: "v1beta/accounts",
+                    scopes: [editScope, readOnlyScope],
+                  },
+                  patch: {
+                    id: "analyticsadmin.accounts.patch",
+                    httpMethod: "PATCH",
+                    path: "v1beta/{+name}",
+                    scopes: [editScope],
+                    parameters: {
+                      name: {
+                        location: "path",
+                        required: true,
+                        type: "string",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {},
+          }),
+        },
+        {
+          discoveryUrl: "https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "analyticsdata",
+            version: "v1beta",
+            title: "Google Analytics Data API",
+            rootUrl: "https://analyticsdata.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  [readOnlyScope]: { description: "Read Analytics reports" },
+                  [analyticsScope]: { description: "Manage Analytics data" },
+                },
+              },
+            },
+            resources: {
+              properties: {
+                methods: {
+                  runReport: {
+                    id: "analyticsdata.properties.runReport",
+                    httpMethod: "POST",
+                    path: "v1beta/{+property}:runReport",
+                    scopes: [analyticsScope, readOnlyScope],
+                    parameters: {
+                      property: {
+                        location: "path",
+                        required: true,
+                        type: "string",
+                      },
+                    },
+                  },
+                },
+                resources: {
+                  audienceExports: {
+                    methods: {
+                      create: {
+                        id: "analyticsdata.properties.audienceExports.create",
+                        httpMethod: "POST",
+                        path: "v1beta/{+parent}/audienceExports",
+                        scopes: [analyticsScope, readOnlyScope],
+                        parameters: {
+                          parent: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {},
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operationIds = Object.values(spec.paths).flatMap((path) =>
+      Object.values(path).map((operation) => operation.operationId),
+    );
+    expect(operationIds).toContain("analyticsadmin.accounts.list");
+    expect(operationIds).not.toContain("analyticsadmin.accounts.patch");
+    expect(operationIds).toContain("analyticsdata.properties.runReport");
+    expect(operationIds).toContain("analyticsdata.properties.audienceExports.create");
+  }),
+);
+
 it.effect("keeps consumer Gmail settings tools alongside full mailbox access", () =>
   Effect.gen(function* () {
     const fullScope = "https://mail.google.com/";
