@@ -1,4 +1,4 @@
-import { type Plugin } from "@executor-js/sdk";
+import { type Plugin } from "@executor-js/sdk/core";
 
 import {
   fileSecretsPlugin as fileSecretsPluginEffect,
@@ -9,7 +9,7 @@ import {
 export type { FileSecretsPluginConfig } from "./index";
 
 // Explicit return type so the emitted dist/promise.d.ts references
-// `import("@executor-js/sdk").Plugin` rather than the Promise-surface
+// `import("@executor-js/sdk/core").Plugin` rather than the Promise-surface
 // root specifier (which doesn't re-export Plugin).
 export const fileSecretsPlugin = (
   config?: FileSecretsPluginConfig,

@@ -2497,8 +2497,13 @@ describe("agent read revalidation (coreTools connections.list)", () => {
   it.effect("concurrent lists past the freshness gate collapse to one probe", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
+      // Completed on probe entry, AFTER `counters.probes` has been bumped:
+      // awaiting it is the explicit "a probe has started" ordering point (a
+      // wall-clock sleep is a timing assumption that loses under suite load).
+      const entered = yield* Deferred.make<void>();
       const { executor, counters, stamp, persisted } = yield* makeHealthHarness({
-        probe: Deferred.await(gate).pipe(
+        probe: Deferred.succeed(entered, void 0).pipe(
+          Effect.andThen(Deferred.await(gate)),
           Effect.map(() => ({
             status: "healthy" as const,
             checkedAt: Date.now(),
@@ -2516,11 +2521,12 @@ describe("agent read revalidation (coreTools connections.list)", () => {
           { concurrency: "unbounded" },
         ),
       );
-      // The probe is held open by the gate, so NOTHING has been persisted yet:
-      // every one of the five lists must pass the freshness check and reach
-      // the probe path. Give them real time to get there — the counter then
-      // says how many probes actually started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until the first probe has provably started. The gate still holds
+      // it open, so NOTHING has been persisted: every list that runs must pass
+      // the freshness check into the probe path, and the in-flight gate must
+      // keep the count at one — any duplicate a later list starts is caught by
+      // the final count below.
+      yield* Deferred.await(entered);
       expect(counters.probes).toBe(1);
 
       yield* Deferred.succeed(gate, void 0);
@@ -3020,6 +3026,12 @@ describe("credential-only health path", () => {
   it.effect("concurrent checks collapse to one credential resolution", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
+      // Completed by the provider on entry, AFTER the resolve counter has
+      // been bumped: awaiting it is the explicit "a resolution has started"
+      // ordering point. A wall-clock sleep here is a timing assumption — under
+      // parallel suite load the forked checks may not have finished their row
+      // loads yet, and the counter reads 0.
+      const entered = yield* Deferred.make<void>();
       const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
       // No declared probe spec + an OAuth client on the row routes checkHealth
       // down the credential-only path: the verdict is "the credential
@@ -3027,7 +3039,9 @@ describe("credential-only health path", () => {
       // behind the same in-flight gate as probing, so concurrent checks must
       // collapse to ONE resolution.
       yield* stamp({ oauth_client: "acme", expires_at: null });
-      hooks.onResolve = Deferred.await(gate);
+      hooks.onResolve = Deferred.succeed(entered, void 0).pipe(
+        Effect.andThen(Deferred.await(gate)),
+      );
       counters.resolves = 0;
       const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
 
@@ -3036,10 +3050,12 @@ describe("credential-only health path", () => {
           concurrency: "unbounded",
         }),
       );
-      // The resolution is held open by the gate, so nothing has been
-      // persisted: both checks must reach the credential path. Give them real
-      // time to get there — the counter then says how many resolutions started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until the first resolution has provably entered the provider.
+      // The gate still holds it open, so nothing has been persisted: while it
+      // holds, the in-flight gate must keep the count at exactly one — and any
+      // duplicate the second check ever starts is caught by the final count
+      // below.
+      yield* Deferred.await(entered);
       expect(counters.resolves).toBe(1);
 
       yield* Deferred.succeed(gate, void 0);
@@ -3099,6 +3115,11 @@ describe("health probe gate key integrity", () => {
     Effect.gen(function* () {
       const counters = { probes: 0 };
       const gate = yield* Deferred.make<void>();
+      // Completed by the probe that brings the count to two: awaiting it is
+      // the explicit "both probes started" ordering point. A collided gate
+      // never completes it (the second check joins the first probe's Deferred
+      // instead of starting its own), which fails the test by timeout.
+      const bothEntered = yield* Deferred.make<void>();
       // Every probe increments the shared counter and then parks on the gate,
       // so both checks are provably in flight at once: nothing is persisted,
       // and a collided gate would let the second check join the first probe's
@@ -3114,7 +3135,10 @@ describe("health probe gate key integrity", () => {
         checkHealth: () =>
           Effect.suspend(() => {
             counters.probes += 1;
-            return Deferred.await(gate).pipe(
+            const arrived =
+              counters.probes >= 2 ? Deferred.succeed(bothEntered, void 0) : Effect.void;
+            return arrived.pipe(
+              Effect.andThen(Deferred.await(gate)),
               Effect.map(() => ({
                 status: "healthy" as const,
                 checkedAt: Date.now(),
@@ -3154,9 +3178,10 @@ describe("health probe gate key integrity", () => {
 
       const checkA = yield* Effect.forkChild(executorA.connections.checkHealth(ref));
       const checkB = yield* Effect.forkChild(executorB.connections.checkHealth(ref));
-      // Give both fibers real time to reach the probe path while the gate
-      // holds every probe open; the counter then says how many started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until both probes have provably started; the gate holds every
+      // probe open, so both checks are in flight at once and nothing has been
+      // persisted.
+      yield* Deferred.await(bothEntered);
       expect(counters.probes).toBe(2);
 
       yield* Deferred.succeed(gate, void 0);
