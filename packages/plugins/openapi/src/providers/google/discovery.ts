@@ -343,6 +343,25 @@ export const isGoogleDiscoveryUrl = (url: string): boolean => {
   return normalizeGoogleDiscoveryUrl(url) !== null;
 };
 
+/** The service's own Discovery endpoint, for a URL that named it. Normalization
+ *  canonicalizes most services onto the central directory, which is right for
+ *  identity but NOT universally fetchable: services outside the directory
+ *  (Google Ads) answer only on their own host. */
+const serviceHostedDiscoveryUrl = (discoveryUrl: string): string | null => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() rejects malformed input
+  try {
+    const parsed = new URL(discoveryUrl.trim());
+    const host = parsed.hostname.toLowerCase();
+    if (host === "www.googleapis.com" || !host.endsWith(".googleapis.com")) return null;
+    if (!["/$discovery/rest", "/$discovery/rest/"].includes(parsed.pathname)) return null;
+    const version = parsed.searchParams.get("version")?.trim();
+    if (!version || !DISCOVERY_VERSION_RE.test(version)) return null;
+    return `https://${host}/$discovery/rest?version=${version}`;
+  } catch {
+    return null;
+  }
+};
+
 export const fetchGoogleDiscoveryDocument = Effect.fn("OpenApi.fetchGoogleDiscoveryDocument")(
   function* (discoveryUrl: string, credentials?: SpecFetchCredentials) {
     const normalizedDiscoveryUrl = normalizeGoogleDiscoveryUrl(discoveryUrl);
@@ -353,35 +372,50 @@ export const fetchGoogleDiscoveryDocument = Effect.fn("OpenApi.fetchGoogleDiscov
       });
     }
     const client = yield* HttpClient.HttpClient;
-    const requestUrl = new URL(normalizedDiscoveryUrl);
-    for (const [name, value] of Object.entries(credentials?.queryParams ?? {})) {
-      requestUrl.searchParams.set(name, value);
-    }
-    let request = HttpClientRequest.get(requestUrl.toString()).pipe(
-      HttpClientRequest.setHeader("Accept", "application/json, */*"),
-    );
-    for (const [name, value] of Object.entries(credentials?.headers ?? {})) {
-      request = HttpClientRequest.setHeader(request, name, value);
-    }
-    const response = yield* client.execute(request).pipe(
-      Effect.mapError(
-        () =>
-          new OpenApiParseError({
-            message: "Failed to fetch Google Discovery document",
-          }),
-      ),
-    );
-    if (response.status < 200 || response.status >= 300) {
-      return yield* new OpenApiParseError({
-        message: `Failed to fetch Google Discovery document: HTTP ${response.status}`,
+
+    const attempt = (target: string) =>
+      Effect.gen(function* () {
+        const requestUrl = new URL(target);
+        for (const [name, value] of Object.entries(credentials?.queryParams ?? {})) {
+          requestUrl.searchParams.set(name, value);
+        }
+        let request = HttpClientRequest.get(requestUrl.toString()).pipe(
+          HttpClientRequest.setHeader("Accept", "application/json, */*"),
+        );
+        for (const [name, value] of Object.entries(credentials?.headers ?? {})) {
+          request = HttpClientRequest.setHeader(request, name, value);
+        }
+        const response = yield* client
+          .execute(request)
+          .pipe(
+            Effect.mapError(
+              () => new OpenApiParseError({ message: "Failed to fetch Google Discovery document" }),
+            ),
+          );
+        if (response.status < 200 || response.status >= 300) {
+          return yield* new OpenApiParseError({
+            message: `Failed to fetch Google Discovery document: HTTP ${response.status}`,
+          });
+        }
+        return yield* response.text.pipe(
+          Effect.mapError(
+            () =>
+              new OpenApiParseError({ message: "Failed to read Google Discovery document body" }),
+          ),
+        );
       });
-    }
-    return yield* response.text.pipe(
-      Effect.mapError(
-        () =>
-          new OpenApiParseError({
-            message: "Failed to read Google Discovery document body",
-          }),
+
+    // Normalization maps a service-hosted URL onto the central directory for a
+    // STABLE IDENTITY, but the directory does not list every service — Google
+    // Ads answers only on googleads.googleapis.com, so the canonical form 404s
+    // for a URL the user pasted that works. Fall back to the host they named
+    // rather than maintaining an allowlist of every such service forever.
+    const serviceHosted = serviceHostedDiscoveryUrl(discoveryUrl);
+    return yield* attempt(normalizedDiscoveryUrl).pipe(
+      Effect.catch((error) =>
+        serviceHosted && serviceHosted !== normalizedDiscoveryUrl
+          ? attempt(serviceHosted)
+          : Effect.fail(error),
       ),
     );
   },
