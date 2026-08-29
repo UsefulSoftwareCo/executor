@@ -28,6 +28,8 @@ import * as cloudSchema from "./schema";
 import * as executorSchema from "./executor-schema";
 import { memberships, accounts } from "./schema";
 import {
+  access_group,
+  access_group_member,
   artifact,
   blob,
   connection,
@@ -158,6 +160,20 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     subject: "s",
   });
 
+  await db.insert(access_group).values({
+    id: `grp-${tag}`,
+    name: "finance",
+    created_at: now,
+    updated_at: now,
+    tenant,
+  });
+  await db.insert(access_group_member).values({
+    group_id: `grp-${tag}`,
+    subject: "s",
+    created_at: now,
+    tenant,
+  });
+
   const orgNs = `o:${tenant}/plugin`;
   const userNs = `u:${tenant}:subject/plugin`;
   await db.insert(blob).values({
@@ -185,6 +201,8 @@ const TENANT_TABLES = [
   plugin_storage,
   subject,
   artifact,
+  access_group,
+  access_group_member,
 ] as const;
 
 // Tables that are NOT purged by org id, each with the reason it is exempt. Any

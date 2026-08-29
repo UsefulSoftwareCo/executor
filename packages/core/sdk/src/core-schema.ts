@@ -197,6 +197,36 @@ export const coreTables = defineTables({
     ["tenant", "external_id"],
   ),
 
+  // A named audience of org members ("finance-leads"). Tenant-scoped like
+  // `subject`: groups are org-level objects, not per-owner rows, and the
+  // admin plane needs to read them tenant-wide with zero policy changes.
+  // Referential integrity with `connection.access_group` is a service-layer
+  // concern (this schema has no FK machinery): group deletion is rejected
+  // while any connection references the group.
+  access_group: tenantExecutorTable(
+    "access_group",
+    {
+      id: keyColumn("id"),
+      name: textColumn("name"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "id"],
+  ),
+
+  // Group membership — one row per (group, subject). `subject` is the same
+  // host-auth principal id the owned tables partition by (`subject.external_id`).
+  // Manual rosters only: a future directory-sync job writes here additively.
+  access_group_member: tenantExecutorTable(
+    "access_group_member",
+    {
+      group_id: keyColumn("group_id"),
+      subject: keyColumn("subject"),
+      created_at: dateColumn("created_at"),
+    },
+    ["tenant", "group_id", "subject"],
+  ),
+
   // THE saved credential, one per (owner, integration, name). Resolves each named
   // input via `provider` + the `item_ids` map (variable → provider item id). A
   // single-secret connection is `{ "token": <id> }`; an apiKey method with two
@@ -237,6 +267,12 @@ export const coreTables = defineTables({
       // callback). Null means refresh uses the oauth_client's `token_url`.
       oauth_token_url: nullableTextColumn("oauth_token_url"),
       provider_state: nullableJsonColumn("provider_state"),
+      // Access-group restriction: the `access_group.id` whose members may see
+      // and invoke this connection; null = unrestricted (every org member, the
+      // pre-existing semantics). Only meaningful on org-owned rows — the
+      // service layer rejects restricting a personal connection. Nullable is
+      // load-bearing: SQLite boot-ensure hosts cannot add NOT NULL columns.
+      access_group: nullableKeyColumn("access_group"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -432,6 +468,8 @@ export type CoreSchema = typeof coreTables;
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
 export type SubjectRow = FumaRow<CoreSchema["subject"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
+export type AccessGroupRow = FumaRow<CoreSchema["access_group"]>;
+export type AccessGroupMemberRow = FumaRow<CoreSchema["access_group_member"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
 export type ToolRow = FumaRow<CoreSchema["tool"]>;

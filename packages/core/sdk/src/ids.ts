@@ -59,6 +59,10 @@ export type ElicitationId = typeof ElicitationId.Type;
 export const PolicyId = Schema.String.pipe(Schema.brand("PolicyId"));
 export type PolicyId = typeof PolicyId.Type;
 
+/** An access group's id, unique within its tenant. */
+export const AccessGroupId = Schema.String.pipe(Schema.brand("AccessGroupId"));
+export type AccessGroupId = typeof AccessGroupId.Type;
+
 /** A saved generative-UI artifact's id, unique within its owner partition. */
 export const ArtifactId = Schema.String.pipe(Schema.brand("ArtifactId"));
 export type ArtifactId = typeof ArtifactId.Type;

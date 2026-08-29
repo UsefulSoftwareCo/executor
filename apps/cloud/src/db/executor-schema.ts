@@ -49,6 +49,39 @@ export const subject = pgTable(
   (table) => [uniqueIndex("subject_uidx").on(table.tenant, table.external_id)],
 );
 
+export const access_group = pgTable(
+  "access_group",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    name: text("name").notNull(),
+    created_at: timestamp("created_at").notNull(),
+    updated_at: timestamp("updated_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("access_group_uidx").on(table.tenant, table.id)],
+);
+
+export const access_group_member = pgTable(
+  "access_group_member",
+  {
+    group_id: varchar("group_id", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+    created_at: timestamp("created_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("access_group_member_uidx").on(table.tenant, table.group_id, table.subject),
+  ],
+);
+
 export const connection = pgTable(
   "connection",
   {
@@ -68,6 +101,7 @@ export const connection = pgTable(
     oauth_scope: text("oauth_scope"),
     oauth_token_url: text("oauth_token_url"),
     provider_state: json("provider_state"),
+    access_group: varchar("access_group", { length: 255 }),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })

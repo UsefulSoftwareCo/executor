@@ -26,6 +26,13 @@ const ToolkitRecord = Schema.Struct({
   id: Schema.String,
   slug: Schema.String,
   name: Schema.String,
+  // Access-group grant: when set, the toolkit exists ONLY for members of
+  // that group — its slug resolves to nothing (session block-all) and its
+  // CRUD reads answer not-found, the same restricted-is-invisible rule core
+  // applies to connections. Absent/null = unrestricted (every pre-existing
+  // record). Managed exclusively through `setAccessGroup` on the extension,
+  // which hosts expose behind their admin planes.
+  accessGroup: Schema.optional(Schema.NullOr(Schema.String)),
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
@@ -231,36 +238,106 @@ const makeToolkitStorage = (pluginStorage: PluginStorageFacade): ToolkitStorage 
 const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
   const storage = ctx.storage;
 
-  const list = () =>
-    storage.toolkits
-      .query({ orderBy: [{ field: "name" }] })
-      .pipe(
-        Effect.map((entries) =>
-          entries
-            .map(toolkitToResponse)
-            .sort(
-              (a, b) =>
-                (a.owner === b.owner ? 0 : a.owner === "org" ? -1 : 1) ||
-                a.name.localeCompare(b.name) ||
-                a.slug.localeCompare(b.slug),
+  // Access-group grant: a toolkit restricted to a group the caller is not in
+  // does not exist for them — its slug resolves to nothing (the session's
+  // policy provider then blocks everything, same as an unknown slug) and its
+  // CRUD reads answer "Toolkit not found." — the restricted-is-invisible
+  // rule core applies to connections, with the same no-oracle discipline.
+  // Membership is read live per call via the core seam.
+  const toolkitVisible = (
+    record: Pick<ToolkitRecord, "accessGroup">,
+  ): Effect.Effect<boolean, StorageFailure> =>
+    record.accessGroup == null
+      ? Effect.succeed(true)
+      : ctx.core.accessGroups
+          .visibleGroupIds()
+          .pipe(Effect.map((groups) => groups === null || groups.has(String(record.accessGroup))));
+
+  const filterVisibleToolkits = <T extends { readonly data: ToolkitRecord }>(
+    entries: readonly T[],
+  ): Effect.Effect<readonly T[], StorageFailure> =>
+    entries.some((entry) => entry.data.accessGroup != null)
+      ? ctx.core.accessGroups
+          .visibleGroupIds()
+          .pipe(
+            Effect.map((groups) =>
+              groups === null
+                ? entries
+                : entries.filter(
+                    (entry) =>
+                      entry.data.accessGroup == null || groups.has(String(entry.data.accessGroup)),
+                  ),
             ),
-        ),
-      );
+          )
+      : Effect.succeed(entries);
+
+  const list = () =>
+    storage.toolkits.query({ orderBy: [{ field: "name" }] }).pipe(
+      Effect.flatMap(filterVisibleToolkits),
+      Effect.map((entries) =>
+        entries
+          .map(toolkitToResponse)
+          .sort(
+            (a, b) =>
+              (a.owner === b.owner ? 0 : a.owner === "org" ? -1 : 1) ||
+              a.name.localeCompare(b.name) ||
+              a.slug.localeCompare(b.slug),
+          ),
+      ),
+    );
 
   const getEntry = (toolkitId: string) => storage.toolkits.get({ key: toolkitId });
 
   const getBySlugEntry = (slug: string) =>
-    storage.toolkits
-      .query({ where: { slug } })
-      .pipe(
-        Effect.map(
-          (entries) => entries.find((entry) => entry.owner === "org") ?? entries[0] ?? null,
-        ),
-      );
+    Effect.gen(function* () {
+      const entries = yield* storage.toolkits.query({ where: { slug } });
+      const entry = entries.find((candidate) => candidate.owner === "org") ?? entries[0] ?? null;
+      if (!entry) return null;
+      return (yield* toolkitVisible(entry.data)) ? entry : null;
+    });
 
   const requireToolkit = (toolkitId: string) =>
-    getEntry(toolkitId).pipe(
-      Effect.flatMap((entry) => (entry ? Effect.succeed(entry) : fail("Toolkit not found."))),
+    Effect.gen(function* () {
+      const entry = yield* getEntry(toolkitId);
+      if (entry && (yield* toolkitVisible(entry.data))) return entry;
+      // Hidden ≡ nonexistent: the same failure a missing id produces.
+      return yield* fail("Toolkit not found.");
+    });
+
+  // ------------------------------------------------------------------
+  // Access-group management — called by the host ADMIN planes only (not on
+  // the member-facing ToolkitsApi routes). Deliberately reads the RAW entry:
+  // an admin must be able to grant/ungrant a toolkit they are not themselves
+  // a member of; their runtime view stays filtered like everyone's.
+  // ------------------------------------------------------------------
+
+  const setAccessGroup = (toolkitId: string, accessGroup: string | null) =>
+    Effect.gen(function* () {
+      const entry = yield* getEntry(toolkitId);
+      if (!entry) return yield* fail("Toolkit not found.");
+      if (entry.owner !== "org") {
+        // A personal toolkit is already invisible to everyone else;
+        // restricting one is a category error, mirroring connections.
+        return yield* fail("Only org-owned toolkits can be restricted.");
+      }
+      yield* storage.toolkits.put({
+        owner: entry.owner,
+        key: toolkitId,
+        data: { ...entry.data, accessGroup, updatedAt: Date.now() },
+      });
+    });
+
+  const listRestrictedToolkits = () =>
+    storage.toolkits.query({}).pipe(
+      Effect.map((entries) =>
+        entries
+          .filter((entry) => entry.data.accessGroup != null)
+          .map((entry) => ({
+            toolkitId: entry.data.id,
+            slug: entry.data.slug,
+            group: String(entry.data.accessGroup),
+          })),
+      ),
     );
 
   const assertSlugAvailable = (slug: string, ignoreToolkitId?: string) =>
@@ -433,8 +510,45 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       yield* storage.policies.remove({ owner: toolkit.owner, key: policyId });
     });
 
+  // Access-group visibility: a toolkit's connection patterns can name org
+  // connections restricted to a group the caller is not in, and for that
+  // caller the connection must not exist — the pattern text itself would be
+  // an existence oracle. A literal `<integration>.org.<connection>` prefix
+  // that doesn't resolve through the (already group-gated) connections list
+  // is dropped from the LIST response. Wildcarded segments and `user`-owner
+  // patterns pass: they carry no one org connection's identity (user
+  // patterns resolve per-viewer). Enforcement itself lives in core — a
+  // hidden connection's tools never list or invoke through a toolkit
+  // session — so this filter is display hygiene, not the boundary.
+  const literalOrgPatternKey = (pattern: string): string | null => {
+    const [integration, owner, connection] = pattern.split(".");
+    if (!integration || !connection || owner !== "org") return null;
+    if (integration === "*" || connection === "*") return null;
+    return `${integration}.${connection}`;
+  };
+
+  const filterVisibleConnectionPatterns = (
+    records: readonly ToolkitConnectionRecord[],
+  ): Effect.Effect<readonly ToolkitConnectionRecord[], StorageFailure> =>
+    Effect.gen(function* () {
+      if (!records.some((record) => literalOrgPatternKey(record.pattern) !== null)) {
+        return records;
+      }
+      const visible = yield* ctx.connections.list({ owner: "org" });
+      const visibleKeys = new Set(
+        visible.map((connection) => `${connection.integration}.${connection.name}`),
+      );
+      return records.filter((record) => {
+        const key = literalOrgPatternKey(record.pattern);
+        return key === null || visibleKeys.has(key);
+      });
+    });
+
   const listConnections = (toolkitId: string) =>
-    requireToolkit(toolkitId).pipe(Effect.flatMap(() => listConnectionsForRecord(toolkitId)));
+    requireToolkit(toolkitId).pipe(
+      Effect.flatMap(() => listConnectionsForRecord(toolkitId)),
+      Effect.flatMap(filterVisibleConnectionPatterns),
+    );
 
   const createConnection = (
     toolkitId: string,
@@ -561,6 +675,8 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
     policyRulesForSlug,
     resolvePolicyForSlug,
     preparePolicyResolverForSlug,
+    setAccessGroup,
+    listRestrictedToolkits,
   };
 };
 
