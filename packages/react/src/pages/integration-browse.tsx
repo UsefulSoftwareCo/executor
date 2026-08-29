@@ -19,6 +19,7 @@ import { Button } from "../components/button";
 import { Input } from "../components/input";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
+import { cn } from "../lib/utils";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import {
   availableCatalogKinds,
@@ -233,7 +234,7 @@ function ResultCard(props: { readonly row: Row }) {
   return (
     <div
       data-testid={row.testId}
-      className="flex flex-col gap-2.5 rounded-lg border border-border/60 p-4 transition-colors hover:border-border hover:bg-accent/20"
+      className="flex min-h-[8.5rem] flex-col gap-2.5 rounded-lg border border-border/60 p-4 transition-colors hover:border-border hover:bg-accent/20"
     >
       <div className="flex items-start justify-between gap-2">
         <span className="flex size-8 shrink-0 items-center justify-center">
@@ -320,9 +321,13 @@ export function IntegrationBrowsePage() {
   const [resolvingDomain, setResolvingDomain] = useState<string | null>(null);
 
   const isUrl = looksLikeUrl(query);
-  // A URL is a destination, not a filter: stop narrowing the lists so the
-  // detect action is the only thing the input is offering.
-  const listQuery = isUrl ? "" : query;
+  // A URL is a destination, not a filter — but half-typed URLs pass through
+  // here on every keystroke ("stripe.co" parses as one), and swapping the
+  // grid back to the browse head mid-typing made the whole page jump. Freeze
+  // the list on the last real query instead; the detect hint is what changes.
+  const lastTextQuery = useRef("");
+  if (!isUrl) lastTextQuery.current = query;
+  const listQuery = isUrl ? lastTextQuery.current : query;
   const text = listQuery.trim().toLowerCase();
 
   const availableKinds = useMemo(
@@ -715,7 +720,15 @@ export function IntegrationBrowsePage() {
             : "Nothing matches that. Paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."}
         </p>
       ) : (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div
+          className={cn(
+            "grid grid-cols-1 gap-2 transition-opacity duration-150 sm:grid-cols-2 lg:grid-cols-3",
+            // Stale results stay up while the next query loads (no empty
+            // flash), but dimmed — a wholesale swap with no signal read as
+            // the page jumping.
+            catalog.loading && "opacity-40",
+          )}
+        >
           {results.map((row) => (
             <ResultCard key={row.key} row={row} />
           ))}

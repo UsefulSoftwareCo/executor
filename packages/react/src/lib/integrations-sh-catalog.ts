@@ -342,7 +342,7 @@ export const filterCatalogEntries = (
 // Hook — debounced search with an in-session response cache
 // ---------------------------------------------------------------------------
 
-const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 150;
 /** Free-text queries wait for a second character; a browse (empty query) does
  *  not, because there is nothing to narrow. */
 const MIN_QUERY_LENGTH = 2;
