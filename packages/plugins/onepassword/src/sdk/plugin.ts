@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Cache, Data, Duration, Effect, Exit, Schema } from "effect";
 
 import {
   definePlugin,
@@ -37,6 +37,17 @@ import { makeOnePasswordService, type ResolvedAuth, type OnePasswordService } fr
 
 const CREDENTIAL_FIELD = "credential";
 const DEFAULT_TIMEOUT_MS = 15_000;
+// How long a resolved secret may be served from memory before 1Password is
+// asked again. Every 1Password read is at least one `op` spawn or SDK IPC
+// round trip (~1s with desktop-app auth), and the executor resolves the
+// connection's credential on every tool call — uncached, a 1Password-backed
+// connection multiplied each call's latency several times over. One minute
+// keeps a revoked or rotated item's window small while collapsing an agent's
+// call burst onto a single backend read. This cache is deliberately scoped to
+// this plugin; other credential providers stay uncached.
+const DEFAULT_SECRET_CACHE_TTL_MS = 60_000;
+const SECRET_CACHE_CAPACITY = 256;
+const SERVICE_CACHE_CAPACITY = 16;
 const CONFIG_KEY = "config";
 const PROVIDER_KEY = ProviderKey.make("onepassword");
 
@@ -188,12 +199,49 @@ const resolveAuth = (auth: OnePasswordAuth): ResolvedAuth =>
     ? { kind: "desktop-app", accountName: auth.accountName }
     : { kind: "service-account", token: auth.token };
 
-/** One service per account: each account carries its own auth, so a shared
- *  client can never leak one account's credential into another's calls. */
-const serviceForAccount =
-  (timeoutMs: number, preferSdk: boolean | undefined) =>
-  (account: OnePasswordAccount): Effect.Effect<OnePasswordService, OnePasswordError> =>
-    makeOnePasswordService(resolveAuth(account.auth), { timeoutMs, preferSdk });
+/** Cache keys with structural equality (`Data.Class`), one per auth shape so
+ *  the two kinds can never collide. Every account row carrying the same
+ *  credential identity maps onto one cached service. */
+class DesktopAuthKey extends Data.Class<{ readonly accountName: string }> {}
+class ServiceAccountKey extends Data.Class<{ readonly token: string }> {}
+type AuthKey = DesktopAuthKey | ServiceAccountKey;
+
+const authKey = (auth: ResolvedAuth): AuthKey =>
+  auth.kind === "desktop-app"
+    ? new DesktopAuthKey({ accountName: auth.accountName })
+    : new ServiceAccountKey({ token: auth.token });
+
+const authFromKey = (key: AuthKey): ResolvedAuth =>
+  key instanceof DesktopAuthKey
+    ? { kind: "desktop-app", accountName: key.accountName }
+    : { kind: "service-account", token: key.token };
+
+/** One service per auth identity, memoized for the plugin instance's
+ *  lifetime. Keying by the resolved auth keeps accounts isolated (a shared
+ *  client can never leak one account's credential into another's calls) while
+ *  reusing the constructed service — and with it the SDK backend's cached
+ *  client — across calls instead of re-authenticating per resolution.
+ *  Construction failures are not retained, so a transient backend problem
+ *  does not poison the account until restart. */
+export const makeServiceForAuth = (
+  timeoutMs: number,
+  preferSdk: boolean | undefined,
+): ((auth: OnePasswordAuth) => Effect.Effect<OnePasswordService, OnePasswordError>) => {
+  const cache = Effect.runSync(
+    Cache.makeWith(
+      (key: AuthKey) => makeOnePasswordService(authFromKey(key), { timeoutMs, preferSdk }),
+      {
+        capacity: SERVICE_CACHE_CAPACITY,
+        timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+      },
+    ),
+  );
+  return (auth) => Cache.get(cache, authKey(resolveAuth(auth)));
+};
+
+type ServiceForAccount = (
+  account: OnePasswordAccount,
+) => Effect.Effect<OnePasswordService, OnePasswordError>;
 
 // ---------------------------------------------------------------------------
 // Explicit ref resolution.
@@ -360,6 +408,61 @@ export const resolveConfiguredRef = (
 };
 
 // ---------------------------------------------------------------------------
+// Cached ref resolution — the hot path.
+//
+// The executor resolves a connection's credential on EVERY tool call, and for
+// this provider each resolution is at least one `op` spawn or SDK IPC round
+// trip (~1s under desktop-app auth; a bare ref pays a per-vault item listing
+// on top). Successful resolutions are therefore served from memory for a
+// short TTL. The cache is keyed by (config fingerprint, ref): editing or
+// removing an account changes the fingerprint, which drops the whole cached
+// generation immediately — a removed account's secrets never outlive the
+// config that granted them, and no explicit invalidation wiring is needed.
+// Only `kind: "resolved"` entries get the TTL; not-found, ambiguity, and
+// failures are never retained, so a just-created item resolves on the next
+// call. Concurrent lookups for the same key share one backend read even when
+// the TTL is 0.
+// ---------------------------------------------------------------------------
+
+export type CachedRefResolver = (
+  config: OnePasswordConfig,
+  ref: string,
+) => Effect.Effect<RefResolution, OnePasswordError>;
+
+export const makeCachedRefResolver = (
+  serviceFor: ServiceForAccount,
+  ttlMs: number,
+): CachedRefResolver => {
+  // Single generation: config edits are rare and refs from an older config
+  // must not be served, so the previous generation's cache is discarded
+  // rather than kept alongside.
+  let generation: {
+    readonly fingerprint: string;
+    readonly cache: Cache.Cache<string, RefResolution, OnePasswordError>;
+  } | null = null;
+
+  return (config, ref) =>
+    Effect.suspend(() => {
+      const fingerprint = JSON.stringify(config.accounts);
+      if (generation === null || generation.fingerprint !== fingerprint) {
+        generation = {
+          fingerprint,
+          cache: Effect.runSync(
+            Cache.makeWith((key: string) => resolveConfiguredRef(config, serviceFor, key), {
+              capacity: SECRET_CACHE_CAPACITY,
+              timeToLive: (exit) =>
+                Exit.isSuccess(exit) && exit.value.kind === "resolved"
+                  ? Duration.millis(ttlMs)
+                  : Duration.zero,
+            }),
+          ),
+        };
+      }
+      return Cache.get(generation.cache, ref);
+    });
+};
+
+// ---------------------------------------------------------------------------
 // CredentialProvider — read-only, resolves op:// URIs or vault-scoped lookups.
 //
 // v2: `get(id)` receives only an opaque `ProviderItemId` — no scope. The id is
@@ -371,10 +474,9 @@ export const resolveConfiguredRef = (
 
 const makeProvider = (
   ctx: PluginCtx<OnePasswordStore>,
-  timeoutMs: number,
-  preferSdk: boolean | undefined,
+  serviceFor: ServiceForAccount,
+  resolveRef: CachedRefResolver,
 ): CredentialProvider => {
-  const serviceFor = serviceForAccount(timeoutMs, preferSdk);
   return {
     key: PROVIDER_KEY,
     writable: false,
@@ -387,7 +489,7 @@ const makeProvider = (
         Effect.flatMap((config) => {
           if (!config) return Effect.succeed(null as string | null);
 
-          return resolveConfiguredRef(config, serviceFor, id).pipe(
+          return resolveRef(config, id).pipe(
             // Backend unreachability degrades to "no value", matching the other
             // providers. Ambiguity does NOT: silently picking a vault (or
             // silently failing) hides a real conflict, so it surfaces as a
@@ -463,10 +565,9 @@ const ownerForCtx = (ctx: PluginCtx<OnePasswordStore>): Owner =>
 
 const makeOnePasswordExtension = (
   ctx: PluginCtx<OnePasswordStore>,
-  timeoutMs: number,
-  preferSdk: boolean | undefined,
+  serviceForAuth: (auth: OnePasswordAuth) => Effect.Effect<OnePasswordService, OnePasswordError>,
 ) => {
-  const serviceFor = serviceForAccount(timeoutMs, preferSdk);
+  const serviceFor: ServiceForAccount = (account) => serviceForAuth(account.auth);
 
   const accountStatus = (account: OnePasswordAccount): Effect.Effect<AccountStatus, never> =>
     serviceFor(account).pipe(
@@ -582,10 +683,7 @@ const makeOnePasswordExtension = (
 
     listVaults: (auth: OnePasswordAuth) =>
       Effect.gen(function* () {
-        const svc = yield* makeOnePasswordService(resolveAuth(auth), {
-          timeoutMs,
-          preferSdk,
-        });
+        const svc = yield* serviceForAuth(auth);
         const vaults = yield* svc.listVaults();
         return vaults
           .map((v) => Vault.make({ id: v.id, name: v.title }))
@@ -640,18 +738,32 @@ export interface OnePasswordPluginOptions {
   readonly timeoutMs?: number;
   /** Force use of the native SDK instead of the CLI (default: false) */
   readonly preferSdk?: boolean;
+  /** How long a successfully resolved secret may be served from memory
+   *  before 1Password is asked again (default: 60000). `0` disables reuse
+   *  while still collapsing concurrent resolutions of the same ref onto one
+   *  backend read. */
+  readonly secretCacheTtlMs?: number;
 }
 
 export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOptions) => {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const preferSdk = options?.preferSdk;
+  const secretCacheTtlMs = options?.secretCacheTtlMs ?? DEFAULT_SECRET_CACHE_TTL_MS;
+
+  // Shared across the extension and the credential provider so both reuse the
+  // same per-account services (and the SDK backend's cached client). The
+  // secret cache keys by config fingerprint, so sharing it across executors
+  // built from this factory cannot cross owner partitions.
+  const serviceForAuth = makeServiceForAuth(timeoutMs, preferSdk);
+  const serviceFor: ServiceForAccount = (account) => serviceForAuth(account.auth);
+  const resolveRef = makeCachedRefResolver(serviceFor, secretCacheTtlMs);
 
   return {
     id: "onepassword" as const,
     packageName: "@executor-js/plugin-onepassword",
     storage: ({ blobs }) => makeOnePasswordStore(blobs),
 
-    extension: (ctx) => makeOnePasswordExtension(ctx, timeoutMs, preferSdk),
+    extension: (ctx) => makeOnePasswordExtension(ctx, serviceForAuth),
 
     staticIntegrations: (self) => [
       {
@@ -720,7 +832,7 @@ export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOption
       },
     ],
 
-    credentialProviders: (ctx) => [makeProvider(ctx, timeoutMs, preferSdk)],
+    credentialProviders: (ctx) => [makeProvider(ctx, serviceFor, resolveRef)],
   };
   // HTTP transport (routes/handlers/extensionService) is layered on by
   // the api-aware factory in `@executor-js/plugin-onepassword/api`. Hosts

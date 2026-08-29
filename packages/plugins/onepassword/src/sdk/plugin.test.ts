@@ -1,11 +1,17 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Effect } from "effect";
+import { TestClock } from "effect/testing";
 
 import { ProviderKey, ToolAddress, createExecutor } from "@executor-js/sdk";
 import { makeInMemoryBlobStore, pluginBlobStore } from "@executor-js/sdk/core";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
-import { makeOnePasswordStore, onepasswordPlugin, resolveConfiguredRef } from "./plugin";
+import {
+  makeCachedRefResolver,
+  makeOnePasswordStore,
+  onepasswordPlugin,
+  resolveConfiguredRef,
+} from "./plugin";
 import type { OnePasswordService } from "./service";
 import { OnePasswordError } from "./errors";
 import { OnePasswordAccount, OnePasswordConfig, DesktopAppAuth } from "./types";
@@ -521,6 +527,124 @@ describe("resolveConfiguredRef", () => {
       });
       const result = yield* resolveConfiguredRef(oneAccountConfig, withItems, "missing");
       expect(result).toEqual({ kind: "not-found" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Cached ref resolution — the executor resolves a connection's credential on
+// every tool call, so successful resolutions are served from memory for a
+// short TTL instead of paying a 1Password round trip per call.
+// ---------------------------------------------------------------------------
+
+describe("makeCachedRefResolver", () => {
+  const countingBackend = () => {
+    let resolves = 0;
+    const serviceFor = (account: OnePasswordAccount) =>
+      Effect.succeed<OnePasswordService>({
+        resolveSecret: (uri) =>
+          Effect.sync(() => {
+            resolves += 1;
+            return `secret:${account.id}:${uri}`;
+          }),
+        listVaults: () => Effect.succeed([]),
+        listItems: () => Effect.succeed([]),
+      });
+    return { serviceFor, resolveCount: () => resolves };
+  };
+
+  it.effect("serves a repeated resolution from memory within the TTL", () =>
+    Effect.gen(function* () {
+      const backend = countingBackend();
+      const resolve = makeCachedRefResolver(backend.serviceFor, 60_000);
+
+      const first = yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+      const second = yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+
+      expect(first).toEqual({
+        kind: "resolved",
+        value: "secret:acct-default:op://vault-123/item-1/credential",
+      });
+      expect(second).toEqual(first);
+      expect(backend.resolveCount()).toBe(1);
+    }),
+  );
+
+  it.effect("asks the backend again once the TTL has passed", () =>
+    Effect.gen(function* () {
+      const backend = countingBackend();
+      const resolve = makeCachedRefResolver(backend.serviceFor, 60_000);
+
+      yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+      yield* TestClock.adjust("61 seconds");
+      yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+
+      expect(backend.resolveCount()).toBe(2);
+    }),
+  );
+
+  it.effect("never retains a not-found outcome", () =>
+    Effect.gen(function* () {
+      // A bare ref against empty vault listings resolves to not-found; the
+      // item may be created a moment later, so the miss must not stick.
+      const backend = countingBackend();
+      let listings = 0;
+      const serviceFor = (account: OnePasswordAccount) =>
+        backend.serviceFor(account).pipe(
+          Effect.map((service) => ({
+            ...service,
+            listItems: () =>
+              Effect.sync(() => {
+                listings += 1;
+                return [];
+              }),
+          })),
+        );
+      const resolve = makeCachedRefResolver(serviceFor, 60_000);
+
+      const first = yield* resolve(oneAccountConfig, "missing-item");
+      const second = yield* resolve(oneAccountConfig, "missing-item");
+
+      expect(first).toEqual({ kind: "not-found" });
+      expect(second).toEqual({ kind: "not-found" });
+      // Two vaults in the config, listed once per resolution.
+      expect(listings).toBe(4);
+    }),
+  );
+
+  it.effect("drops every cached secret the moment the config changes", () =>
+    Effect.gen(function* () {
+      const backend = countingBackend();
+      const resolve = makeCachedRefResolver(backend.serviceFor, 60_000);
+
+      yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+      // Same ref, edited config (one vault removed): a removed account or
+      // vault must not keep serving secrets it used to grant.
+      const edited = OnePasswordConfig.make({
+        accounts: [
+          OnePasswordAccount.make({
+            id: "acct-default",
+            name: "1Password",
+            auth: desktopAuth,
+            vaults: [{ id: "vault-123", name: "Personal" }],
+          }),
+        ],
+      });
+      yield* resolve(edited, "op://vault-123/item-1/credential");
+
+      expect(backend.resolveCount()).toBe(2);
+    }),
+  );
+
+  it.effect("with a zero TTL every sequential resolution reaches the backend", () =>
+    Effect.gen(function* () {
+      const backend = countingBackend();
+      const resolve = makeCachedRefResolver(backend.serviceFor, 0);
+
+      yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+      yield* resolve(oneAccountConfig, "op://vault-123/item-1/credential");
+
+      expect(backend.resolveCount()).toBe(2);
     }),
   );
 });

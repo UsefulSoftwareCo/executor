@@ -1,7 +1,7 @@
-import { Context, Duration, Effect, Semaphore } from "effect";
-import * as op from "@1password/op-js";
+import { Context, Duration, Effect, Schema, Semaphore } from "effect";
 
 import { OnePasswordError } from "./errors";
+import { opCliExec } from "./op-cli";
 import type { OnePasswordSdkModule } from "./onepassword-sdk";
 
 // ---------------------------------------------------------------------------
@@ -175,63 +175,106 @@ export const makeNativeSdkService = (
   }).pipe(Effect.withSpan("onepassword.sdk.make_service"));
 
 // ---------------------------------------------------------------------------
-// CLI backend — uses @1password/op-js (shells out to `op` CLI)
+// CLI backend — spawns the `op` CLI asynchronously (see op-cli.ts for why the
+// spawn must never be synchronous). Auth travels per spawn: the service
+// account token goes through the child's environment and the desktop account
+// through `--account`, so there is no process-global credential state.
 // ---------------------------------------------------------------------------
 
-const cliAuthLock = Semaphore.makeUnsafe(1);
+/** The 1Password desktop app shows at most one CLI-authorization prompt at a
+ *  time, so desktop-app spawns are serialized to keep concurrent calls from
+ *  queueing invisible prompts behind each other. Service-account spawns never
+ *  prompt and run unrestricted. */
+const cliPromptLock = Semaphore.makeUnsafe(1);
+
+const cliEnv = (auth: ResolvedAuth): Record<string, string | undefined> => {
+  const env: Record<string, string | undefined> = { ...process.env };
+  // An inherited token would override `--account` and silently route a
+  // desktop-app call to whatever service account the parent process carries.
+  delete env["OP_SERVICE_ACCOUNT_TOKEN"];
+  if (auth.kind === "service-account") env["OP_SERVICE_ACCOUNT_TOKEN"] = auth.token;
+  return env;
+};
+
+const cliArgs = (auth: ResolvedAuth, base: readonly string[]): readonly string[] =>
+  auth.kind === "desktop-app" ? [...base, `--account=${auth.accountName}`] : base;
+
+const decodeCliVaultRows = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }))),
+);
+const decodeCliItemRows = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String, title: Schema.String }))),
+);
 
 export const makeCliService = (
   auth: ResolvedAuth,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Effect.Effect<OnePasswordService, OnePasswordError> =>
   Effect.sync(() => {
-    const wrapSync = <A>(fn: () => A, operation: string): Effect.Effect<A, OnePasswordError> =>
-      cliAuthLock
-        .withPermits(1)(
-          Effect.try({
-            try: () => {
-              if (auth.kind === "service-account") {
-                op.setGlobalFlags({});
-                op.setServiceAccount(auth.token);
-              } else {
-                op.setServiceAccount("");
-                op.setGlobalFlags({ account: auth.accountName });
-              }
-              return fn();
-            },
-            catch: (cause) =>
-              new OnePasswordError({
-                operation,
-                message: messageWithCause(`1Password CLI ${operation} failed`, cause),
-              }),
-          }).pipe(
-            // `op-js` keeps the service-account token in a PROCESS-GLOBAL
-            // (`cli.serviceAccountToken`, a field on the module's single CLI
-            // instance) and reads it when spawning `op`. Nothing in the library
-            // clears it, so a token set to serve one resolve stayed readable for
-            // the rest of the executor's life — long after the call that needed
-            // it, and with no reader. The account-name branch above happens to
-            // blank it, but only if a differently-authenticated call comes next,
-            // which in a service-account-only deployment never happens.
-            //
-            // So clear it as soon as the call is done: on success, on failure and
-            // on interruption alike. Safe because every write and every read of
-            // that global happens inside this same semaphore, so the next
-            // operation re-sets the token before it spawns anything.
-            Effect.ensuring(Effect.sync(() => op.setServiceAccount(""))),
+    const run = (
+      base: readonly string[],
+      operation: string,
+    ): Effect.Effect<string, OnePasswordError> => {
+      const spawn = Effect.promise((signal) =>
+        opCliExec({ args: cliArgs(auth, base), env: cliEnv(auth), timeoutMs, signal }),
+      ).pipe(
+        Effect.flatMap((result) => {
+          if (result.ok) return Effect.succeed(result.stdout);
+          return Effect.fail(
+            result.timedOut
+              ? new OnePasswordError({
+                  operation,
+                  message: makeTimeoutMessage(operation, timeoutMs),
+                })
+              : new OnePasswordError({
+                  operation,
+                  message: messageWithCause(`1Password CLI ${operation} failed`, result),
+                }),
+          );
+        }),
+      );
+      return (auth.kind === "desktop-app" ? cliPromptLock.withPermits(1)(spawn) : spawn).pipe(
+        Effect.withSpan(`onepassword.cli.${operation}`),
+      );
+    };
+
+    const runJson = <A>(
+      base: readonly string[],
+      operation: string,
+      decodeRows: (raw: string) => Effect.Effect<A, Schema.SchemaError>,
+    ): Effect.Effect<A, OnePasswordError> =>
+      run([...base, "--format=json"], operation).pipe(
+        Effect.flatMap((raw) =>
+          decodeRows(raw).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OnePasswordError({
+                  operation,
+                  message: messageWithCause(
+                    `1Password CLI ${operation} returned unexpected output`,
+                    cause,
+                  ),
+                }),
+            ),
           ),
-        )
-        .pipe(Effect.withSpan(`onepassword.cli.${operation}`));
+        ),
+      );
 
     return OnePasswordServiceTag.of({
-      resolveSecret: (uri) => wrapSync(() => op.read.parse(uri), "secret resolution"),
+      // `op read` appends a trailing newline to the field value; strip it the
+      // same way op-js's `read.parse` did so stored secrets stay unchanged.
+      resolveSecret: (uri) =>
+        run(["read", uri], "secret resolution").pipe(
+          Effect.map((raw) => raw.replace(/[\r\n]+$/, "")),
+        ),
 
       listVaults: () =>
-        wrapSync(() => op.vault.list(), "vault listing").pipe(
+        runJson(["vault", "list"], "vault listing", decodeCliVaultRows).pipe(
           Effect.map((vaults) => vaults.map((v) => ({ id: v.id, title: v.name }))),
         ),
 
       listItems: (vaultId) =>
-        wrapSync(() => op.item.list({ vault: vaultId }), "item listing").pipe(
+        runJson(["item", "list", "--vault", vaultId], "item listing", decodeCliItemRows).pipe(
           Effect.map((items) => items.map((i) => ({ id: i.id, title: i.title }))),
         ),
     });
@@ -270,7 +313,7 @@ export const makeOnePasswordService = (
   }
 
   return Effect.gen(function* () {
-    const cliService = yield* makeCliService(auth);
+    const cliService = yield* makeCliService(auth, timeoutMs);
     const sdkService = yield* Effect.cached(makeNativeSdkService(auth, timeoutMs));
 
     const withSdkFallback = <A>(

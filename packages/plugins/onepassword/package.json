@@ -53,7 +53,6 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@1password/op-js": "^0.1.13",
     "@1password/sdk": "^0.4.1-beta.1",
     "@effect/atom-react": "catalog:",
     "@executor-js/sdk": "workspace:*"

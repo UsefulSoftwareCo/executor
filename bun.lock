@@ -1036,7 +1036,6 @@
       "name": "@executor-js/plugin-onepassword",
       "version": "1.6.3",
       "dependencies": {
-        "@1password/op-js": "^0.1.13",
         "@1password/sdk": "^0.4.1-beta.1",
         "@effect/atom-react": "catalog:",
         "@executor-js/sdk": "workspace:*",
@@ -1290,8 +1289,6 @@
   },
   "packages": {
     "7zip-bin": ["7zip-bin@5.2.0", "", {}, "sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A=="],
-
-    "@1password/op-js": ["@1password/op-js@0.1.13", "", { "dependencies": { "lookpath": "^1.2.2", "semver": "^7.6.2" } }, "sha512-ZZBLxVqywFdvIbLv2xWw2N1ImSi183rRKf90vV19KRMReNyLwuD0dv6IrKrIdrJU33IuV3Gz85Z4K2a1PJTBDg=="],
 
     "@1password/sdk": ["@1password/sdk@0.4.1-beta.1", "", { "dependencies": { "@1password/sdk-core": "0.4.1-beta.1" } }, "sha512-QWY6eIIEs9at6kAFbgjZ1vVxg7ygp/MwXJ6/BoBdPkqIk8vfulXu4pjDsVQ87HhddJAD5LVGBXSbQIa+svI3bA=="],
 
@@ -4565,8 +4562,6 @@
 
     "longest-streak": ["longest-streak@3.1.0", "", {}, "sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g=="],
 
-    "lookpath": ["lookpath@1.2.3", "", { "bin": { "lookpath": "bin/lookpath.js" } }, "sha512-kthRVhf4kH4+HW3anM4UBHxsw/XFESf13euCEldhXr6GpBdmBoa7rDd7WO5G0Mhd4G5XtKTcEy8OR0iRZXpS3Q=="],
-
     "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" }, "bin": { "loose-envify": "cli.js" } }, "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q=="],
 
     "lowercase-keys": ["lowercase-keys@2.0.0", "", {}, "sha512-tqNXrS78oMOE73NMxK4EMLQsQowWf8jKooH9g7xPavRT706R6bkQJ6DY2Te7QukaZsulxa30wQ7bk0pm4XiHmA=="],
@@ -5870,8 +5865,6 @@
     "zustand": ["zustand@3.7.2", "", { "peerDependencies": { "react": ">=16.8" }, "optionalPeers": ["react"] }, "sha512-PIJDIZKtokhof+9+60cpockVOq05sJzHCriyvaLBmEJixseQ1a5Kdov6fWZfWOu5SK9c+FhH1jU0tntLxRJYMA=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
-
-    "@1password/op-js/semver": ["semver@7.7.4", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA=="],
 
     "@antfu/install-pkg/package-manager-detector": ["package-manager-detector@1.6.0", "", {}, "sha512-61A5ThoTiDG/C8s8UMZwSorAGwMJ0ERVGj2OjoW5pAalsNOg15+iQiPzrLJ4jhZ1HJzmC2PIHT2oEiH3R5fzNA=="],
 
