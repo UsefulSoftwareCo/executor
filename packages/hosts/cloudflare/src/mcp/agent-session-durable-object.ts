@@ -290,6 +290,20 @@ export abstract class McpAgentSessionDOBase<
     dbHandle: TDbHandle,
   ): Effect.Effect<BuiltMcpServer>;
 
+  /**
+   * Cheap, count-only proxies for what the runtime `buildMcpServer` just built
+   * holds — e.g. connected-integration counts — attributed alongside
+   * `residencyAttributes()` on the same `McpSessionDO.init` span so per-session
+   * memory footprint is queryable next to isolate residency without a
+   * cross-span join. Empty by default: a host that has nothing free to read
+   * (or nothing beyond what `buildMcpServer` already returns) need not
+   * override this. MUST stay O(1)/O(count) over already-materialized state —
+   * never trigger a new query or serialize a catalog to compute these.
+   */
+  protected sessionFootprintAttributes(): Record<string, number> {
+    return {};
+  }
+
   protected withTelemetry<A, E>(
     effect: Effect.Effect<A, E>,
     _incoming?: IncomingTraceHeaders,
@@ -1001,7 +1015,12 @@ export abstract class McpAgentSessionDOBase<
       // The gauge on the way up. Paired with the same attributes on
       // `mcp.session.idle_runtime_dispose`, this is what shows whether idle
       // sessions are actually giving their runtimes back in production.
-      yield* Effect.annotateCurrentSpan(residencyAttributes());
+      // `sessionFootprintAttributes()` rides the same span so a heavy session
+      // can be attributed to what it holds, not just counted.
+      yield* Effect.annotateCurrentSpan({
+        ...residencyAttributes(),
+        ...self.sessionFootprintAttributes(),
+      });
       // Last statement, and pure bookkeeping: the runtime above is already
       // installed and serving. Losing the timestamp/alarm write to a platform
       // reset must not undo any of it — the in-memory clock is already set and
