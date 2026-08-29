@@ -54,6 +54,10 @@ export interface CatalogSurface {
     readonly header?: string;
     readonly note?: string;
   };
+  /** RFC 6902 JSON Patch the registry says to apply to the fetched spec —
+   *  how a vendor's published document gets improved without hosting a fork
+   *  (e.g. Neon's console session cookies posing as security schemes). */
+  readonly specOverrides?: readonly unknown[];
 }
 
 export interface CatalogSearchEntry {
@@ -123,6 +127,7 @@ const SearchResponse = Schema.Struct({
                 note: Schema.optional(Schema.String),
               }),
             ),
+            specOverrides: Schema.optional(Schema.Array(Schema.Unknown)),
           }),
         ),
       ),
@@ -145,6 +150,9 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
                     slug: surface.slug,
                     ...(surface.url ? { url: surface.url } : {}),
                     ...(surface.auth ? { auth: surface.auth } : {}),
+                    ...(surface.specOverrides && surface.specOverrides.length > 0
+                      ? { specOverrides: surface.specOverrides }
+                      : {}),
                   },
                 ]
               : [],

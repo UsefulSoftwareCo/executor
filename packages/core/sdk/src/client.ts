@@ -209,6 +209,10 @@ export interface IntegrationPlugin {
      *  still declare the right method — an authless MCP server is a fact the
      *  registry already knows. */
     readonly initialAuthKind?: string;
+    /** JSON-encoded RFC 6902 patch the registry says to apply to the fetched
+     *  spec — the registry's mechanism for improving a vendor's published
+     *  document over time without hosting a fork. */
+    readonly initialSpecOverrides?: string;
   }>;
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */

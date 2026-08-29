@@ -14,6 +14,8 @@ const SearchParams = Schema.toStandardSchemaV1(
     authHeader: Schema.optional(Schema.String),
     authNote: Schema.optional(Schema.String),
     authKind: Schema.optional(Schema.String),
+    // JSON-encoded RFC 6902 patch the registry says to apply to the spec.
+    specOverrides: Schema.optional(Schema.String),
   }),
 );
 
@@ -21,7 +23,8 @@ export const Route = createFileRoute("/{-$orgSlug}/integrations/add/$pluginKey")
   validateSearch: SearchParams,
   component: () => {
     const { pluginKey } = Route.useParams();
-    const { url, preset, namespace, authHeader, authNote, authKind } = Route.useSearch();
+    const { url, preset, namespace, authHeader, authNote, authKind, specOverrides } =
+      Route.useSearch();
     return (
       <AddIntegrationPage
         pluginKey={pluginKey}
@@ -31,6 +34,7 @@ export const Route = createFileRoute("/{-$orgSlug}/integrations/add/$pluginKey")
         authHeader={authHeader}
         authNote={authNote}
         authKind={authKind}
+        specOverrides={specOverrides}
       />
     );
   },

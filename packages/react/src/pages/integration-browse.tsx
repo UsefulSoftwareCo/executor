@@ -420,6 +420,7 @@ export function IntegrationBrowsePage() {
       readonly slug?: string;
       readonly domain: string;
       readonly auth?: CatalogSurface["auth"];
+      readonly specOverrides?: CatalogSurface["specOverrides"];
     }) => {
       trackEvent("integration_add_started", {
         plugin_key: input.kind,
@@ -435,6 +436,7 @@ export function IntegrationBrowsePage() {
           ...(input.auth?.header ? { authHeader: input.auth.header } : {}),
           ...(input.auth?.note ? { authNote: input.auth.note } : {}),
           ...(input.auth?.kind ? { authKind: input.auth.kind } : {}),
+          ...(input.specOverrides ? { specOverrides: JSON.stringify(input.specOverrides) } : {}),
         },
       });
     },
@@ -453,6 +455,7 @@ export function IntegrationBrowsePage() {
           domain: entry.domain,
           ...(surface ? { slug: surface.slug } : {}),
           ...(surface?.auth ? { auth: surface.auth } : {}),
+          ...(surface?.specOverrides ? { specOverrides: surface.specOverrides } : {}),
         });
         return;
       }
@@ -477,7 +480,11 @@ export function IntegrationBrowsePage() {
   );
 
   const pickPreset = useCallback(
-    (entry: PresetEntry, auth?: CatalogSurface["auth"]) => {
+    (
+      entry: PresetEntry,
+      auth?: CatalogSurface["auth"],
+      specOverrides?: CatalogSurface["specOverrides"],
+    ) => {
       trackEvent("integration_add_started", {
         plugin_key: entry.pluginKey,
         via: "preset",
@@ -491,6 +498,7 @@ export function IntegrationBrowsePage() {
       if (auth?.header) search.authHeader = auth.header;
       if (auth?.note) search.authNote = auth.note;
       if (auth?.kind) search.authKind = auth.kind;
+      if (specOverrides) search.specOverrides = JSON.stringify(specOverrides);
       void navigate({
         to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey: entry.pluginKey },
@@ -510,7 +518,11 @@ export function IntegrationBrowsePage() {
   const catalogIdentityByKey = useMemo(() => {
     const map = new Map<
       string,
-      { readonly domain: string; readonly auth?: CatalogSurface["auth"] }
+      {
+        readonly domain: string;
+        readonly auth?: CatalogSurface["auth"];
+        readonly specOverrides?: CatalogSurface["specOverrides"];
+      }
     >();
     for (const entry of catalogEntries) {
       const pretty = entry.name ?? domainDisplayName(entry.domain);
@@ -524,6 +536,9 @@ export function IntegrationBrowsePage() {
           map.set(key, {
             domain: entry.domain,
             ...("auth" in surface && surface.auth ? { auth: surface.auth } : {}),
+            ...("specOverrides" in surface && surface.specOverrides
+              ? { specOverrides: surface.specOverrides }
+              : {}),
           });
         }
       }
@@ -552,7 +567,7 @@ export function IntegrationBrowsePage() {
         ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
-        onSelect: () => pickPreset(entry, identity?.auth),
+        onSelect: () => pickPreset(entry, identity?.auth, identity?.specOverrides),
         added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
         busy: false,
       });

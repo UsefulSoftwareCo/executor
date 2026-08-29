@@ -173,6 +173,7 @@ export default function AddOpenApiIntegration(props: {
   initialNamespace?: string;
   initialAuthHeader?: string;
   initialAuthNote?: string;
+  initialSpecOverrides?: string;
 }) {
   const integrationPlugins = useIntegrationPlugins();
   const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
@@ -184,7 +185,17 @@ export default function AddOpenApiIntegration(props: {
 
   const activePreset = resolveOpenApiPreset(openApiPresets, props.initialPreset, specUrl);
   const presetSpecOverrides = decodeOpenApiSpecOverrides(activePreset?.specOverrides);
-  const specOverridesText = specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides);
+  // Registry-declared overrides — how a vendor's published document gets
+  // improved without hosting a fork (Neon's console session cookies posing as
+  // security schemes). A preset's own overrides win; the user's draft wins
+  // over both, and the editor shows exactly what will apply.
+  const registrySpecOverrides = useMemo(() => {
+    if (!props.initialSpecOverrides) return undefined;
+    const parsed = parseSpecOverridesText(props.initialSpecOverrides);
+    return parsed.ok ? parsed.value : undefined;
+  }, [props.initialSpecOverrides]);
+  const specOverridesText =
+    specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides ?? registrySpecOverrides);
 
   // After analysis
   const [preview, setPreview] = useState<SpecPreviewSummary | null>(null);
