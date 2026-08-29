@@ -20,10 +20,12 @@
 //     transport, body is an SSE stream we don't consume.
 //   - 2xx with `Content-Type: application/json` whose body parses as a
 //     JSON-RPC 2.0 envelope (`{jsonrpc:"2.0", result|error|method,...}`).
-//   - 401 with `WWW-Authenticate: Bearer` AND a JSON-RPC error envelope
-//     in the body. The body shape is what separates a real MCP server
-//     from an unrelated OAuth-protected API: GraphQL/REST/HTML 401s
-//     don't shape themselves as JSON-RPC.
+//   - 401 (or 403) with `WWW-Authenticate: Bearer` AND a JSON-RPC error
+//     envelope in the body. The body shape is what separates a real MCP
+//     server from an unrelated OAuth-protected API: GraphQL/REST/HTML
+//     401s don't shape themselves as JSON-RPC. 403 travels the same path
+//     because an edge authenticator (Cloudflare Access) answers with 403
+//     and the endpoint is not therefore unreachable.
 //
 // When POST returns 404/405/406/415 we retry with GET + `Accept:
 // text/event-stream` to support legacy SSE-only servers; that path
@@ -81,6 +83,16 @@ const readHeader = (headers: Readonly<Record<string, string>>, name: string): st
   }
   return null;
 };
+
+/** Statuses that mean "you are not authenticated for this resource".
+ *
+ *  401 is what the MCP authorization spec mandates. 403 is what an edge
+ *  authenticator in front of the server returns instead — Cloudflare
+ *  Access, for example, answers an unauthenticated request with 403 and
+ *  never reaches the MCP server at all. Both say the same thing to the
+ *  user: supply credentials and retry. Treating 403 as a wrong shape
+ *  told them the URL was wrong, which it was not. */
+const isAuthStatus = (status: number): boolean => status === 401 || status === 403;
 
 class ProbeTransportError extends Data.TaggedError("ProbeTransportError")<{
   readonly reason: string;
@@ -213,9 +225,9 @@ const reasonFromBoundaryCause = (cause: unknown): string => {
 
 /** Why the probe rejected an endpoint as not-MCP.
  *
- *  - `auth-required` — server returned 401. We don't know for sure it's
- *    an MCP server (no spec-compliant Bearer challenge or the body
- *    isn't JSON-RPC), but the right next step for the user is the same
+ *  - `auth-required` — server returned 401 or 403. We don't know for
+ *    sure it's an MCP server (no spec-compliant Bearer challenge or the
+ *    body isn't JSON-RPC), but the right next step for the user is the same
  *    either way: provide credentials and retry. This is what
  *    misclassifies real MCP servers like cubic.dev (no
  *    resource_metadata) or ref.tools (no WWW-Authenticate at all)
@@ -227,7 +239,7 @@ export type McpProbeRejectCategory = "auth-required" | "wrong-shape";
 
 export type McpShapeProbeResult =
   /** Server answered initialize successfully — either a 2xx with a
-   *  JSON-RPC payload, or a 401 + WWW-Authenticate: Bearer (RFC 6750
+   *  JSON-RPC payload, or a 401/403 + WWW-Authenticate: Bearer (RFC 6750
    *  challenge) that the MCP auth spec requires. */
   | { readonly kind: "mcp"; readonly requiresAuth: boolean }
   /** Endpoint is reachable but the response does not look like MCP. */
@@ -253,7 +265,7 @@ export interface ProbeOptions {
  *
  * Returns `{kind: "mcp"}` only when the endpoint either:
  *   - answers with 2xx (unauth-OK MCP server), or
- *   - responds 401 with a `Bearer` WWW-Authenticate challenge.
+ *   - responds 401 or 403 with a `Bearer` WWW-Authenticate challenge.
  *
  * Anything else (400, 404, 200-with-HTML, 200-with-GraphQL-errors, ...)
  * is classified `not-mcp`. Transport errors surface as `unreachable`.
@@ -287,20 +299,20 @@ export const probeMcpEndpointShape = (
           const contentType = readHeader(response.headers, "content-type") ?? "";
           const isSse = /^\s*text\/event-stream\b/i.test(contentType);
 
-          if (response.status === 401) {
+          if (isAuthStatus(response.status)) {
             const wwwAuth = readHeader(response.headers, "www-authenticate");
             if (!wwwAuth || !/^\s*bearer\b/i.test(wwwAuth)) {
-              // Spec-non-compliant 401 (no `Bearer` challenge). Before
-              // giving up, check whether the server still publishes
-              // RFC 9728 protected-resource metadata for this path —
-              // some real MCP servers (Datadog) do exactly this.
+              // Spec-non-compliant challenge (no `Bearer`). Before giving
+              // up, check whether the server still publishes RFC 9728
+              // protected-resource metadata for this path — some real MCP
+              // servers (Datadog) do exactly this.
               if (yield* probeProtectedResourceMetadata(client, url, timeoutMs)) {
                 return { kind: "mcp", requiresAuth: true } as const;
               }
               return {
                 kind: "not-mcp",
                 category: "auth-required",
-                reason: "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
+                reason: `${response.status} without Bearer WWW-Authenticate — not an MCP auth challenge`,
               } as const;
             }
             // Spec-compliant MCP signal: the auth spec mandates a
@@ -347,8 +359,7 @@ export const probeMcpEndpointShape = (
               return {
                 kind: "not-mcp",
                 category: "auth-required",
-                reason:
-                  "401 + Bearer without resource_metadata, JSON-RPC body, or OAuth error body",
+                reason: `${response.status} + Bearer without resource_metadata, JSON-RPC body, or OAuth error body`,
               } as const;
             }
             return { kind: "mcp", requiresAuth: true } as const;

@@ -47,6 +47,30 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("projects declared oauth2 scopes alongside the discovery URL", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/oauth/mcp",
+        authenticationTemplate: [{ slug: "oauth2", kind: "oauth2", scopes: ["mcp"] }],
+      }),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "oauth2",
+        label: "OAuth",
+        kind: "oauth",
+        template: "oauth2",
+        oauth: {
+          discoveryUrl: "https://x.example/oauth/mcp",
+          scopes: ["mcp"],
+          supportsDynamicRegistration: true,
+        },
+      },
+    ]);
+  });
+
   it("names the enterprise identity provider when the server declares one", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
@@ -234,6 +258,24 @@ describe("describeMcpAuthMethods", () => {
         }),
       ),
     ).toEqual({ url: "https://mcp.posthog.com/mcp" });
+  });
+
+  it("projects catalog family for remote and stdio integrations", () => {
+    expect(
+      describeMcpIntegrationDisplay(
+        recordWith({
+          transport: "remote",
+          family: "cloudflare",
+          endpoint: "https://mcp.cloudflare.com/mcp",
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+    ).toEqual({ url: "https://mcp.cloudflare.com/mcp", family: "cloudflare" });
+    expect(
+      describeMcpIntegrationDisplay(
+        recordWith({ transport: "stdio", family: "design", command: "design-mcp" }),
+      ),
+    ).toEqual({ family: "design" });
   });
 
   it("does not expose display metadata for stdio or malformed configs", () => {

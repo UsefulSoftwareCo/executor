@@ -221,7 +221,18 @@ describe("Durable Object capture ownership", () => {
   // the auto-instrumentation is the ONLY thing that reports it. Dropping those
   // would trade duplicate noise for silence.
   it("keeps an unclaimed Durable Object failure", () => {
-    const unclaimed = doEcho({ tags: {} });
+    const unclaimed = doEcho({
+      tags: {},
+      exception: {
+        values: [
+          {
+            type: "TypeError",
+            value: "this.scheduleNextSweep is not a function",
+            mechanism: { type: "auto.faas.cloudflare.durable_object", handled: false },
+          },
+        ],
+      },
+    });
     expect(beforeSendWithOtelCorrelation(unclaimed)).not.toBeNull();
   });
 
@@ -298,5 +309,94 @@ describe("Durable Object capture ownership", () => {
       expect(before?.fingerprint).toBeDefined();
       expect(before?.fingerprint).toEqual(after?.fingerprint);
     });
+  });
+});
+
+// The residue the ownership scheme above cannot reach. A deploy resets every
+// live Durable Object, and `instrumentDurableObjectWithSentry` captures that
+// from inside the object being torn down — there is no worker seam in that
+// isolate to classify the failure and claim the cause, so the event arrives
+// unclaimed and files an issue with nothing behind it. The client side is
+// already handled: the in-flight request fails at the worker seam and is
+// answered there with a retryable 503.
+//
+// Not reachable from a black-box test. The dropped event and the events kept
+// beside it declare the same exception type with the same shape; only the
+// mechanism the Sentry SDK stamps and the classifier's verdict on the message
+// separate them, and neither is observable from outside the SDK.
+describe("Durable Object platform reset noise", () => {
+  const doInstrumentationEvent = (
+    value: string,
+    mechanismType = "auto.faas.cloudflare.durable_object",
+  ): ErrorEvent => ({
+    type: undefined,
+    // Unclaimed on purpose: the whole point is that no worker seam existed to
+    // claim this one.
+    tags: {},
+    exception: {
+      values: [
+        {
+          type: "Error",
+          value,
+          mechanism: { type: mechanismType, handled: false },
+        },
+      ],
+    },
+  });
+
+  it("drops a deploy-time code-update reset reported by the DO instrumentation", () => {
+    const event = doInstrumentationEvent("Durable Object reset because its code was updated.");
+    expect(beforeSendWithOtelCorrelation(event)).toBeNull();
+  });
+
+  // The classifier is shared with the worker seams, so every transient kind it
+  // knows is covered here rather than just the deploy message.
+  it("drops the other transient platform resets the shared classifier recognizes", () => {
+    for (const value of [
+      "Durable Object storage operation exceeded timeout which caused object to be reset.",
+      "Durable Object exceeded its CPU time limit and was reset.",
+      "internal error; reference = 0123abcd4567",
+    ]) {
+      expect(beforeSendWithOtelCorrelation(doInstrumentationEvent(value))).toBeNull();
+    }
+  });
+
+  // Same message, different path: a reset seen anywhere other than the DO
+  // instrumentation is somebody's deliberate report and keeps reporting.
+  it("keeps a reset message that did not come from the DO instrumentation", () => {
+    const viaWorker = doInstrumentationEvent(
+      "Durable Object reset because its code was updated.",
+      "auto.http.cloudflare",
+    );
+    expect(beforeSendWithOtelCorrelation(viaWorker)).not.toBeNull();
+
+    const viaCaptureSeam = doInstrumentationEvent(
+      "Durable Object reset because its code was updated.",
+      "generic",
+    );
+    expect(beforeSendWithOtelCorrelation(viaCaptureSeam)).not.toBeNull();
+  });
+
+  // The load-bearing limit: a defect thrown inside a DO is reported by the
+  // instrumentation and by nothing else. The classifier does not recognize it,
+  // so it must survive.
+  it("keeps a Durable Object failure the classifier does not recognize", () => {
+    const defect = doInstrumentationEvent("Cannot read properties of undefined (reading 'meta')");
+    expect(beforeSendWithOtelCorrelation(defect)).not.toBeNull();
+  });
+
+  // The memory-limit reset is deliberately absent from the classifier: the
+  // runtime blames the application for it, so it is a defect, not noise.
+  it("keeps the memory-limit reset the classifier deliberately excludes", () => {
+    const memory = doInstrumentationEvent(
+      "Durable Object's isolate exceeded its memory limit due to overflowing the storage cache. All objects in the isolate were reset.",
+    );
+    expect(beforeSendWithOtelCorrelation(memory)).not.toBeNull();
+  });
+
+  it("the hook the worker and DOs install drops the deploy reset", () => {
+    const options = cloudSentryOptions({ SENTRY_DSN: "https://public@example.invalid/1" } as Env);
+    const event = doInstrumentationEvent("Durable Object reset because its code was updated.");
+    expect(options.beforeSend(event)).toBeNull();
   });
 });

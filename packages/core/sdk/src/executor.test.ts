@@ -125,17 +125,32 @@ const demoPlugin = definePlugin(() => ({
 const diagnosticsPlugin = definePlugin(() => ({
   id: "diagnostics" as const,
   storage: () => ({}),
-  resolveTools: () =>
+  resolveTools: ({ connection }) =>
     Effect.succeed({
       tools: [],
       incomplete: true,
       incompleteReason: "Schema introspection was rejected",
+      ...(String(connection.integration) === "diagnostics_expired"
+        ? {
+            health: {
+              status: "expired" as const,
+              checkedAt: Date.now(),
+              detail: "Reconnect the upstream OAuth grant",
+            },
+          }
+        : {}),
     }),
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
         slug: IntegrationSlug.make("diagnostics"),
         description: "Diagnostics",
+        config: {},
+      }),
+    seedExpired: () =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make("diagnostics_expired"),
+        description: "Expired diagnostics",
         config: {},
       }),
   }),
@@ -465,6 +480,44 @@ describe("createExecutor", () => {
         lastHealth: {
           status: "degraded",
           detail: "Tool sync failing: Schema introspection was rejected",
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves actionable health from an incomplete tool catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.diagnostics.seedExpired();
+
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics_expired",
+          template: "none",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const refreshed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.refresh"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics_expired",
+        },
+        { onElicitation: "accept-all" },
+      );
+      expect(refreshed).toMatchObject({
+        tools: [],
+        lastHealth: {
+          status: "expired",
+          detail: "Reconnect the upstream OAuth grant",
         },
       });
     }),

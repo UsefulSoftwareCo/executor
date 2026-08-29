@@ -38,6 +38,19 @@ describe("groupIntegrations", () => {
     ]);
   });
 
+  it("groups arbitrary provider families", () => {
+    const items = groupIntegrations([
+      integration("cloudflare_api", "mcp", "Cloudflare API", "cloudflare"),
+      integration("cloudflare_docs", "mcp", "Cloudflare Docs", "cloudflare"),
+    ]);
+
+    expect(items).toHaveLength(1);
+    const group = items[0] as IntegrationFamilyGroup;
+    expect(group.type).toBe("group");
+    expect(group.family).toBe("cloudflare");
+    expect(group.label).toBe("Cloudflare");
+  });
+
   it("leaves integrations without config family ungrouped", () => {
     const items = groupIntegrations([
       integration("stripe", "openapi", "Stripe"),
@@ -72,7 +85,7 @@ describe("groupIntegrations", () => {
     ).toEqual(["single", "group:google", "group:microsoft", "single"]);
   });
 
-  it("does not group from integration kind alone", () => {
+  it("does not infer a family from integration kind alone", () => {
     expect(
       integrationFamily(integration("google_calendar", "google", "Google Calendar")),
     ).toBeNull();

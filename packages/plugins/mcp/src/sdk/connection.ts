@@ -1,6 +1,6 @@
 import type { Client, FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
-import { Effect, Layer, Predicate, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Effect, Layer, Option, Predicate, Schema, Stream } from "effect";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
 
 // NOTE: nothing from `@modelcontextprotocol/client` is imported eagerly —
 // value access goes through `loadMcpClientSdk` (see client-module.ts for the
@@ -16,10 +16,11 @@ import { loadMcpClientSdk, type McpClientSdk } from "./client-module";
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import {
   McpConnectionError,
+  McpConnectionFailureKind,
   McpInsufficientScopeError,
   McpOAuthReauthorizationRequired,
 } from "./errors";
-import { httpStatusFromCause } from "./http-status";
+import { connectionHttpStatusFromCause, isStreamableHttpProtocolError } from "./http-status";
 import { detectInsufficientScope } from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,10 @@ export type RemoteConnectorInput = Omit<
   readonly headers?: Record<string, string>;
   readonly queryParams?: Record<string, string>;
   readonly authProvider?: OAuthClientProvider;
+  /** This provider only replays a resolved bearer. A 401 cannot be recovered
+   *  inside the MCP SDK and must return to core as reconnect-required before
+   *  the SDK attempts discovery or Dynamic Client Registration. */
+  readonly staticOAuthBearer?: boolean;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 };
 
@@ -89,6 +94,118 @@ const headersFrom = (headers: HeadersInit | undefined): Headers =>
 const recordFromHeaders = (headers: Headers): Record<string, string> =>
   Object.fromEntries(headers.entries());
 
+const ExternalTransportCause = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+  data: Schema.optional(
+    Schema.Struct({
+      cause: Schema.optional(Schema.Unknown),
+    }),
+  ),
+});
+const decodeExternalTransportCause = Schema.decodeUnknownOption(ExternalTransportCause);
+
+const TLS_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+const DNS_ERROR_CODES = new Set(["EAI_AGAIN", "ENOTFOUND"]);
+const TIMEOUT_ERROR_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
+const PROTOCOL_HTTP_STATUSES = new Set([400, 404, 405, 406, 415, 422, 501]);
+
+const CONNECTION_FAILURE_MESSAGES: Record<McpConnectionFailureKind, string> = {
+  tls: "MCP HTTPS connection failed: TLS certificate verification failed. Check the server certificate and Executor's CA trust configuration.",
+  dns: "MCP connection failed: the server hostname could not be resolved.",
+  timeout: "MCP connection failed: the server did not respond before the connection timed out.",
+  connection_refused: "MCP connection failed: the server refused the connection.",
+  network: "MCP connection failed before transport negotiation completed.",
+  http: "MCP server rejected the HTTP connection.",
+  protocol: "MCP server does not support the requested transport.",
+};
+
+const CONNECTION_ATTEMPT_SUMMARIES: Partial<Record<McpConnectionFailureKind, string>> = {
+  tls: "TLS certificate verification failed",
+  dns: "hostname resolution failed",
+  timeout: "connection timed out",
+  connection_refused: "connection refused",
+  protocol: "unsupported protocol response",
+};
+
+class McpHttpTransportError extends Schema.TaggedErrorClass<McpHttpTransportError>()(
+  "McpHttpTransportError",
+  {
+    failureKind: McpConnectionFailureKind,
+    cause: Schema.Defect,
+  },
+) {}
+const decodeMcpHttpTransportError = Schema.decodeUnknownOption(McpHttpTransportError);
+
+const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTransportError> => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decodedError = decodeMcpHttpTransportError(current);
+    if (Option.isSome(decodedError)) return decodedError;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return Option.none();
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return Option.none();
+  }
+  return Option.none();
+};
+
+/** Walks a (possibly SDK-wrapped) failure cause for the fetch adapter's
+ *  `McpOAuthReauthorizationRequired`. Shared with tool discovery: the same
+ *  interception fires during `tools/list`, where the SDK wraps the rejection
+ *  before it reaches the listing's catch site. */
+export const hasNestedOAuthReauthorization = (cause: unknown): boolean => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (Predicate.isTagged(current, "McpOAuthReauthorizationRequired")) return true;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return false;
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return false;
+  }
+  return false;
+};
+
+const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
+  const codes = new Set<string>();
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const decoded = decodeExternalTransportCause(current);
+    if (Option.isNone(decoded)) break;
+    if (decoded.value.code !== undefined) codes.add(decoded.value.code);
+    current = decoded.value.cause ?? decoded.value.data?.cause;
+    if (current === undefined) break;
+  }
+  return codes;
+};
+
+const classifyHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpConnectionFailureKind => {
+  if (!Predicate.isTagged(failure.reason, "TransportError")) return "network";
+  const codes = externalTransportCodes(failure.reason.cause);
+  if ([...codes].some((code) => TLS_ERROR_CODES.has(code))) return "tls";
+  if ([...codes].some((code) => DNS_ERROR_CODES.has(code))) return "dns";
+  if ([...codes].some((code) => TIMEOUT_ERROR_CODES.has(code))) return "timeout";
+  if (codes.has("ECONNREFUSED")) return "connection_refused";
+  return "network";
+};
+
+const normalizeHttpClientFailure = (
+  failure: HttpClientError.HttpClientError,
+): McpHttpTransportError =>
+  new McpHttpTransportError({
+    failureKind: classifyHttpClientFailure(failure),
+    cause: failure,
+  });
+
 const applyBody = async (
   request: HttpClientRequest.HttpClientRequest,
   headers: Headers,
@@ -121,8 +238,63 @@ const abortError = (signal: AbortSignal): unknown => {
   return error;
 };
 
+/** An effect that completes when `signal` aborts (already-aborted = now). */
+const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    if (signal.aborted) {
+      resume(Effect.void);
+      return;
+    }
+    signal.addEventListener("abort", () => resume(Effect.void), { once: true });
+  });
+
+/** JSON-RPC methods the 401 replay below may re-send. An HTTP 401 does not
+ *  guarantee the server did no work before rejecting, so replay is limited to
+ *  methods that are read-only or handshake-only: `initialize` and
+ *  `notifications/initialized` (handshake), `ping` (side-effect-free by
+ *  spec), and `tools/list` (discovery). That is every method this codebase
+ *  sends except `tools/call`, which may have executed its side effect before
+ *  the 401 and must NEVER run twice. The set is deliberately closed: an
+ *  unlisted or unparseable method does not replay either. */
+const REPLAYABLE_JSONRPC_METHODS: ReadonlySet<string> = new Set([
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+]);
+
+const JsonRpcMethodOnly = Schema.Struct({ method: Schema.String });
+const decodeJsonRpcMethods = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([JsonRpcMethodOnly, Schema.Array(JsonRpcMethodOnly)])),
+);
+
+/** Whether a 401-rejected request is safe to replay once. Only requests whose
+ *  buffered JSON-RPC body consists entirely of allowlisted read-only methods
+ *  qualify (a batch replays only when EVERY element is allowlisted). The one
+ *  bodyless exception is `GET`, the streamable-http server->client stream
+ *  open, which carries no JSON-RPC request and is read-only by HTTP
+ *  semantics. Everything else — `tools/call` above all — fails closed. */
+const isReplaySafeRequest = (init: RequestInit | undefined): boolean => {
+  const body = init?.body;
+  if (body == null) return httpMethodFrom(init?.method) === "GET";
+  // Both remote SDK transports send JSON-RPC bodies as `JSON.stringify`
+  // strings. Any other body shape cannot be verified read-only here.
+  if (typeof body !== "string") return false;
+  return Option.match(decodeJsonRpcMethods(body), {
+    onNone: () => false,
+    onSome: (parsed) => {
+      const messages = Array.isArray(parsed) ? parsed : [parsed];
+      return (
+        messages.length > 0 &&
+        messages.every((message) => REPLAYABLE_JSONRPC_METHODS.has(message.method))
+      );
+    },
+  });
+};
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+  staticOAuthBearer: boolean,
 ): FetchLike => {
   const execute: FetchLike = async (url, init) => {
     const headers = headersFrom(init?.headers);
@@ -137,15 +309,28 @@ const fetchFromHttpClientLayer = (
       for (const [key, value] of Object.entries(response.headers)) {
         if (value !== undefined) responseHeaders.set(key, value);
       }
+      // Abort must reach the body, not just the pending request: this stream
+      // fiber outlives the `runPromise` below, so without this streamable
+      // http's SSE `GET` stays in flight after `close()`. Interrupted at the
+      // source because the SDK holds a locked reader on that same stream,
+      // which rules out cancelling the ReadableStream.
+      const stream =
+        init?.signal == null
+          ? response.stream
+          : Stream.interruptWhen(response.stream, awaitAbort(init.signal));
       const body =
         response.status === 204 || response.status === 205 || response.status === 304
           ? null
-          : Stream.toReadableStream(response.stream);
+          : Stream.toReadableStream(stream);
       return new Response(body, {
         status: response.status,
         headers: responseHeaders,
       });
-    }).pipe(Effect.provide(httpClientLayer));
+    }).pipe(Effect.mapError(normalizeHttpClientFailure), Effect.provide(httpClientLayer));
+    // Executor resolves and refreshes OAuth credentials before constructing
+    // this transport. If that stored bearer is rejected, the MCP SDK cannot
+    // complete its interactive fallback in a catalog refresh and would perform
+    // avoidable DCR first. Stop at the authenticated HTTP boundary instead.
     // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
     // HERE, below the SDK: with an authProvider the SDK would consume the
     // challenge and re-run auth ("upscoping"), which our static-token
@@ -154,9 +339,39 @@ const fetchFromHttpClientLayer = (
     // tagged error from the fetch adapter (a true runtime edge: the SDK
     // consumes promise rejections) so it reaches the invoke/connect catch
     // sites verbatim.
-    const promise = Effect.runPromise(effect).then((response) => {
-      if (response.status === 403) {
-        const challenge = response.headers.get("www-authenticate");
+    const promise = Effect.runPromise(effect).then(async (response) => {
+      let settled = response;
+      if (staticOAuthBearer && settled.status === 401) {
+        // One immediate replay before classifying — but only for requests the
+        // allowlist proves read-only (`isReplaySafeRequest`). A lone 401 on
+        // discovery/handshake traffic can be a transient upstream blip (a
+        // proxy hiccup, a racing key rotation on the server), and stamping
+        // reauthorization-required from a single sample forces a needless
+        // reconnect; the replay itself is possible because every body this
+        // adapter builds is buffered (`applyBody`), never a one-shot stream.
+        // A side-effectful method (`tools/call`) never replays: a 401 does
+        // not guarantee the server did no work first, so re-sending could
+        // execute the action twice. Its single 401 classifies directly —
+        // the invocation has already failed either way, and the
+        // transient-blip concern only justified the retry on read-only
+        // paths. Retrying/classifying here is preferred over demanding a
+        // `WWW-Authenticate` challenge because a headerless 401
+        // (noncompliant server; the MCP auth spec requires the challenge)
+        // must STILL stop at this boundary — falling through would hand the
+        // 401 to the SDK, whose interactive fallback performs exactly the
+        // avoidable discovery/DCR this interception exists to prevent.
+        if (isReplaySafeRequest(init)) {
+          settled = await Effect.runPromise(effect);
+        }
+        if (settled.status === 401) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
+          throw new McpOAuthReauthorizationRequired({
+            message: "MCP OAuth re-authorization required",
+          });
+        }
+      }
+      if (settled.status === 403) {
+        const challenge = settled.headers.get("www-authenticate");
         if (
           challenge !== null &&
           detectInsufficientScope({ headers: { "www-authenticate": challenge } }) !== null
@@ -168,7 +383,7 @@ const fetchFromHttpClientLayer = (
           });
         }
       }
-      return response;
+      return settled;
     });
     // Mark the request promise observed (a no-op handler on the ORIGINAL
     // promise; callers still see the rejection). The MCP SDK fires some
@@ -219,7 +434,7 @@ const connectionFailure = (
   message: string,
   cause: unknown,
 ): McpConnectionError | McpOAuthReauthorizationRequired => {
-  if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
+  if (hasNestedOAuthReauthorization(cause)) {
     return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
   }
   if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
@@ -232,16 +447,57 @@ const connectionFailure = (
       insufficientScope: true,
     });
   }
+  const httpTransportError = nestedMcpHttpTransportError(cause);
+  if (Option.isSome(httpTransportError)) {
+    return new McpConnectionError({
+      transport,
+      message: CONNECTION_FAILURE_MESSAGES[httpTransportError.value.failureKind],
+      failureKind: httpTransportError.value.failureKind,
+    });
+  }
   // Carry the handshake HTTP status structurally (and in the message for
   // humans) so the liveness health check can classify a rejected credential
   // as expired rather than a generic connection failure.
-  const status = httpStatusFromCause(cause);
+  const status = connectionHttpStatusFromCause(cause);
+  const failureKind: McpConnectionFailureKind =
+    isStreamableHttpProtocolError(cause) ||
+    (status !== undefined && PROTOCOL_HTTP_STATUSES.has(status))
+      ? "protocol"
+      : status === undefined
+        ? "network"
+        : "http";
   return new McpConnectionError({
     transport,
     message: status === undefined ? message : `${message} (HTTP ${status})`,
+    failureKind,
     ...(status === undefined ? {} : { httpStatus: status }),
   });
 };
+
+const connectionAttemptSummary = (failure: McpConnectionError): string => {
+  if (failure.httpStatus !== undefined) return `HTTP ${failure.httpStatus}`;
+  return failure.failureKind === undefined
+    ? "connection failed"
+    : (CONNECTION_ATTEMPT_SUMMARIES[failure.failureKind] ?? "connection failed");
+};
+
+const autoTransportFailure = (
+  streamableHttp: McpConnectionError,
+  sse: McpConnectionError,
+): McpConnectionError =>
+  new McpConnectionError({
+    transport: "auto",
+    // The SSE fallback is the TERMINAL attempt, so its structural
+    // classification is this failure's: a timed-out fallback is a timeout
+    // and a fallback that hit an HTTP wall carries that status — collapsing
+    // everything to "protocol" made the health check read a slow-but-alive
+    // server as a generic probe failure. "protocol" remains only the default
+    // for an unclassified fallback error.
+    failureKind: sse.failureKind ?? "protocol",
+    ...(sse.httpStatus !== undefined ? { httpStatus: sse.httpStatus } : {}),
+    ...(sse.insufficientScope !== undefined ? { insufficientScope: sse.insufficientScope } : {}),
+    message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
+  });
 
 const connectClient = (input: {
   transport: string;
@@ -338,7 +594,9 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   const headers = input.headers ?? {};
   const remoteTransport = input.remoteTransport ?? "auto";
   const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-  const fetch = input.httpClientLayer ? fetchFromHttpClientLayer(input.httpClientLayer) : undefined;
+  const fetch = input.httpClientLayer
+    ? fetchFromHttpClientLayer(input.httpClientLayer, input.staticOAuthBearer === true)
+    : undefined;
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
@@ -378,10 +636,18 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) => {
-      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
-      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
-      return connectSse;
+    Effect.catchTags({
+      McpOAuthReauthorizationRequired: Effect.fail,
+      McpConnectionError: (error) => {
+        if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
+        if (error.failureKind !== "protocol") return Effect.fail(error);
+        return connectSse.pipe(
+          Effect.catchTags({
+            McpOAuthReauthorizationRequired: Effect.fail,
+            McpConnectionError: (sseError) => Effect.fail(autoTransportFailure(error, sseError)),
+          }),
+        );
+      },
     }),
   );
 };

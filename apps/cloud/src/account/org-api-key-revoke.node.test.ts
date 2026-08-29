@@ -111,6 +111,7 @@ const stubAutumn = Layer.succeed(AutumnService)({
   ensureCustomer: () => Effect.die("revoke does not touch billing"),
   checkExecutionBalance: () => Effect.die("revoke does not touch billing"),
   trackExecution: () => Effect.void,
+  setMemberSeats: () => Effect.void,
 });
 
 /**

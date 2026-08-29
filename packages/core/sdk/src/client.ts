@@ -168,7 +168,18 @@ export interface IntegrationAccountHandoff {
     readonly clientId?: string;
     readonly authorizationUrl?: string;
     readonly tokenUrl?: string;
-    readonly resource?: string;
+    /** RFC 8707 resource indicator. On a reconnect handoff this is the STORED
+     *  client's value, and an EXPLICIT null means the stored client was
+     *  registered WITHOUT a resource indicator — that absence must survive a
+     *  re-registration (some servers reject any `resource` parameter).
+     *  Undefined means no stored value was carried. */
+    readonly resource?: string | null;
+    /** Reconnect only: the stored client binding is an auto-minted DCR client
+     *  (or its row is gone), so the modal may re-run the automatic
+     *  probe/registration flow. Absent or false pins the reconnect to the
+     *  stored client — a static/BYO or first-party binding must never be
+     *  silently rebound to an automatic client. */
+    readonly dynamicRegistration?: boolean;
   };
 }
 

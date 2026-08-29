@@ -11,12 +11,20 @@ export type McpTestServer = {
   readonly endpoint: string;
   /** Number of MCP sessions created (each connect = 1 session) */
   readonly sessionCount: () => number;
+  /** Requests the server has accepted and not yet finished answering. */
+  readonly inFlightRequests: () => number;
   readonly requests: Effect.Effect<readonly McpTestRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
   /** Drops all server-side session registrations without notifying clients. */
   readonly forgetSessions: Effect.Effect<void>;
   /** Rejects the next request carrying an MCP session id with this status. */
   readonly rejectNextSessionRequest: (status: number) => Effect.Effect<void>;
+  /** From now on, rejects every session-carrying POST whose JSON-RPC body
+   *  names this method with the given status (401 answers with the same
+   *  WWW-Authenticate shape as the auth gate). Models a bearer revoked right
+   *  after the handshake: `initialize` succeeds, the named request meets the
+   *  auth wall. */
+  readonly rejectSessionMethod: (method: string, status: number) => Effect.Effect<void>;
 };
 
 export type McpTestRequest = {
@@ -90,6 +98,29 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
       const path = options.path ?? "/";
       let sessions = 0;
       let nextSessionRequestStatus: number | undefined;
+      let sessionMethodRejection: { readonly method: string; readonly status: number } | undefined;
+
+      const writeUnauthorized = (response: http.ServerResponse, origin: string) =>
+        writeJson(
+          response,
+          401,
+          { error: "invalid_token" },
+          {
+            "www-authenticate":
+              options.auth?.wwwAuthenticate ??
+              `Bearer resource_metadata="${origin}${protectedResourcePath}${path}", error="invalid_token"`,
+          },
+        );
+
+      const namesJsonRpcMethod = (parsedBody: unknown, method: string): boolean => {
+        const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+        return messages.some(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            (message as { readonly method?: unknown }).method === method,
+        );
+      };
 
       const handleMcpRequest = (
         request: http.IncomingMessage,
@@ -139,16 +170,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           if (options.auth) {
             const accepted = yield* options.auth.validateAuthorization(authorization);
             if (!accepted) {
-              writeJson(
-                response,
-                401,
-                { error: "invalid_token" },
-                {
-                  "www-authenticate":
-                    options.auth.wwwAuthenticate ??
-                    `Bearer resource_metadata="${origin}${protectedResourcePath}${path}", error="invalid_token"`,
-                },
-              );
+              writeUnauthorized(response, origin);
               return;
             }
           }
@@ -167,6 +189,24 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           }
 
           if (existingTransport) {
+            const rejection = sessionMethodRejection;
+            if (rejection !== undefined && request.method === "POST") {
+              const body = yield* readRequestBody(request);
+              const parsedBody = Option.getOrUndefined(decodeJsonBody(body));
+              if (namesJsonRpcMethod(parsedBody, rejection.method)) {
+                if (rejection.status === 401 && options.auth) {
+                  writeUnauthorized(response, origin);
+                } else {
+                  writeText(response, rejection.status, `Forced HTTP ${rejection.status}`);
+                }
+                return;
+              }
+              yield* Effect.tryPromise({
+                try: () => existingTransport.handleRequest(request, response, parsedBody),
+                catch: (cause) => new McpTestServerError({ cause }),
+              });
+              return;
+            }
             yield* Effect.tryPromise({
               try: () => existingTransport.handleRequest(request, response),
               catch: (cause) => new McpTestServerError({ cause }),
@@ -222,7 +262,16 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           ),
         );
 
+      // An abandoned SSE `GET` leaves the session gone but the request open,
+      // which `sessionCount` cannot see and socket counting cannot either
+      // (keep-alive holds idle sockets open regardless).
+      let inFlight = 0;
+
       const nodeServer = http.createServer((request, response) => {
+        inFlight += 1;
+        response.once("close", () => {
+          inFlight -= 1;
+        });
         void Effect.runPromise(handleMcpRequest(request, response));
       });
 
@@ -249,12 +298,17 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
         url: endpoint,
         endpoint,
         sessionCount: () => sessions,
+        inFlightRequests: () => inFlight,
         requests: Ref.get(requests),
         clearRequests: Ref.set(requests, []),
         forgetSessions: Effect.sync(() => transports.clear()),
         rejectNextSessionRequest: (status: number) =>
           Effect.sync(() => {
             nextSessionRequestStatus = status;
+          }),
+        rejectSessionMethod: (method: string, status: number) =>
+          Effect.sync(() => {
+            sessionMethodRejection = { method, status };
           }),
         close: Effect.gen(function* () {
           for (const transport of allTransports) {
@@ -619,6 +673,18 @@ export const makeAnnotationsMcpServer = () => {
   server.registerTool(
     "ping",
     { description: "An unannotated tool", inputSchema: {} },
+    async () => ({ content: [] }),
+  );
+
+  // Host-only routing/policy hints the MCP spec reserves on `Tool._meta`. They
+  // are not part of the closed `annotations` set and are never shown to a model.
+  server.registerTool(
+    "meta_stamped",
+    {
+      description: "A tool carrying reserved `_meta`",
+      inputSchema: {},
+      _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+    },
     async () => ({ content: [] }),
   );
 

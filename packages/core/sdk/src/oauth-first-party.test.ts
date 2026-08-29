@@ -199,6 +199,42 @@ describe("first-party oauth clients", () => {
     ),
   );
 
+  it.effect("applies first-party lifecycle scopes, separators, and authorize parameters", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read", "offline_access"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [
+            {
+              ...firstPartyClientFor(server),
+              allowedScopes: ["read", "offline_access"],
+              additionalAuthorizationScopes: ["offline_access"],
+              authorizationScopeSeparator: ",",
+              authorizationExtraParams: { audience: "api.example.com", prompt: "consent" },
+            },
+          ],
+        });
+        yield* executor.acme.seed(["read"]);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: FIRST_PARTY,
+          clientOwner: "org",
+          name: ConnectionName.make("lifecycle"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const authorizationUrl = new URL(started.authorizationUrl);
+        expect(authorizationUrl.searchParams.get("scope")).toBe("read,offline_access");
+        expect(authorizationUrl.searchParams.get("audience")).toBe("api.example.com");
+        expect(authorizationUrl.searchParams.get("prompt")).toBe("consent");
+      }),
+    ),
+  );
+
   it.effect("refresh resolves the config-declared client (no oauth_client row exists)", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -284,6 +320,71 @@ describe("first-party oauth clients", () => {
         expect(firstParty.clientId).toBe("test-client");
         expect(firstParty.resource).toBe(server.resourceUrl);
         expect("clientSecret" in firstParty).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("an unlisted first-party app is withheld from listings but still refreshes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const harness = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [{ ...firstPartyClientFor(server), unlisted: true }],
+        });
+        const { executor, config } = harness;
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("byo-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "byo-client",
+          clientSecret: "byo-secret",
+        });
+
+        // Withheld from the surface that OFFERS an app for a new connection.
+        const clients = yield* executor.oauth.listClients();
+        expect(clients.map((c) => String(c.slug))).toEqual(["byo-app"]);
+
+        // …yet the app itself is untouched: a connection resolves, mints, and
+        // renews through it exactly as a listed one would.
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: FIRST_PARTY,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        const firstToken = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.main.whoami"),
+          {},
+        )) as { token: string };
+
+        // Force expiry so the next resolve must refresh through the config client.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+
+        const refreshedToken = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.main.whoami"),
+          {},
+        )) as { token: string };
+        expect(refreshedToken.token).not.toBe(firstToken.token);
+        expect(yield* server.acceptsAccessToken(refreshedToken.token)).toBe(true);
       }),
     ),
   );

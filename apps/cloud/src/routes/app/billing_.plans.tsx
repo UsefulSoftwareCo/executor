@@ -117,29 +117,32 @@ const ENTERPRISE_FEATURES = [
   "Security reviews, DPA & SOC 2 on request",
 ];
 
-const PLAN_META: Record<string, { tagline: string; inherits?: string; features: string[] }> = {
+// Price display is hardcoded alongside the feature copy: Team's price lives
+// on its per-seat `members` item in Autumn, not the plan-level `price` the
+// SDK surfaces, so there is no live field to render it from.
+const PLAN_META: Record<
+  string,
+  {
+    tagline: string;
+    inherits?: string;
+    features: string[];
+    price: { label: string; suffix?: string };
+  }
+> = {
   free: {
     tagline: "For small teams getting started",
-    features: [
-      "Up to 3 members",
-      "100,000 included executions per month",
-      "$0.20 per 1,000 additional executions",
-      "Unlimited sources",
-    ],
+    price: { label: "$0", suffix: "USD / month" },
+    features: ["Up to 3 members", "100,000 executions per month", "Unlimited sources"],
   },
   team: {
     tagline: "For growing organizations",
-    features: [
-      "Unlimited members",
-      "250,000 included executions per month",
-      "5 minute execution timeout",
-      "Join by team domain",
-      "$0.20 per 1,000 additional executions",
-    ],
+    price: { label: "$15", suffix: "USD / member / month" },
+    features: ["Unlimited executions", "Verified domains & join by team domain"],
   },
   enterprise: {
     tagline: "For orgs with custom needs",
     inherits: "Team",
+    price: { label: "Custom" },
     features: ENTERPRISE_FEATURES,
   },
 };
@@ -278,15 +281,10 @@ function PlansPage() {
 
                   <div className="mt-4 flex items-baseline gap-1.5">
                     <span className="text-2xl font-semibold text-foreground tabular-nums">
-                      {plan.id === "enterprise" ? "Custom" : `$${plan.price?.amount ?? 0}`}
+                      {meta.price.label}
                     </span>
-                    {plan.id !== "enterprise" && plan.price?.interval && (
-                      <span className="text-sm text-muted-foreground">
-                        USD / org / {plan.price.interval}
-                      </span>
-                    )}
-                    {plan.id !== "enterprise" && !plan.price?.interval && (
-                      <span className="text-sm text-muted-foreground">USD</span>
+                    {meta.price.suffix && (
+                      <span className="text-sm text-muted-foreground">{meta.price.suffix}</span>
                     )}
                   </div>
 
@@ -403,7 +401,8 @@ function EnterpriseContactDialog() {
           Contact us
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      {/* Static contact details only: clicking away dismisses it. */}
+      <DialogContent dismissOnOutsideClick>
         <DialogHeader>
           <DialogTitle>Talk to us about Enterprise</DialogTitle>
           <DialogDescription>
@@ -451,7 +450,8 @@ function SlackContactCta() {
               <span aria-hidden>→</span>
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          {/* Static contact details only: clicking away dismisses it. */}
+          <DialogContent dismissOnOutsideClick>
             <DialogHeader>
               <DialogTitle>Get in touch on Slack</DialogTitle>
               <DialogDescription>

@@ -38,7 +38,7 @@ const DECLARED_SCOPES = ["calendar", "gmail", "drive", "sheets"] as const;
 const makeScopePluginWithId = <const TId extends string>(
   id: TId,
   config: { readonly scopes: readonly string[] | null },
-  options: { readonly discoversScopes?: boolean } = {},
+  options: { readonly discoversScopes?: boolean; readonly discoveryUrl?: string } = {},
 ) =>
   definePlugin(() => ({
     id,
@@ -62,7 +62,7 @@ const makeScopePluginWithId = <const TId extends string>(
             kind: "oauth",
             template: String(TEMPLATE),
             ...(options.discoversScopes
-              ? { oauth: { discoveryUrl: `https://${id}.example/mcp` } }
+              ? { oauth: { discoveryUrl: options.discoveryUrl ?? `https://${id}.example/mcp` } }
               : {}),
           },
         ];
@@ -495,19 +495,28 @@ describe("oauth.start integration-driven scopes", () => {
   );
 
   it.effect(
-    "(h) for MCP, a client with no resource fails start (discovery cannot run without one)",
+    "(h) for MCP, a client with no resource still discovers scopes from the integration's discovery URL",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          // #1789 — a user may CLEAR the client's RFC 8707 resource (Entra v2
+          // rejects the parameter). Scope discovery must not die with it: the
+          // integration's own discovery URL (the MCP endpoint) is probed
+          // instead, and the authorize request carries no `resource`.
           const server = yield* serveMetadataServer({ prm: { scopesSupported: ["read"] } });
           const plugins = [
             memoryCredentialsPlugin(),
-            makeMcpScopePlugin({ scopes: null }),
+            makeScopePluginWithId(
+              "mcp",
+              { scopes: null },
+              { discoversScopes: true, discoveryUrl: server.mcpResourceUrl },
+            ),
           ] as const;
           const { executor } = yield* makeTestWorkspaceHarness({ plugins });
           yield* executor.mcp.seed();
 
-          // No `resource` on the client — discovery has nothing to probe.
+          // No `resource` on the client — the wire parameter is absent by
+          // choice, while discovery still has the integration's URL.
           yield* executor.oauth.createClient({
             owner: "org",
             slug: CLIENT,
@@ -518,17 +527,20 @@ describe("oauth.start integration-driven scopes", () => {
             clientSecret: "test-secret",
           });
 
-          const exit = yield* Effect.exit(
-            executor.oauth.start({
-              owner: "org",
-              client: CLIENT,
-              clientOwner: "org",
-              name: ConnectionName.make("main"),
-              integration: INTEG,
-              template: TEMPLATE,
-            }),
-          );
-          expect(Exit.isFailure(exit)).toBe(true);
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["read"]);
+          // The cleared resource stays cleared on the wire.
+          expect(new URL(started.authorizationUrl).searchParams.has("resource")).toBe(false);
         }),
       ),
   );

@@ -1,5 +1,26 @@
 # @executor-js/plugin-keychain
 
+## 1.6.3
+
+### Patch Changes
+
+- Updated dependencies [[`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/sdk@1.6.3
+
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+
+## 1.6.1
+
+### Patch Changes
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+
 ## 1.6.0
 
 ### Patch Changes

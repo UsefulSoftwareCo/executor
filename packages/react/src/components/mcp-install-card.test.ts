@@ -1,6 +1,31 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { buildMcpHttpEndpoint, buildMcpInstallCommand, shellQuoteWord } from "./mcp-install-card";
+import {
+  buildMcpHttpEndpoint,
+  buildMcpInstallCommand,
+  mcpInstallPreferencesStorageKey,
+  shellQuoteWord,
+} from "./mcp-install-card";
+
+describe("MCP install preference storage key", () => {
+  it("gives each organization its own key", () => {
+    // `localStorage` is per-origin. Two orgs signed in through one browser —
+    // or two people sharing a machine — must not inherit each other's
+    // transport and elicitation choices, because the command they render is
+    // different.
+    expect(mcpInstallPreferencesStorageKey("acme")).not.toBe(
+      mcpInstallPreferencesStorageKey("globex"),
+    );
+    expect(mcpInstallPreferencesStorageKey("acme")).toBe("executor.mcpInstallPreferences.v1.acme");
+  });
+
+  it("falls back to one bucket on hosts with no organization", () => {
+    // Local and desktop are single-user and carry no org slug; they get a
+    // stable key rather than an unscoped one shared with every cloud org.
+    expect(mcpInstallPreferencesStorageKey(null)).toBe("executor.mcpInstallPreferences.v1.local");
+    expect(mcpInstallPreferencesStorageKey(null)).not.toBe(mcpInstallPreferencesStorageKey("acme"));
+  });
+});
 
 describe("MCP install command rendering", () => {
   it("quotes shell words without giving scope paths command syntax", () => {

@@ -52,6 +52,7 @@ import {
   OTEL_MAX_SPAN_QUEUE_SIZE,
   recordForceFlush,
 } from "./memory-metrics";
+import { UrlRedactingSpanProcessor } from "./redact-span-urls";
 
 const SERVICE_NAME = "executor-cloud";
 
@@ -124,7 +125,12 @@ const ensureGlobalTracerProvider = (): boolean => {
         }),
         OTEL_MAX_SPAN_QUEUE_SIZE,
       );
-      return [countingProcessor];
+      // Outermost wrapper: every span the isolate produces passes through here
+      // before it is queued for export, so credential-bearing query parameters
+      // (OAuth `code`/`state` on `/api/oauth/callback`, which Effect's
+      // HttpMiddleware.tracer stamps into `url.full`/`url.query`
+      // unconditionally) are stripped no matter which route emitted the span.
+      return [new UrlRedactingSpanProcessor(countingProcessor)];
     })(),
   });
   // Skip `provider.register()` — its StackContextManager / W3C propagator

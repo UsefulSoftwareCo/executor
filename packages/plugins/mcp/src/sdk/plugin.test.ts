@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Predicate, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
@@ -102,6 +102,132 @@ const serveCallToolServer = (callTool: CallToolResponder) =>
       });
     }),
   );
+
+const rejectedOAuthDiscoveryLayer = (endpoint: string) => {
+  const issuer = new URL(endpoint).origin;
+  const requests: string[] = [];
+  const layer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      const response =
+        request.url === endpoint
+          ? new Response("", { status: 401 })
+          : url.pathname === "/.well-known/oauth-protected-resource/mcp"
+            ? Response.json({ resource: endpoint, authorization_servers: [issuer] })
+            : url.pathname === "/.well-known/oauth-authorization-server"
+              ? Response.json({
+                  issuer,
+                  authorization_endpoint: `${issuer}/authorize`,
+                  token_endpoint: `${issuer}/token`,
+                  registration_endpoint: `${issuer}/register`,
+                  response_types_supported: ["code"],
+                  code_challenge_methods_supported: ["S256"],
+                })
+              : url.pathname === "/register"
+                ? Response.json(
+                    {
+                      client_id: "replacement-client",
+                      redirect_uris: ["http://localhost/oauth/callback"],
+                      grant_types: ["authorization_code", "refresh_token"],
+                      response_types: ["code"],
+                      token_endpoint_auth_method: "none",
+                    },
+                    { status: 201 },
+                  )
+                : new Response("unexpected request", { status: 500 });
+      return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+    }),
+  );
+  return { layer, requests };
+};
+
+const clientRpcOf = (request: HttpClientRequest.HttpClientRequest): JsonRpcRequest | undefined =>
+  Predicate.isTagged(request.body, "Uint8Array")
+    ? Option.getOrUndefined(decodeJsonRpcRequest(new TextDecoder().decode(request.body.body)))
+    : undefined;
+
+/** Streamable-http fixture for the post-handshake auth wall: the handshake
+ *  methods succeed and `tools/list` answers 401 for the first
+ *  `revokedListResponses` calls (Infinity = the bearer stays revoked). The
+ *  OAuth discovery + DCR endpoints are served so an SDK fallback that DID see
+ *  the 401 could register — the ledger proves it never gets there. Entries are
+ *  `pathname` or `pathname#jsonRpcMethod`. */
+const listRejectionFixtureLayer = (endpoint: string, revokedListResponses: number) => {
+  const issuer = new URL(endpoint).origin;
+  const requests: string[] = [];
+  let remaining = revokedListResponses;
+  const jsonRpc = (rpc: JsonRpcRequest, result: unknown) =>
+    Response.json({ jsonrpc: "2.0", id: rpc.id ?? null, result });
+  const layer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      const url = new URL(request.url);
+      const rpc = request.url === endpoint ? clientRpcOf(request) : undefined;
+      requests.push(rpc === undefined ? url.pathname : `${url.pathname}#${rpc.method}`);
+      const respond = (response: Response) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      if (request.url === endpoint) {
+        if (rpc === undefined) return respond(new Response("SSE disabled", { status: 405 }));
+        if (rpc.method === "initialize") {
+          return respond(
+            jsonRpc(rpc, {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "list-reject-fixture", version: "1.0.0" },
+            }),
+          );
+        }
+        if (rpc.method === "notifications/initialized") {
+          return respond(new Response("", { status: 202 }));
+        }
+        if (rpc.method === "tools/list") {
+          if (remaining > 0) {
+            remaining -= 1;
+            return respond(new Response("", { status: 401 }));
+          }
+          return respond(
+            jsonRpc(rpc, {
+              tools: [
+                {
+                  name: "echo_back",
+                  description: "Echoes",
+                  inputSchema: { type: "object", properties: {} },
+                },
+              ],
+            }),
+          );
+        }
+        return respond(new Response("Unexpected JSON-RPC method", { status: 400 }));
+      }
+      const response =
+        url.pathname === "/.well-known/oauth-protected-resource/mcp"
+          ? Response.json({ resource: endpoint, authorization_servers: [issuer] })
+          : url.pathname === "/.well-known/oauth-authorization-server"
+            ? Response.json({
+                issuer,
+                authorization_endpoint: `${issuer}/authorize`,
+                token_endpoint: `${issuer}/token`,
+                registration_endpoint: `${issuer}/register`,
+                response_types_supported: ["code"],
+                code_challenge_methods_supported: ["S256"],
+              })
+            : url.pathname === "/register"
+              ? Response.json(
+                  {
+                    client_id: "replacement-client",
+                    redirect_uris: ["http://localhost/oauth/callback"],
+                    grant_types: ["authorization_code", "refresh_token"],
+                    response_types: ["code"],
+                    token_endpoint_auth_method: "none",
+                  },
+                  { status: 201 },
+                )
+              : new Response("unexpected request", { status: 500 });
+      return respond(response);
+    }),
+  );
+  return { layer, requests };
+};
 
 // `tools/call` responders. Both embed a "do-not-leak" sentinel the assertions
 // confirm never reaches the caller-facing failure.
@@ -239,6 +365,45 @@ describe("extractManifestFromListToolsResult", () => {
       expect(result.tools[2]!.annotations).toBeUndefined();
     }),
   );
+
+  it.effect("carries the reserved `_meta` map through verbatim", () =>
+    Effect.sync(() => {
+      const meta = {
+        serverName: "time",
+        shortDescription: "Current time",
+        defer_loading: false,
+        nested: { any: ["shape"] },
+      };
+
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          {
+            name: "time_get_current_time",
+            description: "Get the current time",
+            inputSchema: { type: "object" },
+            _meta: meta,
+          },
+          { name: "no_meta", description: "Has no _meta" },
+        ],
+      });
+
+      expect(result.tools[0]!._meta).toEqual(meta);
+      expect(result.tools[1]!._meta).toBeUndefined();
+    }),
+  );
+
+  // `_meta` is opaque and server-controlled, so a value that does not match the
+  // spec's map shape must not take the rest of the list down with it.
+  it.effect("ignores a malformed `_meta` without dropping the tool", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [{ name: "odd_meta", _meta: "not-a-map" }, { name: "plain" }],
+      });
+
+      expect(result.tools.map((tool) => tool.toolName)).toEqual(["odd_meta", "plain"]);
+      expect(result.tools[0]!._meta).toBeUndefined();
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -296,6 +461,128 @@ describe("joinToolPath", () => {
 // ---------------------------------------------------------------------------
 
 describe("mcpPlugin", () => {
+  it.effect("surfaces OAuth reauthorization from resolveTools as expired health", () =>
+    Effect.gen(function* () {
+      const endpoint = "https://mcp.example.test/mcp";
+      const plugin = mcpPlugin();
+      const ledger = rejectedOAuthDiscoveryLayer(endpoint);
+      const result = yield* plugin.resolveTools!({
+        config: {
+          transport: "remote",
+          endpoint,
+          remoteTransport: "streamable-http",
+          authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+        },
+        connection: {
+          owner: "org",
+          integration: IntegrationSlug.make("oauth_mcp"),
+          name: ConnectionName.make("main"),
+        },
+        template: AuthTemplateSlug.make("oauth2"),
+        getValues: () => Effect.succeed({ token: "rejected-token" }),
+        getValue: () => Effect.succeed("rejected-token"),
+        httpClientLayer: ledger.layer,
+        ctx: null as never,
+        integration: null as never,
+        storage: {},
+      });
+
+      expect(result).toMatchObject({
+        tools: [],
+        incomplete: true,
+        health: {
+          status: "expired",
+          detail: expect.stringContaining("reauthorization"),
+        },
+      });
+      expect(ledger.requests.filter((url) => new URL(url).pathname === "/register")).toEqual([]);
+    }),
+  );
+
+  // The connect path above classifies a handshake 401. This covers the other
+  // half of the window: the bearer is honoured at `initialize` and revoked by
+  // the time `tools/list` runs, so the reauthorization signal surfaces from
+  // the LISTING failure, not the connect failure.
+  it.effect(
+    "surfaces OAuth reauthorization when tools/list rejects a bearer the handshake accepted",
+    () =>
+      Effect.gen(function* () {
+        const endpoint = "https://mcp.example.test/mcp";
+        const plugin = mcpPlugin();
+        const ledger = listRejectionFixtureLayer(endpoint, Number.POSITIVE_INFINITY);
+        const result = yield* plugin.resolveTools!({
+          config: {
+            transport: "remote",
+            endpoint,
+            remoteTransport: "streamable-http",
+            authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+          },
+          connection: {
+            owner: "org",
+            integration: IntegrationSlug.make("oauth_mcp"),
+            name: ConnectionName.make("main"),
+          },
+          template: AuthTemplateSlug.make("oauth2"),
+          getValues: () => Effect.succeed({ token: "revoked-after-handshake" }),
+          getValue: () => Effect.succeed("revoked-after-handshake"),
+          httpClientLayer: ledger.layer,
+          ctx: null as never,
+          integration: null as never,
+          storage: {},
+        });
+
+        expect(result).toMatchObject({
+          tools: [],
+          incomplete: true,
+          health: {
+            status: "expired",
+            detail: expect.stringContaining("reauthorization"),
+          },
+        });
+        expect(ledger.requests.filter((entry) => entry === "/register")).toEqual([]);
+        // Exactly 2: the original tools/list plus the adapter's single
+        // read-only replay. A third request would mean the replay loops; a
+        // single one would mean a lone 401 classified without the
+        // transient-blip re-sample.
+        expect(ledger.requests.filter((entry) => entry === "/mcp#tools/list")).toHaveLength(2);
+      }),
+  );
+
+  // A LONE 401 is not evidence of a revoked bearer: transient upstream blips
+  // must not stamp reauthorization-required. The adapter replays the request
+  // once and only a repeated 401 classifies.
+  it.effect("retries a lone tools/list 401 instead of demanding reauthorization", () =>
+    Effect.gen(function* () {
+      const endpoint = "https://mcp.example.test/mcp";
+      const plugin = mcpPlugin();
+      const ledger = listRejectionFixtureLayer(endpoint, 1);
+      const result = yield* plugin.resolveTools!({
+        config: {
+          transport: "remote",
+          endpoint,
+          remoteTransport: "streamable-http",
+          authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+        },
+        connection: {
+          owner: "org",
+          integration: IntegrationSlug.make("oauth_mcp"),
+          name: ConnectionName.make("main"),
+        },
+        template: AuthTemplateSlug.make("oauth2"),
+        getValues: () => Effect.succeed({ token: "blipped-token" }),
+        getValue: () => Effect.succeed("blipped-token"),
+        httpClientLayer: ledger.layer,
+        ctx: null as never,
+        integration: null as never,
+        storage: {},
+      });
+
+      expect(result.incomplete).not.toBe(true);
+      expect(result.tools.map((tool) => String(tool.name))).toEqual(["echo_back"]);
+      expect(ledger.requests.filter((entry) => entry === "/mcp#tools/list")).toHaveLength(2);
+    }),
+  );
+
   it.effect("creates executor with mcp plugin", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
@@ -343,6 +630,23 @@ describe("mcpPlugin", () => {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const integrations = yield* executor.integrations.list();
       expect(integrations.filter((i) => i.kind === "mcp")).toHaveLength(0);
+    }),
+  );
+
+  it.effect("projects an MCP server family into the integration catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      yield* executor.mcp.addServer({
+        name: "Cloudflare Docs",
+        family: "cloudflare",
+        endpoint: "https://example.com/mcp",
+        slug: "cloudflare_docs",
+      });
+
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.find((item) => item.slug === "cloudflare_docs")?.family).toBe(
+        "cloudflare",
+      );
     }),
   );
 
@@ -557,6 +861,46 @@ describe("mcpPlugin", () => {
     ),
   );
 
+  it.effect("oauth.start uses declared MCP scopes when the client has no resource", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["mcp"] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "GitLab MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "gitlab_mcp",
+          authenticationTemplate: [{ kind: "oauth2", scopes: ["mcp"] }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("gitlab-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("gitlab-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("gitlab_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["mcp"]);
+      }),
+    ),
+  );
+
   // When discovery fails (auth, network, etc.) the connection still lands with
   // an empty tool set so the user can retry via `connections.refresh` once they
   // fix the underlying problem.
@@ -650,6 +994,39 @@ describe("mcpPlugin", () => {
       ),
     );
   }
+
+  // The lone-401 replay above is restricted to read-only methods. A
+  // `tools/call` may have executed its side effect before the server answered
+  // 401 (HTTP gives no such guarantee), so the adapter must never re-send it
+  // — the single 401 classifies reauthorization directly instead.
+  it.effect("never replays a tools/call 401: the action must not run twice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let callToolRequests = 0;
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_replay_401",
+          // oauth: the transport gets an authProvider, which is the
+          // staticOAuthBearer path where the adapter's 401 replay lives.
+          oauth: true,
+          callTool: () => {
+            callToolRequests += 1;
+            return HttpServerResponse.text("do-not-leak: revoked mid-session", { status: 401 });
+          },
+        });
+
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_reauth_required",
+            details: { category: "authentication" },
+          },
+        });
+        expect(callToolRequests, "a 401 tools/call must reach the server exactly once").toBe(1);
+      }),
+    ),
+  );
 
   it.effect(
     "classifies a scope-insufficient 403 as oauth_scope_insufficient, not connection_rejected",
@@ -966,6 +1343,31 @@ describe("MCP destructiveHint → requiresApproval", () => {
       expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
     }),
   );
+
+  // Executor's `Tool` has no `_meta` field, so the reserved MCP map rides in
+  // the `mcp` stamp the plugin persists into the tool row's annotations. A host
+  // embedding the plugin reads it back from there.
+  it.effect("persists the tool's reserved `_meta` into the catalog stamp", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+
+      const stamped = tools.find((t) => String(t.name) === "meta_stamped");
+      expect(stamped?.annotations).toMatchObject({
+        mcp: {
+          toolName: "meta_stamped",
+          _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+        },
+      });
+
+      const ping = tools.find((t) => String(t.name) === "ping");
+      expect(
+        (ping?.annotations as { readonly mcp?: { readonly _meta?: unknown } })?.mcp?._meta,
+      ).toBeUndefined();
+    }),
+  );
 });
 
 describe("userFacingProbeMessage", () => {
@@ -1031,6 +1433,106 @@ describe("mcpPlugin detect URL-token fallback", () => {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
       expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
+    }),
+  );
+});
+
+describe("mcpPlugin endpoint telemetry", () => {
+  // A credential in the endpoint's query string is a first-class supported
+  // input shape here (the shipped preset list carries one, and the add-flow
+  // passes the raw paste through), so the endpoint must be sanitized before it
+  // is stamped onto a span. Synthetic placeholders only.
+  const QUERY_TOKEN = "synthetic-endpoint-token";
+  const USERINFO_PASSWORD = "synthetic-endpoint-password";
+
+  /** Records every span the program opens, so the stamped attributes can be
+   *  read back. Port 1 connection-refuses immediately, so detection resolves
+   *  without any network dependency. */
+  const recordingTracer = (spans: Array<Tracer.NativeSpan>) =>
+    Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+      context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
+    });
+
+  /** Serializes spans the way the OTel export bridge would see them —
+   *  attributes, events, and, for a failed span, the error channel
+   *  (`@effect/opentelemetry` stamps each pretty error's message/stack as an
+   *  exception EVENT and `errors[0].message` as `status.message`). A
+   *  credential hiding in any of those channels fails the assertion, not just
+   *  one hiding in an attribute. */
+  const serializeExportChannels = (spans: ReadonlyArray<Tracer.NativeSpan>): string =>
+    JSON.stringify(
+      spans.map((span) => ({
+        attributes: Object.fromEntries(span.attributes.entries()),
+        events: span.events.map(([name, , attributes]) => ({ name, attributes })),
+        errors:
+          Predicate.isTagged(span.status, "Ended") && Exit.isFailure(span.status.exit)
+            ? Cause.prettyErrors(span.status.exit.cause).map((prettyError) => ({
+                name: prettyError.name,
+                message: prettyError.message,
+                stack: prettyError.stack ?? "",
+              }))
+            : [],
+      })),
+    );
+
+  it.effect("stamps a sanitized endpoint on the detect span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.integrations
+        .detect(`http://svc-user:${USERINFO_PASSWORD}@127.0.0.1:1/api/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const detect = spans.find((span) => span.name === "mcp.plugin.detect");
+      expect(detect).toBeDefined();
+      expect(detect?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/api/mcp");
+      // The non-sensitive companions keep the trace debuggable.
+      expect(detect?.attributes.get("mcp.endpoint.origin")).toBe("http://127.0.0.1:1");
+      expect(detect?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+      expect(detect?.attributes.get("mcp.endpoint.has_userinfo")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
+      expect(serialized).not.toContain(USERINFO_PASSWORD);
+    }),
+  );
+
+  it.effect("stamps a sanitized endpoint on the probe_endpoint span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp
+        .probeEndpoint(`http://127.0.0.1:1/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.exit, Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const probe = spans.find((span) => span.name === "mcp.plugin.probe_endpoint");
+      expect(probe).toBeDefined();
+      expect(probe?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/mcp");
+      expect(probe?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
     }),
   );
 });

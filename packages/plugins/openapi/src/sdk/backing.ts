@@ -7,12 +7,14 @@ import {
   ToolName,
   ToolResult,
   authToolFailure,
-  classifyHttpStatus,
+  classifyProbeResponse,
   detectInsufficientScope,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
   extractResponseFields,
+  pathNamesASecret,
   projectResponseFields,
+  REDACTED_SAMPLE_VALUE,
   type HealthCheckCandidate,
   type HealthCheckResponseField,
   type HealthCheckResult,
@@ -932,6 +934,7 @@ export const checkHealthOpenApi = (input: {
           status: "expired",
           checkedAt,
           detail: `Connection "${input.credential.connection}" has no resolvable credential value.`,
+          reason: "credential_missing",
         } satisfies HealthCheckResult;
       }
       const rendered = renderAuthTemplate(template, input.credential.values);
@@ -968,17 +971,40 @@ export const checkHealthOpenApi = (input: {
         status: "degraded",
         checkedAt,
         detail: scrubSecrets(`Health check request failed: ${probe.failure.message}`),
+        reason: "probe_failed",
       } satisfies HealthCheckResult;
     }
 
-    const status = classifyHttpStatus(probe.result.status);
-    const identity =
+    // Body-aware: a configuration 403 (Google accessNotConfigured /
+    // SERVICE_DISABLED) reads misconfigured, not expired.
+    const status = classifyProbeResponse(probe.result.status, probe.result.error);
+    const rawIdentity =
       status === "healthy" ? extractIdentity(probe.result.data, spec.identityField) : undefined;
+    // The identity is read straight off the raw body, so unlike the sample it
+    // passes through neither redaction pass — and it is persisted to
+    // `connection.last_health` just the same. `identityField` is user-chosen
+    // from whatever the picker listed, which on a key-listing endpoint includes
+    // `api_keys.0.value`. Run both passes over it: the key reading first, then
+    // the known-value scrub.
+    const identity =
+      rawIdentity === undefined
+        ? undefined
+        : pathNamesASecret(spec.identityField ?? "")
+          ? REDACTED_SAMPLE_VALUE
+          : scrubSecrets(rawIdentity);
     // Sample the returned body ONLY on a healthy probe: the sample exists to
     // pick an identity field, and error bodies (upstream internals, auth error
     // envelopes) have no business in the preview. Non-healthy runs carry the
     // classified `detail` instead.
-    const responseSample = status === "healthy" ? extractResponseFields(probe.result.data) : [];
+    // Same scrub the `detail` branch below uses, for the same reason: a body
+    // can echo back the key it was authenticated with. `extractResponseFields`
+    // already redacts leaves whose KEY names a credential; this covers the
+    // other direction, a credential value under an innocent-looking key. It is
+    // handed to the walker rather than mapped over the result so it runs before
+    // the 120-char truncation, which would otherwise leave an unrecognisable —
+    // and unscrubbable — prefix of a long secret.
+    const responseSample =
+      status === "healthy" ? extractResponseFields(probe.result.data, { scrub: scrubSecrets }) : [];
     return {
       status,
       httpStatus: probe.result.status,
@@ -991,6 +1017,9 @@ export const checkHealthOpenApi = (input: {
             detail: scrubSecrets(
               extractOpenApiUpstreamMessage(probe.result.error, probe.result.status),
             ),
+            // Any non-healthy classification here came from the upstream's own
+            // HTTP verdict (2xx/401/403/other → classifyProbeResponse).
+            reason: "upstream_status" as const,
           }),
     } satisfies HealthCheckResult;
   });

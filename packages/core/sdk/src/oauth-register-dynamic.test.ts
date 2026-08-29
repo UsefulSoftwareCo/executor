@@ -145,6 +145,7 @@ describe("oauth.registerDynamicClient", () => {
         expect(registerRequest!.body).toContain(FLOW_REDIRECT_URI);
         expect(registerRequest!.body).toContain("authorization_code");
         expect(registerRequest!.body).toContain("refresh_token");
+        expect(registerRequest!.body).toContain('"application_type":"web"');
         const authorizationRequest = requests.find(
           (r) => r.path === "/authorize" && r.method === "GET",
         );
@@ -156,6 +157,39 @@ describe("oauth.registerDynamicClient", () => {
         expect(tokenRequest).toBeDefined();
         expect(tokenRequest!.body).not.toContain("client_secret");
         expect(new URLSearchParams(tokenRequest!.body).get("resource")).toBe(server.mcpResourceUrl);
+      }),
+    ),
+  );
+
+  it.effect("registers loopback callbacks as native applications", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: "http://127.0.0.1:5394/api/oauth/callback",
+          originIntegration: INTEG,
+        });
+
+        const requests = yield* server.requests;
+        const registerRequest = requests.find(
+          (request) => request.path === "/register" && request.method === "POST",
+        );
+        expect(registerRequest).toBeDefined();
+        expect(registerRequest!.body).toContain('"application_type":"native"');
       }),
     ),
   );
@@ -620,6 +654,56 @@ describe("oauth.registerDynamicClient", () => {
         expect(String(connection.address)).toBe("tools.acme.org.main");
       }),
     ),
+  );
+
+  // After the A→B drift recovery above, the owner holds TWO matching-resource
+  // clients: the stale one (bound to redirect A, oldest) and the recovery one
+  // (bound to redirect B). The reuse decision must prefer a candidate matching
+  // resource AND the current redirect across ALL candidates — taking only the
+  // OLDEST matching-resource candidate and then checking its redirect would
+  // mint yet another client on EVERY reconnect after the first drift.
+  it.effect(
+    "reuses the drift-recovery client on later reconnects instead of registering again",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+          const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+          const registerAt = (slug: string, redirectUri: string) =>
+            executor.oauth.registerDynamicClient({
+              owner: "org",
+              slug: OAuthClientSlug.make(slug),
+              issuer: probe.issuer,
+              registrationEndpoint: probe.registrationEndpoint!,
+              authorizationUrl: probe.authorizationUrl,
+              tokenUrl: probe.tokenUrl,
+              resource: probe.resource,
+              scopes: ["read"],
+              tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+              clientName: "Acme DCR",
+              redirectUri,
+              originIntegration: INTEG,
+            });
+
+          // Original sandbox at redirect A, then the drift recovery at redirect B.
+          yield* registerAt("original-sandbox", FLOW_REDIRECT_URI);
+          const driftedRedirectUri = "https://localhost:6410/api/oauth/callback";
+          const recovered = yield* registerAt("recreated-sandbox", driftedRedirectUri);
+          yield* server.clearRequests;
+
+          // A later reconnect at the SAME (current) redirect B: the recovery
+          // client already matches resource + redirect, so it is reused — no
+          // third registration, no third row.
+          const reused = yield* registerAt("later-reconnect", driftedRedirectUri);
+          expect(registerRequestCount(yield* server.requests)).toBe(0);
+          expect(String(reused)).toBe(String(recovered));
+          const clients = yield* executor.oauth.listClients();
+          expect(clients).toHaveLength(2);
+        }),
+      ),
   );
 
   // Regression: Mercury's authorization server vets `client_name` and rejects

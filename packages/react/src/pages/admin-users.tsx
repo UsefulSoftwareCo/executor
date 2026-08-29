@@ -670,7 +670,8 @@ export function AdminUsersPage() {
           })}
 
       <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">
+        {/* A read-only detail panel: clicking away closes it. */}
+        <SheetContent dismissOnOutsideClick className="w-full gap-0 p-0 sm:max-w-xl">
           {selected && (
             <>
               <SheetHeader className="border-b border-border">

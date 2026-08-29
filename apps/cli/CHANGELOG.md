@@ -1,5 +1,361 @@
 # executor
 
+## 1.6.3
+
+### Patch Changes
+
+- [#1560](https://github.com/UsefulSoftwareCo/executor/pull/1560) [`8c20c33`](https://github.com/UsefulSoftwareCo/executor/commit/8c20c33817ad815b252c3d72290004905aedab10) Thanks [@Adityakk9031](https://github.com/Adityakk9031)! - **Stale tool catalogs refresh together instead of one after another, and self-host can set the freshness window**
+
+  A tools read rebuilds every connection whose catalog has gone stale. Those rebuilds each dial their own upstream, but ran strictly one after another, so a host with several stale remote catalogs paid the sum of every server's latency on the read that tripped the TTL. The upstream listings now run concurrently, bounded so a large stale set cannot open an unbounded number of listings from one read.
+
+  Only the listings overlap. Each rebuild's catalog write stays single-file, because a self-host database is one connection issuing raw `BEGIN`/`COMMIT` and a second transaction opened while one is live fails outright. A rebuild that fails now also logs a warning naming the connection and the reason, instead of disappearing: the read still succeeds on the stale-but-working catalog and the other connections still finish, but a permanently broken connection no longer re-fails silently on every read.
+
+  Self-host also exposes the freshness window as `EXECUTOR_TOOLS_SYNC_TTL_MS`. Leave it unset for the 15-minute default, or set `off` (equivalently `null` or `false`, in any case) to disable time-based re-sync and leave stale-marking and config revision as the only refresh triggers. The value forwards to the SDK verbatim, so `0` keeps its SDK meaning: every catalog is expired on every read. A malformed, negative, or too-large-to-represent value is refused at boot rather than silently falling back to the default.
+
+- [#1572](https://github.com/UsefulSoftwareCo/executor/pull/1572) [`27cb466`](https://github.com/UsefulSoftwareCo/executor/commit/27cb4664282308e86fdb43218b42fe457d22e782) Thanks [@GeiserX](https://github.com/GeiserX)! - **Irreversible cleanup now waits for the transaction to commit, and plugins can do the same**
+
+  `oauth.removeClient` deleted the client row and then deleted the client secret from the credential provider. The provider does not enlist in the caller's transaction and does not roll back with it, so an abort restored the client row while its secret stayed destroyed — a client that looks configured and can never authenticate again. The deletion now waits until the removal is durable and is discarded if the removal rolls back. With no transaction active it runs immediately, exactly as before.
+
+  Deferring the deletion is not enough on its own. The secret is stored under a key derived from the app's `(owner, slug)` identity alone, so the key outlives the row it belonged to: whoever holds that identity when the deletion finally runs owns the key. A slug registered again before the removal committed would lose the new app's secret to the old app's queued deletion — the same unauthenticatable client, reached the other way round. The deferred deletion now re-checks that the app is still gone and stands down when it is not. A removal that matched no row also no longer queues a deletion at all: it removed nothing, so it has no claim on the key, which may well hold another subject's live secret.
+
+  The same trap was reachable by plugins and they had no way out of it. `removeConnection` and `removeIntegration` run inside core's removal transaction — deliberately, so a plugin's own rows die atomically with the connection — which makes them exactly the wrong place to revoke a token at the provider's API, delete a remote object, or notify a third party. Nothing in the hooks' documentation said so, and `PluginCtx` exposed `transaction` but nothing to defer past it.
+
+  `PluginCtx` gains `afterCommit`. It runs the effect once the outermost transaction commits, discards it if that transaction rolls back, and runs it immediately when no transaction is active. The lifecycle hooks now document that they run inside core's transaction and that outside-world work belongs in `afterCommit`.
+
+  Sequencing work after your own `transaction(...)` call is not equivalent, and the documentation says so explicitly: `transaction` nests by pass-through, so inside an active transaction the inner call simply runs its effect and "afterwards" is still before any commit.
+
+- [#1569](https://github.com/UsefulSoftwareCo/executor/pull/1569) [`d874455`](https://github.com/UsefulSoftwareCo/executor/commit/d874455c5d5ea83a69e2010152aeb703d74f51c2) Thanks [@GeiserX](https://github.com/GeiserX)! - **Abandoned authorization sessions no longer keep their PKCE verifier forever**
+
+  An OAuth authorization session stores its PKCE verifier so the callback can redeem the code. `complete` discarded an expired session lazily, but an _abandoned_ flow is never completed, so that check never ran for it and nothing else swept the table — the verifier sat there in plaintext indefinitely.
+
+  Starting a new authorization now sweeps sessions that have already expired. Doing it on `start` bounds the table by how often authorization is begun rather than by how often it is abandoned, and needs no scheduler in any host. A session whose completion cannot be retried is dropped rather than left behind.
+
+  The sweep only ever reaches rows the caller can already see, so one member's authorization never touches another member's sessions. It is best-effort: a sweep that fails logs a warning and lets the authorization continue.
+
+- [#1825](https://github.com/UsefulSoftwareCo/executor/pull/1825) [`06a7b75`](https://github.com/UsefulSoftwareCo/executor/commit/06a7b75fb62ac1c3eb22e28154fc250cd32a3ccb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A console URL naming an organization you cannot see is a not-found page, every time**
+
+  Opening `/<some-other-slug>/policies` sometimes rendered the full authenticated console — sidebar, org switcher showing your OWN organization, page chrome — under an address naming an organization you are not a member of. The page body was a failing org-scoped query with a Retry button, so the workspace on screen belonged to nobody and the URL belonged to someone else.
+
+  The shell's not-found only fired once `/account/me` had answered for the URL's slug. Until then the console read its identity from the auth-hint cookie, which always names the organization the session last landed in, never the one in the address bar. So the first paint answered a question about a different organization and built a whole workspace out of it, and whether you ever saw that depended on how fast the server replied.
+
+  The shell is now built only from an answer that names the organization the URL names. A slug the current answer does not cover renders nothing at all until `/account/me` resolves for that slug, and then either the workspace or — for an organization this session cannot see — the not-found page. The URL is never rewritten: a wrong address stays a wrong address.
+
+  The ordinary cold load is untouched. The hint names the slug already in the URL, so it matches on the very first paint and the shell renders with no round trip. Only a slug the hint does not name waits: a foreign one, and the single frame after switching organizations, which now paints the organization the URL asked for instead of briefly showing the previous one.
+
+- [#1575](https://github.com/UsefulSoftwareCo/executor/pull/1575) [`e5526f3`](https://github.com/UsefulSoftwareCo/executor/commit/e5526f32b355e56aabe20024bc2f96296bfa982d) Thanks [@GeiserX](https://github.com/GeiserX)! - **GraphQL introspection no longer logs a credential carried in the endpoint URL**
+
+  `query` is a supported credential carrier, so a GraphQL endpoint can be reached with `?token=<secret>`. Introspection built its request from a URL **string**, and `HttpClientRequest.setUrl` keeps a string verbatim as `request.url`. Every `HttpClientError` renders `${method} ${request.url}` into its `message` getter, and introspection logs the raw failure cause — so on any transport failure or non-JSON response, the connection's secret was written to the process log.
+
+  The request is now built from a URL **object**, which moves the query into `request.urlParams` and clears it from `request.url`. The secret is therefore absent from the error message, and from anything else that renders the request URL. The credential still reaches the upstream: the client recombines url and urlParams when it executes the request. The endpoint's own query string is handled the same way, not just the separately-supplied query parameters, since a configured endpoint can carry a credential too.
+
+  **The query string is now normalized on the wire.** Recombination appends each pair through `URLSearchParams`, so the query is re-serialized in form-urlencoded form instead of passed through byte-for-byte:
+  - a space written as `%20` is sent as `+`
+  - `~` and `!'()` are percent-encoded
+  - a valueless `?flag` is sent as `flag=`
+
+  Key order, repeated keys, and already-encoded reserved characters are unchanged, and every parameter still decodes to the same value. This is not avoidable while the fix holds: raw query bytes only survive inside `request.url`, which is the one field every error message renders, so byte-transparency and keeping the credential out of the log cannot both hold. An upstream that signs its raw query string is the case to watch. The exact resulting URLs are pinned by test.
+
+  Two endpoints are now rejected up front with an `invalid-endpoint` failure rather than dialed:
+  - an endpoint that is not a valid URL, which cannot be split this way and would otherwise be sent without the query parameters it was asked to include
+  - an endpoint carrying userinfo (`https://user:pass@host/…`), which `URL` keeps in the origin, so it would stay in `request.url` and leak into error messages exactly the way a query-carried secret used to
+
+  Neither rejection echoes any part of the endpoint. A health check on such an integration now reports the invalid configuration and points the operator at the endpoint URL, instead of blaming the credential that was never sent.
+
+- [#1596](https://github.com/UsefulSoftwareCo/executor/pull/1596) [`b77ee69`](https://github.com/UsefulSoftwareCo/executor/commit/b77ee69aeeb90e40a2902c4d849e89d2343d91de) Thanks [@GeiserX](https://github.com/GeiserX)! - **Credentials are kept out of the health-check result that gets persisted**
+
+  A health check stores a sample of the probed operation's response body, plus the extracted identity, in `connection.last_health` — so whatever those carry is written to the database. The operation is user-chosen from the plugin's catalog, which means it can just as easily be a key-listing endpoint as a `/me`, and those return secrets that no scrub of the connection's own credential value can recognise, because they are different secrets entirely.
+
+  Two passes now cover both kinds of secret:
+  - **By key name.** Leaves whose key names a credential (`token`, `api_key`, `secret`, `authorization`, `session`, …) have their value replaced with `[redacted]`. The row itself is kept, so the live preview still shows the response shape and the identity picker still works. Keys that merely contain a matching substring, such as `author`, are left alone. camelCase spellings are recognised too: `accessToken`, `refreshToken`, `clientSecret`, `privateKey` and `sessionId` have no separator before the credential word, so a matcher that only looks for one reads them as innocent.
+  - **By value.** The OpenAPI health check removes the connection's own credential value from each sampled value, covering the other direction: a body that echoes back the key it was authenticated with under an innocent-looking name. This runs before the sample's 120-char truncation, not after — truncating first leaves a prefix of a long credential that an exact-value scrub can no longer match, and that prefix is what would be persisted.
+
+  The key check reads a dotted path two ways. It uses the nearest NAMED segment, because array elements are named by index: `{"tokens": ["sk-live-…"]}` produces the path `tokens.0`, and testing the literal `"0"` matches nothing. It also uses an enclosing array container, because a key listing returns `{"api_keys": [{"value": "sk-live-…"}]}`, whose path is `api_keys.0.value` — the nearest named segment there is the innocent `value`, and only the array's own key says what the collection holds. A collection whose key names nothing, such as `names.0`, is still shown in full.
+
+  The extracted `identity` goes through both passes as well. It is read straight off the raw body, so it previously bypassed them even though it is persisted the same way, and `identityField` is user-chosen from whatever the picker listed.
+
+- [#1823](https://github.com/UsefulSoftwareCo/executor/pull/1823) [`d74865f`](https://github.com/UsefulSoftwareCo/executor/commit/d74865ff8cb7c4ada1badac512169beafe925cf8) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Saved integrations come back after an upgrade left an OAuth expiry in the old number format**
+
+  Some installs lost every saved integration from the MCP gateway at once. The credentials were never deleted — the gateway simply could not read the table they live in, so it served an empty tool list and restarting did not help.
+
+  The `connection.expires_at` column records when an OAuth access token expires. It used to be a plain number; it now holds the value's digits, because a millisecond timestamp is larger than a 32-bit integer. SQLite does not rewrite rows when a column's type changes, so a connection saved by an older build still held the old form. Reading one back failed, and because the failure happened while mapping the row, it failed the whole query rather than that one field — one stale row was enough to hide every integration.
+
+  A boot-time migration now converts those values to the current form. It runs before anything reads the table, so the integrations are back on the first restart after upgrading. It only touches values still in the old numeric form: rows already written by a current build are left exactly as they are, and it runs once.
+
+- [#1607](https://github.com/UsefulSoftwareCo/executor/pull/1607) [`75c917f`](https://github.com/UsefulSoftwareCo/executor/commit/75c917fdb0cb8499678f842c62133483472b4814) Thanks [@timkley](https://github.com/timkley)! - **Fix: allow MCP integrations to declare OAuth scopes when resource metadata omits them**
+
+  MCP OAuth methods can now carry an optional non-empty scope list. Declared scopes
+  take precedence over protected-resource scope discovery, so servers with fixed
+  scopes can connect even when their dynamically registered OAuth client has no
+  resource identifier. Existing integrations without declared scopes keep
+  discovering them from the server at connect time.
+
+- [#1577](https://github.com/UsefulSoftwareCo/executor/pull/1577) [`4879d47`](https://github.com/UsefulSoftwareCo/executor/commit/4879d47bd7bc0d80440fe0438ce0e4b36b19a2d2) Thanks [@GeiserX](https://github.com/GeiserX)! - **Idle MCP connections age out on the pool's next acquire, even when their identity is never dialled again**
+
+  The pool's five-minute idle window was only consulted against the entry being requested, so an identity that was never asked for a second time was never examined a second time. Its session stayed open and authenticated for as long as the pool lived, holding the bearer token or API key it was dialled with. The advertised bound applied only to connections that happened to be reused.
+
+  `acquire` now sweeps every entry past the window, closing each one, rather than just the entry matching the key. This stays lazy in the sense the pool intends — activity drives it, there is no timer and no background fiber — and the map holds at most one entry per identity, so the scan is trivial.
+
+  Because the sweep is paid for by whichever invocation acquires next, it cannot be allowed to stall that caller. The expired entries leave the pool synchronously, before any close is awaited, and the closes then run concurrently with each one bounded by a two-second timeout — so a server that accepts a close and goes quiet is abandoned rather than waited on, and cannot hold up an unrelated request or the connections queued behind it.
+
+  Reuse is unchanged: an entry still inside the window is left alone, and a second call for the same identity still gets the parked session rather than a fresh dial.
+
+- [#1821](https://github.com/UsefulSoftwareCo/executor/pull/1821) [`435c0f2`](https://github.com/UsefulSoftwareCo/executor/commit/435c0f2d36ee891158a4e5cec35024cf439af6fe) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: add remote MCP servers that sit behind an authenticating proxy**
+
+  The add-MCP form now carries an optional request headers editor. The name/value
+  pairs are sent on the connection check and on every later request, so an
+  endpoint gated by an edge authenticator — a Cloudflare Access service token,
+  for example — can be discovered and added.
+
+  A `403` from such a gate is also no longer read as an unreachable server. It is
+  classified the same way a `401` is: the endpoint needs credentials, so the add
+  flow continues to the auth step instead of stopping on "Couldn't reach this
+  URL".
+
+- [#1775](https://github.com/UsefulSoftwareCo/executor/pull/1775) [`ecb87de`](https://github.com/UsefulSoftwareCo/executor/commit/ecb87debfcaa6676062cc09b8c847fde330f6337) Thanks [@The-AarushiSingh](https://github.com/The-AarushiSingh)! - **Stdio MCP integrations can be edited from the UI**
+
+  The integration Edit sheet showed stdio servers as read-only text and told you
+  to remove and recreate the integration to change its command. Fixing a typo in
+  an argument, moving a server to a new path, or adding a static environment
+  variable meant editing `executor.jsonc` by hand, or losing the integration's
+  connections and tool policies to a delete-and-re-add.
+
+  The sheet now edits the command, its arguments, the working directory, and the
+  declared environment map, staged and applied by the sheet's own Save like the
+  remote editor beside it. Arguments use the same quote-aware parsing as the add
+  flow, so an argument containing spaces survives a round trip.
+
+  The environment field edits the DECLARED static variables only. A stdio server
+  receives those plus a small fixed base set — it does not inherit executor's
+  environment — and secret values still belong to the connection, entered per
+  account against the server's declared `stdio_env` method.
+
+  Saving revises the integration config, which is already enough to rebuild the
+  tool catalog: connections whose catalog predates the revision re-list on their
+  next read, so an edited command's tools are correct without an explicit
+  refresh.
+
+- [#1402](https://github.com/UsefulSoftwareCo/executor/pull/1402) [`742a144`](https://github.com/UsefulSoftwareCo/executor/commit/742a144f169e24d5e0c082bfebb4334106267962) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A disabled upstream API now reports `misconfigured` instead of `expired`**
+
+  A 403 caused by the provider disabling the API (Google SERVICE_DISABLED / accessNotConfigured shapes) is a configuration problem, not a credential problem — reconnecting cannot fix it. Health checks now classify it as a fifth status, `misconfigured`, shown with an amber badge and a link to the provider console instead of a Reconnect prompt. Ordinary 401/403 credential rejections still report `expired`.
+
+- [#1377](https://github.com/UsefulSoftwareCo/executor/pull/1377) [`98615b4`](https://github.com/UsefulSoftwareCo/executor/commit/98615b4bd6ee8b18bc63a304fe215c76332e108f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A credential-store outage no longer costs an OAuth connection its grant**
+
+  Refreshing an OAuth token spends the stored refresh token: the authorization server rotates it, so the copy we sent stops working the moment the grant succeeds and the rotated one is the only thing that can mint again. Persisting the rotated token first bounds what a partial write can lose, but it cannot help when the store is refusing writes outright — the grant has already run, there is nowhere to put the successor, and every later refresh replays a token the server has revoked. The connection then reports `invalid_grant` and demands a re-auth over what was only a storage blip.
+
+  The refresh is now gated on a store that is proven writable. Before the grant runs, it writes a fixed value to an item of its own that holds no credential and sits in the same partition as the connection's tokens. A store that cannot take that write fails the resolve while the stored refresh token is still valid, so the connection recovers on its own once the store does.
+
+  The probe deliberately does not test the store by rewriting the refresh token with the value it just read. That is a read-then-write with no compare-and-set, and two instances refreshing one connection would lose the newer token to it: one reads the stored token, the other spends that same token and stores its rotated replacement, and the first then writes the spent one back over the replacement. The connection would die exactly the way the gate is meant to prevent.
+
+  The probe also removes a write rather than adding one in the common case. Authorization servers that do not rotate hand back the same refresh token, and that value is no longer re-persisted when it has not changed — a rotated token never matches, so the write that matters still happens.
+
+- [#1822](https://github.com/UsefulSoftwareCo/executor/pull/1822) [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **An OAuth app can now be registered without an RFC 8707 resource, and that absence holds on every request**
+
+  Microsoft Entra v2 rejects any authorization request that carries both a v2 `scope` (such as `https://api.fabric.microsoft.com/.default`) and the RFC 8707 `resource` parameter, failing with `AADSTS9010010` before the consent screen. Executor made that unavoidable for MCP servers behind Entra: registering an app for an MCP integration always derived the MCP endpoint as the resource, the form had no field to change it, and so every request carried the parameter Entra rejects.
+
+  The register/edit OAuth app form now shows the resource indicator. It is still prefilled for MCP servers — nothing changes for providers that accept the parameter — but it can be cleared, and a cleared value persists as "no resource". A resource-less app then omits `resource` on all four grants alike: the authorization request, the code exchange, token refresh, and client-credentials. Symmetry matters here — sending `resource` on authorize but not on the token request (or the reverse) would bind the two tokens to different audiences.
+
+  Two adjacent gaps closed with it:
+  - MCP scope discovery no longer depends on the app's resource. It now falls back to the integration's own discovery URL (the MCP endpoint), so clearing the resource does not break connecting.
+  - Token refresh for a first-party OAuth app dropped the app's configured resource, refreshing to a different audience than the original grant. It now sends the same resource the authorization request sent.
+
+  Apps that keep their resource — the default for every discovered MCP server — behave exactly as before: the parameter is sent on every grant, as the MCP authorization spec expects.
+
+- [#1567](https://github.com/UsefulSoftwareCo/executor/pull/1567) [`6225d5e`](https://github.com/UsefulSoftwareCo/executor/commit/6225d5ede05b23f552211ad0a99267f4b94fcaf6) Thanks [@GeiserX](https://github.com/GeiserX)! - **Keep token material out of OAuth token-endpoint error messages**
+
+  A token-endpoint failure renders a preview of the upstream body into its
+  message, and that message is persisted onto connection health, returned to the
+  caller, and carried into telemetry. On a malformed HTTP 200 the body being
+  previewed is a _successful_ token response, so an access token and a refresh
+  token could be rendered into it.
+
+  The preview is now built from an allowlist of fields that are safe to show
+  (`error`, `errors`, `error_description`, `error_uri`, plus `code`, `message`,
+  and `detail` nested inside them) instead of a denylist of fields to hide. A
+  field nobody anticipated is omitted by default rather than printed by default.
+  Keys stay visible and only non-allowlisted string values are replaced, so an
+  operator can still read the shape of what the server sent. `code` is readable
+  only when nested, because at the top level of a token response it is the RFC
+  6749 authorization code.
+
+  Form-encoded bodies take the same allowlist, the walk over a body is
+  depth-bounded, and the failure summary records the token endpoint's hostname
+  rather than its full URL, which can carry identifiers in its path.
+
+  On that same malformed-200 path the failure no longer keeps the underlying
+  rejection as its `cause`. That rejection carries the parsed token response, so
+  keeping it put the raw tokens back into anything that renders the whole failure
+  rather than only its message. Everything the path needs from the body — the
+  status, the error code, the redacted preview — is read before the failure is
+  built. A transport failure still keeps its cause, which is what tells a DNS miss
+  apart from a refused connection.
+
+  No public API changes. The dead-grant classification added for HTTP 200 refresh
+  refusals is unaffected: it reads the HTTP status, not the rendered preview.
+
+- [#1829](https://github.com/UsefulSoftwareCo/executor/pull/1829) [`369fa0a`](https://github.com/UsefulSoftwareCo/executor/commit/369fa0a32d5800c8333d2be00610c89f5feeb9ae) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **The 1Password provider can now be scoped to several vaults, with explicit per-vault addressing**
+
+  The provider previously bound exactly one vault. The configuration now holds a set of vaults selected with checkboxes, and every reference is explicit about which vault it means: the item picker is a searchable list that shows each item's vault and stores a vault-qualified `op://` reference, so identically-titled items in different vaults can never collide. A bare item name is accepted only when it matches exactly one item across the selected vaults — a name that exists in more than one place fails with an error naming the matching vaults instead of silently picking one.
+
+  Reopening the vault or item pickers no longer flashes a loading state: listings are retained and re-validated in the background, so the last-known list renders instantly.
+
+  Configurations saved before this change keep working: the stored single-vault shape is read as a one-vault list and upgrades to the new shape the next time it is saved. The `status` tool reports `vaultNames` for all configured vaults and flags any configured vault the account can no longer see. Provider entries also gained an optional `group` label, which pickers use to show where an item lives.
+
+- [#1772](https://github.com/UsefulSoftwareCo/executor/pull/1772) [`597ce90`](https://github.com/UsefulSoftwareCo/executor/commit/597ce90b30b96d2dd333a6c34e5f2cd0ee4c7d42) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Persist the Connect-an-agent card's transport, artifact, integration-search, and approval preferences in the browser so its generated MCP install command remains stable across page reloads.
+
+- [#1529](https://github.com/UsefulSoftwareCo/executor/pull/1529) [`0004ea3`](https://github.com/UsefulSoftwareCo/executor/commit/0004ea353411c9806273698e42d95ab45e0ba2f9) Thanks [@jadch](https://github.com/jadch)! - Keep Last-Event-ID recovery scoped to its originating MCP stream.
+
+- [#1441](https://github.com/UsefulSoftwareCo/executor/pull/1441) [`a9bf623`](https://github.com/UsefulSoftwareCo/executor/commit/a9bf623dd4de359ca1d87275973b6ddf8b4f0ea6) Thanks [@salmonumbrella](https://github.com/salmonumbrella)! - Self-hosted instances can now allow additional browser origins without changing
+  their canonical public URL. Set `EXECUTOR_TRUSTED_ORIGINS` to a comma-separated
+  list of exact HTTP or HTTPS origins when one instance is intentionally reachable
+  through multiple hostnames or addresses. OAuth callbacks, MCP metadata, approval
+  links, and other generated URLs remain pinned to `EXECUTOR_WEB_BASE_URL`, and
+  origins are never inferred from request headers.
+
+- [#1720](https://github.com/UsefulSoftwareCo/executor/pull/1720) [`2da4953`](https://github.com/UsefulSoftwareCo/executor/commit/2da49535562e27291a1544f10e12b079b41f0362) Thanks [@Zeko369](https://github.com/Zeko369)! - **Connect an integration from the sidebar**
+
+  The sidebar lists your integrations on every console route, but connecting
+  another one meant navigating back to the integrations page to reach its Connect
+  action — the picker state was owned by that page, so the shared shell could
+  render the list without being able to open the flow behind it.
+
+  The connect dialog now belongs to the shell. A labelled plus button sits beside
+  the sidebar's Integrations heading and opens the same picker, records the same
+  event, and leaves the current route in place behind it. On mobile the navigation
+  drawer closes first so the dialog gets the full viewport.
+
+- [#1824](https://github.com/UsefulSoftwareCo/executor/pull/1824) [`97ff388`](https://github.com/UsefulSoftwareCo/executor/commit/97ff38856c1618cfe8b6dc4394d3761d70b076b6) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Tools reads stop waiting on slow upstream servers**
+
+  A tools read rebuilds every connection whose catalog has gone stale before answering. The rebuilds already ran concurrently, but the read still waited for all of them, so one slow or unreachable MCP server gated every catalog read behind its network timeout — a tools listing could take tens of seconds while healthy connections sat ready.
+
+  A read now waits at most a short grace budget (2 seconds by default) for the rebuilds, then answers from the persisted catalog. The rebuilds keep running after the read returns and land on a later read, so the catalog still converges — it just no longer holds the reader hostage while it does. Overlapping reads share one in-flight rebuild per connection instead of stacking new ones.
+
+  The budget is `toolsSyncGraceMs` on the SDK config. Pass `null` to restore the strict behavior, where a read blocks until every rebuild finishes and always reflects a fully converged catalog.
+
+- [#1819](https://github.com/UsefulSoftwareCo/executor/pull/1819) [`1cd81d6`](https://github.com/UsefulSoftwareCo/executor/commit/1cd81d62cefa6fb8cfa2e21f2c0adbaedee60041) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: stop the update check from claiming a newer version is available on builds it cannot compare**
+
+  A build stamped with the placeholder 0.0.0 version always compared as older
+  than the latest release, and a prerelease on a channel with no matching
+  dist-tag (rc, alpha, and similar) always lost the comparison too. Both cases
+  now short-circuit to "no update available" before the check reaches the
+  registry.
+
+  This applies wherever the update check runs, so the CLI check and the sidebar
+  update card both stop showing an update prompt that a user could never act on.
+
+- Updated dependencies [[`1908dd6`](https://github.com/UsefulSoftwareCo/executor/commit/1908dd6d7611489362d451f7594adca542c13ba1), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/local@1.6.3
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+  - @executor-js/runtime-quickjs@1.6.3
+
+## 1.6.2
+
+### Patch Changes
+
+- [#1802](https://github.com/UsefulSoftwareCo/executor/pull/1802) [`2afb6e8`](https://github.com/UsefulSoftwareCo/executor/commit/2afb6e86ddf081afb8a246d76291a7ae668e05f4) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Concurrent API requests no longer share one database provider build**
+
+  Every HTTP request gets its own database connection, opened when the request fiber's scope opens and closed when it closes. The middleware that builds a request's execution stack, however, captures the boot fiber's context once at layer-construction time and re-applies it to every request. A captured context carries Effect's current memoization map, and re-applying it replaced the fresh per-request map with the boot one — which every in-flight request in the isolate shares.
+
+  The per-request stack build then memoized itself there. Sequential requests still rebuilt, because the memo entry is released once the request that built it finishes, so the problem was confined to requests that overlap: the second request reused the first one's stack build, and with it the first one's database connection. A request could therefore issue queries on a connection it did not own, and lose that connection mid-flight when the owner finished and closed it — typically surfacing as a failed read after a slow outbound call, on a request that had already read successfully.
+
+  The stack is now built with a request-local memoization scope, so overlapping requests each build their own stack over their own connection. The captured context still carries the long-lived services it exists to carry. The two other per-request provider builds that ran under a captured context — the account provider and the admin-users provider — are built the same way, for the same reason.
+
+- [#1807](https://github.com/UsefulSoftwareCo/executor/pull/1807) [`78311a1`](https://github.com/UsefulSoftwareCo/executor/commit/78311a1ce506705a2420239fd96823203a9a1374) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Desktop: restore the macOS signing entitlements and app icon that were accidentally removed from the build inputs, and fail fast at PR time and before publishing when any configured build resource is missing. The v1.6.1 desktop build could not be signed; this release supersedes it.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/runtime-quickjs@1.6.2
+  - @executor-js/local@1.6.2
+  - @executor-js/api@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1576](https://github.com/UsefulSoftwareCo/executor/pull/1576) [`6535a74`](https://github.com/UsefulSoftwareCo/executor/commit/6535a74de4860e376e5a2e273cb2d5a662f98c5c) Thanks [@GeiserX](https://github.com/GeiserX)! - **The CLI's server-connection store is written owner-only, and two of its tests now actually run**
+
+  `~/.executor/server-connections.json` holds live credentials for a hosted server — a bearer token, or an OAuth access token together with its long-lived refresh token, rewritten on every silent refresh. It was created with no explicit mode, so the process umask applied and it landed world-readable (0644 by default). Any other account on the machine — or anything that copies a home directory, such as a backup or a container layer — could read a durable credential until the user ran `executor logout`.
+
+  It is now created `0600` with a follow-up `chmod`, matching what the local-server manifest already does for the sibling secret it keeps under `server-control/`. Both steps are needed: `mode` applies only on create, and the `chmod` covers rewriting a store that already exists with looser permissions — which is the common path here, since the file is rewritten on every token refresh.
+
+  Separately, two tests in `server-profile.test.ts` were written as `it("…", () => Effect.gen(…))`. An `Effect` is not a thenable, so Vitest treated each as passing without ever running its body — a deliberately falsified assertion still passed. They are now `it.effect` and execute for real. No production behaviour was wrong; the tests simply were not checking it.
+
+- [#1454](https://github.com/UsefulSoftwareCo/executor/pull/1454) [`e8ea62c`](https://github.com/UsefulSoftwareCo/executor/commit/e8ea62c8ba295931cf969cd310278b6a50771bdc) Thanks [@jadch](https://github.com/jadch)! - Prevent concurrent SQLite data-migration runners from failing when another runner commits the same ledger stamp first.
+
+- [#1579](https://github.com/UsefulSoftwareCo/executor/pull/1579) [`31e17c7`](https://github.com/UsefulSoftwareCo/executor/commit/31e17c725f0987f86896519f0626f9c94d39ccb7) Thanks [@GeiserX](https://github.com/GeiserX)! - **The desktop settings store is written owner-only**
+
+  `settings.json` holds `serverProfiles`, which carries a remote server's credential — a bearer token, or a basic-auth username and password — for any "Custom server" the user connects to. `conf` (under electron-store) defaults to `configFileMode: 0o666`, so with no explicit mode the file was created `0644`. On Linux, where `~/.config` is not reliably `0700`, that is readable by every other account on the machine. macOS is protected by `~/Library` being `0700` and Windows by ACLs, so this is primarily a Linux-desktop exposure — but owner-only credential files are already this app's standard: `local-auth.ts` writes `auth.json` at `0o600`, and the sidecar manifest is chmodded the same way.
+
+  One option is sufficient here, rather than the mode-plus-chmod pair used elsewhere: `atomically` chmods the temp inode only when the requested mode differs from its own default, and the atomic rename then carries the tight mode onto an already-loose file. Verified against the installed `conf` — with no option a fresh file lands `0644`; with `configFileMode: 0o600` a fresh file lands `0600` and an existing `0644` file becomes `0600` on the next write.
+
+- [#1582](https://github.com/UsefulSoftwareCo/executor/pull/1582) [`e8e97c4`](https://github.com/UsefulSoftwareCo/executor/commit/e8e97c4c008fce702ee07ec0ffe2a8d3e6946a21) Thanks [@GeiserX](https://github.com/GeiserX)! - **An MCP health check no longer reports `healthy` when the connection's credential is missing**
+
+  Rendering skips an auth placement whose value is unresolved — that is the renderer's documented behaviour, and callers own the missing-value policy. The MCP health check had no such policy, so it dialled unauthenticated, and any server that lists tools without auth answered. `discoverTools` succeeding maps straight to `healthy`, so a connection whose credential was gone reported as healthy.
+
+  Health status is the signal telling a user to re-authenticate, which makes `healthy` the one answer it must never give in that state. The check now reports `expired` with the unresolved input names, mirroring the OpenAPI health check, which already did exactly this.
+
+  The MCP tool-invocation path already refused for the same reason. `resolveTools` is deliberately left alone — its own comment records that discovery tolerating unresolved credentials is intended, since an open server lists tools unauthenticated.
+
+- [#1741](https://github.com/UsefulSoftwareCo/executor/pull/1741) [`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Opt-in per-integration search tools on the MCP surface**
+
+  Connecting with `?search_tools=true` (stdio: `executor mcp --search-tools`) adds one minimally-described `search_<integration>` MCP tool per connected integration, so the integration namespaces reach the model as tool names it can see without calling anything. Each call routes through the same flow as `tools.search({ namespace })` inside `execute`, and the tool list comes from the same inventory the `execute` description shows. Off by default; a clean endpoint URL is unchanged.
+
+- [#1573](https://github.com/UsefulSoftwareCo/executor/pull/1573) [`45ba141`](https://github.com/UsefulSoftwareCo/executor/commit/45ba1419b4e33ad10b0856c5fbc40fabc8f6efe1) Thanks [@GeiserX](https://github.com/GeiserX)! - **The MCP connection pool no longer keeps credentials in its cache key**
+
+  A pooled remote MCP session is looked up by a key describing the connection's identity, and that key included the connection's resolved credential values — plus the headers and query params those same secrets had already been rendered into. The key is retained as a `Map` key for the pool's lifetime, so the secret stayed readable in process memory long after the call that needed it had finished, with nothing left to read it.
+
+  The key is now the SHA-256 digest of that identity rather than the identity itself. Reuse is unchanged, because equal identities still produce equal keys, and separation is unchanged too: a rotated access token, a different rendered auth header and a credential carried in a query param each still dial a fresh session instead of reusing one authenticated as somebody else. Hashing the whole identity rather than only the fields known to be sensitive means a field added later is covered without anyone having to remember it carries a secret.
+
+  Nothing reads the key back — the pool only compares it, and it reaches no log, span or error message — so nothing observable changes.
+
+- [#1800](https://github.com/UsefulSoftwareCo/executor/pull/1800) [`eac13e7`](https://github.com/UsefulSoftwareCo/executor/commit/eac13e7032c027d866c06728f1d5b634fd9ef7dd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Idle MCP session runtimes are actually reclaimed**
+
+  The MCP session Durable Object has an idle timeout that disposes a session's execution runtime — the execution engine and its executor closure, the built tool catalog, and a live database handle — once the session has gone quiet. That timeout never ran.
+
+  The session arms an idle alarm on every request. The agents framework independently recomputes the Durable Object alarm from its own schedule table and keep-alive refcount, and when it finds neither it does not leave the alarm alone: it deletes it. It releases the last keep-alive reference at the end of every ordinary tool call, from a `waitUntil` that runs just after the response goes out — so the idle alarm the session had armed moments earlier was erased, and a session that had just served a request was left with no alarm at all. Its runtime then stayed resident until the platform evicted the whole object.
+
+  Durable Objects are colocated many-to-one onto an isolate with a single heap, so runtimes that are never reclaimed accumulate there. When the heap is exhausted the allocation that fails is whichever comes next, anywhere in the isolate — which is why the failure tended to surface from storage rather than from the runtimes that had consumed the memory.
+
+  The idle deadline belongs to the session, not to the framework's scheduler, so it is now re-asserted after the framework has arranged whatever it needs — and only while a runtime is actually resident, since once there is nothing left to reclaim the framework's answer is correct.
+
+  Disposal also now emits a span carrying a per-isolate resident-runtime gauge, alongside the same gauge on runtime build, so the reclaim can be confirmed in production rather than inferred.
+
+- [#1609](https://github.com/UsefulSoftwareCo/executor/pull/1609) [`662ebe2`](https://github.com/UsefulSoftwareCo/executor/commit/662ebe28d5109156a1aa3b27eaa80ba9daacaf11) Thanks [@timkley](https://github.com/timkley)! - **Fix: declare the OAuth application type during dynamic client registration**
+
+  Dynamic OAuth registrations now identify HTTPS callbacks as web applications
+  and loopback HTTP callbacks as native applications. This lets strict OAuth
+  servers validate Executor's redirect URI against the correct client type.
+
+- [#1570](https://github.com/UsefulSoftwareCo/executor/pull/1570) [`e66a3d8`](https://github.com/UsefulSoftwareCo/executor/commit/e66a3d893c948fcccc7fc028870d051cb2d31860) Thanks [@GeiserX](https://github.com/GeiserX)! - **The OAuth popup clears its result out of `localStorage` after handing it over**
+
+  The popup writes its result to `localStorage` as the fallback completion channel, because `postMessage` is severed when a provider's consent page sets COOP and `BroadcastChannel` can be partitioned or raced by the auto-close. Nothing removed that entry afterwards, so the payload — which carries the identity label, an email, and on failure the error preview — stayed parked in the user's browser profile.
+
+  The entry is now cleared once the handover has had time to land, and on `pagehide` as a backstop — the failure page never auto-closes so the user can read the error, and closing it by hand would otherwise cancel the pending timer and strand the entry. This cannot cost a listener the result: a `storage` event captures `newValue` at dispatch, so an opener that has been notified already holds it.
+
+- [#1574](https://github.com/UsefulSoftwareCo/executor/pull/1574) [`c8bb857`](https://github.com/UsefulSoftwareCo/executor/commit/c8bb8578c3afdc9731274d9e9abc68d7ce32d9ab) Thanks [@GeiserX](https://github.com/GeiserX)! - **The 1Password service-account token is cleared from the op-js global after each call**
+
+  `@1password/op-js` keeps the service-account token on a module-level CLI instance (`cli.serviceAccountToken`) and reads it when it spawns `op`. The CLI backend set that global before each call and never cleared it, so one reachable reference to the token stayed live for the rest of the process.
+
+  It is now cleared as soon as the call that needed it is done, on success, failure and interruption alike. Authentication is unaffected: every read and write of that global already happens inside the backend's semaphore, so the next operation re-sets the token before it spawns anything.
+
+  This is hygiene rather than a boundary change. No unrelated `op` child ever received a stale token — every call routes through the same critical section that sets the correct one immediately before invoking — and the token is separately persisted in plaintext in the plugin's config blob, so an attacker's reach is unchanged. What it removes is a long-lived reachable reference that nothing needed to keep.
+
+- [#1749](https://github.com/UsefulSoftwareCo/executor/pull/1749) [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Slim the per-integration `search_<integration>` tool definitions to under half their size: one shared one-line description (the tool name already carries the namespace) and a single bare `query` parameter, dropping the `limit`/`offset` knobs. A session pays for these definitions once per connected integration, so the surface now costs ~2k tokens instead of ~5k at 30 integrations; paging through a namespace belongs in `execute`.
+
+- [#1798](https://github.com/UsefulSoftwareCo/executor/pull/1798) [`69b0e64`](https://github.com/UsefulSoftwareCo/executor/commit/69b0e6413737599f11848b3877048f789ca84ac5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **The packed Worker toolchain is verified at build time, and an incomplete copy is now reported instead of silently ignored**
+
+  `@cloudflare/worker-bundler` cannot live inside the compiled binary: bunfs has no `node_modules`, so a bare specifier is unresolvable there by construction. The build instead copies the package's `dist/` next to the executable and `native-bindings.ts` publishes that path as `EXECUTOR_WORKER_BUNDLER_DIR` for consumers to load from.
+
+  That handoff was described in two places that were free to drift, and did. The build writes `dist/index.bundled.js` — the entry consumers actually load, packed so it has no bare imports of its own — while the runtime check only looked for `dist/index.js` and `dist/esbuild.wasm`. Nothing verified the staged copy after the compile, so a partial staging produced a binary that looked fine on the build machine and failed on the user's, at startup. Worse, the runtime check failed open: when a file was missing it silently declined to set the environment variable, leaving a consumer to fall through to the bare specifier and crash.
+
+  The required file list is now one shared contract used by both sides, so they cannot disagree. The build asserts the staged copy after compiling each target — every required file present, a size floor on the packed entry, and the `\0asm` magic on the wasm so a truncated copy cannot pass — turning a packaging slip into a failed build rather than a broken install. At runtime, a directory that is present but incomplete is reported on stderr naming the missing files, instead of being swallowed. An absent directory stays quiet, since that is the normal non-packaged path.
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/local@1.6.1
+  - @executor-js/runtime-quickjs@1.6.1
+
 ## 1.6.0
 
 ### Patch Changes

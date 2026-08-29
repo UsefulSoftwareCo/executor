@@ -41,6 +41,7 @@ import type {
   InvokeOptions,
 } from "./elicitation";
 import type {
+  ConnectionAlreadyExistsError,
   ExecuteError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
@@ -208,6 +209,7 @@ export interface PluginCtx<TStore = unknown> {
     ) => Effect.Effect<
       Connection,
       | IntegrationNotFoundError
+      | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
       | StorageFailure
@@ -229,6 +231,17 @@ export interface PluginCtx<TStore = unknown> {
       ref: ConnectionRef,
     ) => Effect.Effect<
       readonly Tool[],
+      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+    >;
+    /** Run the integration's declared health check against a saved connection
+     *  and persist the verdict. `ifStaleMs` serves the persisted verdict when
+     *  younger than that window, so concurrent readers collapse to one probe;
+     *  omit it to always probe. */
+    readonly checkHealth: (
+      ref: ConnectionRef,
+      options?: { readonly ifStaleMs?: number },
+    ) => Effect.Effect<
+      HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     >;
     /** Mark a connection's persisted tool catalog stale (clears its sync
@@ -286,6 +299,25 @@ export interface PluginCtx<TStore = unknown> {
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
   readonly transaction: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E | StorageFailure>;
+
+  /** Defer `effect` until the OUTERMOST transaction commits; discard it if that
+   *  transaction rolls back. With none active it runs immediately.
+   *
+   *  Use this for anything that reaches OUTSIDE the database — revoking a token
+   *  at the provider's API, deleting a remote object, sending a webhook. Such
+   *  work does not enlist in the transaction and cannot be rolled back with it,
+   *  so performing it inline means a later abort leaves the database restored
+   *  and the outside world already changed. That gap is not theoretical: the
+   *  lifecycle hooks below run inside core's own transaction.
+   *
+   *  Sequencing it after your `transaction(...)` call is NOT the same thing.
+   *  `transaction` nests by pass-through, so inside an active transaction the
+   *  inner call just runs its effect and "afterwards" is still before any
+   *  commit. This is the only construct that waits for the real one.
+   *
+   *  Best-effort by contract: failures and defects are swallowed, so a hook that
+   *  cannot tidy up never fails the operation that triggered it. */
+  readonly afterCommit: (effect: Effect.Effect<void>) => Effect.Effect<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +367,10 @@ export interface ResolveToolsResult {
   /** Human-readable reason for an incomplete listing. Persisted by core when it
    *  preserves the prior catalog so operators can see why data is stale. */
   readonly incompleteReason?: string;
+  /** An actionable connection-health outcome discovered while enumerating the
+   *  catalog. Core persists it while preserving the prior non-authoritative
+   *  catalog. Omit for ordinary transient discovery failures. */
+  readonly health?: HealthCheckResult;
 }
 
 export interface ProjectToolSchemaInput<TStore = unknown> {
@@ -707,13 +743,27 @@ export interface PluginSpec<
     readonly toolRows: readonly ToolInvocationRow[];
   }) => Effect.Effect<Record<string, ToolAnnotations>, unknown>;
 
-  /** Plugin-side cleanup when a connection is removed. */
+  /** Plugin-side cleanup when a connection is removed.
+   *
+   *  RUNS INSIDE core's removal transaction, so database work here is atomic
+   *  with the row deletions — which is the point. The consequence is that
+   *  anything reaching outside the database is NOT: revoking the token at the
+   *  provider's API, deleting a remote object, notifying a third party. If the
+   *  transaction later aborts, the connection is restored and that external
+   *  action has already happened, with nothing left to undo it.
+   *
+   *  Wrap such work in `ctx.afterCommit(...)`. It runs once the removal is
+   *  durable and is discarded if the removal rolls back. */
   readonly removeConnection?: (
     input: ConnectionLifecycleInput<TStore>,
   ) => Effect.Effect<void, unknown>;
 
   /** Plugin-side cleanup when a removable integration is removed. Core still
-   *  owns deleting the integration, connection, tool, and definition rows. */
+   *  owns deleting the integration, connection, tool, and definition rows.
+   *
+   *  Runs inside core's removal transaction, with the same consequence as
+   *  `removeConnection` above: defer any work that reaches outside the database
+   *  through `ctx.afterCommit(...)`. */
   readonly removeIntegration?: (
     input: IntegrationLifecycleInput<TStore>,
   ) => Effect.Effect<void, unknown>;

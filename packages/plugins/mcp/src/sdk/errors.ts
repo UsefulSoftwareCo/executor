@@ -3,11 +3,26 @@
 
 import { Data, Schema } from "effect";
 
+export const McpConnectionFailureKind = Schema.Literals([
+  "tls",
+  "dns",
+  "timeout",
+  "connection_refused",
+  "network",
+  "http",
+  "protocol",
+]);
+export type McpConnectionFailureKind = typeof McpConnectionFailureKind.Type;
+
 export class McpConnectionError extends Schema.TaggedErrorClass<McpConnectionError>()(
   "McpConnectionError",
   {
     transport: Schema.String,
     message: Schema.String,
+    /** Safe, structural classification of the connection failure. Auto
+     *  transport uses this to retry only protocol incompatibilities; callers
+     *  can render actionable copy without parsing an external error message. */
+    failureKind: Schema.optional(McpConnectionFailureKind),
     /** HTTP status the handshake observed (e.g. 401 on an auth wall), when the
      *  transport surfaced one. Structural, so the liveness classifier and the
      *  auto-transport fallback never string-match the message. */
@@ -25,13 +40,22 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
   {
     stage: Schema.Literals(["connect", "list_tools"]),
     message: Schema.String,
-    /** HTTP status from the underlying connect failure, when known. */
+    /** HTTP status from the underlying connect or tools/list failure, when
+     *  known. */
     httpStatus: Schema.optional(Schema.Number),
     /** The connection negotiated the modern (2026-07-28) era and the server
      *  then broke that revision's response contract — the signature of a
      *  server that echoes whatever protocol version is proposed. Retrying
      *  with legacy negotiation is expected to succeed. */
     modernContractViolation: Schema.optional(Schema.Boolean),
+    /** The MCP OAuth provider reached the interactive authorization boundary.
+     *  Catalog callers use this structural signal to request reconnect without
+     *  parsing or exposing an upstream error message. */
+    reauthorizationRequired: Schema.optional(Schema.Boolean),
+    /** Discovery hit its deadline (`discoverTools` timeout). Structural, so
+     *  the health check can report `probe_timeout` — a slow-but-alive server —
+     *  without string-matching the message. */
+    timedOut: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

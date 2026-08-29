@@ -42,6 +42,22 @@ export class OAuth2Error extends Data.TaggedError("OAuth2Error")<{
    * because the majority of real refusals carry no RFC 6749 §5.2 code.
    */
   readonly status?: number;
+  /**
+   * The library rejection this failure was built from, kept so a transport
+   * failure stays diagnosable — the chain is what separates a DNS miss from a
+   * refused connection, and neither is expressible in `status` or `error`.
+   *
+   * It is DROPPED on the malformed-HTTP-200 path. There the rejection carries
+   * the token response oauth4webapi already parsed, so retaining it would hand
+   * the raw access and refresh tokens to anything that renders the whole
+   * failure (`Cause.pretty`, `JSON.stringify`) — around the allowlist that
+   * keeps them out of `message`. Everything that path needs from the body is
+   * already lifted onto `status`, `error`, and the redacted preview, and
+   * nothing downstream reads this field, so nothing is lost by omitting it.
+   *
+   * Treat whatever is here as INTERNAL diagnostic input, never display
+   * material: anything RENDERED goes through `redactedBodyPreview` first.
+   */
   readonly cause?: unknown;
 }> {}
 
@@ -359,8 +375,112 @@ const parsedBodyFromOAuthErrorCause = (cause: unknown): unknown => {
  *  though the Response itself never made it into the error. */
 const PARSED_BODY_CAUSE_STATUS = 200;
 
-const redactTokenEndpointBody = (body: string): string =>
-  body
+/** RFC 6749 §5.2's own error fields — the names whose STRING value is safe to
+ *  show wherever they appear. Everything here describes a failure; none of it
+ *  is credential material. */
+export const PREVIEWABLE_BODY_FIELDS = new Set([
+  "error",
+  "errors",
+  "error_description",
+  "error_uri",
+]);
+
+/** Safe only INSIDE one of the fields above.
+ *
+ *  Providers wrap the real error in an envelope — `{"error":{"code":…,
+ *  "message":…}}` — so these have to be readable there. They must NOT be
+ *  readable at the top level: `code` in particular is the RFC 6749
+ *  authorization code, which is credential material, and the form-encoded scrub
+ *  in this same file has always redacted `code=` for exactly that reason. */
+export const PREVIEWABLE_WITHIN_ERROR_FIELDS = new Set(["code", "message", "detail"]);
+
+/** Deepest body this walker will descend. A token endpoint's error body is a
+ *  handful of levels; anything past this is not something an operator was going
+ *  to read anyway. The bound exists because the walk is recursive and this runs
+ *  on a failure path: without it a pathologically nested body turns a leak into
+ *  an uncontained stack overflow, which is a worse bug than the one being fixed. */
+const MAX_PREVIEW_DEPTH = 32;
+
+const isPreviewableKey = (key: string, insideError: boolean): boolean => {
+  const name = key.toLowerCase();
+  return (
+    PREVIEWABLE_BODY_FIELDS.has(name) || (insideError && PREVIEWABLE_WITHIN_ERROR_FIELDS.has(name))
+  );
+};
+
+const redactJsonValues = (value: unknown, keyIsPreviewable = false, depth = 0): unknown => {
+  if (depth > MAX_PREVIEW_DEPTH) return "[redacted]";
+  if (typeof value === "string") return keyIsPreviewable ? value : "[redacted]";
+  if (Array.isArray(value)) {
+    return value.map((item) => redactJsonValues(item, keyIsPreviewable, depth + 1));
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        redactJsonValues(item, isPreviewableKey(key, keyIsPreviewable), depth + 1),
+      ]),
+    );
+  }
+  return value;
+};
+
+/** Redact a token-endpoint body for display.
+ *
+ *  ALLOWLIST, deliberately. This used to name the four fields to hide, which
+ *  silently trusted every field it had not thought of: a provider that returns
+ *  its token under any other key — or that echoes a submitted secret back
+ *  inside an arbitrary error field — walked straight through. That is not
+ *  hypothetical on the malformed-200 path, where the body the library rejected
+ *  IS a successful token response. This preview is not just a log line; it
+ *  reaches persisted connection health and the caller, so an unknown field is
+ *  exactly the case that must fail closed.
+ *
+ *  Structure is preserved rather than dropped: every key stays visible and only
+ *  non-allowlisted STRING values become `[redacted]`, so an operator can still
+ *  see the shape of what the server sent — and so the dead-grant classifier's
+ *  own evidence stays legible in the message it produced it from. Non-strings
+ *  are left alone; a number or boolean cannot carry a token.
+ *
+ *  This governs only what is RENDERED. The classifier reads the parsed body
+ *  through `cause`, unredacted, and is unaffected. */
+const redactTokenEndpointBody = (body: string): string => {
+  // A JSON body is the token-endpoint shape, so it gets the structural
+  // allowlist above. Anything else (an HTML error page, a plain-text 404) is
+  // not a token response; keep the legacy name-based scrub so those stay
+  // readable, which is the only thing that made them useful to begin with.
+  const json: unknown = (() => {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing an untrusted upstream body for display; a parse failure just means "not a JSON token response"
+    try {
+      // oxlint-disable-next-line executor/no-json-parse -- boundary: same untrusted-body probe; the value is only re-serialised for a redacted preview, never decoded into domain types
+      return JSON.parse(body) as unknown;
+    } catch {
+      return undefined;
+    }
+  })();
+  // Anything that parsed as JSON goes through the walker, not just an object.
+  // A body that is a bare JSON string is still a body the server chose to send,
+  // and gating on `object` let exactly that case fall through to the name-based
+  // scrub below — which cannot match a value that has no field name.
+  if (json !== undefined) {
+    return JSON.stringify(redactJsonValues(json));
+  }
+  // A form-encoded body is the OTHER shape a token endpoint answers in, and it
+  // gets the same allowlist. It used to fall through to a name-based scrub,
+  // which meant a server returning its token as `session_token=…` — any name
+  // the scrub had not enumerated — rendered it verbatim into a message that is
+  // persisted onto the connection.
+  if (isFormEncoded(body)) {
+    const params = new URLSearchParams(body);
+    return [...params]
+      .map(([key, value]) => `${key}=${isPreviewableKey(key, false) ? value : "[redacted]"}`)
+      .join("&");
+  }
+  // Neither shape: an HTML error page or a plain-text status line. There is no
+  // field structure to reason about, so keep it readable — that legibility is
+  // the only reason the preview earns its place for these responses — but still
+  // scrub the named credentials, since such a page can echo a submitted one.
+  return body
     .replaceAll(
       /("(?:access_token|refresh_token|id_token|client_secret)"\s*:\s*")[^"]*(")/gi,
       "$1[redacted]$2",
@@ -369,12 +489,22 @@ const redactTokenEndpointBody = (body: string): string =>
       /((?:access_token|refresh_token|id_token|client_secret|code)=)[^&\s]*/gi,
       "$1[redacted]",
     );
+};
+
+/** `a=b&c=d` — no whitespace, at least one `key=`. Deliberately strict: a prose
+ *  body like `route not found` must NOT be mistaken for one field. */
+const isFormEncoded = (body: string): boolean =>
+  /^[^=&\s]+=[^&\s]*(?:&[^=&\s]+=[^&\s]*)*$/.test(body);
 
 const tokenEndpointHttpSummary = async (response: Response): Promise<string> => {
   const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
   const contentType = response.headers.get("content-type");
-  const url = response.url ? ` from ${response.url}` : "";
-  const parts = [`${status}${url}`];
+  // Hostname, never the full URL — the same discipline the token-request span
+  // already applies, and for the same reason: some providers carry tenant ids
+  // in the path. This summary is persisted into connection health and shown to
+  // callers, so it outlives the request by far longer than a log line does.
+  const host = response.url ? hostnameForTelemetry(response.url) : "";
+  const parts = [`${status}${host ? ` from ${host}` : ""}`];
   if (contentType) parts.push(`content-type ${contentType}`);
   const preview = await bodyPreviewFromResponse(response);
   if (preview) parts.push(`body: ${preview}`);
@@ -511,8 +641,23 @@ const oauthErrorFromResponseBody = (
   });
 };
 
-const toOAuth2Error = (cause: unknown): OAuth2Error => {
+/** Exact-string scrub of the submitted client secret from text bound for an
+ *  `OAuth2Error`. A misbehaving authorization server can echo the credential it
+ *  was just sent back inside `error_description` — a field that is deliberately
+ *  previewable everywhere else in this module because it is the AS's
+ *  human-readable verdict. The message it lands in reaches the OAuth popup's
+ *  browser-visible error details, persisted connection health, and telemetry,
+ *  and for a first-party client the secret is deployment-wide. The helper knows
+ *  exactly which string it submitted, so this is a targeted replacement of that
+ *  one value, not a heuristic. */
+const redactSubmittedClientSecret = (
+  text: string,
+  clientSecret: string | null | undefined,
+): string => (clientSecret ? text.replaceAll(clientSecret, "[redacted]") : text);
+
+const toOAuth2Error = (cause: unknown, clientSecret?: string | null): OAuth2Error => {
   if (isOAuth2Error(cause)) return cause;
+  const scrub = (text: string): string => redactSubmittedClientSecret(text, clientSecret);
   if (typeof cause === "object" && cause !== null) {
     const c = cause as {
       error?: unknown;
@@ -527,8 +672,10 @@ const toOAuth2Error = (cause: unknown): OAuth2Error => {
           ? c.message
           : undefined;
     return new OAuth2Error({
-      message: `OAuth token exchange failed: ${description ?? code ?? "unknown error"}`,
-      error: code,
+      message: scrub(`OAuth token exchange failed: ${description ?? code ?? "unknown error"}`),
+      // The code is scrubbed too: a conform envelope's `error` is an arbitrary
+      // string the AS chose, and it flows into the token-request span attribute.
+      error: code === undefined ? undefined : scrub(code),
       cause,
     });
   }
@@ -544,13 +691,18 @@ const toOAuth2Error = (cause: unknown): OAuth2Error => {
  *
  *  `fallbackMessage` is for the paths that hold the error Response directly
  *  rather than catching a thrown oauth4webapi error: there is no library
- *  message to build on, so the caller names the step instead. */
+ *  message to build on, so the caller names the step instead.
+ *
+ *  `clientSecret` is the secret the failed request submitted, when the client
+ *  is confidential. Every constructed message is scrubbed of it, because the
+ *  body it is built from is the AS's and may echo the credential back. */
 const toOAuth2ErrorWithHttpSummary = (
   cause: unknown,
-  options?: { readonly fallbackMessage?: string },
+  options?: { readonly fallbackMessage?: string; readonly clientSecret?: string | null },
 ): Effect.Effect<OAuth2Error> => {
   if (isOAuth2Error(cause)) return Effect.succeed(cause);
-  const base = toOAuth2Error(cause);
+  const scrub = (text: string): string => redactSubmittedClientSecret(text, options?.clientSecret);
+  const base = toOAuth2Error(cause, options?.clientSecret);
   const response = responseFromOAuthErrorCause(cause);
   if (!response) {
     // No Response, but possibly a body the library already parsed off one it
@@ -565,11 +717,18 @@ const toOAuth2ErrorWithHttpSummary = (
     const preview = redactedBodyPreview(safeStringify(parsedBody));
     const summary = [`HTTP ${PARSED_BODY_CAUSE_STATUS}`, ...(preview ? [`body: ${preview}`] : [])];
     return Effect.succeed(
+      // NO `cause` here, deliberately. The rejection this branch was built from
+      // carries the whole parsed token response — access and refresh tokens in
+      // the clear — and every read of that body has ALREADY happened above:
+      // `status`, `error`, and the redacted preview are all lifted out here.
+      // Keeping the rejection would only put the raw tokens back into whatever
+      // renders the full failure (`Cause.pretty`, `JSON.stringify`), which is
+      // exactly the leak the message allowlist exists to prevent. The other
+      // branches keep their cause because theirs is diagnostic, not a body.
       new OAuth2Error({
-        message: `${options?.fallbackMessage ?? base.message} (${summary.join("; ")})`,
-        error: base.error ?? envelope?.error,
+        message: scrub(`${options?.fallbackMessage ?? base.message} (${summary.join("; ")})`),
+        error: base.error ?? (envelope?.error === undefined ? undefined : scrub(envelope.error)),
         status: PARSED_BODY_CAUSE_STATUS,
-        cause,
       }),
     );
   }
@@ -590,20 +749,37 @@ const toOAuth2ErrorWithHttpSummary = (
         : `${headline}: ${recovered.code}${
             recovered.description === undefined ? "" : ` — ${recovered.description}`
           }`;
+    const code = base.error ?? recovered?.code;
+    // The diagnostic rejection is dropped when the submitted secret is visible
+    // in its serialised form — oauth4webapi's ResponseBodyError carries the
+    // AS's `error_description` as an own enumerable field, so anything that
+    // renders the WHOLE failure (`Cause.pretty`, `JSON.stringify`) would
+    // replay the echo straight past the message scrub above. Everything
+    // classification reads — status, code, HTTP summary — is already lifted
+    // out, mirroring the malformed-200 branch's treatment of token-bearing
+    // rejections; the ordinary no-echo failure keeps its cause untouched.
+    const causeEchoesSecret =
+      Boolean(options?.clientSecret) && safeStringify(cause).includes(options?.clientSecret ?? "");
     return new OAuth2Error({
-      message: `${described} (${summary})`,
-      error: base.error ?? recovered?.code,
+      message: scrub(`${described} (${summary})`),
+      error: code === undefined ? undefined : scrub(code),
       // Carried even when no code was recovered: the status is what tells a
       // caller whether the AS refused (4xx — permanent, stop) or stumbled (5xx
       // — retry). Most real refusals arrive with no code at all.
       status: response.status,
-      cause,
+      ...(causeEchoesSecret ? {} : { cause }),
     });
   });
 };
 
-const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2Error> =>
-  toOAuth2ErrorWithHttpSummary(cause).pipe(Effect.flatMap((error) => Effect.fail(error)));
+/** Curried on the submitted client secret so every `Effect.catch` site names
+ *  the credential its request carried — the scrub cannot work without it. */
+const failOAuth2WithHttpSummary =
+  (clientSecret: string | null | undefined) =>
+  (cause: unknown): Effect.Effect<never, OAuth2Error> =>
+    toOAuth2ErrorWithHttpSummary(cause, { clientSecret }).pipe(
+      Effect.flatMap((error) => Effect.fail(error)),
+    );
 
 /** Fail from a token-endpoint error Response the caller holds directly — the
  *  `genericTokenEndpointRequest` paths, where oauth4webapi hands back the raw
@@ -614,8 +790,9 @@ const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2E
 const failOAuth2FromErrorResponse = (
   response: Response,
   fallbackMessage: string,
+  clientSecret: string | null | undefined,
 ): Effect.Effect<never, OAuth2Error> =>
-  toOAuth2ErrorWithHttpSummary(response, { fallbackMessage }).pipe(
+  toOAuth2ErrorWithHttpSummary(response, { fallbackMessage, clientSecret }).pipe(
     Effect.flatMap((error) => Effect.fail(error)),
   );
 
@@ -932,6 +1109,9 @@ export type ExchangeAuthorizationCodeInput = {
   readonly codeVerifier: string;
   readonly code: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator. MCP Auth spec MUST-requires this on
    *  the token request when the client knows the resource it intends
@@ -940,6 +1120,59 @@ export type ExchangeAuthorizationCodeInput = {
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
+};
+
+const base64BasicCredentials = (clientId: string, clientSecret: string): string => {
+  const bytes = new TextEncoder().encode(`${clientId}:${clientSecret}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return globalThis.btoa(binary);
+};
+
+const jsonTokenEndpointRequest = async (input: {
+  readonly tokenUrl: string;
+  readonly clientId: string;
+  readonly clientSecret?: string | null;
+  readonly clientAuth: ClientAuthMethod;
+  readonly grantType: "authorization_code" | "refresh_token";
+  readonly parameters: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
+}): Promise<Response> => {
+  const tokenUrl = assertSupportedOAuthEndpointUrl(
+    input.tokenUrl,
+    "Token URL",
+    input.endpointUrlPolicy,
+  );
+  const headers = new Headers({
+    accept: "application/json",
+    "content-type": "application/json",
+  });
+  const confidential = Boolean(input.clientSecret);
+  if (confidential && input.clientAuth === "basic") {
+    headers.set(
+      "authorization",
+      `Basic ${base64BasicCredentials(input.clientId, input.clientSecret ?? "")}`,
+    );
+  }
+  const body = {
+    grant_type: input.grantType,
+    ...input.parameters,
+    ...(confidential && input.clientAuth === "basic"
+      ? {}
+      : {
+          client_id: input.clientId,
+          ...(confidential ? { client_secret: input.clientSecret ?? "" } : {}),
+        }),
+  };
+  // oxlint-disable-next-line executor/no-raw-fetch -- boundary: provider token exchange is the SDK's HTTP boundary and preserves its injected fetch seam
+  return await (input.fetch ?? globalThis.fetch)(tokenUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(input.timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS),
+  });
 };
 
 export const exchangeAuthorizationCode = (
@@ -969,24 +1202,37 @@ export const exchangeAuthorizationCode = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
-      const response = await oauth.genericTokenEndpointRequest(
-        as,
-        client,
-        clientAuth,
-        "authorization_code",
-        params,
-        oauth4webapiRequestOptions(
-          input.tokenUrl,
-          input.timeoutMs,
-          input.endpointUrlPolicy,
-          input.fetch,
-        ),
-      );
+      const response =
+        input.requestFormat === "json"
+          ? await jsonTokenEndpointRequest({
+              tokenUrl: input.tokenUrl,
+              clientId: input.clientId,
+              clientSecret: input.clientSecret,
+              clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+              grantType: "authorization_code",
+              parameters: Object.fromEntries(params),
+              timeoutMs: input.timeoutMs,
+              endpointUrlPolicy: input.endpointUrlPolicy,
+              fetch: input.fetch,
+            })
+          : await oauth.genericTokenEndpointRequest(
+              as,
+              client,
+              clientAuth,
+              "authorization_code",
+              params,
+              oauth4webapiRequestOptions(
+                input.tokenUrl,
+                input.timeoutMs,
+                input.endpointUrlPolicy,
+                input.fetch,
+              ),
+            );
       return await processTokenEndpointResponse(as, client, response);
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "authorization_code",
       tokenUrl: input.tokenUrl,
@@ -1049,7 +1295,7 @@ export const exchangeClientCredentials = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "client_credentials",
       tokenUrl: input.tokenUrl,
@@ -1071,6 +1317,9 @@ export type RefreshAccessTokenInput = {
   readonly scopes?: readonly string[];
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** Encoding required by the provider's token endpoint. OAuth defaults to
+   *  URL-encoded form; a small set of providers require a JSON object. */
+  readonly requestFormat?: "form" | "json";
   readonly idTokenSigningAlgValuesSupported?: readonly string[];
   /** RFC 8707 Resource Indicator — MCP spec MUST-requires this on
    *  refresh requests so the new access token's audience is bound to
@@ -1104,6 +1353,26 @@ export const refreshAccessToken = (
       }
       const additionalParameters =
         Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
+      if (input.requestFormat === "json") {
+        const response = await jsonTokenEndpointRequest({
+          tokenUrl: input.tokenUrl,
+          clientId: input.clientId,
+          clientSecret: input.clientSecret,
+          clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+          grantType: "refresh_token",
+          parameters: {
+            refresh_token: input.refreshToken,
+            ...(input.scopes && input.scopes.length > 0
+              ? { scope: input.scopes.join(input.scopeSeparator ?? " ") }
+              : {}),
+            ...(input.resource ? { resource: input.resource } : {}),
+          },
+          timeoutMs: input.timeoutMs,
+          endpointUrlPolicy: input.endpointUrlPolicy,
+          fetch: input.fetch,
+        });
+        return await processTokenEndpointResponse(as, client, response);
+      }
       const response = await oauth.refreshTokenGrantRequest(
         as,
         client,
@@ -1128,7 +1397,7 @@ export const refreshAccessToken = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: "refresh_token",
       tokenUrl: input.tokenUrl,
@@ -1238,10 +1507,14 @@ export const exchangeSubjectTokenForIdJag = (
         );
       },
       catch: (cause) => cause,
-    }).pipe(Effect.catch(failOAuth2WithHttpSummary));
+    }).pipe(Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)));
 
     if (!response.ok) {
-      return yield* failOAuth2FromErrorResponse(response, "ID-JAG token exchange was rejected");
+      return yield* failOAuth2FromErrorResponse(
+        response,
+        "ID-JAG token exchange was rejected",
+        input.clientSecret,
+      );
     }
 
     // Nothing else reads this body, so it is consumed directly. A read failure
@@ -1348,7 +1621,7 @@ export const redeemIdJagAssertion = (
     },
     catch: (cause) => cause,
   }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary),
+    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
     withTokenRequestSpan({
       grantType: JWT_BEARER_GRANT_TYPE,
       tokenUrl: input.tokenUrl,

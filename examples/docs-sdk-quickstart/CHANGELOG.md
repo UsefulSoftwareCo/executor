@@ -1,5 +1,29 @@
 # @executor-js/example-docs-sdk-quickstart
 
+## 0.0.49
+
+### Patch Changes
+
+- Updated dependencies [[`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`85b1955`](https://github.com/UsefulSoftwareCo/executor/commit/85b1955b4d24c332e637e15a025d64455e28a626), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/sdk@1.6.3
+  - @executor-js/plugin-openapi@1.6.3
+
+## 0.0.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/plugin-openapi@1.6.2
+
+## 0.0.47
+
+### Patch Changes
+
+- Updated dependencies [[`7c12aee`](https://github.com/UsefulSoftwareCo/executor/commit/7c12aeea390225291ce4c97865b392237ee7934d), [`ddbf0fe`](https://github.com/UsefulSoftwareCo/executor/commit/ddbf0feba38c8502d78fa20c3081391b8ba3d112), [`0007474`](https://github.com/UsefulSoftwareCo/executor/commit/0007474602d8da3642648f216bfdb0f09eb0914f), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/plugin-openapi@1.6.1
+  - @executor-js/sdk@1.6.1
+
 ## 0.0.46
 
 ### Patch Changes

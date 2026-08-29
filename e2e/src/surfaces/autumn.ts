@@ -100,6 +100,19 @@ export interface AutumnSurface {
   /** Read the emulator's request ledger, filtered to one operation — used to
    *  prove a faulted `balances.check` was actually attempted (fail-open proof). */
   readonly ledgerFor: (operationId: string) => Effect.Effect<readonly LedgerEntry[], unknown>;
+  /** The customer's `members` balance as Autumn holds it — the seat count the
+   *  org is billed on — or null when the customer's plan carries no members
+   *  item. */
+  readonly memberSeats: (
+    customerId: string,
+  ) => Effect.Effect<{ usage: number; granted: number; unlimited: boolean } | null, unknown>;
+  /** Poll until the billed seat count reaches `usage`. Seat reporting is
+   *  forked off the mutating request (like usage tracking), so arrival is
+   *  eventually-consistent — polling IS the contract. */
+  readonly expectMemberSeats: (
+    customerId: string,
+    usage: number,
+  ) => Effect.Effect<{ usage: number; granted: number; unlimited: boolean }, unknown>;
 }
 
 export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
@@ -218,6 +231,36 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
       }
     });
 
+  const memberSeats = (customerId: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        fetch(`${autumnUrl}/v1/customers.get_or_create`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ customer_id: customerId }),
+        }),
+      );
+      if (!response.ok) {
+        return yield* Effect.fail(
+          `autumn customers.get_or_create responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
+        );
+      }
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly balances?: Record<
+          string,
+          { readonly usage?: number; readonly granted?: number; readonly unlimited?: boolean }
+        >;
+      };
+      const balance = body.balances?.["members"];
+      return balance
+        ? {
+            usage: balance.usage ?? 0,
+            granted: balance.granted ?? 0,
+            unlimited: balance.unlimited === true,
+          }
+        : null;
+    });
+
   const armFault = (input: FaultInput) =>
     Effect.gen(function* () {
       const response = yield* Effect.promise(() =>
@@ -290,6 +333,19 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
     armFault,
     clearFaults,
     ledgerFor,
+    memberSeats,
+    expectMemberSeats: (customerId, usage) =>
+      memberSeats(customerId).pipe(
+        Effect.filterOrFail(
+          (balance): balance is { usage: number; granted: number; unlimited: boolean } =>
+            balance !== null && balance.usage === usage,
+          (balance) =>
+            `members balance for ${customerId} is ${balance ? balance.usage : "absent"}, expected ${usage}`,
+        ),
+        // Same ceiling as expectUsage: the forked seat sync drains on the
+        // worker's waitUntil shortly after the mutating request returns.
+        Effect.retry(Schedule.both(Schedule.spaced("500 millis"), Schedule.recurs(40))),
+      ),
     expectUsage: (query) =>
       usageEvents(query).pipe(
         Effect.filterOrFail(

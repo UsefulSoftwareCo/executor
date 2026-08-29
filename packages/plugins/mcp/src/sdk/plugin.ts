@@ -10,10 +10,12 @@ import {
   AuthTemplateSlug,
   ConnectionName,
   definePlugin,
+  endpointTelemetryAttributes,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   mergeAuthTemplates,
   OAuthClientSlug,
+  sha256Hex,
   tool,
   ToolResult,
   type AuthMethodDescriptor,
@@ -45,6 +47,7 @@ import { createMcpConnectionPool } from "./connection-pool";
 import { discoverToolsFromInput } from "./discover";
 import {
   McpConnectionError,
+  type McpConnectionFailureKind,
   McpOAuthReauthorizationRequired,
   McpToolDiscoveryError,
 } from "./errors";
@@ -59,6 +62,7 @@ import {
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
+  McpToolMeta,
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
@@ -93,6 +97,21 @@ const mcpLivenessFailureStatus = (failure: {
     lower.includes("unauthorized") ||
     lower.includes("forbidden");
   return authWalled ? "expired" : "degraded";
+};
+
+/** Enumerable failure MECHANISM for a failed liveness probe, beside the status
+ *  classifier above: a hit deadline is `probe_timeout` (a slow-but-alive
+ *  server, not a dead one), an HTTP verdict is `upstream_status`, and anything
+ *  else (transport, protocol, config) is `probe_failed`. Structural fields
+ *  only — never the message. */
+const mcpLivenessFailureReason = (failure: {
+  readonly httpStatus?: number;
+  readonly timedOut?: boolean;
+  readonly failureKind?: McpConnectionFailureKind;
+}): "probe_timeout" | "upstream_status" | "probe_failed" => {
+  if (failure.timedOut === true || failure.failureKind === "timeout") return "probe_timeout";
+  if (failure.httpStatus !== undefined) return "upstream_status";
+  return "probe_failed";
 };
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
@@ -138,14 +157,17 @@ const legacyMcpClientMatches = (
 // ---------------------------------------------------------------------------
 // Tool annotations carry an `mcp` envelope alongside the executor's policy
 // hints. The executor persists `ToolDef.annotations` verbatim into the tool
-// row's JSON column, so the real MCP tool name + upstream annotations survive
-// to `invokeTool` / `resolveAnnotations` with no plugin-side store (resolveTools
-// has no ctx to write one anyway). The envelope is opaque to core.
+// row's JSON column, so the real MCP tool name, the upstream annotations, and
+// the tool's reserved `_meta` map survive to `invokeTool` /
+// `resolveAnnotations` with no plugin-side store (resolveTools has no ctx to
+// write one anyway). The envelope is opaque to core.
 // ---------------------------------------------------------------------------
 
 interface McpToolStamp {
   readonly toolName: string;
   readonly upstream?: McpToolAnnotations;
+  /** The tool's reserved MCP `_meta` map, opaque to core and to the model. */
+  readonly _meta?: McpToolMeta;
 }
 
 type StampedAnnotations = ToolAnnotations & { readonly mcp: McpToolStamp };
@@ -161,6 +183,7 @@ const McpStampSchema = Schema.Struct({
       openWorldHint: Schema.optional(Schema.Boolean),
     }),
   ),
+  _meta: Schema.optional(McpToolMeta),
 });
 const AnnotationsWithStamp = Schema.Struct({ mcp: McpStampSchema });
 const decodeStamp = Schema.decodeUnknownOption(AnnotationsWithStamp);
@@ -180,6 +203,8 @@ const readStamp = (annotations: unknown): McpToolStamp | null =>
 const McpRemoteServerInputSchema = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
@@ -201,6 +226,8 @@ const McpRemoteServerInputSchema = Schema.Struct({
 const McpStdioServerInputSchema = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
@@ -382,6 +409,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     const vars = stdioEnvVarNames(input);
     return {
       transport: "stdio",
+      family: input.family?.trim() || undefined,
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
@@ -394,6 +422,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
   }
   return {
     transport: "remote",
+    family: input.family?.trim() || undefined,
     endpoint: input.endpoint,
     remoteTransport: input.remoteTransport ?? "auto",
     queryParams: input.queryParams,
@@ -435,13 +464,16 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
 };
 
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
- *  real MCP tool name + upstream annotations into the persisted annotations so
- *  they survive to invokeTool with no plugin-side store. */
+ *  real MCP tool name, the upstream annotations, and the tool's `_meta` map
+ *  into the persisted annotations so they survive to invokeTool with no
+ *  plugin-side store. Executor's `ToolDef` has no `_meta` field of its own, so
+ *  the stamp is where a host reads it back. */
 const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   const destructive = entry.annotations?.destructiveHint === true;
   const stamp: McpToolStamp = {
     toolName: entry.toolName,
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
+    ...(entry._meta ? { _meta: entry._meta } : {}),
   };
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,
@@ -636,6 +668,7 @@ const buildConnectorInput = (
     queryParams: Object.keys(queryParams).length > 0 ? queryParams : undefined,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     authProvider,
+    ...(authProvider === undefined ? {} : { staticOAuthBearer: true }),
     httpClientLayer,
     versionNegotiation: config.versionNegotiation,
   });
@@ -653,20 +686,45 @@ const sortedRecord = (
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
 
-const connectionPoolKey = (
+/** The pooled remote connection's identity, as an opaque digest.
+ *
+ *  HASHED, not carried in the clear, because three of the fields below hold a
+ *  live credential: `values` is the connection's resolved secret inputs, and
+ *  `headers` / `queryParams` are those SAME secrets already rendered onto the
+ *  outbound request by `buildConnectorInput`. The result is retained as a `Map`
+ *  key for the POOL's lifetime (`connection-pool.ts`), which outlives by far the
+ *  call that needed the secret — so a plaintext key leaves credentials sitting
+ *  in process memory with no reader.
+ *
+ *  Hashing the WHOLE serialized identity rather than only the fields known to
+ *  be sensitive keeps equality exactly (same identity → same digest, so reuse is
+ *  unchanged) and keeps any field added later covered without anyone having to
+ *  remember it carries a secret. Nothing reads the key back: the pool only ever
+ *  compares it, and it reaches no log, span or error message.
+ *
+ *  SHA-256 rather than a cheap non-cryptographic hash on purpose. A collision
+ *  means reusing a connection authenticated as somebody else, so the hash has to
+ *  be one an attacker who controls their own credential values cannot aim.
+ *
+ *  Exported for tests (not re-exported from `sdk/index.ts`, so this widens no
+ *  public API): the retention property is a property of the KEY, and asserting
+ *  it through pool behaviour alone would not see it. */
+export const connectionPoolKey = (
   input: Extract<ConnectorInput, { readonly transport: "remote" }>,
   template: string,
   values: Record<string, string | null>,
-): string =>
-  JSON.stringify({
-    endpoint: input.endpoint,
-    transport: input.transport,
-    remoteTransport: input.remoteTransport,
-    headers: sortedRecord(input.headers),
-    queryParams: sortedRecord(input.queryParams),
-    template,
-    values: sortedRecord(values),
-  });
+): Effect.Effect<string> =>
+  sha256Hex(
+    JSON.stringify({
+      endpoint: input.endpoint,
+      transport: input.transport,
+      remoteTransport: input.remoteTransport,
+      headers: sortedRecord(input.headers),
+      queryParams: sortedRecord(input.queryParams),
+      template,
+      values: sortedRecord(values),
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Declared auth methods — project the stored MCP config into the catalog's
@@ -678,9 +736,9 @@ const connectionPoolKey = (
 //   stdio                → []          (no remote connection to configure)
 //   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
-//                          (`discoveryUrl`). Endpoints/scopes are discovered
-//                          live at connect time, so they are NOT pre-resolved
-//                          here. We mark
+//                          (`discoveryUrl`). Endpoints are discovered live at
+//                          connect time. Scopes are discovered too unless the
+//                          method declares them explicitly. We mark
 //                          `supportsDynamicRegistration: true` because MCP
 //                          OAuth servers are expected to support RFC 7591 DCR;
 //                          the connect flow probes to confirm and falls back.
@@ -719,6 +777,7 @@ export const describeMcpAuthMethods = (
         // oauth2.
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
           supportsDynamicRegistration: true,
           // Present only when this server was configured with an enterprise
           // identity provider. The connect path re-checks the server's metadata
@@ -736,10 +795,14 @@ export const describeMcpAuthMethods = (
 
 export const describeMcpIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = parseMcpIntegrationConfig(record.config);
-  if (!config || config.transport === "stdio") return {};
-  return { url: config.endpoint };
+  if (!config) return {};
+  const family = config.family?.trim();
+  return {
+    ...(config.transport === "remote" ? { url: config.endpoint } : {}),
+    ...(family ? { family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -931,7 +994,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
-            attributes: { "mcp.endpoint": typeof input === "string" ? input : input.endpoint },
+            // The probed endpoint is raw user paste and routinely carries a
+            // credential in its query string (`?token=…`) — sanitize before
+            // stamping.
+            attributes: endpointTelemetryAttributes(
+              "mcp.endpoint",
+              typeof input === "string" ? input : input.endpoint,
+            ),
           }),
         );
 
@@ -994,6 +1063,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                   // rather than swallow a real failure.
                   Effect.catchTags({
                     IntegrationNotFoundError: (cause) =>
+                      Effect.fail(
+                        new McpConnectionError({ transport: "stdio", message: cause.message }),
+                      ),
+                    ConnectionAlreadyExistsError: (cause) =>
                       Effect.fail(
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
                       ),
@@ -1266,26 +1339,49 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           httpClientLayer,
         ).pipe(Effect.result);
 
-        const manifest = Result.isSuccess(built)
-          ? yield* discoverToolsFromInput(built.success).pipe(
-              Effect.map((d) => ({ ok: true as const, manifest: d.manifest })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
-              Effect.withSpan("mcp.plugin.discover_tools", {
-                attributes: { "mcp.connection.name": String(connection.name) },
-              }),
-            )
-          : { ok: false as const, manifest: null };
-
-        if (!manifest.ok || !manifest.manifest) {
-          return { tools: [] as readonly ToolDef[], incomplete: true };
+        if (Result.isFailure(built)) {
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: built.failure.message,
+          };
         }
-        return { tools: manifest.manifest.tools.map(toToolDef) };
+
+        const discovered = yield* discoverToolsFromInput(built.success).pipe(
+          Effect.result,
+          Effect.withSpan("mcp.plugin.discover_tools", {
+            attributes: { "mcp.connection.name": String(connection.name) },
+          }),
+        );
+        if (Result.isFailure(discovered)) {
+          const reauthorizationRequired = discovered.failure.reauthorizationRequired === true;
+          return {
+            tools: [] as readonly ToolDef[],
+            incomplete: true,
+            incompleteReason: discovered.failure.message,
+            ...(reauthorizationRequired
+              ? {
+                  health: {
+                    status: "expired" as const,
+                    checkedAt: Date.now(),
+                    detail: "MCP OAuth reauthorization required",
+                  },
+                }
+              : {}),
+          };
+        }
+        return { tools: discovered.success.manifest.tools.map(toToolDef) };
       }).pipe(
         Effect.withSpan("mcp.plugin.resolve_tools", {
           attributes: { "mcp.connection.name": String(connection.name) },
         }),
       ) as Effect.Effect<
-        { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
+        {
+          readonly tools: readonly ToolDef[];
+          readonly incomplete?: boolean;
+          readonly incompleteReason?: string;
+          readonly health?: HealthCheckResult;
+        },
         StorageFailure
       >,
 
@@ -1340,7 +1436,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const connector: McpConnector = createMcpConnector(connectorInput);
         const poolKey =
           connectorInput.transport === "remote"
-            ? connectionPoolKey(connectorInput, String(credential.template), credential.values)
+            ? yield* connectionPoolKey(
+                connectorInput,
+                String(credential.template),
+                credential.values,
+              )
             : undefined;
 
         const connectionRef = {
@@ -1530,7 +1630,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       }).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.withSpan("mcp.plugin.detect", {
-          attributes: { "mcp.endpoint": url },
+          // Same raw-paste input as probe_endpoint — sanitize before stamping.
+          attributes: endpointTelemetryAttributes("mcp.endpoint", url),
         }),
       ),
 
@@ -1567,6 +1668,31 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         if (!parsed) {
           return { status: "unknown" as const, checkedAt: Date.now() } satisfies HealthCheckResult;
         }
+        // An unresolved apikey input reports `expired`, not `healthy`.
+        //
+        // Rendering skips a placement whose value is missing, so without this the
+        // probe dials UNAUTHENTICATED — and any server that lists tools without
+        // auth answers, making a connection whose credential is gone report as
+        // healthy. Health is the signal that tells a user to re-authenticate, so
+        // that is the one status it must never give here. The invoke path already
+        // refuses for the same reason, and the OpenAPI health check reports
+        // `expired` in exactly this case.
+        if (parsed.transport === "remote") {
+          const method = selectAuthMethod(parsed, String(credential.template));
+          if (method?.kind === "apikey") {
+            const missing = requiredPlacementVariables(method.placements).filter(
+              (variable) => credential.values[variable] == null,
+            );
+            if (missing.length > 0) {
+              return {
+                status: "expired" as const,
+                checkedAt: Date.now(),
+                detail: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}.`,
+                reason: "credential_missing" as const,
+              } satisfies HealthCheckResult;
+            }
+          }
+        }
         const connector = yield* buildConnectorInput(
           parsed,
           credential.values,
@@ -1586,6 +1712,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               checkedAt: Date.now(),
               ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
               detail: error.message,
+              reason: mcpLivenessFailureReason(error),
             } satisfies HealthCheckResult),
           ),
         );
@@ -1597,6 +1724,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             checkedAt: Date.now(),
             ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
             detail: error.message,
+            reason: mcpLivenessFailureReason(error),
           } satisfies HealthCheckResult),
         ),
         // Every failure above folds onto the SUCCESS channel, so without this
@@ -1607,6 +1735,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             "mcp.health.status": result.status,
             ...("httpStatus" in result && result.httpStatus !== undefined
               ? { "mcp.health.http_status": result.httpStatus }
+              : {}),
+            ...("reason" in result && result.reason !== undefined
+              ? { "mcp.health.reason": result.reason }
               : {}),
           }),
         ),

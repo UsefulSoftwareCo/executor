@@ -1,6 +1,6 @@
 // oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
-import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { afterEach, describe, expect, it } from "@effect/vitest";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
@@ -18,6 +18,8 @@ import {
 class MemoryStorage {
   private readonly data = new Map<string, unknown>();
   alarm: number | undefined;
+
+  private idName: string | undefined = "streamable-http:session-reconnect";
 
   readonly sql = {
     exec: () => [],
@@ -69,8 +71,18 @@ class MemoryStorage {
     return callback();
   }
 
-  get id(): { readonly name: string } {
-    return { name: "streamable-http:session-reconnect" };
+  get id(): { readonly name: string | undefined } {
+    return { name: this.idName };
+  }
+
+  /**
+   * Model a Durable Object invocation the runtime does not give a
+   * `ctx.id.name` — the shape an alarm fires in when it is running against an
+   * alarm record that never carried one.
+   */
+  withoutIdName(): this {
+    this.idName = undefined;
+    return this;
   }
 
   get storage(): MemoryStorage {
@@ -136,6 +148,9 @@ class RestoredTransport implements Transport {
 
 const makeServer = () => new McpServer({ name: "executor-test", version: "1.0.0" });
 
+/** The DO's structured logs are JSON lines; assertions read them back. */
+const decodeLogLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
 const makeDeferred = (): { readonly promise: Promise<void>; readonly resolve: () => void } => {
   let resolve: () => void = () => undefined;
   const promise = new Promise<void>((settle) => {
@@ -173,6 +188,8 @@ const makeEngine = (
       pausedExecutionCount: () => Effect.succeed(0),
       hasPausedExecutions: () => Effect.succeed(false),
       getDescription: Effect.succeed("test engine"),
+      // The fake forks nothing, so there is no sandbox fiber to end.
+      shutdown: Effect.void,
     },
   };
 };
@@ -748,5 +765,158 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
 
     await expect(session.init()).rejects.toThrow(/code was updated/);
     expect(captured, "a deploy reset is expected platform behaviour, not a defect").toEqual([]);
+  });
+});
+
+// PartyServer answers "what is this DO's name" from three sources and does not
+// consult them in one place: the `name` getter reads `ctx.id.name` and an
+// in-memory field hydrated during initialization, while the durable `__ps_name`
+// record is read only BY that initialization. The alarm entry point makes most
+// of its decisions itself and delegates to `super.alarm()` on one branch only,
+// so it never runs that hydration — an alarm could read the durable record,
+// conclude the session was addressable, and then die reading the session id for
+// a LOG LINE about the decision it had just made.
+//
+// This cannot be provoked through the dev stack, which addresses every Durable
+// Object by name, so the shape is pinned here instead: an unnamed `ctx.id`, a
+// faithful stand-in for PartyServer's throwing getter, and the alarm driven end
+// to end.
+describe("McpAgentSessionDOBase alarm name resolution", () => {
+  type NameSession = HarnessSession & {
+    /** Installed by {@link installPartyServerName}, as PartyServer installs it. */
+    readonly name: string;
+    sessionIdForTelemetry: () => string;
+  };
+
+  const storedName = "streamable-http:session-stale-alarm";
+
+  const restoreConsole: Array<() => void> = [];
+  afterEach(() => {
+    while (restoreConsole.length > 0) restoreConsole.pop()?.();
+  });
+
+  // Stand-in for PartyServer's `name` getter and the agents SDK's
+  // `getSessionId`: `ctx.id.name`, else the in-memory field, else the throw.
+  // `inMemoryName` stays absent by default because the alarm path is exactly
+  // the one that never runs the initialization which would populate it.
+  const installPartyServerName = (
+    session: NameSession,
+    options: { readonly inMemoryName?: string } = {},
+  ): void => {
+    Object.defineProperty(session, "name", {
+      configurable: true,
+      get: () => {
+        const ctxName = session.ctx.id.name;
+        if (ctxName !== undefined) return ctxName;
+        if (options.inMemoryName !== undefined) return options.inMemoryName;
+        throw new Error(
+          "Attempting to read .name on McpSessionDOSqlite, but this.ctx.id.name is not set and no __ps_name fallback record is available.",
+        );
+      },
+    });
+    session.getSessionId = () => {
+      const [, sessionId] = session.name.split(":");
+      if (!sessionId) throw new Error("Invalid session id.");
+      return sessionId;
+    };
+  };
+
+  const makeUnnamedSession = async (
+    options: { readonly storeName?: boolean } = {},
+  ): Promise<{ session: NameSession; storage: MemoryStorage; logs: string[] }> => {
+    const storage = new MemoryStorage().withoutIdName();
+    if (options.storeName ?? true) await storage.put("__ps_name", storedName);
+
+    const session = (await makeHarnessSession()) as NameSession;
+    session.ctx = storage;
+    session.lastActivityMs = Date.now() - 10;
+    session.sessionTimeoutMs = () => 1;
+    installPartyServerName(session);
+
+    const logs: string[] = [];
+    const info = console.info;
+    const warn = console.warn;
+    console.info = (line: unknown) => logs.push(String(line));
+    console.warn = (line: unknown) => logs.push(String(line));
+    restoreConsole.push(() => {
+      console.info = info;
+      console.warn = warn;
+    });
+
+    return { session, storage, logs };
+  };
+
+  const parsed = (logs: readonly string[]): readonly unknown[] =>
+    logs.map((line) => decodeLogLine(line));
+
+  it("disposes the right session when only the durable record carries the name", async () => {
+    const { session, storage, logs } = await makeUnnamedSession();
+
+    await expect(
+      session.alarm(),
+      "an alarm whose guard found a name must not die on the next read of that name",
+    ).resolves.toBeUndefined();
+
+    expect(
+      parsed(logs),
+      "the session the stored record names is the one reported as disposed",
+    ).toContainEqual(
+      expect.objectContaining({
+        event: "mcp_session_idle_runtime_dispose",
+        sessionId: "session-stale-alarm",
+      }),
+    );
+    expect(session.initialized, "the idle runtime is torn down").toBe(false);
+    expect(session.engine, "the execution engine is released").toBeNull();
+    expect(storage.alarm, "the idle alarm is cleared").toBeUndefined();
+    expect(await storage.get("last-activity-ms"), "the idle clock is cleared").toBeUndefined();
+  });
+
+  // The lease branches log BEFORE they act, so a throwing read there loses the
+  // extension itself and not merely the line: the alarm dies and the session is
+  // left pinned without making progress.
+  it("extends a paused lease from the durable record instead of dying on its log", async () => {
+    const { session, storage, logs } = await makeUnnamedSession();
+    session.maxPausedSessionIdleMs = () => 1_000_000;
+    session.engine = {
+      ...(session.engine as ExecutionEngine<Cause.YieldableError>),
+      pausedExecutionCount: () => Effect.succeed(1),
+    };
+
+    await expect(session.alarm()).resolves.toBeUndefined();
+
+    expect(parsed(logs)).toContainEqual(
+      expect.objectContaining({
+        event: "mcp_session_paused_lease_extension",
+        sessionId: "session-stale-alarm",
+      }),
+    );
+    expect(storage.alarm, "the lease is actually extended").toBeGreaterThan(0);
+    expect(session.initialized, "a leased session keeps its runtime").toBe(true);
+  });
+
+  it("completes and cleans up when no source has a name at all", async () => {
+    const { session, storage, logs } = await makeUnnamedSession({ storeName: false });
+    await storage.setAlarm(Date.now());
+
+    await expect(
+      session.alarm(),
+      "an unaddressable session exits rather than throwing into an endless alarm retry",
+    ).resolves.toBeUndefined();
+
+    expect(parsed(logs)).toContainEqual(
+      expect.objectContaining({ event: "mcp_session_unaddressable_alarm_cleanup" }),
+    );
+    expect(storage.alarm, "the alarm does not retry forever").toBeUndefined();
+    expect(session.initialized, "the runtime it cannot address is released").toBe(false);
+  });
+
+  it("never throws on an observational read of the session id", async () => {
+    const { session } = await makeUnnamedSession({ storeName: false });
+
+    expect(() => session.sessionIdForTelemetry()).not.toThrow();
+    expect(session.sessionIdForTelemetry(), "a placeholder keeps the log shape stable").toBe(
+      "unresolved",
+    );
   });
 });

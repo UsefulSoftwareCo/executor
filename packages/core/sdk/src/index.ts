@@ -74,6 +74,7 @@ export {
   IntegrationNotFoundError,
   IntegrationAlreadyExistsError,
   IntegrationRemovalNotAllowedError,
+  ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
@@ -115,6 +116,7 @@ export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 // Health-check vocabulary (pure Schema + helpers).
 export {
   HealthStatus,
+  HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,
   HealthCheckResponseSample,
@@ -122,12 +124,15 @@ export {
   HealthCheckCandidateParameter,
   HealthCheckResponseField,
   classifyHttpStatus,
+  classifyProbeResponse,
   extractIdentity,
   compareHealthCheckCandidates,
   candidateIdentityTier,
   sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  pathNamesASecret,
+  REDACTED_SAMPLE_VALUE,
   identityPathTier,
   rankResponseSample,
 } from "./health-check";
@@ -422,6 +427,8 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  DEFAULT_TOOLS_SYNC_GRACE_MS,
+  STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,
   collectTables,
   parseToolAddress,
@@ -484,6 +491,14 @@ export {
   oauthClientGcSqliteMigration,
   runSqliteOAuthClientGcMigration,
 } from "./sqlite-oauth-client-gc-migration";
+// Rewrite `bigint` columns an earlier build left in SQLite's INTEGER storage
+// class, which the bigint row mapper cannot read (issue #1771).
+export {
+  bigintStorageClassSqliteMigration,
+  runSqliteBigintStorageClassMigration,
+  LEGACY_BIGINT_STORAGE_CLASS_COLUMNS,
+  type BigintStorageClassColumn,
+} from "./sqlite-bigint-storage-class-migration";
 export {
   authToolFailure,
   isUnauthorizedToolFailure,
@@ -495,3 +510,21 @@ export {
   insufficientScopeFromEmbeddedJson,
   type InsufficientScopeDetection,
 } from "./insufficient-scope";
+
+// Endpoint sanitization for span attributes — plugins stamping a user-supplied
+// endpoint must strip its credential-bearing parts first.
+export { endpointForTelemetry, endpointTelemetryAttributes } from "./telemetry-endpoint";
+
+// URL redaction for exported telemetry — the shared scrub every exporter path
+// (cloud span processors, self-host and browser OTLP serialization, the
+// browser-traces forwarder) consumes.
+export {
+  redactOtlpTraceExport,
+  redactSpanUrlAttributes,
+  redactStringElements,
+  redactUrlForTelemetry,
+  redactUrlsInText,
+  STRIPPED_QUERY_ATTRIBUTE,
+  UrlRedactingOtlpSerializationJson,
+  type RedactedUrl,
+} from "./telemetry-url-redaction";

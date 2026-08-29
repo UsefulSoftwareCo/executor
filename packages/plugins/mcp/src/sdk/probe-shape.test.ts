@@ -267,6 +267,96 @@ describe("probeMcpEndpointShape", () => {
     ),
   );
 
+  // Cloudflare Access shape: an edge authenticator in front of the MCP
+  // server answers an unauthenticated request with `403` and an HTML
+  // login page. The MCP server is never reached, so there is no Bearer
+  // challenge and no JSON-RPC body. This must read as "supply
+  // credentials", not as "this URL is not MCP" — the latter told users
+  // the endpoint was unreachable when it was merely protected.
+  it.effect("classifies a 403 HTML edge challenge as auth-required", () =>
+    withServer(
+      () =>
+        HttpServerResponse.text("<html><body>Sign in</body></html>", {
+          status: 403,
+          contentType: "text/html",
+        }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  it.effect("classifies 403 with Bearer + JSON-RPC error envelope as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32000, message: "Forbidden" },
+          },
+          { status: 403, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  it.effect("rejects a 403 whose Bearer challenge carries a GraphQL body", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          { errors: [{ message: "Forbidden" }] },
+          { status: 403, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  // The other half of the Cloudflare Access story: once the service-token
+  // headers are configured, the same endpoint answers normally. Proves the
+  // probe actually puts `options.headers` on the wire.
+  it.effect("sends configured request headers and clears an edge challenge", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          if (request.headers["cf-access-client-id"] !== "client-id") {
+            return HttpServerResponse.text("<html>Sign in</html>", {
+              status: 403,
+              contentType: "text/html",
+            });
+          }
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              serverInfo: { name: "t", version: "0" },
+            },
+          });
+        });
+
+        const blocked = yield* probeMcpEndpointShape(server.endpoint);
+        expect(blocked).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+
+        const allowed = yield* probeMcpEndpointShape(server.endpoint, {
+          headers: { "CF-Access-Client-Id": "client-id" },
+        });
+        expect(allowed).toEqual({ kind: "mcp", requiresAuth: false });
+      }),
+    ),
+  );
+
   it.effect("falls back to GET for OAuth-protected SSE endpoints", () =>
     withServer(
       (request) => {

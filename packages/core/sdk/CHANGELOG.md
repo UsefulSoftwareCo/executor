@@ -1,5 +1,34 @@
 # @executor-js/sdk
 
+## 1.6.3
+
+### Patch Changes
+
+- [#1537](https://github.com/UsefulSoftwareCo/executor/pull/1537) [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060) Thanks [@Rish-it](https://github.com/Rish-it)! - Share the OAuth refresh gate across execution stacks so a rotating refresh token is redeemed once.
+
+  The in-flight refresh gate was built inside `createExecutor`, so it only covered one execution stack. A host builds a fresh stack per MCP session, and now per request, so two sessions resolving the same connection each read the same stored refresh token and each believed they were the refresh winner. Against a provider that rotates refresh tokens, the loser redeems a token the winner already spent, and a provider that detects reuse revokes the whole token family: the connection dies and the user has to reauthorize. The first refresh always succeeds, so the fault stayed invisible until a later expiry.
+
+  The gate now hangs off the root database handle, which is the object hosts already share across sessions and requests, so every stack over one handle converges on one gate. Its key includes the tenant, because a gate that spans tenants would otherwise let two tenants collide on one entry.
+
+  The grant also runs on its own detached fiber that callers await, rather than on whichever caller registered it. Sharing an entry across stacks would otherwise share the first caller's cancellation: a disconnected MCP client or an execution deadline would fail every peer waiting on that entry, and would abandon a refresh token the authorization server had already rotated, which is itself a dead connection. A cancelled peer now detaches without touching the grant, and a grant nobody is left waiting on still settles and still persists the rotated token.
+
+  Deduplication covers one database handle in one process. A host that builds a fresh handle per request or per session, and any multi-instance or multi-replica deployment, is out of scope here and still needs database-backed coordination, such as a compare-and-swap on the stored refresh token.
+
+- [#1098](https://github.com/UsefulSoftwareCo/executor/pull/1098) [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae) Thanks [@aryasaatvik](https://github.com/aryasaatvik)! - Add a FumaDB bulk upsert query path and route plugin-storage bulk writes through
+  it so existing rows are updated without delete/reinsert churn.
+- Updated dependencies [[`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/fumadb@1.5.8
+
+## 1.6.2
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1784](https://github.com/UsefulSoftwareCo/executor/pull/1784) [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Build `StorageError.message` from the call-site label plus the driver's error code instead of the driver's raw text. The driver text is drizzle's `Failed query: <sql>\nparams: <bound values>`, so error reporting grouped one storage defect by statement shape and printed bound parameters into issue titles. The full driver error stays on `cause`.
+
+  Add `StorageConnectionError`, a `StorageFailure` variant for postgres.js connection faults (`CONNECTION_ENDED`, `CONNECTION_CLOSED`, `CONNECTION_DESTROYED`, `CONNECT_TIMEOUT`, `ECONNREFUSED`, `ECONNRESET`) and workerd's cross-request I/O rejection. It carries the fault `code` and a `retryable` flag so a lost socket can be told apart from a pool-lifetime bug.
+
 ## 1.6.0
 
 ### Patch Changes
