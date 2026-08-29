@@ -603,14 +603,20 @@ export function IntegrationBrowsePage() {
       const identity = catalogIdentityByKey.get(productKey(entry.preset.name, kindKey));
       rows.push({
         key: `preset-${entry.pluginKey}-${entry.preset.id}`,
-        testId: `preset-${entry.preset.id}`,
+        // Plugin key included: two plugins can both name a preset "stripe",
+        // and a duplicated test id matches two cards.
+        testId: `preset-${entry.pluginKey}-${entry.preset.id}`,
         title,
         kindKey,
         ...(identity ? { domain: identity.domain } : {}),
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
         ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
         onSelect: () => pickPreset(entry, identity?.auth, identity?.specOverrides),
-        added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name),
+        // The rendered title is also what the add flow derives the namespace
+        // from ("Stripe" + MCP → "Stripe MCP" → stripe_mcp), so it recognises
+        // an add made through this very card even when the preset declares no
+        // defaultSlug and its bare name would miss.
+        added: isAdded(entry.pluginKey, entry.preset.defaultSlug, entry.preset.name, title),
         busy: false,
       });
     }
