@@ -103,6 +103,20 @@ export function CredentialGuidancePanel(props: {
         ) : null}
       </div>
       {relevant.setup ? <SetupText text={relevant.setup} /> : null}
+      {/* Provenance, stated plainly: this text is machine-written registry
+          data, not the provider's own docs — the reader should weight it
+          accordingly (menus move, prefixes change). */}
+      <p className="pt-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground/60">
+        AI-generated guidance via{" "}
+        <a
+          href={`https://integrations.sh/${domain ?? ""}`}
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2 hover:text-muted-foreground"
+        >
+          integrations.sh
+        </a>
+      </p>
     </div>
   );
 }
