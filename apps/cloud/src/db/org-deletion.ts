@@ -16,6 +16,8 @@ import { eq, or, sql } from "drizzle-orm";
 import type { DrizzleDb } from "./db";
 import { organizations } from "./schema";
 import {
+  access_group,
+  access_group_member,
   artifact,
   blob,
   connection,
@@ -52,6 +54,8 @@ export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Pr
     await tx.delete(plugin_storage).where(eq(plugin_storage.tenant, organizationId));
     await tx.delete(subject).where(eq(subject.tenant, organizationId));
     await tx.delete(artifact).where(eq(artifact.tenant, organizationId));
+    await tx.delete(access_group_member).where(eq(access_group_member.tenant, organizationId));
+    await tx.delete(access_group).where(eq(access_group.tenant, organizationId));
 
     // Secrets, OAuth tokens, and cached specs live in `blob`, namespaced by
     // owner: `o:<org>/<plugin>` (org scope) and `u:<org>:<subject>/<plugin>`

@@ -199,6 +199,15 @@ export interface PluginCtx<TStore = unknown> {
       readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
       readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
     };
+    readonly accessGroups: {
+      /** The bound view's access-group memberships, read live per call:
+       *  `null` = unrestricted view (platform view, subject-less org
+       *  binding), else the set of group ids the subject belongs to. Lets a
+       *  plugin apply the same restricted-is-invisible rule core applies to
+       *  connections (e.g. toolkits gating their own records). Read-only:
+       *  group management stays on the host admin planes. */
+      readonly visibleGroupIds: () => Effect.Effect<ReadonlySet<string> | null, StorageFailure>;
+    };
   };
 
   /** Saved credentials. A connection IS the credential; resolve its value

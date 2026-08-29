@@ -22,6 +22,7 @@ import { Route as OrgRouteImport } from './routes/app/org'
 import { Route as BillingRouteImport } from './routes/app/billing'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport } from './../../../packages/react/src/routes/artifacts'
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
+import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRouteImport } from './../../../packages/react/src/routes/access-groups'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolkitSlugRouteImport } from './../../../packages/react/src/routes/toolkits.$toolkitSlug'
 import { Route as ResumeDotexecutionIdRouteImport } from './routes/app/resume.$executionId'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRouteImport } from './../../../packages/react/src/routes/integrations.$namespace'
@@ -101,6 +102,12 @@ const ApiKeysRoute = ApiKeysRouteImport.update({
   path: '/{-$orgSlug}/api-keys',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute =
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRouteImport.update({
+    id: '/{-$orgSlug}/access-groups',
+    path: '/{-$orgSlug}/access-groups',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolkitSlugRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolkitSlugRouteImport.update(
     {
@@ -158,6 +165,7 @@ export interface FileRoutesByFullPath {
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
   '/setup-mcp': typeof SetupMcpRoute
+  '/{-$orgSlug}/access-groups': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -180,6 +188,7 @@ export interface FileRoutesByTo {
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
   '/setup-mcp': typeof SetupMcpRoute
+  '/{-$orgSlug}/access-groups': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -203,6 +212,7 @@ export interface FileRoutesById {
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
   '/setup-mcp': typeof SetupMcpRoute
+  '/{-$orgSlug}/access-groups': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -227,6 +237,7 @@ export interface FileRouteTypes {
     | '/create-org'
     | '/login'
     | '/setup-mcp'
+    | '/{-$orgSlug}/access-groups'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -249,6 +260,7 @@ export interface FileRouteTypes {
     | '/create-org'
     | '/login'
     | '/setup-mcp'
+    | '/{-$orgSlug}/access-groups'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -271,6 +283,7 @@ export interface FileRouteTypes {
     | '/create-org'
     | '/login'
     | '/setup-mcp'
+    | '/{-$orgSlug}/access-groups'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -294,6 +307,7 @@ export interface RootRouteChildren {
   CreateOrgRoute: typeof CreateOrgRoute
   LoginRoute: typeof LoginRoute
   SetupMcpRoute: typeof SetupMcpRoute
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute
   ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   BillingRoute: typeof BillingRoute
@@ -404,6 +418,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKeysRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/{-$orgSlug}/access-groups': {
+      id: '/{-$orgSlug}/access-groups'
+      path: '/{-$orgSlug}/access-groups'
+      fullPath: '/{-$orgSlug}/access-groups'
+      preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/{-$orgSlug}/toolkits/$toolkitSlug': {
       id: '/{-$orgSlug}/toolkits/$toolkitSlug'
       path: '/$toolkitSlug'
@@ -490,6 +511,8 @@ const rootRouteChildren: RootRouteChildren = {
   CreateOrgRoute: CreateOrgRoute,
   LoginRoute: LoginRoute,
   SetupMcpRoute: SetupMcpRoute,
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute:
+    DotDotDotDotDotDotDotDotPackagesReactSrcRoutesAccessGroupsRoute,
   ApiKeysRoute: ApiKeysRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren,
@@ -520,11 +543,15 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
+
 import type { startInstance } from './start.ts'
+
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
+
     router: Awaited<ReturnType<typeof getRouter>>
+
     config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

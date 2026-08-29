@@ -60,7 +60,10 @@ const selfHostNavItems = [
 // plain member is not shown a link that would only refuse them. (The existing
 // /admin entry predates this and stays unconditional — it is this instance's
 // member/invite page, and its own notice covers a non-admin who opens it.)
-const selfHostAdminNavItems = [{ to: "/users", label: "Users" }];
+const selfHostAdminNavItems = [
+  { to: "/users", label: "Users" },
+  { to: "/access-groups", label: "Access groups" },
+];
 
 const signOut = async () => {
   await authClient.signOut();

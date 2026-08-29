@@ -41,6 +41,7 @@ export const CONSOLE_ROUTE_PATHS = [
   "/secrets",
   "/tools",
   "/users",
+  "/access-groups",
   "/toolkits",
   "/toolkits/$toolkitSlug",
   "/artifacts",
@@ -85,6 +86,9 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     // desktop, cloudflare) exclude it — the page would only ever render its
     // denied state there.
     ["/users", route("/users", file("users.tsx"))],
+    // Access-group management. Hosts that don't serve `/admin/access-groups*`
+    // (local / desktop, cloudflare) exclude it, same as `/users`.
+    ["/access-groups", route("/access-groups", file("access-groups.tsx"))],
     ["/toolkits", route("/toolkits", file("toolkits.tsx"))],
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],
     ["/artifacts", route("/artifacts", file("artifacts.tsx"))],

@@ -16,6 +16,8 @@ import { WorkerTelemetryLive } from "../observability/telemetry";
 import { OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
+import { AccessGroupsHttpApi } from "@executor-js/api";
+import { AccessGroupsHandlers } from "../access-groups/handlers";
 import { ErrorCaptureLive } from "../observability";
 
 import { AutumnService } from "../extensions/billing/service";
@@ -73,6 +75,15 @@ export const makeOrgApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>
     Layer.provide(OrgHandlers),
     Layer.provide(orgAuthMiddleware(rsLive)),
     Layer.provideMerge(AutumnService.Default),
+  );
+
+// Admin-only access-group management. Same org-session auth middleware as the
+// domains plane; the WorkOS admin-role gate and the per-request scoped
+// executor (built over the request's DbService) live in the handlers.
+export const makeAccessGroupsApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
+  HttpApiBuilder.layer(AccessGroupsHttpApi).pipe(
+    Layer.provide(AccessGroupsHandlers),
+    Layer.provide(orgAuthMiddleware(rsLive)),
   );
 
 // Default export uses the production per-request layer. Existing callers that
