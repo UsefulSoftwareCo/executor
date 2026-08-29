@@ -41,7 +41,11 @@ import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placemen
 import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { McpRequestHeadersEditor } from "./McpRequestHeadersEditor";
 import { mcpHeadersFromRows, type McpHeaderRow } from "./request-headers";
-import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
+import {
+  mcpAuthMethodInputFromEditorValue,
+  mcpDetectedAuthSeeds,
+  mcpWireAuthInput,
+} from "./auth-method-config";
 import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
@@ -219,46 +223,16 @@ export default function AddMcpIntegration(props: {
   // The probe seeds the method list: detected OAuth → an OAuth row; a 401
   // without OAuth metadata → a bearer-header row; an open server → a no-auth
   // row. The user can edit any row or add alternate methods alongside.
-  const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(() => {
-    const registryPlacement = props.initialAuthHeader
-      ? placementFromHeaderPattern(props.initialAuthHeader)
-      : null;
-    if (!probe) {
-      // No probe result (pending, or the server was unreachable from here).
-      // The registry's declared facts still stand: an authless server or a
-      // known header pattern seeds the list the probe would have produced.
-      if (registryPlacement)
-        return [{ value: { kind: "apikey", placements: [registryPlacement] } }];
-      if (props.initialAuthKind === "none") return [{ value: { kind: "none" } }];
-      return [];
-    }
-    if (probe.requiresOAuth) {
-      const oauth: AuthMethodSeed = {
-        value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
-        label: "Detected",
-      };
-      // GitHub's MCP server takes a PAT bearer header in clients without
-      // OAuth; when the registry declared that placement, offer it alongside.
-      return registryPlacement
-        ? [oauth, { value: { kind: "apikey", placements: [registryPlacement] } }]
-        : [oauth];
-    }
-    if (probe.requiresAuthentication) {
-      // The registry's exact placement beats the generic Bearer guess.
-      return [
-        {
-          value: {
-            kind: "apikey",
-            placements: [
-              registryPlacement ?? { carrier: "header", name: "Authorization", prefix: "Bearer " },
-            ],
-          },
-          label: "Detected",
-        },
-      ];
-    }
-    return [{ value: { kind: "none" }, label: "Detected" }];
-  }, [probe, props.initialAuthHeader, props.initialAuthKind]);
+  const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(
+    () =>
+      mcpDetectedAuthSeeds(probe, {
+        placement: props.initialAuthHeader
+          ? placementFromHeaderPattern(props.initialAuthHeader)
+          : null,
+        kind: props.initialAuthKind,
+      }),
+    [probe, props.initialAuthHeader, props.initialAuthKind],
+  );
   const authMethodList = useAuthMethodList(authMethodSeeds);
 
   const remoteIdentity = useIntegrationIdentity({

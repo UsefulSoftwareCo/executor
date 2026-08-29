@@ -85,6 +85,12 @@ const ProbeEndpointResponse = Schema.Struct({
   serverName: Schema.NullOr(Schema.String),
   /** Server `instructions` from initialize — prefills the description field. */
   instructions: Schema.NullOr(Schema.String),
+  /** Which protocol negotiation worked, when discovery succeeded. `legacy`
+   *  means the server echoes the modern revision but breaks its contract, and
+   *  the add must pin `versionNegotiation: "legacy"` on the integration —
+   *  omitting this field here silently stripped it from the HTTP response and
+   *  the pin never happened. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
 });
 
 // ---------------------------------------------------------------------------

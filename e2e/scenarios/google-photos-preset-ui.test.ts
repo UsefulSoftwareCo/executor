@@ -68,16 +68,30 @@ scenario(
         await cards.filter({ hasText: "Google Photos Picker API" }).waitFor();
       });
 
-      await step("Add Photos Library with its own registry URL and namespace", async () => {
+      await step("Add Photos Library in place; the Picker card is untouched", async () => {
         await page
           .getByTestId("catalog-photos.google.com-openapi")
           .filter({ hasText: "Google Photos Library API" })
           .getByRole("button", { name: "Add Google Photos Library API" })
           .click();
-        await page.waitForURL(/\/integrations\/add\/openapi/);
-        const url = new URL(page.url());
-        expect(url.searchParams.get("url")).toBe(librarySpecUrl);
-        expect(url.searchParams.get("namespace")).toBe("google-photos-library");
+        const libraryCard = page
+          .getByTestId("catalog-photos.google.com-openapi")
+          .filter({ hasText: "Google Photos Library API" });
+        await libraryCard
+          .getByRole("link", { name: "View Google Photos Library API" })
+          .waitFor({ timeout: 120_000 });
+        expect(new URL(page.url()).pathname).toMatch(/\/integrations\/browse$/);
+        // Product identity survived: the LIBRARY slug became the namespace…
+        const href = await libraryCard
+          .getByRole("link", { name: "View Google Photos Library API" })
+          .getAttribute("href");
+        expect(href).toContain("/integrations/google_photos_library");
+        // …and the Picker card, same domain and kind, still offers Add.
+        await page
+          .getByTestId("catalog-photos.google.com-openapi")
+          .filter({ hasText: "Google Photos Picker API" })
+          .getByRole("button", { name: "Add Google Photos Picker API" })
+          .waitFor();
       });
     });
   }),

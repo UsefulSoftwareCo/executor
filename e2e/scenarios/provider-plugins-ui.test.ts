@@ -78,15 +78,25 @@ scenario(
         await card.getByText("gmail.com").waitFor();
       });
 
-      await step("Add Gmail with its registry URL and namespace prefilled", async () => {
+      await step("Add Gmail in place: the card flips to View", async () => {
         await page
           .getByTestId("catalog-gmail.com-openapi")
           .getByRole("button", { name: "Add Gmail API" })
           .click();
-        await page.waitForURL(/\/integrations\/add\/openapi/);
-        const url = new URL(page.url());
-        expect(url.searchParams.get("url")).toBe(gmailSpecUrl);
-        expect(url.searchParams.get("namespace")).toBe("google-gmail");
+        // The quick add fetches the hosted spec server-side and registers —
+        // no navigation. Generous timeout: a real spec fetch + parse rides
+        // behind the click.
+        await page
+          .getByTestId("catalog-gmail.com-openapi")
+          .getByRole("link", { name: "View Gmail API" })
+          .waitFor({ timeout: 120_000 });
+        expect(new URL(page.url()).pathname).toMatch(/\/integrations\/browse$/);
+        // The registry surface slug became the namespace.
+        const href = await page
+          .getByTestId("catalog-gmail.com-openapi")
+          .getByRole("link", { name: "View Gmail API" })
+          .getAttribute("href");
+        expect(href).toContain("/integrations/google_gmail");
       });
 
       await step("Search for Outlook and see its separate registry card and domain", async () => {

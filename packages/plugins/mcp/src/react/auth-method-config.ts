@@ -9,6 +9,7 @@
 
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 import type { AuthTemplateEditorValue } from "@executor-js/react/components/auth-template-editor";
+import type { AuthMethodSeed } from "@executor-js/react/components/auth-method-list-editor";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
   authMethodFromSharedTemplate,
@@ -125,4 +126,56 @@ export function mcpAuthMethodInputsFromPlacements(
   const wire = wirePlacementsFromEditor(placements);
   if (wire.length === 0) return [];
   return [{ kind: "apikey", placements: wire }];
+}
+
+/** The auth methods a registry-driven MCP add declares before any editing:
+ *  the probe's detection plus the registry's declared facts. ONE policy for
+ *  both the add page (as editor seeds) and the one-click quick add (mapped
+ *  straight to wire inputs) — two copies drifted is how the picker and the
+ *  add page end up declaring different methods for the same server. */
+export function mcpDetectedAuthSeeds(
+  probe: {
+    readonly requiresOAuth: boolean;
+    readonly requiresAuthentication: boolean;
+  } | null,
+  registry: {
+    readonly placement?: Placement | null;
+    readonly kind?: string | undefined;
+  },
+): readonly AuthMethodSeed[] {
+  const registryPlacement = registry.placement ?? null;
+  if (!probe) {
+    // No probe result (pending, or the server was unreachable from here).
+    // The registry's declared facts still stand: an authless server or a
+    // known header pattern seeds the list the probe would have produced.
+    if (registryPlacement) return [{ value: { kind: "apikey", placements: [registryPlacement] } }];
+    if (registry.kind === "none") return [{ value: { kind: "none" } }];
+    return [];
+  }
+  if (probe.requiresOAuth) {
+    const oauth: AuthMethodSeed = {
+      value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
+      label: "Detected",
+    };
+    // GitHub's MCP server takes a PAT bearer header in clients without
+    // OAuth; when the registry declared that placement, offer it alongside.
+    return registryPlacement
+      ? [oauth, { value: { kind: "apikey", placements: [registryPlacement] } }]
+      : [oauth];
+  }
+  if (probe.requiresAuthentication) {
+    // The registry's exact placement beats the generic Bearer guess.
+    return [
+      {
+        value: {
+          kind: "apikey",
+          placements: [
+            registryPlacement ?? { carrier: "header", name: "Authorization", prefix: "Bearer " },
+          ],
+        },
+        label: "Detected",
+      },
+    ];
+  }
+  return [{ value: { kind: "none" }, label: "Detected" }];
 }

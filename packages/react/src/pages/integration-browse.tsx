@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Effect from "effect/Effect";
@@ -10,6 +10,8 @@ import {
   useIntegrationPlugins,
   type IntegrationPlugin,
   type IntegrationPreset,
+  type IntegrationQuickAddInput,
+  type IntegrationQuickAddResult,
 } from "@executor-js/sdk/client";
 
 import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
@@ -164,6 +166,10 @@ interface Row {
   readonly iconUrl?: string;
   readonly onSelect: () => void;
   readonly added: boolean;
+  /** Namespace of the installed integration this row matched — the View
+   *  destination. Known for quick-added rows and for rows whose installed
+   *  match came from the catalog list. */
+  readonly viewSlug?: string;
   readonly busy: boolean;
   /** A click-time failure, rendered on this card rather than page-top. */
   readonly error?: string;
@@ -240,10 +246,27 @@ function ResultCard(props: { readonly row: Row }) {
           <RowIcon {...(row.iconUrl ? { src: row.iconUrl } : {})} alt={row.title} />
         </span>
         {row.added ? (
-          <span className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            <CheckIcon className="size-3.5" aria-hidden />
-            Added
-          </span>
+          // The add happened HERE — the card is the receipt. View jumps to
+          // the integration's hub, where authenticating happens; the check
+          // stays so the state reads at a glance.
+          row.viewSlug ? (
+            <span className="flex items-center gap-1.5">
+              <CheckIcon className="size-3.5 text-muted-foreground" aria-hidden />
+              <Button asChild variant="outline" size="sm" aria-label={`View ${row.title}`}>
+                <Link
+                  to="/{-$orgSlug}/integrations/$namespace"
+                  params={{ namespace: row.viewSlug }}
+                >
+                  View
+                </Link>
+              </Button>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              <CheckIcon className="size-3.5" aria-hidden />
+              Added
+            </span>
+          )
         ) : row.busy ? (
           <span className="px-2 py-1.5 text-xs text-muted-foreground">Adding…</span>
         ) : (
@@ -298,6 +321,29 @@ function CardSkeleton(props: { readonly index: number }) {
 }
 
 // ---------------------------------------------------------------------------
+// Quick add
+// ---------------------------------------------------------------------------
+
+type QuickAddFn = (input: IntegrationQuickAddInput) => Promise<IntegrationQuickAddResult>;
+
+/** Collects each plugin's bound quick-add callback into the page's map.
+ *  A component per plugin, not a hook over a list: `useQuickAdd` is a hook,
+ *  and mounting one bridge per plugin is how a fixed set of per-plugin hooks
+ *  stays rules-of-hooks clean. */
+function QuickAddBridge(props: {
+  readonly plugin: IntegrationPlugin;
+  readonly register: (key: string, fn: QuickAddFn | null) => void;
+}) {
+  const { plugin, register } = props;
+  const fn = plugin.useQuickAdd?.() ?? null;
+  useEffect(() => {
+    register(plugin.key, fn);
+    return () => register(plugin.key, null);
+  }, [plugin.key, fn, register]);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -318,6 +364,17 @@ export function IntegrationBrowsePage() {
     readonly message: string;
   } | null>(null);
   const [resolvingDomain, setResolvingDomain] = useState<string | null>(null);
+  // One-click adds run per-card and CONCURRENTLY — adding Linear must not
+  // lock the Notion card. Keyed by row error-key (`domain|kind`).
+  const [quickAddingKeys, setQuickAddingKeys] = useState<ReadonlySet<string>>(new Set());
+  // Slugs of integrations added from this page, keyed the same way, so the
+  // card can flip to View without waiting for the catalog refetch.
+  const [quickAddedSlugs, setQuickAddedSlugs] = useState<ReadonlyMap<string, string>>(new Map());
+  const quickAdders = useRef(new Map<string, QuickAddFn>());
+  const registerQuickAdd = useCallback((key: string, fn: QuickAddFn | null) => {
+    if (fn) quickAdders.current.set(key, fn);
+    else quickAdders.current.delete(key);
+  }, []);
 
   const isUrl = looksLikeUrl(query);
   // A URL is a destination, not a filter — but half-typed URLs pass through
@@ -373,6 +430,21 @@ export function IntegrationBrowsePage() {
           installedKeys.has(`${slugifyNamespace(candidate)}:${kind}`)
         );
       }),
+    [installedKeys],
+  );
+
+  /** The installed integration's own namespace for an added row — the View
+   *  button's destination. Same matching rules as `isAdded`. */
+  const installedSlugFor = useCallback(
+    (kind: string, ...candidates: readonly (string | undefined)[]): string | undefined => {
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        if (installedKeys.has(`${candidate}:${kind}`)) return candidate;
+        const slugified = slugifyNamespace(candidate);
+        if (installedKeys.has(`${slugified}:${kind}`)) return slugified;
+      }
+      return undefined;
+    },
     [installedKeys],
   );
 
@@ -456,12 +528,79 @@ export function IntegrationBrowsePage() {
     [navigate],
   );
 
+  /** One-click add, in place. The registry knew the URL and the auth
+   *  indicators, so there is nothing to configure — register directly and
+   *  flip the card to View, leaving the user on this page to keep adding.
+   *  Returns false when it could not (no quick-add for the kind, probe or
+   *  registration failed), and the caller falls back to the configuration
+   *  screen, which renders the same failure with full context. */
+  const tryQuickAdd = useCallback(
+    async (input: {
+      readonly kind: CatalogKind;
+      readonly url: string;
+      readonly title: string;
+      readonly domain: string;
+      /** The row's identity key — carries the PRODUCT, not just domain|kind:
+       *  one domain can offer two products of the same kind (the Google
+       *  Photos Library and Picker), and a domain-level key marked both cards
+       *  added when either one was. */
+      readonly rowKey: string;
+      readonly slug?: string;
+      readonly auth?: CatalogSurface["auth"];
+      readonly specOverrides?: CatalogSurface["specOverrides"];
+    }): Promise<boolean> => {
+      const fn = quickAdders.current.get(KIND_TO_PLUGIN_KEY[input.kind] ?? input.kind);
+      if (!fn) return false;
+      const rowKey = input.rowKey;
+      setQuickAddingKeys((previous) => new Set(previous).add(rowKey));
+      trackEvent("integration_add_started", {
+        plugin_key: input.kind,
+        via: "catalog",
+        catalog_domain: input.domain,
+      });
+      const result = await fn({
+        url: input.url,
+        name: input.title,
+        ...(input.slug ? { slug: input.slug } : {}),
+        ...(input.auth?.header ? { authHeader: input.auth.header } : {}),
+        ...(input.auth?.kind ? { authKind: input.auth.kind } : {}),
+        ...(input.specOverrides ? { specOverrides: input.specOverrides } : {}),
+      });
+      setQuickAddingKeys((previous) => {
+        const next = new Set(previous);
+        next.delete(rowKey);
+        return next;
+      });
+      if (!result.ok) return false;
+      setQuickAddedSlugs((previous) => new Map(previous).set(rowKey, result.slug));
+      return true;
+    },
+    [],
+  );
+
   const pickCatalogEntry = useCallback(
-    async (entry: CatalogSearchEntry, kind: CatalogKind, knownUrl?: string) => {
+    async (
+      entry: CatalogSearchEntry,
+      kind: CatalogKind,
+      title: string,
+      rowKey: string,
+      knownUrl?: string,
+    ) => {
       // The registry already told us where this surface lives — go, rather than
       // spending a round trip re-asking for something we were handed.
       const surface = entry.surfaces?.find((candidate) => candidate.kind === kind);
       if (knownUrl) {
+        const added = await tryQuickAdd({
+          kind,
+          url: knownUrl,
+          title,
+          domain: entry.domain,
+          rowKey,
+          ...(surface ? { slug: surface.slug } : {}),
+          ...(surface?.auth ? { auth: surface.auth } : {}),
+          ...(surface?.specOverrides ? { specOverrides: surface.specOverrides } : {}),
+        });
+        if (added) return;
         goToAdd({
           kind,
           url: knownUrl,
@@ -479,12 +618,21 @@ export function IntegrationBrowsePage() {
       setResolvingDomain(null);
       if (Exit.isFailure(exit) || !exit.value) {
         setRowError({
-          key: `${entry.domain}|${kind}`,
+          key: rowKey,
           message: "Couldn't load connect details. Paste its URL above instead.",
         });
         return;
       }
       const target = exit.value;
+      const added = await tryQuickAdd({
+        kind: target.kind,
+        url: target.url,
+        title,
+        domain: entry.domain,
+        rowKey,
+        ...(target.slug ? { slug: target.slug } : {}),
+      });
+      if (added) return;
       goToAdd({
         kind: target.kind,
         url: target.url,
@@ -492,7 +640,7 @@ export function IntegrationBrowsePage() {
         ...(target.slug ? { slug: target.slug } : {}),
       });
     },
-    [goToAdd, resolvingDomain],
+    [goToAdd, resolvingDomain, tryQuickAdd],
   );
 
   const pickPreset = useCallback(
@@ -564,23 +712,28 @@ export function IntegrationBrowsePage() {
       return surfaces.map((surface): Row => {
         const known = "slug" in surface ? surface : null;
         const word = SURFACE_WORD[surface.kind] ?? CATALOG_KIND_LABEL[surface.kind];
+        const title = withSurface(pretty, word);
+        // Product identity, not just domain|kind: two same-kind products can
+        // share a domain (Google Photos Library and Picker).
+        const rowKey = `${entry.domain}|${surface.kind}|${known?.slug ?? pretty}`;
+        const quickAddedSlug = quickAddedSlugs.get(rowKey);
+        const viewSlug = quickAddedSlug ?? installedSlugFor(surface.kind, known?.slug);
         // Slug in the key: one domain can carry many product surfaces of the
         // same kind (Microsoft Graph's workloads all live on one domain).
         return {
           key: `catalog-${entry.domain}-${surface.kind}-${known?.slug ?? pretty}`,
           testId: `catalog-${known?.slug ?? `${entry.domain}-${surface.kind}`}`,
-          title: withSurface(pretty, word),
+          title,
           kindKey: surface.kind,
           domain: entry.domain,
           ...(description ? { description } : {}),
           iconUrl:
             (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
-          onSelect: () => void pickCatalogEntry(entry, surface.kind, known?.url),
-          added: isAdded(surface.kind, known?.slug),
-          busy: resolvingDomain === entry.domain,
-          ...(rowError?.key === `${entry.domain}|${surface.kind}`
-            ? { error: rowError.message }
-            : {}),
+          onSelect: () => void pickCatalogEntry(entry, surface.kind, title, rowKey, known?.url),
+          added: quickAddedSlug !== undefined || isAdded(surface.kind, known?.slug),
+          ...(viewSlug ? { viewSlug } : {}),
+          busy: resolvingDomain === entry.domain || quickAddingKeys.has(rowKey),
+          ...(rowError?.key === rowKey ? { error: rowError.message } : {}),
         };
       });
     });
@@ -598,7 +751,18 @@ export function IntegrationBrowsePage() {
     // Gmail. Stable within each group, so the registry's own order survives.
     const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
-  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text, presetRows, rowError]);
+  }, [
+    catalogEntries,
+    isAdded,
+    installedSlugFor,
+    quickAddedSlugs,
+    quickAddingKeys,
+    resolvingDomain,
+    pickCatalogEntry,
+    text,
+    presetRows,
+    rowError,
+  ]);
 
   // Local-process cards hold no rank of their own, so each slots in where its
   // title falls alphabetically among the surrounding rows — pinning them to
@@ -625,6 +789,9 @@ export function IntegrationBrowsePage() {
 
   return (
     <PageContainer>
+      {integrationPlugins.map((plugin) => (
+        <QuickAddBridge key={plugin.key} plugin={plugin} register={registerQuickAdd} />
+      ))}
       <PageHeader
         title="Add an integration"
         description="Search for a service, or point executor at any MCP server, OpenAPI spec, or GraphQL endpoint."

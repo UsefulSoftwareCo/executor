@@ -195,6 +195,30 @@ export interface EditSheetSectionProps {
   readonly onPendingChange?: (apply: (() => Promise<EditSheetApplyResult>) | null) => void;
 }
 
+/** What a registry row already knows about a connect target — enough, for
+ *  some plugins, to register without showing the configuration screen. */
+export interface IntegrationQuickAddInput {
+  /** The connect target: MCP endpoint, OpenAPI spec URL, or GraphQL endpoint. */
+  readonly url: string;
+  /** Display name for the integration ("Stripe MCP", "Outlook Mail API"). */
+  readonly name: string;
+  /** Registry surface slug, used as the namespace seed when present. */
+  readonly slug?: string;
+  /** Registry-declared credential placement, e.g. "Authorization: {api_key}". */
+  readonly authHeader?: string;
+  /** Registry-declared credential kind ("none", "oauth", "api_key", …). */
+  readonly authKind?: string;
+  /** RFC 6902 patch the registry says to apply to the fetched spec. */
+  readonly specOverrides?: readonly unknown[];
+}
+
+export type IntegrationQuickAddResult =
+  /** Registered; `slug` is the created integration's namespace. */
+  | { readonly ok: true; readonly slug: string }
+  /** Could not add headlessly — the host falls back to the configuration
+   *  screen, which renders the failure with full context. */
+  | { readonly ok: false; readonly reason: string };
+
 export interface IntegrationPlugin {
   /** Unique key matching the SDK plugin id (e.g. "openapi"). */
   readonly key: string;
@@ -256,6 +280,17 @@ export interface IntegrationPlugin {
    *  Call from the host on intent (hover/focus) so the chunks land before the
    *  user navigates into the add page. Idempotent. */
   readonly preload?: () => void;
+  /** Headless one-click add for a registry row whose facts are already known
+   *  (URL + auth indicators). A HOOK, not a plain function, because each
+   *  plugin binds its own mutation atoms — the host mounts one bridge
+   *  component per plugin to collect the bound callbacks. Absent means the
+   *  plugin always needs its configuration screen. A `{ok: false}` result is
+   *  an expected outcome (unreachable server, slug collision), not an error:
+   *  the host falls back to the configuration screen prefilled with the same
+   *  facts. */
+  readonly useQuickAdd?: () => (
+    input: IntegrationQuickAddInput,
+  ) => Promise<IntegrationQuickAddResult>;
 }
 
 // ---------------------------------------------------------------------------
