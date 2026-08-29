@@ -166,6 +166,16 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
     normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/keep/v1/rest"),
   ).toBe("https://keep.googleapis.com/$discovery/rest?version=v1");
   expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://www.googleapis.com/discovery/v1/apis/analyticsdata/v1beta/rest",
+    ),
+  ).toBe("https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta");
+  expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://www.googleapis.com/discovery/v1/apis/analyticsadmin/v1beta/rest",
+    ),
+  ).toBe("https://analyticsadmin.googleapis.com/$discovery/rest?version=v1beta");
+  expect(
     normalizeGoogleDiscoveryUrl("https://chat.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://www.googleapis.com/discovery/v1/apis/chat/v1/rest");
   expect(
@@ -177,6 +187,16 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
   expect(
     normalizeGoogleDiscoveryUrl("https://keep.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://keep.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta",
+    ),
+  ).toBe("https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta");
+  expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://analyticsadmin.googleapis.com/$discovery/rest?version=v1beta",
+    ),
+  ).toBe("https://analyticsadmin.googleapis.com/$discovery/rest?version=v1beta");
 
   expect(isGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest")).toBe(
     true,
