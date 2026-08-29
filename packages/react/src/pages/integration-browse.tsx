@@ -621,7 +621,20 @@ export function IntegrationBrowsePage() {
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
   }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text, presetRows, rowError]);
 
-  const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
+  // Local-process cards hold no rank of their own, so each slots in where its
+  // title falls alphabetically among the surrounding rows — pinning them to
+  // the top of a popularity-ranked list gave Chrome DevTools pride of place
+  // over everything.
+  const results = useMemo(() => {
+    const merged = [...catalogRows];
+    for (const preset of presetRows) {
+      const at = merged.findIndex(
+        (row) => row.title.localeCompare(preset.title, undefined, { sensitivity: "base" }) > 0,
+      );
+      merged.splice(at === -1 ? merged.length : at, 0, preset);
+    }
+    return merged;
+  }, [presetRows, catalogRows]);
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
