@@ -625,8 +625,12 @@ export function IntegrationBrowsePage() {
   // Local-process cards hold no rank of their own, so each slots in where its
   // title falls alphabetically among the surrounding rows — pinning them to
   // the top of a popularity-ranked list gave Chrome DevTools pride of place
-  // over everything.
+  // over everything. They also WAIT for the catalog: painting a lone Chrome
+  // DevTools card while the registry loads reads as a one-item catalog, then
+  // reflows. When the registry is unreachable they render anyway, so the page
+  // degrades to the cards that still work.
   const results = useMemo(() => {
+    if (catalog.loading && catalogRows.length === 0 && !catalog.failed) return catalogRows;
     const merged = [...catalogRows];
     for (const preset of presetRows) {
       const at = merged.findIndex(
@@ -635,7 +639,7 @@ export function IntegrationBrowsePage() {
       merged.splice(at === -1 ? merged.length : at, 0, preset);
     }
     return merged;
-  }, [presetRows, catalogRows]);
+  }, [presetRows, catalogRows, catalog.loading, catalog.failed]);
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
