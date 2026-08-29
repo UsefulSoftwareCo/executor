@@ -80,6 +80,13 @@ export type HealthCheckResponseSample = typeof HealthCheckResponseSample.Type;
 // separate "the OAuth refresh was refused" from "the probe timed out" from
 // "a tool sync stamped this", which are different incidents with different
 // owners. Healthy and unknown verdicts carry no reason.
+//
+// EVOLUTION HAZARD: `reason` is persisted inside `connection.last_health` and
+// decoded with this closed literal set. A reader that knows the field but not
+// a newly added literal fails the whole verdict decode and treats the row as
+// never-checked (dropping the flip baseline and the freshness cache). Ship
+// any literal ADDITION in its own deploy — readers first, writers emitting
+// the new value only after every isolate can decode it.
 // ---------------------------------------------------------------------------
 
 export const HealthCheckReason = Schema.Literals([

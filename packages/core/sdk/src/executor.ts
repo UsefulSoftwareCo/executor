@@ -991,6 +991,18 @@ const healthProbeGateKey = (tenant: string, row: ConnectionRow): string =>
  *  state) is served as-is; a row whose verdict a racing writer buried (or
  *  that somehow lacks one) gets an expired verdict synthesized from the
  *  recorded rejection, unpersisted. */
+/** The enumerable mechanism behind a credential-resolution failure, read
+ *  off the error's structural fields — never the message. Admin policy and
+ *  missing-material failures are NOT refresh rejections: no authorization
+ *  server refused anything, and aggregating them under
+ *  `credential_refresh_rejected` would misattribute the incident. */
+const credentialFailureReason = (failure: CredentialResolutionError): HealthCheckReason =>
+  failure.blockedByAdmin === true
+    ? "blocked_by_admin"
+    : failure.credentialMissing === true
+      ? "credential_missing"
+      : "credential_refresh_rejected";
+
 const deadGrantVerdict = (
   reauthState: OAuthReauthRequiredState,
   row: ConnectionRow,
@@ -2131,6 +2143,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const markRefreshGrantDead = (
       row: ConnectionRow,
       detail: string,
+      // The mechanism that killed the grant. An admin-policy denial is a dead
+      // grant too, but stamping it `credential_refresh_rejected` would bury
+      // the one classification that says "reconnecting cannot help".
+      reason: HealthCheckReason,
     ): Effect.Effect<void, never> => {
       const existingState = decodeJsonColumn(row.provider_state);
       const mergedState =
@@ -2141,7 +2157,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         status: "expired",
         checkedAt: Date.now(),
         detail,
-        reason: "credential_refresh_rejected",
+        reason,
       };
       return core
         .updateMany("connection", {
@@ -2256,32 +2272,45 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly client: RefreshClient;
       readonly tokenUrl: string;
       readonly scopes: readonly string[];
-      readonly reauth: (message: string) => CredentialResolutionError;
+      readonly reauth: (
+        message: string,
+        options?: { readonly credentialMissing?: boolean },
+      ) => CredentialResolutionError;
     }): Effect.Effect<OAuth2TokenResponse, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const { row, provider, client } = input;
         const owner = row.owner as Owner;
         const state = enterpriseManagedStateFrom(decodeJsonColumn(row.provider_state));
+        // All four are missing-MATERIAL failures: nothing was sent upstream
+        // and no server refused anything, so they classify `credential_missing`.
         if (state === null) {
           return yield* input.reauth(
             "This connection is missing its enterprise-managed authorization settings. Reconnect to continue.",
+            { credentialMissing: true },
           );
         }
         const idpRow = yield* loadOAuthClientRow(state.idpClientOwner, state.idpClient);
         if (!idpRow) {
           return yield* input.reauth(
             `The enterprise identity provider OAuth app "${state.idpClient}" is no longer registered.`,
+            { credentialMissing: true },
           );
         }
         if (!row.refresh_item_id) {
           return yield* input.reauth(
             "No enterprise identity assertion is stored for this connection.",
+            {
+              credentialMissing: true,
+            },
           );
         }
         const subjectToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
         if (!subjectToken) {
           return yield* input.reauth(
             "The stored enterprise identity assertion could not be resolved.",
+            {
+              credentialMissing: true,
+            },
           );
         }
         const idpClientSecret = idpRow.client_secret_item_id
@@ -2352,7 +2381,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.tapError((error) =>
             Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
               ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-                markRefreshGrantDead(row, error.message)
+                markRefreshGrantDead(row, error.message, credentialFailureReason(error))
               : Effect.void,
           ),
         );
@@ -2641,7 +2670,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     Predicate.isTagged(error, "CredentialResolutionError") &&
                     error.reauthRequired === true
                       ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-                        markRefreshGrantDead(row, error.message)
+                        markRefreshGrantDead(row, error.message, credentialFailureReason(error))
                       : Effect.void,
                   ),
                 );
@@ -4364,18 +4393,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.ignore,
         );
       });
-
-    /** The enumerable mechanism behind a credential-resolution failure, read
-     *  off the error's structural fields — never the message. Admin policy and
-     *  missing-material failures are NOT refresh rejections: no authorization
-     *  server refused anything, and aggregating them under
-     *  `credential_refresh_rejected` would misattribute the incident. */
-    const credentialFailureReason = (failure: CredentialResolutionError): HealthCheckReason =>
-      failure.blockedByAdmin === true
-        ? "blocked_by_admin"
-        : failure.credentialMissing === true
-          ? "credential_missing"
-          : "credential_refresh_rejected";
 
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
