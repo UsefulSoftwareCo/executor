@@ -4,6 +4,7 @@ import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Dialog as SheetPrimitive } from "radix-ui";
 
+import { useComposedRef } from "../lib/compose-refs";
 import { applyOutsideDismissPolicy } from "../lib/outside-dismiss";
 import { cn } from "../lib/utils";
 
@@ -60,16 +61,13 @@ function SheetContent({
   dismissOnOutsideClick?: boolean;
 }) {
   const contentRef = React.useRef<React.ComponentRef<typeof SheetPrimitive.Content> | null>(null);
+  const composedRef = useComposedRef(ref, contentRef);
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
         data-slot="sheet-content"
-        ref={(node) => {
-          contentRef.current = node;
-          if (typeof ref === "function") ref(node);
-          else if (ref) ref.current = node;
-        }}
+        ref={composedRef}
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event);
           applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);

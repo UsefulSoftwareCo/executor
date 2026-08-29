@@ -2,6 +2,7 @@ import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 
+import { useComposedRef } from "../lib/compose-refs";
 import { applyOutsideDismissPolicy } from "../lib/outside-dismiss";
 import { cn } from "../lib/utils";
 import { Button } from "./button";
@@ -63,6 +64,7 @@ function DialogContent({
   forceOverlay?: boolean;
 }) {
   const contentRef = React.useRef<React.ComponentRef<typeof DialogPrimitive.Content> | null>(null);
+  const composedRef = useComposedRef(ref, contentRef);
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -71,11 +73,7 @@ function DialogContent({
       ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
-        ref={(node) => {
-          contentRef.current = node;
-          if (typeof ref === "function") ref(node);
-          else if (ref) ref.current = node;
-        }}
+        ref={composedRef}
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event);
           applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);

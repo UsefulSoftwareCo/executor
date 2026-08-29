@@ -6,10 +6,13 @@
 // The API keys page exercises both kinds in one flow.
 import { Effect } from "effect";
 import { expect } from "@effect/vitest";
+import { AccountApi, addGroup } from "@executor-js/api";
 
 import { scenario } from "../src/scenario";
-import { Browser, Target } from "../src/services";
+import { Api, Browser, Target } from "../src/services";
 import { visit } from "../src/surfaces/browser";
+
+const accountApi = addGroup(AccountApi);
 
 const KEY_NAME = "outside-click-check";
 
@@ -19,9 +22,11 @@ scenario(
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
+    const { client: makeClient } = yield* Api;
     const identity = yield* target.newIdentity();
+    const client = yield* makeClient(accountApi, identity);
 
-    yield* browser.session(identity, async ({ page, step }) => {
+    const session = browser.session(identity, async ({ page, step }) => {
       const createDialog = page.getByRole("dialog").filter({ hasText: "Create API key" });
       const revokeDialog = page.getByRole("dialog").filter({ hasText: "Revoke API key" });
       const nameInput = page.locator("#create-key-name");
@@ -85,5 +90,18 @@ scenario(
         await keyRow.waitFor({ state: "detached" });
       });
     });
+
+    // The final step revokes the key through the UI; this sweep only matters
+    // when a mid-test failure aborts the session before that step runs.
+    yield* Effect.ensuring(
+      session,
+      Effect.gen(function* () {
+        const { apiKeys } = yield* client.account.listApiKeys();
+        yield* Effect.forEach(
+          apiKeys.filter((key) => key.name === KEY_NAME),
+          (key) => client.account.revokeApiKey({ params: { apiKeyId: key.id } }),
+        );
+      }).pipe(Effect.ignore),
+    );
   }),
 );
