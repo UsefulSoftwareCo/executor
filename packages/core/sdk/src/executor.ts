@@ -100,6 +100,20 @@ import {
   type ExecuteError,
 } from "./errors";
 import {
+  rowToAccessGroup,
+  rowToAccessGroupMember,
+  type AccessGroup,
+  type AccessGroupMember,
+  type AccessGroupMemberInput,
+  type CreateAccessGroupInput,
+  type RemoveAccessGroupInput,
+  type RestrictConnectionInput,
+  type RestrictedConnection,
+  type UnrestrictConnectionInput,
+  type UpdateAccessGroupInput,
+} from "./access-groups";
+import {
+  AccessGroupId,
   ArtifactId,
   AuthTemplateSlug,
   ConnectionAddress,
@@ -459,6 +473,36 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
     readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
     readonly resolve: (address: ToolAddress) => Effect.Effect<EffectivePolicy, StorageFailure>;
+  };
+
+  /**
+   * Access groups — named audiences of org members gating org-owned
+   * connections. A MANAGEMENT surface: hosts expose it only behind their own
+   * admin gates; it is deliberately absent from the shared any-member HTTP
+   * API. Enforcement (a restricted connection is invisible and uninvokable
+   * for non-members, with no existence oracle) rides on `tools`,
+   * `connections`, and `execute` automatically.
+   */
+  readonly accessGroups: {
+    readonly list: () => Effect.Effect<readonly AccessGroup[], StorageFailure>;
+    readonly create: (input: CreateAccessGroupInput) => Effect.Effect<AccessGroup, StorageFailure>;
+    readonly update: (input: UpdateAccessGroupInput) => Effect.Effect<AccessGroup, StorageFailure>;
+    /** Fails while any connection still references the group. */
+    readonly remove: (input: RemoveAccessGroupInput) => Effect.Effect<void, StorageFailure>;
+    readonly members: (id: string) => Effect.Effect<readonly AccessGroupMember[], StorageFailure>;
+    /** Idempotent; `subject` is the org member's host account id. */
+    readonly addMember: (
+      input: AccessGroupMemberInput,
+    ) => Effect.Effect<AccessGroupMember, StorageFailure>;
+    readonly removeMember: (input: AccessGroupMemberInput) => Effect.Effect<void, StorageFailure>;
+    /** Org-owned connections only — the input carries no owner on purpose. */
+    readonly restrictConnection: (
+      input: RestrictConnectionInput,
+    ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    readonly unrestrictConnection: (
+      input: UnrestrictConnectionInput,
+    ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    readonly restrictions: () => Effect.Effect<readonly RestrictedConnection[], StorageFailure>;
   };
 
   /**
@@ -4204,7 +4248,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               filter?.owner === undefined ? true : b("owner", "=", filter.owner),
             ),
         });
-        const connections = rows.map(rowToConnection);
+        // Access-group gate — composed with (not replaced by) the toolkit-
+        // mode cross-reference below: a restricted connection is invisible
+        // to a non-member on every variant of this surface.
+        const groups = yield* loadSubjectGroupIds();
+        const connections = rows
+          .filter((row) => subjectMayUseConnection(groups, row.access_group))
+          .map(rowToConnection);
         if (!activeToolPolicyProvider) return connections;
 
         const visibleTools = yield* toolsList({ includeAnnotations: false });
@@ -4221,14 +4271,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     const connectionsGet = (ref: ConnectionRef): Effect.Effect<Connection | null, StorageFailure> =>
-      findConnectionRow(ref).pipe(Effect.map((row) => (row ? rowToConnection(row) : null)));
+      findVisibleConnectionRow(ref).pipe(Effect.map((row) => (row ? rowToConnection(row) : null)));
 
     const connectionsUpdate = (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
     ): Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
-        const row = yield* findConnectionRow(ref);
+        const row = yield* findVisibleConnectionRow(ref);
         if (!row) {
           return yield* new ConnectionNotFoundError({
             owner: ref.owner,
@@ -4257,7 +4307,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
       transaction(
         Effect.gen(function* () {
-          const row = yield* findConnectionRow(ref);
+          const row = yield* findVisibleConnectionRow(ref);
           if (!row) {
             return yield* new ConnectionNotFoundError({
               owner: ref.owner,
@@ -4306,7 +4356,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     > =>
       Effect.gen(function* () {
-        const row = yield* findConnectionRow(ref);
+        const row = yield* findVisibleConnectionRow(ref);
         if (!row) {
           return yield* new ConnectionNotFoundError({
             owner: ref.owner,
@@ -4599,7 +4649,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     > =>
       Effect.gen(function* () {
-        const connectionRow = yield* findConnectionRow(ref);
+        const connectionRow = yield* findVisibleConnectionRow(ref);
         if (!connectionRow) {
           return yield* new ConnectionNotFoundError({
             owner: ref.owner,
@@ -4910,6 +4960,133 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             );
 
     // ------------------------------------------------------------------
+    // Access groups — subject-keyed connection restriction. A connection
+    // carrying `access_group` is visible/usable ONLY to members of that
+    // group. The gate is a HARD visibility boundary layered ABOVE policy
+    // resolution: to a non-member the connection and its tools behave
+    // exactly like nonexistent rows (same errors, same suggestions — no
+    // distinguishable 403, no existence oracle), and no `tool_policy`
+    // approve or toolkit allowlist can re-expose them. It is deliberately
+    // NOT modeled as a policy "block": the HTTP tools list defaults
+    // `includeBlocked` to true, so a policy block would leak on the wire.
+    // Membership is read live on EVERY call — never cached in session
+    // state — so a roster change takes effect on the next call of an
+    // already-open MCP session.
+    // ------------------------------------------------------------------
+
+    /** The bound subject's group-id set, or `null` for an unrestricted view.
+     *  Unrestricted on purpose for the platform view (the admin-gated,
+     *  deliberately tenant-wide plane) and for subject-less org bindings
+     *  (platform org API keys keep full org visibility, matching their
+     *  pre-existing semantics) — stated invariants, not fallout. */
+    const loadSubjectGroupIds = (): Effect.Effect<ReadonlySet<string> | null, StorageFailure> =>
+      config.platformView === true || subject == null
+        ? Effect.succeed(null)
+        : core
+            .findMany("access_group_member", {
+              where: (b: AnyCb) => b("subject", "=", subject),
+            })
+            .pipe(Effect.map((rows) => new Set(rows.map((row) => row.group_id))));
+
+    /** May a view holding `groups` use a connection whose `access_group`
+     *  column is `accessGroup`? Null column = unrestricted row; null groups =
+     *  unrestricted view. */
+    const subjectMayUseConnection = (
+      groups: ReadonlySet<string> | null,
+      accessGroup: unknown,
+    ): boolean => groups === null || accessGroup == null || groups.has(String(accessGroup));
+
+    const restrictedConnectionKey = (owner: string, integration: string, connection: string) =>
+      `${owner}:${integration}:${connection}`;
+
+    /** `owner:integration:name → access_group` for every restricted
+     *  connection — the cross-reference the tool surfaces need, since tool
+     *  rows don't carry the column. Bounded: restricted connections are a
+     *  small subset of the org catalog. */
+    const loadRestrictedConnections = (): Effect.Effect<
+      ReadonlyMap<string, string>,
+      StorageFailure
+    > =>
+      core
+        .findMany("connection", {
+          where: (b: AnyCb) => b.isNotNull("access_group"),
+          select: ["owner", "integration", "name", "access_group"],
+        })
+        .pipe(
+          Effect.map(
+            (rows) =>
+              new Map(
+                rows.map(
+                  (row) =>
+                    [
+                      restrictedConnectionKey(row.owner, row.integration, row.name),
+                      String(row.access_group),
+                    ] as const,
+                ),
+              ),
+          ),
+        );
+
+    /** The tool-surface predicate: hides a tool row whose connection is
+     *  restricted to a group this view is not in. Returns a constant-true
+     *  predicate (no restricted-connections query) for unrestricted views. */
+    const loadHiddenToolRowPredicate = (): Effect.Effect<
+      (row: {
+        readonly owner: string;
+        readonly integration: string;
+        readonly connection: string;
+      }) => boolean,
+      StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const groups = yield* loadSubjectGroupIds();
+        if (groups === null) return () => false;
+        const restricted = yield* loadRestrictedConnections();
+        if (restricted.size === 0) return () => false;
+        return (row: {
+          readonly owner: string;
+          readonly integration: string;
+          readonly connection: string;
+        }) => {
+          const group = restricted.get(
+            restrictedConnectionKey(row.owner, row.integration, row.connection),
+          );
+          return group !== undefined && !groups.has(group);
+        };
+      });
+
+    /** `findConnectionRow` with the access-group gate applied: a restricted
+     *  row this view may not use resolves to `null`, exactly like a
+     *  nonexistent one. The gated variant backs every caller-addressed
+     *  connection surface (get/update/remove/refresh/checkHealth); the raw
+     *  reader stays in place for create/mint existence checks and the
+     *  background catalog sync, which must see rows regardless of the
+     *  current caller's memberships. */
+    const findVisibleConnectionRow = (
+      ref: ConnectionRef,
+    ): Effect.Effect<ConnectionRow | null, StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* findConnectionRow(ref);
+        if (!row) return null;
+        const groups = yield* loadSubjectGroupIds();
+        return subjectMayUseConnection(groups, row.access_group) ? row : null;
+      });
+
+    /** The plugin-facing `connections.resolveValue` seam, gated: resolving a
+     *  restricted connection's credential from a non-member binding returns
+     *  `null` (the nonexistent-connection answer), never the value. */
+    const resolveVisibleConnectionValue = (
+      ref: ConnectionRef,
+    ): Effect.Effect<string | null, StorageFailure> =>
+      foldResolutionFailure(
+        Effect.gen(function* () {
+          const row = yield* findVisibleConnectionRow(ref);
+          if (!row) return null;
+          return yield* resolveConnectionValue(row);
+        }),
+      );
+
+    // ------------------------------------------------------------------
     // Tools (read surface)
     // ------------------------------------------------------------------
 
@@ -5115,8 +5292,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
         const includeBlocked = filter?.includeBlocked ?? false;
         const policyRules = yield* listActivePolicyRuleSet();
+        // Access-group gate — unconditional, deliberately OUTSIDE the
+        // `includeBlocked` branch: a restricted row must not exist for a
+        // non-member on ANY variant of this surface. Static tools have no
+        // connection row and are never gated.
+        const hiddenToolRow = yield* loadHiddenToolRowPredicate();
         const tools: Tool[] = [];
         for (const row of rows) {
+          if (hiddenToolRow(row)) continue;
           const tool = rowToTool(row);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
@@ -5193,6 +5376,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
         });
         if (!row) return null;
+        // Access-group gate — before policy resolution; the hidden answer is
+        // the same `null` a nonexistent or blocked tool returns. Gate only on
+        // a present-but-restricted connection row: a tool row without one is
+        // out of this feature's scope and keeps answering as before.
+        const schemaConnectionRow = yield* findConnectionRow({
+          owner: parsed.owner,
+          integration: parsed.integration,
+          name: parsed.connection,
+        });
+        if (schemaConnectionRow?.access_group != null) {
+          const groups = yield* loadSubjectGroupIds();
+          if (!subjectMayUseConnection(groups, schemaConnectionRow.access_group)) return null;
+        }
         const tool = rowToTool(row);
         const effective = yield* resolvePolicyFromRuleSet(
           normalizedPolicyId(tool),
@@ -5482,6 +5678,242 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         return resolveEffectivePolicy(toolId, policyRows, ownerRankForRow, requiresApproval);
       });
+
+    // ------------------------------------------------------------------
+    // Access groups — the management engine behind `executor.accessGroups`.
+    // Hosts expose it ONLY behind their own admin gates (never on the
+    // any-member ExecutorApi). The closures run under the caller's ordinary
+    // binding: the tables are tenant-scoped, so an admin manages groups they
+    // are not a member of — membership grants runtime access, not the right
+    // to manage. This schema has no FK machinery, so referential integrity
+    // (no restriction to a missing group, no deleting a referenced group)
+    // lives here.
+    // ------------------------------------------------------------------
+
+    const findAccessGroupRow = (id: string) =>
+      core.findFirst("access_group", { where: (b: AnyCb) => b("id", "=", id) });
+
+    const requireAccessGroupRow = (id: string) =>
+      findAccessGroupRow(id).pipe(
+        Effect.flatMap((row) =>
+          row
+            ? Effect.succeed(row)
+            : Effect.fail(
+                new StorageError({ message: `Access group not found: ${id}`, cause: undefined }),
+              ),
+        ),
+      );
+
+    const orgConnectionRef = (input: {
+      readonly integration: IntegrationSlug;
+      readonly name: ConnectionName;
+    }): ConnectionRef => ({ owner: "org", integration: input.integration, name: input.name });
+
+    const accessGroupsList = (): Effect.Effect<readonly AccessGroup[], StorageFailure> =>
+      core
+        .findMany("access_group", { orderBy: ["name", "asc"] })
+        .pipe(Effect.map((rows) => rows.map(rowToAccessGroup)));
+
+    const accessGroupsCreate = (
+      input: CreateAccessGroupInput,
+    ): Effect.Effect<AccessGroup, StorageFailure> =>
+      Effect.gen(function* () {
+        const name = input.name.trim();
+        if (name.length === 0) {
+          return yield* new StorageError({
+            message: "Access group name must not be empty.",
+            cause: undefined,
+          });
+        }
+        const id = AccessGroupId.make(
+          `grp_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+        );
+        const now = new Date();
+        const created = yield* core.create("access_group", {
+          tenant,
+          id: String(id),
+          name,
+          created_at: now,
+          updated_at: now,
+        });
+        return rowToAccessGroup(created);
+      });
+
+    const accessGroupsUpdate = (
+      input: UpdateAccessGroupInput,
+    ): Effect.Effect<AccessGroup, StorageFailure> =>
+      Effect.gen(function* () {
+        const existing = yield* requireAccessGroupRow(input.id);
+        const name = input.name.trim();
+        if (name.length === 0) {
+          return yield* new StorageError({
+            message: "Access group name must not be empty.",
+            cause: undefined,
+          });
+        }
+        const set = { name, updated_at: new Date() };
+        yield* core.updateMany("access_group", {
+          where: (b: AnyCb) => b("id", "=", input.id),
+          set,
+        });
+        const updated = yield* findAccessGroupRow(input.id);
+        return rowToAccessGroup(updated ?? { ...existing, ...set });
+      });
+
+    // Deletion is REJECTED while any connection references the group: with no
+    // FK machinery a dangling reference would silently hide the connection
+    // from everyone, which is the one failure mode this surface must never
+    // produce. Unrestrict (or re-restrict) the connections first.
+    const accessGroupsRemove = (
+      input: RemoveAccessGroupInput,
+    ): Effect.Effect<void, StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* requireAccessGroupRow(input.id);
+          const referencing = yield* core.findFirst("connection", {
+            where: (b: AnyCb) => b("access_group", "=", input.id),
+            select: ["integration", "name"],
+          });
+          if (referencing) {
+            return yield* new StorageError({
+              message: `Access group ${input.id} still restricts connection ${referencing.integration}/${referencing.name}; unrestrict it before deleting the group.`,
+              cause: undefined,
+            });
+          }
+          yield* core.deleteMany("access_group_member", {
+            where: (b: AnyCb) => b("group_id", "=", input.id),
+          });
+          yield* core.deleteMany("access_group", {
+            where: (b: AnyCb) => b("id", "=", input.id),
+          });
+        }),
+      );
+
+    const accessGroupsMembers = (
+      id: string,
+    ): Effect.Effect<readonly AccessGroupMember[], StorageFailure> =>
+      Effect.gen(function* () {
+        yield* requireAccessGroupRow(id);
+        const rows = yield* core.findMany("access_group_member", {
+          where: (b: AnyCb) => b("group_id", "=", id),
+          orderBy: ["subject", "asc"],
+        });
+        return rows.map(rowToAccessGroupMember);
+      });
+
+    // Idempotent: adding an existing member returns the existing row. The
+    // subject is the org member's account id, resolved by the host's member
+    // directory — deliberately NOT validated against the `subject` table,
+    // which only records principals already seen on the request path (a
+    // member can be granted access before their first executor call).
+    const accessGroupsAddMember = (
+      input: AccessGroupMemberInput,
+    ): Effect.Effect<AccessGroupMember, StorageFailure> =>
+      Effect.gen(function* () {
+        yield* requireAccessGroupRow(input.id);
+        const memberSubject = input.subject.trim();
+        if (memberSubject.length === 0) {
+          return yield* new StorageError({
+            message: "Access group member subject must not be empty.",
+            cause: undefined,
+          });
+        }
+        const memberWhere = (b: AnyCb) =>
+          b.and(b("group_id", "=", input.id), b("subject", "=", memberSubject));
+        const existing = yield* core.findFirst("access_group_member", { where: memberWhere });
+        if (existing) return rowToAccessGroupMember(existing);
+        const created = yield* core.create("access_group_member", {
+          tenant,
+          group_id: input.id,
+          subject: memberSubject,
+          created_at: new Date(),
+        });
+        return rowToAccessGroupMember(created);
+      });
+
+    // Idempotent: removing an absent member is a no-op, so an org-member
+    // offboarding sweep can best-effort delete without existence checks.
+    const accessGroupsRemoveMember = (
+      input: AccessGroupMemberInput,
+    ): Effect.Effect<void, StorageFailure> =>
+      core.deleteMany("access_group_member", {
+        where: (b: AnyCb) => b.and(b("group_id", "=", input.id), b("subject", "=", input.subject)),
+      });
+
+    // Restriction targets are ALWAYS org-owned (the input carries no owner):
+    // a personal connection is already invisible to everyone else, so
+    // restricting one is a category error, not a supported call.
+    const accessGroupsRestrictConnection = (
+      input: RestrictConnectionInput,
+    ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        yield* requireAccessGroupRow(input.group);
+        const ref = orgConnectionRef(input);
+        const row = yield* findConnectionRow(ref);
+        if (!row) {
+          return yield* new ConnectionNotFoundError({
+            owner: ref.owner,
+            integration: ref.integration,
+            name: ref.name,
+          });
+        }
+        yield* core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner("org")(b),
+              b("integration", "=", String(input.integration)),
+              b("name", "=", String(input.name)),
+            ),
+          set: { access_group: input.group, updated_at: new Date() },
+        });
+      });
+
+    const accessGroupsUnrestrictConnection = (
+      input: UnrestrictConnectionInput,
+    ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const ref = orgConnectionRef(input);
+        const row = yield* findConnectionRow(ref);
+        if (!row) {
+          return yield* new ConnectionNotFoundError({
+            owner: ref.owner,
+            integration: ref.integration,
+            name: ref.name,
+          });
+        }
+        yield* core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner("org")(b),
+              b("integration", "=", String(input.integration)),
+              b("name", "=", String(input.name)),
+            ),
+          set: { access_group: null, updated_at: new Date() },
+        });
+      });
+
+    const accessGroupsRestrictions = (): Effect.Effect<
+      readonly RestrictedConnection[],
+      StorageFailure
+    > =>
+      core
+        .findMany("connection", {
+          where: (b: AnyCb) => b.isNotNull("access_group"),
+          select: ["integration", "name", "access_group"],
+          orderBy: [
+            ["integration", "asc"],
+            ["name", "asc"],
+          ],
+        })
+        .pipe(
+          Effect.map((rows) =>
+            rows.map((row) => ({
+              integration: IntegrationSlug.make(row.integration),
+              name: ConnectionName.make(row.name),
+              group: AccessGroupId.make(String(row.access_group)),
+            })),
+          ),
+        );
 
     // ------------------------------------------------------------------
     // Artifacts — saved generative-UI components, owner-scoped.
@@ -5794,6 +6226,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return yield* new ToolNotFoundError({ address });
         }
 
+        // Access-group gate — THE enforcement boundary for restricted
+        // connections, evaluated before the tool-row lookup, the not-found
+        // suggestions, and policy resolution: to a non-member the connection
+        // must not exist, and a "blocked" verdict or a suggestion list naming
+        // its tools would each be an existence oracle. Every invoke funnel
+        // (execute tool, sandbox tool-invoker, artifact bindings, toolkit
+        // sessions) passes through here. The row loaded here is reused for
+        // credential resolution below.
+        const connectionRow = yield* findConnectionRow({
+          owner: parsed.owner,
+          integration: parsed.integration,
+          name: parsed.connection,
+        });
+        if (connectionRow?.access_group != null) {
+          const groups = yield* loadSubjectGroupIds();
+          if (!subjectMayUseConnection(groups, connectionRow.access_group)) {
+            // The exact nonexistent-connection answer: both suggestion
+            // queries against a connection with no tool rows return nothing.
+            return yield* new ToolNotFoundError({ address, suggestions: [] });
+          }
+        }
+
         // Find the tool row — projected: invoke needs routing/policy fields
         // only, never the multi-KB input/output schema JSON (`tools.schema`
         // is the schema-bearing surface).
@@ -5863,12 +6317,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Find the connection row.
-        const connectionRow = yield* findConnectionRow({
-          owner: parsed.owner,
-          integration: parsed.integration,
-          name: parsed.connection,
-        });
+        // The connection row was loaded up front by the access-group gate.
         if (!connectionRow) {
           return yield* new ConnectionNotFoundError({
             owner: parsed.owner,
@@ -6143,7 +6592,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           refresh: (ref) => connectionsRefresh(ref),
           checkHealth: (ref, options) => connectionCheckHealth(ref, options),
           markToolsStale: (ref) => connectionsMarkToolsStale(ref),
-          resolveValue: (ref) => resolveConnectionValueByRef(ref),
+          resolveValue: (ref) => resolveVisibleConnectionValue(ref),
         },
         providers: {
           list: () => providersList(),
@@ -6464,6 +6913,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         update: policiesUpdate,
         remove: policiesRemove,
         resolve: policiesResolve,
+      },
+      accessGroups: {
+        list: accessGroupsList,
+        create: accessGroupsCreate,
+        update: accessGroupsUpdate,
+        remove: accessGroupsRemove,
+        members: accessGroupsMembers,
+        addMember: accessGroupsAddMember,
+        removeMember: accessGroupsRemoveMember,
+        restrictConnection: accessGroupsRestrictConnection,
+        unrestrictConnection: accessGroupsUnrestrictConnection,
+        restrictions: accessGroupsRestrictions,
       },
       ...(admin ? { admin } : {}),
       artifacts: {
