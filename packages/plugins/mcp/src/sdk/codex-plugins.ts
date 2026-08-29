@@ -40,6 +40,9 @@ export interface CodexPluginEntry {
   readonly env?: Readonly<Record<string, string>>;
   /** Shown when `available` is false. */
   readonly setupHint?: string;
+  /** The plugin's own icon from its local install, as a data URI. Read at
+   *  runtime from the user's disk — never shipped with executor. */
+  readonly icon?: string;
 }
 
 /** The Codex Computer Use client binary — the stable, unversioned entry point
@@ -75,6 +78,7 @@ const PluginManifest = Schema.Struct({
     Schema.Struct({
       displayName: Schema.optional(Schema.String),
       shortDescription: Schema.optional(Schema.String),
+      logo: Schema.optional(Schema.String),
     }),
   ),
   description: Schema.optional(Schema.String),
@@ -159,6 +163,48 @@ const sanitizeId = (value: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
+/** Bound on inlined icon bytes. The bundled icons run 100KB–1MB; anything
+ *  past this is not worth inlining into a list response for a 20px avatar. */
+const MAX_ICON_BYTES = 1_000_000;
+
+const ICON_MIME: Readonly<Record<string, string>> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+};
+
+/** The plugin's own icon as a data URI, read from the user's local install. */
+const readIconDataUri = (file: string): string | undefined =>
+  tryOrElse(() => {
+    const mime = ICON_MIME[path.extname(file).toLowerCase()];
+    if (mime === undefined) return undefined;
+    if (fs.statSync(file).size > MAX_ICON_BYTES) return undefined;
+    return `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
+  }, undefined);
+
+/** Icon for a curated plugin: its cache entry (any source, newest version)
+ *  declares a `logo` path in the manifest. The curated SPAWN target is the
+ *  stable client binary, but the icon only exists in the cache. */
+const curatedIconDataUri = (codexHome: string, pluginName: string): string | undefined => {
+  const cacheDir = path.join(codexHome, "plugins", "cache");
+  for (const sourceName of listDirs(cacheDir)) {
+    const pluginDir = path.join(cacheDir, sourceName, pluginName);
+    const version = [...listDirs(pluginDir)].sort(compareVersionsDesc)[0];
+    if (version === undefined) continue;
+    const versionDir = path.join(pluginDir, version);
+    const manifest = Option.getOrUndefined(
+      decodeManifestJson(readText(path.join(versionDir, ".codex-plugin", "plugin.json"))),
+    );
+    const logo = manifest?.interface?.logo;
+    if (logo === undefined) continue;
+    const icon = readIconDataUri(path.resolve(versionDir, logo));
+    if (icon !== undefined) return icon;
+  }
+  return undefined;
+};
+
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
@@ -192,6 +238,10 @@ const scanCachedPlugin = (
     manifest.interface?.shortDescription ??
     manifest.description?.split("\n")[0] ??
     `Local MCP server from the Codex plugin "${manifest.name}".`;
+  const icon =
+    manifest.interface?.logo === undefined
+      ? undefined
+      : readIconDataUri(path.resolve(versionDir, manifest.interface.logo));
 
   const localServers = Object.entries(servers.mcpServers).flatMap(([serverKey, spec]) =>
     spec.command !== undefined && spec.type !== "http" && spec.url === undefined
@@ -226,6 +276,7 @@ const scanCachedPlugin = (
       // the integration after adding it.
       env: { CODEX_HOME: codexHome },
       ...(available ? {} : { setupHint: CODEX_SETUP_HINT }),
+      ...(icon === undefined ? {} : { icon }),
     };
   });
 };
@@ -248,19 +299,23 @@ export const scanCodexPlugins = (options?: {
   const client = clientBinaryPath(codexHome);
   const clientAvailable = isExecutableFile(client);
 
-  const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => ({
-    id: entry.id,
-    name: entry.name,
-    summary: entry.summary,
-    available: clientAvailable,
-    slug: entry.slug,
-    source: "curated" as const,
-    command: client,
-    args: entry.args,
-    cwd: path.join(codexHome, "computer-use"),
-    env: { CODEX_HOME: codexHome },
-    ...(clientAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
-  }));
+  const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => {
+    const icon = curatedIconDataUri(codexHome, entry.pluginName);
+    return {
+      id: entry.id,
+      name: entry.name,
+      summary: entry.summary,
+      available: clientAvailable,
+      slug: entry.slug,
+      source: "curated" as const,
+      command: client,
+      args: entry.args,
+      cwd: path.join(codexHome, "computer-use"),
+      env: { CODEX_HOME: codexHome },
+      ...(clientAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
+      ...(icon === undefined ? {} : { icon }),
+    };
+  });
 
   const cacheDir = path.join(codexHome, "plugins", "cache");
   const scanned = listDirs(cacheDir).flatMap((sourceName) => {

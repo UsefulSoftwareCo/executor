@@ -28,14 +28,17 @@ export interface McpStdioPreset {
 export type McpPreset = McpRemotePreset | McpStdioPreset;
 
 // Codex plugin presets — searchable catalog entries ("imessage", "computer
-// use", …) for the plugins the add form's Codex-plugins section installs.
-// `command` is deliberately empty: the real spawn recipe is machine-specific
-// and comes from the server-side scanner (`codex-plugins.ts`); picking one of
-// these routes to the stdio tab with the matching card highlighted.
+// use", …). `command` is deliberately empty: the real spawn recipe is
+// machine-specific and comes from the server-side scanner
+// (`codex-plugins.ts`); picking one of these opens the focused Codex add
+// screen, which shows the plugin's own locally installed icon. The list icon
+// is the OpenAI logo — the shared provenance of all three — because a static
+// preset cannot reach the machine-local icon files.
 const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map((plugin) => ({
   id: plugin.id,
   name: plugin.name,
   summary: plugin.summary,
+  icon: "https://integrations.sh/logo/openai.com",
   family: "codex",
   transport: "stdio",
   command: "",

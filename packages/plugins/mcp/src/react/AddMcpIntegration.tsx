@@ -41,7 +41,7 @@ import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { McpRequestHeadersEditor } from "./McpRequestHeadersEditor";
 import { mcpHeadersFromRows, type McpHeaderRow } from "./request-headers";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
-import { CodexPluginsSection } from "./CodexPluginsSection";
+import CodexPluginAdd from "./CodexPluginAdd";
 import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
@@ -169,15 +169,14 @@ export default function AddMcpIntegration(props: {
   // Drop stdio presets when stdio is disabled — the caller should have
   // already filtered these out, but defence-in-depth.
   const preset = rawPreset?.transport === "stdio" && !allowStdio ? undefined : rawPreset;
-  // A Codex plugin preset is a catalog pointer, not a spawn recipe: it opens
-  // the stdio tab and highlights the matching Codex-plugins card (which
-  // carries the server-resolved command and availability) instead of
-  // prefilling the manual form.
+  // A Codex plugin preset is a catalog pointer, not a spawn recipe: it gets
+  // its own focused add screen (rendered below, before the generic form),
+  // fed by the server-side scanner.
   const isCodexPreset = isCodexPresetId(preset?.id);
   const isStdioPreset = preset?.transport === "stdio" && !isCodexPreset;
 
   const [transport, setTransport] = useState<"remote" | "stdio">(
-    (isStdioPreset || isCodexPreset) && allowStdio ? "stdio" : "remote",
+    isStdioPreset && allowStdio ? "stdio" : "remote",
   );
 
   // --- Stdio state ---
@@ -398,6 +397,18 @@ export default function AddMcpIntegration(props: {
 
   // ---- Render ----
 
+  // Placed after every hook so the hook order is identical on all renders;
+  // `isCodexPreset` is fixed for the component's lifetime (route search param).
+  if (isCodexPreset && preset) {
+    return (
+      <CodexPluginAdd
+        presetId={preset.id}
+        onComplete={props.onComplete}
+        onCancel={props.onCancel}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-6">
       <div>
@@ -525,13 +536,6 @@ export default function AddMcpIntegration(props: {
         </>
       ) : (
         <>
-          {/* Locally installed Codex plugins — one-click presets, with an
-              install hint for entries whose binaries are missing. */}
-          <CodexPluginsSection
-            onComplete={(slug) => props.onComplete(slug)}
-            {...(isCodexPreset && preset ? { highlightId: preset.id } : {})}
-          />
-
           {/* Stdio form */}
           <CardStack>
             <CardStackContent className="border-t-0">

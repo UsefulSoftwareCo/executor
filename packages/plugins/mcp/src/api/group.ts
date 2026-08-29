@@ -145,6 +145,8 @@ const CodexPluginEntrySchema = Schema.Struct({
   cwd: Schema.optional(Schema.String),
   env: Schema.optional(StringMap),
   setupHint: Schema.optional(Schema.String),
+  /** The plugin's own icon from its local install, as a data URI. */
+  icon: Schema.optional(Schema.String),
 });
 
 const ListCodexPluginsResponse = Schema.Struct({
